@@ -208,7 +208,7 @@ export const TabBar = React.memo(function TabBar() {
     <TooltipProvider delayDuration={300}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: div is used for window drag region */}
       <div
-        className="relative z-[200] flex items-center h-[34px] bg-background border-b border-[var(--border-subtle)] pl-2 pr-2 gap-1"
+        className="relative z-[200] flex items-center h-[34px] bg-transparent pl-2 pr-2 gap-1"
         onMouseDown={startDrag}
       >
         <Tabs

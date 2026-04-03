@@ -359,6 +359,20 @@
   -webkit-app-region: no-drag;
 }
 
+/* Floating panel style */
+.panel-float {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+/* Hide scrollbar */
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
 /* Clickable file path links in Markdown */
 .file-path-link {
   text-decoration: underline;

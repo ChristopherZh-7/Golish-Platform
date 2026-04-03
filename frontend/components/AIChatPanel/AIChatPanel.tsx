@@ -1,5 +1,5 @@
 import { memo, useState, useRef, useEffect, useCallback } from "react";
-import { Image, ChevronDown, Cpu, ArrowUp, Gauge, RotateCcw } from "lucide-react";
+import { Image, ChevronDown, Cpu, ArrowUp, Gauge, Plus, Clock, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useStore, useSessionAiConfig } from "@/store";
 import { PROVIDER_GROUPS, formatModelName } from "@/lib/models";
@@ -20,6 +20,22 @@ interface ChatMessage {
   timestamp: number;
 }
 
+interface ChatConversation {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+  createdAt: number;
+}
+
+function createConversation(): ChatConversation {
+  return {
+    id: `chat-${Date.now()}`,
+    title: "New Chat",
+    messages: [],
+    createdAt: Date.now(),
+  };
+}
+
 function MessageBlock({ message }: { message: ChatMessage }) {
   const isUser = message.role === "user";
 
@@ -36,10 +52,59 @@ function MessageBlock({ message }: { message: ChatMessage }) {
 }
 
 export const AIChatPanel = memo(function AIChatPanel() {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [conversations, setConversations] = useState<ChatConversation[]>(() => [createConversation()]);
+  const [activeConvId, setActiveConvId] = useState(() => conversations[0].id);
+  const [showHistory, setShowHistory] = useState(false);
   const [input, setInput] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const tabsRef = useRef<HTMLDivElement>(null);
+
+  const activeConv = conversations.find((c) => c.id === activeConvId);
+  const messages = activeConv?.messages ?? [];
+
+  const setMessages = useCallback(
+    (updater: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => {
+      setConversations((prev) =>
+        prev.map((c) => {
+          if (c.id !== activeConvId) return c;
+          const newMessages = typeof updater === "function" ? updater(c.messages) : updater;
+          const title = newMessages.length > 0 && c.title === "New Chat"
+            ? newMessages.find((m) => m.role === "user")?.content.slice(0, 30) || c.title
+            : c.title;
+          return { ...c, messages: newMessages, title };
+        }),
+      );
+    },
+    [activeConvId],
+  );
+
+  const handleNewChat = useCallback(() => {
+    const conv = createConversation();
+    setConversations((prev) => [...prev, conv]);
+    setActiveConvId(conv.id);
+    setInput("");
+    setShowHistory(false);
+  }, []);
+
+  const handleCloseTab = useCallback(
+    (convId: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      setConversations((prev) => {
+        const filtered = prev.filter((c) => c.id !== convId);
+        if (filtered.length === 0) {
+          const fresh = createConversation();
+          setActiveConvId(fresh.id);
+          return [fresh];
+        }
+        if (convId === activeConvId) {
+          setActiveConvId(filtered[filtered.length - 1].id);
+        }
+        return filtered;
+      });
+    },
+    [activeConvId],
+  );
 
   const activeSessionId = useStore((s) => s.activeSessionId);
   const setSessionAiConfig = useStore((s) => s.setSessionAiConfig);
@@ -173,25 +238,97 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const currentProvider = aiConfig?.provider ?? "";
 
   return (
-    <div className="flex flex-col h-full bg-background border-l border-[var(--border-subtle)]">
-      {/* Header */}
-      <div className="h-[34px] flex items-center justify-between px-3 flex-shrink-0">
-        <span className="text-[12px] font-medium text-foreground">Chat</span>
-        <div className="flex items-center gap-1">
-          {messages.length > 0 && (
+    <div className="flex flex-col h-full">
+      {/* Tab Bar */}
+      <div className="h-[40px] flex items-center px-2 gap-1.5 flex-shrink-0">
+        <div ref={tabsRef} className="flex-1 flex items-center gap-1.5 overflow-x-auto scrollbar-none min-w-0">
+          {conversations.map((conv) => (
             <button
+              key={conv.id}
               type="button"
-              className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors"
-              onClick={() => setMessages([])}
+              className={cn(
+                "group flex items-center gap-1.5 h-[28px] px-3 text-[12px] whitespace-nowrap flex-shrink-0 transition-all rounded-lg",
+                conv.id === activeConvId
+                  ? "text-foreground bg-[var(--bg-hover)]"
+                  : "text-muted-foreground hover:text-foreground/80",
+              )}
+              onClick={() => { setActiveConvId(conv.id); setShowHistory(false); }}
             >
-              <RotateCcw className="w-3 h-3" />
+              <span className="max-w-[120px] truncate">{conv.title}</span>
+              <span
+                className={cn(
+                  "w-4 h-4 flex items-center justify-center rounded-full transition-opacity",
+                  conv.id === activeConvId ? "opacity-60 hover:opacity-100" : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
+                )}
+                onClick={(e) => handleCloseTab(conv.id, e)}
+                onKeyDown={() => {}}
+                role="button"
+                tabIndex={-1}
+              >
+                <X className="w-2.5 h-2.5" />
+              </span>
             </button>
-          )}
+          ))}
+        </div>
+        <div className="flex items-center gap-0.5 flex-shrink-0">
+          <button
+            type="button"
+            title="新对话"
+            className="h-6 w-6 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors"
+            onClick={handleNewChat}
+          >
+            <Plus className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            title="历史记录"
+            className={cn(
+              "h-6 w-6 flex items-center justify-center rounded-md transition-colors",
+              showHistory ? "text-foreground bg-[var(--bg-hover)]" : "text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]",
+            )}
+            onClick={() => setShowHistory((v) => !v)}
+          >
+            <Clock className="w-3.5 h-3.5" />
+          </button>
         </div>
       </div>
 
+      {/* History panel */}
+      {showHistory && (
+        <div className="flex-1 overflow-y-auto overflow-x-hidden border-b border-[var(--border-subtle)]">
+          <div className="px-3 py-2">
+            <span className="text-[11px] text-muted-foreground uppercase tracking-wider font-semibold">历史对话</span>
+          </div>
+          {conversations.filter((c) => c.messages.length > 0).length === 0 ? (
+            <div className="flex items-center justify-center py-8">
+              <span className="text-[12px] text-muted-foreground/50">暂无历史对话</span>
+            </div>
+          ) : (
+            conversations
+              .filter((c) => c.messages.length > 0)
+              .sort((a, b) => b.createdAt - a.createdAt)
+              .map((conv) => (
+                <button
+                  key={conv.id}
+                  type="button"
+                  className={cn(
+                    "w-full text-left px-3 py-2 text-[12px] hover:bg-[var(--bg-hover)] transition-colors",
+                    conv.id === activeConvId ? "text-foreground bg-[var(--bg-hover)]" : "text-muted-foreground",
+                  )}
+                  onClick={() => { setActiveConvId(conv.id); setShowHistory(false); }}
+                >
+                  <div className="truncate">{conv.title}</div>
+                  <div className="text-[10px] text-muted-foreground/50 mt-0.5">
+                    {new Date(conv.createdAt).toLocaleDateString()} · {conv.messages.length} 条消息
+                  </div>
+                </button>
+              ))
+          )}
+        </div>
+      )}
+
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden">
+      {!showHistory && <div className="flex-1 overflow-y-auto overflow-x-hidden">
         {messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full select-none gap-4">
             <div className="flex items-center gap-1.5">
@@ -213,7 +350,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
             <div ref={messagesEndRef} />
           </div>
         )}
-      </div>
+      </div>}
 
       {/* Input Area */}
       <div className="p-3 flex-shrink-0">
