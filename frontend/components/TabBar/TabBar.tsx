@@ -208,7 +208,7 @@ export const TabBar = React.memo(function TabBar() {
     <TooltipProvider delayDuration={300}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: div is used for window drag region */}
       <div
-        className="relative z-[200] flex items-center h-[34px] bg-card border-b border-[var(--border-subtle)] pl-[78px] pr-2 gap-1"
+        className="relative z-[200] flex items-center h-[34px] bg-background border-b border-[var(--border-subtle)] pl-2 pr-2 gap-1"
         onMouseDown={startDrag}
       >
         <Tabs
@@ -278,94 +278,7 @@ export const TabBar = React.memo(function TabBar() {
         {/* Drag region - empty space extends to fill remaining width */}
         <div className="flex-1 h-full min-w-[100px]" />
 
-        {/* Mock Dev Tools toggle - only in browser mode */}
-        {isMockBrowserMode() && <MockDevToolsToggle />}
-
-        {/* File Editor panel toggle */}
-        {display.showFileEditorButton && (
-          <div className="shrink-0 flex items-center justify-center">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => useStore.getState().toggleFileEditorPanel()}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  className="h-5 w-5 text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]"
-                >
-                  <FileCode className="size-icon-tab-bar" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">
-                <p>File Editor (⇧⌘E)</p>
-              </TooltipContent>
-            </Tooltip>
-          </div>
-        )}
-
-        {/* History button */}
-        {display.showHistoryButton && (
-          <div className="ui-fade-width" data-visible={String(!hideAiItems)}>
-            <div className="shrink-0 flex items-center justify-center">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => useStore.getState().openSessionBrowser()}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    className="h-5 w-5 text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]"
-                  >
-                    <History className="size-icon-tab-bar" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  <p>Session History</p>
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          </div>
-        )}
-
-        {/* Settings button */}
-        {display.showSettingsButton && (
-          <div className="shrink-0 flex items-center justify-center">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => useStore.getState().openSettingsTab()}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  className="h-5 w-5 text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]"
-                >
-                  <Settings className="size-icon-tab-bar" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">
-                <p>Settings (⌘,)</p>
-              </TooltipContent>
-            </Tooltip>
-          </div>
-        )}
-
-        {/* Separator + Notification widget */}
-        {display.showNotificationBell && (
-          <div className="shrink-0 flex items-center">
-            {/* Separator - only shown when there are buttons to the left */}
-            {(display.showFileEditorButton ||
-              (display.showHistoryButton && !hideAiItems) ||
-              display.showSettingsButton) && (
-              <div className="shrink-0 flex items-center justify-center w-[9px]">
-                <div className="h-4 w-px bg-border" />
-              </div>
-            )}
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: div is used to prevent drag propagation to notification widget */}
-            <div className="relative" onMouseDown={(e) => e.stopPropagation()}>
-              <NotificationWidget />
-            </div>
-          </div>
-        )}
+        {/* Right-side utility buttons hidden for cleaner layout */}
       </div>
 
       {/* Convert to Pane Modal */}

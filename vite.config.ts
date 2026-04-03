@@ -1,6 +1,6 @@
 import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
-import react from "@vitejs/plugin-react";
+import react from "@vitejs/plugin-react-swc";
 import { defineConfig } from "vite";
 import type { PluginOption } from "vite";
 
@@ -28,11 +28,7 @@ const reactDevToolsPlugin = (): PluginOption => ({
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [
-    react({
-      babel: {
-        plugins: ["babel-plugin-react-compiler"],
-      },
-    }),
+    react(),
     tailwindcss(),
     reactDevToolsPlugin(),
   ],
@@ -41,6 +37,7 @@ export default defineConfig(async () => ({
     alias: {
       "@": path.resolve(__dirname, "./frontend"),
     },
+    dedupe: ["react", "react-dom"],
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

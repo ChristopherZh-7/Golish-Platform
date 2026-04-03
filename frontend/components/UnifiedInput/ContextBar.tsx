@@ -38,64 +38,22 @@ export function ContextBar({ sessionId, isAgentBusy }: ContextBarProps) {
     <div>
       <div
         className={cn(
-          "flex items-center gap-2 px-4 py-1.5",
+          "flex items-center gap-2 px-3 py-1",
           isAgentBusy && "agent-loading-shimmer"
         )}
       >
-        {/* Path badge */}
+        {/* Path badge - Warp style */}
         {pathVisible && (
           <div
-            className="h-5 px-1.5 gap-1 text-xs rounded bg-muted/50 border border-border/50 inline-flex items-center shrink-0"
+            className="h-[18px] px-1.5 gap-1 text-[11px] rounded bg-muted/40 inline-flex items-center shrink-0"
             title={workingDirectory || "~"}
           >
-            <Folder className="size-icon-context-bar text-[#e0af68] shrink-0" />
+            <Folder className="w-3 h-3 text-[#e0af68] shrink-0" />
             <span className="text-muted-foreground">{displayPath}</span>
           </div>
         )}
 
-        {/* Git badge */}
-        {gitVisible && gitBranch && (
-          <button
-            type="button"
-            onClick={openGitPanel}
-            className="h-5 px-1.5 gap-1 text-xs rounded flex items-center border transition-colors shrink-0 bg-muted/50 hover:bg-muted border-border/50 cursor-pointer"
-            title="Toggle Git Panel"
-          >
-            <GitBranch className="size-icon-context-bar text-[#7dcfff]" />
-            <span className="text-muted-foreground">{gitBranch}</span>
-            {gitStatus && (
-              <>
-                <span className="text-muted-foreground ml-0.5">|</span>
-                <span className="text-[#9ece6a]">+{gitStatus.insertions ?? 0}</span>
-                <span className="text-muted-foreground">/</span>
-                <span className="text-[#f7768e]">-{gitStatus.deletions ?? 0}</span>
-                {((gitStatus.ahead ?? 0) > 0 || (gitStatus.behind ?? 0) > 0) && (
-                  <>
-                    <span className="text-muted-foreground ml-0.5">|</span>
-                    {(gitStatus.ahead ?? 0) > 0 && (
-                      <span
-                        className="flex items-center text-[#9ece6a]"
-                        title={`${gitStatus.ahead} to push`}
-                      >
-                        <ArrowUp className="w-2.5 h-2.5" />
-                        {gitStatus.ahead}
-                      </span>
-                    )}
-                    {(gitStatus.behind ?? 0) > 0 && (
-                      <span
-                        className="flex items-center text-[#e0af68]"
-                        title={`${gitStatus.behind} to pull`}
-                      >
-                        <ArrowDown className="w-2.5 h-2.5" />
-                        {gitStatus.behind}
-                      </span>
-                    )}
-                  </>
-                )}
-              </>
-            )}
-          </button>
-        )}
+        {/* Git badge hidden - functionality available via Git panel */}
 
         {/* Virtual env badge — always visible, not gated by display settings */}
         {virtualEnv && (

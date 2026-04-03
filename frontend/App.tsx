@@ -1,7 +1,10 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { logger } from "@/lib/logger";
+import { ActivityBar, type ActivityView } from "./components/ActivityBar/ActivityBar";
 import { CommandPalette, type PageRoute } from "./components/CommandPalette";
 import { PaneContainer } from "./components/PaneContainer";
+import { PentestToolTree } from "./components/PentestToolTree/PentestToolTree";
+import { AIChatPanel } from "./components/AIChatPanel/AIChatPanel";
 import { SidecarNotifications } from "./components/Sidecar";
 import { TabBar } from "./components/TabBar";
 import { TerminalLayer } from "./components/Terminal";
@@ -99,6 +102,8 @@ function App() {
   const [quickOpenDialogOpen, setQuickOpenDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [currentPage, setCurrentPage] = useState<PageRoute>("main");
+  const [activityView, setActivityView] = useState<ActivityView>("tools");
+  const [bottomTerminalOpen, setBottomTerminalOpen] = useState(true);
 
   // Subscribe to file editor sidebar store to sync open state
   // This allows openFile() calls from anywhere to open the sidebar
@@ -333,30 +338,40 @@ function App() {
 
   if (isLoading) {
     return (
-      <div className="h-screen w-screen bg-[#1a1b26] flex flex-col overflow-hidden">
-        {/* Skeleton tab bar */}
-        <div className="flex items-center h-9 bg-[#1a1b26] pl-[78px] pr-2 gap-2 titlebar-drag">
-          <Skeleton className="h-6 w-24 bg-[#1f2335]" />
-          <Skeleton className="h-6 w-6 rounded bg-[#1f2335]" />
+      <div className="h-screen w-screen bg-background flex overflow-hidden">
+        {/* Skeleton Activity Bar */}
+        <div className="w-[48px] flex-shrink-0 bg-background border-r border-[var(--border-subtle)] flex flex-col items-center gap-2 pt-12">
+          <Skeleton className="h-8 w-8 rounded-md bg-muted" />
+          <Skeleton className="h-8 w-8 rounded-md bg-muted" />
+          <Skeleton className="h-8 w-8 rounded-md bg-muted" />
         </div>
 
-        {/* Skeleton content area */}
-        <div className="flex-1 p-4 space-y-3">
-          <Skeleton className="h-16 w-full bg-[#1f2335]" />
-          <Skeleton className="h-16 w-3/4 bg-[#1f2335]" />
-          <Skeleton className="h-16 w-5/6 bg-[#1f2335]" />
+        {/* Skeleton left panel */}
+        <div className="w-[220px] flex-shrink-0 bg-card border-r border-[var(--border-subtle)] p-3 space-y-3">
+          <Skeleton className="h-6 w-16 bg-muted" />
+          <Skeleton className="h-7 w-full bg-muted" />
+          <Skeleton className="h-4 w-20 bg-muted" />
+          <Skeleton className="h-4 w-24 bg-muted" />
         </div>
 
-        {/* Skeleton input area */}
-        <div className="bg-[#1a1b26] border-t border-[#1f2335] px-4 py-3 space-y-2">
-          <div className="flex items-center justify-between">
-            <Skeleton className="h-4 w-32 bg-[#1f2335]" />
-            <Skeleton className="h-7 w-40 rounded-lg bg-[#1f2335]" />
+        {/* Skeleton center */}
+        <div className="flex-1 flex flex-col">
+          <div className="flex items-center h-[34px] bg-card border-b border-[var(--border-subtle)] pl-2 pr-2 gap-2">
+            <Skeleton className="h-5 w-20 bg-muted" />
+            <Skeleton className="h-5 w-5 rounded bg-muted" />
           </div>
-          <Skeleton className="h-8 w-full bg-[#1f2335]" />
+          <div className="flex-1 p-4 space-y-3">
+            <Skeleton className="h-16 w-full bg-muted" />
+            <Skeleton className="h-16 w-3/4 bg-muted" />
+          </div>
         </div>
 
-        {/* Mock Dev Tools - available during loading in browser mode */}
+        {/* Skeleton right panel */}
+        <div className="w-[340px] flex-shrink-0 bg-card border-l border-[var(--border-subtle)] p-3 space-y-3">
+          <Skeleton className="h-6 w-16 bg-muted" />
+          <Skeleton className="h-20 w-full bg-muted" />
+        </div>
+
         {isMockBrowserMode() && (
           <Suspense fallback={null}>
             <MockDevTools />
@@ -420,57 +435,95 @@ function App() {
     );
   }
 
+  const renderLeftPanel = () => {
+    switch (activityView) {
+      case "tools":
+        return <PentestToolTree />;
+      case "settings":
+        return (
+          <div className="flex flex-col h-full bg-card">
+            <div className="h-[34px] flex items-center px-3 border-b border-[var(--border-subtle)]">
+              <span className="text-[12px] font-medium text-foreground uppercase tracking-wider">设置</span>
+            </div>
+            <div className="flex-1 flex items-center justify-center">
+              <span className="text-[12px] text-muted-foreground">设置面板开发中</span>
+            </div>
+          </div>
+        );
+      default:
+        return (
+          <div className="flex flex-col h-full bg-card">
+            <div className="h-[34px] flex items-center px-3 border-b border-[var(--border-subtle)]">
+              <span className="text-[12px] font-medium text-foreground uppercase tracking-wider">
+                {activityView === "search" ? "搜索" : activityView === "explorer" ? "文件" : activityView === "database" ? "数据库" : "知识库"}
+              </span>
+            </div>
+            <div className="flex-1 flex items-center justify-center">
+              <span className="text-[12px] text-muted-foreground">面板开发中</span>
+            </div>
+          </div>
+        );
+    }
+  };
+
   return (
     <TerminalPortalProvider>
-      <div className="h-screen w-screen bg-background flex flex-col overflow-hidden app-bg-layered">
-        {/* Tab bar - self-sufficient, no props needed */}
-        <TabBar />
+      <div className="h-screen w-screen bg-background flex overflow-hidden app-bg-layered" data-bottom-terminal={bottomTerminalOpen ? "open" : "closed"}>
+        {/* Activity Bar - narrow icon strip */}
+        <ActivityBar
+          activeView={activityView}
+          onViewChange={setActivityView}
+          terminalOpen={bottomTerminalOpen}
+          onToggleTerminal={() => setBottomTerminalOpen((v) => !v)}
+        />
 
-        {/* Main content area */}
-        <div className="flex-1 min-h-0 min-w-0 flex overflow-hidden">
-          {/* Main content - Pane layout */}
-          {/* Render ALL tabs but only show the active one. This keeps Terminal instances
-              mounted across tab switches so fullterm apps (claude, codex) don't lose state. */}
-          <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden relative">
-            {tabLayouts.map(({ tabId, root }) => (
-              <div
-                key={tabId}
-                className={`absolute inset-0 ${tabId === activeSessionId ? "visible" : "invisible pointer-events-none"}`}
-              >
-                <PaneContainer node={root} tabId={tabId} />
-              </div>
-            ))}
-            {!activeSessionId && (
-              <div className="flex items-center justify-center h-full">
-                <span className="text-[#565f89]">No active session</span>
-              </div>
-            )}
-          </div>
-
-          {/* Lazy-loaded side panels - wrapped in Suspense with null fallback
-              since they render nothing when closed anyway */}
-          <Suspense fallback={null}>
-            <GitPanel open={gitPanelOpen} onOpenChange={handleGitPanelOpenChange} />
-          </Suspense>
-
-          {/* Context Panel - integrated side panel, uses sidecar's current session */}
-          <Suspense fallback={null}>
-            <ContextPanel open={contextPanelOpen} onOpenChange={handleContextPanelOpenChange} />
-          </Suspense>
-
-          {/* File Editor Panel - right side code editor (shared across all tabs) */}
-          <Suspense fallback={null}>
-            <FileEditorSidebarPanel
-              open={fileEditorPanelOpen}
-              onOpenChange={handleFileEditorPanelOpenChange}
-            />
-          </Suspense>
+        {/* Left panel - changes based on activity bar selection */}
+        <div className="w-[220px] flex-shrink-0 h-full border-r border-[var(--border-subtle)]">
+          {renderLeftPanel()}
         </div>
 
-        {/* Terminal Layer - renders all Terminal instances via React portals.
-            Terminals are rendered here (at a stable position in the tree) and portaled
-            into their respective PaneLeaf targets. This prevents Terminal unmount/remount
-            when pane structure changes during splits. */}
+        {/* Center - TabBar + Pane content */}
+        <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+          <TabBar />
+
+          <div className="flex-1 min-h-0 min-w-0 flex overflow-hidden">
+            <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden relative">
+              {tabLayouts.map(({ tabId, root }) => (
+                <div
+                  key={tabId}
+                  className={`absolute inset-0 ${tabId === activeSessionId ? "visible" : "invisible pointer-events-none"}`}
+                >
+                  <PaneContainer node={root} tabId={tabId} />
+                </div>
+              ))}
+              {!activeSessionId && (
+                <div className="flex items-center justify-center h-full">
+                  <span className="text-muted-foreground">No active session</span>
+                </div>
+              )}
+            </div>
+
+            <Suspense fallback={null}>
+              <GitPanel open={gitPanelOpen} onOpenChange={handleGitPanelOpenChange} />
+            </Suspense>
+            <Suspense fallback={null}>
+              <ContextPanel open={contextPanelOpen} onOpenChange={handleContextPanelOpenChange} />
+            </Suspense>
+            <Suspense fallback={null}>
+              <FileEditorSidebarPanel
+                open={fileEditorPanelOpen}
+                onOpenChange={handleFileEditorPanelOpenChange}
+              />
+            </Suspense>
+          </div>
+        </div>
+
+        {/* Right sidebar - AI Chat Panel */}
+        <div className="w-[340px] flex-shrink-0 h-full">
+          <AIChatPanel />
+        </div>
+
+        {/* Terminal Layer - renders all Terminal instances via React portals */}
         <TerminalLayer />
 
         {/* Command Palette */}
@@ -495,7 +548,6 @@ function App() {
           onOpenQuickOpen={() => setQuickOpenDialogOpen(true)}
         />
 
-        {/* Quick Open Dialog (Cmd+P) */}
         <Suspense fallback={null}>
           <QuickOpenDialog
             open={quickOpenDialogOpen}
@@ -504,8 +556,6 @@ function App() {
           />
         </Suspense>
 
-        {/* Lazy-loaded dialogs and panels - wrapped in Suspense with null fallback
-            since they render nothing when closed anyway */}
         <Suspense fallback={null}>
           <SidecarPanel open={sidecarPanelOpen} onOpenChange={handleSidecarPanelOpenChange} />
         </Suspense>
@@ -522,10 +572,8 @@ function App() {
           <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
         </Suspense>
 
-        {/* Sidecar event notifications */}
         <SidecarNotifications />
 
-        {/* Mock Dev Tools - only in browser mode */}
         {isMockBrowserMode() && (
           <Suspense fallback={null}>
             <MockDevTools />
