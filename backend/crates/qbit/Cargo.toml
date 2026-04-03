@@ -35,6 +35,7 @@ qbit-llm-providers = { path = "../qbit-llm-providers" }
 qbit-synthesis = { path = "../qbit-synthesis" }
 qbit-skills = { path = "../qbit-skills" }
 qbit-mcp = { path = "../qbit-mcp" }
+golish-pentest = { path = "../golish-pentest" }
 
 # Domain crate
 qbit-ai = { path = "../qbit-ai" }
