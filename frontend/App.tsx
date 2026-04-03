@@ -441,9 +441,9 @@ function App() {
         return <PentestToolTree />;
       case "settings":
         return (
-          <div className="flex flex-col h-full bg-card">
-            <div className="h-[34px] flex items-center px-3 border-b border-[var(--border-subtle)]">
-              <span className="text-[12px] font-medium text-foreground uppercase tracking-wider">设置</span>
+          <div className="flex flex-col h-full">
+            <div className="h-[34px] flex items-center px-3 flex-shrink-0">
+              <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">设置</span>
             </div>
             <div className="flex-1 flex items-center justify-center">
               <span className="text-[12px] text-muted-foreground">设置面板开发中</span>
@@ -452,9 +452,9 @@ function App() {
         );
       default:
         return (
-          <div className="flex flex-col h-full bg-card">
-            <div className="h-[34px] flex items-center px-3 border-b border-[var(--border-subtle)]">
-              <span className="text-[12px] font-medium text-foreground uppercase tracking-wider">
+          <div className="flex flex-col h-full">
+            <div className="h-[34px] flex items-center px-3 flex-shrink-0">
+              <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
                 {activityView === "search" ? "搜索" : activityView === "explorer" ? "文件" : activityView === "database" ? "数据库" : "知识库"}
               </span>
             </div>
@@ -468,59 +468,65 @@ function App() {
 
   return (
     <TerminalPortalProvider>
-      <div className="h-screen w-screen bg-background flex overflow-hidden app-bg-layered" data-bottom-terminal={bottomTerminalOpen ? "open" : "closed"}>
-        {/* Activity Bar - narrow icon strip */}
-        <ActivityBar
-          activeView={activityView}
-          onViewChange={setActivityView}
-          terminalOpen={bottomTerminalOpen}
-          onToggleTerminal={() => setBottomTerminalOpen((v) => !v)}
-        />
+      <div className="h-screen w-screen bg-background flex flex-col overflow-hidden app-bg-layered" data-bottom-terminal={bottomTerminalOpen ? "open" : "closed"}>
+        {/* macOS traffic lights + window drag region */}
+        <div className="h-[38px] w-full titlebar-drag flex-shrink-0" data-tauri-drag-region />
 
-        {/* Left panel - changes based on activity bar selection */}
-        <div className="w-[220px] flex-shrink-0 h-full border-r border-[var(--border-subtle)]">
-          {renderLeftPanel()}
-        </div>
+        {/* Content - floating panels */}
+        <div className="flex-1 flex overflow-hidden gap-1.5 px-1.5 pb-1.5 min-h-0">
+          {/* Activity Bar - narrow icon strip */}
+          <ActivityBar
+            activeView={activityView}
+            onViewChange={setActivityView}
+            terminalOpen={bottomTerminalOpen}
+            onToggleTerminal={() => setBottomTerminalOpen((v) => !v)}
+          />
 
-        {/* Center - TabBar + Pane content */}
-        <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
-          <TabBar />
-
-          <div className="flex-1 min-h-0 min-w-0 flex overflow-hidden">
-            <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden relative">
-              {tabLayouts.map(({ tabId, root }) => (
-                <div
-                  key={tabId}
-                  className={`absolute inset-0 ${tabId === activeSessionId ? "visible" : "invisible pointer-events-none"}`}
-                >
-                  <PaneContainer node={root} tabId={tabId} />
-                </div>
-              ))}
-              {!activeSessionId && (
-                <div className="flex items-center justify-center h-full">
-                  <span className="text-muted-foreground">No active session</span>
-                </div>
-              )}
-            </div>
-
-            <Suspense fallback={null}>
-              <GitPanel open={gitPanelOpen} onOpenChange={handleGitPanelOpenChange} />
-            </Suspense>
-            <Suspense fallback={null}>
-              <ContextPanel open={contextPanelOpen} onOpenChange={handleContextPanelOpenChange} />
-            </Suspense>
-            <Suspense fallback={null}>
-              <FileEditorSidebarPanel
-                open={fileEditorPanelOpen}
-                onOpenChange={handleFileEditorPanelOpenChange}
-              />
-            </Suspense>
+          {/* Left panel - changes based on activity bar selection */}
+          <div className="w-[220px] flex-shrink-0 h-full rounded-xl bg-card overflow-hidden panel-float">
+            {renderLeftPanel()}
           </div>
-        </div>
 
-        {/* Right sidebar - AI Chat Panel */}
-        <div className="w-[340px] flex-shrink-0 h-full">
-          <AIChatPanel />
+          {/* Center - TabBar + Pane content */}
+          <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
+            <TabBar />
+
+            <div className="flex-1 min-h-0 min-w-0 flex overflow-hidden">
+              <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden relative">
+                {tabLayouts.map(({ tabId, root }) => (
+                  <div
+                    key={tabId}
+                    className={`absolute inset-0 ${tabId === activeSessionId ? "visible" : "invisible pointer-events-none"}`}
+                  >
+                    <PaneContainer node={root} tabId={tabId} />
+                  </div>
+                ))}
+                {!activeSessionId && (
+                  <div className="flex items-center justify-center h-full">
+                    <span className="text-muted-foreground">No active session</span>
+                  </div>
+                )}
+              </div>
+
+              <Suspense fallback={null}>
+                <GitPanel open={gitPanelOpen} onOpenChange={handleGitPanelOpenChange} />
+              </Suspense>
+              <Suspense fallback={null}>
+                <ContextPanel open={contextPanelOpen} onOpenChange={handleContextPanelOpenChange} />
+              </Suspense>
+              <Suspense fallback={null}>
+                <FileEditorSidebarPanel
+                  open={fileEditorPanelOpen}
+                  onOpenChange={handleFileEditorPanelOpenChange}
+                />
+              </Suspense>
+            </div>
+          </div>
+
+          {/* Right sidebar - AI Chat Panel */}
+          <div className="w-[340px] flex-shrink-0 h-full rounded-xl bg-card overflow-hidden panel-float">
+            <AIChatPanel />
+          </div>
         </div>
 
         {/* Terminal Layer - renders all Terminal instances via React portals */}

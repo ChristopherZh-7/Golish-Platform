@@ -891,6 +891,23 @@ pub fn run_gui() {
             tools::pentest::pentest_check_env_setup,
             tools::pentest::pentest_create_file,
             tools::pentest::pentest_open_url,
+            // GitHub API commands
+            tools::pentest::pentest_fetch_github_releases,
+            tools::pentest::pentest_fetch_github_release,
+            tools::pentest::pentest_fetch_github_release_by_tag,
+            tools::pentest::pentest_fetch_github_repo_info,
+            // Tool package management commands
+            tools::pentest::pentest_create_tool_package,
+            tools::pentest::pentest_update_tool,
+            tools::pentest::pentest_update_tool_executable,
+            tools::pentest::pentest_delete_backup,
+            tools::pentest::pentest_delete_tool,
+            tools::pentest::pentest_copy_to_toolpack,
+            tools::pentest::pentest_download_and_extract,
+            // Sandboxie commands
+            tools::pentest::pentest_check_sandboxie,
+            tools::pentest::pentest_test_sandboxie,
+            tools::pentest::pentest_download_sandboxie,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
