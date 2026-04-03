@@ -122,7 +122,9 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
                 <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden">
                   <UnifiedTimeline sessionId={sessionId} />
                 </div>
-                <UnifiedInput sessionId={sessionId} />
+                <div className="pane-bottom-terminal">
+                  <UnifiedInput sessionId={sessionId} />
+                </div>
                 <ToolApprovalDialog sessionId={sessionId} />
               </>
             )}

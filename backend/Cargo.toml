@@ -63,7 +63,7 @@ version = "0.2.43"
 edition = "2021"
 authors = ["you"]
 license = "MIT"
-repository = "https://github.com/yourusername/qbit"
+repository = "https://github.com/ChristopherZh-7/golish-platform"
 
 [workspace.dependencies]
 # Internal crates

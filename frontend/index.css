@@ -173,6 +173,35 @@
   z-index: 1;
 }
 
+/* Floating idle animation for AI chat panel */
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+/* Bottom terminal toggle via Activity Bar */
+[data-bottom-terminal="closed"] .pane-bottom-terminal {
+  display: none;
+}
+
+/* AI Chat idle typing-dots animation */
+@keyframes typing-dot {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.3; }
+  30% { transform: translateY(-6px); opacity: 0.7; }
+}
+
+.typing-dot {
+  animation: typing-dot 1.4s ease-in-out infinite;
+}
+
 /* Blinking cursor animation */
 @keyframes blink {
   0%, 50% {

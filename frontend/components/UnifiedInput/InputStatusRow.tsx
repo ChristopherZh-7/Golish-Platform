@@ -733,9 +733,9 @@ export const InputStatusRow = memo(function InputStatusRow({ sessionId }: InputS
           </div>
         )}
 
-        {/* Divider + Model selector badge */}
+        {/* Divider + Model selector badge (hidden - moved to AI Chat Panel) */}
         {display.showStatusBadge && (
-          <div className="ui-fade-width ml-2" data-visible={String(!hideAiItems)}>
+          <div className="ml-2" style={{ display: "none" }} data-visible={String(!hideAiItems)}>
             <div className="shrink-0 flex items-center gap-2">
               <div className="h-4 w-px bg-[var(--border-medium)]" />
               {status === "disconnected" ? (

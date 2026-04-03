@@ -1255,15 +1255,15 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
         {/* Inline Task Plan - only shown when a plan exists */}
         <InlineTaskPlan sessionId={sessionId} />
 
-        {/* Path and badges row - shows shimmer when agent is busy */}
+        {/* Path badge row - minimal Warp-style */}
         <ContextBar sessionId={sessionId} isAgentBusy={isAgentBusy} />
 
         {/* Input row with container */}
-        <div className="px-3 py-1 border-y border-[var(--border-subtle)]">
+        <div className="px-3 py-2 border-y border-[var(--border-subtle)]">
           <div
             ref={dropZoneRef}
             className={cn(
-              "relative flex items-center gap-2 rounded-md bg-background px-2 py-1",
+              "relative flex items-center gap-2 rounded-md bg-background px-2 py-1.5",
               "transition-all duration-150",
               // Drag-over states
               isDragOver && !dragError && ["bg-accent/10"],
@@ -1334,7 +1334,7 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
                       ? "Session limit exceeded. Please start a new session."
                       : isCompacting
                         ? "Compacting conversation..."
-                        : ""
+                        : "输入命令..."
                 }
                 rows={1}
                 className={cn(
@@ -1430,8 +1430,7 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
           </div>
         </div>
 
-        {/* Status row - model selector, token usage */}
-        {showStatusRow && <InputStatusRow sessionId={sessionId} />}
+        {/* Status row - hidden for cleaner layout, functionality moved to AI Chat Panel */}
       </div>
     </>
   );

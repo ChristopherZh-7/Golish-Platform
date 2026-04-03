@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "qbit",
+  "productName": "Golish Platform",
   "mainBinaryName": "qbit",
-  "identifier": "com.qbit.terminal",
+  "identifier": "com.golish.platform",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "qbit",
+        "title": "Golish Platform",
         "width": 1400,
         "height": 900,
         "minWidth": 800,
