@@ -176,15 +176,17 @@ fn truncate_head_tail(content: &str, head_chars: usize, tail_chars: usize) -> Tr
         middle_lines,
         tail.trim_start()
     );
+    let result_chars = result.len();
+    let tokens_saved = TokenBudgetManager::estimate_tokens(content)
+        .saturating_sub(TokenBudgetManager::estimate_tokens(&result));
 
     TruncationResult {
-        content: result.clone(),
+        content: result,
         truncated: true,
         original_chars,
-        result_chars: result.len(),
+        result_chars,
         lines_removed: middle_lines,
-        tokens_saved: TokenBudgetManager::estimate_tokens(content)
-            .saturating_sub(TokenBudgetManager::estimate_tokens(&result)),
+        tokens_saved,
     }
 }
 
@@ -235,15 +237,17 @@ pub fn safe_truncate_to_bytes(content: &str, max_bytes: usize) -> TruncationResu
         "{}\n[... content truncated by byte fuse ...]",
         &content[..safe_end]
     );
+    let result_chars = truncated.len();
+    let tokens_saved = TokenBudgetManager::estimate_tokens(content)
+        .saturating_sub(TokenBudgetManager::estimate_tokens(&truncated));
 
     TruncationResult {
-        content: truncated.clone(),
+        content: truncated,
         truncated: true,
         original_chars,
-        result_chars: truncated.len(),
+        result_chars,
         lines_removed: content[safe_end..].lines().count(),
-        tokens_saved: TokenBudgetManager::estimate_tokens(content)
-            .saturating_sub(TokenBudgetManager::estimate_tokens(&truncated)),
+        tokens_saved,
     }
 }
 
@@ -281,15 +285,16 @@ pub fn truncate_json_output(json: &str, max_tokens: usize) -> TruncationResult {
         let summary_str =
             serde_json::to_string_pretty(&summary).unwrap_or_else(|_| json.to_string());
 
-        if TokenBudgetManager::estimate_tokens(&summary_str) <= max_tokens {
+        let summary_tokens = TokenBudgetManager::estimate_tokens(&summary_str);
+        if summary_tokens <= max_tokens {
+            let result_chars = summary_str.len();
             return TruncationResult {
-                content: summary_str.clone(),
+                content: summary_str,
                 truncated: true,
                 original_chars: json.len(),
-                result_chars: summary_str.len(),
+                result_chars,
                 lines_removed: 0,
-                tokens_saved: original_tokens
-                    .saturating_sub(TokenBudgetManager::estimate_tokens(&summary_str)),
+                tokens_saved: original_tokens.saturating_sub(summary_tokens),
             };
         }
     }
