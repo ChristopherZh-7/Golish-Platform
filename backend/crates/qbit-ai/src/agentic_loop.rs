@@ -2222,51 +2222,47 @@ where
             Some(serde_json::Value::Object(additional_params_json))
         };
 
-        // Log if any messages contain images (debugging multimodal)
-        let image_count: usize = chat_history
-            .iter()
-            .map(|msg| {
-                if let Message::User { content } = msg {
+        // Diagnostic logging — only traverse history when log level permits
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let image_count: usize = chat_history
+                .iter()
+                .map(|msg| {
+                    if let Message::User { content } = msg {
+                        content
+                            .iter()
+                            .filter(|c| matches!(c, rig::message::UserContent::Image(_)))
+                            .count()
+                    } else {
+                        0
+                    }
+                })
+                .sum();
+            if image_count > 0 {
+                tracing::debug!(
+                    "[Unified] Chat history contains {} image(s) across {} messages",
+                    image_count,
+                    chat_history.len()
+                );
+            }
+
+            let has_reasoning_in_history = chat_history.iter().any(|m| {
+                if let Message::Assistant { content, .. } = m {
                     content
                         .iter()
-                        .filter(|c| matches!(c, rig::message::UserContent::Image(_)))
-                        .count()
+                        .any(|c| matches!(c, AssistantContent::Reasoning(_)))
                 } else {
-                    0
+                    false
                 }
-            })
-            .sum();
-        if image_count > 0 {
-            tracing::info!(
-                "[Unified] Chat history contains {} image(s) across {} messages",
-                image_count,
-                chat_history.len()
+            });
+            tracing::debug!(
+                "[OpenAI Debug] Starting stream: iteration={}, history_len={}, provider={}, has_reasoning_history={}, thinking={}",
+                iteration,
+                chat_history.len(),
+                ctx.provider_name,
+                has_reasoning_in_history,
+                supports_thinking
             );
         }
-
-        // Make streaming completion request (instrumented for Langfuse)
-        // Diagnostic logging for OpenAI multi-turn debugging
-        let has_reasoning_in_history = chat_history.iter().any(|m| {
-            if let Message::Assistant { content, .. } = m {
-                content
-                    .iter()
-                    .any(|c| matches!(c, AssistantContent::Reasoning(_)))
-            } else {
-                false
-            }
-        });
-        tracing::info!(
-            "[OpenAI Debug] Starting stream: iteration={}, history_len={}, provider={}, has_reasoning_history={}",
-            iteration,
-            chat_history.len(),
-            ctx.provider_name,
-            has_reasoning_in_history
-        );
-        tracing::debug!(
-            "[Unified] Starting streaming completion request (iteration {}, thinking={})",
-            iteration,
-            supports_thinking
-        );
 
         // Wrap stream request in timeout to prevent infinite hangs (3 minutes)
         let stream_timeout = std::time::Duration::from_secs(180);
@@ -2298,23 +2294,27 @@ where
         // flattener.
         let is_nvidia_provider = ctx.provider_name == "nvidia";
 
-        for attempt in 1..=STREAM_START_MAX_ATTEMPTS {
-            let (preamble, effective_history) = if is_nvidia_provider {
-                let mut nvidia_history = vec![Message::User {
-                    content: OneOrMany::one(UserContent::text(system_prompt)),
-                }];
-                nvidia_history.extend(chat_history.clone());
-                (None, nvidia_history)
-            } else {
-                (Some(system_prompt.to_string()), chat_history.clone())
-            };
+        // Build request components once before the retry loop to avoid
+        // re-cloning chat_history, tools, and additional_params on each attempt.
+        let (preamble, request_history) = if is_nvidia_provider {
+            let mut nvidia_history = vec![Message::User {
+                content: OneOrMany::one(UserContent::text(system_prompt)),
+            }];
+            nvidia_history.extend(chat_history.clone());
+            (None, nvidia_history)
+        } else {
+            (Some(system_prompt.to_string()), chat_history.clone())
+        };
+        let request_chat_history = OneOrMany::many(request_history.clone())
+            .unwrap_or_else(|_| OneOrMany::one(request_history[0].clone()));
+        let request_tools = tools.clone();
 
+        for attempt in 1..=STREAM_START_MAX_ATTEMPTS {
             let request = rig::completion::CompletionRequest {
-                preamble,
-                chat_history: OneOrMany::many(effective_history.clone())
-                    .unwrap_or_else(|_| OneOrMany::one(effective_history[0].clone())),
+                preamble: preamble.clone(),
+                chat_history: request_chat_history.clone(),
                 documents: vec![],
-                tools: tools.clone(),
+                tools: request_tools.clone(),
                 temperature,
                 max_tokens: Some(MAX_COMPLETION_TOKENS as u64),
                 tool_choice: None,

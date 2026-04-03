@@ -344,10 +344,10 @@ impl ContextManager {
         let mut stats = TokenUsageStats::new();
 
         for message in messages {
-            let tokens = TokenBudgetManager::estimate_tokens(&message_to_text(message));
+            let chars = estimate_message_chars(message);
+            let tokens = chars / 4; // chars/4 heuristic, same as TokenBudgetManager::estimate_tokens
             match message {
                 Message::User { content } => {
-                    // Check if this contains tool results
                     let has_tool_result = content
                         .iter()
                         .any(|c| matches!(c, rig::message::UserContent::ToolResult(_)));
@@ -593,8 +593,9 @@ pub struct ContextEnforcementResult {
     pub warning_info: Option<ContextWarningInfo>,
 }
 
-/// Convert message to text for token estimation
-fn message_to_text(message: &Message) -> String {
+/// Estimate character length of a message without allocating strings.
+/// Used for token estimation (chars / 4 heuristic).
+fn estimate_message_chars(message: &Message) -> usize {
     use rig::completion::AssistantContent;
     use rig::message::UserContent;
 
@@ -602,30 +603,25 @@ fn message_to_text(message: &Message) -> String {
         Message::User { content } => content
             .iter()
             .map(|c| match c {
-                UserContent::Text(t) => t.text.clone(),
-                UserContent::Image(_) => "[image]".to_string(),
-                UserContent::Document(_) => "[document]".to_string(),
+                UserContent::Text(t) => t.text.len(),
+                UserContent::Image(_) => 7,     // "[image]"
+                UserContent::Document(_) => 10,  // "[document]"
                 UserContent::ToolResult(result) => result
                     .content
                     .iter()
-                    .map(|tc| format!("{:?}", tc))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                _ => "[media]".to_string(), // Audio, Video, etc.
+                    .map(|tc| format!("{:?}", tc).len())
+                    .sum(),
+                _ => 7, // "[media]"
             })
-            .collect::<Vec<_>>()
-            .join("\n"),
+            .sum(),
         Message::Assistant { content, .. } => content
             .iter()
             .map(|c| match c {
-                AssistantContent::Text(t) => t.text.clone(),
-                AssistantContent::ToolCall(call) => {
-                    format!("[tool: {}]", call.function.name)
-                }
-                _ => "[reasoning]".to_string(), // Reasoning, etc.
+                AssistantContent::Text(t) => t.text.len(),
+                AssistantContent::ToolCall(call) => 8 + call.function.name.len(),
+                _ => 11, // "[reasoning]"
             })
-            .collect::<Vec<_>>()
-            .join("\n"),
+            .sum(),
     }
 }
 
