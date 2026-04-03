@@ -1,0 +1,10 @@
+---
+source: crates/qbit/tests/ai_events_characterization.rs
+assertion_line: 529
+expression: json
+---
+{
+  "agent_id": "agent-001",
+  "agent_name": "analyzer",
+  "type": "sub_agent"
+}

@@ -1,0 +1,11 @@
+---
+source: crates/qbit/tests/ai_events_characterization.rs
+assertion_line: 307
+expression: json
+---
+{
+  "max_tokens": 200000,
+  "total_tokens": 170000,
+  "type": "context_warning",
+  "utilization": 0.85
+}

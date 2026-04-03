@@ -1,0 +1,746 @@
+import {
+  ChevronDown,
+  ChevronRight,
+  File,
+  FolderGit2,
+  FolderOpen,
+  GitBranch,
+  Minus,
+  Plus,
+  RefreshCw,
+  Trash2,
+  TreePine,
+  X,
+} from "lucide-react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
+import {
+  listProjectsForHome,
+  listRecentDirectories,
+  type ProjectInfo,
+  type RecentDirectory,
+  removeRecentDirectory,
+} from "@/lib/indexer";
+import { logger } from "@/lib/logger";
+import { deleteProject, type ProjectFormData, saveProject } from "@/lib/projects";
+import { deleteWorktree } from "@/lib/tauri";
+import { NewWorktreeModal } from "./NewWorktreeModal";
+import { SetupProjectModal } from "./SetupProjectModal";
+
+/**
+ * Debounce delay for window focus refresh (milliseconds).
+ * Small delay to batch rapid focus events.
+ */
+export const HOME_VIEW_FOCUS_DEBOUNCE_MS = 100;
+
+/**
+ * Minimum interval between focus-triggered fetches (milliseconds).
+ * Prevents excessive fetching when user rapidly switches windows.
+ */
+export const HOME_VIEW_FOCUS_MIN_INTERVAL_MS = 2000;
+
+/** Context menu state */
+interface ContextMenuState {
+  x: number;
+  y: number;
+  projectPath: string;
+  projectName: string;
+}
+
+/** Worktree context menu state */
+interface WorktreeContextMenuState {
+  x: number;
+  y: number;
+  projectPath: string;
+  worktreePath: string;
+  branchName: string;
+}
+
+/** Stats badge showing file count, insertions, and deletions */
+const StatsBadge = memo(function StatsBadge({
+  fileCount,
+  insertions,
+  deletions,
+}: {
+  fileCount: number;
+  insertions: number;
+  deletions: number;
+}) {
+  if (fileCount === 0 && insertions === 0 && deletions === 0) {
+    return null;
+  }
+
+  return (
+    <div className="flex items-center bg-[#0d1117] px-2 py-1 rounded-full border border-[#30363d] space-x-2 text-xs text-gray-500">
+      {fileCount > 0 && (
+        <div className="flex items-center">
+          <File size={12} className="mr-0.5 text-gray-500" />
+          <span>{fileCount}</span>
+        </div>
+      )}
+      {insertions > 0 && (
+        <div className="flex items-center">
+          <Plus size={12} className="mr-0.5 text-[#3fb950]" />
+          <span>{insertions}</span>
+        </div>
+      )}
+      {deletions > 0 && (
+        <div className="flex items-center">
+          <Minus size={12} className="mr-0.5 text-[#f85149]" />
+          <span>{deletions}</span>
+        </div>
+      )}
+    </div>
+  );
+});
+
+/** Worktree count badge */
+const WorktreeBadge = memo(function WorktreeBadge({ count }: { count: number }) {
+  return (
+    <div className="flex items-center bg-[#0d1117] px-2 py-1 rounded-full border border-[#30363d] text-xs text-gray-500">
+      <TreePine size={14} className="mr-1 text-[#238636]" />
+      {count}
+    </div>
+  );
+});
+
+/** Worktree context menu component */
+function WorktreeContextMenu({
+  x,
+  y,
+  onDelete,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Close on click outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        onClose();
+      }
+    };
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onClose();
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [onClose]);
+
+  const handleDeleteClick = useCallback(() => {
+    onDelete();
+    onClose();
+  }, [onDelete, onClose]);
+
+  return (
+    <div
+      ref={menuRef}
+      className="fixed z-50 bg-[#1c2128] border border-[#30363d] rounded-md shadow-xl py-1 min-w-[160px]"
+      style={{ left: x, top: y }}
+    >
+      <button
+        type="button"
+        onClick={handleDeleteClick}
+        className="w-full flex items-center px-3 py-2 text-sm text-red-400 hover:bg-[#30363d] hover:text-red-300 transition-colors text-left"
+      >
+        <Trash2 size={14} className="mr-2" />
+        Delete Worktree
+      </button>
+    </div>
+  );
+}
+
+/** Single project row (expandable) - memoized to prevent re-renders when parent state changes */
+export const ProjectRow = memo(function ProjectRow({
+  project,
+  isExpanded,
+  onToggle,
+  onOpenDirectory,
+  onContextMenu,
+  onWorktreeContextMenu,
+  onDelete,
+}: {
+  project: ProjectInfo;
+  isExpanded: boolean;
+  onToggle: () => void;
+  onOpenDirectory: (path: string) => void;
+  onContextMenu: (e: React.MouseEvent) => void;
+  onWorktreeContextMenu: (e: React.MouseEvent, worktreePath: string, branchName: string) => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="border-b border-[#30363d]/50 last:border-0">
+      {/* Project header */}
+      <button
+        type="button"
+        onClick={onToggle}
+        onContextMenu={onContextMenu}
+        className="w-full flex items-center justify-between p-3 hover:bg-[#1c2128] transition-colors group text-left"
+      >
+        <div className="flex items-center min-w-0 mr-4">
+          <div className="mr-2 flex-shrink-0 hover:bg-[#30363d] rounded p-0.5 transition-colors">
+            {isExpanded ? (
+              <ChevronDown size={14} className="text-gray-500" />
+            ) : (
+              <ChevronRight size={14} className="text-gray-500" />
+            )}
+          </div>
+          <FolderGit2
+            size={16}
+            className="text-gray-500 mr-3 flex-shrink-0 group-hover:text-[#58a6ff] transition-colors"
+          />
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-gray-300 truncate group-hover:text-white transition-colors">
+              {project.name}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center text-xs text-gray-500 flex-shrink-0 space-x-3">
+          <WorktreeBadge count={project.branches.length} />
+          <span>{project.last_activity}</span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-red-900/30 text-gray-500 hover:text-red-400 flex-shrink-0"
+            title="Delete project"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      </button>
+
+      {/* Expanded branches */}
+      {isExpanded && project.branches.length > 0 && (
+        <div className="bg-[#0d1117] border-t border-[#30363d]/50 max-h-[420px] overflow-y-auto custom-scrollbar">
+          {project.branches.map((branch) => (
+            <button
+              type="button"
+              key={branch.name}
+              onClick={() => onOpenDirectory(branch.path)}
+              onContextMenu={(e) => onWorktreeContextMenu(e, branch.path, branch.name)}
+              className="w-full flex items-center p-3 pl-12 hover:bg-[#161b22] transition-colors text-left border-b border-[#30363d]/30 last:border-0 group"
+            >
+              <div className="flex items-center min-w-0 w-[450px] mr-4">
+                <div className="min-w-0">
+                  <div className="flex items-center text-xs text-gray-500">
+                    <GitBranch size={12} className="mr-1 text-[#58a6ff] flex-shrink-0" />
+                    <span className="text-gray-300 truncate">{branch.name}</span>
+                  </div>
+                  <div className="text-xs text-gray-600 truncate font-mono mt-0.5">
+                    {branch.path}
+                  </div>
+                </div>
+              </div>
+
+              <StatsBadge
+                fileCount={branch.file_count}
+                insertions={branch.insertions}
+                deletions={branch.deletions}
+              />
+
+              <div className="flex items-center text-xs text-gray-500 flex-shrink-0 ml-auto space-x-2">
+                <span>{branch.last_activity}</span>
+                <ChevronRight
+                  size={14}
+                  className="opacity-0 group-hover:opacity-100 transition-opacity text-[#58a6ff]"
+                />
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+});
+
+/** Single recent directory row - memoized to prevent re-renders when parent state changes */
+export const RecentDirectoryRow = memo(function RecentDirectoryRow({
+  directory,
+  onOpen,
+  onRemove,
+}: {
+  directory: RecentDirectory;
+  onOpen: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="w-full flex items-center p-3 hover:bg-[#1c2128] transition-colors group text-left border-b border-[#30363d]/50 last:border-0"
+    >
+      <div className="flex items-center min-w-0 w-[500px] mr-4">
+        <FolderOpen
+          size={16}
+          className="text-gray-500 mr-3 flex-shrink-0 group-hover:text-[#58a6ff] transition-colors"
+        />
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-gray-300 truncate group-hover:text-white transition-colors">
+            {directory.name}
+          </div>
+          {directory.branch && (
+            <div className="flex items-center text-xs text-gray-500 opacity-60">
+              <GitBranch size={12} className="mr-1 text-[#58a6ff]" />
+              <span className="text-gray-300">{directory.branch}</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <StatsBadge
+        fileCount={directory.file_count}
+        insertions={directory.insertions}
+        deletions={directory.deletions}
+      />
+
+      <div className="flex items-center text-xs text-gray-500 flex-shrink-0 ml-auto space-x-2">
+        <span>{directory.last_accessed}</span>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove();
+          }}
+          className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-red-900/30 text-gray-500 hover:text-red-400 flex-shrink-0"
+          title="Remove from recent"
+        >
+          <X size={14} />
+        </button>
+      </div>
+    </button>
+  );
+});
+
+/** Context menu component */
+function ProjectContextMenu({
+  x,
+  y,
+  onNewWorktree,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  onNewWorktree: () => void;
+  onClose: () => void;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Close on click outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        onClose();
+      }
+    };
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onClose();
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [onClose]);
+
+  const handleNewWorktreeClick = useCallback(() => {
+    onNewWorktree();
+    onClose();
+  }, [onNewWorktree, onClose]);
+
+  return (
+    <div
+      ref={menuRef}
+      className="fixed z-50 bg-[#1c2128] border border-[#30363d] rounded-md shadow-xl py-1 min-w-[160px]"
+      style={{ left: x, top: y }}
+    >
+      <button
+        type="button"
+        onClick={handleNewWorktreeClick}
+        className="w-full flex items-center px-3 py-2 text-sm text-gray-300 hover:bg-[#30363d] hover:text-white transition-colors text-left"
+      >
+        <TreePine size={14} className="mr-2 text-[#238636]" />
+        New Worktree
+      </button>
+    </div>
+  );
+}
+
+export const HomeView = memo(function HomeView() {
+  const { createTerminalTab } = useCreateTerminalTab();
+  const [projects, setProjects] = useState<ProjectInfo[]>([]);
+  const [recentDirectories, setRecentDirectories] = useState<RecentDirectory[]>([]);
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isSetupModalOpen, setIsSetupModalOpen] = useState(false);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [worktreeContextMenu, setWorktreeContextMenu] = useState<WorktreeContextMenuState | null>(
+    null
+  );
+  const [worktreeModal, setWorktreeModal] = useState<{
+    projectPath: string;
+    projectName: string;
+  } | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<{ name: string; path: string } | null>(null);
+
+  // Fetch data helper
+  const fetchData = useCallback(async (showLoadingState = true) => {
+    if (showLoadingState) setIsLoading(true);
+    setIsRefreshing(true);
+    try {
+      const [projectsData, directoriesData] = await Promise.all([
+        listProjectsForHome(),
+        listRecentDirectories(10),
+      ]);
+      setProjects(projectsData);
+      setRecentDirectories(directoriesData);
+    } catch (error) {
+      logger.error("Failed to fetch home view data:", error);
+    } finally {
+      setIsLoading(false);
+      setIsRefreshing(false);
+    }
+  }, []);
+
+  // Fetch data on mount
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  // Refresh on window focus with debounce to avoid excessive fetches
+  // when user rapidly switches windows
+  // Track last fetch time at component level so it persists across effect re-runs
+  // Start with 0 to allow the first focus fetch (after initial mount fetch)
+  const lastFocusFetchTimeRef = useRef(0);
+
+  useEffect(() => {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const handleFocus = () => {
+      const now = Date.now();
+      // Skip if we fetched recently (minimum interval between fetches)
+      if (now - lastFocusFetchTimeRef.current < HOME_VIEW_FOCUS_MIN_INTERVAL_MS) {
+        return;
+      }
+      // Clear any pending debounced fetch
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      // Debounce the fetch
+      timeoutId = setTimeout(() => {
+        lastFocusFetchTimeRef.current = Date.now();
+        fetchData(false);
+        timeoutId = null;
+      }, HOME_VIEW_FOCUS_DEBOUNCE_MS);
+    };
+
+    window.addEventListener("focus", handleFocus);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [fetchData]);
+
+  const handleRefresh = useCallback(() => {
+    fetchData(false);
+  }, [fetchData]);
+
+  const toggleProject = useCallback((path: string) => {
+    setExpandedProjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleOpenDirectory = useCallback(
+    (path: string) => {
+      createTerminalTab(path);
+    },
+    [createTerminalTab]
+  );
+
+  const handleSetupNewProject = useCallback(() => {
+    setIsSetupModalOpen(true);
+  }, []);
+
+  const handleProjectContextMenu = useCallback((e: React.MouseEvent, project: ProjectInfo) => {
+    e.preventDefault();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      projectPath: project.path,
+      projectName: project.name,
+    });
+  }, []);
+
+  const handleWorktreeContextMenu = useCallback(
+    (e: React.MouseEvent, projectPath: string, worktreePath: string, branchName: string) => {
+      e.preventDefault();
+      e.stopPropagation(); // Prevent project context menu
+      setWorktreeContextMenu({
+        x: e.clientX,
+        y: e.clientY,
+        projectPath,
+        worktreePath,
+        branchName,
+      });
+    },
+    []
+  );
+
+  const handleNewWorktree = useCallback(() => {
+    if (contextMenu) {
+      setWorktreeModal({
+        projectPath: contextMenu.projectPath,
+        projectName: contextMenu.projectName,
+      });
+    }
+  }, [contextMenu]);
+
+  const handleDeleteWorktree = useCallback(async () => {
+    if (worktreeContextMenu) {
+      if (
+        confirm(`Are you sure you want to delete worktree "${worktreeContextMenu.branchName}"?`)
+      ) {
+        try {
+          await deleteWorktree(
+            worktreeContextMenu.projectPath,
+            worktreeContextMenu.worktreePath,
+            true
+          );
+          fetchData(false);
+        } catch (error) {
+          logger.error("Failed to delete worktree:", error);
+          alert(`Failed to delete worktree: ${error}`);
+        }
+      }
+    }
+  }, [worktreeContextMenu, fetchData]);
+
+  const handleWorktreeCreated = useCallback(
+    (worktreePath: string) => {
+      // Refresh the project list to show the new worktree
+      fetchData(false);
+      // Optionally open the new worktree in a tab
+      createTerminalTab(worktreePath);
+    },
+    [fetchData, createTerminalTab]
+  );
+
+  const handleProjectSubmit = useCallback(
+    async (data: ProjectFormData) => {
+      try {
+        await saveProject(data);
+        setIsSetupModalOpen(false);
+        // Refresh the project list
+        fetchData(false);
+      } catch (error) {
+        logger.error("Failed to save project:", error);
+        // TODO: Show error toast
+      }
+    },
+    [fetchData]
+  );
+
+  if (isLoading) {
+    return <div className="h-full flex items-center justify-center text-gray-500">Loading...</div>;
+  }
+
+  return (
+    <>
+      <SetupProjectModal
+        isOpen={isSetupModalOpen}
+        onClose={() => setIsSetupModalOpen(false)}
+        onSubmit={handleProjectSubmit}
+      />
+
+      {/* Delete Project Confirmation Dialog */}
+      <Dialog open={!!deleteConfirm} onOpenChange={() => setDeleteConfirm(null)}>
+        <DialogContent className="bg-[#1c2128] border-[#30363d] text-gray-300 max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete Project</DialogTitle>
+            <DialogDescription>
+              Remove <span className="text-white font-medium">{deleteConfirm?.name}</span> from
+              Qbit? This deletes the project configuration but won't delete any files.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setDeleteConfirm(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={async () => {
+                if (deleteConfirm) {
+                  await deleteProject(deleteConfirm.name);
+                }
+                setDeleteConfirm(null);
+                fetchData(false);
+              }}
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* New Worktree Modal */}
+      {worktreeModal && (
+        <NewWorktreeModal
+          isOpen={true}
+          projectPath={worktreeModal.projectPath}
+          projectName={worktreeModal.projectName}
+          onClose={() => setWorktreeModal(null)}
+          onSuccess={handleWorktreeCreated}
+        />
+      )}
+
+      {/* Context Menu */}
+      {contextMenu &&
+        createPortal(
+          <ProjectContextMenu
+            x={contextMenu.x}
+            y={contextMenu.y}
+            onNewWorktree={handleNewWorktree}
+            onClose={() => setContextMenu(null)}
+          />,
+          document.body
+        )}
+
+      {/* Worktree Context Menu */}
+      {worktreeContextMenu &&
+        createPortal(
+          <WorktreeContextMenu
+            x={worktreeContextMenu.x}
+            y={worktreeContextMenu.y}
+            onDelete={handleDeleteWorktree}
+            onClose={() => setWorktreeContextMenu(null)}
+          />,
+          document.body
+        )}
+
+      <div className="h-full overflow-auto bg-[#0d1117] p-8">
+        <div className="max-w-3xl mx-auto w-full space-y-8">
+          {/* Projects Section */}
+          <section className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <h2 className="text-sm font-bold text-gray-400 uppercase tracking-wider">
+                  Projects
+                </h2>
+                <button
+                  type="button"
+                  onClick={handleRefresh}
+                  disabled={isRefreshing}
+                  className="p-1 hover:bg-[#30363d] rounded transition-colors disabled:opacity-50"
+                  title="Refresh"
+                >
+                  <RefreshCw
+                    size={14}
+                    className={`text-gray-500 ${isRefreshing ? "animate-spin" : ""}`}
+                  />
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={handleSetupNewProject}
+                className="flex items-center space-x-2 px-3 py-1.5 bg-[#238636] hover:bg-[#2ea043] text-white text-xs font-medium rounded-md transition-colors"
+              >
+                <Plus size={14} />
+                <span>Setup new project</span>
+              </button>
+            </div>
+            <div className="bg-[#161b22] border border-[#30363d] rounded-lg overflow-hidden">
+              {projects.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">
+                  No projects configured.{" "}
+                  <button
+                    type="button"
+                    className="text-[#238636] hover:underline"
+                    onClick={handleSetupNewProject}
+                  >
+                    Add your first project
+                  </button>
+                </div>
+              ) : (
+                projects.map((project) => (
+                  <ProjectRow
+                    key={project.path}
+                    project={project}
+                    isExpanded={expandedProjects.has(project.path)}
+                    onToggle={() => toggleProject(project.path)}
+                    onOpenDirectory={handleOpenDirectory}
+                    onContextMenu={(e) => handleProjectContextMenu(e, project)}
+                    onWorktreeContextMenu={(e, worktreePath, branchName) =>
+                      handleWorktreeContextMenu(e, project.path, worktreePath, branchName)
+                    }
+                    onDelete={() => setDeleteConfirm({ name: project.name, path: project.path })}
+                  />
+                ))
+              )}
+            </div>
+          </section>
+
+          {/* Recent Directories Section */}
+          <section className="space-y-4">
+            <h2 className="text-sm font-bold text-gray-400 uppercase tracking-wider">
+              Recent Directories
+            </h2>
+            <div className="bg-[#161b22] border border-[#30363d] rounded-lg overflow-hidden">
+              {recentDirectories.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">No recent directories</div>
+              ) : (
+                recentDirectories.map((directory) => (
+                  <RecentDirectoryRow
+                    key={directory.path}
+                    directory={directory}
+                    onOpen={() => handleOpenDirectory(directory.path)}
+                    onRemove={async () => {
+                      await removeRecentDirectory(directory.path);
+                      fetchData(false);
+                    }}
+                  />
+                ))
+              )}
+            </div>
+          </section>
+        </div>
+      </div>
+    </>
+  );
+});

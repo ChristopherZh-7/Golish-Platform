@@ -1,0 +1,40 @@
+[package]
+name = "rig-zai-sdk"
+version.workspace = true
+edition.workspace = true
+description = "Z.AI API provider for rig-core with native SDK implementation"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Rig core for LLM orchestration
+rig-core.workspace = true
+
+# HTTP client
+reqwest = { workspace = true, features = ["json", "stream"] }
+
+# Async runtime
+futures.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# JSON repair for malformed LLM output
+qbit-json-repair = { path = "../qbit-json-repair" }
+
+# Regex for parsing pseudo-XML tool calls
+regex.workspace = true
+
+# Bytes utilities
+bytes.workspace = true
+
+# Unique ID generation
+nanoid = "0.4"
+

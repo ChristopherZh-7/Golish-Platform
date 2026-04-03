@@ -1,0 +1,223 @@
+[workspace]
+members = [
+    "crates/qbit",
+    "crates/qbit-core",
+    "crates/qbit-evals",
+    "crates/qbit-models",
+    "crates/qbit-settings",
+    "crates/qbit-tools",
+    "crates/qbit-udiff",
+    "crates/qbit-pty",
+    "crates/qbit-sidecar",
+    "crates/qbit-artifacts",
+    "crates/qbit-synthesis",
+    "crates/qbit-session",
+    "crates/qbit-context",
+    "crates/qbit-workflow",
+    "crates/qbit-llm-providers",
+    "crates/qbit-ai",
+    "crates/qbit-sub-agents",
+    "crates/qbit-web",
+    "crates/qbit-shell-exec",
+    "crates/rig-anthropic-vertex",
+    "crates/rig-openai-responses",
+    "crates/rig-zai-sdk",
+    "crates/rig-gemini-vertex",
+    "crates/qbit-skills",
+    "crates/qbit-benchmarks",
+    "crates/qbit-swebench",
+    "crates/qbit-json-repair",
+    "crates/qbit-mcp",
+]
+# Default members for fast inner-loop development (excludes Tauri app, evals, benchmarks)
+default-members = [
+    "crates/qbit-core",
+    "crates/qbit-models",
+    "crates/qbit-settings",
+    "crates/qbit-tools",
+    "crates/qbit-udiff",
+    "crates/qbit-pty",
+    "crates/qbit-sidecar",
+    "crates/qbit-artifacts",
+    "crates/qbit-synthesis",
+    "crates/qbit-session",
+    "crates/qbit-context",
+    "crates/qbit-workflow",
+    "crates/qbit-llm-providers",
+    "crates/qbit-ai",
+    "crates/qbit-sub-agents",
+    "crates/qbit-web",
+    "crates/qbit-shell-exec",
+    "crates/rig-anthropic-vertex",
+    "crates/rig-openai-responses",
+    "crates/rig-zai-sdk",
+    "crates/rig-gemini-vertex",
+    "crates/qbit-skills",
+    "crates/qbit-json-repair",
+    "crates/qbit-mcp",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.2.43"
+edition = "2021"
+authors = ["you"]
+license = "MIT"
+repository = "https://github.com/yourusername/qbit"
+
+[workspace.dependencies]
+# Internal crates
+qbit-core = { path = "crates/qbit-core" }
+qbit-evals = { path = "crates/qbit-evals" }
+qbit-models = { path = "crates/qbit-models" }
+qbit-settings = { path = "crates/qbit-settings" }
+qbit-tools = { path = "crates/qbit-tools" }
+qbit-udiff = { path = "crates/qbit-udiff" }
+qbit-pty = { path = "crates/qbit-pty" }
+qbit-sidecar = { path = "crates/qbit-sidecar" }
+qbit-artifacts = { path = "crates/qbit-artifacts" }
+qbit-session = { path = "crates/qbit-session" }
+qbit-context = { path = "crates/qbit-context" }
+qbit-workflow = { path = "crates/qbit-workflow" }
+qbit-ai = { path = "crates/qbit-ai" }
+qbit-sub-agents = { path = "crates/qbit-sub-agents" }
+qbit-llm-providers = { path = "crates/qbit-llm-providers" }
+qbit-web = { path = "crates/qbit-web" }
+qbit-shell-exec = { path = "crates/qbit-shell-exec" }
+qbit-synthesis = { path = "crates/qbit-synthesis" }
+qbit-skills = { path = "crates/qbit-skills" }
+qbit-benchmarks = { path = "crates/qbit-benchmarks" }
+qbit-swebench = { path = "crates/qbit-swebench" }
+rig-zai-sdk = { path = "crates/rig-zai-sdk" }
+rig-gemini-vertex = { path = "crates/rig-gemini-vertex" }
+
+# Tauri (optional - only for GUI app)
+tauri = { version = "2", features = [] }
+tauri-build = { version = "2", features = [] }
+tauri-plugin-dialog = { version = "2" }
+tauri-plugin-shell = { version = "2" }
+tauri-plugin-notification = { version = "2" }
+
+# CLI dependencies (optional - only for CLI binary)
+clap = { version = "4", features = ["derive", "env"] }
+atty = { version = "0.2" }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9.34"
+
+# File watching
+notify = "7"
+notify-debouncer-mini = "0.5"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Terminal
+portable-pty = "0.9"
+vte = "0.13"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6"
+parking_lot = "0.12"
+base64 = "0.22"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+nix = "0.29"
+libc = "0.2"
+
+# OpenTelemetry for Langfuse tracing (0.31 to match opentelemetry-langfuse)
+opentelemetry = { version = "0.31", features = ["trace"] }
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "experimental_trace_batch_span_processor_with_async_runtime"] }
+opentelemetry-otlp = { version = "0.31", features = ["http-proto", "trace", "reqwest-client"] }
+opentelemetry-semantic-conventions = "0.31"
+tracing-opentelemetry = "0.32"
+opentelemetry-langfuse = "0.6"
+similar = "2"
+
+# File indexing
+vtcode-indexer = "0.47"
+futures = "0.3"
+async-stream = "0.3"
+dotenvy = "0.15"
+
+# Web search
+tavily = "0.2"
+
+# Web fetching and content extraction
+reqwest = { version = "0.13", features = ["json"] }
+readability = { version = "0.3", default-features = false }
+url = "2.5"
+
+# Token estimation
+tokenx-rs = "0.1"
+
+# Rig core for LLM orchestration
+rig-core = { version = "^0.31.0", features = [] }
+# Rig companion crate for Google Vertex AI (Gemini)
+rig-vertexai = { version = "0.2.4" }
+
+# HTTP utilities (for custom HTTP clients)
+http = "1.2"
+
+# Evals framework (optional - only for evals feature)
+tempfile = { version = "3" }
+indicatif = { version = "0.17" }
+
+# Google Cloud authentication (for sidecar Vertex AI synthesis)
+gcp_auth = "0.12"
+
+# Graph-based workflow execution for multi-agent systems
+graph-flow = "0.4"
+async-trait = "0.1"
+
+# TypeScript type generation
+ts-rs = { version = "11", features = ["serde-compat"] }
+
+# File walking with gitignore support
+ignore = "0.4"
+
+# Pattern matching and regex
+glob = "0.3"
+regex = "1"
+
+# TOML settings file support
+toml = "0.8"
+
+# TLS crypto provider (required for rustls 0.23+)
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+# Bytes utilities
+bytes = "1"
+
+# Dev dependencies
+proptest = "1.4"
+tower = { version = "0.5", features = ["util"] }
+serial_test = "3"
+
+# Dev profile: optimize for fast incremental builds
+[profile.dev]
+# Faster linking on macOS
+split-debuginfo = "unpacked"
+# More parallelism during codegen
+codegen-units = 256
+
+# Optimize dependencies in dev mode (they don't change often)
+# This significantly speeds up runtime without hurting compile times
+[profile.dev.package."*"]
+opt-level = 2
+
+# Release profile: optimize for runtime performance
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true

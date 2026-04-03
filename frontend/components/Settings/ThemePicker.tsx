@@ -1,0 +1,194 @@
+import { Palette, Trash2, Upload } from "lucide-react";
+import { useState } from "react";
+import { logger } from "@/lib/logger";
+import { notify } from "@/lib/notify";
+import { useTheme } from "../../hooks/useTheme";
+import { loadThemeFromDirectory, loadThemeFromFile } from "../../lib/theme/ThemeLoader";
+import { Button } from "../ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../ui/dialog";
+
+export function ThemePicker() {
+  const { currentTheme, currentThemeId, availableThemes, setTheme, deleteTheme } = useTheme();
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [themeToDelete, setThemeToDelete] = useState<string | null>(null);
+
+  const handleThemeSelect = async (themeId: string) => {
+    // Apply theme directly - changes are saved immediately
+    const success = await setTheme(themeId);
+    if (!success) {
+      notify.error("Failed to apply theme");
+    }
+  };
+
+  const handleFileImport = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+
+    try {
+      // Check if it's a directory import (multiple files with webkitRelativePath)
+      const isDirectory = files.length > 1 || files[0]?.webkitRelativePath;
+
+      notify.info(isDirectory ? "Importing theme directory..." : "Importing theme...");
+
+      if (isDirectory) {
+        await loadThemeFromDirectory(files);
+      } else {
+        await loadThemeFromFile(files[0]);
+      }
+
+      notify.success(`Theme applied: ${currentTheme?.name ?? "Custom Theme"}`);
+    } catch (err) {
+      logger.error("Failed to load theme", err);
+      notify.error(`Import failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const handleDeleteClick = (themeId: string) => {
+    const theme = availableThemes.find((t) => t.id === themeId);
+    if (!theme) return;
+
+    if (theme.builtin) {
+      notify.error("Cannot delete builtin themes");
+      return;
+    }
+
+    setThemeToDelete(themeId);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!themeToDelete) return;
+
+    const theme = availableThemes.find((t) => t.id === themeToDelete);
+    if (!theme) return;
+
+    try {
+      const success = await deleteTheme(themeToDelete);
+
+      if (!success) {
+        notify.error("Failed to delete theme");
+        return;
+      }
+
+      notify.success(`Deleted theme: ${theme.name}`);
+
+      // If we deleted the current theme, switch to first available theme
+      if (themeToDelete === currentThemeId) {
+        const remainingThemes = availableThemes.filter((t) => t.id !== themeToDelete);
+        if (remainingThemes.length > 0) {
+          await setTheme(remainingThemes[0].id);
+        }
+      }
+    } catch (err) {
+      logger.error("Delete failed", err);
+      notify.error("Failed to delete theme");
+    } finally {
+      setDeleteDialogOpen(false);
+      setThemeToDelete(null);
+    }
+  };
+
+  return (
+    <>
+      <div className="space-y-6">
+        {/* Theme List */}
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <Palette className="w-4 h-4" />
+            Themes
+          </div>
+          <div className="space-y-1 border border-[var(--border-medium)] rounded-md p-2 max-h-64 overflow-y-auto bg-muted">
+            {availableThemes.map((theme) => (
+              <div
+                key={theme.id}
+                className={`flex items-center justify-between p-2 rounded transition-colors group ${
+                  theme.id === currentThemeId
+                    ? "bg-[var(--accent-dim)] border border-accent"
+                    : "hover:bg-[var(--bg-hover)] border border-transparent"
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => handleThemeSelect(theme.id)}
+                  className="flex-1 text-left text-sm"
+                >
+                  {theme.name}
+                  {!theme.builtin && (
+                    <span className="text-xs text-muted-foreground ml-2">(Custom)</span>
+                  )}
+                  {theme.id === currentThemeId && (
+                    <span className="text-xs text-accent ml-2">● Active</span>
+                  )}
+                </button>
+                {!theme.builtin && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteClick(theme.id);
+                    }}
+                    title="Delete theme"
+                  >
+                    <Trash2 className="w-3 h-3 text-destructive" />
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Import from File or Directory */}
+        <div className="space-y-2">
+          <label htmlFor="theme-file" className="flex items-center gap-2 text-sm font-medium">
+            <Upload className="w-4 h-4" />
+            Import Theme
+          </label>
+          <input
+            id="theme-file"
+            type="file"
+            accept="application/json,.json"
+            // @ts-expect-error - webkitdirectory is not in the types but works in browsers
+            webkitdirectory=""
+            directory=""
+            multiple
+            onChange={(e) => handleFileImport(e.target.files)}
+            className="flex h-10 w-full rounded-md border border-[var(--border-medium)] bg-muted px-3 py-2 text-sm file:border-0 file:bg-transparent file:text-sm file:font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+          />
+          <p className="text-xs text-muted-foreground">
+            Select a theme directory containing theme.json and assets folder
+          </p>
+        </div>
+      </div>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Theme</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete "
+              {availableThemes.find((t) => t.id === themeToDelete)?.name}"? This action cannot be
+              undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleConfirmDelete}>
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}

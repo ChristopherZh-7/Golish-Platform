@@ -1,0 +1,10 @@
+---
+source: crates/qbit/tests/ai_events_characterization.rs
+assertion_line: 227
+expression: json
+---
+{
+  "error_type": "network",
+  "message": "Connection timeout",
+  "type": "error"
+}

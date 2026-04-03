@@ -1,0 +1,99 @@
+# AI
+ai_docs/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Dependencies
+node_modules
+
+# Build outputs
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.swp
+*~
+
+# Rust / Cargo
+backend/target/
+backend/crates/*/target/
+**/*.rs.bk
+Cargo.lock
+
+# Tauri
+backend/gen/
+backend/crates/qbit/gen/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Qbit app data (indexer cache, etc.)
+.qbit/
+
+# Claude Code
+.claude/
+
+# Git worktrees
+*.worktrees/
+
+# Codanna index
+.codanna/
+
+# Test coverage
+coverage/
+*.lcov
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+tmp/
+
+.vtcode/
+/external/
+
+mistral-testbed/target/
+
+# Test workspace for evals
+qbit-go-testbed/
+
+# Python
+*.egg-info/
+*.pyc
+/backend/swebench/
+
+# Apple code signing (NEVER commit these)
+*.key
+*.p12
+*.certSigningRequest
+*.cer
+*.mobileprovision

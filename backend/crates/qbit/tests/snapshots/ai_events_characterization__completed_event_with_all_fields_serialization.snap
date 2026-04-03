@@ -1,0 +1,13 @@
+---
+source: crates/qbit/tests/ai_events_characterization.rs
+assertion_line: 202
+expression: json
+---
+{
+  "duration_ms": 2500,
+  "input_tokens": 1000,
+  "output_tokens": 500,
+  "reasoning": "Let me think about this...",
+  "response": "Task completed successfully.",
+  "type": "completed"
+}

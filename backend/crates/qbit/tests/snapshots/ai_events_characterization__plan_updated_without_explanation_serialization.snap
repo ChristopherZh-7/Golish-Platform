@@ -1,0 +1,26 @@
+---
+source: crates/qbit/tests/ai_events_characterization.rs
+assertion_line: 506
+expression: json
+---
+{
+  "explanation": null,
+  "steps": [
+    {
+      "status": "pending",
+      "step": "Research the problem"
+    },
+    {
+      "status": "pending",
+      "step": "Implement solution"
+    }
+  ],
+  "summary": {
+    "completed": 0,
+    "in_progress": 0,
+    "pending": 2,
+    "total": 2
+  },
+  "type": "plan_updated",
+  "version": 1
+}

@@ -1,0 +1,277 @@
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build-macos:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    environment: macos-signing
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - args: --target aarch64-apple-darwin
+            rust_target: aarch64-apple-darwin
+            name: macOS-ARM64
+          - args: --target x86_64-apple-darwin
+            rust_target: x86_64-apple-darwin
+            name: macOS-x86_64
+
+    runs-on: macos-latest-large
+    name: Build (${{ matrix.name }})
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          shared-key: release-${{ matrix.name }}
+
+      - name: Build and upload
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_CONFIG: '{"bundle":{"externalBin":null}}'
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ needs.release-please.outputs.tag_name }}
+          releaseName: ${{ needs.release-please.outputs.tag_name }}
+          projectPath: backend/crates/qbit
+          tauriScript: pnpm --dir ../../.. tauri
+          args: ${{ matrix.args }}
+
+  build-windows:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    runs-on: windows-latest
+    name: Build (Windows-x86_64)
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          shared-key: release-Windows-x86_64
+
+      - name: Build and upload
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_CONFIG: '{"bundle":{"externalBin":null}}'
+        with:
+          tagName: ${{ needs.release-please.outputs.tag_name }}
+          releaseName: ${{ needs.release-please.outputs.tag_name }}
+          projectPath: backend/crates/qbit
+          tauriScript: pnpm --dir ../../.. tauri
+          args: --target x86_64-pc-windows-msvc
+
+  build-linux:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    runs-on: ubuntu-22.04
+    name: Build (Linux-x86_64)
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          shared-key: release-Linux-x86_64
+
+      - name: Build and upload
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_CONFIG: '{"bundle":{"externalBin":null}}'
+        with:
+          tagName: ${{ needs.release-please.outputs.tag_name }}
+          releaseName: ${{ needs.release-please.outputs.tag_name }}
+          projectPath: backend/crates/qbit
+          tauriScript: pnpm --dir ../../.. tauri
+          args: --target x86_64-unknown-linux-gnu
+
+  update-homebrew:
+    needs: [release-please, build-macos]
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Extract version
+        id: version
+        run: echo "version=${TAG#v}" >> $GITHUB_OUTPUT
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Get SHA256 checksums
+        id: sha256
+        run: |
+          ARM_SHA=$(curl -sL "https://github.com/qbit-ai/qbit/releases/download/${{ needs.release-please.outputs.tag_name }}/qbit_${{ steps.version.outputs.version }}_aarch64.dmg" | sha256sum | cut -d' ' -f1)
+          X64_SHA=$(curl -sL "https://github.com/qbit-ai/qbit/releases/download/${{ needs.release-please.outputs.tag_name }}/qbit_${{ steps.version.outputs.version }}_x64.dmg" | sha256sum | cut -d' ' -f1)
+          echo "arm=$ARM_SHA" >> $GITHUB_OUTPUT
+          echo "x64=$X64_SHA" >> $GITHUB_OUTPUT
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: qbit-ai/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Update cask formula
+        run: |
+          cat > Casks/qbit.rb << 'EOF'
+          cask "qbit" do
+            version "${{ steps.version.outputs.version }}"
+
+            on_arm do
+              sha256 "${{ steps.sha256.outputs.arm }}"
+              url "https://github.com/qbit-ai/qbit/releases/download/v#{version}/qbit_#{version}_aarch64.dmg"
+            end
+
+            on_intel do
+              sha256 "${{ steps.sha256.outputs.x64 }}"
+              url "https://github.com/qbit-ai/qbit/releases/download/v#{version}/qbit_#{version}_x64.dmg"
+            end
+
+            name "Qbit"
+            desc "AI-powered terminal emulator"
+            homepage "https://github.com/qbit-ai/qbit"
+
+            livecheck do
+              url :url
+              strategy :github_latest
+            end
+
+            # Remove quarantine attribute to prevent Gatekeeper warnings
+            postflight do
+              system_command "/usr/bin/xattr",
+                             args: ["-cr", "#{appdir}/qbit.app"],
+                             sudo: false
+            end
+
+            app "qbit.app"
+
+            zap trash: [
+              "~/.qbit",
+              "~/Library/Application Support/com.qbit.terminal",
+              "~/Library/Caches/com.qbit.terminal",
+              "~/Library/Preferences/com.qbit.terminal.plist",
+              "~/Library/Saved Application State/com.qbit.terminal.savedState",
+            ]
+          end
+          EOF
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/qbit.rb
+          git commit -m "Update qbit to ${{ steps.version.outputs.version }}"
+          git push

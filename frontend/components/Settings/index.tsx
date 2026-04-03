@@ -1,0 +1,371 @@
+import {
+  Bell,
+  Bot,
+  Cog,
+  FileCode,
+  FolderCode,
+  Globe,
+  Loader2,
+  Paintbrush,
+  Puzzle,
+  Server,
+  Shield,
+  Terminal,
+  X,
+} from "lucide-react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { listIndexedCodebases } from "@/lib/indexer";
+import { logger } from "@/lib/logger";
+import { notify } from "@/lib/notify";
+import {
+  type CodebaseConfig,
+  getSettings,
+  type QbitSettings,
+  updateSettings,
+} from "@/lib/settings";
+import { cn } from "@/lib/utils";
+
+const AdvancedSettings = lazy(() =>
+  import("./AdvancedSettings").then((m) => ({ default: m.AdvancedSettings }))
+);
+const AgentSettings = lazy(() =>
+  import("./AgentSettings").then((m) => ({ default: m.AgentSettings }))
+);
+const AiSettings = lazy(() => import("./AiSettings").then((m) => ({ default: m.AiSettings })));
+const CodebasesSettings = lazy(() =>
+  import("./CodebasesSettings").then((m) => ({ default: m.CodebasesSettings }))
+);
+const EditorSettings = lazy(() =>
+  import("./EditorSettings").then((m) => ({ default: m.EditorSettings }))
+);
+const NotificationsSettings = lazy(() =>
+  import("./NotificationsSettings").then((m) => ({ default: m.NotificationsSettings }))
+);
+const ProviderSettings = lazy(() =>
+  import("./ProviderSettings").then((m) => ({ default: m.ProviderSettings }))
+);
+const TerminalSettings = lazy(() =>
+  import("./TerminalSettings").then((m) => ({ default: m.TerminalSettings }))
+);
+const AppearanceSettings = lazy(() =>
+  import("./AppearanceSettings").then((m) => ({ default: m.AppearanceSettings }))
+);
+const McpSettings = lazy(() => import("./McpSettings").then((m) => ({ default: m.McpSettings })));
+const NetworkSettings = lazy(() =>
+  import("./NetworkSettings").then((m) => ({ default: m.NetworkSettings }))
+);
+
+interface SettingsDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}
+
+type SettingsSection =
+  | "providers"
+  | "ai"
+  | "terminal"
+  | "editor"
+  | "agent"
+  | "mcp"
+  | "codebases"
+  | "network"
+  | "notifications"
+  | "appearance"
+  | "advanced";
+
+interface NavItem {
+  id: SettingsSection;
+  label: string;
+  icon: React.ReactNode;
+  description: string;
+}
+
+const NAV_ITEMS: NavItem[] = [
+  {
+    id: "providers",
+    label: "Providers",
+    icon: <Server className="w-4 h-4" />,
+    description: "Configure AI provider credentials",
+  },
+  {
+    id: "ai",
+    label: "AI & Models",
+    icon: <Bot className="w-4 h-4" />,
+    description: "Default provider and synthesis",
+  },
+  {
+    id: "terminal",
+    label: "Terminal",
+    icon: <Terminal className="w-4 h-4" />,
+    description: "Shell and display settings",
+  },
+  {
+    id: "editor",
+    label: "Editor",
+    icon: <FileCode className="w-4 h-4" />,
+    description: "File editor preferences",
+  },
+  {
+    id: "agent",
+    label: "Agent",
+    icon: <Cog className="w-4 h-4" />,
+    description: "Session and approval settings",
+  },
+  {
+    id: "mcp",
+    label: "MCP Servers",
+    icon: <Puzzle className="w-4 h-4" />,
+    description: "External tools via Model Context Protocol",
+  },
+  {
+    id: "codebases",
+    label: "Codebases",
+    icon: <FolderCode className="w-4 h-4" />,
+    description: "Manage indexed repositories",
+  },
+  {
+    id: "network",
+    label: "Network",
+    icon: <Globe className="w-4 h-4" />,
+    description: "Proxy and connection settings",
+  },
+  {
+    id: "notifications",
+    label: "Notifications",
+    icon: <Bell className="w-4 h-4" />,
+    description: "System notification settings",
+  },
+  {
+    id: "appearance",
+    label: "Appearance",
+    icon: <Paintbrush className="w-4 h-4" />,
+    description: "UI element visibility",
+  },
+  {
+    id: "advanced",
+    label: "Advanced",
+    icon: <Shield className="w-4 h-4" />,
+    description: "Privacy and debug options",
+  },
+];
+
+export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
+  const [settings, setSettings] = useState<QbitSettings | null>(null);
+  const [activeSection, setActiveSection] = useState<SettingsSection>("providers");
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Load settings when dialog opens
+  useEffect(() => {
+    if (open) {
+      setIsLoading(true);
+      getSettings()
+        .then(setSettings)
+        .catch((err) => {
+          logger.error("Failed to load settings:", err);
+          notify.error("Failed to load settings");
+        })
+        .finally(() => setIsLoading(false));
+    }
+  }, [open]);
+
+  // Auto-save settings when they change
+  const saveSettings = useCallback(async (settingsToSave: QbitSettings) => {
+    try {
+      // Reload codebases from backend before saving to preserve any changes made
+      // via CodebasesSettings (which saves directly to backend, not to parent state)
+      const currentCodebases = await listIndexedCodebases();
+      const updatedCodebases: CodebaseConfig[] = currentCodebases.map((cb) => ({
+        path: cb.path,
+        memory_file: cb.memory_file,
+      }));
+
+      const finalSettings = {
+        ...settingsToSave,
+        codebases: updatedCodebases,
+      };
+
+      await updateSettings(finalSettings);
+      // Notify other components (e.g., StatusBar) that settings have been updated
+      window.dispatchEvent(new CustomEvent("settings-updated", { detail: finalSettings }));
+    } catch (err) {
+      logger.error("Failed to save settings:", err);
+      notify.error("Failed to save settings");
+    }
+  }, []);
+
+  const handleClose = useCallback(() => {
+    onOpenChange(false);
+  }, [onOpenChange]);
+
+  // Handler to update a specific section of settings and auto-save
+  const updateSection = useCallback(
+    <K extends keyof QbitSettings>(section: K, value: QbitSettings[K]) => {
+      setSettings((prev) => {
+        if (!prev) return null;
+        const updated = { ...prev, [section]: value };
+        // Auto-save after state update
+        saveSettings(updated);
+        return updated;
+      });
+    },
+    [saveSettings]
+  );
+
+  const renderContent = useCallback(() => {
+    if (!settings) return null;
+
+    switch (activeSection) {
+      case "providers":
+        return (
+          <ProviderSettings settings={settings.ai} onChange={(ai) => updateSection("ai", ai)} />
+        );
+      case "ai":
+        return (
+          <AiSettings
+            apiKeys={settings.api_keys}
+            sidecarSettings={settings.sidecar}
+            onApiKeysChange={(keys) => updateSection("api_keys", keys)}
+            onSidecarChange={(sidecar) => updateSection("sidecar", sidecar)}
+          />
+        );
+      case "terminal":
+        return (
+          <TerminalSettings
+            settings={settings.terminal}
+            onChange={(terminal) => updateSection("terminal", terminal)}
+          />
+        );
+      case "editor":
+        return <EditorSettings />;
+      case "agent":
+        return (
+          <AgentSettings
+            settings={settings.agent}
+            toolsSettings={settings.tools}
+            subAgentModels={settings.ai.sub_agent_models || {}}
+            onChange={(agent) => updateSection("agent", agent)}
+            onToolsChange={(tools) => updateSection("tools", tools)}
+            onSubAgentModelsChange={(models) =>
+              updateSection("ai", { ...settings.ai, sub_agent_models: models })
+            }
+          />
+        );
+      case "mcp":
+        return <McpSettings />;
+      case "codebases":
+        return <CodebasesSettings />;
+      case "network":
+        return (
+          <NetworkSettings
+            settings={settings.network}
+            onChange={(network) => updateSection("network", network)}
+          />
+        );
+      case "notifications":
+        return (
+          <NotificationsSettings
+            settings={settings.notifications}
+            onChange={(notifications) => updateSection("notifications", notifications)}
+          />
+        );
+      case "appearance":
+        return (
+          <AppearanceSettings
+            terminalSettings={settings.terminal}
+            onTerminalChange={(terminal) => updateSection("terminal", terminal)}
+          />
+        );
+      case "advanced":
+        return (
+          <AdvancedSettings
+            settings={settings.advanced}
+            privacy={settings.privacy}
+            onChange={(advanced) => updateSection("advanced", advanced)}
+            onPrivacyChange={(privacy) => updateSection("privacy", privacy)}
+          />
+        );
+    }
+  }, [activeSection, settings, updateSection]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        showCloseButton={false}
+        className="!max-w-none !inset-0 !translate-x-0 !translate-y-0 !w-screen !h-screen p-0 bg-background border-0 rounded-none text-foreground flex flex-col overflow-hidden"
+      >
+        {/* Visually hidden title for screen readers */}
+        <DialogTitle className="sr-only">Settings</DialogTitle>
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border-medium)] flex-shrink-0">
+          <h2 className="text-lg font-semibold text-foreground">Settings</h2>
+          <button
+            type="button"
+            onClick={handleClose}
+            className="p-1.5 rounded-md hover:bg-[var(--bg-hover)] text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {isLoading ? (
+          <div className="flex-1 flex items-center justify-center">
+            <Loader2 className="w-6 h-6 text-muted-foreground animate-spin" />
+          </div>
+        ) : settings ? (
+          <div className="flex-1 flex min-h-0 overflow-hidden">
+            {/* Sidebar Navigation */}
+            <nav className="w-64 border-r border-[var(--border-medium)] flex flex-col flex-shrink-0">
+              <div className="flex-1 py-2">
+                {NAV_ITEMS.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setActiveSection(item.id)}
+                    className={cn(
+                      "w-full flex items-start gap-3 px-4 py-3 text-left transition-colors",
+                      activeSection === item.id
+                        ? "bg-[var(--accent-dim)] text-foreground border-l-2 border-accent"
+                        : "text-muted-foreground hover:bg-[var(--bg-hover)] hover:text-foreground border-l-2 border-transparent"
+                    )}
+                  >
+                    <span className={cn("mt-0.5", activeSection === item.id ? "text-accent" : "")}>
+                      {item.icon}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium">{item.label}</div>
+                      <div className="text-xs text-muted-foreground mt-0.5">{item.description}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </nav>
+
+            {/* Main Content */}
+            <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
+              <ScrollArea className="h-full">
+                <div className="p-6 max-w-3xl">
+                  <Suspense
+                    fallback={
+                      <div className="flex items-center justify-center py-8">
+                        <Loader2 className="w-6 h-6 text-muted-foreground animate-spin" />
+                      </div>
+                    }
+                  >
+                    {renderContent()}
+                  </Suspense>
+                </div>
+              </ScrollArea>
+            </div>
+          </div>
+        ) : (
+          <div className="flex-1 flex items-center justify-center">
+            <span className="text-destructive">Failed to load settings</span>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}

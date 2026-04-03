@@ -1,0 +1,90 @@
+name: Check
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+
+jobs:
+  check:
+    runs-on: linux-arm64
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+        continue-on-error: true
+
+      - name: Configure sccache
+        run: |
+          # Test if sccache is working before enabling it
+          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+          if sccache --start-server 2>/dev/null && sccache --show-stats 2>/dev/null; then
+            echo "sccache is working, enabling RUSTC_WRAPPER"
+            echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          else
+            echo "sccache not available, building without cache wrapper"
+          fi
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          shared-key: rust-arm64-v5
+          cache-targets: true
+          save-if: "${{ github.ref == 'refs/heads/main' }}"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libssl-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Debug show rig-anthropic-vertex Usage and snippet
+        run: |
+          echo "--- streaming.rs (around suspected failing line) ---"
+          sed -n 590,620p backend/crates/rig-anthropic-vertex/src/streaming.rs
+          echo "--- types.rs (Usage struct) ---"
+          sed -n 250,290p backend/crates/rig-anthropic-vertex/src/types.rs
+
+      - name: Run checks
+        run: just check
+
+      - name: Rust tests (verbose on failure)
+        if: failure()
+        run: just test-rust-verbose
