@@ -144,17 +144,17 @@ Generate a comprehensive summary following the required format."#,
 pub async fn generate_summary(client: &LlmClient, conversation: &str) -> Result<SummaryResponse> {
     let user_prompt = build_summarizer_user_prompt(conversation);
 
-    // Log the full system prompt
     tracing::info!(
-        "[summarizer] System prompt ({} chars):\n{}",
+        "[summarizer] Starting summary generation (system_prompt={} chars, user_prompt={} chars)",
         SUMMARIZER_SYSTEM_PROMPT.len(),
+        user_prompt.len()
+    );
+    tracing::debug!(
+        "[summarizer] System prompt:\n{}",
         SUMMARIZER_SYSTEM_PROMPT
     );
-
-    // Log the full user message
-    tracing::info!(
-        "[summarizer] User message ({} chars):\n{}",
-        user_prompt.len(),
+    tracing::debug!(
+        "[summarizer] User message:\n{}",
         user_prompt
     );
 
@@ -197,11 +197,9 @@ async fn call_summarizer_model(client: &LlmClient, user_message: Message) -> Res
     // TODO: max tokens (output tokens) is model dependent
 
     // Build the completion request
-    let chat_history = vec![user_message.clone()];
     let request = CompletionRequest {
         preamble: Some(SUMMARIZER_SYSTEM_PROMPT.to_string()),
-        chat_history: OneOrMany::many(chat_history.clone())
-            .unwrap_or_else(|_| OneOrMany::one(chat_history[0].clone())),
+        chat_history: OneOrMany::one(user_message.clone()),
         documents: vec![],
         tools: vec![],            // No tools - this is a simple completion
         temperature: Some(0.3),   // Low temperature for consistent output
@@ -239,15 +237,16 @@ async fn call_summarizer_model(client: &LlmClient, user_message: Message) -> Res
         LlmClient::RigXai(model) => complete_with_model!(model),
         LlmClient::RigZaiSdk(model) => complete_with_model!(model),
         LlmClient::RigNvidia(model) => {
-            // NVIDIA NIM workaround: embed system prompt as user message
-            let mut nvidia_history = vec![Message::User {
-                content: OneOrMany::one(UserContent::text(SUMMARIZER_SYSTEM_PROMPT)),
-            }];
-            nvidia_history.push(user_message.clone());
+            let nvidia_history = vec![
+                Message::User {
+                    content: OneOrMany::one(UserContent::text(SUMMARIZER_SYSTEM_PROMPT)),
+                },
+                user_message.clone(),
+            ];
             let nvidia_request = CompletionRequest {
                 preamble: None,
-                chat_history: OneOrMany::many(nvidia_history.clone())
-                    .unwrap_or_else(|_| OneOrMany::one(nvidia_history[0].clone())),
+                chat_history: OneOrMany::many(nvidia_history)
+                    .expect("nvidia_history always has 2 elements"),
                 documents: vec![],
                 tools: vec![],
                 temperature: Some(0.3),
