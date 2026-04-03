@@ -28,6 +28,7 @@ members = [
     "crates/qbit-swebench",
     "crates/qbit-json-repair",
     "crates/qbit-mcp",
+    "crates/golish-pentest",
 ]
 # Default members for fast inner-loop development (excludes Tauri app, evals, benchmarks)
 default-members = [
@@ -55,6 +56,7 @@ default-members = [
     "crates/qbit-skills",
     "crates/qbit-json-repair",
     "crates/qbit-mcp",
+    "crates/golish-pentest",
 ]
 resolver = "2"
 
@@ -90,6 +92,7 @@ qbit-benchmarks = { path = "crates/qbit-benchmarks" }
 qbit-swebench = { path = "crates/qbit-swebench" }
 rig-zai-sdk = { path = "crates/rig-zai-sdk" }
 rig-gemini-vertex = { path = "crates/rig-gemini-vertex" }
+golish-pentest = { path = "crates/golish-pentest" }
 
 # Tauri (optional - only for GUI app)
 tauri = { version = "2", features = [] }

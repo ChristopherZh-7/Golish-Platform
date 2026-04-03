@@ -9,3 +9,6 @@
 
 // Re-export everything from qbit-tools
 pub use qbit_tools::*;
+
+// Penetration testing tool management (ported from Golish)
+pub mod pentest;

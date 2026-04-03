@@ -418,6 +418,7 @@ pub fn run_gui() {
         .manage(app_state)
         .manage(history_manager)
         .manage(Arc::new(FileWatcherState::new()))
+        .manage(tools::pentest::PentestState::new())
         .on_window_event(|window, event| {
             // Persist window bounds continuously (debounced) so dev restarts and Cmd+Q are reliable.
             static SAVE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -875,6 +876,21 @@ pub fn run_gui() {
             mcp_has_project_config,
             mcp_connect,
             mcp_disconnect,
+            // Pentest tool management commands (ported from Golish)
+            tools::pentest::pentest_scan_tools,
+            tools::pentest::pentest_launch_tool,
+            tools::pentest::pentest_kill_tool,
+            tools::pentest::pentest_kill_all_tools,
+            tools::pentest::pentest_search_tools,
+            tools::pentest::pentest_get_command,
+            tools::pentest::pentest_check_runtime,
+            tools::pentest::pentest_open_directory,
+            tools::pentest::pentest_update_config,
+            tools::pentest::pentest_get_config,
+            tools::pentest::pentest_get_categories,
+            tools::pentest::pentest_check_env_setup,
+            tools::pentest::pentest_create_file,
+            tools::pentest::pentest_open_url,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
