@@ -27,8 +27,10 @@ interface LiveTerminalInstance {
   serializeAddon: SerializeAddon;
   currentContainer: HTMLElement | null;
   themeUnsubscribe: (() => void) | null;
-  pendingWrites: string[]; // Buffer for writes before terminal is opened
-  isOpened: boolean; // Track if terminal has been opened
+  pendingWrites: string[];
+  isOpened: boolean;
+  isReady: boolean;
+  inputDisposable: { dispose(): void } | null;
 }
 
 class LiveTerminalManagerClass {
@@ -140,6 +142,8 @@ class LiveTerminalManagerClass {
       themeUnsubscribe,
       pendingWrites: [],
       isOpened: false,
+      isReady: false,
+      inputDisposable: null,
     };
 
     this.instances.set(sessionId, instance);
@@ -192,10 +196,10 @@ class LiveTerminalManagerClass {
       }
     }
 
-    if (instance.isOpened) {
+    if (instance.isReady) {
       instance.terminal.write(data);
     } else {
-      // Buffer writes until terminal is opened
+      // Buffer writes until terminal is opened and fitted
       instance.pendingWrites.push(data);
     }
   }
@@ -228,17 +232,28 @@ class LiveTerminalManagerClass {
       terminal.open(container);
       instance.isOpened = true;
 
-      // Fit BEFORE flushing writes to ensure terminal has proper dimensions
-      // This prevents data loss when pending writes exceed initial row count
-      this.safeFit(fitAddon);
-
-      // Flush any pending writes that happened before open
-      if (instance.pendingWrites.length > 0) {
-        for (const data of instance.pendingWrites) {
-          terminal.write(data);
-        }
-        instance.pendingWrites = [];
+      // Try synchronous fit first (container should be in DOM now)
+      try {
+        fitAddon.fit();
+      } catch {
+        // Renderer may not be ready yet
       }
+
+      // Deferred re-fit + flush: ensures layout has settled
+      requestAnimationFrame(() => {
+        try {
+          fitAddon.fit();
+        } catch {
+          // Ignore
+        }
+        instance.isReady = true;
+        if (instance.pendingWrites.length > 0) {
+          for (const data of instance.pendingWrites) {
+            terminal.write(data);
+          }
+          instance.pendingWrites = [];
+        }
+      });
     }
 
     // Update the tracked container
@@ -258,6 +273,57 @@ class LiveTerminalManagerClass {
       if (instance.terminal.element) {
         this.getParkingLot().appendChild(instance.terminal.element);
       }
+    }
+  }
+
+  /**
+   * Re-fit terminal to its container's current dimensions.
+   */
+  fit(sessionId: string): void {
+    const instance = this.instances.get(sessionId);
+    if (instance?.isOpened) {
+      try {
+        instance.fitAddon.fit();
+      } catch {
+        // Renderer may not be ready
+      }
+    }
+  }
+
+  /**
+   * Enable keyboard input on the terminal. User keystrokes are forwarded via onData callback.
+   */
+  enableInput(sessionId: string, onData: (data: string) => void): void {
+    const instance = this.instances.get(sessionId);
+    if (!instance) return;
+
+    this.disableInput(sessionId);
+    instance.terminal.options.disableStdin = false;
+    instance.inputDisposable = instance.terminal.onData(onData);
+    instance.terminal.focus();
+  }
+
+  /**
+   * Disable keyboard input, restoring read-only mode.
+   */
+  disableInput(sessionId: string): void {
+    const instance = this.instances.get(sessionId);
+    if (!instance) return;
+
+    if (instance.inputDisposable) {
+      instance.inputDisposable.dispose();
+      instance.inputDisposable = null;
+    }
+    instance.terminal.options.disableStdin = true;
+  }
+
+  /**
+   * Focus the terminal.
+   */
+  focus(sessionId: string): void {
+    const instance = this.instances.get(sessionId);
+    if (instance?.isOpened) {
+      instance.terminal.focus();
     }
   }
 

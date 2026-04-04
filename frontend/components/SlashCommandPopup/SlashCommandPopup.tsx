@@ -1,4 +1,4 @@
-import { Puzzle } from "lucide-react";
+import { Puzzle, Terminal } from "lucide-react";
 import { memo, useCallback, useEffect, useRef } from "react";
 import { Badge } from "@/components/ui/badge";
 import type { SlashCommand } from "@/hooks/useSlashCommands";
@@ -54,9 +54,12 @@ export const SlashCommandItem = memo(function SlashCommandItem({
           {command.type === "skill" && (
             <Puzzle className="w-3.5 h-3.5 text-[var(--ansi-magenta)] shrink-0" />
           )}
+          {command.type === "builtin" && (
+            <Terminal className="w-3.5 h-3.5 text-orange-400 shrink-0" />
+          )}
           <span className="font-mono text-sm text-foreground">/{command.name}</span>
         </div>
-        {command.type === "skill" && command.description && (
+        {(command.type === "skill" || command.type === "builtin") && command.description && (
           <span className="text-xs text-muted-foreground truncate">{command.description}</span>
         )}
       </div>
@@ -64,14 +67,16 @@ export const SlashCommandItem = memo(function SlashCommandItem({
         variant="outline"
         className={cn(
           "text-xs shrink-0",
-          command.type === "skill"
-            ? "border-[var(--ansi-magenta)] text-[var(--ansi-magenta)]"
-            : command.source === "local"
-              ? "border-[var(--ansi-green)] text-[var(--ansi-green)]"
-              : "border-[var(--ansi-blue)] text-[var(--ansi-blue)]"
+          command.type === "builtin"
+            ? "border-orange-400 text-orange-400"
+            : command.type === "skill"
+              ? "border-[var(--ansi-magenta)] text-[var(--ansi-magenta)]"
+              : command.source === "local"
+                ? "border-[var(--ansi-green)] text-[var(--ansi-green)]"
+                : "border-[var(--ansi-blue)] text-[var(--ansi-blue)]"
         )}
       >
-        {command.type === "skill" ? "skill" : command.source}
+        {command.type === "builtin" ? "工具" : command.type === "skill" ? "skill" : command.source}
       </Badge>
     </div>
   );
@@ -142,7 +147,7 @@ export function SlashCommandPopup({
         <div className="max-h-[250px] overflow-y-auto py-1" role="listbox">
           {commands.map((command, index) => (
             <SlashCommandItem
-              key={command.path}
+              key={command.path || command.name}
               command={command}
               index={index}
               isSelected={index === selectedIndex}

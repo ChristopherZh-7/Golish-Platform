@@ -906,6 +906,10 @@ pub fn run_gui() {
             tools::pentest::pentest_delete_tool,
             tools::pentest::pentest_copy_to_toolpack,
             tools::pentest::pentest_download_and_extract,
+            tools::pentest::pentest_rename_tool_dir,
+            tools::pentest::pentest_uninstall_tool_files,
+            tools::pentest::pentest_read_tool_config,
+            tools::pentest::pentest_save_tool_config,
             // Version management commands
             tools::pentest::pentest_list_installed_java,
             tools::pentest::pentest_list_available_java,

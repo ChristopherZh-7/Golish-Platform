@@ -78,11 +78,6 @@ export function Terminal({ sessionId }: TerminalProps) {
 
     // Only act when transitioning TO fullterm (not on initial mount or when exiting)
     if (renderMode === "fullterm" && prevMode !== "fullterm" && terminalRef.current) {
-      // Use reset() for a full terminal reset - clears screen and resets all modes.
-      // Always reset regardless of isReattachmentRef: if the terminal was reattached
-      // while in fullterm mode, prevMode would already be "fullterm" and this branch
-      // wouldn't execute. If it was reattached in timeline mode and is now transitioning
-      // to fullterm, we must reset to get a clean rendering surface.
       terminalRef.current.reset();
 
       // Schedule fit() for after the container has computed dimensions.

@@ -53,11 +53,17 @@ export const VirtualizedTimeline = memo(function VirtualizedTimeline({
   // For small timelines, skip virtualization overhead
   if (blocks.length < VIRTUALIZATION_THRESHOLD) {
     return (
-      <div className="space-y-2">
+      <div className="divide-y divide-[var(--border-color,rgba(255,255,255,0.06))]">
         {blocks.map((block) => (
-          <TimelineBlockErrorBoundary key={block.id} blockId={block.id}>
-            <UnifiedBlock block={block} sessionId={sessionId} workingDirectory={workingDirectory} />
-          </TimelineBlockErrorBoundary>
+          <div key={block.id} className="py-1">
+            <TimelineBlockErrorBoundary blockId={block.id}>
+              <UnifiedBlock
+                block={block}
+                sessionId={sessionId}
+                workingDirectory={workingDirectory}
+              />
+            </TimelineBlockErrorBoundary>
+          </div>
         ))}
       </div>
     );
@@ -85,7 +91,7 @@ export const VirtualizedTimeline = memo(function VirtualizedTimeline({
               transform: `translateY(${virtualRow.start}px)`,
             }}
           >
-            <div className="pb-2">
+            <div className="py-1 border-b border-[rgba(255,255,255,0.06)]">
               <TimelineBlockErrorBoundary blockId={block.id}>
                 <UnifiedBlock
                   block={block}

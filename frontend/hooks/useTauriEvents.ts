@@ -140,12 +140,16 @@ function extractProcessName(command: string | null): string | null {
   return baseName;
 }
 
+let activeGeneration = 0;
+
 export function useTauriEvents() {
   // Get store actions directly - these are stable references from zustand
   const store = useStore;
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: store.getState is stable zustand API
   useEffect(() => {
+    const generation = ++activeGeneration;
+    const isStale = () => generation !== activeGeneration;
     const unlisteners: Promise<UnlistenFn>[] = [];
     // Track pending process detection timers per session
     const processDetectionTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -225,6 +229,7 @@ export function useTauriEvents() {
     // Command block events
     unlisteners.push(
       listen<CommandBlockEvent>("command_block", (event) => {
+        if (isStale()) return;
         const { session_id, command, exit_code, event_type } = event.payload;
         const state = store.getState();
 
@@ -234,30 +239,19 @@ export function useTauriEvents() {
             const pendingOutput = state.pendingCommand[session_id]?.output;
             const pendingCommand = state.pendingCommand[session_id]?.command;
 
-            // Dispose VirtualTerminal for this command (it's no longer needed)
             virtualTerminalManager.dispose(session_id);
-            // Scroll live terminal to bottom and dispose
             liveTerminalManager.scrollToBottom(session_id);
             liveTerminalManager.dispose(session_id);
 
             state.handlePromptStart(session_id);
 
-            // Command lifecycle has completed; clear last-started command.
             lastStartedCommand.delete(session_id);
             // Switch back to timeline mode when shell is ready for next command
-            // This handles both alternate screen apps and fallback list apps
-            // (moved from command_end to prevent premature switching for apps like codex/cdx)
             const session = state.sessions[session_id];
-            if (session?.renderMode) {
-              logger.debug("[fullterm] prompt_start: renderMode =", session.renderMode);
-            }
             if (session?.renderMode === "fullterm") {
-              // Log the output that would otherwise be lost when switching from fullterm
               if (pendingOutput) {
                 logger.debug("[fullterm] Captured output from fullterm command:", pendingCommand);
-                logger.debug("[fullterm] Output:", pendingOutput);
               }
-              logger.debug("[fullterm] Switching back to timeline mode");
               state.setRenderMode(session_id, "timeline");
             }
             break;
@@ -274,15 +268,12 @@ export function useTauriEvents() {
             usedAlternateScreen.set(session_id, false);
 
             // Create a VirtualTerminal for processing ANSI sequences in this command's output
-            // This enables proper rendering of spinners, progress bars, and other animations
             virtualTerminalManager.create(session_id);
             // Create live terminal for embedded xterm.js display
             liveTerminalManager.getOrCreate(session_id);
 
-            // Primary fullterm mode switching is handled via alternate_screen events
-            // from the PTY parser detecting ANSI sequences. However, some apps
-            // (like AI coding agents) don't use alternate screen buffer, so we
-            // have a small fallback list for those edge cases.
+            // Known fullterm-only apps (TUI agents, AI coding tools) that don't use
+            // alternate screen buffer — switch to fullterm mode and skip output serialization.
             const processName = extractProcessName(command);
             if (processName && fulltermCommands.has(processName)) {
               logger.debug("[fullterm] Switching to fullterm mode for", {
@@ -290,7 +281,7 @@ export function useTauriEvents() {
                 processName,
               });
               state.setRenderMode(session_id, "fullterm");
-              usedAlternateScreen.set(session_id, true); // treat as fullterm for output handling
+              usedAlternateScreen.set(session_id, true);
             }
 
             // Skip process detection for known-fast commands
@@ -348,14 +339,10 @@ export function useTauriEvents() {
                 state.handleCommandEnd(session_id, exit_code);
               } else {
                 // Normal command - serialize output for display
-                // This is async because terminal.write() is async and we need to
-                // wait for pending writes to complete before serializing
                 void (async () => {
                   const serializedOutput =
                     await liveTerminalManager.serializeAndDispose(session_id);
                   if (serializedOutput) {
-                    // Update the pending command output with the serialized terminal content
-                    // This ensures we capture all scrollback that xterm accumulated
                     state.setPendingOutput(session_id, serializedOutput);
                   }
                   state.handleCommandEnd(session_id, exit_code);
@@ -401,6 +388,7 @@ export function useTauriEvents() {
     // Terminal output - capture for command blocks
     unlisteners.push(
       listen<TerminalOutputEvent>("terminal_output", (event) => {
+        if (isStale()) return;
         const { session_id, data } = event.payload;
         const state = store.getState();
         state.appendOutput(session_id, data);
@@ -414,6 +402,7 @@ export function useTauriEvents() {
     // Directory changed
     unlisteners.push(
       listen<DirectoryChangedEvent>("directory_changed", async (event) => {
+        if (isStale()) return;
         const { session_id, path } = event.payload;
         const state = store.getState();
 
@@ -445,6 +434,7 @@ export function useTauriEvents() {
     // Virtual environment changed
     unlisteners.push(
       listen<VirtualEnvChangedEvent>("virtual_env_changed", (event) => {
+        if (isStale()) return;
         const { session_id, name } = event.payload;
         store.getState().updateVirtualEnv(session_id, name);
       })
@@ -453,6 +443,7 @@ export function useTauriEvents() {
     // Session ended
     unlisteners.push(
       listen<SessionEndedEvent>("session_ended", (event) => {
+        if (isStale()) return;
         store.getState().removeSession(event.payload.sessionId);
       })
     );
@@ -461,6 +452,7 @@ export function useTauriEvents() {
     // This is the primary mechanism for detecting when to switch to fullterm mode
     unlisteners.push(
       listen<AlternateScreenEvent>("alternate_screen", (event) => {
+        if (isStale()) return;
         const { session_id, enabled } = event.payload;
         const state = store.getState();
         state.setRenderMode(session_id, enabled ? "fullterm" : "timeline");

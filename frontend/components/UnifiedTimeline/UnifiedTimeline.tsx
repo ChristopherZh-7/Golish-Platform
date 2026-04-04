@@ -234,10 +234,20 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
     });
   }, []);
 
-  // Auto-scroll to bottom when new content arrives (only if user is at bottom)
-  // streamingTextLength triggers scroll during text streaming (throttled to ~50 char buckets)
-  const hasThinkingContent = !!thinkingContent;
+  // Force-scroll to bottom when command state changes (start or end)
   const hasPendingCommand = !!pendingCommand?.command;
+  const prevHadPendingRef = useRef(hasPendingCommand);
+  useEffect(() => {
+    const wasRunning = prevHadPendingRef.current;
+    prevHadPendingRef.current = hasPendingCommand;
+    if (wasRunning !== hasPendingCommand) {
+      setIsAtBottom(true);
+      requestAnimationFrame(() => scrollToBottom());
+    }
+  }, [hasPendingCommand, scrollToBottom]);
+
+  // Auto-scroll to bottom when new content arrives (only if user is at bottom)
+  const hasThinkingContent = !!thinkingContent;
   const hasActiveWorkflow = !!activeWorkflow;
   const workflowStepCount = activeWorkflow?.steps.length ?? 0;
   const hasActiveSubAgents = activeSubAgents.length > 0;
@@ -304,7 +314,11 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
           {/* Streaming output for running command */}
           {/* Show if we have a command OR if we have buffered output (fallback for missing command_start) */}
           {(pendingCommand?.command || pendingCommand?.output) && (
-            <LiveTerminalBlock sessionId={sessionId} command={pendingCommand?.command || null} />
+            <LiveTerminalBlock
+              sessionId={sessionId}
+              command={pendingCommand?.command || null}
+              interactive
+            />
           )}
 
           {/* Thinking indicator - shown while waiting for first content (when no thinking content yet) */}
