@@ -1,14 +1,14 @@
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from "react";
 import { ThemeRegistry } from "../lib/theme/registry";
 import { ThemeManager } from "../lib/theme/ThemeManager";
-import type { QbitTheme } from "../lib/theme/types";
+import type { GolishTheme } from "../lib/theme/types";
 
 interface ThemeContextValue {
-  currentTheme: QbitTheme | null;
+  currentTheme: GolishTheme | null;
   currentThemeId: string | null;
   availableThemes: Array<{ id: string; name: string; builtin: boolean }>;
   setTheme: (themeId: string) => Promise<boolean>;
-  loadCustomTheme: (theme: QbitTheme) => Promise<void>;
+  loadCustomTheme: (theme: GolishTheme) => Promise<void>;
   deleteTheme: (themeId: string) => Promise<boolean>;
   // Preview mode methods for settings UI
   previewTheme: (themeId: string) => Promise<boolean>;
@@ -24,7 +24,7 @@ interface ThemeProviderProps {
 }
 
 export function ThemeProvider({ children, defaultThemeId }: ThemeProviderProps) {
-  const [currentTheme, setCurrentTheme] = useState<QbitTheme | null>(null);
+  const [currentTheme, setCurrentTheme] = useState<GolishTheme | null>(null);
   const [currentThemeId, setCurrentThemeId] = useState<string | null>(null);
   const [availableThemes, setAvailableThemes] = useState<
     Array<{ id: string; name: string; builtin: boolean }>
@@ -83,7 +83,7 @@ export function ThemeProvider({ children, defaultThemeId }: ThemeProviderProps) 
     return await ThemeManager.applyThemeById(themeId);
   }, []);
 
-  const loadCustomTheme = useCallback(async (theme: QbitTheme): Promise<void> => {
+  const loadCustomTheme = useCallback(async (theme: GolishTheme): Promise<void> => {
     await ThemeManager.loadThemeFromObject(theme);
   }, []);
 

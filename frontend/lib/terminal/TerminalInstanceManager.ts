@@ -32,7 +32,7 @@ class TerminalInstanceManagerClass {
     if (this.parkingLotEl) return this.parkingLotEl;
 
     const el = document.createElement("div");
-    el.id = "qbit-xterm-parking-lot";
+    el.id = "golish-xterm-parking-lot";
     // Keep terminals in the DOM between React remounts.
     // xterm.js isn't designed to be fully "detached"; removing its element
     // can leave renderer internals in an inconsistent state.

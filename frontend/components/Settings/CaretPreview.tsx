@@ -5,8 +5,8 @@ interface CaretPreviewProps {
   settings: CaretSettings;
 }
 
-const PREVIEW_TEXT = "qbit> hello world";
-const CARET_POS = 12; // After "qbit> hello " — mid-text position
+const PREVIEW_TEXT = "golish> hello world";
+const CARET_POS = 12; // After "golish> hello " — mid-text position
 
 /**
  * Live preview of the block caret rendered in a mock input area.

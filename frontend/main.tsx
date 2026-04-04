@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import "./index.css";
+import "./lib/i18n";
 
 /**
  * Check if we're running inside Tauri or in a browser.

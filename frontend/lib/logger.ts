@@ -1,7 +1,7 @@
 /**
  * Centralized logging utility for the frontend.
  *
- * Logs are written to ~/.qbit/frontend.log via Tauri IPC,
+ * Logs are written to ~/.golish/frontend.log via Tauri IPC,
  * and also output to the browser console for development.
  *
  * API is compatible with console.* for easy migration:

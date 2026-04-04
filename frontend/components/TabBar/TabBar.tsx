@@ -4,20 +4,17 @@ import {
   ArrowRight,
   Bot,
   Copy,
-  FileCode,
-  History,
+  Globe,
   Home,
   Loader2,
   PanelLeft,
   Plus,
   Settings,
   Terminal,
-  Wrench,
   X,
 } from "lucide-react";
 import React from "react";
-import { useMockDevTools } from "@/components/MockDevTools";
-import { NotificationWidget } from "@/components/NotificationWidget";
+import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
@@ -49,7 +46,6 @@ import { logger } from "@/lib/logger";
 import { ptyDestroy } from "@/lib/tauri";
 import { liveTerminalManager, TerminalInstanceManager } from "@/lib/terminal";
 import { cn } from "@/lib/utils";
-import { isMockBrowserMode } from "@/mocks";
 import { useInputMode, useStore } from "@/store";
 import { type TabItemState, useTabBarState } from "@/store/selectors/tab-bar";
 import { selectDisplaySettings } from "@/store/slices";
@@ -62,37 +58,6 @@ const startDrag = async (e: React.MouseEvent) => {
     logger.error("Failed to start dragging:", err);
   }
 };
-
-/**
- * Toggle button for Mock Dev Tools - only rendered in browser mode
- */
-function MockDevToolsToggle() {
-  const { toggle, isOpen } = useMockDevTools();
-
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={toggle}
-          onMouseDown={(e) => e.stopPropagation()}
-          title="Toggle Mock Dev Tools"
-          className={cn(
-            "h-5 w-5",
-            "text-[var(--ansi-yellow)] hover:text-[var(--ansi-yellow)] hover:bg-[var(--ansi-yellow)]/10",
-            isOpen && "bg-[var(--ansi-yellow)]/20"
-          )}
-        >
-          <Wrench className="size-icon-tab-bar" />
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent side="bottom">
-        <p>Toggle Mock Dev Tools</p>
-      </TooltipContent>
-    </Tooltip>
-  );
-}
 
 function buildTabNumberMap(tabs: TabItemState[]): Map<string, number> {
   const map = new Map<string, number>();
@@ -123,7 +88,24 @@ export const TabBar = React.memo(function TabBar() {
   const getTabSessionIds = useStore((state) => state.getTabSessionIds);
   const closeTab = useStore((state) => state.closeTab);
   const moveTab = useStore((state) => state.moveTab);
+  const reorderTab = useStore((state) => state.reorderTab);
   const moveTabToPane = useStore((state) => state.moveTabToPane);
+
+  const dragState = React.useRef<{
+    draggedId: string | null;
+    startX: number;
+    startY: number;
+    offsetX: number;
+    offsetY: number;
+    isDragging: boolean;
+  }>({ draggedId: null, startX: 0, startY: 0, offsetX: 0, offsetY: 0, isDragging: false });
+  const [draggedTabId, setDraggedTabId] = React.useState<string | null>(null);
+  const [dragPos, setDragPos] = React.useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [dropIndicator, setDropIndicator] = React.useState<{
+    targetId: string;
+    side: "left" | "right";
+  } | null>(null);
+  const tabRefs = React.useRef<Map<string, HTMLDivElement>>(new Map());
 
   // Display settings for animated show/hide of right-side buttons
   const display = useStore(selectDisplaySettings);
@@ -161,6 +143,76 @@ export const TabBar = React.memo(function TabBar() {
       window.removeEventListener("blur", handleBlur);
     };
   }, []);
+
+  const handleTabPointerDown = React.useCallback(
+    (e: React.PointerEvent, tabId: string, tabType: TabItemState["tabType"]) => {
+      if (tabType === "home" || e.button !== 0) return;
+      const el = tabRefs.current.get(tabId);
+      const rect = el?.getBoundingClientRect();
+      const offsetX = rect ? e.clientX - rect.left : 0;
+      const offsetY = rect ? e.clientY - rect.top : 0;
+      dragState.current = { draggedId: tabId, startX: e.clientX, startY: e.clientY, offsetX, offsetY, isDragging: false };
+    },
+    []
+  );
+
+  React.useEffect(() => {
+    const handlePointerMove = (e: PointerEvent) => {
+      const ds = dragState.current;
+      if (!ds.draggedId) return;
+
+      if (!ds.isDragging && Math.abs(e.clientX - ds.startX) > 5) {
+        ds.isDragging = true;
+        setDraggedTabId(ds.draggedId);
+        setDragPos({ x: e.clientX, y: e.clientY });
+        document.documentElement.classList.add("tab-dragging");
+      }
+
+      if (!ds.isDragging) return;
+      setDragPos({ x: e.clientX, y: e.clientY });
+
+      let closestId: string | null = null;
+      let closestDist = Number.POSITIVE_INFINITY;
+      let closestSide: "left" | "right" = "left";
+      for (const [id, el] of tabRefs.current) {
+        if (id === ds.draggedId) continue;
+        const rect = el.getBoundingClientRect();
+        const centerX = rect.left + rect.width / 2;
+        const dist = Math.abs(e.clientX - centerX);
+        if (dist < closestDist) {
+          closestDist = dist;
+          closestId = id;
+          closestSide = e.clientX < centerX ? "left" : "right";
+        }
+      }
+      if (closestId) {
+        setDropIndicator({ targetId: closestId, side: closestSide });
+      } else {
+        setDropIndicator(null);
+      }
+    };
+
+    const handlePointerUp = () => {
+      const ds = dragState.current;
+      if (ds.isDragging && ds.draggedId && dropIndicator) {
+        const homeTabId = tabs[0]?.tabType === "home" ? tabs[0].id : null;
+        if (dropIndicator.targetId !== homeTabId) {
+          reorderTab(ds.draggedId, dropIndicator.targetId);
+        }
+      }
+      dragState.current = { draggedId: null, startX: 0, startY: 0, offsetX: 0, offsetY: 0, isDragging: false };
+      setDraggedTabId(null);
+      setDropIndicator(null);
+      document.documentElement.classList.remove("tab-dragging");
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [dropIndicator, tabs, reorderTab]);
 
   const handleCloseTab = React.useCallback(
     async (e: React.MouseEvent, tabId: string, tabType: TabItemState["tabType"]) => {
@@ -233,6 +285,7 @@ export const TabBar = React.memo(function TabBar() {
                 <TabItem
                   key={tab.id}
                   tab={tab}
+                  index={index}
                   isActive={isActive}
                   isBusy={isBusy}
                   onClose={(e) => handleCloseTab(e, tab.id, tab.tabType)}
@@ -249,6 +302,17 @@ export const TabBar = React.memo(function TabBar() {
                   tabNumber={tabNumberById.get(tab.id)}
                   showTabNumber={cmdKeyPressed}
                   hasNewActivity={hasNewActivity}
+                  isBeingDragged={draggedTabId === tab.id}
+                  dropSide={
+                    dropIndicator?.targetId === tab.id && draggedTabId !== tab.id
+                      ? dropIndicator.side
+                      : null
+                  }
+                  onTabPointerDown={(e) => handleTabPointerDown(e, tab.id, tab.tabType)}
+                  tabRef={(el) => {
+                    if (el) tabRefs.current.set(tab.id, el);
+                    else tabRefs.current.delete(tab.id);
+                  }}
                 />
               );
             })}
@@ -298,12 +362,42 @@ export const TabBar = React.memo(function TabBar() {
           }}
         />
       )}
+      {/* Floating ghost tab that follows cursor during drag */}
+      {draggedTabId && (() => {
+        const draggedTab = tabs.find((t) => t.id === draggedTabId);
+        if (!draggedTab) return null;
+        const IconComp = draggedTab.tabType === "home" ? Home
+          : draggedTab.tabType === "settings" ? Settings
+          : draggedTab.tabType === "browser" ? Globe
+          : draggedTab.mode === "agent" ? Bot : Terminal;
+        const label = draggedTab.customName
+          || (draggedTab.tabType === "browser" ? "Browser" : null)
+          || (draggedTab.tabType === "settings" ? draggedTab.name || "Settings" : null)
+          || draggedTab.processName
+          || draggedTab.workingDirectory.split(/[/\\]/).pop()
+          || "Tab";
+        return createPortal(
+          <div
+            className="fixed z-[9999] pointer-events-none flex items-center gap-1.5 px-3 py-1 rounded-md bg-muted/90 border border-accent text-foreground text-[11px] font-mono shadow-lg backdrop-blur-sm"
+            style={{
+              left: dragPos.x,
+              top: dragPos.y,
+              transform: "translate(-50%, -50%)",
+            }}
+          >
+            <IconComp className="w-3 h-3 text-accent flex-shrink-0" />
+            <span className="truncate max-w-[120px]">{label}</span>
+          </div>,
+          document.body
+        );
+      })()}
     </TooltipProvider>
   );
 });
 
 interface TabItemProps {
   tab: TabItemState;
+  index: number;
   isActive: boolean;
   isBusy: boolean;
   onClose: (e: React.MouseEvent) => void;
@@ -317,10 +411,15 @@ interface TabItemProps {
   tabNumber?: number;
   showTabNumber?: boolean;
   hasNewActivity: boolean;
+  isBeingDragged: boolean;
+  dropSide: "left" | "right" | null;
+  onTabPointerDown: (e: React.PointerEvent) => void;
+  tabRef: (el: HTMLDivElement | null) => void;
 }
 
 const TabItem = React.memo(function TabItem({
   tab,
+  index,
   isActive,
   isBusy,
   onClose,
@@ -334,6 +433,10 @@ const TabItem = React.memo(function TabItem({
   tabNumber,
   showTabNumber,
   hasNewActivity,
+  isBeingDragged,
+  dropSide,
+  onTabPointerDown,
+  tabRef,
 }: TabItemProps) {
   const [isEditing, setIsEditing] = React.useState(false);
   const [editValue, setEditValue] = React.useState("");
@@ -360,6 +463,15 @@ const TabItem = React.memo(function TabItem({
       return {
         displayName: name,
         dirName: tab.name || "Settings",
+        isCustomName: !!tab.customName,
+        isProcessName: false,
+      };
+    }
+
+    if (tabType === "browser") {
+      return {
+        displayName: tab.customName || "Browser",
+        dirName: "Browser",
         isCustomName: !!tab.customName,
         isProcessName: false,
       };
@@ -420,8 +532,9 @@ const TabItem = React.memo(function TabItem({
         return Home;
       case "settings":
         return Settings;
+      case "browser":
+        return Globe;
       default:
-        // For terminal tabs, icon depends on tab mode
         return tab.mode === "agent" ? Bot : Terminal;
     }
   };
@@ -437,6 +550,20 @@ const TabItem = React.memo(function TabItem({
   }, [isCustomName, isProcessName, displayName, tab.workingDirectory, tabType]);
 
   return (
+    <div
+      ref={tabRef}
+      className={cn(
+        "relative",
+        isBeingDragged && "opacity-60 ring-2 ring-accent bg-accent/10 rounded-md scale-[0.92] transition-all duration-150"
+      )}
+      onPointerDown={onTabPointerDown}
+    >
+      {dropSide === "left" && (
+        <div className="absolute left-0 top-1 bottom-1 w-0.5 bg-accent rounded-full z-20" />
+      )}
+      {dropSide === "right" && (
+        <div className="absolute right-0 top-1 bottom-1 w-0.5 bg-accent rounded-full z-20" />
+      )}
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <div className="group relative flex items-center">
@@ -587,6 +714,7 @@ const TabItem = React.memo(function TabItem({
         )}
       </ContextMenuContent>
     </ContextMenu>
+    </div>
   );
 });
 

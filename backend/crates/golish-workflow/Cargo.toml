@@ -1,0 +1,15 @@
+[package]
+name = "golish-workflow"
+version.workspace = true
+edition.workspace = true
+description = "Graph-based workflow execution for Golish AI multi-step tasks"
+
+[dependencies]
+graph-flow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }

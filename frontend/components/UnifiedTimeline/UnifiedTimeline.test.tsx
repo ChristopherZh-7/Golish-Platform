@@ -81,7 +81,7 @@ describe("UnifiedTimeline", () => {
       render(<UnifiedTimeline sessionId="test-session" />);
 
       // Empty state text should NOT be visible
-      expect(screen.queryByText("Qbit")).not.toBeInTheDocument();
+      expect(screen.queryByText("Golish")).not.toBeInTheDocument();
       // Command header should show the command text
       expect(screen.getByText("ls -la")).toBeInTheDocument();
       // Terminal container should be rendered
@@ -106,7 +106,7 @@ describe("UnifiedTimeline", () => {
 
       render(<UnifiedTimeline sessionId="test-session" />);
 
-      expect(screen.queryByText("Qbit")).not.toBeInTheDocument();
+      expect(screen.queryByText("Golish")).not.toBeInTheDocument();
       expect(screen.getByText("Thinking...")).toBeInTheDocument();
     });
   });

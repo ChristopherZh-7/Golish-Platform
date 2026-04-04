@@ -1,4 +1,4 @@
-import type { QbitTheme } from "../../types";
+import type { GolishTheme } from "../../types";
 
 // Obsidian Ember Color Palette
 const palette = {
@@ -43,7 +43,7 @@ const palette = {
   red500: "#B33B32", // Primary red
 };
 
-export const obsidianEmber: QbitTheme = {
+export const obsidianEmber: GolishTheme = {
   author: "ally",
   license: "MIT",
   name: "Obsidian Ember",

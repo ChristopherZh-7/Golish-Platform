@@ -5,6 +5,7 @@ import { useStore, useSessionAiConfig } from "@/store";
 import { PROVIDER_GROUPS, formatModelName } from "@/lib/models";
 import { initAiSession, type ProviderConfig } from "@/lib/ai";
 import { getSettings } from "@/lib/settings";
+import { useTranslation } from "react-i18next";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -42,7 +43,7 @@ function MessageBlock({ message }: { message: ChatMessage }) {
   return (
     <div className={cn("px-4 py-3", !isUser && "bg-[var(--bg-hover)]")}>
       <div className="text-[11px] text-muted-foreground mb-1.5 font-medium">
-        {isUser ? "You" : "Qbit AI"}
+        {isUser ? "You" : "Golish AI"}
       </div>
       <div className="text-[13px] text-foreground leading-[1.6] whitespace-pre-wrap">
         {message.content}
@@ -52,6 +53,7 @@ function MessageBlock({ message }: { message: ChatMessage }) {
 }
 
 export const AIChatPanel = memo(function AIChatPanel() {
+  const { t } = useTranslation();
   const [conversations, setConversations] = useState<ChatConversation[]>(() => [createConversation()]);
   const [activeConvId, setActiveConvId] = useState(() => conversations[0].id);
   const [showHistory, setShowHistory] = useState(false);
@@ -210,7 +212,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
         {
           id: `ai-${Date.now()}`,
           role: "assistant",
-          content: "功能开发中，后续将支持自动化工具调用和智能漏洞分析。",
+          content: t("ai.devInProgress"),
           timestamp: Date.now(),
         },
       ]);
@@ -273,7 +275,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
         <div className="flex items-center gap-0.5 flex-shrink-0">
           <button
             type="button"
-            title="新对话"
+            title={t("ai.newChat")}
             className="h-6 w-6 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors"
             onClick={handleNewChat}
           >
@@ -281,7 +283,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
           </button>
           <button
             type="button"
-            title="历史记录"
+            title={t("ai.history")}
             className={cn(
               "h-6 w-6 flex items-center justify-center rounded-md transition-colors",
               showHistory ? "text-foreground bg-[var(--bg-hover)]" : "text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]",
@@ -297,11 +299,11 @@ export const AIChatPanel = memo(function AIChatPanel() {
       {showHistory && (
         <div className="flex-1 overflow-y-auto overflow-x-hidden border-b border-[var(--border-subtle)]">
           <div className="px-3 py-2">
-            <span className="text-[11px] text-muted-foreground uppercase tracking-wider font-semibold">历史对话</span>
+            <span className="text-[11px] text-muted-foreground uppercase tracking-wider font-semibold">{t("ai.historyTitle")}</span>
           </div>
           {conversations.filter((c) => c.messages.length > 0).length === 0 ? (
             <div className="flex items-center justify-center py-8">
-              <span className="text-[12px] text-muted-foreground/50">暂无历史对话</span>
+              <span className="text-[12px] text-muted-foreground/50">{t("ai.noHistory")}</span>
             </div>
           ) : (
             conversations
@@ -319,7 +321,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
                 >
                   <div className="truncate">{conv.title}</div>
                   <div className="text-[10px] text-muted-foreground/50 mt-0.5">
-                    {new Date(conv.createdAt).toLocaleDateString()} · {conv.messages.length} 条消息
+                    {new Date(conv.createdAt).toLocaleDateString()} · {conv.messages.length} {t("ai.messages")}
                   </div>
                 </button>
               ))
@@ -340,7 +342,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
                 />
               ))}
             </div>
-            <p className="text-[13px] text-muted-foreground/50">今天要做点什么呢</p>
+            <p className="text-[13px] text-muted-foreground/50">{t("ai.placeholder")}</p>
           </div>
         ) : (
           <div>
@@ -432,21 +434,21 @@ export const AIChatPanel = memo(function AIChatPanel() {
             <div className="flex items-center gap-1">
               <button
                 type="button"
-                title="用量"
+                title={t("ai.usage")}
                 className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors"
               >
                 <Gauge className="w-3.5 h-3.5" />
               </button>
               <button
                 type="button"
-                title="上传图片"
+                title={t("ai.uploadImage")}
                 className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors"
               >
                 <Image className="w-3.5 h-3.5" />
               </button>
               <button
                 type="button"
-                title={input.trim() ? "发送" : ""}
+                title={input.trim() ? t("ai.send") : ""}
                 onClick={handleSend}
                 disabled={!input.trim()}
                 className={cn(

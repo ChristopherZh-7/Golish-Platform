@@ -1,0 +1,19 @@
+[package]
+name = "golish-shell-exec"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "Shell command execution for Golish"
+
+[dependencies]
+golish-core = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+nix = { workspace = true, features = ["signal", "process"] }
+libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

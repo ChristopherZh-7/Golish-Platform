@@ -1,9 +1,9 @@
 /**
- * Theme type definitions for Qbit
+ * Theme type definitions for Golish
  * These types replace the JSON schema for compile-time type safety
  */
 
-export interface QbitThemeMetadata {
+export interface GolishThemeMetadata {
   schemaVersion: string;
   name: string;
   version?: string;
@@ -132,7 +132,7 @@ export interface ThemeEffects {
   plugins?: ThemePlugin[];
 }
 
-export interface QbitTheme extends QbitThemeMetadata {
+export interface GolishTheme extends GolishThemeMetadata {
   colors: ThemeColors;
   typography?: ThemeTypography;
   radii?: ThemeRadii;
@@ -146,6 +146,6 @@ export interface QbitTheme extends QbitThemeMetadata {
  */
 export interface ThemeRegistryEntry {
   id: string;
-  theme: QbitTheme;
+  theme: GolishTheme;
   builtin?: boolean;
 }

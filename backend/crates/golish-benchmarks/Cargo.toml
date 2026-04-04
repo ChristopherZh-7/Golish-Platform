@@ -1,0 +1,17 @@
+[package]
+name = "golish-benchmarks"
+version.workspace = true
+edition.workspace = true
+description = "Benchmark integrations for Golish AI agent evaluation"
+
+[dependencies]
+# Internal crates
+golish-evals = { path = "../golish-evals" }
+
+# External dependencies
+tokio.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tracing.workspace = true

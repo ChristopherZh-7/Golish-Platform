@@ -2,7 +2,7 @@ import Ajv from "ajv";
 import { logger } from "@/lib/logger";
 import schema from "./schema.json" with { type: "json" };
 import { ThemeManager } from "./ThemeManager";
-import type { QbitTheme } from "./types";
+import type { GolishTheme } from "./types";
 
 /**
  * Load and validate a theme from a file upload
@@ -112,14 +112,14 @@ export async function loadThemeFromUrl(url: string): Promise<void> {
 /**
  * Apply a theme object directly (for programmatic use)
  */
-export async function applyTheme(theme: QbitTheme): Promise<void> {
+export async function applyTheme(theme: GolishTheme): Promise<void> {
   await ThemeManager.loadThemeFromObject(theme);
 }
 
 /**
  * Validate a theme against the JSON schema
  */
-function validateTheme(theme: QbitTheme): void {
+function validateTheme(theme: GolishTheme): void {
   const ajv = new Ajv({ allErrors: true, strict: false });
   const localSchema = { ...schema };
   // biome-ignore lint/suspicious/noExplicitAny: Schema manipulation requires any
@@ -134,11 +134,11 @@ function validateTheme(theme: QbitTheme): void {
   }
 }
 
-// Convert known external theme formats into QbitTheme
+// Convert known external theme formats into GolishTheme
 // biome-ignore lint/suspicious/noExplicitAny: Input theme format is unknown
-function normalizeTheme(raw: any): QbitTheme {
-  // If already in Qbit format
-  if (raw?.colors?.ui && raw?.colors?.ansi) return raw as QbitTheme;
+function normalizeTheme(raw: any): GolishTheme {
+  // If already in Golish format
+  if (raw?.colors?.ui && raw?.colors?.ansi) return raw as GolishTheme;
 
   if (raw?.ui && raw?.ansi) {
     const ui = raw.ui ?? {};
@@ -146,8 +146,8 @@ function normalizeTheme(raw: any): QbitTheme {
     const term = raw.terminal ?? {};
     const name = raw.name ?? "Custom Theme";
 
-    // Map to QbitTheme structure
-    const qbit: QbitTheme = {
+    // Map to GolishTheme structure
+    const golish: GolishTheme = {
       schemaVersion: "1.0.0",
       name,
       version: raw.version,
@@ -245,9 +245,9 @@ function normalizeTheme(raw: any): QbitTheme {
         plugins: raw.effects?.plugins,
       },
     };
-    return qbit;
+    return golish;
   }
 
   // Fallback pass-through
-  return raw as QbitTheme;
+  return raw as GolishTheme;
 }

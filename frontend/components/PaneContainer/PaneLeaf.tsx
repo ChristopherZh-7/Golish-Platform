@@ -36,6 +36,11 @@ const SettingsTabContent = lazy(() =>
     default: m.SettingsTabContent,
   }))
 );
+const BrowserView = lazy(() =>
+  import("@/components/BrowserView/BrowserView").then((m) => ({
+    default: m.BrowserView,
+  }))
+);
 
 // Loading fallback component for lazy-loaded tab content
 function TabLoadingFallback() {
@@ -55,7 +60,7 @@ interface PaneLeafProps {
 export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId }: PaneLeafProps) {
   // Use combined selector for efficient state access - only re-renders when
   // specific properties change, not when entire Session/TabLayout objects change
-  const { focusedPaneId, renderMode, tabType, sessionExists, sessionName } = usePaneLeafState(
+  const { focusedPaneId, renderMode, tabType, sessionExists, sessionName, workingDirectory } = usePaneLeafState(
     tabId,
     sessionId
   );
@@ -103,6 +108,12 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
         return (
           <Suspense fallback={<TabLoadingFallback />}>
             <SettingsTabContent />
+          </Suspense>
+        );
+      case "browser":
+        return (
+          <Suspense fallback={<TabLoadingFallback />}>
+            <BrowserView initialUrl={workingDirectory} sessionId={sessionId} />
           </Suspense>
         );
       default:

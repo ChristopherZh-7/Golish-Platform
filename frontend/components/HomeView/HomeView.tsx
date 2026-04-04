@@ -596,7 +596,7 @@ export const HomeView = memo(function HomeView() {
             <DialogTitle>Delete Project</DialogTitle>
             <DialogDescription>
               Remove <span className="text-white font-medium">{deleteConfirm?.name}</span> from
-              Qbit? This deletes the project configuration but won't delete any files.
+              Golish? This deletes the project configuration but won't delete any files.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="gap-2">

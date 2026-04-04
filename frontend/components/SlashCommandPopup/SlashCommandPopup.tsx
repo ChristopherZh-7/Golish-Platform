@@ -3,6 +3,7 @@ import { memo, useCallback, useEffect, useRef } from "react";
 import { Badge } from "@/components/ui/badge";
 import type { SlashCommand } from "@/hooks/useSlashCommands";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "react-i18next";
 
 interface SlashCommandItemProps {
   command: SlashCommand;
@@ -21,6 +22,7 @@ export const SlashCommandItem = memo(function SlashCommandItem({
   isSelected,
   onSelect,
 }: SlashCommandItemProps) {
+  const { t } = useTranslation();
   const handleClick = useCallback(() => {
     onSelect(command);
   }, [command, onSelect]);
@@ -76,7 +78,7 @@ export const SlashCommandItem = memo(function SlashCommandItem({
                 : "border-[var(--ansi-blue)] text-[var(--ansi-blue)]"
         )}
       >
-        {command.type === "builtin" ? "工具" : command.type === "skill" ? "skill" : command.source}
+        {command.type === "builtin" ? t("slash.tool") : command.type === "skill" ? "skill" : command.source}
       </Badge>
     </div>
   );

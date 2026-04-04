@@ -306,7 +306,7 @@ impl CompletionModel {
             // Add tool calls from the structured API
             if let Some(ref tool_calls) = choice.message.tool_calls {
                 for tc in tool_calls {
-                    let arguments = qbit_json_repair::parse_tool_args(&tc.function.arguments);
+                    let arguments = golish_json_repair::parse_tool_args(&tc.function.arguments);
                     content.push(AssistantContent::ToolCall(ToolCall {
                         id: tc.id.clone(),
                         call_id: None,
@@ -506,7 +506,7 @@ impl completion::CompletionModel for CompletionModel {
                     StreamChunk::ToolCallsComplete { tool_calls } => {
                         // Emit the first tool call as complete (rig handles one at a time)
                         if let Some(tc) = tool_calls.first() {
-                            let arguments = qbit_json_repair::parse_tool_args(&tc.arguments);
+                            let arguments = golish_json_repair::parse_tool_args(&tc.arguments);
                             RawStreamingChoice::ToolCall(RawStreamingToolCall {
                                 id: tc.id.clone(),
                                 call_id: Some(tc.id.clone()),

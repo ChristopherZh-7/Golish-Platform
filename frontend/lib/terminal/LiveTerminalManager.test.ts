@@ -86,7 +86,7 @@ describe("LiveTerminalManager", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     liveTerminalManager.disposeAll();
-    document.getElementById("qbit-live-xterm-parking-lot")?.remove();
+    document.getElementById("golish-live-xterm-parking-lot")?.remove();
   });
 
   it("does not throw when fit runs before renderer is ready", () => {
@@ -115,7 +115,7 @@ describe("LiveTerminalManager", () => {
 
     liveTerminalManager.detach(sessionId);
 
-    const parkingLot = document.getElementById("qbit-live-xterm-parking-lot");
+    const parkingLot = document.getElementById("golish-live-xterm-parking-lot");
     expect(parkingLot).toBeTruthy();
     expect(parkingLot?.contains(terminalEl as HTMLElement)).toBe(true);
   });

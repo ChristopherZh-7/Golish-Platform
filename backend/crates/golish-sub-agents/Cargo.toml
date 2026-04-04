@@ -1,0 +1,43 @@
+[package]
+name = "golish-sub-agents"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "Sub-agent system for Golish (definitions, registry, and executor)"
+
+[dependencies]
+# Foundation crates
+golish-core = { workspace = true }
+golish-udiff = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+
+# LLM integration via rig
+rig-core = { workspace = true }
+
+# Tool registry
+golish-tools = { workspace = true }
+
+# LLM provider configuration (for model capability checks)
+golish-llm-providers = { workspace = true }
+
+# JSON repair for malformed LLM output
+golish-json-repair = { path = "../golish-json-repair" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

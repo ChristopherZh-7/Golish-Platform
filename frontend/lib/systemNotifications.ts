@@ -1,5 +1,5 @@
 /**
- * Native OS notification system for Qbit.
+ * Native OS notification system for Golish.
  *
  * Responsibilities:
  * - Read opt-in setting (notifications.native_enabled)

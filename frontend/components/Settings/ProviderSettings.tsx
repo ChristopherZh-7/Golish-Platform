@@ -15,6 +15,7 @@ import { getProviders, type ProviderInfo } from "@/lib/model-registry";
 import type { AiSettings, OpenRouterProviderPreferences, WebSearchContextSize } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { ModelSelector } from "./ModelSelector";
+import { useTranslation } from "react-i18next";
 
 interface ProviderSettingsProps {
   settings: AiSettings;
@@ -423,6 +424,7 @@ function OpenRouterProviderPreferencesSection({
 }
 
 export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) {
+  const { t } = useTranslation();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [providers, setProviders] = useState<ProviderConfig[]>(FALLBACK_PROVIDERS);
 
@@ -878,8 +880,8 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
               {/* Show in selector toggle */}
               <div className="flex items-center justify-between py-2.5 border-y border-border/15">
                 <div>
-                  <div className="text-[12px] font-medium text-foreground/80">在模型选择器中显示</div>
-                  <div className="text-[11px] text-muted-foreground/40">启用后可在模型列表中选择此供应商</div>
+                  <div className="text-[12px] font-medium text-foreground/80">{t("provider.showInSelector")}</div>
+                  <div className="text-[11px] text-muted-foreground/40">{t("provider.showInSelectorDesc")}</div>
                 </div>
                 <Switch
                   checked={getShowInSelector(selectedProvider.id)}
@@ -892,7 +894,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
             </div>
           ) : (
             <div className="h-full flex items-center justify-center">
-              <span className="text-[12px] text-muted-foreground/30">← 选择一个供应商进行配置</span>
+              <span className="text-[12px] text-muted-foreground/30">{t("provider.selectProvider")}</span>
             </div>
           )}
         </div>
@@ -900,7 +902,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
 
       {/* Bottom: default model */}
       <div className="pt-4 mt-4 border-t border-border/20 flex-shrink-0">
-        <div className="text-[12px] font-medium text-foreground/70 mb-2">默认模型</div>
+        <div className="text-[12px] font-medium text-foreground/70 mb-2">{t("provider.defaultModel")}</div>
         <ModelSelector
           provider={settings.default_provider}
           model={settings.default_model}
@@ -915,7 +917,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
             })
           }
         />
-        <p className="text-[11px] text-muted-foreground/40 mt-1.5">新对话默认使用的模型</p>
+        <p className="text-[11px] text-muted-foreground/40 mt-1.5">{t("provider.defaultModelDesc")}</p>
       </div>
     </div>
   );

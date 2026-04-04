@@ -1,0 +1,13 @@
+[package]
+name = "golish-context"
+version.workspace = true
+edition.workspace = true
+description = "Context window and token budget management for Golish AI"
+
+[dependencies]
+rig-core = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }
+tokenx-rs = { workspace = true }

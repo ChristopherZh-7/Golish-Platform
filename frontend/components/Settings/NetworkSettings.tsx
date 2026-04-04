@@ -1,5 +1,6 @@
 import { Input } from "@/components/ui/input";
 import type { NetworkSettings as NetworkSettingsType } from "@/lib/settings";
+import { useTranslation } from "react-i18next";
 
 interface NetworkSettingsProps {
   settings: NetworkSettingsType;
@@ -7,11 +8,12 @@ interface NetworkSettingsProps {
 }
 
 export function NetworkSettings({ settings, onChange }: NetworkSettingsProps) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-6">
       <div className="space-y-2">
         <label htmlFor="proxy-url" className="text-sm font-medium text-foreground">
-          Proxy URL
+          {t("network.proxyUrl")}
         </label>
         <Input
           id="proxy-url"
@@ -19,17 +21,16 @@ export function NetworkSettings({ settings, onChange }: NetworkSettingsProps) {
           onChange={(e) =>
             onChange({ ...settings, proxy_url: e.target.value || null })
           }
-          placeholder="http://127.0.0.1:7890"
+          placeholder={t("network.proxyPlaceholder")}
         />
         <p className="text-xs text-muted-foreground">
-          HTTP, HTTPS, or SOCKS5 proxy for all outgoing requests (LLM APIs, web search, content
-          fetching)
+          {t("network.proxyHint")}
         </p>
       </div>
 
       <div className="space-y-2">
         <label htmlFor="no-proxy" className="text-sm font-medium text-foreground">
-          No Proxy
+          {t("network.noProxy")}
         </label>
         <Input
           id="no-proxy"
@@ -37,15 +38,35 @@ export function NetworkSettings({ settings, onChange }: NetworkSettingsProps) {
           onChange={(e) =>
             onChange({ ...settings, no_proxy: e.target.value || null })
           }
-          placeholder="localhost,127.0.0.1,.local"
+          placeholder={t("network.noProxyPlaceholder")}
         />
         <p className="text-xs text-muted-foreground">
-          Comma-separated list of hosts or domains that bypass the proxy
+          {t("network.noProxyHint")}
+        </p>
+      </div>
+
+      <div className="space-y-2 border-t border-[var(--border-medium)] pt-4">
+        <label htmlFor="github-token" className="text-sm font-medium text-foreground">
+          {t("network.githubToken")}
+        </label>
+        <Input
+          id="github-token"
+          type="password"
+          value={settings.github_token || ""}
+          onChange={(e) =>
+            onChange({ ...settings, github_token: e.target.value || null })
+          }
+          placeholder={t("network.githubTokenPlaceholder")}
+        />
+        <p className="text-xs text-muted-foreground">
+          {t("network.githubTokenHint")}
+          <a href="https://github.com/settings/tokens" target="_blank" rel="noreferrer"
+            className="text-accent hover:underline ml-1">{t("network.generateToken")}</a>
         </p>
       </div>
 
       <p className="text-xs text-muted-foreground border-t border-[var(--border-medium)] pt-4">
-        Proxy changes take effect after restarting the application.
+        {t("network.proxyRestart")}
       </p>
     </div>
   );

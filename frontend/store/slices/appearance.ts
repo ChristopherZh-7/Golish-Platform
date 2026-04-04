@@ -7,7 +7,7 @@
 
 import type { SliceCreator } from "./types";
 
-const DISPLAY_SETTINGS_KEY = "qbit-display-settings-v3";
+const DISPLAY_SETTINGS_KEY = "golish-display-settings-v3";
 
 /**
  * Controls which UI elements are visible.

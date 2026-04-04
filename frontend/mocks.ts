@@ -240,9 +240,9 @@ const mockSubAgents = [
 const mockSessions = [
   {
     identifier: "session-2024-01-15-001",
-    path: "/home/user/.qbit/sessions/session-2024-01-15-001.json",
-    workspace_label: "qbit",
-    workspace_path: "/home/user/qbit",
+    path: "/home/user/.golish/sessions/session-2024-01-15-001.json",
+    workspace_label: "golish",
+    workspace_path: "/home/user/golish",
     model: "claude-opus-4.5",
     provider: "anthropic_vertex",
     started_at: "2024-01-15T10:00:00Z",
@@ -254,9 +254,9 @@ const mockSessions = [
   },
   {
     identifier: "session-2024-01-14-002",
-    path: "/home/user/.qbit/sessions/session-2024-01-14-002.json",
-    workspace_label: "qbit",
-    workspace_path: "/home/user/qbit",
+    path: "/home/user/.golish/sessions/session-2024-01-14-002.json",
+    workspace_label: "golish",
+    workspace_path: "/home/user/golish",
     model: "claude-opus-4.5",
     provider: "anthropic_vertex",
     started_at: "2024-01-14T14:00:00Z",
@@ -310,16 +310,16 @@ let mockHitlConfig = {
 
 // Mock prompts
 const mockPrompts = [
-  { name: "review", path: "/home/user/.qbit/prompts/review.md", source: "global" as const },
-  { name: "explain", path: "/home/user/.qbit/prompts/explain.md", source: "global" as const },
-  { name: "project-context", path: ".qbit/prompts/project-context.md", source: "local" as const },
+  { name: "review", path: "/home/user/.golish/prompts/review.md", source: "global" as const },
+  { name: "explain", path: "/home/user/.golish/prompts/explain.md", source: "global" as const },
+  { name: "project-context", path: ".golish/prompts/project-context.md", source: "local" as const },
 ];
 
 // Mock skills
 const mockSkills = [
   {
     name: "code-review",
-    path: "/home/user/.qbit/skills/code-review",
+    path: "/home/user/.golish/skills/code-review",
     source: "global",
     description: "Review code for quality and best practices",
     license: undefined,
@@ -332,7 +332,7 @@ const mockSkills = [
   },
   {
     name: "refactor",
-    path: "/home/user/.qbit/skills/refactor",
+    path: "/home/user/.golish/skills/refactor",
     source: "global",
     description: "Refactor code for improved readability and maintainability",
     license: undefined,
@@ -375,7 +375,7 @@ let mockCodebases: MockCodebase[] = [
 ];
 
 // Mock settings state
-// Mock per-project settings (stored in .qbit/project.toml)
+// Mock per-project settings (stored in .golish/project.toml)
 const mockProjectSettings: {
   provider: string | null;
   model: string | null;
@@ -1216,7 +1216,7 @@ export function setupMocks(): void {
           active_session: false,
           session_id: null,
           enabled: true,
-          sessions_dir: "/home/user/.qbit/sessions",
+          sessions_dir: "/home/user/.golish/sessions",
           workspace_path: "/home/user",
         };
 
@@ -1410,7 +1410,7 @@ export function setupMocks(): void {
         return mockSessionPersistenceEnabled;
 
       case "finalize_ai_session":
-        return "/home/user/.qbit/sessions/mock-session.json";
+        return "/home/user/.golish/sessions/mock-session.json";
 
       case "restore_ai_session": {
         const restorePayload = args as { identifier: string };
@@ -1516,13 +1516,13 @@ export function setupMocks(): void {
       case "search_code":
         return [
           {
-            file_path: "/home/user/qbit/src/lib/ai.ts",
+            file_path: "/home/user/golish/src/lib/ai.ts",
             line_number: 42,
             line_content: "export async function initAiAgent(config: AiConfig): Promise<void> {",
             matches: ["initAiAgent"],
           },
           {
-            file_path: "/home/user/qbit/src/lib/tauri.ts",
+            file_path: "/home/user/golish/src/lib/tauri.ts",
             line_number: 15,
             line_content: "export async function ptyCreate(",
             matches: ["ptyCreate"],
@@ -1531,9 +1531,9 @@ export function setupMocks(): void {
 
       case "search_files":
         return [
-          "/home/user/qbit/src/lib/ai.ts",
-          "/home/user/qbit/src/lib/tauri.ts",
-          "/home/user/qbit/src/lib/indexer.ts",
+          "/home/user/golish/src/lib/ai.ts",
+          "/home/user/golish/src/lib/tauri.ts",
+          "/home/user/golish/src/lib/indexer.ts",
         ];
 
       case "shutdown_indexer":
@@ -1599,12 +1599,12 @@ export function setupMocks(): void {
         // Return mock projects for the home view
         return [
           {
-            path: "/home/user/projects/qbit",
-            name: "qbit",
+            path: "/home/user/projects/golish",
+            name: "golish",
             branches: [
               {
                 name: "main",
-                path: "/home/user/projects/qbit",
+                path: "/home/user/projects/golish",
                 file_count: 0,
                 insertions: 0,
                 deletions: 0,
@@ -1612,7 +1612,7 @@ export function setupMocks(): void {
               },
               {
                 name: "feature/home-view",
-                path: "/home/user/projects/qbit-feature-home-view",
+                path: "/home/user/projects/golish-feature-home-view",
                 file_count: 3,
                 insertions: 42,
                 deletions: 12,
@@ -1628,8 +1628,8 @@ export function setupMocks(): void {
         // Return mock recent directories
         return [
           {
-            path: "/home/user/projects/qbit",
-            name: "qbit",
+            path: "/home/user/projects/golish",
+            name: "golish",
             branch: "main",
             file_count: 0,
             insertions: 0,
@@ -1655,7 +1655,7 @@ export function setupMocks(): void {
       case "create_git_worktree":
         // Return mock worktree creation result
         return {
-          path: "/home/user/projects/qbit-new-branch",
+          path: "/home/user/projects/golish-new-branch",
           branch: "new-branch",
           init_script_run: false,
           init_script_output: null,
@@ -1715,10 +1715,10 @@ export function setupMocks(): void {
         return true;
 
       case "get_settings_path":
-        return "/home/user/.qbit/settings.toml";
+        return "/home/user/.golish/settings.toml";
 
       // =========================================================================
-      // Project Settings Commands (per-project .qbit/project.toml)
+      // Project Settings Commands (per-project .golish/project.toml)
       // =========================================================================
       case "get_project_settings": {
         // Return mock project settings - provider, model, agent_mode

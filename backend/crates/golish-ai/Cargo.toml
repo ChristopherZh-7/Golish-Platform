@@ -1,0 +1,68 @@
+[package]
+name = "golish-ai"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "AI agent orchestration for Golish"
+
+[dependencies]
+# Foundation crates
+golish-core = { workspace = true }
+golish-settings = { workspace = true }
+golish-tools = { workspace = true }
+
+# Infrastructure crates
+vtcode-indexer = { workspace = true }
+golish-pty = { workspace = true }
+golish-sidecar = { workspace = true }
+
+# Extracted AI subsystem crates
+golish-session = { workspace = true }
+golish-context = { workspace = true }
+golish-workflow = { workspace = true }
+golish-web = { workspace = true }
+golish-llm-providers = { workspace = true }
+golish-sub-agents = { workspace = true }
+golish-skills = { workspace = true }
+golish-shell-exec = { workspace = true }
+
+# JSON repair for malformed LLM output
+golish-json-repair = { path = "../golish-json-repair" }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+dirs = { workspace = true }
+parking_lot = { workspace = true }
+regex = { workspace = true }
+tokenx-rs = { workspace = true }
+
+# LLM integration via rig
+rig-core = { workspace = true }
+rig-anthropic-vertex = { path = "../rig-anthropic-vertex" }
+# Custom OpenAI Responses provider for reasoning models
+rig-openai-responses = { path = "../rig-openai-responses" }
+
+# HTTP client (needed for llm_client.rs)
+reqwest = { workspace = true }
+
+[features]
+default = []
+
+[dev-dependencies]
+tempfile = { workspace = true }
+proptest = { workspace = true }

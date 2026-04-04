@@ -1,7 +1,7 @@
 /**
- * Settings API for Qbit configuration management.
+ * Settings API for Golish configuration management.
  *
- * Settings are stored in `~/.qbit/settings.toml` and support environment variable
+ * Settings are stored in `~/.golish/settings.toml` and support environment variable
  * interpolation. The backend provides fallback to environment variables for
  * backward compatibility.
  */
@@ -23,9 +23,9 @@ export interface CodebaseConfig {
 }
 
 /**
- * Root settings structure for Qbit.
+ * Root settings structure for Golish.
  */
-export interface QbitSettings {
+export interface GolishSettings {
   version: number;
   ai: AiSettings;
   api_keys: ApiKeysSettings;
@@ -419,6 +419,8 @@ export interface NetworkSettings {
   proxy_url: string | null;
   /** Comma-separated list of hosts that bypass the proxy */
   no_proxy: string | null;
+  /** GitHub Personal Access Token for higher API rate limits (5000/hour vs 60/hour) */
+  github_token: string | null;
 }
 
 /**
@@ -440,14 +442,14 @@ export interface NotificationsSettings {
 /** Settings cache TTL in milliseconds */
 export const SETTINGS_CACHE_TTL_MS = 5000;
 
-let settingsCache: QbitSettings | null = null;
+let settingsCache: GolishSettings | null = null;
 let settingsCacheTime = 0;
 
 /**
  * Get settings with caching.
  * Returns cached settings if within TTL, otherwise fetches fresh.
  */
-export async function getSettingsCached(): Promise<QbitSettings> {
+export async function getSettingsCached(): Promise<GolishSettings> {
   const now = Date.now();
   if (settingsCache && now - settingsCacheTime < SETTINGS_CACHE_TTL_MS) {
     return settingsCache;
@@ -473,14 +475,14 @@ export function invalidateSettingsCache(): void {
 /**
  * Get all settings.
  */
-export async function getSettings(): Promise<QbitSettings> {
+export async function getSettings(): Promise<GolishSettings> {
   return invoke("get_settings");
 }
 
 /**
  * Update all settings.
  */
-export async function updateSettings(settings: QbitSettings): Promise<void> {
+export async function updateSettings(settings: GolishSettings): Promise<void> {
   await invoke("update_settings", { settings });
   invalidateSettingsCache();
 }
@@ -589,7 +591,7 @@ export interface ProviderVisibility {
  * Build provider visibility map from settings.
  * Extracts show_in_selector from each provider's settings.
  */
-export function buildProviderVisibility(settings: QbitSettings): ProviderVisibility {
+export function buildProviderVisibility(settings: GolishSettings): ProviderVisibility {
   return {
     vertex_ai: settings.ai.vertex_ai.show_in_selector,
     vertex_gemini: settings.ai.vertex_gemini?.show_in_selector ?? true,
@@ -612,7 +614,7 @@ export function buildProviderVisibility(settings: QbitSettings): ProviderVisibil
 /**
  * Default settings matching the Rust defaults.
  */
-export const DEFAULT_SETTINGS: QbitSettings = {
+export const DEFAULT_SETTINGS: GolishSettings = {
   version: 1,
   ai: {
     default_provider: "vertex_ai",
@@ -756,6 +758,7 @@ export const DEFAULT_SETTINGS: QbitSettings = {
   network: {
     proxy_url: null,
     no_proxy: null,
+    github_token: null,
   },
   notifications: {
     native_enabled: false,

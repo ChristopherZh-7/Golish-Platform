@@ -1,0 +1,818 @@
+//! Tool definitions for the agent system.
+//!
+//! This module contains tool definitions and schema sanitization logic
+//! for various tool types: standard tools, indexer tools, and sub-agent tools.
+//!
+//! ## Tool Selection
+//!
+//! Tools can be filtered using presets or custom configuration:
+//! - `ToolPreset::Minimal` - Essential file operations only
+//! - `ToolPreset::Standard` - Core development tools (recommended)
+//! - `ToolPreset::Full` - All vtcode tools
+//!
+//! Use `ToolConfig` to override presets with custom allow/block lists.
+
+use std::collections::HashSet;
+
+use golish_core::ToolName;
+use golish_tools::build_function_declarations;
+use rig::completion::ToolDefinition;
+use serde::Deserialize;
+use serde_json::json;
+
+use golish_sub_agents::SubAgentRegistry;
+
+/// Tool preset levels for different use cases.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolPreset {
+    /// Minimal tools: read, edit, write files + shell command
+    Minimal,
+    /// Standard tools for most development tasks (default)
+    #[default]
+    Standard,
+    /// All registered tools
+    Full,
+}
+
+impl ToolPreset {
+    /// Get the list of tool names for this preset.
+    pub fn tool_names(&self) -> Option<Vec<&'static str>> {
+        match self {
+            ToolPreset::Minimal => {
+                Some(vec!["read_file", "edit_file", "write_file", "run_pty_cmd"])
+            }
+            ToolPreset::Standard => Some(vec![
+                // Search & discovery
+                "grep_file",
+                "list_files",
+                // Structural code search & replace (AST-based)
+                "ast_grep",
+                "ast_grep_replace",
+                // File operations
+                "read_file",
+                "create_file",
+                "edit_file",
+                "write_file",
+                "delete_file",
+                // Shell execution
+                "run_pty_cmd",
+                // Web
+                "web_fetch",
+                // Planning
+                "update_plan",
+            ]),
+            ToolPreset::Full => None, // None means all tools
+        }
+    }
+}
+
+/// Configuration for tool selection with optional overrides.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ToolConfig {
+    /// Base preset to use
+    #[serde(default)]
+    pub preset: ToolPreset,
+    /// Additional tools to enable (on top of preset)
+    #[serde(default)]
+    pub additional: Vec<String>,
+    /// Tools to disable (removed from preset)
+    #[serde(default)]
+    pub disabled: Vec<String>,
+}
+
+impl ToolConfig {
+    /// Create a new config with the given preset.
+    pub fn with_preset(preset: ToolPreset) -> Self {
+        Self {
+            preset,
+            additional: vec![],
+            disabled: vec![],
+        }
+    }
+
+    /// Create the default tool config for the main agent.
+    ///
+    /// This is the recommended configuration for golish's primary AI agent.
+    /// It uses the Standard preset with additional tools that are useful
+    /// for the main agent but not sub-agents.
+    ///
+    /// Sub-agents are added dynamically from the registry and don't need to be listed here.
+    pub fn main_agent() -> Self {
+        Self {
+            preset: ToolPreset::Standard,
+            additional: vec![
+                // Code execution for complex operations
+                "execute_code".to_string(),
+                // Patch-based editing for large changes
+                "apply_patch".to_string(),
+                // Tavily-powered web tools (requires API key and settings.tools.web_search = true)
+                "tavily_search".to_string(),
+                "tavily_search_answer".to_string(),
+                "tavily_extract".to_string(),
+                "tavily_crawl".to_string(),
+                "tavily_map".to_string(),
+            ],
+            // Hide run_pty_cmd - we expose it as run_command instead
+            disabled: vec!["run_pty_cmd".to_string()],
+        }
+    }
+
+    /// Check if a tool name is enabled by this config.
+    pub fn is_tool_enabled(&self, tool_name: &str) -> bool {
+        // Check disabled list first
+        if self.disabled.iter().any(|t| t == tool_name) {
+            return false;
+        }
+
+        // Check additional list
+        if self.additional.iter().any(|t| t == tool_name) {
+            return true;
+        }
+
+        // Check preset
+        match self.preset.tool_names() {
+            Some(names) => names.contains(&tool_name),
+            None => true, // Full preset allows all
+        }
+    }
+}
+
+/// Get tool definitions using the default Standard preset.
+///
+/// This is the recommended entry point for most use cases.
+/// Uses `ToolPreset::Standard` which includes core development tools.
+#[allow(dead_code)] // Public API - used externally or for future internal use
+pub fn get_standard_tool_definitions() -> Vec<ToolDefinition> {
+    get_tool_definitions_with_config(&ToolConfig::default())
+}
+
+/// Get tool definitions with a specific preset.
+#[allow(dead_code)] // Public API - used externally or for future internal use
+pub fn get_tool_definitions_for_preset(preset: ToolPreset) -> Vec<ToolDefinition> {
+    get_tool_definitions_with_config(&ToolConfig::with_preset(preset))
+}
+
+/// Get tool definitions with full configuration control.
+///
+/// Filters function declarations based on the provided config,
+/// sanitizes schemas for Anthropic compatibility, and applies description overrides.
+pub fn get_tool_definitions_with_config(config: &ToolConfig) -> Vec<ToolDefinition> {
+    build_function_declarations()
+        .into_iter()
+        .filter(|fd| config.is_tool_enabled(&fd.name))
+        .map(|fd| {
+            // Override description for run_pty_cmd to instruct agent not to repeat output
+            let description = if ToolName::from_str(&fd.name) == Some(ToolName::RunPtyCmd) {
+                format!(
+                    "{}. IMPORTANT: The command output is displayed directly in the user's terminal. \
+                     Do NOT repeat or summarize the command output in your response - the user can already see it. \
+                     Only mention significant errors or ask clarifying questions if needed.",
+                    fd.description
+                )
+            } else {
+                fd.description
+            };
+
+            ToolDefinition {
+                name: fd.name,
+                description,
+                parameters: sanitize_schema(fd.parameters),
+            }
+        })
+        .collect()
+}
+
+/// Get all tool definitions using the specified config (alias for get_tool_definitions_with_config).
+pub fn get_all_tool_definitions_with_config(config: &ToolConfig) -> Vec<ToolDefinition> {
+    get_tool_definitions_with_config(config)
+}
+
+/// Get all available tool definitions (uses Full preset).
+pub fn get_all_tool_definitions() -> Vec<ToolDefinition> {
+    get_tool_definitions_with_config(&ToolConfig::with_preset(ToolPreset::Full))
+}
+
+/// Get the run_command tool definition.
+///
+/// This is a wrapper around `run_pty_cmd` with a more intuitive name.
+/// The execution layer maps `run_command` calls to `run_pty_cmd`.
+pub fn get_run_command_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: ToolName::RunCommand.as_str().to_string(),
+        description: "Execute a shell command and return the output. Use for running builds, tests, git operations, and other CLI commands. The command runs in a shell environment with access to common tools.".to_string(),
+        parameters: sanitize_schema(json!({
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The shell command to execute"
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": "Working directory for the command (relative to workspace)"
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Timeout in seconds (default: 120)"
+                }
+            },
+            "required": ["command"]
+        })),
+    }
+}
+
+/// Get sub-agent tool definitions from the registry.
+pub async fn get_sub_agent_tool_definitions(registry: &SubAgentRegistry) -> Vec<ToolDefinition> {
+    registry
+        .all()
+        .map(|agent| ToolDefinition {
+            name: format!("sub_agent_{}", agent.id),
+            description: format!("[{}] {}", agent.name, agent.description),
+            parameters: sanitize_schema(json!({
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": "The specific task or question for this sub-agent to handle"
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Optional additional context to help the sub-agent understand the task"
+                    }
+                },
+                "required": ["task"]
+            })),
+        })
+        .collect()
+}
+
+/// Filter tools by allowed set.
+pub fn filter_tools_by_allowed(
+    tools: Vec<ToolDefinition>,
+    allowed_tools: &[String],
+) -> Vec<ToolDefinition> {
+    if allowed_tools.is_empty() {
+        tools
+    } else {
+        let allowed_set: HashSet<&str> = allowed_tools.iter().map(|s| s.as_str()).collect();
+        tools
+            .into_iter()
+            .filter(|t| allowed_set.contains(t.name.as_str()))
+            .collect()
+    }
+}
+
+/// Sanitize JSON schema for LLM provider compatibility.
+///
+/// This function recursively:
+/// - Removes anyOf, allOf, oneOf (Anthropic doesn't support them)
+/// - Simplifies nested oneOf in properties to use the first option
+/// - For OpenAI Responses API strict mode: adds `additionalProperties: false`,
+///   makes optional properties nullable, and includes all properties in `required`
+pub fn sanitize_schema(schema: serde_json::Value) -> serde_json::Value {
+    sanitize_schema_recursive(schema, &HashSet::new())
+}
+
+/// Internal recursive schema sanitization with context about which properties are required.
+fn sanitize_schema_recursive(
+    mut schema: serde_json::Value,
+    _parent_required: &HashSet<String>,
+) -> serde_json::Value {
+    if let Some(obj) = schema.as_object_mut() {
+        // Remove top-level anyOf/allOf/oneOf
+        obj.remove("anyOf");
+        obj.remove("allOf");
+        obj.remove("oneOf");
+
+        // Check if this is an object type schema
+        let is_object_type = obj
+            .get("type")
+            .map(|t| {
+                t == "object" || (t.is_array() && t.as_array().unwrap().contains(&json!("object")))
+            })
+            .unwrap_or(false);
+
+        // Add additionalProperties: false for object types (OpenAI strict mode)
+        if is_object_type || obj.contains_key("properties") {
+            obj.insert(
+                "additionalProperties".to_string(),
+                serde_json::Value::Bool(false),
+            );
+        }
+
+        // Get the set of originally required properties at this level
+        let originally_required: HashSet<String> = obj
+            .get("required")
+            .and_then(|r| r.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Collect all property keys
+        let mut all_property_keys: Vec<String> = Vec::new();
+
+        // Recursively sanitize properties and make optional ones nullable
+        if let Some(props) = obj.get_mut("properties") {
+            if let Some(props_obj) = props.as_object_mut() {
+                all_property_keys = props_obj.keys().cloned().collect();
+
+                for (key, prop_value) in props_obj.iter_mut() {
+                    // First, handle oneOf simplification
+                    if let Some(prop_obj) = prop_value.as_object_mut() {
+                        if prop_obj.contains_key("oneOf") {
+                            if let Some(one_of) = prop_obj.remove("oneOf") {
+                                if let Some(arr) = one_of.as_array() {
+                                    if let Some(first) = arr.first() {
+                                        if let Some(first_obj) = first.as_object() {
+                                            for (k, v) in first_obj {
+                                                prop_obj.insert(k.clone(), v.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        prop_obj.remove("anyOf");
+                        prop_obj.remove("allOf");
+                    }
+
+                    // Recursively sanitize nested schemas
+                    *prop_value =
+                        sanitize_schema_recursive(prop_value.take(), &originally_required);
+
+                    // For optional properties (not in original required array),
+                    // make them nullable by adding "null" to the type
+                    if !originally_required.contains(key) {
+                        if let Some(prop_obj) = prop_value.as_object_mut() {
+                            if let Some(type_val) = prop_obj.get_mut("type") {
+                                if let Some(type_str) = type_val.as_str() {
+                                    *type_val = json!([type_str, "null"]);
+                                } else if let Some(type_arr) = type_val.as_array_mut() {
+                                    if !type_arr.iter().any(|v| v == "null") {
+                                        type_arr.push(json!("null"));
+                                    }
+                                }
+                            } else if !prop_obj.contains_key("properties")
+                                && !prop_obj.contains_key("items")
+                            {
+                                // Only add default type if not a complex nested schema
+                                prop_obj.insert("type".to_string(), json!(["string", "null"]));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Handle array items schema
+        if let Some(items) = obj.get_mut("items") {
+            *items = sanitize_schema_recursive(items.take(), &HashSet::new());
+        }
+
+        // Set all properties as required (OpenAI Responses API strict mode)
+        if !all_property_keys.is_empty() {
+            let required_array: Vec<serde_json::Value> = all_property_keys
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect();
+            obj.insert(
+                "required".to_string(),
+                serde_json::Value::Array(required_array),
+            );
+        }
+    }
+    schema
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_schema_removes_any_of() {
+        let schema = json!({
+            "type": "object",
+            "anyOf": [{"type": "string"}, {"type": "number"}],
+            "properties": {
+                "name": {"type": "string"}
+            }
+        });
+
+        let sanitized = sanitize_schema(schema);
+
+        assert!(sanitized.get("anyOf").is_none());
+        assert!(sanitized.get("properties").is_some());
+    }
+
+    #[test]
+    fn test_sanitize_schema_handles_one_of_in_properties() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "value": {
+                    "oneOf": [
+                        {"type": "string"},
+                        {"type": "number"}
+                    ]
+                }
+            },
+            "required": ["value"]  // Make it required so type stays as-is
+        });
+
+        let sanitized = sanitize_schema(schema);
+
+        let value_prop = sanitized
+            .get("properties")
+            .and_then(|p| p.get("value"))
+            .unwrap();
+        assert!(value_prop.get("oneOf").is_none());
+        // Should have type from first oneOf option
+        assert_eq!(
+            value_prop.get("type").and_then(|t| t.as_str()),
+            Some("string")
+        );
+    }
+
+    #[test]
+    fn test_sanitize_schema_strict_mode_compatibility() {
+        // Schema with required and optional properties
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Required file path"},
+                "line_start": {"type": "integer", "description": "Optional start line"},
+                "line_end": {"type": "integer", "description": "Optional end line"}
+            },
+            "required": ["file_path"]
+        });
+
+        let sanitized = sanitize_schema(schema);
+
+        // Should have additionalProperties: false
+        assert_eq!(
+            sanitized.get("additionalProperties"),
+            Some(&serde_json::Value::Bool(false))
+        );
+
+        // All properties should be in required array
+        let required = sanitized
+            .get("required")
+            .and_then(|r| r.as_array())
+            .unwrap();
+        assert!(required.contains(&json!("file_path")));
+        assert!(required.contains(&json!("line_start")));
+        assert!(required.contains(&json!("line_end")));
+
+        // Originally required property should keep its type
+        let file_path = sanitized
+            .get("properties")
+            .and_then(|p| p.get("file_path"))
+            .unwrap();
+        assert_eq!(file_path.get("type"), Some(&json!("string")));
+
+        // Optional properties should be nullable (type becomes array with null)
+        let line_start = sanitized
+            .get("properties")
+            .and_then(|p| p.get("line_start"))
+            .unwrap();
+        let line_start_type = line_start.get("type").unwrap();
+        assert!(line_start_type.is_array());
+        let type_arr = line_start_type.as_array().unwrap();
+        assert!(type_arr.contains(&json!("integer")));
+        assert!(type_arr.contains(&json!("null")));
+    }
+
+    #[test]
+    fn test_sanitize_schema_nested_objects() {
+        // Schema with nested array of objects (like update_plan)
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "plan": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "task": {"type": "string"},
+                            "status": {"type": "string"}
+                        },
+                        "required": ["task"]
+                    }
+                }
+            },
+            "required": ["plan"]
+        });
+
+        let sanitized = sanitize_schema(schema);
+
+        // Check nested items schema
+        let items = sanitized
+            .get("properties")
+            .and_then(|p| p.get("plan"))
+            .and_then(|p| p.get("items"))
+            .unwrap();
+
+        // Items should have additionalProperties: false
+        assert_eq!(
+            items.get("additionalProperties"),
+            Some(&serde_json::Value::Bool(false))
+        );
+
+        // Items should have all properties in required
+        let items_required = items.get("required").and_then(|r| r.as_array()).unwrap();
+        assert!(items_required.contains(&json!("task")));
+        assert!(items_required.contains(&json!("status")));
+
+        // Status should be nullable (was optional)
+        let status = items
+            .get("properties")
+            .and_then(|p| p.get("status"))
+            .unwrap();
+        let status_type = status.get("type").unwrap();
+        assert!(status_type.is_array());
+        assert!(status_type.as_array().unwrap().contains(&json!("null")));
+    }
+
+    #[test]
+    fn test_get_standard_tool_definitions() {
+        let tools = get_standard_tool_definitions();
+        assert!(!tools.is_empty());
+    }
+
+    #[test]
+    fn test_filter_tools_by_allowed() {
+        let tools = vec![
+            ToolDefinition {
+                name: "tool_a".to_string(),
+                description: "A".to_string(),
+                parameters: json!({}),
+            },
+            ToolDefinition {
+                name: "tool_b".to_string(),
+                description: "B".to_string(),
+                parameters: json!({}),
+            },
+            ToolDefinition {
+                name: "tool_c".to_string(),
+                description: "C".to_string(),
+                parameters: json!({}),
+            },
+        ];
+
+        let allowed = vec!["tool_a".to_string(), "tool_c".to_string()];
+        let filtered = filter_tools_by_allowed(tools, &allowed);
+
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().any(|t| t.name == "tool_a"));
+        assert!(filtered.iter().any(|t| t.name == "tool_c"));
+    }
+
+    #[test]
+    fn test_filter_tools_empty_allowed() {
+        let tools = vec![ToolDefinition {
+            name: "tool_a".to_string(),
+            description: "A".to_string(),
+            parameters: json!({}),
+        }];
+
+        let filtered = filter_tools_by_allowed(tools.clone(), &[]);
+
+        assert_eq!(filtered.len(), 1);
+    }
+
+    #[test]
+    fn test_tool_preset_minimal() {
+        let preset = ToolPreset::Minimal;
+        let names = preset.tool_names().unwrap();
+
+        assert_eq!(names.len(), 4);
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"edit_file"));
+        assert!(names.contains(&"write_file"));
+        assert!(names.contains(&"run_pty_cmd"));
+    }
+
+    #[test]
+    fn test_tool_preset_standard() {
+        let preset = ToolPreset::Standard;
+        let names = preset.tool_names().unwrap();
+
+        // Should have core tools
+        assert!(names.contains(&"grep_file"));
+        assert!(names.contains(&"list_files"));
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"edit_file"));
+        assert!(names.contains(&"run_pty_cmd"));
+        assert!(names.contains(&"web_fetch"));
+
+        // Should NOT have skill tools or PTY session management
+        assert!(!names.contains(&"save_skill"));
+        assert!(!names.contains(&"create_pty_session"));
+    }
+
+    #[test]
+    fn test_tool_preset_full() {
+        let preset = ToolPreset::Full;
+        // Full preset returns None (meaning all tools)
+        assert!(preset.tool_names().is_none());
+    }
+
+    #[test]
+    fn test_tool_config_default_is_standard() {
+        let config = ToolConfig::default();
+        assert_eq!(config.preset, ToolPreset::Standard);
+    }
+
+    #[test]
+    fn test_tool_config_is_tool_enabled() {
+        let config = ToolConfig::with_preset(ToolPreset::Standard);
+
+        // Standard tools should be enabled
+        assert!(config.is_tool_enabled("read_file"));
+        assert!(config.is_tool_enabled("grep_file"));
+
+        // Non-standard tools should be disabled
+        assert!(!config.is_tool_enabled("save_skill"));
+        assert!(!config.is_tool_enabled("create_pty_session"));
+    }
+
+    #[test]
+    fn test_tool_config_additional_tools() {
+        let config = ToolConfig {
+            preset: ToolPreset::Minimal,
+            additional: vec!["grep_file".to_string()],
+            disabled: vec![],
+        };
+
+        // Minimal preset tools
+        assert!(config.is_tool_enabled("read_file"));
+        // Additional tool
+        assert!(config.is_tool_enabled("grep_file"));
+        // Not in minimal or additional
+        assert!(!config.is_tool_enabled("web_fetch"));
+    }
+
+    #[test]
+    fn test_tool_config_disabled_tools() {
+        let config = ToolConfig {
+            preset: ToolPreset::Standard,
+            additional: vec![],
+            disabled: vec!["delete_file".to_string()],
+        };
+
+        // Standard tool that's not disabled
+        assert!(config.is_tool_enabled("read_file"));
+        // Disabled even though in preset
+        assert!(!config.is_tool_enabled("delete_file"));
+    }
+
+    #[test]
+    fn test_tool_config_disabled_overrides_additional() {
+        let config = ToolConfig {
+            preset: ToolPreset::Minimal,
+            additional: vec!["grep_file".to_string()],
+            disabled: vec!["grep_file".to_string()],
+        };
+
+        // Disabled takes precedence over additional
+        assert!(!config.is_tool_enabled("grep_file"));
+    }
+
+    #[test]
+    fn test_get_tool_definitions_for_preset_minimal() {
+        let tools = get_tool_definitions_for_preset(ToolPreset::Minimal);
+        let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+
+        assert_eq!(tools.len(), 4);
+        assert!(tool_names.contains(&"read_file"));
+        assert!(tool_names.contains(&"edit_file"));
+        assert!(tool_names.contains(&"write_file"));
+        assert!(tool_names.contains(&"run_pty_cmd"));
+    }
+
+    #[test]
+    fn test_get_tool_definitions_for_preset_full() {
+        let full_tools = get_tool_definitions_for_preset(ToolPreset::Full);
+        let standard_tools = get_tool_definitions_for_preset(ToolPreset::Standard);
+
+        // Full should have more tools than standard
+        assert!(full_tools.len() > standard_tools.len());
+    }
+
+    #[test]
+    fn test_tool_config_with_config() {
+        let config = ToolConfig {
+            preset: ToolPreset::Minimal,
+            additional: vec!["grep_file".to_string(), "list_files".to_string()],
+            disabled: vec![],
+        };
+
+        let tools = get_tool_definitions_with_config(&config);
+        let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+
+        // Minimal preset (4) + additional (2) = 6
+        assert_eq!(tools.len(), 6);
+        assert!(tool_names.contains(&"read_file"));
+        assert!(tool_names.contains(&"grep_file"));
+        assert!(tool_names.contains(&"list_files"));
+    }
+
+    #[test]
+    fn test_tool_config_main_agent() {
+        let config = ToolConfig::main_agent();
+
+        // Should be based on Standard preset
+        assert_eq!(config.preset, ToolPreset::Standard);
+
+        // Should have additional tools (but not sub-agents - those are added dynamically)
+        assert!(config.additional.contains(&"execute_code".to_string()));
+        assert!(config.additional.contains(&"apply_patch".to_string()));
+
+        // Verify the tools are actually enabled
+        assert!(config.is_tool_enabled("read_file")); // From Standard
+        assert!(config.is_tool_enabled("grep_file")); // From Standard
+        assert!(config.is_tool_enabled("execute_code")); // From additional
+        assert!(config.is_tool_enabled("apply_patch")); // From additional
+
+        // Verify web tools are enabled (Tavily tools from additional + web_fetch from Standard)
+        assert!(config.is_tool_enabled("web_fetch"));
+        assert!(config.is_tool_enabled("tavily_search")); // From Tavily additional
+        assert!(config.is_tool_enabled("tavily_search_answer")); // From Tavily additional
+        assert!(config.is_tool_enabled("tavily_extract")); // From Tavily additional
+        assert!(config.is_tool_enabled("tavily_crawl")); // From Tavily additional
+        assert!(config.is_tool_enabled("tavily_map")); // From Tavily additional
+                                                       // run_pty_cmd is disabled in favor of run_command wrapper
+        assert!(!config.is_tool_enabled("run_pty_cmd"));
+
+        // Verify non-standard tools are still disabled
+        assert!(!config.is_tool_enabled("save_skill"));
+        assert!(!config.is_tool_enabled("create_pty_session"));
+    }
+
+    #[test]
+    fn test_main_agent_tool_definitions() {
+        let config = ToolConfig::main_agent();
+        let tools = get_tool_definitions_with_config(&config);
+        let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+
+        // Should have Standard preset file operation tools from golish_tools
+        assert!(tool_names.contains(&"grep_file"));
+        assert!(tool_names.contains(&"read_file"));
+        assert!(tool_names.contains(&"edit_file"));
+        assert!(tool_names.contains(&"write_file"));
+        assert!(tool_names.contains(&"list_files"));
+        assert!(tool_names.contains(&"create_file"));
+        assert!(tool_names.contains(&"delete_file"));
+
+        // run_pty_cmd is disabled in main_agent config (replaced by run_command)
+        assert!(!tool_names.contains(&"run_pty_cmd"));
+    }
+
+    #[tokio::test]
+    async fn test_sub_agent_tool_definitions_no_system_prompt_param() {
+        use golish_sub_agents::SubAgentRegistry;
+
+        let mut registry = SubAgentRegistry::new();
+
+        // Register a worker agent (has prompt_template)
+        let worker = golish_sub_agents::SubAgentDefinition::new(
+            "worker",
+            "Worker",
+            "A worker agent",
+            "default prompt",
+        )
+        .with_prompt_template("Generate prompt for: {task}");
+        registry.register(worker);
+
+        // Register a fixed agent (no prompt_template)
+        let fixed = golish_sub_agents::SubAgentDefinition::new(
+            "fixed",
+            "Fixed",
+            "A fixed agent",
+            "fixed prompt",
+        );
+        registry.register(fixed);
+
+        let defs = get_sub_agent_tool_definitions(&registry).await;
+
+        // Neither agent should have a system_prompt parameter —
+        // prompt generation is internal, not exposed as a tool parameter
+        for def in &defs {
+            let props = def.parameters.get("properties").unwrap();
+            assert!(
+                props.get("system_prompt").is_none(),
+                "Agent {} should NOT have system_prompt parameter",
+                def.name
+            );
+            assert!(
+                props.get("task").is_some(),
+                "Agent {} should have task parameter",
+                def.name
+            );
+        }
+    }
+}

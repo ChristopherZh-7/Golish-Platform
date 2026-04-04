@@ -1,5 +1,5 @@
 /**
- * MCP (Model Context Protocol) API for Qbit.
+ * MCP (Model Context Protocol) API for Golish.
  *
  * This module provides typed wrappers for MCP server management commands,
  * enabling the frontend to list servers, view tools, and manage connections.
@@ -35,7 +35,7 @@ export interface McpServerInfo {
   toolCount: number | null;
   /** Error message (if status is "error") */
   error: string | null;
-  /** Source: "user" for ~/.qbit/mcp.json, "project" for <project>/.qbit/mcp.json */
+  /** Source: "user" for ~/.golish/mcp.json, "project" for <project>/.golish/mcp.json */
   source: "user" | "project";
 }
 
@@ -94,8 +94,8 @@ export interface McpEvent {
 /**
  * List all configured MCP servers with their status.
  *
- * Returns servers from both user-global (~/.qbit/mcp.json) and
- * project-specific (<project>/.qbit/mcp.json) configurations.
+ * Returns servers from both user-global (~/.golish/mcp.json) and
+ * project-specific (<project>/.golish/mcp.json) configurations.
  * Live connection status is reported from the global MCP manager.
  *
  * @param workspacePath - Optional workspace path (defaults to current directory)

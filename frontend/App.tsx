@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
 import { logger } from "@/lib/logger";
 import { ActivityBar, type ActivityView } from "./components/ActivityBar/ActivityBar";
@@ -58,25 +59,20 @@ const ComponentTestbed = lazy(() =>
     default: m.ComponentTestbed,
   }))
 );
-const MockDevTools = lazy(() =>
-  import("./components/MockDevTools").then((m) => ({
-    default: m.MockDevTools,
-  }))
-);
 const QuickOpenDialog = lazy(() =>
   import("./components/QuickOpenDialog").then((m) => ({
     default: m.QuickOpenDialog,
   }))
 );
 
-import { MockDevToolsProvider } from "./components/MockDevTools";
 import { useAiEvents } from "./hooks/useAiEvents";
 import { useCreateTerminalTab } from "./hooks/useCreateTerminalTab";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import { TerminalPortalProvider } from "./hooks/useTerminalPortal";
 import { ThemeProvider } from "./hooks/useTheme";
-import { isMockBrowserMode } from "./lib/isMockBrowser";
 import { notify } from "./lib/notify";
+import { updateConfig as updatePentestConfig } from "./lib/pentest/api";
+import { getSettings } from "./lib/settings";
 import { initSystemNotifications, listenForSettingsUpdates } from "./lib/systemNotifications";
 import { shellIntegrationInstall, shellIntegrationStatus } from "./lib/tauri";
 import { clearConversation, restoreSession, useStore } from "./store";
@@ -92,6 +88,7 @@ function App() {
   const setRenderMode = useStore((state) => state.setRenderMode);
   const openSettingsTab = useStore((state) => state.openSettingsTab);
   const openHomeTab = useStore((state) => state.openHomeTab);
+  const openBrowserTab = useStore((state) => state.openBrowserTab);
 
   // Panel state from store (replaces local useState)
   const gitPanelOpen = useStore((state) => state.gitPanelOpen);
@@ -195,6 +192,22 @@ function App() {
     init();
   }, [openHomeTab, createTerminalTab]);
 
+  // Sync frontend network settings (github_token, proxy_url) to backend pentest config on startup.
+  // The backend pentest config is in-memory only, so it resets on every restart.
+  useEffect(() => {
+    getSettings()
+      .then((s) => {
+        const { proxy_url, github_token } = s.network;
+        if (proxy_url || github_token) {
+          updatePentestConfig({
+            proxy_url: proxy_url || "",
+            github_token: github_token || "",
+          }).catch((e) => logger.error("[App] pentest config startup sync failed:", e));
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   // Initialize system notifications and app focus/visibility tracking
   useEffect(() => {
     const { setAppIsFocused, setAppIsVisible } = useStore.getState();
@@ -224,13 +237,19 @@ function App() {
     setAppIsFocused(document.hasFocus());
     setAppIsVisible(document.visibilityState === "visible");
 
+    // Close any stale browser webview on app startup (e.g., after HMR/refresh)
+    invoke("pentest_browser_close").catch(() => {});
+    const handleBrowserCleanup = () => {
+      invoke("pentest_browser_close").catch(() => {});
+    };
+    window.addEventListener("beforeunload", handleBrowserCleanup);
+
     return () => {
-      // Cleanup settings listener
       unlistenSettings();
-      // Cleanup app focus/visibility listeners
       window.removeEventListener("focus", handleFocus);
       window.removeEventListener("blur", handleBlur);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("beforeunload", handleBrowserCleanup);
     };
   }, []);
 
@@ -385,11 +404,6 @@ function App() {
           <Skeleton className="h-20 w-full bg-muted" />
         </div>
 
-        {isMockBrowserMode() && (
-          <Suspense fallback={null}>
-            <MockDevTools />
-          </Suspense>
-        )}
       </div>
     );
   }
@@ -398,12 +412,6 @@ function App() {
     return (
       <div className="flex items-center justify-center h-screen bg-[#1a1b26]">
         <div className="text-[#f7768e] text-lg">Error: {error}</div>
-        {/* Mock Dev Tools - available on error in browser mode */}
-        {isMockBrowserMode() && (
-          <Suspense fallback={null}>
-            <MockDevTools />
-          </Suspense>
-        )}
       </div>
     );
   }
@@ -438,12 +446,6 @@ function App() {
         <Suspense fallback={null}>
           <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
         </Suspense>
-        {/* Mock Dev Tools - available on testbed in browser mode */}
-        {isMockBrowserMode() && (
-          <Suspense fallback={null}>
-            <MockDevTools />
-          </Suspense>
-        )}
       </>
     );
   }
@@ -478,6 +480,7 @@ function App() {
             terminalOpen={bottomTerminalOpen}
             onToggleTerminal={() => setBottomTerminalOpen((v) => !v)}
             onOpenSettings={() => setSettingsOpen(true)}
+            onOpenBrowser={() => openBrowserTab()}
           />
 
           {/* Left panel - only shown for tools/settings views */}
@@ -618,12 +621,6 @@ function App() {
         </Suspense>
 
         <SidecarNotifications />
-
-        {isMockBrowserMode() && (
-          <Suspense fallback={null}>
-            <MockDevTools />
-          </Suspense>
-        )}
       </div>
     </TerminalPortalProvider>
   );
@@ -631,15 +628,10 @@ function App() {
 
 function AppWithTheme() {
   const content = (
-    <ThemeProvider defaultThemeId="qbit">
+    <ThemeProvider defaultThemeId="golish">
       <App />
     </ThemeProvider>
   );
-
-  // Wrap with MockDevToolsProvider only in browser mode
-  if (isMockBrowserMode()) {
-    return <MockDevToolsProvider>{content}</MockDevToolsProvider>;
-  }
 
   return content;
 }

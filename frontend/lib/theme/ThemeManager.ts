@@ -4,7 +4,7 @@ import { getThemeAssetPath } from "../themes";
 // Import builtin theme assets directly (use ?url to get the asset path)
 import obsidianEmberBg from "./builtin/obsidian-ember/assets/background.jpeg?url";
 import { ThemeRegistry } from "./registry";
-import type { QbitTheme } from "./types";
+import type { GolishTheme } from "./types";
 
 // Import builtin theme assets
 const builtinAssets: Record<string, Record<string, string>> = {
@@ -13,10 +13,10 @@ const builtinAssets: Record<string, Record<string, string>> = {
   },
 };
 
-type ThemeListeners = Array<(t: QbitTheme | null) => void>;
+type ThemeListeners = Array<(t: GolishTheme | null) => void>;
 
 class ThemeManagerImpl {
-  private currentTheme: QbitTheme | null = null;
+  private currentTheme: GolishTheme | null = null;
   private currentThemeId: string | null = null;
   private listeners: ThemeListeners = [];
   private styleElement: HTMLStyleElement | null = null;
@@ -32,7 +32,7 @@ class ThemeManagerImpl {
     return this.currentThemeId;
   }
 
-  onChange(listener: (t: QbitTheme | null) => void) {
+  onChange(listener: (t: GolishTheme | null) => void) {
     this.listeners.push(listener);
     return () => {
       this.listeners = this.listeners.filter((l) => l !== listener);
@@ -57,7 +57,7 @@ class ThemeManagerImpl {
 
     if (persist && !this.isPreviewMode) {
       try {
-        localStorage.setItem("qbit.currentThemeId", themeId);
+        localStorage.setItem("golish.currentThemeId", themeId);
       } catch (e) {
         logger.warn("Failed to persist theme ID:", e);
       }
@@ -84,7 +84,7 @@ class ThemeManagerImpl {
   commitPreview(): void {
     if (this.isPreviewMode && this.currentThemeId) {
       try {
-        localStorage.setItem("qbit.currentThemeId", this.currentThemeId);
+        localStorage.setItem("golish.currentThemeId", this.currentThemeId);
       } catch (e) {
         logger.warn("Failed to persist theme ID:", e);
       }
@@ -118,7 +118,7 @@ class ThemeManagerImpl {
   /**
    * Load and apply a custom theme object (for user uploads)
    */
-  async loadThemeFromObject(theme: QbitTheme, assets?: Array<[string, Uint8Array]>): Promise<void> {
+  async loadThemeFromObject(theme: GolishTheme, assets?: Array<[string, Uint8Array]>): Promise<void> {
     // Generate a safe theme ID from the theme name
     const customId = theme.name.toLowerCase().replace(/[^a-z0-9-]/g, "-");
 
@@ -134,7 +134,7 @@ class ThemeManagerImpl {
    */
   async tryLoadPersistedTheme(): Promise<boolean> {
     try {
-      const themeId = localStorage.getItem("qbit.currentThemeId");
+      const themeId = localStorage.getItem("golish.currentThemeId");
       if (!themeId) return false;
 
       // Check if theme exists in registry
@@ -143,9 +143,9 @@ class ThemeManagerImpl {
       }
 
       // Fallback: try loading from old format
-      const raw = localStorage.getItem("qbit.theme");
+      const raw = localStorage.getItem("golish.theme");
       if (raw) {
-        const obj = JSON.parse(raw) as QbitTheme;
+        const obj = JSON.parse(raw) as GolishTheme;
         await this.loadThemeFromObject(obj);
         return true;
       }
@@ -211,7 +211,7 @@ class ThemeManagerImpl {
   /**
    * Inject theme styles using a style element for better performance
    */
-  private async injectThemeStyles(theme: QbitTheme): Promise<void> {
+  private async injectThemeStyles(theme: GolishTheme): Promise<void> {
     const root = document.documentElement;
 
     // Set theme name as data attribute for CSS targeting
@@ -224,7 +224,7 @@ class ThemeManagerImpl {
 
     // Create new style element
     this.styleElement = document.createElement("style");
-    this.styleElement.id = "qbit-theme-vars";
+    this.styleElement.id = "golish-theme-vars";
 
     // Build CSS variable declarations
     const cssVars: string[] = [];

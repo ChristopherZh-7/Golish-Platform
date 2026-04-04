@@ -27,7 +27,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 # JSON repair for malformed LLM output
-qbit-json-repair = { path = "../qbit-json-repair" }
+golish-json-repair = { path = "../golish-json-repair" }
 
 # Regex for parsing pseudo-XML tool calls
 regex.workspace = true

@@ -213,8 +213,8 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
       {/* Config location info */}
       <div className="text-xs text-muted-foreground bg-[var(--bg-secondary)] rounded-md px-3 py-2 border border-[var(--border-subtle)]">
         <p>
-          Configure servers in <code className="text-accent">~/.qbit/mcp.json</code> (global) or{" "}
-          <code className="text-accent">&lt;project&gt;/.qbit/mcp.json</code> (project-specific).
+          Configure servers in <code className="text-accent">~/.golish/mcp.json</code> (global) or{" "}
+          <code className="text-accent">&lt;project&gt;/.golish/mcp.json</code> (project-specific).
         </p>
       </div>
 
@@ -224,7 +224,7 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
           <Server className="w-8 h-8 mx-auto mb-3 opacity-50" />
           <p>No MCP servers configured.</p>
           <p className="mt-1 text-xs">
-            Create <code>~/.qbit/mcp.json</code> to add servers.
+            Create <code>~/.golish/mcp.json</code> to add servers.
           </p>
         </div>
       ) : (
