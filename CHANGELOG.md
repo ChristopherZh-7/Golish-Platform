@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.44](https://github.com/ChristopherZh-7/Golish-Platform/compare/v0.2.43...v0.2.44) (2026-04-04)
+
+
+### Features
+
+* add NVIDIA NIM support, proxy settings, and Windows build ([b334a56](https://github.com/ChristopherZh-7/Golish-Platform/commit/b334a56767f831e6fe07e340893cdfa9f699c462))
+* port Golish backend to Rust (golish-pentest crate) ([6ff936c](https://github.com/ChristopherZh-7/Golish-Platform/commit/6ff936c13c4eff1b64cb6a73a70ba5391ac2c786))
+* rebrand to Golish Platform with IDE-style pentest UI ([6b44a4b](https://github.com/ChristopherZh-7/Golish-Platform/commit/6b44a4b1946e459cab06f8a517b1611e262bc6b9))
+
+
+### Performance
+
+* eliminate unnecessary clones in token truncation and summarizer ([b34896e](https://github.com/ChristopherZh-7/Golish-Platform/commit/b34896e6907f26ea78aa5e1cc84570a098b1ffeb))
+* optimize agent loop hot path to reduce allocations ([2d759d7](https://github.com/ChristopherZh-7/Golish-Platform/commit/2d759d70f62bbf5f199c94b7cb9e19d7e7aa79a6))
+
 ## [0.2.43](https://github.com/qbit-ai/qbit/compare/v0.2.42...v0.2.43) (2026-03-13)
 
 
