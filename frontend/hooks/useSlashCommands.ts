@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { logger } from "@/lib/logger";
 import { listPrompts, listSkills, type PromptInfo, type SkillInfo } from "@/lib/tauri";
 
-export type SlashCommandType = "prompt" | "skill";
+export type SlashCommandType = "prompt" | "skill" | "builtin";
 
 export interface SlashCommand {
   name: string;
@@ -61,6 +61,15 @@ export function useSlashCommands(workingDirectory?: string) {
           type: "prompt",
         });
       }
+
+      // Add built-in commands
+      commandMap.set("t", {
+        name: "t",
+        path: "",
+        source: "global",
+        type: "builtin",
+        description: "搜索并启动渗透工具",
+      });
 
       // Convert to sorted array
       const mergedCommands = Array.from(commandMap.values()).sort((a, b) =>

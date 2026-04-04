@@ -1,5 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { liveTerminalManager } from "@/lib/terminal";
+import { ptyWrite } from "@/lib/tauri";
 import "@xterm/xterm/css/xterm.css";
 import "@/styles/xterm-overrides.css";
 
@@ -7,59 +8,84 @@ interface LiveTerminalBlockProps {
   sessionId: string;
   /** The command being executed (captured from OSC 133;C) */
   command: string | null;
+  /** When true, terminal accepts keyboard input forwarded to the PTY */
+  interactive?: boolean;
 }
 
-/**
- * Static style object for code elements.
- * Extracted to module level to prevent object recreation on every render,
- * which would cause unnecessary re-renders of child components.
- */
 export const CODE_STYLE = {
   fontSize: "12px",
   lineHeight: 1.4,
   fontFamily: "JetBrains Mono, Menlo, Monaco, Consolas, monospace",
 } as const;
 
-export function LiveTerminalBlock({ sessionId, command }: LiveTerminalBlockProps) {
+export function LiveTerminalBlock({ sessionId, command, interactive }: LiveTerminalBlockProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+
+  const handleData = useCallback(
+    (data: string) => {
+      ptyWrite(sessionId, data).catch(() => {});
+    },
+    [sessionId]
+  );
 
   useEffect(() => {
     if (!containerRef.current) {
       return;
     }
 
-    // Get or create the terminal for this session
+    const container = containerRef.current;
+
     liveTerminalManager.getOrCreate(sessionId);
+    liveTerminalManager.attachToContainer(sessionId, container);
 
-    // Attach to this container
-    liveTerminalManager.attachToContainer(sessionId, containerRef.current);
+    const resizeObserver = new ResizeObserver(() => {
+      liveTerminalManager.fit(sessionId);
+    });
+    resizeObserver.observe(container);
 
-    // Keep xterm mounted in an offscreen parking lot across React unmount/remount.
-    // Final disposal still happens in useTauriEvents via serializeAndDispose().
     return () => {
+      resizeObserver.disconnect();
       liveTerminalManager.detach(sessionId);
     };
   }, [sessionId]);
 
+  // Toggle interactive mode based on prop
+  useEffect(() => {
+    if (interactive) {
+      liveTerminalManager.enableInput(sessionId, handleData);
+    } else {
+      liveTerminalManager.disableInput(sessionId);
+    }
+    return () => {
+      liveTerminalManager.disableInput(sessionId);
+    };
+  }, [sessionId, interactive, handleData]);
+
+  // Auto-focus when interactive
+  useEffect(() => {
+    if (interactive) {
+      liveTerminalManager.focus(sessionId);
+    }
+  }, [sessionId, interactive]);
+
   return (
-    <div className="w-full">
-      {/* Command header - matches CommandBlock style */}
+    <div className="w-full flex-1 flex flex-col min-h-0">
+      {/* Command header */}
       {command && (
-        <div className="flex items-center gap-2 px-5 py-3 w-full">
+        <div className="flex items-center gap-2 px-5 py-3 w-full shrink-0">
           <code className="flex-1 truncate text-[var(--ansi-white)]" style={CODE_STYLE}>
             <span className="text-[var(--ansi-green)]">$ </span>
             {command}
           </code>
-          {/* Pulsing indicator to show command is running */}
           <span className="w-2 h-2 bg-[#7aa2f7] rounded-full animate-pulse flex-shrink-0" />
         </div>
       )}
 
-      {/* Terminal container - shows only command output */}
-      <div className="px-5 pb-4">
+      {/* Terminal container - grows to fill available space when interactive */}
+      <div className={`px-5 pb-4 w-full ${interactive ? "flex-1 min-h-0" : ""}`}>
         <div
           ref={containerRef}
-          className="h-96 overflow-hidden [&_.xterm-viewport]:!overflow-y-auto"
+          className={`w-full overflow-hidden [&_.xterm-viewport]:!overflow-y-auto ${interactive ? "h-full" : "h-96"}`}
         />
       </div>
     </div>

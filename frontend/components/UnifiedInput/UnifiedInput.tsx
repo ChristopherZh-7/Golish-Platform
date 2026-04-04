@@ -7,6 +7,7 @@ import { HistorySearchPopup } from "@/components/HistorySearchPopup";
 import { InlineTaskPlan } from "@/components/InlineTaskPlan";
 import { PathCompletionPopup } from "@/components/PathCompletionPopup";
 import { filterCommands, SlashCommandPopup } from "@/components/SlashCommandPopup";
+import { ToolSearchPopup } from "@/components/ToolSearchPopup/ToolSearchPopup";
 import { useCommandHistory } from "@/hooks/useCommandHistory";
 import { useFileCommands } from "@/hooks/useFileCommands";
 import { type HistoryMatch, useHistorySearch } from "@/hooks/useHistorySearch";
@@ -31,8 +32,21 @@ import {
   readPrompt,
   readSkillBody,
 } from "@/lib/tauri";
+import { useToolSearch } from "@/hooks/useToolSearch";
+import type { ToolConfig } from "@/lib/pentest/types";
+
+interface ToolParam {
+  label: string;
+  flag: string;
+  type: string;
+  required?: boolean;
+  placeholder?: string;
+  default?: string | number | boolean;
+  options?: { value: string; label: string }[];
+  description?: string;
+}
 import { cn } from "@/lib/utils";
-import { useAgentMessages, useSessionAiConfig, useStore } from "@/store";
+import { useAgentMessages, usePendingCommand, useSessionAiConfig, useStore } from "@/store";
 import { useUnifiedInputState } from "@/store/selectors/unified-input";
 import { selectDisplaySettings } from "@/store/slices";
 import { BlockCaret } from "./BlockCaret";
@@ -99,7 +113,7 @@ const GhostTextHint = memo(function GhostTextHint({
 
   return (
     <span
-      className="absolute pointer-events-none font-mono text-[13px] text-muted-foreground/50 leading-relaxed whitespace-pre"
+      className="absolute pointer-events-none font-mono text-[13px] text-muted-foreground/50 leading-[26px] whitespace-pre"
       style={style}
       aria-hidden="true"
     >
@@ -126,6 +140,10 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
   const [originalInput, setOriginalInput] = useState("");
   const [imageAttachments, setImageAttachments] = useState<ImagePart[]>([]);
   const [visionCapabilities, setVisionCapabilities] = useState<VisionCapabilities | null>(null);
+  const [showToolPopup, setShowToolPopup] = useState(false);
+  const [toolSelectedIndex, setToolSelectedIndex] = useState(0);
+  const [activeTool, setActiveTool] = useState<ToolConfig | null>(null);
+  const [toolParams, setToolParams] = useState<ToolParam[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
   const [dragError, setDragError] = useState<string | null>(null);
   const [isFocused, setIsFocused] = useState(false);
@@ -140,6 +158,8 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
   // Combined selector for optimized state access (reduces ~12 subscriptions to 1)
   const { inputMode, isAgentResponding, isCompacting, isSessionDead, streamingBlocksLength } =
     useUnifiedInputState(sessionId);
+  const pendingCommand = usePendingCommand(sessionId);
+  const isProcessRunning = !!pendingCommand;
   const hideAiItems = display.hideAiSettingsInShellMode && inputMode === "terminal";
 
   const showStatusRow =
@@ -210,6 +230,12 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
   const fileQuery = atMatch?.[1] ?? "";
   const { files } = useFileCommands(workingDirectory, fileQuery);
 
+  // Tool search - active when typing in terminal mode without slash/at triggers
+  const isToolSearchMode = inputMode === "terminal" && /^\/t\s/i.test(input);
+  const toolSearchQuery = isToolSearchMode ? input.replace(/^\/t\s+/i, "") : "";
+  const toolSearchEnabled = isToolSearchMode && toolSearchQuery.length > 0 && !activeTool;
+  const { matches: toolMatches } = useToolSearch(toolSearchQuery, toolSearchEnabled);
+
   // Path completions (Tab in terminal mode)
   const { completions: pathCompletions, totalCount: pathTotalCount } = usePathCompletion({
     sessionId,
@@ -279,6 +305,10 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
     historySelectedIndex: 0,
     originalInput: "",
     commands: [] as SlashCommand[],
+    showToolPopup: false,
+    toolMatches: [] as ToolConfig[],
+    toolSelectedIndex: 0,
+    activeTool: null as ToolConfig | null,
   });
 
   // Update ref properties directly in render (no object allocation)
@@ -305,6 +335,10 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
   ref.historySelectedIndex = historySelectedIndex;
   ref.originalInput = originalInput;
   ref.commands = commands;
+  ref.showToolPopup = showToolPopup;
+  ref.toolMatches = toolMatches;
+  ref.toolSelectedIndex = toolSelectedIndex;
+  ref.activeTool = activeTool;
 
   // Supported image MIME types for drag-and-drop and paste
   const SUPPORTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"];
@@ -418,12 +452,24 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
   useEffect(() => {
     void sessionId;
     void inputMode;
+    if (isProcessRunning) return;
     const handle = requestAnimationFrame(() => {
       textareaRef.current?.focus();
     });
 
     return () => cancelAnimationFrame(handle);
-  }, [sessionId, inputMode]);
+  }, [sessionId, inputMode, isProcessRunning]);
+
+  // Blur textarea when a command is running (input bar is hidden,
+  // focus should go to the interactive LiveTerminalBlock).
+  // Re-focus when the command finishes.
+  useEffect(() => {
+    if (isProcessRunning) {
+      textareaRef.current?.blur();
+    } else {
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    }
+  }, [isProcessRunning]);
 
   // Adjust height when input changes
   // biome-ignore lint/correctness/useExhaustiveDependencies: input triggers re-measurement of textarea scrollHeight
@@ -683,7 +729,10 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
     }
 
     if (effectiveMode === "terminal") {
-      // Terminal mode: send to PTY
+      // /t prefix is tool search — don't send to terminal
+      if (/^\/t(\s|$)/i.test(value)) {
+        return;
+      }
 
       // Handle clear command - clear timeline and command blocks
       if (value === "clear") {
@@ -692,17 +741,33 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
         return;
       }
 
-      // Add to history
-      addToHistory(value);
+      // If in tool mode, construct the full command with cd and runtime prefix
+      const ctx = toolContextRef.current;
+      const currentActiveTool = stateRef.current.activeTool;
+      let fullCmd = value;
+      let historyEntry = value;
+      if (ctx.baseCmd && currentActiveTool) {
+        const args = value.trim();
+        const toolCmd = args ? `${ctx.baseCmd} ${args}` : ctx.baseCmd;
+        fullCmd = ctx.cdPrefix ? `${ctx.cdPrefix}${toolCmd}` : toolCmd;
+        historyEntry = toolCmd;
+        // Save to tool history for badge restoration on recall
+        toolHistoryRef.current.set(historyEntry, {
+          tool: currentActiveTool,
+          cdPrefix: ctx.cdPrefix,
+          baseCmd: ctx.baseCmd,
+        });
+        clearToolMode();
+      }
 
-      // Note: Fullterm mode switching is now handled automatically via
-      // alternate_screen events from the PTY parser detecting ANSI sequences
+      // Add the user-facing command to history (not just raw args)
+      addToHistory(historyEntry);
 
-      // Store command before sending (for bash integration which may not include command in OSC 133)
-      setLastSentCommand(sessionId, value);
+      // Store command before sending
+      setLastSentCommand(sessionId, historyEntry);
 
       // Send command + newline to PTY
-      await ptyWrite(sessionId, `${value}\n`);
+      await ptyWrite(sessionId, `${fullCmd}\n`);
     } else {
       // Agent mode: send to AI
 
@@ -763,6 +828,14 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
   // Handle slash command selection (prompts and skills)
   const handleSlashSelect = useCallback(
     async (command: SlashCommand, args?: string) => {
+      // Built-in /t command: enter tool search mode
+      if (command.type === "builtin" && command.name === "t") {
+        setShowSlashPopup(false);
+        setInput("/t ");
+        requestAnimationFrame(() => textareaRef.current?.focus());
+        return;
+      }
+
       setShowSlashPopup(false);
       setInput("");
 
@@ -873,6 +946,92 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
     textareaRef.current?.focus();
   }, []);
 
+  // Stores the tool context for transparent directory change on submit
+  const toolContextRef = useRef<{ cdPrefix: string; baseCmd: string }>({ cdPrefix: "", baseCmd: "" });
+
+  const clearToolMode = useCallback(() => {
+    setActiveTool(null);
+    setToolParams([]);
+    toolContextRef.current = { cdPrefix: "", baseCmd: "" };
+  }, []);
+  // Maps history commands to their tool context for badge restoration on recall
+  const toolHistoryRef = useRef<Map<string, { tool: ToolConfig; cdPrefix: string; baseCmd: string }>>(new Map());
+
+  // Handle tool selection from tool search popup — enters "tool launch mode"
+  const handleToolSelect = useCallback(
+    async (tool: ToolConfig) => {
+      setShowToolPopup(false);
+      setToolSelectedIndex(0);
+
+      if (!tool.installed) {
+        setInput("");
+        notify.warning(`${tool.name} 未安装，请先在工具管理中安装`);
+        return;
+      }
+
+      // Build command context
+      const { getConfig } = await import("@/lib/pentest/api");
+      let toolsDir = "";
+      try {
+        const cfg = await getConfig();
+        toolsDir = cfg.tools_dir;
+      } catch { /* use empty */ }
+
+      const runtimePrefix: Record<string, string> = {
+        python: "python3",
+        java: "java -jar",
+        node: "node",
+      };
+      const prefix = runtimePrefix[tool.runtime] || "";
+      const exeFile = tool.executable.split("/").pop() || tool.executable;
+      const runCmd = prefix ? `${prefix} ${exeFile}` : `./${exeFile}`;
+
+      if (toolsDir) {
+        const toolSubDir = tool.executable.includes("/")
+          ? tool.executable.split("/").slice(0, -1).join("/")
+          : tool.name.toLowerCase();
+        toolContextRef.current = {
+          cdPrefix: `cd "${toolsDir}/${toolSubDir}" && `,
+          baseCmd: runCmd,
+        };
+      } else {
+        toolContextRef.current = { cdPrefix: "", baseCmd: runCmd };
+      }
+
+      // Load tool params from raw config — try name-based filename first, then id-based
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        let rawJson = "";
+        try {
+          rawJson = await invoke<string>("pentest_read_tool_config", {
+            category: tool.category,
+            subcategory: tool.subcategory,
+            toolId: tool.name.toLowerCase(),
+          });
+        } catch {
+          rawJson = await invoke<string>("pentest_read_tool_config", {
+            category: tool.category,
+            subcategory: tool.subcategory,
+            toolId: tool.id,
+          });
+        }
+        const parsed = JSON.parse(rawJson);
+        setToolParams(parsed?.tool?.params || []);
+      } catch {
+        setToolParams([]);
+      }
+
+      // Enter tool mode — clear input for parameter entry
+      setActiveTool(tool);
+      setInput("");
+
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+      });
+    },
+    []
+  );
+
   // Stable handleKeyDown callback - reads current values from stateRef
   // This prevents recreation on every keystroke (when input changes)
   const handleKeyDown = useCallback(
@@ -896,7 +1055,80 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
         historySelectedIndex,
         originalInput,
         commands,
+        showToolPopup,
+        toolMatches,
+        toolSelectedIndex,
       } = stateRef.current;
+
+      // Force-clear stale pendingCommand state on Escape
+      if (e.key === "Escape" && isProcessRunning && !stateRef.current.activeTool && !showToolPopup && !showHistorySearch) {
+        e.preventDefault();
+        useStore.getState().handlePromptStart(sessionId);
+        return;
+      }
+
+      // Exit /t tool search mode on Escape or Backspace on empty query
+      if (isToolSearchMode && !stateRef.current.activeTool) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setInput("");
+          setShowToolPopup(false);
+          return;
+        }
+        if (e.key === "Backspace" && toolSearchQuery === "") {
+          e.preventDefault();
+          setInput("");
+          setShowToolPopup(false);
+          return;
+        }
+      }
+
+      // Exit tool mode on Escape, or Backspace on empty input
+      if (stateRef.current.activeTool) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          clearToolMode();
+          setInput("");
+          if (isProcessRunning) {
+            useStore.getState().handlePromptStart(sessionId);
+          }
+          return;
+        }
+        if (e.key === "Backspace" && input === "") {
+          e.preventDefault();
+          clearToolMode();
+          return;
+        }
+      }
+
+      // Tool search popup keyboard navigation
+      if (showToolPopup && toolMatches.length > 0) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setShowToolPopup(false);
+          return;
+        }
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setToolSelectedIndex((prev) => (prev + 1) % toolMatches.length);
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setToolSelectedIndex((prev) => (prev - 1 + toolMatches.length) % toolMatches.length);
+          return;
+        }
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          handleToolSelect(toolMatches[toolSelectedIndex]);
+          return;
+        }
+        if (e.key === "Tab") {
+          e.preventDefault();
+          handleToolSelect(toolMatches[toolSelectedIndex]);
+          return;
+        }
+      }
 
       // History search mode keyboard navigation
       if (showHistorySearch) {
@@ -1124,6 +1356,7 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
         return;
       }
 
+
       // Handle Enter for slash commands with args (popup closed due to exact match + space)
       if (e.key === "Enter" && !e.shiftKey && input.startsWith("/")) {
         const afterSlash = input.slice(1);
@@ -1153,7 +1386,20 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
           e.preventDefault();
           const cmd = navigateUp();
           if (cmd !== null) {
-            setInput(cmd);
+            // Check if this command was a tool command — restore badge if so
+            const toolCtx = toolHistoryRef.current.get(cmd);
+            if (toolCtx) {
+              setActiveTool(toolCtx.tool);
+              toolContextRef.current = { cdPrefix: toolCtx.cdPrefix, baseCmd: toolCtx.baseCmd };
+              // Show only the arguments portion (strip the base command prefix)
+              const argsOnly = cmd.startsWith(toolCtx.baseCmd)
+                ? cmd.slice(toolCtx.baseCmd.length).trimStart()
+                : cmd;
+              setInput(argsOnly);
+            } else {
+              clearToolMode();
+              setInput(cmd);
+            }
           }
         }
         // Otherwise, let default behavior move cursor up
@@ -1164,7 +1410,19 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
         const cursorPos = textareaRef.current?.selectionStart ?? input.length;
         if (isCursorOnLastLine(input, cursorPos)) {
           e.preventDefault();
-          setInput(navigateDown());
+          const recalled = navigateDown();
+          const toolCtx = toolHistoryRef.current.get(recalled);
+          if (toolCtx && recalled) {
+            setActiveTool(toolCtx.tool);
+            toolContextRef.current = { cdPrefix: toolCtx.cdPrefix, baseCmd: toolCtx.baseCmd };
+            const argsOnly = recalled.startsWith(toolCtx.baseCmd)
+              ? recalled.slice(toolCtx.baseCmd.length).trimStart()
+              : recalled;
+            setInput(argsOnly);
+          } else {
+            clearToolMode();
+            setInput(recalled);
+          }
         }
         // Otherwise, let default behavior move cursor down
         return;
@@ -1196,6 +1454,14 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
           e.preventDefault();
           await ptyWrite(sessionId, "\x03");
           setInput("");
+          clearToolMode();
+          // Fallback: clear pendingCommand if shell integration events don't fire
+          setTimeout(() => {
+            const store = useStore.getState();
+            if (store.pendingCommand[sessionId]) {
+              store.handlePromptStart(sessionId);
+            }
+          }, 500);
           return;
         }
 
@@ -1225,6 +1491,8 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
       handlePathSelect,
       handlePathSelectFinal,
       handleHistorySelect,
+      handleToolSelect,
+      clearToolMode,
     ]
   );
 
@@ -1258,6 +1526,68 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
         {/* Path badge row - minimal Warp-style */}
         <ContextBar sessionId={sessionId} isAgentBusy={isAgentBusy} />
 
+        {/* Tool params hint panel — shown when in tool mode */}
+        {activeTool && toolParams.length > 0 && (
+          <div className="px-3 py-1.5 border-b border-[var(--border-subtle)] flex flex-wrap gap-1">
+            {toolParams.map((p) => {
+              const escapedFlag = p.flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              const alreadyUsed = new RegExp(`(^|\\s)${escapedFlag}(\\s|$)`).test(input);
+              return (
+                <button
+                  key={p.flag}
+                  type="button"
+                  className={cn(
+                    "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] transition-colors cursor-pointer",
+                    alreadyUsed
+                      ? "bg-accent/20 text-accent border border-accent/30 hover:bg-destructive/20 hover:text-destructive hover:border-destructive/30"
+                      : p.required
+                        ? "bg-accent/15 text-accent border border-accent/30 hover:bg-accent/25"
+                        : "bg-muted/40 text-muted-foreground hover:bg-muted/60",
+                  )}
+                  onClick={() => {
+                    const ta = textareaRef.current;
+                    if (!ta) return;
+
+                    if (alreadyUsed) {
+                      // Remove: strip the flag and its value from the input
+                      let newInput = input;
+                      if (p.type === "boolean") {
+                        newInput = newInput.replace(new RegExp(`\\s*${p.flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`), "");
+                      } else {
+                        newInput = newInput.replace(new RegExp(`\\s*${p.flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+\\S*`), "");
+                      }
+                      setInput(newInput.trim());
+                      requestAnimationFrame(() => { ta.focus(); });
+                      return;
+                    }
+
+                    // Insert just the flag (+ space for non-boolean types)
+                    const insert = p.type === "boolean" ? p.flag : `${p.flag} `;
+                    const pos = ta.selectionStart ?? input.length;
+                    const before = input.slice(0, pos);
+                    const after = input.slice(pos);
+                    const spaceBefore = before.length > 0 && !before.endsWith(" ") ? " " : "";
+                    const spaceAfter = after.length > 0 && !after.startsWith(" ") ? " " : "";
+                    const newInput = `${before}${spaceBefore}${insert}${spaceAfter}${after}`;
+                    setInput(newInput);
+                    requestAnimationFrame(() => {
+                      const newPos = (before + spaceBefore + insert).length;
+                      ta.focus();
+                      ta.setSelectionRange(newPos, newPos);
+                    });
+                  }}
+                  title={p.description || p.label}
+                >
+                  <span className="font-mono font-medium">{p.flag}</span>
+                  <span className="opacity-70">{p.label}</span>
+                  {p.required && !alreadyUsed && <span className="text-accent">*</span>}
+                  {alreadyUsed && <span className="opacity-50">✓</span>}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         {/* Input row with container */}
         <div className="px-3 py-2 border-y border-[var(--border-subtle)]">
           <div
@@ -1270,14 +1600,55 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
               isDragOver && dragError && ["bg-destructive/10"]
             )}
           >
+            {/* Tool search mode badge (/t) */}
+            {isToolSearchMode && !activeTool && (
+              <div className="flex items-center gap-1 h-[26px] px-2 rounded-md bg-orange-500/15 border border-orange-500/30 shrink-0 self-center">
+                <span className="text-[12px] font-medium text-orange-400 leading-none">工具搜索</span>
+                <button
+                  type="button"
+                  className="w-3.5 h-3.5 flex items-center justify-center rounded-full hover:bg-orange-500/20 text-orange-400/60 hover:text-orange-400 transition-colors"
+                  onClick={() => setInput("")}
+                >
+                  <span className="text-[10px] leading-none">×</span>
+                </button>
+              </div>
+            )}
+
+            {/* Tool launch mode badge */}
+            {activeTool && (
+              <div className="flex items-center gap-1.5 h-[26px] px-2 rounded-md bg-accent/15 border border-accent/30 shrink-0 self-center">
+                <div className="w-4 h-4 rounded bg-accent/20 flex items-center justify-center">
+                  <span className="text-[9px] font-bold text-accent">
+                    {activeTool.runtime === "python" ? "Py" : activeTool.runtime === "java" ? "Jv" : activeTool.runtime === "node" ? "Js" : "⌘"}
+                  </span>
+                </div>
+                <span className="text-[13px] font-medium text-accent leading-none">{activeTool.name}</span>
+                <button
+                  type="button"
+                  className="w-3.5 h-3.5 flex items-center justify-center rounded-full hover:bg-accent/20 text-accent/60 hover:text-accent transition-colors"
+                  onClick={() => {
+                    clearToolMode();
+                    setInput("");
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            )}
             <div ref={inputContainerRef} className="relative flex-1 min-w-0">
               <textarea
                 ref={textareaRef}
                 data-testid="unified-input"
                 data-mode={inputMode}
-                value={showHistorySearch ? "" : input}
+                value={showHistorySearch ? "" : isToolSearchMode ? toolSearchQuery : input}
                 onChange={(e) => {
-                  const value = e.target.value;
+                  let value = e.target.value;
+
+                  // When badge is visible, user types query only — prepend /t prefix
+                  if (isToolSearchMode && !value.toLowerCase().startsWith("/t")) {
+                    value = `/t ${value}`;
+                  }
+
                   setInput(value);
                   resetHistory();
 
@@ -1296,32 +1667,47 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
                     }
                   }
 
-                  // Show slash popup when "/" is typed at the start
-                  if (value.startsWith("/") && value.length >= 1) {
-                    const afterSlash = value.slice(1);
-                    const spaceIdx = afterSlash.indexOf(" ");
-                    const commandPart =
-                      spaceIdx === -1 ? afterSlash : afterSlash.slice(0, spaceIdx);
-                    const exactMatch = commands.some((c) => c.name === commandPart);
+                  // /t prefix — tool search mode
+                  const isToolInput = /^\/t\s/i.test(value);
+                  if (isToolInput && inputMode === "terminal" && !activeTool) {
+                    const query = value.replace(/^\/t\s+/i, "");
+                    if (query.length > 0) {
+                      setShowToolPopup(true);
+                      setToolSelectedIndex(0);
+                    } else {
+                      setShowToolPopup(false);
+                    }
+                    setShowSlashPopup(false);
+                    setShowFilePopup(false);
+                  } else {
+                    setShowToolPopup(false);
 
-                    // Close popup after space when there's an exact command match
-                    if (spaceIdx === -1 || !exactMatch) {
-                      setShowSlashPopup(true);
-                      setSlashSelectedIndex(0);
+                    // Show slash popup when "/" is typed at the start
+                    if (value.startsWith("/") && value.length >= 1) {
+                      const afterSlash = value.slice(1);
+                      const spaceIdx = afterSlash.indexOf(" ");
+                      const commandPart =
+                        spaceIdx === -1 ? afterSlash : afterSlash.slice(0, spaceIdx);
+                      const exactMatch = commands.some((c) => c.name === commandPart);
+
+                      if (spaceIdx === -1 || !exactMatch) {
+                        setShowSlashPopup(true);
+                        setSlashSelectedIndex(0);
+                      } else {
+                        setShowSlashPopup(false);
+                      }
+                      setShowFilePopup(false);
                     } else {
                       setShowSlashPopup(false);
                     }
-                    setShowFilePopup(false);
-                  } else {
-                    setShowSlashPopup(false);
-                  }
 
-                  // Show file popup when "@" is typed (agent mode only)
-                  if (inputMode !== "terminal" && /@[^\s@]*$/.test(value)) {
-                    setShowFilePopup(true);
-                    setFileSelectedIndex(0);
-                  } else {
-                    setShowFilePopup(false);
+                    // Show file popup when "@" is typed (agent mode only)
+                    if (inputMode !== "terminal" && /@[^\s@]*$/.test(value)) {
+                      setShowFilePopup(true);
+                      setFileSelectedIndex(0);
+                    } else {
+                      setShowFilePopup(false);
+                    }
                   }
                 }}
                 onKeyDown={handleKeyDown}
@@ -1334,13 +1720,22 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
                       ? "Session limit exceeded. Please start a new session."
                       : isCompacting
                         ? "Compacting conversation..."
-                        : "输入命令..."
+                        : activeTool
+                          ? (() => {
+                              const req = toolParams.find((p) => p.required);
+                              return req
+                                ? `${req.flag} ${req.placeholder || req.label}...`
+                                : "输入参数... 点击上方标签快速添加";
+                            })()
+                          : isToolSearchMode
+                            ? "搜索工具名称..."
+                            : "输入命令..."
                 }
                 rows={1}
                 className={cn(
-                  "w-full max-h-[200px] py-0",
+                  "w-full max-h-[200px] py-0 min-h-[26px]",
                   "bg-transparent border-none shadow-none resize-none",
-                  "font-mono text-[13px] text-foreground leading-relaxed",
+                  "font-mono text-[13px] text-foreground leading-[26px] align-middle",
                   "focus:outline-none focus:ring-0",
                   "disabled:opacity-50 disabled:cursor-not-allowed",
                   "placeholder:text-muted-foreground"
@@ -1397,6 +1792,14 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
                 files={files}
                 selectedIndex={fileSelectedIndex}
                 onSelect={handleFileSelect}
+                containerRef={inputContainerRef}
+              />
+              <ToolSearchPopup
+                open={showToolPopup && toolMatches.length > 0}
+                onOpenChange={setShowToolPopup}
+                tools={toolMatches}
+                selectedIndex={toolSelectedIndex}
+                onSelect={handleToolSelect}
                 containerRef={inputContainerRef}
               />
             </div>

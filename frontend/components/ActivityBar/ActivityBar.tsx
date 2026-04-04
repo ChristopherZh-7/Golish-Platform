@@ -5,6 +5,7 @@ import {
   FolderTree,
   Database,
   BookOpen,
+  Wrench,
   Settings,
   Terminal,
   type LucideIcon,
@@ -17,7 +18,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-export type ActivityView = "tools" | "search" | "explorer" | "database" | "wiki" | "settings";
+export type ActivityView = "tools" | "search" | "explorer" | "database" | "wiki" | "toolManage" | "settings" | null;
 
 interface ActivityBarItem {
   id: ActivityView;
@@ -31,6 +32,7 @@ const ACTIVITY_ITEMS: ActivityBarItem[] = [
   { id: "explorer", icon: FolderTree, label: "文件浏览" },
   { id: "database", icon: Database, label: "数据库" },
   { id: "wiki", icon: BookOpen, label: "知识库" },
+  { id: "toolManage", icon: Wrench, label: "工具管理" },
 ];
 
 interface ActivityBarProps {
@@ -67,7 +69,7 @@ export const ActivityBar = memo(function ActivityBar({
                           ? "text-foreground bg-[var(--bg-hover)]"
                           : "text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]",
                       )}
-                      onClick={() => onViewChange(item.id)}
+                      onClick={() => onViewChange(isActive ? null : item.id)}
                     >
                       <item.icon className="w-[18px] h-[18px]" />
                       {isActive && (
@@ -116,7 +118,7 @@ export const ActivityBar = memo(function ActivityBar({
                     ? "text-foreground bg-[var(--bg-hover)]"
                     : "text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]",
                 )}
-                onClick={() => onViewChange("settings")}
+                onClick={() => onViewChange(activeView === "settings" ? null : "settings")}
               >
                 <Settings className="w-[18px] h-[18px]" />
                 {activeView === "settings" && (

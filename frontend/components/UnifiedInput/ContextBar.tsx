@@ -15,16 +15,9 @@ export function ContextBar({ sessionId, isAgentBusy }: ContextBarProps) {
   const { virtualEnv, gitBranch, gitStatus } = useUnifiedInputState(sessionId);
   const display = useStore(selectDisplaySettings);
 
-  // Abbreviate path like fish shell: ~/C/p/my-project
   const displayPath = (() => {
     if (!workingDirectory) return "~";
-    const withTilde = workingDirectory.replace(/^\/Users\/[^/]+/, "~");
-    const parts = withTilde.split("/");
-    if (parts.length <= 2) return withTilde;
-    const first = parts[0];
-    const last = parts[parts.length - 1];
-    const middle = parts.slice(1, -1).map((p) => p[0] || p);
-    return [first, ...middle, last].join("/");
+    return workingDirectory.replace(/^\/Users\/[^/]+/, "~");
   })();
 
   const parentOn = display.showTerminalContext;

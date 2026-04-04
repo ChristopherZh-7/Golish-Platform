@@ -1,3 +1,4 @@
+import { FitAddon } from "@xterm/addon-fit";
 import type { ILink, Terminal as TerminalType } from "@xterm/xterm";
 import { Terminal } from "@xterm/xterm";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -61,26 +62,22 @@ export function StaticTerminalOutput({
 }: StaticTerminalOutputProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<TerminalType | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
 
   const [popupOpen, setPopupOpen] = useState(false);
   const [popupPosition, setPopupPosition] = useState<{ x: number; y: number } | null>(null);
   const [popupPaths, setPopupPaths] = useState<ResolvedPath[]>([]);
   const [popupLoading, setPopupLoading] = useState(false);
-  // Store the detected path for resolution
   const pendingDetectedRef = useRef<DetectedPath | null>(null);
 
   const { openFile } = useFileEditorSidebar(workingDirectory);
 
-  // Calculate rows needed for content (pre-render estimate)
   const lineCount = output.split("\n").length;
-  const rows = Math.max(lineCount, 1);
 
   // Effect to create terminal (runs once on mount)
-  // biome-ignore lint/correctness/useExhaustiveDependencies: rows is only needed for initial creation; resizing is handled in separate effect
   useEffect(() => {
     if (!containerRef.current) return;
 
-    // Create terminal if it doesn't exist
     if (!terminalRef.current) {
       const terminal = new Terminal({
         cursorBlink: false,
@@ -91,17 +88,17 @@ export function StaticTerminalOutput({
         fontWeight: "normal",
         fontWeightBold: "bold",
         lineHeight: 1.4,
-        scrollback: 0, // No scrollback - we set rows to fit all content
+        scrollback: 0,
         convertEol: true,
         allowProposedApi: true,
-        rows, // Set rows to match content
-        cols: 200, // Wide enough to avoid wrapping most content
       });
 
-      // Apply theme colors
+      const fitAddon = new FitAddon();
+      terminal.loadAddon(fitAddon);
+      fitAddonRef.current = fitAddon;
+
       ThemeManager.applyToTerminal(terminal);
 
-      // Override with our specific settings
       terminal.options.fontSize = 12;
       terminal.options.lineHeight = 1.4;
       terminal.options.fontWeight = "normal";
@@ -113,13 +110,30 @@ export function StaticTerminalOutput({
 
       terminal.open(containerRef.current);
       terminalRef.current = terminal;
+
+      // Fit columns to container width
+      try {
+        fitAddon.fit();
+      } catch { /* ignore */ }
     }
 
+    // Re-fit when container resizes
+    const container = containerRef.current;
+    const observer = new ResizeObserver(() => {
+      if (fitAddonRef.current && terminalRef.current) {
+        try {
+          fitAddonRef.current.fit();
+        } catch { /* ignore */ }
+      }
+    });
+    observer.observe(container);
+
     return () => {
-      // Cleanup on unmount
+      observer.disconnect();
       if (terminalRef.current) {
         terminalRef.current.dispose();
         terminalRef.current = null;
+        fitAddonRef.current = null;
       }
     };
   }, []);
@@ -194,15 +208,24 @@ export function StaticTerminalOutput({
     const terminal = terminalRef.current;
     if (!terminal || !processedOutput) return;
 
-    // Update rows if content changed
-    if (terminal.rows !== rows) {
-      terminal.resize(terminal.cols, rows);
+    // Calculate rows accounting for line wrapping at current column count
+    const cols = terminal.cols || 80;
+    const lines = processedOutput.split("\n");
+    let totalRows = 0;
+    for (const line of lines) {
+      // Strip ANSI escape codes to get visible character count
+      const visibleLen = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").length;
+      totalRows += Math.max(1, Math.ceil(visibleLen / cols));
+    }
+    totalRows = Math.max(totalRows, 1);
+
+    if (terminal.rows !== totalRows || terminal.cols !== cols) {
+      terminal.resize(cols, totalRows);
     }
 
-    // Write output
     terminal.clear();
     terminal.write(processedOutput);
-  }, [processedOutput, rows]);
+  }, [processedOutput, lineCount]);
 
   const handleOpenFile = useCallback(
     (absolutePath: string, _line?: number, _column?: number) => {

@@ -22,7 +22,7 @@ import { ContextMenuTrigger } from "@/components/ui/context-menu";
 import { useTerminalPortalTarget } from "@/hooks/useTerminalPortal";
 import { countLeafPanes } from "@/lib/pane-utils";
 import type { PaneId } from "@/store";
-import { useStore } from "@/store";
+import { usePendingCommand, useStore } from "@/store";
 import { usePaneLeafState } from "@/store/selectors/pane-leaf";
 import { PaneContextMenu } from "./PaneContextMenu";
 import { PaneMoveOverlay } from "./PaneMoveOverlay";
@@ -67,8 +67,9 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
   const paneCount = useStore((state) => countLeafPanes(state.tabLayouts[tabId]?.root));
 
   // Register portal target for this pane's Terminal
-  // The actual Terminal is rendered via TerminalLayer using React portals
   const terminalPortalRef = useTerminalPortalTarget(sessionId);
+  const pendingCommand = usePendingCommand(sessionId);
+  const isCommandRunning = !!(pendingCommand?.command);
 
   const isFocused = focusedPaneId === paneId;
   const showFocusIndicator = isFocused && paneCount > 1;
@@ -117,12 +118,17 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
               onMouseDownCapture={handleFocus}
             />
             {renderMode !== "fullterm" && (
-              // Timeline mode with unified input
               <>
                 <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden">
                   <UnifiedTimeline sessionId={sessionId} />
                 </div>
-                <div className="pane-bottom-terminal">
+                <div
+                  className={`pane-bottom-terminal transition-all duration-300 ease-in-out origin-bottom ${
+                    isCommandRunning
+                      ? "translate-y-full opacity-0 scale-y-0 h-0 pointer-events-none"
+                      : "translate-y-0 opacity-100 scale-y-100"
+                  }`}
+                >
                   <UnifiedInput sessionId={sessionId} />
                 </div>
                 <ToolApprovalDialog sessionId={sessionId} />

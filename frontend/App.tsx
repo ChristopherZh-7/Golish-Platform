@@ -38,6 +38,11 @@ const SettingsNav = lazy(() =>
 const SettingsContent = lazy(() =>
   import("./components/Settings").then((m) => ({ default: m.SettingsContent }))
 );
+const ToolManagerView = lazy(() =>
+  import("./components/ToolManager/ToolManager").then((m) => ({
+    default: m.ToolManager,
+  }))
+);
 const ContextPanel = lazy(() =>
   import("./components/Sidecar/ContextPanel").then((m) => ({
     default: m.ContextPanel,
@@ -110,7 +115,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState("providers");
   const [currentPage, setCurrentPage] = useState<PageRoute>("main");
-  const [activityView, setActivityView] = useState<ActivityView>("tools");
+  const [activityView, setActivityView] = useState<ActivityView>(null);
   const [bottomTerminalOpen, setBottomTerminalOpen] = useState(true);
 
   // Subscribe to file editor sidebar store to sync open state
@@ -454,18 +459,7 @@ function App() {
           </Suspense>
         );
       default:
-        return (
-          <div className="flex flex-col h-full">
-            <div className="h-[34px] flex items-center px-3 flex-shrink-0">
-              <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
-                {activityView === "search" ? "搜索" : activityView === "explorer" ? "文件" : activityView === "database" ? "数据库" : "知识库"}
-              </span>
-            </div>
-            <div className="flex-1 flex items-center justify-center">
-              <span className="text-[12px] text-muted-foreground">面板开发中</span>
-            </div>
-          </div>
-        );
+        return null;
     }
   };
 
@@ -476,7 +470,7 @@ function App() {
         <div className="h-[38px] w-full titlebar-drag flex-shrink-0" data-tauri-drag-region />
 
         {/* Content - floating panels */}
-        <div className="flex-1 flex overflow-hidden gap-1.5 px-1.5 pb-1.5 min-h-0 relative">
+        <div className="flex-1 flex overflow-hidden gap-2 px-2 pb-2 min-h-0 relative">
           {/* Activity Bar - narrow icon strip */}
           <ActivityBar
             activeView={activityView}
@@ -486,14 +480,19 @@ function App() {
             onOpenSettings={() => setSettingsOpen(true)}
           />
 
-          {/* Left panel - changes based on activity bar selection */}
-          <div className="w-[220px] flex-shrink-0 h-full rounded-xl bg-card overflow-hidden panel-float">
+          {/* Left panel - only shown for tools/settings views */}
+          <div className={cn(
+            "flex-shrink-0 h-full rounded-xl bg-card overflow-hidden panel-float transition-all duration-200 ease-out",
+            (activityView === "tools" || activityView === "settings")
+              ? "w-[220px] opacity-100"
+              : "w-0 opacity-0 pointer-events-none -mr-2"
+          )}>
             {renderLeftPanel()}
           </div>
 
           {/* Settings view - overlays center+right area */}
           <div className={cn(
-            "absolute inset-0 left-[280px] flex transition-all duration-200 ease-out px-1.5 pb-1.5 pt-0",
+            "absolute inset-0 left-[284px] flex transition-all duration-200 ease-out px-2 pb-2 pt-0",
             activityView === "settings"
               ? "opacity-100 translate-y-0 pointer-events-auto z-10"
               : "opacity-0 translate-y-1 pointer-events-none z-0",
@@ -505,10 +504,24 @@ function App() {
             </div>
           </div>
 
+          {/* Tool Manager view - overlays entire center+right area */}
+          <div className={cn(
+            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
+            activityView === "toolManage"
+              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
+              : "opacity-0 translate-y-1 pointer-events-none z-0",
+          )}>
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
+              <Suspense fallback={null}>
+                <ToolManagerView />
+              </Suspense>
+            </div>
+          </div>
+
           {/* Normal view - center + right panels */}
           <div className={cn(
-            "flex-1 flex gap-1.5 min-w-0 transition-all duration-200 ease-out",
-            activityView === "settings"
+            "flex-1 flex gap-2 min-w-0 transition-all duration-200 ease-out",
+            (activityView === "settings" || activityView === "toolManage")
               ? "opacity-0 scale-[0.98] pointer-events-none"
               : "opacity-100 scale-100 pointer-events-auto",
           )}>
