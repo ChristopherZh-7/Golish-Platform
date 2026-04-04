@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { cn } from "@/lib/utils";
 import { logger } from "@/lib/logger";
 import { ActivityBar, type ActivityView } from "./components/ActivityBar/ActivityBar";
 import { CommandPalette, type PageRoute } from "./components/CommandPalette";
@@ -30,6 +31,12 @@ const SessionBrowser = lazy(() =>
 );
 const SettingsDialog = lazy(() =>
   import("./components/Settings").then((m) => ({ default: m.SettingsDialog }))
+);
+const SettingsNav = lazy(() =>
+  import("./components/Settings").then((m) => ({ default: m.SettingsNav }))
+);
+const SettingsContent = lazy(() =>
+  import("./components/Settings").then((m) => ({ default: m.SettingsContent }))
 );
 const ContextPanel = lazy(() =>
   import("./components/Sidecar/ContextPanel").then((m) => ({
@@ -101,6 +108,7 @@ function App() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [quickOpenDialogOpen, setQuickOpenDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState("providers");
   const [currentPage, setCurrentPage] = useState<PageRoute>("main");
   const [activityView, setActivityView] = useState<ActivityView>("tools");
   const [bottomTerminalOpen, setBottomTerminalOpen] = useState(true);
@@ -441,14 +449,9 @@ function App() {
         return <PentestToolTree />;
       case "settings":
         return (
-          <div className="flex flex-col h-full">
-            <div className="h-[34px] flex items-center px-3 flex-shrink-0">
-              <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">设置</span>
-            </div>
-            <div className="flex-1 flex items-center justify-center">
-              <span className="text-[12px] text-muted-foreground">设置面板开发中</span>
-            </div>
-          </div>
+          <Suspense fallback={null}>
+            <SettingsNav activeSection={settingsSection} onSectionChange={setSettingsSection} />
+          </Suspense>
         );
       default:
         return (
@@ -473,13 +476,14 @@ function App() {
         <div className="h-[38px] w-full titlebar-drag flex-shrink-0" data-tauri-drag-region />
 
         {/* Content - floating panels */}
-        <div className="flex-1 flex overflow-hidden gap-1.5 px-1.5 pb-1.5 min-h-0">
+        <div className="flex-1 flex overflow-hidden gap-1.5 px-1.5 pb-1.5 min-h-0 relative">
           {/* Activity Bar - narrow icon strip */}
           <ActivityBar
             activeView={activityView}
             onViewChange={setActivityView}
             terminalOpen={bottomTerminalOpen}
             onToggleTerminal={() => setBottomTerminalOpen((v) => !v)}
+            onOpenSettings={() => setSettingsOpen(true)}
           />
 
           {/* Left panel - changes based on activity bar selection */}
@@ -487,45 +491,67 @@ function App() {
             {renderLeftPanel()}
           </div>
 
-          {/* Center - TabBar + Pane content */}
-          <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
-            <TabBar />
-
-            <div className="flex-1 min-h-0 min-w-0 flex overflow-hidden">
-              <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden relative">
-                {tabLayouts.map(({ tabId, root }) => (
-                  <div
-                    key={tabId}
-                    className={`absolute inset-0 ${tabId === activeSessionId ? "visible" : "invisible pointer-events-none"}`}
-                  >
-                    <PaneContainer node={root} tabId={tabId} />
-                  </div>
-                ))}
-                {!activeSessionId && (
-                  <div className="flex items-center justify-center h-full">
-                    <span className="text-muted-foreground">No active session</span>
-                  </div>
-                )}
-              </div>
-
+          {/* Settings view - overlays center+right area */}
+          <div className={cn(
+            "absolute inset-0 left-[280px] flex transition-all duration-200 ease-out px-1.5 pb-1.5 pt-0",
+            activityView === "settings"
+              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
+              : "opacity-0 translate-y-1 pointer-events-none z-0",
+          )}>
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
               <Suspense fallback={null}>
-                <GitPanel open={gitPanelOpen} onOpenChange={handleGitPanelOpenChange} />
-              </Suspense>
-              <Suspense fallback={null}>
-                <ContextPanel open={contextPanelOpen} onOpenChange={handleContextPanelOpenChange} />
-              </Suspense>
-              <Suspense fallback={null}>
-                <FileEditorSidebarPanel
-                  open={fileEditorPanelOpen}
-                  onOpenChange={handleFileEditorPanelOpenChange}
-                />
+                <SettingsContent activeSection={settingsSection} onSectionChange={setSettingsSection} />
               </Suspense>
             </div>
           </div>
 
-          {/* Right sidebar - AI Chat Panel */}
-          <div className="w-[340px] flex-shrink-0 h-full rounded-xl bg-card overflow-hidden panel-float">
-            <AIChatPanel />
+          {/* Normal view - center + right panels */}
+          <div className={cn(
+            "flex-1 flex gap-1.5 min-w-0 transition-all duration-200 ease-out",
+            activityView === "settings"
+              ? "opacity-0 scale-[0.98] pointer-events-none"
+              : "opacity-100 scale-100 pointer-events-auto",
+          )}>
+            {/* Center - TabBar + Pane content */}
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
+              <TabBar />
+
+              <div className="flex-1 min-h-0 min-w-0 flex overflow-hidden">
+                <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden relative">
+                  {tabLayouts.map(({ tabId, root }) => (
+                    <div
+                      key={tabId}
+                      className={`absolute inset-0 ${tabId === activeSessionId ? "visible" : "invisible pointer-events-none"}`}
+                    >
+                      <PaneContainer node={root} tabId={tabId} />
+                    </div>
+                  ))}
+                  {!activeSessionId && (
+                    <div className="flex items-center justify-center h-full">
+                      <span className="text-muted-foreground">No active session</span>
+                    </div>
+                  )}
+                </div>
+
+                <Suspense fallback={null}>
+                  <GitPanel open={gitPanelOpen} onOpenChange={handleGitPanelOpenChange} />
+                </Suspense>
+                <Suspense fallback={null}>
+                  <ContextPanel open={contextPanelOpen} onOpenChange={handleContextPanelOpenChange} />
+                </Suspense>
+                <Suspense fallback={null}>
+                  <FileEditorSidebarPanel
+                    open={fileEditorPanelOpen}
+                    onOpenChange={handleFileEditorPanelOpenChange}
+                  />
+                </Suspense>
+              </div>
+            </div>
+
+            {/* Right sidebar - AI Chat Panel */}
+            <div className="w-[340px] flex-shrink-0 h-full rounded-xl bg-card overflow-hidden panel-float">
+              <AIChatPanel />
+            </div>
           </div>
         </div>
 
