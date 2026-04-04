@@ -423,10 +423,9 @@ function OpenRouterProviderPreferencesSection({
 }
 
 export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) {
-  const [openProvider, setOpenProvider] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [providers, setProviders] = useState<ProviderConfig[]>(FALLBACK_PROVIDERS);
 
-  // Fetch providers from backend on mount
   useEffect(() => {
     getProviders()
       .then((backendProviders) => {
@@ -459,9 +458,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
     }
   };
 
-  const handleToggle = (providerId: string) => {
-    setOpenProvider(openProvider === providerId ? null : providerId);
-  };
+  const selectedProvider = providers.find((p) => p.id === selectedId) ?? null;
 
   const renderProviderFields = (provider: ProviderConfig) => {
     switch (provider.id) {
@@ -834,10 +831,76 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
   };
 
   return (
-    <div className="space-y-4">
-      {/* Default Model Selector */}
-      <div className="p-4 rounded-lg bg-muted border border-[var(--border-medium)]">
-        <div className="text-sm font-medium text-foreground mb-2">Default Model</div>
+    <div className="flex flex-col" style={{ height: "calc(100vh - 140px)" }}>
+      {/* Top: left-right split */}
+      <div className="flex gap-4 flex-1 min-h-0">
+        {/* Left: provider list */}
+        <div className="w-56 flex-shrink-0 overflow-y-auto space-y-0.5 pr-1">
+          {providers.map((provider) => {
+            const isConfigured = provider.getConfigured(settings);
+            const isDefault = settings.default_provider === provider.id;
+            const isSelected = selectedId === provider.id;
+
+            return (
+              <button key={provider.id} type="button"
+                onClick={() => setSelectedId(isSelected ? null : provider.id)}
+                className={cn(
+                  "w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-colors",
+                  isSelected ? "bg-accent/10 text-foreground" : "hover:bg-[var(--bg-hover)] text-foreground/70"
+                )}
+              >
+                <span className="text-sm w-6 h-6 flex items-center justify-center flex-shrink-0">{provider.icon}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[12px] font-medium truncate">{provider.name}</span>
+                    {isDefault && <Star className="w-2.5 h-2.5 text-accent fill-current flex-shrink-0" />}
+                  </div>
+                </div>
+                <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", isConfigured ? "bg-emerald-400" : "bg-muted-foreground/20")} />
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Right: config panel */}
+        <div className="flex-1 border-l border-border/15 pl-4 overflow-y-auto">
+          {selectedProvider ? (
+            <div className="space-y-5">
+              {/* Header */}
+              <div className="flex items-center gap-3">
+                <span className="text-xl">{selectedProvider.icon}</span>
+                <div>
+                  <div className="text-[14px] font-medium text-foreground">{selectedProvider.name}</div>
+                  <div className="text-[11px] text-muted-foreground/50">{selectedProvider.description}</div>
+                </div>
+              </div>
+
+              {/* Show in selector toggle */}
+              <div className="flex items-center justify-between py-2.5 border-y border-border/15">
+                <div>
+                  <div className="text-[12px] font-medium text-foreground/80">在模型选择器中显示</div>
+                  <div className="text-[11px] text-muted-foreground/40">启用后可在模型列表中选择此供应商</div>
+                </div>
+                <Switch
+                  checked={getShowInSelector(selectedProvider.id)}
+                  onCheckedChange={(checked) => updateProvider(selectedProvider.id, "show_in_selector", checked)}
+                />
+              </div>
+
+              {/* Provider fields */}
+              {renderProviderFields(selectedProvider)}
+            </div>
+          ) : (
+            <div className="h-full flex items-center justify-center">
+              <span className="text-[12px] text-muted-foreground/30">← 选择一个供应商进行配置</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Bottom: default model */}
+      <div className="pt-4 mt-4 border-t border-border/20 flex-shrink-0">
+        <div className="text-[12px] font-medium text-foreground/70 mb-2">默认模型</div>
         <ModelSelector
           provider={settings.default_provider}
           model={settings.default_model}
@@ -852,109 +915,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
             })
           }
         />
-        <p className="text-xs text-muted-foreground mt-2">
-          The provider and model used when starting new conversations
-        </p>
-      </div>
-
-      {/* Provider Configurations */}
-      <div className="space-y-1">
-        {providers.map((provider) => {
-          const isOpen = openProvider === provider.id;
-          const isConfigured = provider.getConfigured(settings);
-          const showInSelector = getShowInSelector(provider.id);
-          const isDefault = settings.default_provider === provider.id;
-
-          return (
-            <Collapsible
-              key={provider.id}
-              open={isOpen}
-              onOpenChange={() => handleToggle(provider.id)}
-            >
-              <div
-                className={cn(
-                  "border border-[var(--border-medium)] rounded-lg overflow-hidden transition-colors",
-                  isOpen && "border-accent/50"
-                )}
-              >
-                <CollapsibleTrigger asChild>
-                  <button
-                    type="button"
-                    className={cn(
-                      "w-full flex items-center gap-3 px-4 py-3 text-left transition-colors",
-                      "hover:bg-[var(--bg-hover)]",
-                      isOpen && "bg-[var(--bg-hover)]"
-                    )}
-                  >
-                    <span className="text-xl w-8 h-8 flex items-center justify-center bg-muted rounded-lg border border-[var(--border-subtle)]">
-                      {provider.icon}
-                    </span>
-
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-foreground">{provider.name}</span>
-                        {isDefault && (
-                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium bg-accent/20 text-accent rounded">
-                            <Star className="w-3 h-3 fill-current" />
-                            Default
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2 mt-0.5">
-                        <span
-                          className={cn(
-                            "inline-flex items-center gap-1 text-xs",
-                            isConfigured ? "text-[var(--success)]" : "text-muted-foreground"
-                          )}
-                        >
-                          <span
-                            className={cn(
-                              "w-1.5 h-1.5 rounded-full",
-                              isConfigured ? "bg-[var(--success)]" : "bg-muted-foreground/50"
-                            )}
-                          />
-                          {isConfigured ? "Configured" : "Not configured"}
-                        </span>
-                      </div>
-                    </div>
-
-                    <ChevronDown
-                      className={cn(
-                        "w-4 h-4 text-muted-foreground transition-transform duration-200",
-                        isOpen && "rotate-180"
-                      )}
-                    />
-                  </button>
-                </CollapsibleTrigger>
-
-                <CollapsibleContent>
-                  <div className="px-4 pb-4 pt-2 border-t border-[var(--border-subtle)] bg-[var(--bg-subtle)]">
-                    {/* Show in selector toggle */}
-                    <div className="flex items-center justify-between py-3 mb-4 border-b border-[var(--border-subtle)]">
-                      <div>
-                        <div className="text-sm font-medium text-foreground">
-                          Show in model selector
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          Make this provider available for selection
-                        </div>
-                      </div>
-                      <Switch
-                        checked={showInSelector}
-                        onCheckedChange={(checked) =>
-                          updateProvider(provider.id, "show_in_selector", checked)
-                        }
-                      />
-                    </div>
-
-                    {/* Provider-specific fields */}
-                    {renderProviderFields(provider)}
-                  </div>
-                </CollapsibleContent>
-              </div>
-            </Collapsible>
-          );
-        })}
+        <p className="text-[11px] text-muted-foreground/40 mt-1.5">新对话默认使用的模型</p>
       </div>
     </div>
   );

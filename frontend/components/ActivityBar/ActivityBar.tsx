@@ -38,6 +38,7 @@ interface ActivityBarProps {
   onViewChange: (view: ActivityView) => void;
   terminalOpen?: boolean;
   onToggleTerminal?: () => void;
+  onOpenSettings?: () => void;
 }
 
 export const ActivityBar = memo(function ActivityBar({
@@ -45,6 +46,7 @@ export const ActivityBar = memo(function ActivityBar({
   onViewChange,
   terminalOpen,
   onToggleTerminal,
+  onOpenSettings,
 }: ActivityBarProps) {
   return (
     <TooltipProvider delayDuration={200}>
@@ -108,13 +110,18 @@ export const ActivityBar = memo(function ActivityBar({
               <button
                 type="button"
                 className={cn(
-                  "w-10 h-10 flex items-center justify-center rounded-md",
-                  "text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]",
+                  "relative w-10 h-10 flex items-center justify-center rounded-md",
                   "transition-colors cursor-pointer",
+                  activeView === "settings"
+                    ? "text-foreground bg-[var(--bg-hover)]"
+                    : "text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]",
                 )}
                 onClick={() => onViewChange("settings")}
               >
                 <Settings className="w-[18px] h-[18px]" />
+                {activeView === "settings" && (
+                  <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[2px] h-5 bg-accent rounded-r" />
+                )}
               </button>
             </TooltipTrigger>
             <TooltipContent side="right" sideOffset={8}>

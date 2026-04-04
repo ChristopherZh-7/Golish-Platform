@@ -11,6 +11,7 @@ import {
   Server,
   Shield,
   Terminal,
+  Wrench,
   X,
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
@@ -56,6 +57,9 @@ const McpSettings = lazy(() => import("./McpSettings").then((m) => ({ default: m
 const NetworkSettings = lazy(() =>
   import("./NetworkSettings").then((m) => ({ default: m.NetworkSettings }))
 );
+const PentestEnvSettings = lazy(() =>
+  import("./PentestEnvSettings").then((m) => ({ default: m.PentestEnvSettings }))
+);
 
 interface SettingsDialogProps {
   open: boolean;
@@ -73,7 +77,8 @@ type SettingsSection =
   | "network"
   | "notifications"
   | "appearance"
-  | "advanced";
+  | "advanced"
+  | "pentest";
 
 interface NavItem {
   id: SettingsSection;
@@ -83,6 +88,12 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
+  {
+    id: "pentest",
+    label: "环境配置",
+    icon: <Wrench className="w-4 h-4" />,
+    description: "Python / Java / Node.js 运行环境",
+  },
   {
     id: "providers",
     label: "Providers",
@@ -151,9 +162,190 @@ const NAV_ITEMS: NavItem[] = [
   },
 ];
 
+export function SettingsNav({
+  activeSection,
+  onSectionChange,
+}: {
+  activeSection: string;
+  onSectionChange: (section: SettingsSection) => void;
+}) {
+  return (
+    <div className="flex flex-col h-full">
+      <div className="h-[34px] flex items-center px-3 flex-shrink-0">
+        <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Settings</span>
+      </div>
+      <div className="flex-1 overflow-y-auto px-1.5 py-1">
+        {NAV_ITEMS.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => onSectionChange(item.id)}
+            className={cn(
+              "w-full flex items-center gap-2.5 px-3 py-2 text-left transition-all rounded-lg mb-0.5",
+              activeSection === item.id
+                ? "bg-[var(--bg-hover)] text-foreground"
+                : "text-muted-foreground hover:bg-[var(--bg-hover)] hover:text-foreground"
+            )}
+          >
+            <span className={cn(activeSection === item.id ? "text-accent" : "")}>
+              {item.icon}
+            </span>
+            <span className="text-[12px] font-medium">{item.label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function SettingsContent({
+  activeSection: activeSectionProp,
+  onSectionChange,
+}: {
+  activeSection?: string;
+  onSectionChange?: (section: SettingsSection) => void;
+}) {
+  const [settings, setSettings] = useState<QbitSettings | null>(null);
+  const [activeSection, setActiveSection] = useState<SettingsSection>(
+    (activeSectionProp as SettingsSection) || "pentest"
+  );
+  const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    if (activeSectionProp) {
+      setActiveSection(activeSectionProp as SettingsSection);
+    }
+  }, [activeSectionProp]);
+
+  useEffect(() => {
+    setIsLoading(true);
+    getSettings()
+      .then(setSettings)
+      .catch((err) => {
+        logger.error("Failed to load settings:", err);
+        notify.error("Failed to load settings");
+      })
+      .finally(() => setIsLoading(false));
+  }, []);
+
+  const saveSettings = useCallback(async (settingsToSave: QbitSettings) => {
+    try {
+      const currentCodebases = await listIndexedCodebases();
+      const updatedCodebases: CodebaseConfig[] = currentCodebases.map((cb) => ({
+        path: cb.path,
+        memory_file: cb.memory_file,
+      }));
+      const finalSettings = { ...settingsToSave, codebases: updatedCodebases };
+      await updateSettings(finalSettings);
+      window.dispatchEvent(new CustomEvent("settings-updated", { detail: finalSettings }));
+    } catch (err) {
+      logger.error("Failed to save settings:", err);
+      notify.error("Failed to save settings");
+    }
+  }, []);
+
+  const updateSection = useCallback(
+    <K extends keyof QbitSettings>(section: K, value: QbitSettings[K]) => {
+      setSettings((prev) => {
+        if (!prev) return null;
+        const updated = { ...prev, [section]: value };
+        saveSettings(updated);
+        return updated;
+      });
+    },
+    [saveSettings]
+  );
+
+  const renderContent = useCallback(() => {
+    if (activeSection === "pentest") {
+      return <PentestEnvSettings />;
+    }
+    if (!settings) return null;
+    switch (activeSection) {
+      case "providers":
+        return <ProviderSettings settings={settings.ai} onChange={(ai) => updateSection("ai", ai)} />;
+      case "ai":
+        return (
+          <AiSettings
+            apiKeys={settings.api_keys}
+            sidecarSettings={settings.sidecar}
+            onApiKeysChange={(keys) => updateSection("api_keys", keys)}
+            onSidecarChange={(sidecar) => updateSection("sidecar", sidecar)}
+          />
+        );
+      case "terminal":
+        return <TerminalSettings settings={settings.terminal} onChange={(terminal) => updateSection("terminal", terminal)} />;
+      case "editor":
+        return <EditorSettings />;
+      case "agent":
+        return (
+          <AgentSettings
+            settings={settings.agent}
+            toolsSettings={settings.tools}
+            subAgentModels={settings.ai.sub_agent_models || {}}
+            onChange={(agent) => updateSection("agent", agent)}
+            onToolsChange={(tools) => updateSection("tools", tools)}
+            onSubAgentModelsChange={(models) => updateSection("ai", { ...settings.ai, sub_agent_models: models })}
+          />
+        );
+      case "mcp":
+        return <McpSettings />;
+      case "codebases":
+        return <CodebasesSettings />;
+      case "network":
+        return <NetworkSettings settings={settings.network} onChange={(network) => updateSection("network", network)} />;
+      case "notifications":
+        return <NotificationsSettings settings={settings.notifications} onChange={(notifications) => updateSection("notifications", notifications)} />;
+      case "appearance":
+        return <AppearanceSettings terminalSettings={settings.terminal} onTerminalChange={(terminal) => updateSection("terminal", terminal)} />;
+      case "advanced":
+        return (
+          <AdvancedSettings
+            settings={settings.advanced}
+            privacy={settings.privacy}
+            onChange={(advanced) => updateSection("advanced", advanced)}
+            onPrivacyChange={(privacy) => updateSection("privacy", privacy)}
+          />
+        );
+    }
+  }, [activeSection, settings, updateSection]);
+
+  if (isLoading) {
+    return (
+      <div className="flex-1 flex items-center justify-center h-full">
+        <Loader2 className="w-6 h-6 text-muted-foreground animate-spin" />
+      </div>
+    );
+  }
+
+  if (!settings) {
+    return (
+      <div className="flex-1 flex items-center justify-center h-full">
+        <span className="text-destructive text-[13px]">Failed to load settings</span>
+      </div>
+    );
+  }
+
+  return (
+    <ScrollArea className="h-full">
+      <div className={cn("p-6", (activeSection === "pentest" || activeSection === "providers") ? "" : "max-w-3xl")}>
+        <Suspense
+          fallback={
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="w-6 h-6 text-muted-foreground animate-spin" />
+            </div>
+          }
+        >
+          {renderContent()}
+        </Suspense>
+      </div>
+    </ScrollArea>
+  );
+}
+
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const [settings, setSettings] = useState<QbitSettings | null>(null);
-  const [activeSection, setActiveSection] = useState<SettingsSection>("providers");
+  const [activeSection, setActiveSection] = useState<SettingsSection>("pentest");
   const [isLoading, setIsLoading] = useState(false);
 
   // Load settings when dialog opens
@@ -214,6 +406,9 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   );
 
   const renderContent = useCallback(() => {
+    if (activeSection === "pentest") {
+      return <PentestEnvSettings />;
+    }
     if (!settings) return null;
 
     switch (activeSection) {
@@ -295,18 +490,17 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         showCloseButton={false}
         className="!max-w-none !inset-0 !translate-x-0 !translate-y-0 !w-screen !h-screen p-0 bg-background border-0 rounded-none text-foreground flex flex-col overflow-hidden"
       >
-        {/* Visually hidden title for screen readers */}
         <DialogTitle className="sr-only">Settings</DialogTitle>
 
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border-medium)] flex-shrink-0">
-          <h2 className="text-lg font-semibold text-foreground">Settings</h2>
+        {/* Header - macOS traffic lights + title */}
+        <div className="flex items-center justify-between px-6 h-[38px] flex-shrink-0 titlebar-drag" data-tauri-drag-region>
+          <h2 className="text-[14px] font-semibold text-foreground titlebar-no-drag">Settings</h2>
           <button
             type="button"
             onClick={handleClose}
-            className="p-1.5 rounded-md hover:bg-[var(--bg-hover)] text-muted-foreground hover:text-foreground transition-colors"
+            className="p-1.5 rounded-lg hover:bg-[var(--bg-hover)] text-muted-foreground hover:text-foreground transition-colors titlebar-no-drag"
           >
-            <X className="w-5 h-5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
 
@@ -315,28 +509,28 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             <Loader2 className="w-6 h-6 text-muted-foreground animate-spin" />
           </div>
         ) : settings ? (
-          <div className="flex-1 flex min-h-0 overflow-hidden">
+          <div className="flex-1 flex gap-1.5 px-1.5 pb-1.5 min-h-0 overflow-hidden">
             {/* Sidebar Navigation */}
-            <nav className="w-64 border-r border-[var(--border-medium)] flex flex-col flex-shrink-0">
-              <div className="flex-1 py-2">
+            <nav className="w-52 bg-card rounded-xl flex flex-col flex-shrink-0 panel-float overflow-hidden">
+              <div className="flex-1 py-2 px-1.5 overflow-y-auto">
                 {NAV_ITEMS.map((item) => (
                   <button
                     key={item.id}
                     type="button"
                     onClick={() => setActiveSection(item.id)}
                     className={cn(
-                      "w-full flex items-start gap-3 px-4 py-3 text-left transition-colors",
+                      "w-full flex items-start gap-2.5 px-3 py-2.5 text-left transition-all rounded-lg mb-0.5",
                       activeSection === item.id
-                        ? "bg-[var(--accent-dim)] text-foreground border-l-2 border-accent"
-                        : "text-muted-foreground hover:bg-[var(--bg-hover)] hover:text-foreground border-l-2 border-transparent"
+                        ? "bg-[var(--bg-hover)] text-foreground"
+                        : "text-muted-foreground hover:bg-[var(--bg-hover)] hover:text-foreground"
                     )}
                   >
                     <span className={cn("mt-0.5", activeSection === item.id ? "text-accent" : "")}>
                       {item.icon}
                     </span>
                     <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium">{item.label}</div>
-                      <div className="text-xs text-muted-foreground mt-0.5">{item.description}</div>
+                      <div className="text-[13px] font-medium">{item.label}</div>
+                      <div className="text-[11px] text-muted-foreground/60 mt-0.5">{item.description}</div>
                     </div>
                   </button>
                 ))}
@@ -344,9 +538,9 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             </nav>
 
             {/* Main Content */}
-            <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
+            <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden bg-card rounded-xl panel-float">
               <ScrollArea className="h-full">
-                <div className="p-6 max-w-3xl">
+                <div className={cn("p-6", (activeSection === "pentest" || activeSection === "providers") ? "" : "max-w-3xl")}>
                   <Suspense
                     fallback={
                       <div className="flex items-center justify-center py-8">
