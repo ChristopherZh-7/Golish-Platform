@@ -26,4 +26,4 @@ base64 = "0.22"
 nanoid = "0.4"
 
 # JSON repair for malformed LLM output
-qbit-json-repair = { path = "../qbit-json-repair" }
+golish-json-repair = { path = "../golish-json-repair" }

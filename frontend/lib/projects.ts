@@ -1,7 +1,7 @@
 /**
  * Project configuration API.
  *
- * Projects are stored as individual TOML files in ~/.qbit/projects/.
+ * Projects are stored as individual TOML files in ~/.golish/projects/.
  */
 
 import { invoke } from "@tauri-apps/api/core";

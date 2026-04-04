@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { QbitSettings } from "./settings";
+import type { GolishSettings } from "./settings";
 import {
   getSettingsCached,
   invalidateSettingsCache,
@@ -125,7 +125,7 @@ describe("Settings Cache", () => {
       const callsBefore = vi.mocked(invoke).mock.calls.length;
 
       // Mutate
-      await updateSettings({} as QbitSettings);
+      await updateSettings({} as GolishSettings);
       expect(invoke).toHaveBeenCalledWith("update_settings", { settings: {} });
 
       // Next read must bypass cache

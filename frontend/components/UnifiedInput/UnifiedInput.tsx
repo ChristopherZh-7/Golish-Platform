@@ -22,6 +22,7 @@ import {
 } from "@/lib/ai";
 import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
+import { useTranslation } from "react-i18next";
 import { type CaretSettings, DEFAULT_CARET_SETTINGS, getSettings } from "@/lib/settings";
 import {
   classifyInput,
@@ -123,6 +124,7 @@ const GhostTextHint = memo(function GhostTextHint({
 });
 
 export function UnifiedInput({ sessionId }: UnifiedInputProps) {
+  const { t } = useTranslation();
   const workingDirectory = useStore((state) => state.sessions[sessionId]?.workingDirectory);
   const display = useStore(selectDisplaySettings);
   const [input, setInput] = useState("");
@@ -965,7 +967,7 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
 
       if (!tool.installed) {
         setInput("");
-        notify.warning(`${tool.name} 未安装，请先在工具管理中安装`);
+        notify.warning(t("install.notInstalledWarning", { name: tool.name }));
         return;
       }
 
@@ -977,25 +979,55 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
         toolsDir = cfg.tools_dir;
       } catch { /* use empty */ }
 
-      const runtimePrefix: Record<string, string> = {
-        python: "python3",
-        java: "java -jar",
-        node: "node",
-      };
-      const prefix = runtimePrefix[tool.runtime] || "";
+      let prefix = "";
+      console.log("[ToolMode] runtime:", tool.runtime, "runtimeVersion:", tool.runtimeVersion);
+      if (tool.runtime === "python") {
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          console.log("[ToolMode] Resolving python path for version:", tool.runtimeVersion);
+          const pythonPath = await invoke<string>("pentest_resolve_python_path", {
+            version: tool.runtimeVersion || "",
+          });
+          console.log("[ToolMode] Resolved python path:", pythonPath);
+          prefix = `"${pythonPath}"`;
+        } catch (e) {
+          console.warn("[ToolMode] Failed to resolve python path:", e);
+          prefix = "python3";
+        }
+      } else if (tool.runtime === "java") {
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          const javaPath = await invoke<string>("pentest_resolve_java_path", {
+            version: tool.runtimeVersion || "",
+          });
+          console.log("[ToolMode] Resolved java path:", javaPath);
+          prefix = `"${javaPath}" -jar`;
+        } catch (e) {
+          console.warn("[ToolMode] Failed to resolve java path, using default:", e);
+          prefix = "java -jar";
+        }
+      } else if (tool.runtime === "node") {
+        prefix = "node";
+      }
+      const isHomebrew = tool.install?.method === "homebrew" || tool.runtime === "native" || tool.runtime === "system";
       const exeFile = tool.executable.split("/").pop() || tool.executable;
-      const runCmd = prefix ? `${prefix} ${exeFile}` : `./${exeFile}`;
 
-      if (toolsDir) {
-        const toolSubDir = tool.executable.includes("/")
-          ? tool.executable.split("/").slice(0, -1).join("/")
-          : tool.name.toLowerCase();
-        toolContextRef.current = {
-          cdPrefix: `cd "${toolsDir}/${toolSubDir}" && `,
-          baseCmd: runCmd,
-        };
+      if (isHomebrew) {
+        const cmdName = tool.install?.source || exeFile.replace(/\.[^.]+$/, "");
+        toolContextRef.current = { cdPrefix: "", baseCmd: cmdName };
       } else {
-        toolContextRef.current = { cdPrefix: "", baseCmd: runCmd };
+        const runCmd = prefix ? `${prefix} ${exeFile}` : `./${exeFile}`;
+        if (toolsDir) {
+          const toolSubDir = tool.executable.includes("/")
+            ? tool.executable.split("/").slice(0, -1).join("/")
+            : tool.name.toLowerCase();
+          toolContextRef.current = {
+            cdPrefix: `cd "${toolsDir}/${toolSubDir}" && `,
+            baseCmd: runCmd,
+          };
+        } else {
+          toolContextRef.current = { cdPrefix: "", baseCmd: runCmd };
+        }
       }
 
       // Load tool params from raw config — try name-based filename first, then id-based
@@ -1120,12 +1152,14 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
         }
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
-          handleToolSelect(toolMatches[toolSelectedIndex]);
+          const sel = toolMatches[toolSelectedIndex];
+          if (sel?.installed && sel?.envReady !== false) handleToolSelect(sel);
           return;
         }
         if (e.key === "Tab") {
           e.preventDefault();
-          handleToolSelect(toolMatches[toolSelectedIndex]);
+          const sel = toolMatches[toolSelectedIndex];
+          if (sel?.installed && sel?.envReady !== false) handleToolSelect(sel);
           return;
         }
       }
@@ -1603,7 +1637,7 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
             {/* Tool search mode badge (/t) */}
             {isToolSearchMode && !activeTool && (
               <div className="flex items-center gap-1 h-[26px] px-2 rounded-md bg-orange-500/15 border border-orange-500/30 shrink-0 self-center">
-                <span className="text-[12px] font-medium text-orange-400 leading-none">工具搜索</span>
+                <span className="text-[12px] font-medium text-orange-400 leading-none">{t("toolSearch.title")}</span>
                 <button
                   type="button"
                   className="w-3.5 h-3.5 flex items-center justify-center rounded-full hover:bg-orange-500/20 text-orange-400/60 hover:text-orange-400 transition-colors"
@@ -1725,11 +1759,11 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
                               const req = toolParams.find((p) => p.required);
                               return req
                                 ? `${req.flag} ${req.placeholder || req.label}...`
-                                : "输入参数... 点击上方标签快速添加";
+                                : t("input.enterParamsHint");
                             })()
                           : isToolSearchMode
-                            ? "搜索工具名称..."
-                            : "输入命令..."
+                            ? t("input.searchToolName")
+                            : t("input.enterCommand")
                 }
                 rows={1}
                 className={cn(

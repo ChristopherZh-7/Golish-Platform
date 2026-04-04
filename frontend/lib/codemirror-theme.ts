@@ -3,11 +3,11 @@ import { EditorView } from "@codemirror/view";
 import { tags as t } from "@lezer/highlight";
 
 /**
- * Custom CodeMirror theme matching the Qbit app design
- * Colors derived from frontend/lib/theme/builtin/qbit/theme.ts
+ * Custom CodeMirror theme matching the Golish app design
+ * Colors derived from frontend/lib/theme/builtin/golish/theme.ts
  */
 
-// Qbit palette
+// Golish palette
 const palette = {
   // Backgrounds
   bgPrimary: "#0d0f12",
@@ -36,7 +36,7 @@ const palette = {
 };
 
 // Editor theme (UI styling)
-export const qbitEditorTheme = EditorView.theme(
+export const golishEditorTheme = EditorView.theme(
   {
     "&": {
       backgroundColor: palette.bgPrimary,
@@ -135,7 +135,7 @@ export const qbitEditorTheme = EditorView.theme(
 );
 
 // Syntax highlighting
-export const qbitHighlightStyle = HighlightStyle.define([
+export const golishHighlightStyle = HighlightStyle.define([
   { tag: t.comment, color: palette.textMuted, fontStyle: "italic" },
   { tag: t.lineComment, color: palette.textMuted, fontStyle: "italic" },
   { tag: t.blockComment, color: palette.textMuted, fontStyle: "italic" },
@@ -209,4 +209,4 @@ export const qbitHighlightStyle = HighlightStyle.define([
 ]);
 
 // Combined theme extension
-export const qbitTheme = [qbitEditorTheme, syntaxHighlighting(qbitHighlightStyle)];
+export const golishTheme = [golishEditorTheme, syntaxHighlighting(golishHighlightStyle)];

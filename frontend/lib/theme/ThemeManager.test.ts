@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { QbitTheme } from "./types";
+import type { GolishTheme } from "./types";
 
 // Mock dependencies before importing ThemeManager
 vi.mock("@/lib/logger", () => ({
@@ -20,7 +20,7 @@ vi.mock("./builtin/obsidian-ember/assets/background.jpeg?url", () => ({
 }));
 
 // Create a minimal mock theme for testing
-const createMockTheme = (name: string): QbitTheme => ({
+const createMockTheme = (name: string): GolishTheme => ({
   schemaVersion: "1.0",
   name,
   colors: {
@@ -76,7 +76,7 @@ const createMockTheme = (name: string): QbitTheme => ({
 });
 
 // Mock ThemeRegistry
-const mockThemes = new Map<string, QbitTheme>();
+const mockThemes = new Map<string, GolishTheme>();
 vi.mock("./registry", () => ({
   ThemeRegistry: {
     get: vi.fn((id: string) => mockThemes.get(id)),
@@ -137,7 +137,7 @@ describe("ThemeManager", () => {
     it("startPreview applies theme without persisting to localStorage", async () => {
       // First apply a theme normally
       await ThemeManager.applyThemeById("theme-a");
-      expect(localStorageMock.setItem).toHaveBeenCalledWith("qbit.currentThemeId", "theme-a");
+      expect(localStorageMock.setItem).toHaveBeenCalledWith("golish.currentThemeId", "theme-a");
 
       localStorageMock.setItem.mockClear();
 
@@ -185,7 +185,7 @@ describe("ThemeManager", () => {
 
       ThemeManager.commitPreview();
 
-      expect(localStorageMock.setItem).toHaveBeenCalledWith("qbit.currentThemeId", "theme-b");
+      expect(localStorageMock.setItem).toHaveBeenCalledWith("golish.currentThemeId", "theme-b");
       expect(ThemeManager.isInPreviewMode()).toBe(false);
       expect(ThemeManager.getThemeId()).toBe("theme-b");
     });
@@ -257,7 +257,7 @@ describe("ThemeManager", () => {
 
       await ThemeManager.applyThemeById("theme-a");
 
-      expect(localStorageMock.setItem).toHaveBeenCalledWith("qbit.currentThemeId", "theme-a");
+      expect(localStorageMock.setItem).toHaveBeenCalledWith("golish.currentThemeId", "theme-a");
     });
   });
 

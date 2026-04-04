@@ -2,6 +2,7 @@ import { Download, Play, Terminal } from "lucide-react";
 import { memo, useEffect, useRef } from "react";
 import type { ToolConfig } from "@/lib/pentest/types";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "react-i18next";
 
 const RUNTIME_COLORS: Record<string, string> = {
   python: "text-[#3b82f6] border-[#3b82f6]/30",
@@ -21,15 +22,24 @@ const ToolSearchItem = memo(function ToolSearchItem({
   isSelected: boolean;
   onSelect: (tool: ToolConfig) => void;
 }) {
+  const { t } = useTranslation();
+  const notInstalled = !tool.installed;
+  const noEnv = tool.installed && !tool.envReady;
+  const disabled = notInstalled || noEnv;
+  const reason = notInstalled ? t("toolSearch.notInstalled") : noEnv ? t("toolSearch.noEnv") : null;
+
   return (
     <div
       role="option"
       aria-selected={isSelected}
+      aria-disabled={disabled}
       data-index={index}
-      onClick={() => onSelect(tool)}
+      onClick={() => { if (!disabled) onSelect(tool); }}
       className={cn(
-        "flex items-center gap-3 px-3 py-2 cursor-pointer transition-colors",
-        isSelected ? "bg-primary/10" : "hover:bg-card",
+        "flex items-center gap-3 px-3 py-2 transition-colors",
+        disabled
+          ? "opacity-40 cursor-not-allowed"
+          : cn("cursor-pointer", isSelected ? "bg-primary/10" : "hover:bg-card"),
       )}
     >
       <div className="w-7 h-7 rounded-md bg-[var(--bg-hover)] flex items-center justify-center flex-shrink-0">
@@ -46,9 +56,9 @@ const ToolSearchItem = memo(function ToolSearchItem({
           >
             {tool.runtime}
           </span>
-          {!tool.installed && (
+          {reason && (
             <span className="text-[10px] px-1.5 py-0 border border-yellow-500/30 text-yellow-500 rounded-full leading-[18px]">
-              未安装
+              {reason}
             </span>
           )}
         </div>
@@ -84,6 +94,7 @@ export function ToolSearchPopup({
   onSelect,
   containerRef,
 }: ToolSearchPopupProps) {
+  const { t } = useTranslation();
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -120,7 +131,7 @@ export function ToolSearchPopup({
     >
       <div className="px-3 py-1.5 border-b border-border/50">
         <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">
-          匹配工具 · {tools.length} 个结果
+          {t("toolSearch.matchedTools", { count: tools.length })}
         </span>
       </div>
       <div className="max-h-[300px] overflow-y-auto py-1" role="listbox">
@@ -135,9 +146,9 @@ export function ToolSearchPopup({
         ))}
       </div>
       <div className="px-3 py-1.5 border-t border-border/50 flex items-center gap-3 text-[10px] text-muted-foreground">
-        <span>↑↓ 选择</span>
-        <span>↵ 运行</span>
-        <span>Esc 关闭</span>
+        <span>{t("toolSearch.keySelect")}</span>
+        <span>{t("toolSearch.keyRun")}</span>
+        <span>{t("toolSearch.keyClose")}</span>
       </div>
     </div>
   );

@@ -1,61 +1,61 @@
 [workspace]
 members = [
-    "crates/qbit",
-    "crates/qbit-core",
-    "crates/qbit-evals",
-    "crates/qbit-models",
-    "crates/qbit-settings",
-    "crates/qbit-tools",
-    "crates/qbit-udiff",
-    "crates/qbit-pty",
-    "crates/qbit-sidecar",
-    "crates/qbit-artifacts",
-    "crates/qbit-synthesis",
-    "crates/qbit-session",
-    "crates/qbit-context",
-    "crates/qbit-workflow",
-    "crates/qbit-llm-providers",
-    "crates/qbit-ai",
-    "crates/qbit-sub-agents",
-    "crates/qbit-web",
-    "crates/qbit-shell-exec",
+    "crates/golish",
+    "crates/golish-core",
+    "crates/golish-evals",
+    "crates/golish-models",
+    "crates/golish-settings",
+    "crates/golish-tools",
+    "crates/golish-udiff",
+    "crates/golish-pty",
+    "crates/golish-sidecar",
+    "crates/golish-artifacts",
+    "crates/golish-synthesis",
+    "crates/golish-session",
+    "crates/golish-context",
+    "crates/golish-workflow",
+    "crates/golish-llm-providers",
+    "crates/golish-ai",
+    "crates/golish-sub-agents",
+    "crates/golish-web",
+    "crates/golish-shell-exec",
     "crates/rig-anthropic-vertex",
     "crates/rig-openai-responses",
     "crates/rig-zai-sdk",
     "crates/rig-gemini-vertex",
-    "crates/qbit-skills",
-    "crates/qbit-benchmarks",
-    "crates/qbit-swebench",
-    "crates/qbit-json-repair",
-    "crates/qbit-mcp",
+    "crates/golish-skills",
+    "crates/golish-benchmarks",
+    "crates/golish-swebench",
+    "crates/golish-json-repair",
+    "crates/golish-mcp",
     "crates/golish-pentest",
 ]
 # Default members for fast inner-loop development (excludes Tauri app, evals, benchmarks)
 default-members = [
-    "crates/qbit-core",
-    "crates/qbit-models",
-    "crates/qbit-settings",
-    "crates/qbit-tools",
-    "crates/qbit-udiff",
-    "crates/qbit-pty",
-    "crates/qbit-sidecar",
-    "crates/qbit-artifacts",
-    "crates/qbit-synthesis",
-    "crates/qbit-session",
-    "crates/qbit-context",
-    "crates/qbit-workflow",
-    "crates/qbit-llm-providers",
-    "crates/qbit-ai",
-    "crates/qbit-sub-agents",
-    "crates/qbit-web",
-    "crates/qbit-shell-exec",
+    "crates/golish-core",
+    "crates/golish-models",
+    "crates/golish-settings",
+    "crates/golish-tools",
+    "crates/golish-udiff",
+    "crates/golish-pty",
+    "crates/golish-sidecar",
+    "crates/golish-artifacts",
+    "crates/golish-synthesis",
+    "crates/golish-session",
+    "crates/golish-context",
+    "crates/golish-workflow",
+    "crates/golish-llm-providers",
+    "crates/golish-ai",
+    "crates/golish-sub-agents",
+    "crates/golish-web",
+    "crates/golish-shell-exec",
     "crates/rig-anthropic-vertex",
     "crates/rig-openai-responses",
     "crates/rig-zai-sdk",
     "crates/rig-gemini-vertex",
-    "crates/qbit-skills",
-    "crates/qbit-json-repair",
-    "crates/qbit-mcp",
+    "crates/golish-skills",
+    "crates/golish-json-repair",
+    "crates/golish-mcp",
     "crates/golish-pentest",
 ]
 resolver = "2"
@@ -69,33 +69,33 @@ repository = "https://github.com/ChristopherZh-7/golish-platform"
 
 [workspace.dependencies]
 # Internal crates
-qbit-core = { path = "crates/qbit-core" }
-qbit-evals = { path = "crates/qbit-evals" }
-qbit-models = { path = "crates/qbit-models" }
-qbit-settings = { path = "crates/qbit-settings" }
-qbit-tools = { path = "crates/qbit-tools" }
-qbit-udiff = { path = "crates/qbit-udiff" }
-qbit-pty = { path = "crates/qbit-pty" }
-qbit-sidecar = { path = "crates/qbit-sidecar" }
-qbit-artifacts = { path = "crates/qbit-artifacts" }
-qbit-session = { path = "crates/qbit-session" }
-qbit-context = { path = "crates/qbit-context" }
-qbit-workflow = { path = "crates/qbit-workflow" }
-qbit-ai = { path = "crates/qbit-ai" }
-qbit-sub-agents = { path = "crates/qbit-sub-agents" }
-qbit-llm-providers = { path = "crates/qbit-llm-providers" }
-qbit-web = { path = "crates/qbit-web" }
-qbit-shell-exec = { path = "crates/qbit-shell-exec" }
-qbit-synthesis = { path = "crates/qbit-synthesis" }
-qbit-skills = { path = "crates/qbit-skills" }
-qbit-benchmarks = { path = "crates/qbit-benchmarks" }
-qbit-swebench = { path = "crates/qbit-swebench" }
+golish-core = { path = "crates/golish-core" }
+golish-evals = { path = "crates/golish-evals" }
+golish-models = { path = "crates/golish-models" }
+golish-settings = { path = "crates/golish-settings" }
+golish-tools = { path = "crates/golish-tools" }
+golish-udiff = { path = "crates/golish-udiff" }
+golish-pty = { path = "crates/golish-pty" }
+golish-sidecar = { path = "crates/golish-sidecar" }
+golish-artifacts = { path = "crates/golish-artifacts" }
+golish-session = { path = "crates/golish-session" }
+golish-context = { path = "crates/golish-context" }
+golish-workflow = { path = "crates/golish-workflow" }
+golish-ai = { path = "crates/golish-ai" }
+golish-sub-agents = { path = "crates/golish-sub-agents" }
+golish-llm-providers = { path = "crates/golish-llm-providers" }
+golish-web = { path = "crates/golish-web" }
+golish-shell-exec = { path = "crates/golish-shell-exec" }
+golish-synthesis = { path = "crates/golish-synthesis" }
+golish-skills = { path = "crates/golish-skills" }
+golish-benchmarks = { path = "crates/golish-benchmarks" }
+golish-swebench = { path = "crates/golish-swebench" }
 rig-zai-sdk = { path = "crates/rig-zai-sdk" }
 rig-gemini-vertex = { path = "crates/rig-gemini-vertex" }
 golish-pentest = { path = "crates/golish-pentest" }
 
 # Tauri (optional - only for GUI app)
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["unstable"] }
 tauri-build = { version = "2", features = [] }
 tauri-plugin-dialog = { version = "2" }
 tauri-plugin-shell = { version = "2" }

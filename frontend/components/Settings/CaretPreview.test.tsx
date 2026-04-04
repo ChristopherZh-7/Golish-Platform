@@ -29,7 +29,7 @@ describe("CaretPreview", () => {
     it("should render preview text content", () => {
       render(<CaretPreview settings={blockSettings} />);
       // The text is split around the caret but should be present
-      expect(screen.getByText(/qbit> hello/)).toBeInTheDocument();
+      expect(screen.getByText(/golish> hello/)).toBeInTheDocument();
     });
 
     it("should render in a monospace font container", () => {

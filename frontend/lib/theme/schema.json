@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://qbit.ai/schemas/qbit-theme.schema.json",
-  "title": "Qbit Theme",
+  "$id": "https://golish.ai/schemas/golish-theme.schema.json",
+  "title": "Golish Theme",
   "type": "object",
   "required": ["schemaVersion", "name", "colors"],
   "properties": {

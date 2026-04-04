@@ -1,0 +1,27 @@
+[package]
+name = "golish-evals"
+version.workspace = true
+edition.workspace = true
+description = "Evaluation framework for Golish AI agent testing"
+
+[dependencies]
+# Internal crates
+golish-ai = { path = "../golish-ai" }
+golish-core = { path = "../golish-core" }
+golish-settings = { path = "../golish-settings" }
+golish-sub-agents = { path = "../golish-sub-agents" }
+
+# External dependencies
+tokio.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tempfile.workspace = true
+indicatif.workspace = true
+rig-core = { workspace = true, features = ["experimental"] }
+rig-anthropic-vertex = { path = "../rig-anthropic-vertex" }
+rig-zai-sdk = { path = "../rig-zai-sdk" }
+async-trait.workspace = true
+regex.workspace = true
+reqwest.workspace = true

@@ -1,20 +1,24 @@
 import { useCallback, useEffect, useState, useRef } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowLeft, ArrowUpDown, Check, Code2, Copy, Download, FileText,
   FolderOpen, Grid3X3, Loader2, List, Plus, RefreshCw, Save, Search, Trash2, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
-import { scanTools, deleteTool, getCategories, fetchGitHubRelease, downloadAndExtract, installRuntime } from "@/lib/pentest/api";
+import { listen } from "@tauri-apps/api/event";
+import { scanTools, deleteTool, getCategories, fetchGitHubRelease, downloadAndExtract, installRuntime, createPythonEnv, listPythonEnvs, listInstalledJava, listAvailableJava, installJavaVersion } from "@/lib/pentest/api";
 import type { ToolConfig, ToolCategory } from "@/lib/pentest/types";
 import { getSettings } from "@/lib/settings";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useTranslation } from "react-i18next";
 
 type ToolWithMeta = ToolConfig & { categoryName?: string; subcategoryName?: string };
 type ViewMode = "grid" | "list";
 type SortKey = "name" | "status" | "category" | "runtime";
 
 export function ToolManager() {
+  const { t } = useTranslation();
   const [tools, setTools] = useState<ToolWithMeta[]>([]);
   const [categories, setCategories] = useState<ToolCategory[]>([]);
   const [loading, setLoading] = useState(true);
@@ -41,9 +45,19 @@ export function ToolManager() {
   // Context menu
   const [ctxMenu, setCtxMenu] = useState<{ tool: ToolWithMeta; x: number; y: number } | null>(null);
   const [uninstallTarget, setUninstallTarget] = useState<ToolWithMeta | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ToolWithMeta | null>(null);
 
   // Install progress
   const [installProgress, setInstallProgress] = useState<Record<string, string>>({});
+  const [dlProgress, setDlProgress] = useState<{ downloaded: number; total: number } | null>(null);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    listen<{ downloaded: number; total: number }>("download-progress", (e) => {
+      setDlProgress(e.payload);
+    }).then((fn) => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  }, []);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -67,7 +81,7 @@ export function ToolManager() {
       }));
       setTools(enriched);
     } catch (e) {
-      setError(`加载失败: ${e}`);
+      setError(t("toolManager.loadFailed", { error: e }));
     } finally {
       setLoading(false);
     }
@@ -87,59 +101,261 @@ export function ToolManager() {
 
   const handleInstall = useCallback(async (tool: ToolWithMeta) => {
     const method = tool.install?.method;
-    if (!method) { setError(`工具 ${tool.name} 没有配置安装方式`); return; }
+    if (!method) { setError(t("toolManager.noInstallMethod", { name: tool.name })); return; }
+
+    const proxyUrl = await getProxy();
+
+    if (tool.runtime === "python" && tool.runtimeVersion) {
+      const ver = tool.runtimeVersion;
+      const envName = `python${ver}_env`;
+      console.log(`[Install] ${tool.name}: 检查 Python 环境 ${envName}...`);
+
+      let envExists = false;
+      try {
+        const envsResult = await listPythonEnvs();
+        if (envsResult.success) {
+          envExists = envsResult.versions.some((v) => v.vendor === envName);
+          console.log(`[Install] 已有环境:`, envsResult.versions.map((v) => v.vendor));
+        }
+      } catch { /* assume not exists */ }
+
+      console.log(`[Install] ${envName} 存在: ${envExists}`);
+      if (!envExists) {
+        setError(null);
+        setBusy(tool.id);
+        setInstallProgress((p) => ({ ...p, [tool.id]: t("install.missingPythonEnv", { ver }) }));
+        try {
+          const envResult = await createPythonEnv(envName, ver, proxyUrl);
+          if (!envResult.success) {
+            setError(t("install.pythonEnvFailed", { ver, error: envResult.message }));
+            setBusy(null);
+            setInstallProgress((p) => { const n = { ...p }; delete n[tool.id]; return n; });
+            return;
+          }
+        } catch (e) {
+          setError(t("install.pythonEnvFailed", { ver, error: e }));
+          setBusy(null);
+          setInstallProgress((p) => { const n = { ...p }; delete n[tool.id]; return n; });
+          return;
+        }
+      }
+    }
+
+    if (tool.runtime === "java") {
+      const requiredMajor = tool.runtimeVersion || "17";
+      console.log(`[Install] ${tool.name}: 检查 Java ${requiredMajor} 环境...`);
+      let javaReady = false;
+      try {
+        const javaResult = await listInstalledJava();
+        if (javaResult.success && javaResult.versions.length > 0) {
+          console.log(`[Install] 已安装 Java 版本:`, javaResult.versions.map((v) => v.version));
+          javaReady = javaResult.versions.some((v) => v.version.startsWith(`${requiredMajor}.`) || v.version === requiredMajor);
+        }
+      } catch { /* assume not installed */ }
+
+      console.log(`[Install] Java ${requiredMajor} 已安装: ${javaReady}`);
+      if (!javaReady) {
+        setError(null);
+        setBusy(tool.id);
+        setInstallProgress((p) => ({ ...p, [tool.id]: t("install.missingJava", { ver: requiredMajor }) }));
+        try {
+          let identifier = "";
+          const available = await listAvailableJava();
+          if (available.success) {
+            const majorMatches = available.versions.filter((v) =>
+              v.version.startsWith(`${requiredMajor}.`) || v.version === requiredMajor
+            );
+            const fxMatch = majorMatches.find((v) => v.version.includes("-fx"));
+            const temMatch = majorMatches.find((v) => v.version.endsWith("-tem"));
+            const match = fxMatch || temMatch || majorMatches[0];
+            if (match) identifier = match.version;
+            console.log(`[Install] Java ${requiredMajor} 可选版本: ${majorMatches.map(v => v.version).join(", ")}, 选择: ${identifier}`);
+          }
+          if (!identifier) {
+            setError(t("install.javaNotFound", { ver: requiredMajor }));
+            setBusy(null);
+            setInstallProgress((p) => { const n = { ...p }; delete n[tool.id]; return n; });
+            return;
+          }
+          console.log(`[Install] 自动安装 Java: ${identifier}`);
+          setInstallProgress((p) => ({ ...p, [tool.id]: t("install.installingJava", { id: identifier }) }));
+          const javaInstall = await installJavaVersion(identifier, proxyUrl);
+          if (!javaInstall.success) {
+            setError(t("install.javaFailed", { ver: requiredMajor, error: javaInstall.message }));
+            setBusy(null);
+            setInstallProgress((p) => { const n = { ...p }; delete n[tool.id]; return n; });
+            return;
+          }
+        } catch (e) {
+          setError(t("install.javaFailed", { ver: requiredMajor, error: e }));
+          setBusy(null);
+          setInstallProgress((p) => { const n = { ...p }; delete n[tool.id]; return n; });
+          return;
+        }
+      }
+    }
+
     setBusy(tool.id);
-    setInstallProgress((p) => ({ ...p, [tool.id]: "准备中..." }));
+    setInstallProgress((p) => ({ ...p, [tool.id]: t("common.preparing") }));
+    setDlProgress(null);
     setError(null);
     try {
-      const proxyUrl = await getProxy();
       if (method === "github") {
         const source = tool.install?.source;
-        if (!source) throw new Error("缺少 GitHub 仓库地址");
+        if (!source) throw new Error(t("install.missingGithubSource"));
         const [owner, repo] = source.split("/");
-        if (!owner || !repo) throw new Error("GitHub source 格式错误");
-        setInstallProgress((p) => ({ ...p, [tool.id]: "获取版本..." }));
-        const release = await fetchGitHubRelease(owner, repo);
-        const platform = navigator.platform.toLowerCase();
-        const isMac = platform.includes("mac") || platform.includes("darwin");
-        const asset = release.assets.find((a) => {
-          const n = a.name.toLowerCase();
-          if (isMac) return n.includes("darwin") || n.includes("macos") || n.includes("mac") || n.includes("osx");
-          return n.includes("linux");
-        }) || release.assets.find((a) => {
-          const n = a.name.toLowerCase();
-          return n.endsWith(".zip") || n.endsWith(".tar.gz") || n.endsWith(".tgz");
-        });
-        let downloadUrl: string, fileName: string;
-        if (!asset) {
-          downloadUrl = `https://github.com/${source}/archive/refs/tags/${release.tag_name}.zip`;
-          fileName = `${repo}-${release.tag_name}.zip`;
-        } else {
-          downloadUrl = asset.browser_download_url;
-          fileName = asset.name;
-        }
-        setInstallProgress((p) => ({ ...p, [tool.id]: "下载中..." }));
-        const result = await downloadAndExtract({ url: downloadUrl, fileName, useProxy: !!proxyUrl });
-        if (!result.success) throw new Error(result.error || "下载失败");
-        setInstallProgress((p) => ({ ...p, [tool.id]: "安装中..." }));
-        if (result.extract_path && tool.executable) {
-          const toolDir = tool.executable.split("/")[0];
-          if (toolDir && !result.extract_path.endsWith(`/${toolDir}`)) {
-            try {
-              await invoke("pentest_rename_tool_dir", { fromPath: result.extract_path, toName: toolDir });
-            } catch { /* ignore */ }
+        if (!owner || !repo) throw new Error(t("install.githubSourceFormat"));
+        setInstallProgress((p) => ({ ...p, [tool.id]: t("install.detectMethod") }));
+
+        let binaryAsset: { browser_download_url: string; name: string } | null = null;
+        let releaseVersion: string | null = null;
+        try {
+          console.log(`[Install] ${tool.name}: 获取 GitHub release from ${owner}/${repo}`);
+          const release = await fetchGitHubRelease(owner, repo);
+          releaseVersion = release.tag_name;
+          console.log(`[Install] ${tool.name}: Release tag=${release.tag_name}, assets=[${release.assets.map((a) => a.name).join(", ")}]`);
+          const platform = navigator.platform.toLowerCase();
+          const isMac = platform.includes("mac") || platform.includes("darwin");
+          binaryAsset = release.assets.find((a) => {
+            const n = a.name.toLowerCase();
+            if (isMac) return n.includes("darwin") || n.includes("macos") || n.includes("mac") || n.includes("osx");
+            return n.includes("linux");
+          }) || release.assets.find((a) => {
+            const n = a.name.toLowerCase();
+            return n.endsWith(".zip") || n.endsWith(".tar.gz") || n.endsWith(".tgz") || n.endsWith(".jar");
+          }) || null;
+          console.log(`[Install] ${tool.name}: 选中的 asset = ${binaryAsset?.name || "null"}`);
+        } catch (releaseErr) {
+          const errStr = String(releaseErr);
+          console.error(`[Install] ${tool.name}: Release 获取失败:`, errStr);
+          if (errStr.includes("403")) {
+            throw new Error(t("install.githubRateLimit"));
           }
+          console.warn(`[Install] ${tool.name}: 非限流错误, 将尝试 git clone:`, errStr);
+        }
+
+        if (binaryAsset) {
+          console.log(`[Install] ${tool.name}: 开始下载 ${binaryAsset.name} from ${binaryAsset.browser_download_url}`);
+          setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.downloadRelease") }));
+          const result = await downloadAndExtract({ url: binaryAsset.browser_download_url, fileName: binaryAsset.name, useProxy: !!proxyUrl });
+          console.log(`[Install] ${tool.name}: 下载结果:`, JSON.stringify(result));
+          if (!result.success) throw new Error(result.error || t("install.downloadFailed"));
+          setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.installing") }));
+
+          const stableDirName = tool.name;
+          console.log(`[Install] ${tool.name}: 稳定目录名 = ${stableDirName}, extract_path = ${result.extract_path}`);
+          if (result.extract_path) {
+            const actualDir = result.extract_path.split("/").pop() || "";
+            console.log(`[Install] ${tool.name}: 实际目录 = ${actualDir}, 目标 = ${stableDirName}`);
+            if (actualDir && actualDir !== stableDirName) {
+              try {
+                await invoke("pentest_rename_tool_dir", { fromPath: result.extract_path, toName: stableDirName });
+                console.log(`[Install] ${tool.name}: 重命名成功 ${actualDir} → ${stableDirName}`);
+              } catch (renameErr) {
+                console.error(`[Install] ${tool.name}: 重命名失败:`, renameErr);
+              }
+            }
+          }
+
+          setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.detectExecutable") }));
+          try {
+            const execs: string[] = await invoke("pentest_find_tool_executables", {
+              toolDir: stableDirName,
+              runtime: tool.runtime || null,
+            });
+            console.log(`[Install] ${tool.name}: 扫描到可执行文件:`, execs);
+
+            let selectedExec: string | null = null;
+            if (execs.length === 1) {
+              selectedExec = execs[0];
+              console.log(`[Install] ${tool.name}: 自动选择: ${selectedExec}`);
+            } else if (execs.length > 1) {
+              console.log(`[Install] ${tool.name}: 多个可执行文件，弹出选择器`);
+              selectedExec = await new Promise<string | null>((resolve) => {
+                setExecPicker({ tool, dirName: stableDirName, candidates: execs, resolve });
+              });
+              console.log(`[Install] ${tool.name}: 用户选择: ${selectedExec}`);
+            } else {
+              console.warn(`[Install] ${tool.name}: 未找到可执行文件！`);
+            }
+
+            if (selectedExec) {
+              const newExecutable = `${stableDirName}/${selectedExec}`;
+              console.log(`[Install] ${tool.name}: 当前 executable = ${tool.executable}, 新 = ${newExecutable}`);
+              await invoke("pentest_update_tool_executable", {
+                toolId: tool.id,
+                category: tool.category,
+                subcategory: tool.subcategory,
+                newExecutable,
+                version: releaseVersion || undefined,
+                lastUpdated: new Date().toISOString().slice(0, 10),
+              });
+              console.log(`[Install] ${tool.name}: executable 已更新, version=${releaseVersion}`);
+            } else if (releaseVersion) {
+              await invoke("pentest_update_tool_executable", {
+                toolId: tool.id,
+                category: tool.category,
+                subcategory: tool.subcategory,
+                newExecutable: tool.executable,
+                version: releaseVersion,
+                lastUpdated: new Date().toISOString().slice(0, 10),
+              });
+            }
+          } catch (scanErr) {
+            console.error(`[Install] ${tool.name}: 扫描/更新失败:`, scanErr);
+          }
+        } else {
+          console.log(`[Install] ${tool.name}: 无 binary asset，使用 git clone`);
+          setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.gitCloning") }));
+          const toolDir = tool.executable?.split("/")[0] || tool.name;
+          const cloneUrl = `https://github.com/${source}.git`;
+          console.log(`[Install] ${tool.name}: git clone ${cloneUrl} → ${toolDir}`);
+          await invoke("pentest_git_clone_tool", { source: cloneUrl, toolDir, proxyUrl: proxyUrl || null });
+          console.log(`[Install] ${tool.name}: git clone 完成`);
         }
       } else if (method === "homebrew") {
-        setInstallProgress((p) => ({ ...p, [tool.id]: "Homebrew 安装中..." }));
+        setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.brewInstalling") }));
         const pkg = tool.install?.source || tool.name;
-        await installRuntime(`brew:${pkg}`, proxyUrl);
+        const brewResult = await installRuntime(`brew:${pkg}`, proxyUrl);
+        const brewVerMatch = brewResult.message?.match(/BREW_VERSION=(.+)/);
+        if (brewVerMatch) {
+          await invoke("pentest_update_tool_executable", {
+            toolId: tool.id,
+            category: tool.category,
+            subcategory: tool.subcategory,
+            newExecutable: tool.executable,
+            version: brewVerMatch[1],
+            lastUpdated: new Date().toISOString().slice(0, 10),
+          });
+        }
       }
+
+      if (tool.runtime === "python" && tool.runtimeVersion) {
+        const toolDir = tool.executable?.split("/")[0] || tool.name;
+        try {
+          const hasReqs = await invoke<boolean>("pentest_check_requirements", { toolDir });
+          console.log(`[Install] ${tool.name}: requirements.txt exists = ${hasReqs}`);
+          if (hasReqs) {
+            setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.installingPythonDeps") }));
+            await invoke("pentest_install_requirements", {
+              toolDir,
+              pythonVersion: tool.runtimeVersion,
+              proxyUrl: proxyUrl || null,
+            });
+            console.log(`[Install] ${tool.name}: requirements.txt 依赖安装完成`);
+          }
+        } catch (e) {
+          console.warn(`[Install] ${tool.name}: requirements.txt 安装失败:`, e);
+        }
+      }
+
+      console.log(`[Install] ${tool.name}: 安装流程完成`);
       await loadData();
     } catch (e) {
-      setError(`安装失败: ${e}`);
+      setError(t("toolManager.installFailed", { error: e }));
     } finally {
       setBusy(null);
+      setDlProgress(null);
       setInstallProgress((p) => { const n = { ...p }; delete n[tool.id]; return n; });
     }
   }, [getProxy, loadData]);
@@ -151,11 +367,63 @@ export function ToolManager() {
       if (toolDir) await invoke("pentest_uninstall_tool_files", { toolDir });
       await loadData();
     } catch (e) {
-      setError(`卸载失败: ${e}`);
+      setError(t("toolManager.uninstallFailed", { error: e }));
     } finally {
       setBusy(null);
     }
   }, [loadData]);
+
+  const [depPicker, setDepPicker] = useState<{ tool: ToolWithMeta; files: string[] } | null>(null);
+  const [execPicker, setExecPicker] = useState<{
+    tool: ToolWithMeta;
+    dirName: string;
+    candidates: string[];
+    resolve: (v: string | null) => void;
+  } | null>(null);
+
+  const handleInstallDeps = useCallback(async (tool: ToolWithMeta) => {
+    if (tool.runtime !== "python" || !tool.runtimeVersion) return;
+    const toolDir = tool.executable?.split("/")[0] || tool.name;
+    try {
+      const files = await invoke<string[]>("pentest_list_dep_files", { toolDir });
+      if (files.length === 0) {
+        setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.noDepFiles") }));
+        setTimeout(() => setInstallProgress((p) => { const n = { ...p }; delete n[tool.id]; return n; }), 2000);
+        return;
+      }
+      if (files.length === 1 && files[0].toLowerCase() === "requirements.txt") {
+        await doInstallDepFile(tool, files[0]);
+      } else {
+        setDepPicker({ tool, files });
+      }
+    } catch (e) {
+      setError(t("toolManager.scanFailed", { error: e }));
+    }
+  }, []);
+
+  const doInstallDepFile = useCallback(async (tool: ToolWithMeta, fileName: string) => {
+    setDepPicker(null);
+    const toolDir = tool.executable?.split("/")[0] || tool.name;
+    setBusy(tool.id);
+    setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.installingDeps", { file: fileName }) }));
+    setError(null);
+    try {
+      const proxyUrl = await getProxy();
+      await invoke("pentest_install_dep_file", {
+        toolDir,
+        fileName,
+        pythonVersion: tool.runtimeVersion || "",
+        proxyUrl: proxyUrl || null,
+      });
+      setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.depInstallDone") }));
+      await new Promise((r) => setTimeout(r, 1500));
+    } catch (e) {
+      setError(t("toolManager.depInstallFailed", { error: e }));
+    } finally {
+      setBusy(null);
+      setInstallProgress((p) => { const n = { ...p }; delete n[tool.id]; return n; });
+    }
+  }, [getProxy]);
 
   const handleUninstall = useCallback((tool: ToolWithMeta) => {
     setUninstallTarget(tool);
@@ -242,14 +510,26 @@ export function ToolManager() {
       let content: string;
       if (editorMode === "raw") { JSON.parse(rawJson); content = rawJson; }
       else { content = JSON.stringify({ tool: formData }, null, 2); }
-      await invoke("pentest_save_tool_config", {
-        category: editingTool.category, subcategory: editingTool.subcategory,
-        toolId: editingTool.id, content,
-      });
+
+      // Use category/subcategory from form data (user may have changed them)
+      const category = (formData.category as string) || editingTool.category || "misc";
+      const subcategory = (formData.subcategory as string) || editingTool.subcategory || "other";
+      const toolId = (formData.id as string) || editingTool.id;
+
+      // If category changed, delete old config first
+      if (editingTool.category && editingTool.subcategory &&
+          (editingTool.category !== category || editingTool.subcategory !== subcategory)) {
+        await invoke("pentest_delete_tool", {
+          toolId: editingTool.id, category: editingTool.category,
+          subcategory: editingTool.subcategory, toolFolder: null,
+        }).catch(() => {});
+      }
+
+      await invoke("pentest_save_tool_config", { category, subcategory, toolId, content });
       setEditorDirty(false);
       await loadData();
     } catch (e) {
-      setError(`保存失败: ${e}`);
+      setError(t("toolManager.saveFailed", { error: e }));
     } finally {
       setSaving(false);
     }
@@ -261,36 +541,41 @@ export function ToolManager() {
     setEditorMode(mode);
   }, [editorMode, formData, rawJson, syncFormToRaw, syncRawToForm]);
 
-  // Add new tool
-  const handleAddTool = useCallback(async () => {
+  // Add new tool — open editor directly without creating a file
+  const handleAddTool = useCallback(() => {
     const id = Math.random().toString(36).substring(2, 10);
-    const newTool = {
-      tool: {
-        id,
-        name: "新工具",
-        description: "",
-        icon: "🔧",
-        executable: "",
-        runtime: "native",
-        runtimeVersion: "",
-        ui: "cli",
-        params: [],
-        install: { method: "", source: "" },
-      },
+    const defaults: Record<string, unknown> = {
+      id,
+      name: "",
+      description: "",
+      icon: "🔧",
+      executable: "",
+      runtime: "native",
+      runtimeVersion: "",
+      ui: "cli",
+      params: [],
+      install: { method: "", source: "" },
     };
-    const content = JSON.stringify(newTool, null, 2);
-    try {
-      await invoke("pentest_save_tool_config", {
-        category: "misc",
-        subcategory: "other",
-        toolId: id,
-        content,
-      });
-      await loadData();
-    } catch (e) {
-      setError(`创建失败: ${e}`);
-    }
-  }, [loadData]);
+    const json = JSON.stringify({ tool: defaults }, null, 2);
+    const placeholder: ToolWithMeta = {
+      ...defaults,
+      name: t("toolManager.newTool"),
+      category: "misc",
+      subcategory: "other",
+      installed: false,
+      categoryName: "misc",
+      subcategoryName: "other",
+    } as unknown as ToolWithMeta;
+
+    setEditingTool(placeholder);
+    setEditorMode("form");
+    setEditorDirty(true);
+    setEditorLoading(false);
+    originalJsonRef.current = json;
+    setRawJson(json);
+    setFormData(defaults);
+    requestAnimationFrame(() => setEditorVisible(true));
+  }, []);
 
   // Context menu
   const handleContextMenu = useCallback((e: React.MouseEvent, tool: ToolWithMeta) => {
@@ -299,7 +584,7 @@ export function ToolManager() {
     setCtxMenu({ tool, x: e.clientX, y: e.clientY });
   }, []);
 
-  const ctxAction = useCallback((action: string) => {
+  const ctxAction = useCallback(async (action: string) => {
     if (!ctxMenu) return;
     const tool = ctxMenu.tool;
     setCtxMenu(null);
@@ -307,12 +592,16 @@ export function ToolManager() {
       case "edit": openEditor(tool); break;
       case "uninstall": handleUninstall(tool); break;
       case "install": handleInstall(tool); break;
+      case "install-deps": handleInstallDeps(tool); break;
       case "copy-id": navigator.clipboard.writeText(tool.id); break;
       case "open-dir":
-        invoke("pentest_open_tool_dir", { toolDir: tool.executable.split("/")[0] || tool.name }).catch(() => {});
+        invoke("pentest_open_directory", { executable: tool.executable || tool.name }).catch(() => {});
+        break;
+      case "delete":
+        setDeleteTarget(tool);
         break;
     }
-  }, [ctxMenu, openEditor, handleUninstall, handleInstall]);
+  }, [ctxMenu, openEditor, handleUninstall, handleInstall, handleInstallDeps, loadData]);
 
   // Filtering and sorting
   const installedCount = tools.filter((t) => t.installed).length;
@@ -356,7 +645,7 @@ export function ToolManager() {
 
   const installMethodLabel = (tool: ToolWithMeta) => {
     const method = tool.install?.method;
-    if (!method || method === "manual") return "手动";
+    if (!method || method === "manual") return t("toolManager.manual");
     if (method === "github") return "GitHub";
     if (method === "homebrew") return "Homebrew";
     return method;
@@ -369,7 +658,7 @@ export function ToolManager() {
   }) => (
     <Select value={value || undefined} onValueChange={onChange}>
       <SelectTrigger size="sm" className="flex-1 h-7 border-transparent bg-transparent hover:border-border/20 text-[12px] shadow-none px-2 gap-1">
-        <SelectValue placeholder="选择..." />
+        <SelectValue placeholder={t("common.select")} />
       </SelectTrigger>
       <SelectContent position="popper" className="min-w-[120px]">
         {options.map((o) => <SelectItem key={o.value} value={o.value || "_none"} className="text-[12px]">{o.label}</SelectItem>)}
@@ -427,13 +716,13 @@ export function ToolManager() {
     return (
       <div className="px-3">
         {params.length === 0 ? (
-          <p className="text-[12px] text-muted-foreground/25 py-3 text-center">暂无参数</p>
+          <p className="text-[12px] text-muted-foreground/25 py-3 text-center">{t("toolManager.noParams")}</p>
         ) : (
           <div className="space-y-1">
             {params.map((p, i) => (
               <div key={i} className="flex items-center gap-2 py-1.5 group/param rounded-lg hover:bg-[var(--bg-hover)]/30 px-1">
                 <input value={(p.label as string) || ""} onChange={(e) => updateParam(i, "label", e.target.value)}
-                  placeholder="标签" className="flex-[3] h-7 px-2 text-[12px] rounded-md bg-transparent border border-transparent hover:border-border/20 focus:border-accent/40 text-foreground placeholder:text-muted-foreground/20 outline-none transition-colors" />
+                  placeholder={t("toolManager.label")} className="flex-[3] h-7 px-2 text-[12px] rounded-md bg-transparent border border-transparent hover:border-border/20 focus:border-accent/40 text-foreground placeholder:text-muted-foreground/20 outline-none transition-colors" />
                 <input value={(p.flag as string) || ""} onChange={(e) => updateParam(i, "flag", e.target.value)}
                   placeholder="--flag" className="flex-[2] h-7 px-2 text-[11px] font-mono rounded-md bg-transparent border border-transparent hover:border-border/20 focus:border-accent/40 text-foreground placeholder:text-muted-foreground/20 outline-none transition-colors" />
                 <div className="flex-[1.5]">
@@ -456,9 +745,26 @@ export function ToolManager() {
         )}
         <button type="button" onClick={addParam}
           className="flex items-center gap-1 text-[11px] text-accent/60 hover:text-accent transition-colors mt-2 px-1">
-          <Plus className="w-3 h-3" /> 添加参数
+          <Plus className="w-3 h-3" /> {t("toolManager.addParam")}
         </button>
       </div>
+    );
+  };
+
+  const CircleProgress = ({ size = 28, pct }: { size?: number; pct: number }) => {
+    const r = (size - 4) / 2;
+    const circ = 2 * Math.PI * r;
+    const offset = circ * (1 - Math.min(Math.max(pct, 0), 1));
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="flex-shrink-0">
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none"
+          stroke="currentColor" strokeWidth="2.5" className="text-muted-foreground/10" />
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none"
+          stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
+          strokeDasharray={`${circ}`} strokeDashoffset={`${offset}`}
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+          className="text-accent transition-[stroke-dashoffset] duration-200" />
+      </svg>
     );
   };
 
@@ -466,23 +772,29 @@ export function ToolManager() {
   const ActionButton = ({ tool }: { tool: ToolWithMeta }) => {
     const isBusy = busy === tool.id;
     const progress = installProgress[tool.id];
+    const hasDlProgress = isBusy && dlProgress && dlProgress.total > 0;
+    const dlPct = hasDlProgress ? dlProgress!.downloaded / dlProgress!.total : 0;
     return (
       <div className="flex items-center gap-1 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
         {isBusy ? (
           <div className="flex items-center gap-1.5">
-            <Loader2 className="w-3.5 h-3.5 animate-spin text-accent/60" />
-            {progress && <span className="text-[10px] text-accent/50 whitespace-nowrap">{progress}</span>}
+            {hasDlProgress ? (
+              <CircleProgress pct={dlPct} size={22} />
+            ) : (
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-accent/60" />
+            )}
+            {progress && <span className="text-[10px] text-accent/50 whitespace-nowrap max-w-[80px] truncate">{progress}</span>}
           </div>
         ) : tool.installed ? (
           <button type="button" onClick={() => handleUninstall(tool)}
-            className="p-1 rounded text-muted-foreground/30 opacity-0 group-hover:opacity-100 hover:text-destructive transition-all" title="卸载">
+            className="p-1 rounded text-muted-foreground/30 opacity-0 group-hover:opacity-100 hover:text-destructive transition-all" title={t("common.uninstall")}>
             <Trash2 className="w-3.5 h-3.5" />
           </button>
         ) : (
           <button type="button" onClick={() => handleInstall(tool)}
             className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
-            title={`通过 ${installMethodLabel(tool)} 安装`}>
-            <Download className="w-3 h-3" /> 安装
+            title={t("toolManager.installVia", { method: installMethodLabel(tool) })}>
+            <Download className="w-3 h-3" /> {t("common.install")}
           </button>
         )}
       </div>
@@ -515,7 +827,7 @@ export function ToolManager() {
       onClick={() => openEditor(tool)}
       onContextMenu={(e) => handleContextMenu(e, tool)}
       className={cn(
-        "group rounded-xl border transition-all cursor-pointer p-4",
+        "group rounded-xl border transition-colors cursor-pointer p-4",
         tool.installed
           ? "border-border/15 bg-[var(--bg-hover)]/20 hover:bg-[var(--bg-hover)]/40"
           : "border-border/10 bg-[var(--bg-hover)]/8 hover:bg-[var(--bg-hover)]/20"
@@ -528,7 +840,7 @@ export function ToolManager() {
             <span className={cn("text-[13px] font-medium truncate", tool.installed ? "text-foreground" : "text-foreground/60")}>{tool.name}</span>
             {tool.installed && (
               <span className="text-[9px] px-1.5 py-px rounded-full bg-green-500/15 text-green-400 flex-shrink-0 flex items-center gap-0.5">
-                <Check className="w-2.5 h-2.5" /> 已安装
+                <Check className="w-2.5 h-2.5" /> {t("common.installed")}
               </span>
             )}
           </div>
@@ -547,7 +859,7 @@ export function ToolManager() {
       onClick={() => openEditor(tool)}
       onContextMenu={(e) => handleContextMenu(e, tool)}
       className={cn(
-        "group rounded-xl border transition-all cursor-pointer px-4 py-2.5 flex items-center",
+        "group rounded-xl border transition-colors cursor-pointer px-4 py-2.5 flex items-center",
         tool.installed
           ? "border-border/15 bg-[var(--bg-hover)]/20 hover:bg-[var(--bg-hover)]/40"
           : "border-border/10 bg-[var(--bg-hover)]/8 hover:bg-[var(--bg-hover)]/20"
@@ -558,7 +870,7 @@ export function ToolManager() {
         <span className={cn("text-[13px] font-medium truncate", tool.installed ? "text-foreground" : "text-foreground/60")}>{tool.name}</span>
         {tool.installed && (
           <span className="text-[9px] px-1.5 py-px rounded-full bg-green-500/15 text-green-400 flex-shrink-0 flex items-center gap-0.5">
-            <Check className="w-2.5 h-2.5" /> 已安装
+            <Check className="w-2.5 h-2.5" /> {t("common.installed")}
           </span>
         )}
       </div>
@@ -588,9 +900,9 @@ export function ToolManager() {
                 <div className="flex items-center gap-2">
                   {editingTool.icon && <span className="text-[14px]">{editingTool.icon}</span>}
                   <h1 className="text-[16px] font-semibold text-foreground">{editingTool.name}</h1>
-                  {editorDirty && <span className="w-2 h-2 rounded-full bg-accent/60 flex-shrink-0" title="有未保存的修改" />}
+                  {editorDirty && <span className="w-2 h-2 rounded-full bg-accent/60 flex-shrink-0" title={t("toolManager.unsavedChanges")} />}
                 </div>
-                <p className="text-[11px] text-muted-foreground/50 mt-0.5">编辑工具配置</p>
+                <p className="text-[11px] text-muted-foreground/50 mt-0.5">{t("toolManager.editToolConfig")}</p>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -598,35 +910,35 @@ export function ToolManager() {
                 <button type="button" onClick={() => handleSwitchMode("form")}
                   className={cn("flex items-center gap-1.5 px-3 py-1.5 text-[11px] transition-colors",
                     editorMode === "form" ? "bg-accent/15 text-accent" : "text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)]")}>
-                  <FileText className="w-3 h-3" /> 界面
+                  <FileText className="w-3 h-3" /> {t("toolManager.form")}
                 </button>
                 <button type="button" onClick={() => handleSwitchMode("raw")}
                   className={cn("flex items-center gap-1.5 px-3 py-1.5 text-[11px] transition-colors",
                     editorMode === "raw" ? "bg-accent/15 text-accent" : "text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)]")}>
-                  <Code2 className="w-3 h-3" /> JSON
+                  <Code2 className="w-3 h-3" /> {t("toolManager.json")}
                 </button>
               </div>
               <button type="button" onClick={handleSave} disabled={saving || !editorDirty}
                 className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-colors",
                   editorDirty ? "bg-accent text-accent-foreground hover:bg-accent/90" : "bg-muted/30 text-muted-foreground/30 cursor-not-allowed")}>
-                {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />} 保存
+                {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />} {t("common.save")}
               </button>
             </div>
           </>
         ) : (
           <>
             <div>
-              <h1 className="text-[16px] font-semibold text-foreground">工具管理</h1>
+              <h1 className="text-[16px] font-semibold text-foreground">{t("toolManager.title")}</h1>
               <p className="text-[11px] text-muted-foreground/50 mt-0.5">
-                {tools.length} 个工具 · {installedCount} 已安装
+                {t("toolManager.toolCount", { count: tools.length, installed: installedCount })}
               </p>
             </div>
             <div className="flex items-center gap-1.5">
-              <button type="button" onClick={handleAddTool} title="添加工具"
+              <button type="button" onClick={handleAddTool} title={t("toolManager.addTool")}
                 className="p-2 rounded-lg text-muted-foreground/50 hover:text-accent hover:bg-[var(--bg-hover)] transition-colors">
                 <Plus className="w-4 h-4" />
               </button>
-              <button type="button" onClick={loadData} disabled={loading} title="刷新"
+              <button type="button" onClick={loadData} disabled={loading} title={t("common.refresh")}
                 className="p-2 rounded-lg text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-30">
                 <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
               </button>
@@ -658,51 +970,69 @@ export function ToolManager() {
             <div className="flex gap-4 h-full">
               <div className="flex-1 min-w-0 space-y-4 overflow-y-auto">
                 <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
-                  <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/40">基本信息</span></div>
-                  <FieldRow label="名称" field="name" placeholder="dirsearch" />
-                  <FieldRow label="图标" field="icon" placeholder="📂" />
+                  <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/40">{t("toolManager.basicInfo")}</span></div>
+                  <FieldRow label={t("toolManager.name")} field="name" placeholder="dirsearch" />
+                  <FieldRow label={t("toolManager.icon")} field="icon" placeholder="📂" />
                   <div className="flex items-start gap-3 py-2 px-3 rounded-lg hover:bg-[var(--bg-hover)]/30 transition-colors">
-                    <span className="text-[12px] text-muted-foreground/60 w-24 flex-shrink-0 mt-1.5">描述</span>
+                    <span className="text-[12px] text-muted-foreground/60 w-24 flex-shrink-0 mt-1.5">{t("toolManager.description")}</span>
                     <textarea value={(formData.description as string) ?? ""} onChange={(e) => handleFormChange("description", e.target.value)}
-                      placeholder="工具描述..." rows={2}
+                      placeholder={t("toolManager.descriptionPlaceholder")} rows={2}
                       className="flex-1 px-2 py-1.5 text-[12px] rounded-md bg-transparent border border-transparent hover:border-border/20 focus:border-accent/40 text-foreground placeholder:text-muted-foreground/20 outline-none transition-colors resize-y" />
                   </div>
+                  <FieldRow label={t("common.version")} field="version" placeholder="1.0.0" />
                   <FieldRow label="ID" field="id" mono placeholder="hash" />
-                  <FieldRow label="可执行文件" field="executable" mono placeholder="tool/main.py" />
+                  <FieldRow label={t("toolManager.executable")} field="executable" mono placeholder="tool/main.py" />
                 </div>
                 <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
-                  <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/40">运行环境</span></div>
-                  <FieldRow label="运行时" field="runtime" type="select" options={[
+                  <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/40">{t("toolManager.runtime")}</span></div>
+                  <FieldRow label={t("toolManager.runtimeLabel")} field="runtime" type="select" options={[
                     { value: "python", label: "Python" }, { value: "java", label: "Java" },
                     { value: "node", label: "Node.js" }, { value: "native", label: "Native" },
                   ]} />
-                  <FieldRow label="版本" field="runtimeVersion" placeholder="3.11" />
-                  <FieldRow label="界面" field="ui" type="select" options={[
+                  {formData.runtime !== "native" && (
+                    <FieldRow label={t("toolManager.runtimeVersion")} field="runtimeVersion" placeholder={
+                      formData.runtime === "java" ? "17" : formData.runtime === "node" ? "20" : "3.11"
+                    } />
+                  )}
+                  <FieldRow label={t("toolManager.uiLabel")} field="ui" type="select" options={[
                     { value: "cli", label: "CLI" }, { value: "gui", label: "GUI" }, { value: "web", label: "Web" },
                   ]} />
                 </div>
                 <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
-                  <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/40">安装方式</span></div>
-                  <InstallFieldRow label="安装方法" subField="method" type="select" options={[
-                    { value: "", label: "无" }, { value: "github", label: "GitHub" },
-                    { value: "homebrew", label: "Homebrew" }, { value: "manual", label: "手动" },
+                  <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/40">{t("toolManager.installMethod")}</span></div>
+                  <InstallFieldRow label={t("toolManager.installMethodLabel")} subField="method" type="select" options={[
+                    { value: "", label: t("common.none") }, { value: "github", label: "GitHub" },
+                    { value: "homebrew", label: "Homebrew" }, { value: "manual", label: t("toolManager.manual") },
                   ]} />
-                  <InstallFieldRow label="来源" subField="source" placeholder="owner/repo" mono />
+                  <InstallFieldRow label={t("toolManager.source")} subField="source"
+                    placeholder={
+                      ((formData.install as Record<string, string>)?.method === "github") ? "owner/repo" :
+                      ((formData.install as Record<string, string>)?.method === "homebrew") ? "formula-name" :
+                      t("toolManager.source")
+                    } mono />
                 </div>
                 <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
-                  <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/40">参数配置</span></div>
+                  <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/40">{t("toolManager.paramConfig")}</span></div>
                   <div className="py-2"><ParamsEditor /></div>
                 </div>
                 <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
-                  <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/40">分类</span></div>
-                  <FieldRow label="分类" field="category" placeholder="web" />
-                  <FieldRow label="子分类" field="subcategory" placeholder="fuzzing" />
+                  <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/40">{t("toolManager.category")}</span></div>
+                  <FieldRow label={t("toolManager.category")} field="category" type="select" options={
+                    categories.length > 0
+                      ? categories.map((c) => ({ value: c.id, label: c.name }))
+                      : [{ value: "misc", label: "misc" }]
+                  } />
+                  <FieldRow label={t("toolManager.subcategory")} field="subcategory" type="select" options={(() => {
+                    const cat = categories.find((c) => c.id === (formData.category as string));
+                    if (cat && cat.items.length > 0) return cat.items.map((s) => ({ value: s.id, label: s.name }));
+                    return [{ value: "other", label: "other" }];
+                  })()} />
                 </div>
               </div>
               <div className="w-[380px] flex-shrink-0 rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden flex flex-col">
                 <div className="px-3 py-2 border-b border-border/8 flex items-center gap-2">
                   <Code2 className="w-3 h-3 text-muted-foreground/30" />
-                  <span className="text-[11px] font-medium text-muted-foreground/40">JSON 预览</span>
+                  <span className="text-[11px] font-medium text-muted-foreground/40">{t("toolManager.jsonPreview")}</span>
                 </div>
                 <pre className="flex-1 overflow-auto px-4 py-3 text-[10px] font-mono leading-[1.6] text-muted-foreground/60 select-all whitespace-pre">
                   {JSON.stringify({ tool: formData }, null, 2)}
@@ -717,7 +1047,7 @@ export function ToolManager() {
           <div className="px-6 py-3 flex items-center gap-3 border-b border-border/10 flex-shrink-0">
             <div className="relative flex-1 max-w-sm">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/30" />
-              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索工具名称、描述..."
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t("toolManager.searchPlaceholder")}
                 className="w-full h-8 pl-8 pr-3 text-[12px] bg-[var(--bg-hover)]/30 rounded-lg border border-border/15 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40 transition-colors" />
             </div>
 
@@ -725,7 +1055,7 @@ export function ToolManager() {
               <button type="button" onClick={() => setSelectedCategory(null)}
                 className={cn("text-[11px] px-2.5 py-1 rounded-md transition-colors",
                   !selectedCategory ? "bg-accent/15 text-accent" : "text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)]")}>
-                全部
+                {t("common.all")}
               </button>
               {allCategories.map((catId) => (
                 <button key={catId} type="button" onClick={() => setSelectedCategory(selectedCategory === catId ? null : catId)}
@@ -744,20 +1074,20 @@ export function ToolManager() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent position="popper" className="min-w-[100px]">
-                  <SelectItem value="name" className="text-[12px]">名称</SelectItem>
-                  <SelectItem value="status" className="text-[12px]">安装状态</SelectItem>
-                  <SelectItem value="category" className="text-[12px]">分类</SelectItem>
-                  <SelectItem value="runtime" className="text-[12px]">运行时</SelectItem>
+                  <SelectItem value="name" className="text-[12px]">{t("toolManager.sortByName")}</SelectItem>
+                  <SelectItem value="status" className="text-[12px]">{t("toolManager.sortByStatus")}</SelectItem>
+                  <SelectItem value="category" className="text-[12px]">{t("toolManager.sortByCategory")}</SelectItem>
+                  <SelectItem value="runtime" className="text-[12px]">{t("toolManager.sortByRuntime")}</SelectItem>
                 </SelectContent>
               </Select>
 
               {/* View toggle */}
               <div className="flex items-center rounded-md border border-border/10 overflow-hidden">
-                <button type="button" onClick={() => setViewMode("grid")} title="网格视图"
+                <button type="button" onClick={() => setViewMode("grid")} title={t("toolManager.gridView")}
                   className={cn("p-1.5 transition-colors", viewMode === "grid" ? "bg-accent/15 text-accent" : "text-muted-foreground/30 hover:text-foreground")}>
                   <Grid3X3 className="w-3.5 h-3.5" />
                 </button>
-                <button type="button" onClick={() => setViewMode("list")} title="列表视图"
+                <button type="button" onClick={() => setViewMode("list")} title={t("toolManager.listView")}
                   className={cn("p-1.5 transition-colors", viewMode === "list" ? "bg-accent/15 text-accent" : "text-muted-foreground/30 hover:text-foreground")}>
                   <List className="w-3.5 h-3.5" />
                 </button>
@@ -774,12 +1104,12 @@ export function ToolManager() {
             ) : filteredTools.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-32 gap-2">
                 <span className="text-[12px] text-muted-foreground/40">
-                  {search.trim() ? "没有找到匹配的工具" : "暂无工具"}
+                  {search.trim() ? t("toolManager.noMatch") : t("toolManager.noTools")}
                 </span>
                 {!search.trim() && (
                   <button type="button" onClick={handleAddTool}
                     className="text-[11px] text-accent/60 hover:text-accent transition-colors flex items-center gap-1">
-                    <Plus className="w-3 h-3" /> 添加第一个工具
+                    <Plus className="w-3 h-3" /> {t("toolManager.addFirstTool")}
                   </button>
                 )}
               </div>
@@ -796,51 +1126,149 @@ export function ToolManager() {
         </>
       )}
 
-      {/* Context menu */}
-      {ctxMenu && (
+      {/* Context menu - rendered via portal to avoid transform containing block offset */}
+      {ctxMenu && createPortal(
         <div className="fixed z-50 rounded-lg border border-border/20 bg-popover shadow-xl py-1 min-w-[140px]"
           style={{ left: ctxMenu.x, top: ctxMenu.y }}
           onClick={(e) => e.stopPropagation()}>
           <button type="button" onClick={() => ctxAction("edit")}
             className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2">
-            <FileText className="w-3 h-3 text-muted-foreground/50" /> 编辑配置
+            <FileText className="w-3 h-3 text-muted-foreground/50" /> {t("toolManager.edit")}
           </button>
           {ctxMenu.tool.installed ? (
             <button type="button" onClick={() => ctxAction("uninstall")}
               className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2">
-              <Trash2 className="w-3 h-3 text-muted-foreground/50" /> 卸载
+              <Trash2 className="w-3 h-3 text-muted-foreground/50" /> {t("common.uninstall")}
             </button>
           ) : (
             <button type="button" onClick={() => ctxAction("install")}
               className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2">
-              <Download className="w-3 h-3 text-muted-foreground/50" /> 安装
+              <Download className="w-3 h-3 text-muted-foreground/50" /> {t("common.install")}
             </button>
           )}
           <div className="my-1 border-t border-border/10" />
           <button type="button" onClick={() => ctxAction("copy-id")}
             className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2">
-            <Copy className="w-3 h-3 text-muted-foreground/50" /> 复制 ID
+            <Copy className="w-3 h-3 text-muted-foreground/50" /> {t("toolManager.copyId")}
           </button>
           {ctxMenu.tool.installed && (
             <button type="button" onClick={() => ctxAction("open-dir")}
               className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2">
-              <FolderOpen className="w-3 h-3 text-muted-foreground/50" /> 打开目录
+              <FolderOpen className="w-3 h-3 text-muted-foreground/50" /> {t("toolManager.openDir")}
             </button>
           )}
-        </div>
+          {ctxMenu.tool.installed && ctxMenu.tool.runtime === "python" && (
+            <button type="button" onClick={() => ctxAction("install-deps")}
+              className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2">
+              <Download className="w-3 h-3 text-muted-foreground/50" /> {t("toolManager.installDeps")}
+            </button>
+          )}
+          <div className="my-1 border-t border-border/10" />
+          <button type="button" onClick={() => ctxAction("delete")}
+            className="w-full text-left px-3 py-1.5 text-[12px] text-red-400 hover:bg-red-500/10 transition-colors flex items-center gap-2">
+            <Trash2 className="w-3 h-3" /> {t("toolManager.deleteConfig")}
+          </button>
+        </div>,
+        document.body
       )}
 
       {/* Uninstall confirm */}
       {uninstallTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setUninstallTarget(null)}>
           <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-xs w-full" onClick={(e) => e.stopPropagation()}>
-            <p className="text-[13px] text-foreground mb-1">卸载 {uninstallTarget.name}</p>
-            <p className="text-[11px] text-muted-foreground/50 mb-4">配置保留，可重新安装</p>
+            <p className="text-[13px] text-foreground mb-1">{t("toolManager.uninstallConfirm", { name: uninstallTarget.name })}</p>
+            <p className="text-[11px] text-muted-foreground/50 mb-4">{t("toolManager.uninstallKeepConfig")}</p>
             <div className="flex justify-end gap-2">
               <button type="button" onClick={() => setUninstallTarget(null)}
-                className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">取消</button>
+                className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">{t("common.cancel")}</button>
               <button type="button" onClick={confirmUninstall}
-                className="text-[12px] px-3 py-1.5 rounded-lg bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors">确认卸载</button>
+                className="text-[12px] px-3 py-1.5 rounded-lg bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors">{t("toolManager.confirmUninstall")}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Dep file picker */}
+      {depPicker && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setDepPicker(null)}>
+          <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-sm w-full" onClick={(e) => e.stopPropagation()}>
+            <p className="text-[13px] text-foreground mb-1">{t("toolManager.selectDepFile")}</p>
+            <p className="text-[11px] text-muted-foreground/50 mb-3">{t("toolManager.depFileHint", { name: depPicker.tool.name })}</p>
+            <div className="space-y-1 max-h-48 overflow-y-auto mb-4">
+              {depPicker.files.map((f) => (
+                <button key={f} type="button" onClick={() => doInstallDepFile(depPicker.tool, f)}
+                  className="w-full text-left px-3 py-2 rounded-lg text-[12px] font-mono text-foreground hover:bg-accent/10 transition-colors">
+                  {f}
+                </button>
+              ))}
+            </div>
+            <div className="flex justify-end">
+              <button type="button" onClick={() => setDepPicker(null)}
+                className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">{t("common.cancel")}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Executable picker */}
+      {execPicker && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          onClick={() => { execPicker.resolve(null); setExecPicker(null); }}>
+          <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-sm w-full" onClick={(e) => e.stopPropagation()}>
+            <p className="text-[13px] text-foreground mb-1">{t("toolManager.selectExecutable")}</p>
+            <p className="text-[11px] text-muted-foreground/50 mb-3">
+              {t("toolManager.multipleExecsDetected", { name: execPicker.tool.name })}
+            </p>
+            <div className="space-y-1 max-h-48 overflow-y-auto mb-4">
+              {execPicker.candidates.map((f, i) => (
+                <button key={f} type="button"
+                  onClick={() => { execPicker.resolve(f); setExecPicker(null); }}
+                  className={cn(
+                    "w-full text-left px-3 py-2 rounded-lg text-[12px] font-mono transition-colors",
+                    i === 0
+                      ? "bg-accent/15 text-accent hover:bg-accent/20 font-semibold"
+                      : "text-foreground hover:bg-accent/10",
+                  )}>
+                  {f}{i === 0 && <span className="ml-2 text-[10px] text-accent/70 font-normal">{t("common.recommended")}</span>}
+                </button>
+              ))}
+            </div>
+            <div className="flex justify-end">
+              <button type="button" onClick={() => { execPicker.resolve(null); setExecPicker(null); }}
+                className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">{t("common.skip")}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete config confirm */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setDeleteTarget(null)}>
+          <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-xs w-full" onClick={(e) => e.stopPropagation()}>
+            <p className="text-[13px] text-foreground mb-1">{t("toolManager.deleteConfirmTitle", { name: deleteTarget.name })}</p>
+            <p className="text-[11px] text-muted-foreground/50 mb-4">
+              {t("toolManager.deleteConfirmMsg")}
+              {deleteTarget.installed && t("toolManager.deleteKeepFiles")}
+            </p>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setDeleteTarget(null)}
+                className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">{t("common.cancel")}</button>
+              <button type="button" onClick={async () => {
+                const tool = deleteTarget;
+                setDeleteTarget(null);
+                try {
+                  await invoke("pentest_delete_tool", {
+                    toolId: tool.id,
+                    category: tool.category,
+                    subcategory: tool.subcategory,
+                    toolFolder: null,
+                  });
+                  await loadData();
+                } catch (e) {
+                  setError(t("toolManager.deleteFailed", { error: e }));
+                }
+              }}
+                className="text-[12px] px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors">{t("toolManager.confirmDelete")}</button>
             </div>
           </div>
         </div>
@@ -850,13 +1278,13 @@ export function ToolManager() {
       {showCloseConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowCloseConfirm(false)}>
           <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-xs w-full" onClick={(e) => e.stopPropagation()}>
-            <p className="text-[13px] text-foreground mb-1">有未保存的修改</p>
-            <p className="text-[11px] text-muted-foreground/50 mb-4">关闭后修改将丢失</p>
+            <p className="text-[13px] text-foreground mb-1">{t("toolManager.unsavedChanges")}</p>
+            <p className="text-[11px] text-muted-foreground/50 mb-4">{t("toolManager.unsavedChangesMsg")}</p>
             <div className="flex justify-end gap-2">
               <button type="button" onClick={() => setShowCloseConfirm(false)}
-                className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">继续编辑</button>
+                className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">{t("toolManager.continueEditing")}</button>
               <button type="button" onClick={forceCloseEditor}
-                className="text-[12px] px-3 py-1.5 rounded-lg bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors">放弃修改</button>
+                className="text-[12px] px-3 py-1.5 rounded-lg bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors">{t("toolManager.discardChanges")}</button>
             </div>
           </div>
         </div>

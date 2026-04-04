@@ -322,7 +322,7 @@ impl CompletionModel {
                     }
                 }
                 OutputItem::FunctionCall(fc) => {
-                    let arguments = qbit_json_repair::parse_tool_args(&fc.arguments);
+                    let arguments = golish_json_repair::parse_tool_args(&fc.arguments);
                     // fc.id is Option<String>, use empty string as fallback
                     let id = fc.id.clone().unwrap_or_default();
                     content.push(AssistantContent::ToolCall(ToolCall {

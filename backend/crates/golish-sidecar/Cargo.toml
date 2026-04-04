@@ -1,0 +1,41 @@
+[package]
+name = "golish-sidecar"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "Context capture and session management for Golish"
+
+[dependencies]
+# Foundation crates
+golish-core = { workspace = true }
+golish-settings = { workspace = true }
+golish-synthesis = { workspace = true }
+golish-artifacts = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+toml = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+dirs = { workspace = true }
+similar = { workspace = true }
+
+# Tauri (for GUI runtime event emission)
+tauri = { workspace = true }
+
+[features]
+default = []
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -6,7 +6,7 @@ import {
   saveTheme as saveTauriTheme,
 } from "../themes";
 import { registerBuiltinThemes } from "./builtin";
-import type { QbitTheme, ThemeRegistryEntry } from "./types";
+import type { GolishTheme, ThemeRegistryEntry } from "./types";
 
 /**
  * Central registry for all available themes
@@ -26,13 +26,13 @@ class ThemeRegistryClass {
     registerBuiltinThemes();
 
     try {
-      // Load user themes from ~/.qbit/themes/
+      // Load user themes from ~/.golish/themes/
       const userThemes = await listThemes();
 
       for (const themeInfo of userThemes) {
         try {
           const themeJson = await readTheme(themeInfo.name);
-          const theme = JSON.parse(themeJson) as QbitTheme;
+          const theme = JSON.parse(themeJson) as GolishTheme;
 
           // Don't overwrite builtin themes with user themes
           if (this.themes.has(themeInfo.name)) {
@@ -57,7 +57,7 @@ class ThemeRegistryClass {
   /**
    * Register a theme in the registry
    */
-  register(id: string, theme: QbitTheme, builtin = false): void {
+  register(id: string, theme: GolishTheme, builtin = false): void {
     this.themes.set(id, { id, theme, builtin });
     this.emit();
   }
@@ -90,7 +90,7 @@ class ThemeRegistryClass {
    */
   async saveTheme(
     id: string,
-    theme: QbitTheme,
+    theme: GolishTheme,
     assets?: Array<[string, Uint8Array]>
   ): Promise<boolean> {
     try {
@@ -121,7 +121,7 @@ class ThemeRegistryClass {
   /**
    * Get a theme by ID
    */
-  get(id: string): QbitTheme | null {
+  get(id: string): GolishTheme | null {
     const entry = this.themes.get(id);
     return entry?.theme ?? null;
   }

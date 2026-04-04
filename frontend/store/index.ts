@@ -50,7 +50,7 @@ enableMapSet();
  * Helper function to mark a tab as having new activity from within a draft state.
  * This avoids nested set() calls by operating directly on the draft state.
  */
-function markTabNewActivityInDraft(state: QbitState, sessionId: string): void {
+function markTabNewActivityInDraft(state: GolishState, sessionId: string): void {
   // Find owning tab by checking tabLayouts for a leaf matching sessionId
   for (const [tabId, layout] of Object.entries(state.tabLayouts)) {
     const leaves = getAllLeafPanes(layout.root);
@@ -100,7 +100,7 @@ export type AiStatus = "disconnected" | "initializing" | "ready" | "error";
  * - settings: Settings panel (no PTY, gear icon)
  * - home: Home tab (no PTY, home icon)
  */
-export type TabType = "terminal" | "settings" | "home";
+export type TabType = "terminal" | "settings" | "home" | "browser";
 
 /**
  * Agent mode determines how tool approvals are handled:
@@ -377,7 +377,7 @@ export interface PendingCommand {
   workingDirectory: string;
 }
 
-interface QbitState extends AppearanceSlice, ContextSlice, GitSlice, NotificationSlice, PanelSlice {
+interface GolishState extends AppearanceSlice, ContextSlice, GitSlice, NotificationSlice, PanelSlice {
   // App focus/visibility state
   appIsFocused: boolean;
   appIsVisible: boolean;
@@ -650,6 +650,11 @@ interface QbitState extends AppearanceSlice, ContextSlice, GitSlice, Notificatio
    */
   openHomeTab: () => void;
   /**
+   * Open browser in a tab. If a browser tab already exists, focus it.
+   * Otherwise, create a new browser tab.
+   */
+  openBrowserTab: (url?: string) => void;
+  /**
    * Get all session IDs belonging to a tab (root + all pane sessions).
    * Used by TabBar to perform backend cleanup before removing state.
    */
@@ -667,6 +672,8 @@ interface QbitState extends AppearanceSlice, ContextSlice, GitSlice, Notificatio
   clearTabNewActivity: (tabId: string) => void;
   /** Move a tab left or right in the tab order. Home tab cannot be moved. */
   moveTab: (tabId: string, direction: "left" | "right") => void;
+  /** Reorder a tab via drag-and-drop using tab IDs. Home tab is protected. */
+  reorderTab: (draggedTabId: string, targetTabId: string) => void;
   /** Move a tab's content as a pane into another tab. */
   moveTabToPane: (
     sourceTabId: string,
@@ -675,7 +682,7 @@ interface QbitState extends AppearanceSlice, ContextSlice, GitSlice, Notificatio
   ) => void;
 }
 
-export const useStore = create<QbitState>()(
+export const useStore = create<GolishState>()(
   devtools(
     immer((set, get, _store) => ({
       // Slices
@@ -2106,6 +2113,43 @@ export const useStore = create<QbitState>()(
           state.tabActivationHistory.push(homeId);
         }),
 
+      openBrowserTab: (url?: string) =>
+        set((state) => {
+          const existingBrowserTab = Object.values(state.sessions).find(
+            (session) => session.tabType === "browser"
+          );
+
+          if (existingBrowserTab) {
+            state.activeSessionId = existingBrowserTab.id;
+            state.tabHasNewActivity[existingBrowserTab.id] = false;
+            const histIdx = state.tabActivationHistory.indexOf(existingBrowserTab.id);
+            if (histIdx !== -1) {
+              state.tabActivationHistory.splice(histIdx, 1);
+            }
+            state.tabActivationHistory.push(existingBrowserTab.id);
+            return;
+          }
+
+          const browserId = `browser-${Date.now()}`;
+          state.sessions[browserId] = {
+            id: browserId,
+            tabType: "browser",
+            name: "Browser",
+            workingDirectory: url || "",
+            createdAt: new Date().toISOString(),
+            mode: "terminal",
+          };
+          state.activeSessionId = browserId;
+
+          state.tabLayouts[browserId] = {
+            root: { type: "leaf", id: browserId, sessionId: browserId },
+            focusedPaneId: browserId,
+          };
+          state.tabHasNewActivity[browserId] = false;
+          state.tabOrder.push(browserId);
+          state.tabActivationHistory.push(browserId);
+        }),
+
       getTabSessionIds: (tabId) => {
         const layout = get().tabLayouts[tabId];
         if (!layout) return [];
@@ -2240,15 +2284,22 @@ export const useStore = create<QbitState>()(
         set((state) => {
           const idx = state.tabOrder.indexOf(tabId);
           if (idx === -1) return;
-          // Home tab (index 0) cannot be moved
           if (idx === 0) return;
           const targetIdx = direction === "left" ? idx - 1 : idx + 1;
-          // Cannot move before home tab (index 0) or beyond the end
           if (targetIdx < 1 || targetIdx >= state.tabOrder.length) return;
-          // Swap
           const temp = state.tabOrder[targetIdx];
           state.tabOrder[targetIdx] = state.tabOrder[idx];
           state.tabOrder[idx] = temp;
+        }),
+
+      reorderTab: (draggedTabId, targetTabId) =>
+        set((state) => {
+          if (draggedTabId === targetTabId) return;
+          const fromIdx = state.tabOrder.indexOf(draggedTabId);
+          const toIdx = state.tabOrder.indexOf(targetTabId);
+          if (fromIdx < 1 || toIdx < 1) return;
+          state.tabOrder.splice(fromIdx, 1);
+          state.tabOrder.splice(toIdx, 0, draggedTabId);
         }),
 
       moveTabToPane: (sourceTabId, destTabId, location) =>
@@ -2363,7 +2414,7 @@ export const useStore = create<QbitState>()(
           });
         }),
     })),
-    { name: "qbit" }
+    { name: "golish" }
   )
 );
 

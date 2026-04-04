@@ -1,6 +1,6 @@
 import type { ITerminalOptions, Terminal as XTerm } from "@xterm/xterm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { QbitTheme } from "./types";
+import type { GolishTheme } from "./types";
 
 // Mock dependencies
 vi.mock("@/lib/logger", () => ({
@@ -21,7 +21,7 @@ vi.mock("./builtin/obsidian-ember/assets/background.jpeg?url", () => ({
 }));
 
 // Create a mock theme for testing
-const createMockTheme = (name: string): QbitTheme => ({
+const createMockTheme = (name: string): GolishTheme => ({
   schemaVersion: "1.0",
   name,
   colors: {
@@ -87,7 +87,7 @@ const createMockTheme = (name: string): QbitTheme => ({
 });
 
 // Mock ThemeRegistry
-const mockThemes = new Map<string, QbitTheme>();
+const mockThemes = new Map<string, GolishTheme>();
 vi.mock("./registry", () => ({
   ThemeRegistry: {
     get: vi.fn((id: string) => mockThemes.get(id)),
@@ -195,7 +195,7 @@ describe("ThemeManager Terminal Batching", () => {
 
     it("should skip undefined theme properties", async () => {
       // Create a theme without optional properties
-      const minimalTheme: QbitTheme = {
+      const minimalTheme: GolishTheme = {
         schemaVersion: "1.0",
         name: "Minimal Theme",
         colors: {

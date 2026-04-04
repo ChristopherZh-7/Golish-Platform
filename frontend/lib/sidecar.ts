@@ -98,7 +98,7 @@ export interface SessionMeta {
 export interface SidecarConfig {
   /** Enable the sidecar system */
   enabled: boolean;
-  /** Directory for session storage (null = default ~/.qbit/sessions) */
+  /** Directory for session storage (null = default ~/.golish/sessions) */
   sessions_dir: string | null;
   /** Days to retain session data (0 = unlimited) */
   retention_days: number;

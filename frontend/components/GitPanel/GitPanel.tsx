@@ -227,7 +227,7 @@ function buildFileTree(changes: GitChange[]): TreeNode[] {
     }
   }
 
-  // Compact single-child directory chains: backend/crates/qbit → one node
+  // Compact single-child directory chains: backend/crates/golish → one node
   const compactNodes = (nodes: TreeNode[]): TreeNode[] => {
     return nodes.map((node) => {
       if (!node.isDirectory) return node;

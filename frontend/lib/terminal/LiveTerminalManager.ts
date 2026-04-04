@@ -41,7 +41,7 @@ class LiveTerminalManagerClass {
     if (this.parkingLotEl) return this.parkingLotEl;
 
     const el = document.createElement("div");
-    el.id = "qbit-live-xterm-parking-lot";
+    el.id = "golish-live-xterm-parking-lot";
     // Keep live terminals mounted in the DOM between block remounts.
     // Removing xterm's element can leave renderer internals inconsistent.
     el.style.position = "fixed";

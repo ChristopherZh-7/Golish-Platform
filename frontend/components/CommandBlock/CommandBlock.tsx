@@ -46,7 +46,7 @@ export function CommandBlock({ block, sessionId, onToggleCollapse }: CommandBloc
     <Collapsible
       open={hasOutput && !block.isCollapsed}
       onOpenChange={() => hasOutput && onToggleCollapse(block.id)}
-      className="w-full group"
+      className="w-full group border-b border-border/10"
       data-testid="command-block"
     >
       {/* Header */}

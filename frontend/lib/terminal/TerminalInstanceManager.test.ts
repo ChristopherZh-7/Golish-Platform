@@ -23,7 +23,7 @@ describe("TerminalInstanceManager", () => {
   beforeEach(() => {
     // Ensure singleton doesn't leak instances or DOM across tests.
     TerminalInstanceManager.disposeAll();
-    document.getElementById("qbit-xterm-parking-lot")?.remove();
+    document.getElementById("golish-xterm-parking-lot")?.remove();
   });
 
   it("keeps the terminal element in the DOM on detach by parking it offscreen", () => {
@@ -59,7 +59,7 @@ describe("TerminalInstanceManager", () => {
     // Detach should move the element to the parking lot so removing containerA
     // (React unmount) doesn't remove the xterm element.
     TerminalInstanceManager.detach(sessionId);
-    const parkingLot = document.getElementById("qbit-xterm-parking-lot");
+    const parkingLot = document.getElementById("golish-xterm-parking-lot");
     expect(parkingLot).toBeTruthy();
     expect(parkingLot?.contains(terminalEl)).toBe(true);
 

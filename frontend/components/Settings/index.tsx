@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { listIndexedCodebases } from "@/lib/indexer";
@@ -23,9 +24,10 @@ import { notify } from "@/lib/notify";
 import {
   type CodebaseConfig,
   getSettings,
-  type QbitSettings,
+  type GolishSettings,
   updateSettings,
 } from "@/lib/settings";
+import { updateConfig as updatePentestConfig } from "@/lib/pentest/api";
 import { cn } from "@/lib/utils";
 
 const AdvancedSettings = lazy(() =>
@@ -80,86 +82,26 @@ type SettingsSection =
   | "advanced"
   | "pentest";
 
-interface NavItem {
+interface NavItemDef {
   id: SettingsSection;
-  label: string;
+  labelKey: string;
   icon: React.ReactNode;
-  description: string;
+  descKey: string;
 }
 
-const NAV_ITEMS: NavItem[] = [
-  {
-    id: "pentest",
-    label: "环境配置",
-    icon: <Wrench className="w-4 h-4" />,
-    description: "Python / Java / Node.js 运行环境",
-  },
-  {
-    id: "providers",
-    label: "Providers",
-    icon: <Server className="w-4 h-4" />,
-    description: "Configure AI provider credentials",
-  },
-  {
-    id: "ai",
-    label: "AI & Models",
-    icon: <Bot className="w-4 h-4" />,
-    description: "Default provider and synthesis",
-  },
-  {
-    id: "terminal",
-    label: "Terminal",
-    icon: <Terminal className="w-4 h-4" />,
-    description: "Shell and display settings",
-  },
-  {
-    id: "editor",
-    label: "Editor",
-    icon: <FileCode className="w-4 h-4" />,
-    description: "File editor preferences",
-  },
-  {
-    id: "agent",
-    label: "Agent",
-    icon: <Cog className="w-4 h-4" />,
-    description: "Session and approval settings",
-  },
-  {
-    id: "mcp",
-    label: "MCP Servers",
-    icon: <Puzzle className="w-4 h-4" />,
-    description: "External tools via Model Context Protocol",
-  },
-  {
-    id: "codebases",
-    label: "Codebases",
-    icon: <FolderCode className="w-4 h-4" />,
-    description: "Manage indexed repositories",
-  },
-  {
-    id: "network",
-    label: "Network",
-    icon: <Globe className="w-4 h-4" />,
-    description: "Proxy and connection settings",
-  },
-  {
-    id: "notifications",
-    label: "Notifications",
-    icon: <Bell className="w-4 h-4" />,
-    description: "System notification settings",
-  },
-  {
-    id: "appearance",
-    label: "Appearance",
-    icon: <Paintbrush className="w-4 h-4" />,
-    description: "UI element visibility",
-  },
-  {
-    id: "advanced",
-    label: "Advanced",
-    icon: <Shield className="w-4 h-4" />,
-    description: "Privacy and debug options",
-  },
+const NAV_ITEM_DEFS: NavItemDef[] = [
+  { id: "pentest", labelKey: "settings.environment", icon: <Wrench className="w-4 h-4" />, descKey: "settings.envDescription" },
+  { id: "providers", labelKey: "settings.providers", icon: <Server className="w-4 h-4" />, descKey: "settings.providersDesc" },
+  { id: "ai", labelKey: "settings.aiModels", icon: <Bot className="w-4 h-4" />, descKey: "settings.aiModelsDesc" },
+  { id: "terminal", labelKey: "settings.terminal", icon: <Terminal className="w-4 h-4" />, descKey: "settings.terminal" },
+  { id: "editor", labelKey: "settings.editor", icon: <FileCode className="w-4 h-4" />, descKey: "settings.editor" },
+  { id: "agent", labelKey: "settings.agent", icon: <Cog className="w-4 h-4" />, descKey: "settings.agent" },
+  { id: "mcp", labelKey: "settings.mcp", icon: <Puzzle className="w-4 h-4" />, descKey: "settings.mcp" },
+  { id: "codebases", labelKey: "settings.codebases", icon: <FolderCode className="w-4 h-4" />, descKey: "settings.codebases" },
+  { id: "network", labelKey: "settings.network", icon: <Globe className="w-4 h-4" />, descKey: "settings.network" },
+  { id: "notifications", labelKey: "settings.notifications", icon: <Bell className="w-4 h-4" />, descKey: "settings.notifications" },
+  { id: "appearance", labelKey: "settings.appearance", icon: <Paintbrush className="w-4 h-4" />, descKey: "settings.appearance" },
+  { id: "advanced", labelKey: "settings.advanced", icon: <Shield className="w-4 h-4" />, descKey: "settings.advanced" },
 ];
 
 export function SettingsNav({
@@ -169,13 +111,14 @@ export function SettingsNav({
   activeSection: string;
   onSectionChange: (section: SettingsSection) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="flex flex-col h-full">
       <div className="h-[34px] flex items-center px-3 flex-shrink-0">
-        <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Settings</span>
+        <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">{t("settings.title")}</span>
       </div>
       <div className="flex-1 overflow-y-auto px-1.5 py-1">
-        {NAV_ITEMS.map((item) => (
+        {NAV_ITEM_DEFS.map((item) => (
           <button
             key={item.id}
             type="button"
@@ -190,7 +133,7 @@ export function SettingsNav({
             <span className={cn(activeSection === item.id ? "text-accent" : "")}>
               {item.icon}
             </span>
-            <span className="text-[12px] font-medium">{item.label}</span>
+            <span className="text-[12px] font-medium">{t(item.labelKey)}</span>
           </button>
         ))}
       </div>
@@ -205,7 +148,7 @@ export function SettingsContent({
   activeSection?: string;
   onSectionChange?: (section: SettingsSection) => void;
 }) {
-  const [settings, setSettings] = useState<QbitSettings | null>(null);
+  const [settings, setSettings] = useState<GolishSettings | null>(null);
   const [activeSection, setActiveSection] = useState<SettingsSection>(
     (activeSectionProp as SettingsSection) || "pentest"
   );
@@ -228,7 +171,7 @@ export function SettingsContent({
       .finally(() => setIsLoading(false));
   }, []);
 
-  const saveSettings = useCallback(async (settingsToSave: QbitSettings) => {
+  const saveSettings = useCallback(async (settingsToSave: GolishSettings) => {
     try {
       const currentCodebases = await listIndexedCodebases();
       const updatedCodebases: CodebaseConfig[] = currentCodebases.map((cb) => ({
@@ -245,7 +188,7 @@ export function SettingsContent({
   }, []);
 
   const updateSection = useCallback(
-    <K extends keyof QbitSettings>(section: K, value: QbitSettings[K]) => {
+    <K extends keyof GolishSettings>(section: K, value: GolishSettings[K]) => {
       setSettings((prev) => {
         if (!prev) return null;
         const updated = { ...prev, [section]: value };
@@ -293,7 +236,18 @@ export function SettingsContent({
       case "codebases":
         return <CodebasesSettings />;
       case "network":
-        return <NetworkSettings settings={settings.network} onChange={(network) => updateSection("network", network)} />;
+        return (
+          <NetworkSettings
+            settings={settings.network}
+            onChange={(network) => {
+              updateSection("network", network);
+              updatePentestConfig({
+                proxy_url: network.proxy_url || "",
+                github_token: network.github_token || "",
+              }).catch((e) => console.error("[Settings] pentest config sync failed:", e));
+            }}
+          />
+        );
       case "notifications":
         return <NotificationsSettings settings={settings.notifications} onChange={(notifications) => updateSection("notifications", notifications)} />;
       case "appearance":
@@ -343,8 +297,39 @@ export function SettingsContent({
   );
 }
 
+function SettingsDialogNav({ activeSection, onSectionChange }: { activeSection: SettingsSection; onSectionChange: (s: SettingsSection) => void }) {
+  const { t } = useTranslation();
+  return (
+    <nav className="w-52 bg-card rounded-xl flex flex-col flex-shrink-0 panel-float overflow-hidden">
+      <div className="flex-1 py-2 px-1.5 overflow-y-auto">
+        {NAV_ITEM_DEFS.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => onSectionChange(item.id)}
+            className={cn(
+              "w-full flex items-start gap-2.5 px-3 py-2.5 text-left transition-all rounded-lg mb-0.5",
+              activeSection === item.id
+                ? "bg-[var(--bg-hover)] text-foreground"
+                : "text-muted-foreground hover:bg-[var(--bg-hover)] hover:text-foreground"
+            )}
+          >
+            <span className={cn("mt-0.5", activeSection === item.id ? "text-accent" : "")}>
+              {item.icon}
+            </span>
+            <div className="flex-1 min-w-0">
+              <div className="text-[13px] font-medium">{t(item.labelKey)}</div>
+              <div className="text-[11px] text-muted-foreground/60 mt-0.5">{t(item.descKey)}</div>
+            </div>
+          </button>
+        ))}
+      </div>
+    </nav>
+  );
+}
+
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
-  const [settings, setSettings] = useState<QbitSettings | null>(null);
+  const [settings, setSettings] = useState<GolishSettings | null>(null);
   const [activeSection, setActiveSection] = useState<SettingsSection>("pentest");
   const [isLoading, setIsLoading] = useState(false);
 
@@ -363,7 +348,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   }, [open]);
 
   // Auto-save settings when they change
-  const saveSettings = useCallback(async (settingsToSave: QbitSettings) => {
+  const saveSettings = useCallback(async (settingsToSave: GolishSettings) => {
     try {
       // Reload codebases from backend before saving to preserve any changes made
       // via CodebasesSettings (which saves directly to backend, not to parent state)
@@ -393,7 +378,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
 
   // Handler to update a specific section of settings and auto-save
   const updateSection = useCallback(
-    <K extends keyof QbitSettings>(section: K, value: QbitSettings[K]) => {
+    <K extends keyof GolishSettings>(section: K, value: GolishSettings[K]) => {
       setSettings((prev) => {
         if (!prev) return null;
         const updated = { ...prev, [section]: value };
@@ -455,7 +440,15 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         return (
           <NetworkSettings
             settings={settings.network}
-            onChange={(network) => updateSection("network", network)}
+            onChange={(network) => {
+              updateSection("network", network);
+              const hasToken = !!network.github_token;
+              console.log(`[Settings] 同步 pentest config: proxy=${!!network.proxy_url}, github_token=${hasToken}`);
+              updatePentestConfig({
+                proxy_url: network.proxy_url || "",
+                github_token: network.github_token || "",
+              }).catch((e) => console.error("[Settings] pentest config 同步失败:", e));
+            }}
           />
         );
       case "notifications":
@@ -511,31 +504,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         ) : settings ? (
           <div className="flex-1 flex gap-1.5 px-1.5 pb-1.5 min-h-0 overflow-hidden">
             {/* Sidebar Navigation */}
-            <nav className="w-52 bg-card rounded-xl flex flex-col flex-shrink-0 panel-float overflow-hidden">
-              <div className="flex-1 py-2 px-1.5 overflow-y-auto">
-                {NAV_ITEMS.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setActiveSection(item.id)}
-                    className={cn(
-                      "w-full flex items-start gap-2.5 px-3 py-2.5 text-left transition-all rounded-lg mb-0.5",
-                      activeSection === item.id
-                        ? "bg-[var(--bg-hover)] text-foreground"
-                        : "text-muted-foreground hover:bg-[var(--bg-hover)] hover:text-foreground"
-                    )}
-                  >
-                    <span className={cn("mt-0.5", activeSection === item.id ? "text-accent" : "")}>
-                      {item.icon}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-[13px] font-medium">{item.label}</div>
-                      <div className="text-[11px] text-muted-foreground/60 mt-0.5">{item.description}</div>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </nav>
+            <SettingsDialogNav activeSection={activeSection} onSectionChange={setActiveSection} />
 
             {/* Main Content */}
             <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden bg-card rounded-xl panel-float">

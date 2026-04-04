@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { QbitSettings } from "./settings";
+import type { GolishSettings } from "./settings";
 import type { RiskLevel } from "./tools";
 
 // In browser mode, use the mock listen function if available
@@ -34,7 +34,7 @@ export type AiProvider =
   | "zai_sdk"
   | "nvidia";
 
-/** Per-project settings from .qbit/project.toml */
+/** Per-project settings from .golish/project.toml */
 export interface ProjectSettings {
   provider: AiProvider | null;
   model: string | null;
@@ -1404,7 +1404,7 @@ export async function getAgentMode(sessionId: string): Promise<AgentMode> {
 // =============================================================================
 
 /**
- * Get per-project settings from {workspace}/.qbit/project.toml
+ * Get per-project settings from {workspace}/.golish/project.toml
  * Returns the stored provider, model, and agent_mode (all optional)
  */
 export async function getProjectSettings(workspace: string): Promise<ProjectSettings> {
@@ -1413,7 +1413,7 @@ export async function getProjectSettings(workspace: string): Promise<ProjectSett
 
 /**
  * Save the provider and model to per-project settings.
- * This persists the selection to {workspace}/.qbit/project.toml
+ * This persists the selection to {workspace}/.golish/project.toml
  */
 export async function saveProjectModel(
   workspace: string,
@@ -1613,12 +1613,12 @@ function buildOpenRouterProviderPreferencesJson(
  * Build a ProviderConfig for the given provider/model settings.
  * This is used for initializing AI sessions with proper credentials.
  *
- * @param settings - The user's QbitSettings
+ * @param settings - The user's GolishSettings
  * @param workspace - The workspace/working directory path
  * @param overrides - Optional provider/model overrides (defaults to settings.ai.default_*)
  */
 export async function buildProviderConfig(
-  settings: QbitSettings,
+  settings: GolishSettings,
   workspace: string,
   overrides?: { provider?: AiProvider | null; model?: string | null }
 ): Promise<ProviderConfig> {

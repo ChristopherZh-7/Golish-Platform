@@ -1,0 +1,35 @@
+[package]
+name = "golish-llm-providers"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "LLM provider abstraction for Golish"
+
+[dependencies]
+# Internal crates
+golish-models = { path = "../golish-models" }
+golish-settings = { path = "../golish-settings" }
+
+# LLM integration via rig
+rig-core = { workspace = true }
+rig-anthropic-vertex = { path = "../rig-anthropic-vertex" }
+# Custom OpenAI Responses provider with explicit reasoning event separation
+rig-openai-responses = { path = "../rig-openai-responses" }
+# Z.AI native SDK provider
+rig-zai-sdk = { path = "../rig-zai-sdk" }
+# Gemini on Vertex AI provider
+rig-gemini-vertex = { path = "../rig-gemini-vertex" }
+
+# HTTP client (needed for some rig providers)
+reqwest = { workspace = true }
+
+# Serialization (for ProviderConfig)
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Async trait support
+async-trait = { workspace = true }
+
+# Error handling and logging
+anyhow = { workspace = true }
+tracing = { workspace = true }

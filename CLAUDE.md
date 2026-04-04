@@ -2,8 +2,8 @@ AI-powered terminal emulator built with Tauri 2 (Rust backend, React 19 frontend
 
 ## About This Project
 
-This is **Qbit's own codebase**. If you are Qbit, then you are the AI agent being developed here.
-The system prompt you operate under is defined in `backend/crates/qbit-ai/src/system_prompt.rs`.
+This is **Golish's own codebase**. If you are Golish, then you are the AI agent being developed here.
+The system prompt you operate under is defined in `backend/crates/golish-ai/src/system_prompt.rs`.
 When working on this project, you have unique insight into how changes will affect your own behavior.
 
 ## Commands
@@ -38,9 +38,9 @@ just build-rust       # Rust only (debug)
 pnpm devtools         # Launch standalone React DevTools (run before `just dev`)
 
 # Headless CLI mode
-cargo build -p qbit
-./target/debug/qbit --headless -e "prompt" --auto-approve
-./target/debug/qbit -e "prompt"  # -e implies --headless
+cargo build -p golish
+./target/debug/golish --headless -e "prompt" --auto-approve
+./target/debug/golish -e "prompt"  # -e implies --headless
 ```
 
 ## Architecture
@@ -55,28 +55,28 @@ React Frontend (frontend/)
 Rust Backend Workspace (backend/crates/) - 28 crates in 4 layers
     |
     Layer 4 (Application):
-    +-- qbit (main crate - Tauri commands, CLI entry, runtime, history, CLI output)
+    +-- golish (main crate - Tauri commands, CLI entry, runtime, history, CLI output)
     |
     Layer 3 (Domain):
-    +-- qbit-ai (agent orchestration, planning, HITL, loop detection, tool policy, indexing)
+    +-- golish-ai (agent orchestration, planning, HITL, loop detection, tool policy, indexing)
     |
     Layer 2 (Infrastructure):
-    +-- qbit-artifacts (artifact management)
-    +-- qbit-context (token budget, context pruning)
-    +-- qbit-evals (evaluation framework)
-    +-- qbit-llm-providers (provider configuration types)
-    +-- qbit-mcp (MCP client for external tool servers)
-    +-- qbit-pty (terminal sessions)
-    +-- qbit-session (conversation persistence)
-    +-- qbit-settings (TOML config management)
-    +-- qbit-shell-exec (shell execution)
-    +-- qbit-sidecar (context capture)
-    +-- qbit-sub-agents (sub-agent definitions and execution)
-    +-- qbit-synthesis (session synthesis)
-    +-- qbit-tools (tool system, registry, file ops, directory ops, AST search)
-    +-- qbit-udiff (unified diff system)
-    +-- qbit-web (web search, content fetching)
-    +-- qbit-workflow (graph-based multi-step tasks)
+    +-- golish-artifacts (artifact management)
+    +-- golish-context (token budget, context pruning)
+    +-- golish-evals (evaluation framework)
+    +-- golish-llm-providers (provider configuration types)
+    +-- golish-mcp (MCP client for external tool servers)
+    +-- golish-pty (terminal sessions)
+    +-- golish-session (conversation persistence)
+    +-- golish-settings (TOML config management)
+    +-- golish-shell-exec (shell execution)
+    +-- golish-sidecar (context capture)
+    +-- golish-sub-agents (sub-agent definitions and execution)
+    +-- golish-synthesis (session synthesis)
+    +-- golish-tools (tool system, registry, file ops, directory ops, AST search)
+    +-- golish-udiff (unified diff system)
+    +-- golish-web (web search, content fetching)
+    +-- golish-workflow (graph-based multi-step tasks)
     +-- rig-anthropic-vertex (Vertex AI Anthropic provider)
     +-- rig-gemini-vertex (Vertex AI Gemini provider)
     +-- rig-zai (Z.AI GLM provider)
@@ -84,7 +84,7 @@ Rust Backend Workspace (backend/crates/) - 28 crates in 4 layers
     +-- rig-openai-responses (OpenAI Responses adapter with explicit reasoning/text stream separation)
     |
     Layer 1 (Foundation):
-    +-- qbit-core (zero internal deps)
+    +-- golish-core (zero internal deps)
 ```
 
 ## Project Structure
@@ -147,7 +147,7 @@ frontend/                 # React frontend
   mocks.ts                # Tauri IPC mock adapter for browser-only development
 
 backend/crates/           # Rust workspace (modular crate architecture)
-  qbit/                   # Main application crate (Layer 4)
+  golish/                   # Main application crate (Layer 4)
     src/
       ai/commands/        # AI-specific Tauri commands
       commands/           # General Tauri commands (PTY, shell, themes, files, skills)
@@ -160,18 +160,18 @@ backend/crates/           # Rust workspace (modular crate architecture)
       indexer/            # Code indexer commands
         commands.rs       # Indexer Tauri commands
         mod.rs            # Module definition
-      projects/           # Project configuration storage (~/.qbit/projects/)
+      projects/           # Project configuration storage (~/.golish/projects/)
         schema.rs         # ProjectConfig, ProjectCommands, WorktreeConfig
         storage.rs        # TOML file operations (list, load, save, delete)
         commands.rs       # Tauri commands for project management
         mod.rs            # Module definition
       main.rs             # Unified entry point (GUI default, --headless for CLI)
       lib.rs              # Command registration and app entry point
-  qbit-evals/             # Evaluation framework crate (Layer 2)
+  golish-evals/             # Evaluation framework crate (Layer 2)
     src/
       scenarios/          # Eval scenario definitions
       runner.rs           # Scenario execution
-  qbit-core/              # Foundation crate (Layer 1, zero internal deps)
+  golish-core/              # Foundation crate (Layer 1, zero internal deps)
     src/
       events.rs           # Core event types
       runtime.rs          # Runtime trait definitions
@@ -182,7 +182,7 @@ backend/crates/           # Rust workspace (modular crate architecture)
         storage.rs        # Session storage
       hitl.rs             # HITL interfaces
       plan.rs             # Planning types
-  qbit-ai/                # AI orchestration crate (Layer 3)
+  golish-ai/                # AI orchestration crate (Layer 3)
     src/
       agent_bridge.rs     # Bridge between Tauri and vtcode agent
       agentic_loop.rs     # Main agent execution loop (includes context compaction)
@@ -192,36 +192,36 @@ backend/crates/           # Rust workspace (modular crate architecture)
       tool_definitions.rs # Tool schemas and configs
       system_prompt.rs    # System prompt generation (includes continuation summary)
       transcript.rs       # Transcript recording for context compaction
-  qbit-sub-agents/        # Sub-agent crate (Layer 2)
+  golish-sub-agents/        # Sub-agent crate (Layer 2)
     src/
       defaults.rs         # Default sub-agent configurations
       definition.rs       # Sub-agent type definitions
       executor.rs         # Sub-agent execution logic
       schemas.rs          # Sub-agent schemas
       transcript.rs       # Sub-agent transcript handling
-  qbit-context/           # Context management crate (Layer 2)
+  golish-context/           # Context management crate (Layer 2)
     src/
       context_manager.rs  # Context window orchestration
       token_budget.rs     # Token budget tracking
       token_trunc.rs      # Token truncation utilities
-  qbit-session/           # Session persistence crate (Layer 2)
+  golish-session/           # Session persistence crate (Layer 2)
     src/lib.rs            # Conversation history and archival
-  qbit-web/               # Web services crate (Layer 2)
+  golish-web/               # Web services crate (Layer 2)
     src/
       tavily.rs           # Tavily web search integration
       web_fetch.rs        # Web content fetching
-  qbit-workflow/          # Workflow crate (Layer 2)
+  golish-workflow/          # Workflow crate (Layer 2)
     src/
       models.rs           # Workflow traits and types
       registry.rs         # Workflow registry
       runner.rs           # Workflow execution
       definitions/        # Built-in workflow definitions
-  qbit-pty/               # PTY crate (Layer 2)
+  golish-pty/               # PTY crate (Layer 2)
     src/
       manager.rs          # PTY session lifecycle
       parser.rs           # VTE/OSC sequence parsing
       shell.rs            # Shell integration
-  qbit-sidecar/           # Context capture crate (Layer 2)
+  golish-sidecar/           # Context capture crate (Layer 2)
     src/
       capture.rs          # Context capture logic
       commits.rs          # Git commit tracking
@@ -230,11 +230,11 @@ backend/crates/           # Rust workspace (modular crate architecture)
       processor.rs        # Event processing + state updates
       session.rs          # Session file operations
       state.rs            # Sidecar state management
-  qbit-settings/          # Settings crate (Layer 2)
+  golish-settings/          # Settings crate (Layer 2)
     src/
-      schema.rs           # QbitSettings struct definitions
+      schema.rs           # GolishSettings struct definitions
       loader.rs           # File loading with env var interpolation
-  qbit-tools/             # Tool system crate (Layer 2)
+  golish-tools/             # Tool system crate (Layer 2)
     src/
       definitions.rs      # Tool definitions
       registry.rs         # Tool registry
@@ -260,9 +260,9 @@ e2e/                      # End-to-end tests (Playwright)
 | `evals` | Evaluation framework for agent testing | No |
 
 The unified binary supports both GUI and CLI modes:
-- `qbit` or `qbit [path]` - Launches GUI (default)
-- `qbit --headless` - Runs in headless CLI mode
-- `qbit -e "prompt"` - Execute a single prompt (implies `--headless`)
+- `golish` or `golish [path]` - Launches GUI (default)
+- `golish --headless` - Runs in headless CLI mode
+- `golish -e "prompt"` - Execute a single prompt (implies `--headless`)
 
 ## Environment Setup
 
@@ -272,13 +272,13 @@ Create `.env` in project root:
 TAVILY_API_KEY=your-key
 ```
 
-Settings file: `~/.qbit/settings.toml` (auto-generated on first run, see `backend/crates/qbit-settings/src/template.toml`)
+Settings file: `~/.golish/settings.toml` (auto-generated on first run, see `backend/crates/golish-settings/src/template.toml`)
 
-Sessions stored in: `~/.qbit/sessions/` (override with `VT_SESSION_DIR` env var)
+Sessions stored in: `~/.golish/sessions/` (override with `VT_SESSION_DIR` env var)
 
-Projects stored in: `~/.qbit/projects/`
+Projects stored in: `~/.golish/projects/`
 
-Logs: `~/.qbit/frontend.log` and `~/.qbit/backend.log`
+Logs: `~/.golish/frontend.log` and `~/.golish/backend.log`
 
 Workspace override: `just dev /path/to/project` or set `QBIT_WORKSPACE` env var
 
@@ -328,7 +328,7 @@ UI note: `system_hooks_injected` is persisted into the unified timeline as a `Un
 - Logging: `tracing` crate (`debug!`, `info!`, `warn!`, `error!`)
 
 ### Tauri Integration
-- Commands distributed across modules in main crate (`backend/crates/qbit/src/`):
+- Commands distributed across modules in main crate (`backend/crates/golish/src/`):
   - `commands/*.rs` - PTY, shell, themes, files, skills
   - `ai/commands/*.rs` - AI agent commands
   - `settings/commands.rs` - Settings commands
@@ -357,29 +357,29 @@ UI note: `system_hooks_injected` is persisted into the unified timeline as a `Un
 ### Internal Workspace Crates
 | Crate | Layer | Purpose |
 |-------|-------|---------|
-| qbit-core | 1 (Foundation) | Core types, traits, zero internal deps |
-| qbit-artifacts | 2 (Infra) | Artifact management |
-| qbit-context | 2 (Infra) | Token budget, context pruning |
-| qbit-evals | 2 (Infra) | Evaluation framework |
-| qbit-llm-providers | 2 (Infra) | Provider configuration types |
-| qbit-mcp | 2 (Infra) | MCP client for external tool servers |
-| qbit-pty | 2 (Infra) | PTY/terminal management |
-| qbit-session | 2 (Infra) | Conversation persistence |
-| qbit-settings | 2 (Infra) | TOML configuration management |
-| qbit-shell-exec | 2 (Infra) | Shell execution |
-| qbit-sidecar | 2 (Infra) | Context capture |
-| qbit-sub-agents | 2 (Infra) | Sub-agent definitions and execution |
-| qbit-synthesis | 2 (Infra) | Session synthesis |
-| qbit-tools | 2 (Infra) | Tool system, registry, file ops, directory ops, AST search |
-| qbit-udiff | 2 (Infra) | Unified diff system |
-| qbit-web | 2 (Infra) | Web search, content fetching |
-| qbit-workflow | 2 (Infra) | Graph-based multi-step tasks |
+| golish-core | 1 (Foundation) | Core types, traits, zero internal deps |
+| golish-artifacts | 2 (Infra) | Artifact management |
+| golish-context | 2 (Infra) | Token budget, context pruning |
+| golish-evals | 2 (Infra) | Evaluation framework |
+| golish-llm-providers | 2 (Infra) | Provider configuration types |
+| golish-mcp | 2 (Infra) | MCP client for external tool servers |
+| golish-pty | 2 (Infra) | PTY/terminal management |
+| golish-session | 2 (Infra) | Conversation persistence |
+| golish-settings | 2 (Infra) | TOML configuration management |
+| golish-shell-exec | 2 (Infra) | Shell execution |
+| golish-sidecar | 2 (Infra) | Context capture |
+| golish-sub-agents | 2 (Infra) | Sub-agent definitions and execution |
+| golish-synthesis | 2 (Infra) | Session synthesis |
+| golish-tools | 2 (Infra) | Tool system, registry, file ops, directory ops, AST search |
+| golish-udiff | 2 (Infra) | Unified diff system |
+| golish-web | 2 (Infra) | Web search, content fetching |
+| golish-workflow | 2 (Infra) | Graph-based multi-step tasks |
 | rig-anthropic-vertex | 2 (Infra) | Vertex AI Anthropic provider |
 | rig-gemini-vertex | 2 (Infra) | Vertex AI Gemini provider |
 | rig-zai | 2 (Infra) | Z.AI GLM provider |
 | rig-zai-anthropic | 2 (Infra) | Z.AI Anthropic SSE transformer |
-| qbit-ai | 3 (Domain) | Agent orchestration, planning, HITL, loop detection, tool policy, indexing |
-| qbit | 4 (App) | Main crate, Tauri commands, CLI, runtime, history, CLI output |
+| golish-ai | 3 (Domain) | Agent orchestration, planning, HITL, loop detection, tool policy, indexing |
+| golish | 4 (App) | Main crate, Tauri commands, CLI, runtime, history, CLI output |
 
 ## Testing
 
@@ -396,13 +396,13 @@ Rust-native evaluation framework using rig for end-to-end agent capability testi
 
 ```bash
 # Run all eval scenarios
-cargo run -p qbit --features evals -- --eval
+cargo run -p golish --features evals -- --eval
 
 # Run specific scenario
-cargo run -p qbit --features evals -- --eval --scenario bug-fix
+cargo run -p golish --features evals -- --eval --scenario bug-fix
 
 # List available scenarios
-cargo run -p qbit --features evals -- --list-scenarios
+cargo run -p golish --features evals -- --list-scenarios
 ```
 
 See `docs/rig-evals.md` for complete documentation.
@@ -418,7 +418,7 @@ The terminal supports two render modes controlled by `RenderMode` in the store:
 **Fallback list**: Some apps (like AI coding agents) don't use the alternate screen buffer but still need fullterm mode. Built-in defaults:
 - AI tools: claude, cc, codex, cdx, aider, cursor, gemini
 
-**Custom commands**: Users can add additional commands via `~/.qbit/settings.toml`:
+**Custom commands**: Users can add additional commands via `~/.golish/settings.toml`:
 ```toml
 [terminal]
 fullterm_commands = ["my-custom-tui", "another-app"]
@@ -451,7 +451,7 @@ Terminals use React portals to persist state across pane structure changes (spli
 When the agent's context window approaches capacity, automatic compaction is triggered:
 
 1. **Detection**: `ContextManager::should_compact()` checks token usage against model limits
-2. **Transcript**: Conversation history is read from `~/.qbit/transcripts/{session_id}/transcript.json` (JSONL format — one JSON object per line, with backward-compatible JSON array fallback for legacy files)
+2. **Transcript**: Conversation history is read from `~/.golish/transcripts/{session_id}/transcript.json` (JSONL format — one JSON object per line, with backward-compatible JSON array fallback for legacy files)
 3. **Summarization**: A dedicated summarizer LLM call generates a concise summary. The summarizer uses XML tag extraction (`<analysis>`/`<summary>`) to separate internal reasoning from the final summary. Reasoning/thinking from agent turns is excluded from summarizer input to save context budget.
 4. **Reset**: Message history is cleared and replaced with:
    - A context summary (wrapped in `[Context Summary - ...]` markers)
@@ -461,17 +461,17 @@ When the agent's context window approaches capacity, automatic compaction is tri
 **Transcript format**: Events are written as append-only JSONL (one timestamped JSON object per line). Streaming events (`TextDelta`, `Reasoning`, `ToolOutputChunk`) and sub-agent internal events (`SubAgentToolRequest`, `SubAgentToolResult`) are filtered out — their content is captured in aggregate by `Completed` and `ToolResult` events. Filtering is centralized in `transcript::should_transcript()`.
 
 **Artifacts saved**:
-- `~/.qbit/artifacts/compaction/summarizer-input-{timestamp}.md` - Input to summarizer
-- `~/.qbit/artifacts/summaries/summary-{timestamp}.md` - Generated summary
+- `~/.golish/artifacts/compaction/summarizer-input-{timestamp}.md` - Input to summarizer
+- `~/.golish/artifacts/summaries/summary-{timestamp}.md` - Generated summary
 
 **Key files**:
-- `qbit-ai/src/agentic_loop.rs` - `maybe_compact()`, `perform_compaction()`, `apply_compaction()`
-- `qbit-ai/src/transcript.rs` - `TranscriptWriter`, `should_transcript()`, `read_transcript()`, `format_for_summarizer()`
-- `qbit-ai/src/summarizer.rs` - Summarizer LLM call, `extract_summary_text()`
-- `qbit-ai/src/system_prompt.rs` - `append_continuation_summary()`, `update_continuation_summary()`
-- `qbit-context/src/context_manager.rs` - `CompactionState`, `should_compact()`
+- `golish-ai/src/agentic_loop.rs` - `maybe_compact()`, `perform_compaction()`, `apply_compaction()`
+- `golish-ai/src/transcript.rs` - `TranscriptWriter`, `should_transcript()`, `read_transcript()`, `format_for_summarizer()`
+- `golish-ai/src/summarizer.rs` - Summarizer LLM call, `extract_summary_text()`
+- `golish-ai/src/system_prompt.rs` - `append_continuation_summary()`, `update_continuation_summary()`
+- `golish-context/src/context_manager.rs` - `CompactionState`, `should_compact()`
 
-**Configuration** (in `~/.qbit/settings.toml`):
+**Configuration** (in `~/.golish/settings.toml`):
 ```toml
 [ai]
 summarizer_model = "claude-3-5-haiku-latest"  # Optional: model for summarization
@@ -483,14 +483,14 @@ Agent Skills follow the [agentskills.io](https://agentskills.io) specification. 
 
 **Directory Structure**:
 ```
-~/.qbit/skills/           # Global skills
+~/.golish/skills/           # Global skills
   skill-name/
     SKILL.md              # Required: YAML frontmatter + instructions
     scripts/              # Optional: executable scripts
     references/           # Optional: reference documents
     assets/               # Optional: assets
 
-<project>/.qbit/skills/   # Local skills (override global)
+<project>/.golish/skills/   # Local skills (override global)
 ```
 
 **SKILL.md Format**:
@@ -519,7 +519,7 @@ when the skill is invoked via `/<skill-name>` in the input field.
 **Discovery**:
 - Skills are discovered from both global and local directories
 - Local skills override global skills with the same name
-- Prompts (`.qbit/prompts/*.md`) take precedence over skills with the same name
+- Prompts (`.golish/prompts/*.md`) take precedence over skills with the same name
 
 **Usage**:
 - Type `/` in the input field to see available prompts and skills
@@ -528,7 +528,7 @@ when the skill is invoked via `/<skill-name>` in the input field.
 - Arguments can be appended: `/skill-name some arguments`
 
 **Key Files**:
-- `backend/crates/qbit/src/commands/skills.rs` - Skill discovery, parsing, Tauri commands
+- `backend/crates/golish/src/commands/skills.rs` - Skill discovery, parsing, Tauri commands
 - `frontend/components/SlashCommandPopup/SlashCommandPopup.tsx` - Unified popup UI
 - `frontend/hooks/useSlashCommands.ts` - Merges prompts and skills into unified list
 - `frontend/lib/tauri.ts` - Skill invoke wrappers (`listSkills`, `readSkillBody`, etc.)
@@ -543,7 +543,7 @@ when the skill is invoked via `/<skill-name>` in the input field.
 ## Adding New Features
 
 ### New Tauri Command
-1. Create function in appropriate file in `backend/crates/qbit/src/`:
+1. Create function in appropriate file in `backend/crates/golish/src/`:
    - `commands/*.rs` for general commands
    - `ai/commands/*.rs` for AI-specific commands
    - `settings/commands.rs`, `sidecar/commands.rs`, `indexer/commands.rs` for domain commands
@@ -552,17 +552,17 @@ when the skill is invoked via `/<skill-name>` in the input field.
 4. Add typed wrapper in `frontend/lib/*.ts`
 
 ### New AI Tool
-1. Add tool definition in `backend/crates/qbit-ai/src/tool_definitions.rs`
-2. Add executor in `backend/crates/qbit-ai/src/tool_executors.rs`
+1. Add tool definition in `backend/crates/golish-ai/src/tool_definitions.rs`
+2. Add executor in `backend/crates/golish-ai/src/tool_executors.rs`
 3. Register in the tool registry
 
 ### New AI Event
-1. Add variant to `AiEvent` enum in `backend/crates/qbit-core/src/events.rs`
+1. Add variant to `AiEvent` enum in `backend/crates/golish-core/src/events.rs`
 2. Emit via `app.emit("ai-event", event)`
 3. Handle in `frontend/hooks/useAiEvents.ts`
 
 ### New Infrastructure Crate
 1. Create new crate in `backend/crates/` following Layer 2 pattern
 2. Add to workspace members in `backend/Cargo.toml`
-3. Add as dependency to consuming crates (typically qbit-ai or qbit)
-4. Re-export public API through qbit crate if needed for Tauri commands
+3. Add as dependency to consuming crates (typically golish-ai or golish)
+4. Re-export public API through golish crate if needed for Tauri commands

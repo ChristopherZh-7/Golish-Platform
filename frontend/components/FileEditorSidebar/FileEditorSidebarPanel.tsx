@@ -14,7 +14,7 @@ import { useFileEditorSidebar } from "@/hooks/useFileEditorSidebar";
 import { useFileWatcher } from "@/hooks/useFileWatcher";
 import { useThrottledResize } from "@/hooks/useThrottledResize";
 import { getLanguageExtension } from "@/lib/codemirror-languages";
-import { qbitTheme } from "@/lib/codemirror-theme";
+import { golishTheme } from "@/lib/codemirror-theme";
 import { cn } from "@/lib/utils";
 import { useFocusedSessionId, useStore } from "@/store";
 import { useFileEditorSidebarStore } from "@/store/file-editor-sidebar";
@@ -603,7 +603,7 @@ export function FileEditorSidebarPanel({ open, onOpenChange }: FileEditorSidebar
             ref={editorRef}
             value={activeTab.file.content}
             height="100%"
-            theme={qbitTheme}
+            theme={golishTheme}
             extensions={extensions}
             basicSetup={false}
             onChange={(value) => updateFileContent(activeTab.id, value)}

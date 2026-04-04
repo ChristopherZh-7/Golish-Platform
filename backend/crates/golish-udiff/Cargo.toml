@@ -1,0 +1,11 @@
+[package]
+name = "golish-udiff"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "Unified diff parsing and application for Golish"
+
+[dependencies]
+similar = { workspace = true }
+
+[dev-dependencies]

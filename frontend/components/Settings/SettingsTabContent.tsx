@@ -25,7 +25,7 @@ import { notify } from "@/lib/notify";
 import {
   type CodebaseConfig,
   getSettings,
-  type QbitSettings,
+  type GolishSettings,
   updateSettings,
 } from "@/lib/settings";
 import { cn } from "@/lib/utils";
@@ -131,7 +131,7 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 export function SettingsTabContent() {
-  const [settings, setSettings] = useState<QbitSettings | null>(null);
+  const [settings, setSettings] = useState<GolishSettings | null>(null);
   const [activeSection, setActiveSection] = useState<SettingsSection>("providers");
   const [isLoading, setIsLoading] = useState(true);
 
@@ -148,7 +148,7 @@ export function SettingsTabContent() {
   }, []);
 
   // Auto-save settings when they change
-  const saveSettings = useCallback(async (settingsToSave: QbitSettings) => {
+  const saveSettings = useCallback(async (settingsToSave: GolishSettings) => {
     try {
       // Reload codebases from backend before saving to preserve any changes made
       // via CodebasesSettings (which saves directly to backend, not to parent state)
@@ -174,7 +174,7 @@ export function SettingsTabContent() {
 
   // Handler to update a specific section of settings and auto-save
   const updateSection = useCallback(
-    <K extends keyof QbitSettings>(section: K, value: QbitSettings[K]) => {
+    <K extends keyof GolishSettings>(section: K, value: GolishSettings[K]) => {
       setSettings((prev) => {
         if (!prev) return null;
         const updated = { ...prev, [section]: value };

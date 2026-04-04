@@ -6,35 +6,35 @@ export interface ThemeInfo {
 }
 
 /**
- * List all available themes in ~/.qbit/themes/
+ * List all available themes in ~/.golish/themes/
  */
 export async function listThemes(): Promise<ThemeInfo[]> {
   return await invoke<ThemeInfo[]>("list_themes");
 }
 
 /**
- * Read a theme from ~/.qbit/themes/{theme_name}/theme.json
+ * Read a theme from ~/.golish/themes/{theme_name}/theme.json
  */
 export async function readTheme(themeName: string): Promise<string> {
   return await invoke<string>("read_theme", { themeName });
 }
 
 /**
- * Save a theme to ~/.qbit/themes/{theme_name}/theme.json
+ * Save a theme to ~/.golish/themes/{theme_name}/theme.json
  */
 export async function saveTheme(themeName: string, themeData: string): Promise<string> {
   return await invoke<string>("save_theme", { themeName, themeData });
 }
 
 /**
- * Delete a theme from ~/.qbit/themes/{theme_name}/
+ * Delete a theme from ~/.golish/themes/{theme_name}/
  */
 export async function deleteTheme(themeName: string): Promise<void> {
   return await invoke<void>("delete_theme", { themeName });
 }
 
 /**
- * Save a theme asset (like background images) to ~/.qbit/themes/{theme_name}/assets/{filename}
+ * Save a theme asset (like background images) to ~/.golish/themes/{theme_name}/assets/{filename}
  */
 export async function saveThemeAsset(
   themeName: string,
