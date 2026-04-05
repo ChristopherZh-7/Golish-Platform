@@ -31,6 +31,7 @@ const toolIcons: Record<string, typeof FileText> = {
   list_files: FolderOpen,
   grep_file: Search,
   run_pty_cmd: Terminal,
+  run_command: Terminal,
   shell: Terminal,
   web_fetch: Globe,
   web_search: Globe,

@@ -1,8 +1,11 @@
+import { homeDir } from "@tauri-apps/api/path";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { FolderOpen, X } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import type { ProjectFormData } from "@/lib/projects";
+
+const DEFAULT_PROJECTS_DIR = "golish-platform";
 
 interface SetupProjectModalProps {
   isOpen: boolean;
@@ -15,6 +18,15 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
     name: "",
     rootPath: "",
   });
+
+  useEffect(() => {
+    if (isOpen && !formData.rootPath) {
+      homeDir().then((dir) => {
+        const defaultPath = `${dir.replace(/\/$/, "")}/${DEFAULT_PROJECTS_DIR}`;
+        setFormData((prev) => prev.rootPath ? prev : { ...prev, rootPath: defaultPath });
+      }).catch(() => {});
+    }
+  }, [isOpen, formData.rootPath]);
 
   const handleChange = useCallback((field: keyof ProjectFormData, value: string) => {
     setFormData((prev) => ({

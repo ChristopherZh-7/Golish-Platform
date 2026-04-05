@@ -16,6 +16,11 @@ export function isAgentTerminalCommand(tool: BaseToolCall): boolean {
   );
 }
 
+/** Check if a tool call is a visible terminal command (run_pty_cmd/run_command) */
+export function isVisibleTerminalCommand(tool: BaseToolCall): boolean {
+  return tool.name === "run_pty_cmd" || tool.name === "run_command";
+}
+
 /** Format tool name for display (e.g., "read_file" -> "Read File") */
 export function formatToolName(name: string): string {
   return name

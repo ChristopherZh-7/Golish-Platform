@@ -1,3 +1,4 @@
+import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import {
   ChevronDown,
   ChevronRight,
@@ -7,7 +8,6 @@ import {
   GitBranch,
   Minus,
   Plus,
-  RefreshCw,
   Trash2,
   TreePine,
   X,
@@ -413,7 +413,6 @@ export const HomeView = memo(function HomeView() {
   const [recentDirectories, setRecentDirectories] = useState<RecentDirectory[]>([]);
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [isLoading, setIsLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSetupModalOpen, setIsSetupModalOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [worktreeContextMenu, setWorktreeContextMenu] = useState<WorktreeContextMenuState | null>(
@@ -429,7 +428,6 @@ export const HomeView = memo(function HomeView() {
   // Fetch data — saved projects are critical, indexer data is nice-to-have
   const fetchData = useCallback(async (showLoadingState = true) => {
     if (showLoadingState) setIsLoading(true);
-    setIsRefreshing(true);
     try {
       // Saved projects are lightweight — fetch first so the UI is usable quickly
       try {
@@ -454,7 +452,6 @@ export const HomeView = memo(function HomeView() {
       }
     } finally {
       setIsLoading(false);
-      setIsRefreshing(false);
     }
   }, []);
 
@@ -497,10 +494,6 @@ export const HomeView = memo(function HomeView() {
         clearTimeout(timeoutId);
       }
     };
-  }, [fetchData]);
-
-  const handleRefresh = useCallback(() => {
-    fetchData(false);
   }, [fetchData]);
 
   const toggleProject = useCallback((path: string) => {
@@ -557,6 +550,23 @@ export const HomeView = memo(function HomeView() {
   const handleSetupNewProject = useCallback(() => {
     setIsSetupModalOpen(true);
   }, []);
+
+  const handleOpenExistingProject = useCallback(async () => {
+    const selected = await openFolderDialog({
+      directory: true,
+      multiple: false,
+      title: "Open project folder",
+    });
+    if (!selected) return;
+    const folderName = selected.split("/").pop() || selected.split("\\").pop() || "untitled";
+    try {
+      await saveProject({ name: folderName, rootPath: selected });
+      fetchData(false);
+      handleOpenProject(folderName, selected);
+    } catch (error) {
+      logger.error("Failed to open project:", error);
+    }
+  }, [fetchData, handleOpenProject]);
 
   const handleProjectContextMenu = useCallback((e: React.MouseEvent, project: ProjectInfo) => {
     e.preventDefault();
@@ -721,7 +731,7 @@ export const HomeView = memo(function HomeView() {
         <div className="flex flex-col items-center justify-center min-h-full py-16 px-8">
           {/* Logo / Title */}
           <div className="text-center mb-10">
-            <h1 className="text-3xl font-bold text-white tracking-tight mb-1">QbitPentest</h1>
+            <h1 className="text-3xl font-bold text-white tracking-tight mb-1">Golish</h1>
             <p className="text-sm text-gray-500">Penetration Testing Platform</p>
           </div>
 
@@ -729,20 +739,19 @@ export const HomeView = memo(function HomeView() {
           <div className="flex items-center gap-3 mb-12">
             <button
               type="button"
+              onClick={handleOpenExistingProject}
+              className="flex items-center gap-2 px-5 py-2.5 bg-[#161b22] border border-[#30363d] rounded-lg hover:bg-[#1c2128] hover:border-[#484f58] transition-colors text-sm text-gray-200"
+            >
+              <FolderOpen size={16} className="text-gray-400" />
+              Open Project
+            </button>
+            <button
+              type="button"
               onClick={handleSetupNewProject}
               className="flex items-center gap-2 px-5 py-2.5 bg-[#161b22] border border-[#30363d] rounded-lg hover:bg-[#1c2128] hover:border-[#484f58] transition-colors text-sm text-gray-200"
             >
               <Plus size={16} className="text-gray-400" />
               New Project
-            </button>
-            <button
-              type="button"
-              onClick={handleRefresh}
-              disabled={isRefreshing}
-              className="flex items-center gap-2 px-5 py-2.5 bg-[#161b22] border border-[#30363d] rounded-lg hover:bg-[#1c2128] hover:border-[#484f58] transition-colors text-sm text-gray-200 disabled:opacity-50"
-            >
-              <RefreshCw size={16} className={`text-gray-400 ${isRefreshing ? "animate-spin" : ""}`} />
-              Refresh
             </button>
           </div>
 

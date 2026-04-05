@@ -8,8 +8,10 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::oneshot;
+
+use crate::tools::pty_interactive::PtyOutputTap;
 
 #[derive(Debug, Clone, Serialize)]
 struct TerminalOutputEvent {
@@ -20,13 +22,20 @@ struct TerminalOutputEvent {
 pub struct TauriRuntime {
     app_handle: AppHandle,
     pending_approvals: Arc<RwLock<HashMap<String, oneshot::Sender<ApprovalResult>>>>,
+    pty_output_tap: Option<Arc<PtyOutputTap>>,
 }
 
 impl TauriRuntime {
     pub fn new(app_handle: AppHandle) -> Self {
+        // Try to get the PtyOutputTap from AppState if available
+        let pty_output_tap = app_handle
+            .try_state::<crate::state::AppState>()
+            .map(|state| state.pty_output_tap.clone());
+
         Self {
             app_handle,
             pending_approvals: Arc::new(RwLock::new(HashMap::new())),
+            pty_output_tap,
         }
     }
 
@@ -160,6 +169,12 @@ impl QbitRuntime for TauriRuntime {
                 // Terminal output goes to terminal_output channel
                 let output_str = String::from_utf8_lossy(data).to_string();
                 let byte_count = data.len();
+
+                // Feed the PTY output tap for AI tool subscribers
+                if let Some(ref tap) = self.pty_output_tap {
+                    tap.feed(session_id.clone(), output_str.clone());
+                }
+
                 self.app_handle
                     .emit(
                         "terminal_output",

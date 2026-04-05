@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "patterns": {
+    "run_command": {
+      "tool_name": "run_command",
+      "total_requests": 1,
+      "approvals": 1,
+      "denials": 0,
+      "always_allow": false,
+      "last_updated": "2026-04-05T14:34:02.326443Z",
+      "justifications": []
+    },
+    "68SS0TmTU": {
+      "tool_name": "68SS0TmTU",
+      "total_requests": 1,
+      "approvals": 1,
+      "denials": 0,
+      "always_allow": false,
+      "last_updated": "2026-04-05T12:20:49.690764Z",
+      "justifications": []
+    },
+    "aE3oDeSwB": {
+      "tool_name": "aE3oDeSwB",
+      "total_requests": 1,
+      "approvals": 1,
+      "denials": 0,
+      "always_allow": false,
+      "last_updated": "2026-04-05T14:20:05.361933Z",
+      "justifications": []
+    },
+    "run_pty_cmd": {
+      "tool_name": "run_pty_cmd",
+      "total_requests": 5,
+      "approvals": 5,
+      "denials": 0,
+      "always_allow": false,
+      "last_updated": "2026-04-05T14:32:11.977813Z",
+      "justifications": []
+    },
+    "V4sxlnzN2": {
+      "tool_name": "V4sxlnzN2",
+      "total_requests": 1,
+      "approvals": 1,
+      "denials": 0,
+      "always_allow": false,
+      "last_updated": "2026-04-05T12:24:04.334632Z",
+      "justifications": []
+    },
+    "zPUV9RAtL": {
+      "tool_name": "zPUV9RAtL",
+      "total_requests": 1,
+      "approvals": 1,
+      "denials": 0,
+      "always_allow": false,
+      "last_updated": "2026-04-05T14:34:02.325031Z",
+      "justifications": []
+    },
+    "tglQV5nLT": {
+      "tool_name": "tglQV5nLT",
+      "total_requests": 1,
+      "approvals": 1,
+      "denials": 0,
+      "always_allow": false,
+      "last_updated": "2026-04-05T14:16:12.922921Z",
+      "justifications": []
+    },
+    "NEFmTjORB": {
+      "tool_name": "NEFmTjORB",
+      "total_requests": 1,
+      "approvals": 1,
+      "denials": 0,
+      "always_allow": false,
+      "last_updated": "2026-04-05T12:32:43.749932Z",
+      "justifications": []
+    },
+    "sub_agent_explorer": {
+      "tool_name": "sub_agent_explorer",
+      "total_requests": 1,
+      "approvals": 1,
+      "denials": 0,
+      "always_allow": false,
+      "last_updated": "2026-04-05T12:20:49.691384Z",
+      "justifications": []
+    },
+    "ZIBgJdKbF": {
+      "tool_name": "ZIBgJdKbF",
+      "total_requests": 1,
+      "approvals": 1,
+      "denials": 0,
+      "always_allow": false,
+      "last_updated": "2026-04-05T14:32:11.976764Z",
+      "justifications": []
+    }
+  },
+  "config": {
+    "always_allow": [
+      "read_file",
+      "grep_file",
+      "list_files",
+      "indexer_search_code",
+      "indexer_search_files",
+      "indexer_analyze_file",
+      "indexer_extract_symbols",
+      "indexer_get_metrics",
+      "indexer_detect_language",
+      "debug_agent",
+      "analyze_agent",
+      "get_errors",
+      "list_skills",
+      "search_skills",
+      "load_skill",
+      "search_tools"
+    ],
+    "always_require_approval": [
+      "delete_file",
+      "run_command",
+      "run_pty_cmd",
+      "execute_code"
+    ],
+    "pattern_learning_enabled": true,
+    "min_approvals": 3,
+    "approval_threshold": 0.8
+  }
+}

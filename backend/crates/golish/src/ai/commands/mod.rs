@@ -223,6 +223,19 @@ pub async fn configure_bridge(bridge: &mut AgentBridge, state: &AppState, _sessi
             registry.register_tool(tool);
         }
     }
+
+    // Replace the default background run_pty_cmd with one that routes through
+    // the user's visible terminal so commands appear on the left side.
+    {
+        let visible_cmd_tool = crate::tools::pty_interactive::VisibleRunPtyCmdTool::new(
+            state.pty_manager.clone(),
+            state.pty_output_tap.clone(),
+            state.active_terminal_session.clone(),
+        );
+        let mut registry = bridge.tool_registry().write().await;
+        registry.register_tool(Arc::new(visible_cmd_tool));
+        tracing::info!("[configure_bridge] Registered VisibleRunPtyCmdTool for visible terminal execution");
+    }
 }
 
 /// Set up MCP tool definitions and executor on a bridge from the global MCP manager.

@@ -29,6 +29,7 @@ use ai::{
     execute_ai_tool, export_ai_session_transcript, finalize_ai_session, find_ai_session,
     generate_commit_message, get_agent_mode, get_ai_conversation_length,
     get_ai_conversation_length_session, get_api_request_stats, get_approval_patterns,
+    restore_ai_conversation,
     get_available_tools, get_context_summary, get_context_trim_config, get_context_utilization,
     get_hitl_config, get_loop_detector_stats, get_loop_protection_config, get_openai_api_key,
     get_openrouter_api_key, get_plan, get_project_settings, get_remaining_tokens,
@@ -112,6 +113,7 @@ use state::AppState;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{Emitter, Manager};
 use tokio::sync::RwLock;
 
@@ -440,6 +442,89 @@ pub fn run_gui() {
             }
         })
         .setup(|app| {
+            // Build native macOS menu
+            let handle = app.handle();
+
+            let app_menu = Submenu::with_items(
+                handle,
+                "Golish Platform",
+                true,
+                &[
+                    &PredefinedMenuItem::about(handle, Some("About Golish Platform"), None)?,
+                    &PredefinedMenuItem::separator(handle)?,
+                    &MenuItem::with_id(handle, "settings", "Settings...", true, Some("CmdOrCtrl+,"))?,
+                    &PredefinedMenuItem::separator(handle)?,
+                    &PredefinedMenuItem::services(handle, Some("Services"))?,
+                    &PredefinedMenuItem::separator(handle)?,
+                    &PredefinedMenuItem::hide(handle, Some("Hide Golish Platform"))?,
+                    &PredefinedMenuItem::hide_others(handle, Some("Hide Others"))?,
+                    &PredefinedMenuItem::show_all(handle, Some("Show All"))?,
+                    &PredefinedMenuItem::separator(handle)?,
+                    &PredefinedMenuItem::quit(handle, Some("Quit Golish Platform"))?,
+                ],
+            )?;
+
+            let file_menu = Submenu::with_items(
+                handle,
+                "File",
+                true,
+                &[
+                    &MenuItem::with_id(handle, "open-project", "Open Project...", true, Some("CmdOrCtrl+O"))?,
+                    &MenuItem::with_id(handle, "new-project", "New Project...", true, Some("CmdOrCtrl+N"))?,
+                    &PredefinedMenuItem::separator(handle)?,
+                    &PredefinedMenuItem::close_window(handle, Some("Close Window"))?,
+                ],
+            )?;
+
+            let edit_menu = Submenu::with_items(
+                handle,
+                "Edit",
+                true,
+                &[
+                    &PredefinedMenuItem::undo(handle, Some("Undo"))?,
+                    &PredefinedMenuItem::redo(handle, Some("Redo"))?,
+                    &PredefinedMenuItem::separator(handle)?,
+                    &PredefinedMenuItem::cut(handle, Some("Cut"))?,
+                    &PredefinedMenuItem::copy(handle, Some("Copy"))?,
+                    &PredefinedMenuItem::paste(handle, Some("Paste"))?,
+                    &PredefinedMenuItem::select_all(handle, Some("Select All"))?,
+                ],
+            )?;
+
+            let view_menu = Submenu::with_items(
+                handle,
+                "View",
+                true,
+                &[
+                    &PredefinedMenuItem::fullscreen(handle, Some("Toggle Full Screen"))?,
+                ],
+            )?;
+
+            let window_menu = Submenu::with_items(
+                handle,
+                "Window",
+                true,
+                &[
+                    &PredefinedMenuItem::minimize(handle, Some("Minimize"))?,
+                    &PredefinedMenuItem::maximize(handle, Some("Zoom"))?,
+                ],
+            )?;
+
+            let menu = Menu::with_items(
+                handle,
+                &[&app_menu, &file_menu, &edit_menu, &view_menu, &window_menu],
+            )?;
+            app.set_menu(menu)?;
+
+            app.on_menu_event(move |app_handle, event| {
+                match event.id().as_ref() {
+                    "open-project" => { app_handle.emit("menu-open-project", ()).ok(); }
+                    "new-project" => { app_handle.emit("menu-new-project", ()).ok(); }
+                    "settings" => { app_handle.emit("menu-settings", ()).ok(); }
+                    _ => {}
+                }
+            });
+
             // Auto-initialize sidecar at startup
             let state = app.state::<AppState>();
             let sidecar_state = state.sidecar_state.clone();
@@ -636,6 +721,7 @@ pub fn run_gui() {
             pty_destroy,
             pty_get_session,
             pty_get_foreground_process,
+            set_active_terminal_session,
             // Completion commands
             list_path_completions,
             // Input classification (auto mode)
@@ -690,6 +776,7 @@ pub fn run_gui() {
             update_ai_workspace,
             clear_ai_conversation,
             get_ai_conversation_length,
+            restore_ai_conversation,
             // Session persistence commands
             list_ai_sessions,
             find_ai_session,

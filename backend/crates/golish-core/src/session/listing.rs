@@ -79,7 +79,8 @@ impl SessionListing {
             .map(|m| {
                 let text = m.content.as_text();
                 if text.len() > 200 {
-                    format!("{}...", &text[..200])
+                    let end = text.floor_char_boundary(200);
+                    format!("{}...", &text[..end])
                 } else {
                     text
                 }
