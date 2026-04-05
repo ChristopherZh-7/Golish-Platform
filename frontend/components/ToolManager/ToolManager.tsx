@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
-  ArrowLeft, ArrowUpDown, Check, Code2, Copy, Download, FileText,
-  FolderOpen, Grid3X3, Loader2, List, Plus, RefreshCw, Save, Search, Trash2, X,
+  ArrowLeft, ArrowUpDown, BookOpen, Check, Code2, Copy, Download, FileText,
+  FolderOpen, Grid3X3, Loader2, List, Pencil, Plus, RefreshCw, Save, Search, Trash2, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { scanTools, deleteTool, getCategories, fetchGitHubRelease, downloadAndExtract, installRuntime, createPythonEnv, listPythonEnvs, listInstalledJava, listAvailableJava, installJavaVersion } from "@/lib/pentest/api";
+import { scanTools, deleteTool, getCategories, fetchGitHubRelease, downloadAndExtract, installRuntime, createPythonEnv, listPythonEnvs, listInstalledJava, listAvailableJava, installJavaVersion, listSkills, readSkill, writeSkill, deleteSkill, type SkillFileInfo } from "@/lib/pentest/api";
 import type { ToolConfig, ToolCategory } from "@/lib/pentest/types";
 import { getSettings } from "@/lib/settings";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -31,7 +31,7 @@ export function ToolManager() {
 
   // Editor state
   const [editingTool, setEditingTool] = useState<ToolWithMeta | null>(null);
-  const [editorMode, setEditorMode] = useState<"form" | "raw">("form");
+  const [editorMode, setEditorMode] = useState<"form" | "raw" | "skills">("form");
   const [rawJson, setRawJson] = useState("");
   const [formData, setFormData] = useState<Record<string, unknown>>({});
   const [editorLoading, setEditorLoading] = useState(false);
@@ -41,6 +41,15 @@ export function ToolManager() {
   const [editorVisible, setEditorVisible] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const originalJsonRef = useRef("");
+
+  // Skills state
+  const [skillsList, setSkillsList] = useState<SkillFileInfo[]>([]);
+  const [activeSkillId, setActiveSkillId] = useState<string | null>(null);
+  const [skillContent, setSkillContent] = useState("");
+  const [skillDirty, setSkillDirty] = useState(false);
+  const [skillSaving, setSkillSaving] = useState(false);
+  const [newSkillName, setNewSkillName] = useState("");
+  const [showNewSkill, setShowNewSkill] = useState(false);
 
   // Context menu
   const [ctxMenu, setCtxMenu] = useState<{ tool: ToolWithMeta; x: number; y: number } | null>(null);
@@ -535,11 +544,83 @@ export function ToolManager() {
     }
   }, [editingTool, editorMode, rawJson, formData, loadData]);
 
-  const handleSwitchMode = useCallback((mode: "form" | "raw") => {
+  const handleSwitchMode = useCallback((mode: "form" | "raw" | "skills") => {
+    if (mode === "skills") {
+      setEditorMode("skills");
+      if (editingTool) {
+        listSkills(editingTool.name).then(setSkillsList).catch(() => setSkillsList([]));
+        setActiveSkillId(null);
+        setSkillContent("");
+        setSkillDirty(false);
+      }
+      return;
+    }
     if (mode === "raw") syncFormToRaw(formData);
     else syncRawToForm(rawJson);
     setEditorMode(mode);
-  }, [editorMode, formData, rawJson, syncFormToRaw, syncRawToForm]);
+  }, [editorMode, formData, rawJson, syncFormToRaw, syncRawToForm, editingTool]);
+
+  const loadSkillContent = useCallback(async (skillId: string) => {
+    if (!editingTool) return;
+    try {
+      const content = await readSkill(editingTool.name, skillId);
+      setActiveSkillId(skillId);
+      setSkillContent(content);
+      setSkillDirty(false);
+    } catch {
+      setActiveSkillId(skillId);
+      setSkillContent("");
+      setSkillDirty(false);
+    }
+  }, [editingTool]);
+
+  const handleSaveSkill = useCallback(async () => {
+    if (!editingTool || !activeSkillId) return;
+    setSkillSaving(true);
+    try {
+      await writeSkill(editingTool.name, activeSkillId, skillContent);
+      setSkillDirty(false);
+    } catch (e) {
+      console.error("[Skills] Save failed:", e);
+    } finally {
+      setSkillSaving(false);
+    }
+  }, [editingTool, activeSkillId, skillContent]);
+
+  const handleCreateSkill = useCallback(async () => {
+    if (!editingTool || !newSkillName.trim()) return;
+    const id = newSkillName.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+    if (!id) return;
+    const template = `# ${newSkillName.trim()}\n\n## Description\n\nDescribe what this skill does.\n\n## Usage\n\n\`\`\`bash\n${editingTool.name} <args>\n\`\`\`\n\n## Notes\n\n- Add notes here\n`;
+    try {
+      await writeSkill(editingTool.name, id, template);
+      const updated = await listSkills(editingTool.name);
+      setSkillsList(updated);
+      setActiveSkillId(id);
+      setSkillContent(template);
+      setSkillDirty(false);
+      setNewSkillName("");
+      setShowNewSkill(false);
+    } catch (e) {
+      console.error("[Skills] Create failed:", e);
+    }
+  }, [editingTool, newSkillName]);
+
+  const handleDeleteSkill = useCallback(async (skillId: string) => {
+    if (!editingTool) return;
+    try {
+      await deleteSkill(editingTool.name, skillId);
+      const updated = await listSkills(editingTool.name);
+      setSkillsList(updated);
+      if (activeSkillId === skillId) {
+        setActiveSkillId(null);
+        setSkillContent("");
+        setSkillDirty(false);
+      }
+    } catch (e) {
+      console.error("[Skills] Delete failed:", e);
+    }
+  }, [editingTool, activeSkillId]);
 
   // Add new tool — open editor directly without creating a file
   const handleAddTool = useCallback(() => {
@@ -912,17 +993,24 @@ export function ToolManager() {
                     editorMode === "form" ? "bg-accent/15 text-accent" : "text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)]")}>
                   <FileText className="w-3 h-3" /> {t("toolManager.form")}
                 </button>
+                <button type="button" onClick={() => handleSwitchMode("skills")}
+                  className={cn("flex items-center gap-1.5 px-3 py-1.5 text-[11px] transition-colors",
+                    editorMode === "skills" ? "bg-accent/15 text-accent" : "text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)]")}>
+                  <BookOpen className="w-3 h-3" /> Skills
+                </button>
                 <button type="button" onClick={() => handleSwitchMode("raw")}
                   className={cn("flex items-center gap-1.5 px-3 py-1.5 text-[11px] transition-colors",
                     editorMode === "raw" ? "bg-accent/15 text-accent" : "text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)]")}>
                   <Code2 className="w-3 h-3" /> {t("toolManager.json")}
                 </button>
               </div>
-              <button type="button" onClick={handleSave} disabled={saving || !editorDirty}
-                className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-colors",
-                  editorDirty ? "bg-accent text-accent-foreground hover:bg-accent/90" : "bg-muted/30 text-muted-foreground/30 cursor-not-allowed")}>
-                {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />} {t("common.save")}
-              </button>
+              {editorMode !== "skills" && (
+                <button type="button" onClick={handleSave} disabled={saving || !editorDirty}
+                  className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-colors",
+                    editorDirty ? "bg-accent text-accent-foreground hover:bg-accent/90" : "bg-muted/30 text-muted-foreground/30 cursor-not-allowed")}>
+                  {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />} {t("common.save")}
+                </button>
+              )}
             </div>
           </>
         ) : (
@@ -966,6 +1054,89 @@ export function ToolManager() {
             <textarea ref={textareaRef} value={rawJson} onChange={(e) => handleRawChange(e.target.value)} spellCheck={false}
               className="w-full h-full min-h-[400px] px-4 py-3 text-[11px] font-mono leading-[1.6] rounded-lg border border-border/10 bg-[var(--bg-hover)]/20 text-foreground outline-none focus:border-accent/30 transition-colors resize-none"
               style={{ tabSize: 2 }} />
+          ) : editorMode === "skills" ? (
+            <div className="flex gap-4 h-full min-h-[400px]">
+              {/* Skills list */}
+              <div className="w-[220px] flex-shrink-0 rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden flex flex-col">
+                <div className="px-3 py-2 border-b border-border/8 flex items-center justify-between">
+                  <span className="text-[11px] font-medium text-muted-foreground/40">Skills</span>
+                  <button type="button" onClick={() => setShowNewSkill(true)}
+                    className="p-1 rounded text-muted-foreground/40 hover:text-accent hover:bg-[var(--bg-hover)] transition-colors">
+                    <Plus className="w-3 h-3" />
+                  </button>
+                </div>
+                {showNewSkill && (
+                  <div className="px-2 py-2 border-b border-border/8 flex gap-1.5">
+                    <input value={newSkillName} onChange={(e) => setNewSkillName(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") handleCreateSkill(); if (e.key === "Escape") { setShowNewSkill(false); setNewSkillName(""); } }}
+                      placeholder={t("toolManager.newSkillName", "Skill name...")}
+                      autoFocus
+                      className="flex-1 px-2 py-1 text-[11px] rounded bg-background border border-border/20 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40" />
+                    <button type="button" onClick={handleCreateSkill} disabled={!newSkillName.trim()}
+                      className="p-1 rounded text-accent hover:bg-accent/10 disabled:opacity-30 transition-colors">
+                      <Check className="w-3 h-3" />
+                    </button>
+                    <button type="button" onClick={() => { setShowNewSkill(false); setNewSkillName(""); }}
+                      className="p-1 rounded text-muted-foreground/40 hover:text-foreground transition-colors">
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                )}
+                <div className="flex-1 overflow-y-auto">
+                  {skillsList.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-24 gap-2">
+                      <BookOpen className="w-4 h-4 text-muted-foreground/20" />
+                      <span className="text-[11px] text-muted-foreground/30">{t("toolManager.noSkills", "No skills yet")}</span>
+                    </div>
+                  ) : (
+                    skillsList.map((skill) => (
+                      <div key={skill.id}
+                        className={cn("group flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors",
+                          activeSkillId === skill.id ? "bg-accent/10 text-accent" : "text-foreground/70 hover:bg-[var(--bg-hover)]")}
+                        onClick={() => loadSkillContent(skill.id)}>
+                        <BookOpen className="w-3 h-3 flex-shrink-0 opacity-40" />
+                        <span className="flex-1 text-[12px] truncate">{skill.name}</span>
+                        <button type="button"
+                          onClick={(e) => { e.stopPropagation(); handleDeleteSkill(skill.id); }}
+                          className="p-0.5 rounded opacity-0 group-hover:opacity-40 hover:!opacity-100 hover:text-destructive transition-all">
+                          <Trash2 className="w-2.5 h-2.5" />
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+              {/* Skill editor */}
+              <div className="flex-1 min-w-0 rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden flex flex-col">
+                {activeSkillId ? (
+                  <>
+                    <div className="px-3 py-2 border-b border-border/8 flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Pencil className="w-3 h-3 text-muted-foreground/30" />
+                        <span className="text-[11px] font-medium text-muted-foreground/40">{activeSkillId}.md</span>
+                        {skillDirty && <span className="w-1.5 h-1.5 rounded-full bg-accent/60" />}
+                      </div>
+                      <button type="button" onClick={handleSaveSkill} disabled={!skillDirty || skillSaving}
+                        className={cn("flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium transition-colors",
+                          skillDirty ? "bg-accent text-accent-foreground hover:bg-accent/90" : "text-muted-foreground/30 cursor-not-allowed")}>
+                        {skillSaving ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Save className="w-2.5 h-2.5" />}
+                        {t("common.save")}
+                      </button>
+                    </div>
+                    <textarea value={skillContent}
+                      onChange={(e) => { setSkillContent(e.target.value); setSkillDirty(true); }}
+                      spellCheck={false}
+                      className="flex-1 w-full px-4 py-3 text-[12px] font-mono leading-[1.7] bg-transparent text-foreground outline-none resize-none"
+                      style={{ tabSize: 2 }} />
+                  </>
+                ) : (
+                  <div className="flex-1 flex flex-col items-center justify-center gap-3">
+                    <BookOpen className="w-8 h-8 text-muted-foreground/10" />
+                    <p className="text-[12px] text-muted-foreground/30">{t("toolManager.selectSkill", "Select a skill to edit or create a new one")}</p>
+                  </div>
+                )}
+              </div>
+            </div>
           ) : (
             <div className="flex gap-4 h-full">
               <div className="flex-1 min-w-0 space-y-4 overflow-y-auto">

@@ -64,7 +64,8 @@ use models::commands::{
     get_available_models, get_model_by_id, get_model_capabilities_command, get_providers,
 };
 use projects::commands::{
-    delete_project_config, get_project_config, list_project_configs, save_project,
+    delete_project_config, get_project_config, list_project_configs, load_project_workspace,
+    save_project, save_project_workspace,
 };
 use settings::{
     get_setting, get_settings, get_settings_path, get_telemetry_stats, get_window_state,
@@ -773,6 +774,8 @@ pub fn run_gui() {
             delete_project_config,
             list_project_configs,
             get_project_config,
+            save_project_workspace,
+            load_project_workspace,
             // Prompt commands
             list_prompts,
             read_prompt,
@@ -946,6 +949,11 @@ pub fn run_gui() {
             tools::pentest::pentest_check_sandboxie,
             tools::pentest::pentest_test_sandboxie,
             tools::pentest::pentest_download_sandboxie,
+            // Skills CRUD
+            tools::pentest::pentest_list_skills,
+            tools::pentest::pentest_read_skill,
+            tools::pentest::pentest_write_skill,
+            tools::pentest::pentest_delete_skill,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -32,8 +32,21 @@ import {
   removeRecentDirectory,
 } from "@/lib/indexer";
 import { logger } from "@/lib/logger";
-import { deleteProject, type ProjectFormData, saveProject } from "@/lib/projects";
+import {
+  deleteProject,
+  listProjectConfigs,
+  type ProjectData,
+  type ProjectFormData,
+  saveProject,
+} from "@/lib/projects";
 import { deleteWorktree } from "@/lib/tauri";
+import {
+  loadWorkspaceState,
+  setLastProjectName,
+  toChatConversation,
+} from "@/lib/workspace-storage";
+import { useStore } from "@/store";
+import { createNewConversation } from "@/store/slices/conversation";
 import { NewWorktreeModal } from "./NewWorktreeModal";
 import { SetupProjectModal } from "./SetupProjectModal";
 
@@ -396,6 +409,7 @@ function ProjectContextMenu({
 export const HomeView = memo(function HomeView() {
   const { createTerminalTab } = useCreateTerminalTab();
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
+  const [savedProjects, setSavedProjects] = useState<ProjectData[]>([]);
   const [recentDirectories, setRecentDirectories] = useState<RecentDirectory[]>([]);
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [isLoading, setIsLoading] = useState(true);
@@ -410,20 +424,34 @@ export const HomeView = memo(function HomeView() {
     projectName: string;
   } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ name: string; path: string } | null>(null);
+  const currentProjectName = useStore((s) => s.currentProjectName);
 
-  // Fetch data helper
+  // Fetch data — saved projects are critical, indexer data is nice-to-have
   const fetchData = useCallback(async (showLoadingState = true) => {
     if (showLoadingState) setIsLoading(true);
     setIsRefreshing(true);
     try {
-      const [projectsData, directoriesData] = await Promise.all([
-        listProjectsForHome(),
-        listRecentDirectories(10),
-      ]);
-      setProjects(projectsData);
-      setRecentDirectories(directoriesData);
-    } catch (error) {
-      logger.error("Failed to fetch home view data:", error);
+      // Saved projects are lightweight — fetch first so the UI is usable quickly
+      try {
+        const savedProjectsData = await listProjectConfigs();
+        setSavedProjects(savedProjectsData);
+      } catch (e) {
+        logger.warn("Failed to load saved projects:", e);
+      }
+
+      // Indexer data can be slow — don't block the UI on it
+      setIsLoading(false);
+
+      try {
+        const [projectsData, directoriesData] = await Promise.all([
+          listProjectsForHome(),
+          listRecentDirectories(10),
+        ]);
+        setProjects(projectsData);
+        setRecentDirectories(directoriesData);
+      } catch (e) {
+        logger.warn("Failed to load indexer data:", e);
+      }
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -492,6 +520,38 @@ export const HomeView = memo(function HomeView() {
       createTerminalTab(path);
     },
     [createTerminalTab]
+  );
+
+  /** Open a project: load its workspace state, set as current, create terminal */
+  const handleOpenProject = useCallback(
+    async (projectName: string, rootPath: string) => {
+      try {
+        // Set as current project
+        useStore.getState().setCurrentProject(projectName);
+        setLastProjectName(projectName);
+
+        // Try to load saved workspace state for this project
+        const saved = await loadWorkspaceState(projectName);
+        if (saved && saved.conversations.length > 0) {
+          const restoredConvs = saved.conversations.map(toChatConversation);
+          useStore.getState().restoreConversations(
+            restoredConvs,
+            saved.conversationOrder,
+            saved.activeConversationId,
+          );
+        } else {
+          // No saved state for this project — create a fresh conversation
+          const conv = createNewConversation();
+          useStore.getState().restoreConversations([conv], [conv.id], conv.id);
+        }
+
+        // Create a terminal in the project root
+        createTerminalTab(rootPath);
+      } catch (error) {
+        logger.error("Failed to open project:", error);
+      }
+    },
+    [createTerminalTab],
   );
 
   const handleSetupNewProject = useCallback(() => {
@@ -567,14 +627,14 @@ export const HomeView = memo(function HomeView() {
       try {
         await saveProject(data);
         setIsSetupModalOpen(false);
-        // Refresh the project list
         fetchData(false);
+        // Open the newly created project
+        handleOpenProject(data.name, data.rootPath);
       } catch (error) {
         logger.error("Failed to save project:", error);
-        // TODO: Show error toast
       }
     },
-    [fetchData]
+    [fetchData, handleOpenProject]
   );
 
   if (isLoading) {
@@ -608,6 +668,9 @@ export const HomeView = memo(function HomeView() {
               onClick={async () => {
                 if (deleteConfirm) {
                   await deleteProject(deleteConfirm.name);
+                  if (useStore.getState().currentProjectName === deleteConfirm.name) {
+                    useStore.getState().setCurrentProject(null);
+                  }
                 }
                 setDeleteConfirm(null);
                 fetchData(false);
@@ -654,91 +717,90 @@ export const HomeView = memo(function HomeView() {
           document.body
         )}
 
-      <div className="h-full overflow-auto bg-[#0d1117] p-8">
-        <div className="max-w-3xl mx-auto w-full space-y-8">
-          {/* Projects Section */}
-          <section className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-2">
-                <h2 className="text-sm font-bold text-gray-400 uppercase tracking-wider">
-                  Projects
-                </h2>
-                <button
-                  type="button"
-                  onClick={handleRefresh}
-                  disabled={isRefreshing}
-                  className="p-1 hover:bg-[#30363d] rounded transition-colors disabled:opacity-50"
-                  title="Refresh"
-                >
-                  <RefreshCw
-                    size={14}
-                    className={`text-gray-500 ${isRefreshing ? "animate-spin" : ""}`}
-                  />
-                </button>
-              </div>
-              <button
-                type="button"
-                onClick={handleSetupNewProject}
-                className="flex items-center space-x-2 px-3 py-1.5 bg-[#238636] hover:bg-[#2ea043] text-white text-xs font-medium rounded-md transition-colors"
-              >
-                <Plus size={14} />
-                <span>Setup new project</span>
-              </button>
-            </div>
-            <div className="bg-[#161b22] border border-[#30363d] rounded-lg overflow-hidden">
-              {projects.length === 0 ? (
-                <div className="p-8 text-center text-gray-500">
-                  No projects configured.{" "}
-                  <button
-                    type="button"
-                    className="text-[#238636] hover:underline"
-                    onClick={handleSetupNewProject}
-                  >
-                    Add your first project
-                  </button>
-                </div>
-              ) : (
-                projects.map((project) => (
-                  <ProjectRow
-                    key={project.path}
-                    project={project}
-                    isExpanded={expandedProjects.has(project.path)}
-                    onToggle={() => toggleProject(project.path)}
-                    onOpenDirectory={handleOpenDirectory}
-                    onContextMenu={(e) => handleProjectContextMenu(e, project)}
-                    onWorktreeContextMenu={(e, worktreePath, branchName) =>
-                      handleWorktreeContextMenu(e, project.path, worktreePath, branchName)
-                    }
-                    onDelete={() => setDeleteConfirm({ name: project.name, path: project.path })}
-                  />
-                ))
-              )}
-            </div>
-          </section>
+      <div className="h-full overflow-auto bg-[#0d1117]">
+        <div className="flex flex-col items-center justify-center min-h-full py-16 px-8">
+          {/* Logo / Title */}
+          <div className="text-center mb-10">
+            <h1 className="text-3xl font-bold text-white tracking-tight mb-1">QbitPentest</h1>
+            <p className="text-sm text-gray-500">Penetration Testing Platform</p>
+          </div>
 
-          {/* Recent Directories Section */}
-          <section className="space-y-4">
-            <h2 className="text-sm font-bold text-gray-400 uppercase tracking-wider">
-              Recent Directories
-            </h2>
-            <div className="bg-[#161b22] border border-[#30363d] rounded-lg overflow-hidden">
-              {recentDirectories.length === 0 ? (
-                <div className="p-8 text-center text-gray-500">No recent directories</div>
-              ) : (
-                recentDirectories.map((directory) => (
-                  <RecentDirectoryRow
-                    key={directory.path}
-                    directory={directory}
-                    onOpen={() => handleOpenDirectory(directory.path)}
-                    onRemove={async () => {
-                      await removeRecentDirectory(directory.path);
-                      fetchData(false);
-                    }}
-                  />
-                ))
-              )}
-            </div>
-          </section>
+          {/* Action Buttons */}
+          <div className="flex items-center gap-3 mb-12">
+            <button
+              type="button"
+              onClick={handleSetupNewProject}
+              className="flex items-center gap-2 px-5 py-2.5 bg-[#161b22] border border-[#30363d] rounded-lg hover:bg-[#1c2128] hover:border-[#484f58] transition-colors text-sm text-gray-200"
+            >
+              <Plus size={16} className="text-gray-400" />
+              New Project
+            </button>
+            <button
+              type="button"
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+              className="flex items-center gap-2 px-5 py-2.5 bg-[#161b22] border border-[#30363d] rounded-lg hover:bg-[#1c2128] hover:border-[#484f58] transition-colors text-sm text-gray-200 disabled:opacity-50"
+            >
+              <RefreshCw size={16} className={`text-gray-400 ${isRefreshing ? "animate-spin" : ""}`} />
+              Refresh
+            </button>
+          </div>
+
+          {/* Projects List */}
+          <div className="w-full max-w-lg">
+            {savedProjects.length > 0 && (
+              <div className="mb-8">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Recent projects
+                  </h2>
+                </div>
+                <div className="space-y-0.5">
+                  {savedProjects.map((proj) => (
+                    <button
+                      key={proj.name}
+                      type="button"
+                      onClick={() => handleOpenProject(proj.name, proj.rootPath)}
+                      className={`w-full flex items-center justify-between px-3 py-2.5 rounded-md hover:bg-[#161b22] transition-colors text-left group ${
+                        proj.name === currentProjectName ? "bg-[#161b22]" : ""
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className="text-sm text-gray-200">{proj.name}</span>
+                        {proj.name === currentProjectName && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#238636]/20 text-[#238636]">
+                            Active
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-600 font-mono truncate max-w-[200px]">
+                          {proj.rootPath.replace(/^\/Users\/[^/]+/, "~")}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeleteConfirm({ name: proj.name, path: proj.rootPath });
+                          }}
+                          className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-[#30363d] transition-all"
+                          title="Delete project"
+                        >
+                          <X size={12} className="text-gray-500" />
+                        </button>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {savedProjects.length === 0 && (
+              <div className="text-center text-gray-500 text-sm">
+                No projects yet. Create one to get started.
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </>

@@ -35,6 +35,8 @@ pub struct AppState {
     pub mcp_manager: Arc<RwLock<Option<Arc<golish_mcp::McpManager>>>>,
     /// Command index for auto input mode classification.
     pub command_index: Arc<CommandIndex>,
+    /// Pentest config manager for AI tool integration.
+    pub pentest_config_manager: Arc<golish_pentest::ConfigManager>,
 }
 
 impl AppState {
@@ -77,6 +79,7 @@ impl AppState {
             telemetry_stats,
             mcp_manager: Arc::new(RwLock::new(None)),
             command_index: Arc::new(CommandIndex::new()),
+            pentest_config_manager: Arc::new(golish_pentest::ConfigManager::with_defaults()),
         }
     }
 
@@ -117,6 +120,7 @@ impl AppState {
             telemetry_stats,
             mcp_manager: Arc::new(RwLock::new(None)),
             command_index: Arc::new(CommandIndex::new()),
+            pentest_config_manager: Arc::new(golish_pentest::ConfigManager::with_defaults()),
         }
     }
 }

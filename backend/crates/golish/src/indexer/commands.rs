@@ -1305,7 +1305,7 @@ pub async fn create_git_worktree(
         return Err(format!("Repository path does not exist: {}", repo_path));
     }
 
-    // Load project config to get worktrees_dir and init_script
+    // Load project config to check project associations
     let project_configs = crate::projects::list_projects()
         .await
         .map_err(|e| format!("Failed to load projects: {}", e))?;
@@ -1318,29 +1318,13 @@ pub async fn create_git_worktree(
             .unwrap_or(false)
     });
 
+    let _ = project_config; // project_config is only used for lookup, not for worktree settings
+
     // Determine worktree path
     let wt_path = if let Some(custom_path) = worktree_path {
         PathBuf::from(custom_path)
-    } else if let Some(config) = &project_config {
-        // Use project's worktrees_dir if configured
-        if let Some(worktrees_dir) = &config.worktrees_dir {
-            let dir = PathBuf::from(worktrees_dir);
-            dir.join(&branch_name)
-        } else {
-            // Default: sibling directory named project-branch
-            let project_name = repo
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "project".to_string());
-            let parent = repo.parent().unwrap_or(&repo);
-            parent.join(format!(
-                "{}-{}",
-                project_name,
-                branch_name.replace('/', "-")
-            ))
-        }
     } else {
-        // No project config, use sibling directory
+        // Default: sibling directory named project-branch
         let project_name = repo
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -1416,41 +1400,10 @@ pub async fn create_git_worktree(
         }
     }
 
-    // Run init script if configured
-    let (init_script_run, init_script_output) =
-        if let Some(init_script) = project_config.and_then(|c| c.worktree.init_script.as_ref()) {
-            tracing::info!("Running worktree init script: {}", init_script);
-
-            let script_output = Command::new("sh")
-                .args(["-c", init_script])
-                .current_dir(&wt_path)
-                .output();
-
-            match script_output {
-                Ok(out) => {
-                    let stdout = String::from_utf8_lossy(&out.stdout);
-                    let stderr = String::from_utf8_lossy(&out.stderr);
-                    let combined = format!("{}{}", stdout, stderr);
-
-                    if !out.status.success() {
-                        tracing::warn!("Init script exited with non-zero status: {}", combined);
-                    }
-
-                    (true, Some(combined))
-                }
-                Err(e) => {
-                    tracing::error!("Failed to run init script: {}", e);
-                    (true, Some(format!("Error: {}", e)))
-                }
-            }
-        } else {
-            (false, None)
-        };
-
     Ok(WorktreeCreated {
         path: wt_path.to_string_lossy().to_string(),
         branch: branch_name,
-        init_script_run,
-        init_script_output,
+        init_script_run: false,
+        init_script_output: None,
     })
 }

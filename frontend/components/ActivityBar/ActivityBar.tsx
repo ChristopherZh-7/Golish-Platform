@@ -1,7 +1,6 @@
 import { memo } from "react";
 import {
   Home,
-  Shield,
   Search,
   FolderTree,
   Database,
@@ -21,7 +20,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useTranslation } from "react-i18next";
 
-export type ActivityView = "tools" | "search" | "explorer" | "database" | "wiki" | "toolManage" | "settings" | null;
+export type ActivityView = "search" | "explorer" | "database" | "wiki" | "toolManage" | "settings" | null;
 
 interface ActivityBarItem {
   id: ActivityView;
@@ -31,7 +30,6 @@ interface ActivityBarItem {
 
 const ACTIVITY_ITEMS: ActivityBarItem[] = [
   { id: "search", icon: Search, label: "activity.search" },
-  { id: "tools", icon: Shield, label: "activity.tools" },
   { id: "explorer", icon: FolderTree, label: "activity.explorer" },
   { id: "database", icon: Database, label: "activity.database" },
   { id: "wiki", icon: BookOpen, label: "activity.wiki" },

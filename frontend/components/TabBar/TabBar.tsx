@@ -79,7 +79,29 @@ function buildTabNumberMap(tabs: TabItemState[]): Map<string, number> {
 
 export const TabBar = React.memo(function TabBar() {
   // Use optimized selector that avoids subscribing to entire Record objects
-  const { tabs, activeSessionId } = useTabBarState();
+  const { tabs: allTabs, activeSessionId } = useTabBarState();
+
+  // Filter tabs to only show those belonging to the active conversation
+  const activeConvTerminals = useStore((s) => {
+    const convId = s.activeConversationId;
+    if (!convId) return null;
+    return s.conversationTerminals[convId] ?? null;
+  });
+
+  // Get active conversation title for the tab bar label
+  const activeConvTitle = useStore((s) => {
+    const convId = s.activeConversationId;
+    if (!convId) return null;
+    return s.conversations[convId]?.title ?? null;
+  });
+
+  const tabs = React.useMemo(() => {
+    if (!activeConvTerminals) return allTabs;
+    return allTabs.filter((tab) => {
+      if (tab.tabType !== "terminal") return true;
+      return activeConvTerminals.includes(tab.id);
+    });
+  }, [allTabs, activeConvTerminals]);
 
   const tabNumberById = React.useMemo(() => buildTabNumberMap(tabs), [tabs]);
 
@@ -142,6 +164,76 @@ export const TabBar = React.memo(function TabBar() {
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", handleBlur);
     };
+  }, []);
+
+  // Custom scrollbar state for tab overflow
+  const tabScrollRef = React.useRef<HTMLDivElement>(null);
+  const [tabBarHovered, setTabBarHovered] = React.useState(false);
+  const [scrollThumb, setScrollThumb] = React.useState({ left: 0, width: 0, visible: false });
+  const thumbDragRef = React.useRef<{ startX: number; startScroll: number } | null>(null);
+
+  const updateScrollThumb = React.useCallback(() => {
+    const el = tabScrollRef.current;
+    if (!el) return;
+    const hasOverflow = el.scrollWidth > el.clientWidth + 1;
+    if (!hasOverflow) {
+      setScrollThumb({ left: 0, width: 0, visible: false });
+      return;
+    }
+    const ratio = el.clientWidth / el.scrollWidth;
+    const thumbWidth = Math.max(ratio * 100, 10);
+    const scrollRange = el.scrollWidth - el.clientWidth;
+    const thumbLeft = scrollRange > 0 ? (el.scrollLeft / scrollRange) * (100 - thumbWidth) : 0;
+    setScrollThumb({ left: thumbLeft, width: thumbWidth, visible: true });
+  }, []);
+
+  React.useEffect(() => {
+    const el = tabScrollRef.current;
+    if (!el) return;
+    updateScrollThumb();
+    el.addEventListener("scroll", updateScrollThumb, { passive: true });
+    const observer = new ResizeObserver(updateScrollThumb);
+    observer.observe(el);
+    return () => {
+      el.removeEventListener("scroll", updateScrollThumb);
+      observer.disconnect();
+    };
+  }, [updateScrollThumb, tabs.length]);
+
+  React.useEffect(() => {
+    const el = tabScrollRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
+      if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+        e.preventDefault();
+        el.scrollLeft += e.deltaY;
+      }
+    };
+    el.addEventListener("wheel", handler, { passive: false });
+    return () => el.removeEventListener("wheel", handler);
+  }, []);
+
+  const handleThumbDragStart = React.useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const el = tabScrollRef.current;
+    if (!el) return;
+    thumbDragRef.current = { startX: e.clientX, startScroll: el.scrollLeft };
+    const onMove = (ev: MouseEvent) => {
+      if (!thumbDragRef.current || !tabScrollRef.current) return;
+      const trackEl = tabScrollRef.current;
+      const dx = ev.clientX - thumbDragRef.current.startX;
+      const trackWidth = trackEl.clientWidth;
+      const scrollRange = trackEl.scrollWidth - trackEl.clientWidth;
+      trackEl.scrollLeft = thumbDragRef.current.startScroll + (dx / trackWidth) * scrollRange;
+    };
+    const onUp = () => {
+      thumbDragRef.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
   }, []);
 
   const handleTabPointerDown = React.useCallback(
@@ -250,6 +342,13 @@ export const TabBar = React.memo(function TabBar() {
         }
       }
 
+      // Remove terminal from its conversation
+      const store = useStore.getState();
+      const convId = store.getConversationForTerminal(tabId);
+      if (convId) {
+        store.removeTerminalFromConversation(convId, tabId);
+      }
+
       // Remove all frontend state for the tab
       closeTab(tabId);
     },
@@ -260,64 +359,69 @@ export const TabBar = React.memo(function TabBar() {
     <TooltipProvider delayDuration={300}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: div is used for window drag region */}
       <div
-        className="relative z-[200] flex items-center h-[34px] bg-transparent pl-2 pr-2 gap-1"
+        className="relative z-[200] flex flex-col bg-transparent"
         onMouseDown={startDrag}
+        onMouseEnter={() => setTabBarHovered(true)}
+        onMouseLeave={() => setTabBarHovered(false)}
       >
-        <Tabs
-          value={activeSessionId || undefined}
-          onValueChange={setActiveSession}
-          className="min-w-0"
+        <div className="flex items-center h-[31px] pl-2 pr-2 gap-1">
+        <div
+          ref={tabScrollRef}
+          className="min-w-0 overflow-x-auto scrollbar-none"
           onMouseDown={(e) => e.stopPropagation()}
         >
-          <TabsList className="h-6 bg-transparent p-0 gap-1 w-full justify-start">
-            {tabs.map((tab, index) => {
-              const isActive = tab.id === activeSessionId;
-              // Compute isBusy from the optimized tab state
-              const isBusy = tab.tabType === "terminal" && (tab.isRunning || tab.hasPendingCommand);
-              // Show activity indicator for inactive terminal tabs
-              const hasNewActivity = tab.tabType === "terminal" && !isActive && tab.hasNewActivity;
-              const isHomeTab = tab.tabType === "home";
-              const homeVisible = display.showHomeTab;
+          <Tabs
+            value={activeSessionId || undefined}
+            onValueChange={setActiveSession}
+          >
+            <TabsList className="h-6 bg-transparent p-0 gap-1 w-max justify-start">
+              {tabs.map((tab, index) => {
+                const isActive = tab.id === activeSessionId;
+                const isBusy = tab.tabType === "terminal" && (tab.isRunning || tab.hasPendingCommand);
+                const hasNewActivity = tab.tabType === "terminal" && !isActive && tab.hasNewActivity;
+                const isHomeTab = tab.tabType === "home";
+                const homeVisible = display.showHomeTab;
 
-              if (isHomeTab && !homeVisible) return null;
+                if (isHomeTab && !homeVisible) return null;
 
-              return (
-                <TabItem
-                  key={tab.id}
-                  tab={tab}
-                  index={index}
-                  isActive={isActive}
-                  isBusy={isBusy}
-                  onClose={(e) => handleCloseTab(e, tab.id, tab.tabType)}
-                  onDuplicateTab={createTerminalTab}
-                  canClose={tab.tabType !== "home"}
-                  canMoveLeft={index > 1}
-                  canMoveRight={tab.tabType !== "home" && index < tabs.length - 1}
-                  onMoveLeft={() => moveTab(tab.id, "left")}
-                  onMoveRight={() => moveTab(tab.id, "right")}
-                  onConvertToPane={() => {
-                    logger.info("[TabBar] convert-to-pane: open", { sourceTabId: tab.id });
-                    setConvertToPaneTab(tab.id);
-                  }}
-                  tabNumber={tabNumberById.get(tab.id)}
-                  showTabNumber={cmdKeyPressed}
-                  hasNewActivity={hasNewActivity}
-                  isBeingDragged={draggedTabId === tab.id}
-                  dropSide={
-                    dropIndicator?.targetId === tab.id && draggedTabId !== tab.id
-                      ? dropIndicator.side
-                      : null
-                  }
-                  onTabPointerDown={(e) => handleTabPointerDown(e, tab.id, tab.tabType)}
-                  tabRef={(el) => {
-                    if (el) tabRefs.current.set(tab.id, el);
-                    else tabRefs.current.delete(tab.id);
-                  }}
-                />
-              );
-            })}
-          </TabsList>
-        </Tabs>
+                return (
+                  <TabItem
+                    key={tab.id}
+                    tab={tab}
+                    index={index}
+                    isActive={isActive}
+                    isBusy={isBusy}
+                    onClose={(e) => handleCloseTab(e, tab.id, tab.tabType)}
+                    onDuplicateTab={createTerminalTab}
+                    canClose={tab.tabType !== "home"}
+                    canMoveLeft={index > 1}
+                    canMoveRight={tab.tabType !== "home" && index < tabs.length - 1}
+                    onMoveLeft={() => moveTab(tab.id, "left")}
+                    onMoveRight={() => moveTab(tab.id, "right")}
+                    onConvertToPane={() => {
+                      logger.info("[TabBar] convert-to-pane: open", { sourceTabId: tab.id });
+                      setConvertToPaneTab(tab.id);
+                    }}
+                    tabNumber={tabNumberById.get(tab.id)}
+                    showTabNumber={cmdKeyPressed}
+                    hasNewActivity={hasNewActivity}
+                    isBeingDragged={draggedTabId === tab.id}
+                    dropSide={
+                      dropIndicator?.targetId === tab.id && draggedTabId !== tab.id
+                        ? dropIndicator.side
+                        : null
+                    }
+                    onTabPointerDown={(e) => handleTabPointerDown(e, tab.id, tab.tabType)}
+                    tabRef={(el) => {
+                      if (el) tabRefs.current.set(tab.id, el);
+                      else tabRefs.current.delete(tab.id);
+                    }}
+                  />
+                );
+              })}
+            </TabsList>
+          </Tabs>
+        </div>
 
         {/* New tab button */}
         <Tooltip>
@@ -339,10 +443,36 @@ export const TabBar = React.memo(function TabBar() {
           </TooltipContent>
         </Tooltip>
 
+        {/* Active conversation label - shows which AI chat tab these terminals belong to */}
+        {activeConvTitle && (
+          <div
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] text-muted-foreground/60 select-none max-w-[140px]"
+            onMouseDown={(e) => e.stopPropagation()}
+            title={`Terminals for: ${activeConvTitle}`}
+          >
+            <div className="w-1.5 h-1.5 rounded-full bg-accent/50 flex-shrink-0" />
+            <span className="truncate">{activeConvTitle}</span>
+          </div>
+        )}
+
         {/* Drag region - empty space extends to fill remaining width */}
         <div className="flex-1 h-full min-w-[100px]" />
 
         {/* Right-side utility buttons hidden for cleaner layout */}
+        </div>
+        {/* Custom scrollbar track */}
+        {tabBarHovered && scrollThumb.visible && (
+          <div className="h-[3px] mx-2">
+            <div className="relative h-full w-full">
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: scrollbar thumb is drag-only */}
+              <div
+                className="absolute h-full rounded-full bg-foreground/20 hover:bg-foreground/35 cursor-pointer"
+                style={{ left: `${scrollThumb.left}%`, width: `${scrollThumb.width}%` }}
+                onMouseDown={handleThumbDragStart}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Convert to Pane Modal */}
