@@ -238,8 +238,10 @@ export const InputStatusRow = memo(function InputStatusRow({ sessionId }: InputS
   const setSessionAiConfig = useStore((state) => state.setSessionAiConfig);
   const display = useStore(selectDisplaySettings);
 
-  // When "Hide AI Settings in Shell Mode" is on, suppress AI-specific items in terminal mode
-  const hideAiItems = display.hideAiSettingsInShellMode && inputMode === "terminal";
+  // Hide AI items when: (1) shell mode setting is active, or (2) AI is not initialized for this terminal
+  const hideAiItems =
+    (display.hideAiSettingsInShellMode && inputMode === "terminal") ||
+    status === "disconnected";
 
   // Auto-hide labels after a delay in agent mode
   const [showLabels, setShowLabels] = useState(true);
@@ -680,8 +682,19 @@ export const InputStatusRow = memo(function InputStatusRow({ sessionId }: InputS
     >
       {/* Left side */}
       <div className="flex items-center">
-        {/* Mode segmented control - icons only */}
-        {!display.showInputModeToggle && inputMode !== "auto" ? (
+        {/* Mode segmented control - hidden when AI is not initialized (pure terminal) */}
+        {status === "disconnected" ? (
+          <div className="p-0.5 border border-transparent rounded-lg">
+            <button
+              type="button"
+              aria-label="Terminal mode"
+              title="Terminal"
+              className="h-6 w-6 flex items-center justify-center rounded-md bg-accent/15 text-accent shadow-[0_0_8px_rgba(var(--accent-rgb),0.3)]"
+            >
+              <Terminal className="size-icon-status-bar" />
+            </button>
+          </div>
+        ) : !display.showInputModeToggle && inputMode !== "auto" ? (
           <div className="p-0.5 border border-transparent rounded-lg">
             <button
               type="button"

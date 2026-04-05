@@ -373,6 +373,8 @@
   scrollbar-width: none;
 }
 
+
+
 /* Clickable file path links in Markdown */
 .file-path-link {
   text-decoration: underline;

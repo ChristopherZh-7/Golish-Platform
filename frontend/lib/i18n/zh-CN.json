@@ -115,7 +115,10 @@
     "sortByCategory": "分类",
     "sortByRuntime": "运行时",
     "gridView": "网格视图",
-    "listView": "列表视图"
+    "listView": "列表视图",
+    "newSkillName": "Skill 名称...",
+    "noSkills": "暂无 Skills",
+    "selectSkill": "选择一个 Skill 进行编辑或创建新的"
   },
   "toolSearch": {
     "placeholder": "搜索工具...",
@@ -248,6 +251,10 @@
     "uploadImage": "上传图片",
     "send": "发送",
     "devInProgress": "功能开发中，后续将支持自动化工具调用和智能漏洞分析。",
+    "toolsAvailable": "个工具可用",
+    "noModelSelected": "请先选择模型（左下角下拉菜单）",
+    "noProviders": "未配置任何服务商",
+    "configureInSettings": "请在 设置 → Providers 中配置 API Key",
     "messages": "条消息"
   },
   "input": {

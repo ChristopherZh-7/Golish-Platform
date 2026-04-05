@@ -12,3 +12,6 @@ pub use golish_tools::*;
 
 // Penetration testing tool management (ported from Golish)
 pub mod pentest;
+
+// Pentest AI tools (expose installed pentest tools to the AI agent)
+pub mod pentest_ai;

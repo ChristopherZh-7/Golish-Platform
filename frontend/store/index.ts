@@ -24,10 +24,14 @@ import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager"
 import type { RiskLevel } from "@/lib/tools";
 import {
   type AppearanceSlice,
+  type ChatConversation,
+  type ChatMessage,
   type ContextMetrics,
   type ContextSlice,
+  type ConversationSlice,
   createAppearanceSlice,
   createContextSlice,
+  createConversationSlice,
   createGitSlice,
   createNotificationSlice,
   createPanelSlice,
@@ -36,12 +40,17 @@ import {
   type NotificationSlice,
   type NotificationType,
   type PanelSlice,
+  selectActiveConversation,
+  selectActiveConversationTerminals,
+  selectAllConversations,
   selectContextMetrics,
 } from "./slices";
 
 export type { ApprovalPattern, ReasoningEffort, RiskLevel };
 // Re-export pane types from the single source of truth
 export type { PaneId, PaneNode, SplitDirection, TabLayout };
+// Re-export conversation types
+export type { ChatConversation, ChatMessage };
 
 // Enable Immer support for Set and Map (needed for processedToolRequests)
 enableMapSet();
@@ -377,7 +386,7 @@ export interface PendingCommand {
   workingDirectory: string;
 }
 
-interface GolishState extends AppearanceSlice, ContextSlice, GitSlice, NotificationSlice, PanelSlice {
+interface GolishState extends AppearanceSlice, ContextSlice, ConversationSlice, GitSlice, NotificationSlice, PanelSlice {
   // App focus/visibility state
   appIsFocused: boolean;
   appIsVisible: boolean;
@@ -386,6 +395,9 @@ interface GolishState extends AppearanceSlice, ContextSlice, GitSlice, Notificat
   sessions: Record<string, Session>;
   activeSessionId: string | null;
   homeTabId: string | null;
+
+  // Current project
+  currentProjectName: string | null;
 
   // AI configuration
   aiConfig: AiConfig;
@@ -680,6 +692,8 @@ interface GolishState extends AppearanceSlice, ContextSlice, GitSlice, Notificat
     destTabId: string,
     location: "left" | "right" | "top" | "bottom"
   ) => void;
+  /** Set the current project name (for workspace persistence). */
+  setCurrentProject: (name: string | null) => void;
 }
 
 export const useStore = create<GolishState>()(
@@ -688,6 +702,7 @@ export const useStore = create<GolishState>()(
       // Slices
       ...createAppearanceSlice(set, get),
       ...createContextSlice(set, get),
+      ...createConversationSlice(set, get),
       ...createGitSlice(set, get),
       ...createNotificationSlice(set, get),
       ...createPanelSlice(set, get),
@@ -700,6 +715,7 @@ export const useStore = create<GolishState>()(
       sessions: {},
       activeSessionId: null,
       homeTabId: null,
+      currentProjectName: null,
       aiConfig: {
         provider: "",
         model: "",
@@ -2413,6 +2429,11 @@ export const useStore = create<GolishState>()(
             direction,
           });
         }),
+
+      setCurrentProject: (name) =>
+        set((state) => {
+          state.currentProjectName = name;
+        }),
     })),
     { name: "golish" }
   )
@@ -2526,6 +2547,16 @@ export const useIsThinkingExpanded = (sessionId: string) =>
 // Context metrics selector (uses slice selector)
 export const useContextMetrics = (sessionId: string) =>
   useStore((state) => selectContextMetrics(state, sessionId));
+
+// Conversation selectors
+export const useActiveConversation = () =>
+  useStore((state) => selectActiveConversation(state));
+
+export const useAllConversations = () =>
+  useStore((state) => selectAllConversations(state));
+
+export const useActiveConversationTerminals = () =>
+  useStore((state) => selectActiveConversationTerminals(state));
 
 /**
  * Get the session ID of the currently focused pane.

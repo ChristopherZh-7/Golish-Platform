@@ -1653,13 +1653,36 @@ export function setupMocks(): void {
         return ["main", "develop", "feature/new-feature"];
 
       case "create_git_worktree":
-        // Return mock worktree creation result
         return {
           path: "/home/user/projects/golish-new-branch",
           branch: "new-branch",
           init_script_run: false,
           init_script_output: null,
         };
+
+      case "save_project":
+        console.log("[Mock IPC] save_project:", args);
+        return undefined;
+
+      case "delete_project_config":
+        console.log("[Mock IPC] delete_project_config:", args);
+        return true;
+
+      case "list_project_configs":
+        return [
+          { name: "golish", rootPath: "/home/user/projects/golish" },
+          { name: "my-pentest", rootPath: "/home/user/projects/my-pentest" },
+        ];
+
+      case "get_project_config":
+        return { name: "golish", rootPath: "/home/user/projects/golish" };
+
+      case "save_project_workspace":
+        console.log("[Mock IPC] save_project_workspace:", args);
+        return undefined;
+
+      case "load_project_workspace":
+        return null;
 
       // =========================================================================
       // Settings Commands

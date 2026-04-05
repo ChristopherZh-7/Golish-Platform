@@ -16,8 +16,10 @@ import {
   Server,
   Shield,
   Terminal,
+  Wrench,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { listIndexedCodebases } from "@/lib/indexer";
 import { logger } from "@/lib/logger";
@@ -28,6 +30,7 @@ import {
   type GolishSettings,
   updateSettings,
 } from "@/lib/settings";
+import { updateConfig as updatePentestConfig } from "@/lib/pentest/api";
 import { cn } from "@/lib/utils";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { AdvancedSettings } from "./AdvancedSettings";
@@ -38,10 +41,12 @@ import { EditorSettings } from "./EditorSettings";
 import { McpSettings } from "./McpSettings";
 import { NetworkSettings } from "./NetworkSettings";
 import { NotificationsSettings } from "./NotificationsSettings";
+import { PentestEnvSettings } from "./PentestEnvSettings";
 import { ProviderSettings } from "./ProviderSettings";
 import { TerminalSettings } from "./TerminalSettings";
 
 type SettingsSection =
+  | "pentest"
   | "providers"
   | "ai"
   | "terminal"
@@ -56,83 +61,90 @@ type SettingsSection =
 
 interface NavItem {
   id: SettingsSection;
-  label: string;
+  labelKey: string;
   icon: React.ReactNode;
-  description: string;
+  descKey: string;
 }
 
 const NAV_ITEMS: NavItem[] = [
   {
+    id: "pentest",
+    labelKey: "settings.environment",
+    icon: <Wrench className="w-4 h-4" />,
+    descKey: "settings.envDescription",
+  },
+  {
     id: "providers",
-    label: "Providers",
+    labelKey: "settings.providers",
     icon: <Server className="w-4 h-4" />,
-    description: "Configure AI provider credentials",
+    descKey: "settings.providersDesc",
   },
   {
     id: "ai",
-    label: "AI & Models",
+    labelKey: "settings.aiModels",
     icon: <Bot className="w-4 h-4" />,
-    description: "Default provider and synthesis",
+    descKey: "settings.aiModelsDesc",
   },
   {
     id: "terminal",
-    label: "Terminal",
+    labelKey: "settings.terminal",
     icon: <Terminal className="w-4 h-4" />,
-    description: "Shell and display settings",
+    descKey: "settings.terminal",
   },
   {
     id: "editor",
-    label: "Editor",
+    labelKey: "settings.editor",
     icon: <FileCode className="w-4 h-4" />,
-    description: "File editor preferences",
+    descKey: "settings.editor",
   },
   {
     id: "agent",
-    label: "Agent",
+    labelKey: "settings.agent",
     icon: <Cog className="w-4 h-4" />,
-    description: "Session and approval settings",
+    descKey: "settings.agent",
   },
   {
     id: "mcp",
-    label: "MCP Servers",
+    labelKey: "settings.mcp",
     icon: <Puzzle className="w-4 h-4" />,
-    description: "External tools via Model Context Protocol",
+    descKey: "settings.mcp",
   },
   {
     id: "codebases",
-    label: "Codebases",
+    labelKey: "settings.codebases",
     icon: <FolderCode className="w-4 h-4" />,
-    description: "Manage indexed repositories",
+    descKey: "settings.codebases",
   },
   {
     id: "network",
-    label: "Network",
+    labelKey: "settings.network",
     icon: <Globe className="w-4 h-4" />,
-    description: "Proxy and connection settings",
+    descKey: "settings.network",
   },
   {
     id: "notifications",
-    label: "Notifications",
+    labelKey: "settings.notifications",
     icon: <Bell className="w-4 h-4" />,
-    description: "System notification settings",
+    descKey: "settings.notifications",
   },
   {
     id: "appearance",
-    label: "Appearance",
+    labelKey: "settings.appearance",
     icon: <Paintbrush className="w-4 h-4" />,
-    description: "UI element visibility",
+    descKey: "settings.appearance",
   },
   {
     id: "advanced",
-    label: "Advanced",
+    labelKey: "settings.advanced",
     icon: <Shield className="w-4 h-4" />,
-    description: "Privacy and debug options",
+    descKey: "settings.advanced",
   },
 ];
 
 export function SettingsTabContent() {
+  const { t } = useTranslation();
   const [settings, setSettings] = useState<GolishSettings | null>(null);
-  const [activeSection, setActiveSection] = useState<SettingsSection>("providers");
+  const [activeSection, setActiveSection] = useState<SettingsSection>("pentest");
   const [isLoading, setIsLoading] = useState(true);
 
   // Load settings on mount
@@ -187,6 +199,9 @@ export function SettingsTabContent() {
   );
 
   const renderContent = () => {
+    if (activeSection === "pentest") {
+      return <PentestEnvSettings />;
+    }
     if (!settings) return null;
 
     switch (activeSection) {
@@ -233,7 +248,13 @@ export function SettingsTabContent() {
         return (
           <NetworkSettings
             settings={settings.network}
-            onChange={(network) => updateSection("network", network)}
+            onChange={(network) => {
+              updateSection("network", network);
+              updatePentestConfig({
+                proxy_url: network.proxy_url || "",
+                github_token: network.github_token || "",
+              }).catch((e) => console.error("[Settings] pentest config sync failed:", e));
+            }}
           />
         );
       case "notifications":
@@ -289,7 +310,7 @@ export function SettingsTabContent() {
     <div className="h-full w-full flex flex-col overflow-hidden bg-background">
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border-medium)] flex-shrink-0">
-        <h2 className="text-lg font-semibold text-foreground">Settings</h2>
+        <h2 className="text-lg font-semibold text-foreground">{t("settings.title")}</h2>
       </div>
 
       <div className="flex-1 flex min-h-0 overflow-hidden">
@@ -312,8 +333,8 @@ export function SettingsTabContent() {
                   {item.icon}
                 </span>
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium">{item.label}</div>
-                  <div className="text-xs text-muted-foreground mt-0.5">{item.description}</div>
+                  <div className="text-sm font-medium">{t(item.labelKey)}</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">{t(item.descKey)}</div>
                 </div>
               </button>
             ))}
@@ -323,7 +344,7 @@ export function SettingsTabContent() {
         {/* Main Content */}
         <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
           <ScrollArea className="h-full">
-            <div className="p-6 max-w-3xl">{renderContent()}</div>
+            <div className={cn("p-6", (activeSection === "pentest" || activeSection === "providers") ? "" : "max-w-3xl")}>{renderContent()}</div>
           </ScrollArea>
         </div>
       </div>

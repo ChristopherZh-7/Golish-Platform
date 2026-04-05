@@ -156,6 +156,11 @@ impl ToolRegistry {
         self.tools.keys().cloned().collect()
     }
 
+    /// Register an additional tool at runtime.
+    pub fn register_tool(&mut self, tool: Arc<dyn Tool>) {
+        self.tools.insert(tool.name().to_string(), tool);
+    }
+
     /// Get the workspace path.
     pub fn workspace(&self) -> &PathBuf {
         &self.workspace

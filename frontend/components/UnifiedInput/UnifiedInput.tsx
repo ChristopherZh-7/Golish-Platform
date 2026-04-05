@@ -158,11 +158,16 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
   const dropZoneRectRef = useRef<DOMRect | null>(null);
 
   // Combined selector for optimized state access (reduces ~12 subscriptions to 1)
-  const { inputMode, isAgentResponding, isCompacting, isSessionDead, streamingBlocksLength } =
+  const { inputMode: rawInputMode, isAgentResponding, isCompacting, isSessionDead, streamingBlocksLength } =
     useUnifiedInputState(sessionId);
+  const aiStatus = useStore((s) => s.sessions[sessionId]?.aiConfig?.status);
+  const isAiDisconnected = !aiStatus || aiStatus === "disconnected";
+  const inputMode = isAiDisconnected ? "terminal" as const : rawInputMode;
   const pendingCommand = usePendingCommand(sessionId);
   const isProcessRunning = !!pendingCommand;
-  const hideAiItems = display.hideAiSettingsInShellMode && inputMode === "terminal";
+  const hideAiItems =
+    (display.hideAiSettingsInShellMode && inputMode === "terminal") ||
+    isAiDisconnected;
 
   const showStatusRow =
     display.showStatusBar ||
@@ -497,10 +502,12 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
   }, [sessionId]);
 
   // Toggle input mode (cycle: terminal → agent → auto → terminal)
+  // Disabled when AI is disconnected (pure terminal mode)
   const toggleInputMode = useCallback(() => {
+    if (isAiDisconnected) return;
     const next = inputMode === "terminal" ? "agent" : inputMode === "agent" ? "auto" : "terminal";
     setInputMode(sessionId, next);
-  }, [sessionId, inputMode, setInputMode]);
+  }, [sessionId, inputMode, setInputMode, isAiDisconnected]);
 
   // Update the cached drop zone bounding rect (called on drag-enter and periodically)
   const updateDropZoneRect = useCallback(() => {

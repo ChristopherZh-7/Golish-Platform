@@ -115,7 +115,10 @@
     "sortByCategory": "Category",
     "sortByRuntime": "Runtime",
     "gridView": "Grid View",
-    "listView": "List View"
+    "listView": "List View",
+    "newSkillName": "Skill name...",
+    "noSkills": "No skills yet",
+    "selectSkill": "Select a skill to edit or create a new one"
   },
   "toolSearch": {
     "placeholder": "Search tools...",
@@ -248,7 +251,11 @@
     "uploadImage": "Upload Image",
     "send": "Send",
     "devInProgress": "Feature under development. Automated tool invocation and intelligent vulnerability analysis coming soon.",
-    "messages": "messages"
+    "messages": "messages",
+    "toolsAvailable": "tools available",
+    "noModelSelected": "Please select a model first (bottom-left dropdown)",
+    "noProviders": "No providers configured",
+    "configureInSettings": "Configure API keys in Settings → Providers"
   },
   "input": {
     "searchToolName": "Search tool name...",

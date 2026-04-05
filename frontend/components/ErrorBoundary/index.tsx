@@ -73,8 +73,17 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 export function setupGlobalErrorHandlers(): void {
   // Handle uncaught errors
   window.onerror = (message, source, lineno, colno, error) => {
+    const msg = String(message);
+    const src = typeof source === "string" ? source : "";
+
+    // xterm.js renderer race condition during WebGL swap — harmless, downgrade to debug
+    if (src.includes("@xterm") && msg.includes("_renderer")) {
+      logger.debug("[Terminal] Renderer initialization race (harmless):", msg);
+      return true;
+    }
+
     logger.error("[GlobalError] Uncaught error:", {
-      message: String(message),
+      message: msg,
       source,
       lineno,
       colno,

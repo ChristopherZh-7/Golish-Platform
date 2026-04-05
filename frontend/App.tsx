@@ -5,7 +5,6 @@ import { logger } from "@/lib/logger";
 import { ActivityBar, type ActivityView } from "./components/ActivityBar/ActivityBar";
 import { CommandPalette, type PageRoute } from "./components/CommandPalette";
 import { PaneContainer } from "./components/PaneContainer";
-import { PentestToolTree } from "./components/PentestToolTree/PentestToolTree";
 import { AIChatPanel } from "./components/AIChatPanel/AIChatPanel";
 import { SidecarNotifications } from "./components/Sidecar";
 import { TabBar } from "./components/TabBar";
@@ -76,6 +75,13 @@ import { getSettings } from "./lib/settings";
 import { initSystemNotifications, listenForSettingsUpdates } from "./lib/systemNotifications";
 import { shellIntegrationInstall, shellIntegrationStatus } from "./lib/tauri";
 import { clearConversation, restoreSession, useStore } from "./store";
+import { createNewConversation } from "./store/slices/conversation";
+import {
+  createWorkspaceAutoSaver,
+  getLastProjectName,
+  loadWorkspaceState,
+  toChatConversation,
+} from "./lib/workspace-storage";
 import { useFileEditorSidebarStore } from "./store/file-editor-sidebar";
 import { useAppState } from "./store/selectors";
 
@@ -105,6 +111,7 @@ function App() {
   const { createTerminalTab } = useCreateTerminalTab();
   const { handleSplitPane, handleClosePane, handleNavigatePane } = usePaneControls(activeSessionId);
 
+  const hasProject = useStore((s) => s.currentProjectName !== null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -178,8 +185,41 @@ function App() {
           }
         })();
 
-        // Create initial terminal session (only awaits PTY creation)
-        await createTerminalTab();
+        // Try to restore last project's workspace state
+        const lastProject = getLastProjectName();
+        if (lastProject) {
+          logger.info("[App] Restoring project:", lastProject);
+          const { getProjectConfig } = await import("./lib/projects");
+          const config = await getProjectConfig(lastProject);
+
+          if (config) {
+            useStore.getState().setCurrentProject(lastProject);
+
+            // Restore conversations
+            const saved = await loadWorkspaceState(lastProject);
+            if (saved && saved.conversations.length > 0) {
+              const restoredConvs = saved.conversations.map(toChatConversation);
+              useStore.getState().restoreConversations(
+                restoredConvs,
+                saved.conversationOrder,
+                saved.activeConversationId,
+              );
+            } else {
+              const initialConv = createNewConversation();
+              useStore.getState().addConversation(initialConv);
+            }
+
+            // Create terminal in project root
+            await createTerminalTab(config.rootPath);
+          }
+        }
+
+        // If no project was restored, just show the Home tab — no terminal, no chat
+        // The user must create or open a project first
+        const homeId = useStore.getState().homeTabId;
+        if (homeId) {
+          useStore.getState().setActiveSession(homeId);
+        }
 
         setIsLoading(false);
       } catch (e) {
@@ -191,6 +231,22 @@ function App() {
 
     init();
   }, [openHomeTab, createTerminalTab]);
+
+  // Auto-save workspace state (conversations, chat history) on changes + window close
+  useEffect(() => {
+    return createWorkspaceAutoSaver(
+      () => useStore.getState().currentProjectName,
+      (listener) => useStore.subscribe(listener),
+      () => {
+        const s = useStore.getState();
+        return {
+          conversations: s.conversations,
+          conversationOrder: s.conversationOrder,
+          activeConversationId: s.activeConversationId,
+        };
+      },
+    );
+  }, []);
 
   // Sync frontend network settings (github_token, proxy_url) to backend pentest config on startup.
   // The backend pentest config is in-memory only, so it resets on every restart.
@@ -452,8 +508,6 @@ function App() {
 
   const renderLeftPanel = () => {
     switch (activityView) {
-      case "tools":
-        return <PentestToolTree />;
       case "settings":
         return (
           <Suspense fallback={null}>
@@ -483,10 +537,10 @@ function App() {
             onOpenBrowser={() => openBrowserTab()}
           />
 
-          {/* Left panel - only shown for tools/settings views */}
+          {/* Left panel - only shown for settings view */}
           <div className={cn(
             "flex-shrink-0 h-full rounded-xl bg-card overflow-hidden panel-float transition-all duration-200 ease-out",
-            (activityView === "tools" || activityView === "settings")
+            activityView === "settings"
               ? "w-[220px] opacity-100"
               : "w-0 opacity-0 pointer-events-none -mr-2"
           )}>
@@ -530,7 +584,7 @@ function App() {
           )}>
             {/* Center - TabBar + Pane content */}
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
-              <TabBar />
+              {hasProject && <TabBar />}
 
               <div className="flex-1 min-h-0 min-w-0 flex overflow-hidden">
                 <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden relative">
@@ -564,10 +618,12 @@ function App() {
               </div>
             </div>
 
-            {/* Right sidebar - AI Chat Panel */}
-            <div className="w-[340px] flex-shrink-0 h-full rounded-xl bg-card overflow-hidden panel-float">
-              <AIChatPanel />
-            </div>
+            {/* Right sidebar - AI Chat Panel (hidden until a project is opened) */}
+            {hasProject && (
+              <div className="w-[340px] flex-shrink-0 h-full rounded-xl bg-card overflow-hidden panel-float">
+                <AIChatPanel />
+              </div>
+            )}
           </div>
         </div>
 

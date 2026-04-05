@@ -221,42 +221,51 @@ export function Terminal({ sessionId }: TerminalProps) {
       const gl = testCanvas.getContext("webgl2") || testCanvas.getContext("webgl");
 
       if (gl) {
-        try {
-          const webglAddon = new WebglAddon();
+        // Defer WebGL addon loading to the next frame so the canvas renderer
+        // from terminal.open() is fully stable. Loading synchronously causes a
+        // race where xterm.js's internal ResizeObserver fires during the
+        // renderer swap, accessing dimensions before the WebGL renderer is ready.
+        const webglRafId = requestAnimationFrame(() => {
+          if (aborted) return;
+          try {
+            const webglAddon = new WebglAddon();
 
-          // Handle WebGL context loss (e.g., GPU driver crash, resource exhaustion)
-          // When context is lost, dispose the addon and fall back to canvas renderer
-          webglAddon.onContextLoss(() => {
-            logger.warn("[Terminal] WebGL context lost for session:", sessionId);
+            webglAddon.onContextLoss(() => {
+              logger.warn("[Terminal] WebGL context lost for session:", sessionId);
+              try {
+                webglAddon.dispose();
+              } catch (disposeError) {
+                logger.debug("[Terminal] WebGL addon disposal error (expected):", disposeError);
+              }
+            });
+
+            terminal.loadAddon(webglAddon);
+            logger.debug("[Terminal] WebGL renderer active for session:", sessionId);
+
+            cleanupFnsRef.current.push(() => {
+              try {
+                webglAddon.dispose();
+              } catch (disposeError) {
+                logger.debug("[Terminal] WebGL cleanup disposal error (expected):", disposeError);
+              }
+            });
+
+            // Re-fit after renderer swap to pick up correct dimensions
             try {
-              webglAddon.dispose();
-            } catch (disposeError) {
-              logger.debug("[Terminal] WebGL addon disposal error (expected):", disposeError);
+              fitAddon.fit();
+            } catch (error) {
+              logger.debug("[Terminal] fit() after WebGL swap failed:", error);
             }
-            // Terminal will automatically fall back to canvas renderer
-          });
-
-          terminal.loadAddon(webglAddon);
-          logger.debug("[Terminal] WebGL renderer active for session:", sessionId);
-
-          // Store cleanup function for proper disposal on unmount
-          cleanupFnsRef.current.push(() => {
-            try {
-              webglAddon.dispose();
-            } catch (disposeError) {
-              // Ignore disposal errors during cleanup - addon may have already
-              // been disposed due to context loss or earlier runtime errors
-              logger.debug("[Terminal] WebGL cleanup disposal error (expected):", disposeError);
-            }
-          });
-        } catch (e) {
-          logger.warn("[Terminal] WebGL addon failed, using canvas renderer:", e);
-        }
+          } catch (e) {
+            logger.warn("[Terminal] WebGL addon failed, using canvas renderer:", e);
+          }
+        });
+        cleanupFnsRef.current.push(() => cancelAnimationFrame(webglRafId));
       } else {
         logger.debug("[Terminal] WebGL not available, using canvas renderer");
       }
 
-      // Initial fit (may fail if renderer not ready, will be retried on resize)
+      // Initial fit with canvas renderer (WebGL path does its own fit after swap)
       try {
         fitAddon.fit();
       } catch (error) {

@@ -73,5 +73,22 @@ export {
   selectSidecarPanelOpen,
 } from "./panel";
 
+// Conversation slice
+export {
+  createConversationSlice,
+  createNewConversation,
+  initialConversationState,
+  type ChatConversation,
+  type ChatMessage,
+  type ChatToolCall,
+  type ConversationActions,
+  type ConversationSlice,
+  type ConversationState,
+  selectActiveConversation,
+  selectActiveConversationTerminals,
+  selectAllConversations,
+  selectConversationTerminals,
+} from "./conversation";
+
 // Types
 export type { ImmerSet, SliceCreator, StateGet } from "./types";
