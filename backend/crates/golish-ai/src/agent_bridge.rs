@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use rig::completion::Message;
-use rig::message::{Text, UserContent};
+use rig::message::{AssistantContent, Text, UserContent};
 use rig::one_or_many::OneOrMany;
 use rig::providers::anthropic as rig_anthropic;
 use rig::providers::gemini as rig_gemini;
@@ -1608,6 +1608,38 @@ impl AgentBridge {
         });
 
         accumulated_response
+    }
+
+    /// Restore conversation history from a list of simple messages.
+    /// Used when reopening an existing conversation to give the AI context.
+    pub async fn restore_conversation_history(&self, messages: Vec<(String, String)>) {
+        let mut history = Vec::new();
+        for (role, content) in messages {
+            match role.as_str() {
+                "user" => {
+                    history.push(Message::User {
+                        content: OneOrMany::one(UserContent::Text(Text {
+                            text: content,
+                        })),
+                    });
+                }
+                "assistant" => {
+                    history.push(Message::Assistant {
+                        id: None,
+                        content: OneOrMany::one(AssistantContent::Text(Text {
+                            text: content,
+                        })),
+                    });
+                }
+                _ => {
+                    tracing::warn!("[restore] Unknown message role: {}", role);
+                }
+            }
+        }
+        let count = history.len();
+        let mut guard = self.conversation_history.write().await;
+        *guard = history;
+        tracing::info!("[restore] Restored {} messages to conversation history", count);
     }
 
     async fn persist_terminal_error_state(&self, terminal_state: &TerminalErrorState) {

@@ -15,3 +15,6 @@ pub mod pentest;
 
 // Pentest AI tools (expose installed pentest tools to the AI agent)
 pub mod pentest_ai;
+
+// Interactive PTY tool (allows AI to control visible terminal sessions)
+pub mod pty_interactive;

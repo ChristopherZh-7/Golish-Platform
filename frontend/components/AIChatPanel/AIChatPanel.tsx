@@ -19,6 +19,7 @@ import {
   sendPromptSession,
   onAiEvent,
   shutdownAiSession,
+  restoreAiConversation,
   type AiEvent,
   type ProviderConfig,
 } from "@/lib/ai";
@@ -35,6 +36,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useStore, type ChatMessage } from "@/store";
+import { respondToToolApproval, setAgentMode, type AgentMode } from "@/lib/ai";
 import { useShallow } from "zustand/react/shallow";
 import { createNewConversation } from "@/store/slices/conversation";
 import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
@@ -72,7 +74,126 @@ function ThinkingBlock({ content, isActive }: { content: string; isActive: boole
   );
 }
 
-function MessageBlock({ message }: { message: ChatMessage }) {
+function CollapsibleToolCall({
+  tc,
+  approval,
+  onApprove,
+  onDeny,
+  approvalMode,
+  onApprovalModeChange,
+}: {
+  tc: { name: string; args?: string; result?: string; success?: boolean };
+  approval?: { requestId: string } | null;
+  onApprove?: (requestId: string) => void;
+  onDeny?: (requestId: string) => void;
+  approvalMode?: string;
+  onApprovalModeChange?: (mode: "ask" | "allowlist" | "run-all") => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const isPending = !!approval;
+
+  return (
+    <div className={cn(
+      "rounded-md border bg-background/50",
+      isPending ? "border-[#e0af68]/50" : "border-border/30",
+    )}>
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-1.5 w-full px-2 py-1.5 text-[11px] text-muted-foreground hover:text-muted-foreground/80 transition-colors"
+      >
+        <ChevronDown
+          className={cn(
+            "w-3 h-3 transition-transform",
+            !expanded && "-rotate-90",
+          )}
+        />
+        <Wrench className="w-3 h-3" />
+        <span className="font-mono font-medium">{tc.name}</span>
+        {tc.success !== undefined && (
+          <span className={cn("ml-auto", tc.success ? "text-green-500" : "text-red-500")}>
+            {tc.success ? "\u2713" : "\u2717"}
+          </span>
+        )}
+      </button>
+
+      {isPending && approval && (
+        <div className="px-2 pb-1.5 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onApprove?.(approval.requestId); }}
+            className="px-2.5 py-1 text-[11px] rounded bg-[#7aa2f7] text-[#1a1b26] hover:bg-[#7aa2f7]/80 transition-colors font-medium"
+          >
+            Run
+          </button>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onDeny?.(approval.requestId); }}
+            className="px-2.5 py-1 text-[11px] rounded border border-[#3b4261] text-muted-foreground hover:bg-[#3b4261] transition-colors"
+          >
+            Deny
+          </button>
+        </div>
+      )}
+
+      {/* Approval mode dropdown - second row */}
+      <div className="px-2 pb-1.5">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              onClick={(e) => e.stopPropagation()}
+              className="flex items-center gap-1 text-[11px] text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+            >
+              {approvalMode === "run-all" ? "Run Everything" : approvalMode === "allowlist" ? "Use Allowlist" : "Ask Every Time"}
+              <ChevronDown className="w-2.5 h-2.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="bg-card border-[var(--border-medium)] min-w-[160px]">
+            {([
+              { id: "ask" as const, label: "Ask Every Time" },
+              { id: "allowlist" as const, label: "Use Allowlist" },
+              { id: "run-all" as const, label: "Run Everything" },
+            ]).map((opt) => (
+              <DropdownMenuItem
+                key={opt.id}
+                onClick={() => onApprovalModeChange?.(opt.id)}
+                className={cn("text-xs cursor-pointer", approvalMode === opt.id && "bg-accent/10 text-accent")}
+              >
+                {opt.label}
+                {approvalMode === opt.id && <span className="ml-auto text-accent">✓</span>}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+
+      {expanded && tc.result && (
+        <div className="px-2 pb-2">
+          <pre className="text-[11px] text-muted-foreground/80 font-mono whitespace-pre-wrap max-h-[200px] overflow-auto">
+            {tc.result.length > 2000 ? `${tc.result.slice(0, 2000)}...` : tc.result}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MessageBlock({
+  message,
+  pendingApproval,
+  onApprove,
+  onDeny,
+  approvalMode,
+  onApprovalModeChange,
+}: {
+  message: ChatMessage;
+  pendingApproval?: { requestId: string; toolName: string } | null;
+  onApprove?: (requestId: string) => void;
+  onDeny?: (requestId: string) => void;
+  approvalMode?: string;
+  onApprovalModeChange?: (mode: "ask" | "allowlist" | "run-all") => void;
+}) {
   const isUser = message.role === "user";
 
   return (
@@ -106,25 +227,15 @@ function MessageBlock({ message }: { message: ChatMessage }) {
       {message.toolCalls && message.toolCalls.length > 0 && (
         <div className="mt-2 space-y-1.5">
           {message.toolCalls.map((tc, i) => (
-            <div
+            <CollapsibleToolCall
               key={`${tc.name}-${i}`}
-              className="rounded-md border border-border/30 bg-background/50 p-2"
-            >
-              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mb-1">
-                <Wrench className="w-3 h-3" />
-                <span className="font-mono font-medium">{tc.name}</span>
-                {tc.success !== undefined && (
-                  <span className={cn("ml-auto", tc.success ? "text-green-500" : "text-red-500")}>
-                    {tc.success ? "✓" : "✗"}
-                  </span>
-                )}
-              </div>
-              {tc.result && (
-                <pre className="text-[11px] text-muted-foreground/80 font-mono whitespace-pre-wrap max-h-[200px] overflow-auto">
-                  {tc.result.length > 2000 ? `${tc.result.slice(0, 2000)}...` : tc.result}
-                </pre>
-              )}
-            </div>
+              tc={tc}
+              approval={pendingApproval?.toolName === tc.name ? pendingApproval : null}
+              onApprove={onApprove}
+              onDeny={onDeny}
+              approvalMode={approvalMode}
+              onApprovalModeChange={onApprovalModeChange}
+            />
           ))}
         </div>
       )}
@@ -151,6 +262,27 @@ export const AIChatPanel = memo(function AIChatPanel() {
   );
   const messages = activeConv?.messages ?? EMPTY_MESSAGES;
   const isStreaming = activeConv?.isStreaming ?? false;
+
+  const [pendingApproval, setPendingApproval] = useState<{
+    requestId: string;
+    sessionId: string;
+    toolName: string;
+    args: Record<string, unknown>;
+    riskLevel: string;
+  } | null>(null);
+
+  type ApprovalMode = "ask" | "allowlist" | "run-all";
+  const [approvalMode, setApprovalMode] = useState<ApprovalMode>(() => {
+    try {
+      return (localStorage.getItem("golish-approval-mode") as ApprovalMode) || "ask";
+    } catch { return "ask"; }
+  });
+
+  const [contextUsage, setContextUsage] = useState<{
+    utilization: number;
+    totalTokens: number;
+    maxTokens: number;
+  } | null>(null);
 
   // Store actions
   const {
@@ -182,7 +314,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const streamingMsgRef = useRef<string | null>(null);
   const generateTitleRef = useRef<((convId: string, firstMsg: string) => void) | null>(null);
 
-  // Load saved conversations into store on mount
+  // Load saved conversations into store on mount — merge with any already loaded by workspace auto-saver
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -192,37 +324,41 @@ export const AIChatPanel = memo(function AIChatPanel() {
         createdAt: number; aiSessionId: string;
       }>;
       const store = useStore.getState();
-      if (store.conversationOrder.length > 0) return;
+      const existing = store.conversations;
       for (const c of parsed.filter((c) => c.messages.length > 0)) {
-        store.addConversation({
+        const ex = existing[c.id];
+        if (ex && ex.messages.length >= c.messages.length) continue;
+        const conv = {
           ...c,
           aiSessionId: c.aiSessionId || c.id,
           aiInitialized: false,
           isStreaming: false,
           messages: c.messages.map((m) => ({ ...m, isStreaming: false })),
-        });
+        };
+        if (ex) {
+          store.updateConversation(c.id, { messages: conv.messages, title: conv.title });
+        } else {
+          store.addConversation(conv);
+        }
       }
     } catch { /* ignore */ }
   }, []);
 
-  // Persist conversations to localStorage (debounced)
+  // Persist conversations to localStorage immediately on every change
   useEffect(() => {
     if (conversations.length === 0) return;
-    const timer = setTimeout(() => {
-      try {
-        const toSave = conversations
-          .filter((c) => c.messages.length > 0)
-          .slice(-MAX_STORED_CONVS)
-          .map((c) => ({
-            ...c,
-            aiInitialized: false,
-            isStreaming: false,
-            messages: c.messages.map((m: ChatMessage) => ({ ...m, isStreaming: false })),
-          }));
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
-      } catch { /* ignore */ }
-    }, 500);
-    return () => clearTimeout(timer);
+    try {
+      const toSave = conversations
+        .filter((c) => c.messages.length > 0)
+        .slice(-MAX_STORED_CONVS)
+        .map((c) => ({
+          ...c,
+          aiInitialized: false,
+          isStreaming: false,
+          messages: c.messages.map((m: ChatMessage) => ({ ...m, isStreaming: false })),
+        }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+    } catch { /* ignore */ }
   }, [conversations]);
 
   const [selectedModel, setSelectedModel] = useState<{ model: string; provider: string } | null>(() => {
@@ -358,6 +494,34 @@ export const AIChatPanel = memo(function AIChatPanel() {
               break;
             }
 
+            case "tool_approval_request": {
+              store.addMessageToolCall(convId, {
+                name: event.tool_name,
+                args: typeof event.args === "string"
+                  ? event.args
+                  : JSON.stringify(event.args, null, 2),
+              });
+
+              const currentMode = localStorage.getItem("golish-approval-mode") || "ask";
+              if (currentMode === "run-all") {
+                respondToToolApproval(event.session_id, {
+                  request_id: event.request_id,
+                  approved: true,
+                  remember: false,
+                  always_allow: false,
+                }).catch(console.error);
+              } else {
+                setPendingApproval({
+                  requestId: event.request_id,
+                  sessionId: event.session_id,
+                  toolName: event.tool_name,
+                  args: event.args as Record<string, unknown>,
+                  riskLevel: event.risk_level ?? "medium",
+                });
+              }
+              break;
+            }
+
             case "tool_result": {
               const resultStr =
                 typeof event.result === "string"
@@ -388,6 +552,15 @@ export const AIChatPanel = memo(function AIChatPanel() {
                   generateTitleRef.current?.(convId, userMsgs[0].content);
                 }
               }
+              break;
+            }
+
+            case "context_warning": {
+              setContextUsage({
+                utilization: event.utilization,
+                totalTokens: event.total_tokens,
+                maxTokens: event.max_tokens,
+              });
               break;
             }
 
@@ -691,6 +864,28 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
         }
 
         await initAiSession(conv.aiSessionId, providerConfig);
+
+        // Restore conversation history so the AI retains context from previous messages
+        const existingMessages = useStore.getState().conversations[conv.id]?.messages ?? [];
+        if (existingMessages.length > 0) {
+          const pairs: [string, string][] = existingMessages
+            .filter((m) => m.role === "user" || m.role === "assistant")
+            .map((m) => [m.role, m.content] as [string, string]);
+          if (pairs.length > 0) {
+            try {
+              await restoreAiConversation(conv.aiSessionId, pairs);
+              console.debug("[AIChatPanel] Restored", pairs.length, "messages for session", conv.aiSessionId);
+            } catch (restoreErr) {
+              console.warn("[AIChatPanel] Failed to restore conversation history:", restoreErr);
+            }
+          }
+        }
+
+        // Sync the stored approval/agent mode to the backend
+        const savedMode = localStorage.getItem("golish-approval-mode") || "ask";
+        const backendMode: AgentMode = savedMode === "run-all" ? "auto-approve" : "default";
+        await setAgentMode(conv.aiSessionId, backendMode).catch(console.warn);
+
         updateConv(conv.id, { aiInitialized: true });
         return true;
       } catch (err) {
@@ -726,6 +921,19 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
     }
     setInput("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
+
+    // Ensure the conversation has a linked terminal tab
+    const convTerminals = useStore.getState().conversationTerminals[conv.id] ?? [];
+    if (convTerminals.length === 0) {
+      try {
+        const termId = await createTerminalTab();
+        if (termId) {
+          useStore.getState().addTerminalToConversation(conv.id, termId);
+        }
+      } catch (e) {
+        console.warn("[AIChatPanel] Failed to create terminal for conversation:", e);
+      }
+    }
 
     // Initialize session if needed
     const initialized = await initializeSession(conv);
@@ -776,6 +984,14 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
     setMessageError,
     t,
   ]);
+
+  const handleApprovalModeChange = useCallback((mode: ApprovalMode) => {
+    setApprovalMode(mode);
+    localStorage.setItem("golish-approval-mode", mode);
+    if (!activeConv) return;
+    const backendMode: AgentMode = mode === "run-all" ? "auto-approve" : "default";
+    setAgentMode(activeConv.aiSessionId, backendMode).catch(console.error);
+  }, [activeConv]);
 
   const handleStop = useCallback(() => {
     if (!activeConv) return;
@@ -963,7 +1179,33 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
           ) : (
             <div>
               {messages.map((msg) => (
-                <MessageBlock key={msg.id} message={msg} />
+                <MessageBlock
+                  key={msg.id}
+                  message={msg}
+                  pendingApproval={pendingApproval ? { requestId: pendingApproval.requestId, toolName: pendingApproval.toolName } : null}
+                  approvalMode={approvalMode}
+                  onApprovalModeChange={handleApprovalModeChange}
+                  onApprove={(requestId) => {
+                    if (!pendingApproval) return;
+                    respondToToolApproval(pendingApproval.sessionId, {
+                      request_id: requestId,
+                      approved: true,
+                      remember: false,
+                      always_allow: false,
+                    }).catch(console.error);
+                    setPendingApproval(null);
+                  }}
+                  onDeny={(requestId) => {
+                    if (!pendingApproval) return;
+                    respondToToolApproval(pendingApproval.sessionId, {
+                      request_id: requestId,
+                      approved: false,
+                      remember: false,
+                      always_allow: false,
+                    }).catch(console.error);
+                    setPendingApproval(null);
+                  }}
+                />
               ))}
               <div ref={messagesEndRef} />
             </div>
@@ -1060,6 +1302,36 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
               </DropdownMenu>
             </div>
             <div className="flex items-center gap-1">
+              {/* Context usage ring */}
+              <div className="relative group" title={
+                contextUsage
+                  ? `${(contextUsage.utilization * 100).toFixed(1)}% · ${(contextUsage.totalTokens / 1000).toFixed(1)}K / ${(contextUsage.maxTokens / 1000).toFixed(0)}K context used`
+                  : "No context data"
+              }>
+                <svg className="w-5 h-5 -rotate-90" viewBox="0 0 20 20">
+                  <circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" strokeWidth="2" className="text-muted-foreground/20" />
+                  <circle
+                    cx="10" cy="10" r="8"
+                    fill="none"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeDasharray={`${(contextUsage?.utilization ?? 0) * 50.27} 50.27`}
+                    className={cn(
+                      "transition-all duration-300",
+                      !contextUsage ? "text-muted-foreground/30" :
+                      contextUsage.utilization > 0.9 ? "text-red-400" :
+                      contextUsage.utilization > 0.7 ? "text-[#e0af68]" : "text-accent",
+                    )}
+                    stroke="currentColor"
+                  />
+                </svg>
+                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 rounded bg-[#1a1b26] border border-[#27293d] text-[10px] text-[#c0caf5] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
+                  {contextUsage
+                    ? `${(contextUsage.utilization * 100).toFixed(1)}% · ${(contextUsage.totalTokens / 1000).toFixed(1)}K / ${(contextUsage.maxTokens / 1000).toFixed(0)}K context used`
+                    : "Context usage unavailable"}
+                </div>
+              </div>
+
               <button
                 type="button"
                 title={t("ai.uploadImage")}
@@ -1096,6 +1368,7 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
           </div>
         </div>
       </div>
+
     </div>
   );
 });

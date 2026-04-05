@@ -1244,6 +1244,20 @@ export async function restoreAiSession(
   return invoke("restore_ai_session", { sessionId, identifier });
 }
 
+/**
+ * Restore conversation history from raw messages.
+ * Used when reopening a conversation from localStorage to give the AI context.
+ *
+ * @param sessionId - The AI session ID to restore history for
+ * @param messages - Array of [role, content] pairs
+ */
+export async function restoreAiConversation(
+  sessionId: string,
+  messages: [string, string][]
+): Promise<void> {
+  return invoke("restore_ai_conversation", { sessionId, messages });
+}
+
 // =============================================================================
 // HITL (Human-in-the-Loop) API
 // =============================================================================

@@ -766,6 +766,13 @@ export const useStore = create<GolishState>()(
               state.tabActivationHistory.splice(histIdx, 1);
             }
             state.tabActivationHistory.push(session.id);
+
+            // Notify backend of active terminal session for visible command execution
+            if ((session.tabType ?? "terminal") === "terminal") {
+              import("@/lib/tauri").then(({ setActiveTerminalSession }) => {
+                setActiveTerminalSession(session.id).catch(() => {});
+              });
+            }
           }
 
           state.timelines[session.id] = [];
@@ -882,6 +889,14 @@ export const useStore = create<GolishState>()(
             state.tabActivationHistory.splice(idx, 1);
           }
           state.tabActivationHistory.push(sessionId);
+
+          // Notify backend of active terminal session for visible command execution
+          const session = state.sessions[sessionId];
+          if (session && (session.tabType ?? "terminal") === "terminal") {
+            import("@/lib/tauri").then(({ setActiveTerminalSession }) => {
+              setActiveTerminalSession(sessionId).catch(() => {});
+            });
+          }
         }),
 
       setAppIsFocused: (focused) =>

@@ -32,6 +32,39 @@ pub async fn clear_ai_conversation(state: State<'_, AppState>) -> Result<(), Str
     Ok(())
 }
 
+/// Restore conversation history for a specific AI session.
+/// Called when reopening an existing conversation to give the AI context.
+///
+/// # Arguments
+/// * `session_id` - The AI session ID to restore history for
+/// * `messages` - List of [role, content] pairs to restore
+#[tauri::command]
+pub async fn restore_ai_conversation(
+    state: State<'_, AppState>,
+    session_id: String,
+    messages: Vec<(String, String)>,
+) -> Result<(), String> {
+    let bridge = state
+        .ai_state
+        .get_session_bridge(&session_id)
+        .await
+        .ok_or_else(|| {
+            format!(
+                "AI agent not initialized for session '{}'. Call init_ai_session first.",
+                session_id
+            )
+        })?;
+
+    let count = messages.len();
+    bridge.restore_conversation_history(messages).await;
+    tracing::info!(
+        "[restore] Restored {} messages for session '{}'",
+        count,
+        session_id
+    );
+    Ok(())
+}
+
 /// Get the current conversation history length.
 /// Useful for debugging or showing context status in the UI.
 #[tauri::command]

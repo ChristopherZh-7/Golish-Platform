@@ -11,7 +11,7 @@ import { useStore } from "@/store";
  */
 export function useCreateTerminalTab() {
   const createTerminalTab = useCallback(
-    async (workingDirectory?: string): Promise<string | null> => {
+    async (workingDirectory?: string, skipConversationLink?: boolean): Promise<string | null> => {
       const {
         addSession,
         updateGitBranch,
@@ -32,8 +32,8 @@ export function useCreateTerminalTab() {
           mode: "terminal",
         });
 
-        // Link terminal to the active conversation
-        if (activeConversationId) {
+        // Link terminal to the active conversation (unless skipped, e.g. during workspace restore)
+        if (!skipConversationLink && activeConversationId) {
           addTerminalToConversation(activeConversationId, session.id);
         }
 

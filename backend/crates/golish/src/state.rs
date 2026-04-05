@@ -12,6 +12,8 @@ use crate::pty::PtyManager;
 use crate::settings::SettingsManager;
 use crate::sidecar::{SidecarConfig, SidecarState};
 use crate::telemetry::TelemetryStats;
+use crate::tools::pty_interactive::PtyOutputTap;
+use parking_lot::Mutex;
 use tokio::sync::RwLock;
 
 pub struct AppState {
@@ -37,6 +39,10 @@ pub struct AppState {
     pub command_index: Arc<CommandIndex>,
     /// Pentest config manager for AI tool integration.
     pub pentest_config_manager: Arc<golish_pentest::ConfigManager>,
+    /// Shared broadcast tap for PTY output events (used by visible run_pty_cmd).
+    pub pty_output_tap: Arc<PtyOutputTap>,
+    /// Currently active (visible) terminal session ID, set by the frontend.
+    pub active_terminal_session: Arc<Mutex<Option<String>>>,
 }
 
 impl AppState {
@@ -80,6 +86,8 @@ impl AppState {
             mcp_manager: Arc::new(RwLock::new(None)),
             command_index: Arc::new(CommandIndex::new()),
             pentest_config_manager: Arc::new(golish_pentest::ConfigManager::with_defaults()),
+            pty_output_tap: Arc::new(PtyOutputTap::new()),
+            active_terminal_session: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -121,6 +129,8 @@ impl AppState {
             mcp_manager: Arc::new(RwLock::new(None)),
             command_index: Arc::new(CommandIndex::new()),
             pentest_config_manager: Arc::new(golish_pentest::ConfigManager::with_defaults()),
+            pty_output_tap: Arc::new(PtyOutputTap::new()),
+            active_terminal_session: Arc::new(Mutex::new(None)),
         }
     }
 }

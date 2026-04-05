@@ -7,7 +7,7 @@
 //! - Message history management
 //! - Extended thinking (streaming reasoning content)
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -1213,12 +1213,7 @@ where
         tool_name
     };
 
-    // For run_pty_cmd, use streaming execution to provide real-time feedback
-    if effective_tool_name == "run_pty_cmd" {
-        return execute_shell_command_streaming(tool_args, tool_id, ctx).await;
-    }
-
-    // Execute regular tool via registry
+    // Execute tool via registry (run_pty_cmd uses VisibleRunPtyCmdTool when registered)
     let registry = ctx.tool_registry.read().await;
     let result = registry
         .execute_tool(effective_tool_name, tool_args.clone())
@@ -1246,11 +1241,15 @@ where
     }
 }
 
-/// Execute a shell command with streaming output.
+/// Execute a shell command with streaming output (background execution).
 ///
 /// This function uses `golish_shell_exec::execute_streaming` to run the command
 /// and emits `ToolOutputChunk` events as output arrives, providing real-time
 /// feedback for long-running commands.
+///
+/// Currently unused: commands route through VisibleRunPtyCmdTool in the registry
+/// so they execute in the user's visible terminal instead of in the background.
+#[allow(dead_code)]
 async fn execute_shell_command_streaming(
     tool_args: &serde_json::Value,
     tool_id: &str,
@@ -1528,6 +1527,32 @@ where
         .await;
     }
 
+    // Step 4.2: Auto-approve pentest tools only.
+    // run_command / run_pty_cmd require explicit user approval (HITL).
+    if tool_name.starts_with("pentest_") {
+        tracing::info!("[hitl] Auto-approving pentest tool: {}", tool_name);
+        emit_event(
+            ctx,
+            AiEvent::ToolAutoApproved {
+                request_id: tool_id.to_string(),
+                tool_name: tool_name.to_string(),
+                args: effective_args.clone(),
+                reason: "Auto-approved: Golish platform tool".to_string(),
+                source: golish_core::events::ToolSource::Main,
+            },
+        );
+
+        return execute_tool_direct_generic(
+            tool_name,
+            &effective_args,
+            ctx,
+            model,
+            context,
+            tool_id,
+        )
+        .await;
+    }
+
     // Step 4.4: Auto-approve if agent mode or runtime flag is set
     // This happens AFTER constraints are checked (Step 2) to ensure safety limits apply
     if is_auto_approve {
@@ -1596,9 +1621,15 @@ where
         },
     );
 
+    tracing::info!(
+        "[hitl] Waiting for user approval: tool={}, risk={:?}, id={}",
+        tool_name, risk_level, tool_id
+    );
+
     // Wait for approval response (with timeout)
     match tokio::time::timeout(std::time::Duration::from_secs(APPROVAL_TIMEOUT_SECS), rx).await {
         Ok(Ok(decision)) => {
+            tracing::info!("[hitl] User decision: tool={}, approved={}", tool_name, decision.approved);
             if decision.approved {
                 let _ = ctx
                     .approval_recorder
@@ -1631,6 +1662,7 @@ where
             success: false,
         }),
         Err(_) => {
+            tracing::warn!("[hitl] Approval TIMED OUT after {}s: tool={}", APPROVAL_TIMEOUT_SECS, tool_name);
             // Only need to clean up pending_approvals in legacy path
             // Coordinator handles cleanup automatically
             if ctx.coordinator.is_none() {
@@ -1896,17 +1928,27 @@ where
         tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>()
     );
 
-    // Always add Tavily web tools from the registry if enabled (alongside native tools)
-    // Apply sanitize_schema for OpenAI strict mode compatibility
+    // Add dynamically registered tools from the registry (Tavily, PTY interactive, pentest, etc.)
+    // Dynamic tools are registered at runtime by configure_bridge and should always be included.
+    // Tavily tools still respect tool_config since they can be disabled in settings.
+    // Apply sanitize_schema for OpenAI strict mode compatibility.
     {
         let registry = ctx.tool_registry.read().await;
         let registry_tools = registry.get_tool_definitions();
         drop(registry);
 
+        let existing_names: HashSet<String> = tools.iter().map(|t| t.name.clone()).collect();
+
         for tool in registry_tools {
-            if (tool.name.starts_with("tavily_"))
-                && ctx.tool_config.is_tool_enabled(&tool.name)
-            {
+            if existing_names.contains(&tool.name) {
+                continue;
+            }
+
+            let always_include = tool.name.starts_with("pentest_");
+            let tavily_enabled = tool.name.starts_with("tavily_")
+                && ctx.tool_config.is_tool_enabled(&tool.name);
+
+            if always_include || tavily_enabled {
                 tools.push(rig::completion::ToolDefinition {
                     name: tool.name,
                     description: tool.description,
@@ -3519,6 +3561,13 @@ where
     };
     let tool_id = tool_call.id.clone();
     let tool_call_id = tool_call.call_id.clone().unwrap_or_else(|| tool_id.clone());
+
+    tracing::info!(
+        "[tool-dispatch] Executing tool: name={}, id={}, args_len={}",
+        tool_name,
+        tool_id,
+        serde_json::to_string(&tool_args).map(|s| s.len()).unwrap_or(0),
+    );
 
     // Create span for tool call
     let args_str = serde_json::to_string(&tool_args).unwrap_or_default();

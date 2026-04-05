@@ -22,6 +22,7 @@ export interface PersistedWorkspaceState {
   conversations: PersistedConversation[];
   conversationOrder: string[];
   activeConversationId: string | null;
+  terminalTabs?: PersistedTerminalTab[];
 }
 
 interface PersistedConversation {
@@ -30,6 +31,10 @@ interface PersistedConversation {
   messages: ChatMessage[];
   createdAt: number;
   aiSessionId: string;
+}
+
+export interface PersistedTerminalTab {
+  workingDirectory: string;
 }
 
 function toPersistedConversation(conv: ChatConversation): PersistedConversation {
@@ -71,6 +76,7 @@ export async function saveWorkspaceState(
   conversations: Record<string, ChatConversation>,
   conversationOrder: string[],
   activeConversationId: string | null,
+  terminalTabs?: PersistedTerminalTab[],
 ): Promise<void> {
   try {
     const state: PersistedWorkspaceState = {
@@ -82,11 +88,13 @@ export async function saveWorkspaceState(
         .map(toPersistedConversation),
       conversationOrder,
       activeConversationId,
+      terminalTabs,
     };
 
     await saveProjectWorkspace(projectName, JSON.stringify(state));
     logger.debug("[WorkspaceStorage] Saved for project:", projectName, {
       conversations: state.conversations.length,
+      terminalTabs: terminalTabs?.length ?? 0,
     });
   } catch (e) {
     logger.warn("[WorkspaceStorage] Failed to save:", e);
@@ -124,6 +132,8 @@ export async function loadWorkspaceState(
  * Creates a debounced auto-saver that subscribes to store changes.
  * Returns an unsubscribe function.
  */
+const LOCAL_STORAGE_BACKUP_KEY = "golish-pentest-conversations";
+
 export function createWorkspaceAutoSaver(
   getProjectName: () => string | null,
   subscribe: (listener: () => void) => () => void,
@@ -131,6 +141,7 @@ export function createWorkspaceAutoSaver(
     conversations: Record<string, ChatConversation>;
     conversationOrder: string[];
     activeConversationId: string | null;
+    terminalTabs: PersistedTerminalTab[];
   },
 ): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -138,8 +149,27 @@ export function createWorkspaceAutoSaver(
   const save = () => {
     const name = getProjectName();
     if (!name) return;
-    const { conversations, conversationOrder, activeConversationId } = getState();
-    saveWorkspaceState(name, conversations, conversationOrder, activeConversationId);
+    const { conversations, conversationOrder, activeConversationId, terminalTabs } = getState();
+    saveWorkspaceState(name, conversations, conversationOrder, activeConversationId, terminalTabs);
+  };
+
+  const saveToLocalStorageSync = () => {
+    try {
+      const { conversations, conversationOrder } = getState();
+      const toSave = conversationOrder
+        .map((id) => conversations[id])
+        .filter((c) => c && c.messages.length > 0)
+        .map((c) => ({
+          id: c.id,
+          title: c.title,
+          messages: c.messages.map((m: ChatMessage) => ({ ...m, isStreaming: false })),
+          createdAt: c.createdAt,
+          aiSessionId: c.aiSessionId,
+          aiInitialized: false,
+          isStreaming: false,
+        }));
+      localStorage.setItem(LOCAL_STORAGE_BACKUP_KEY, JSON.stringify(toSave));
+    } catch { /* ignore */ }
   };
 
   const debouncedSave = () => {
@@ -149,7 +179,10 @@ export function createWorkspaceAutoSaver(
 
   const unsubscribe = subscribe(debouncedSave);
 
-  const handleBeforeUnload = () => save();
+  const handleBeforeUnload = () => {
+    saveToLocalStorageSync();
+    save();
+  };
   window.addEventListener("beforeunload", handleBeforeUnload);
 
   return () => {

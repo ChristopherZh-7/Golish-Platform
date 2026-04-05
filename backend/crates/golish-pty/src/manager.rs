@@ -464,6 +464,12 @@ impl PtyManager {
         cmd.env("QBIT", "1");
         cmd.env("QBIT_VERSION", env!("CARGO_PKG_VERSION"));
         cmd.env("TERM", "xterm-256color");
+        if std::env::var("LANG").is_err() {
+            cmd.env("LANG", "en_US.UTF-8");
+        }
+        if std::env::var("LC_ALL").is_err() {
+            cmd.env("LC_ALL", "en_US.UTF-8");
+        }
         // Note: Set QBIT_DEBUG=1 to enable shell integration debug output
 
         // Set integration environment variables
@@ -921,6 +927,12 @@ impl PtyManager {
             rows,
             cols,
         })
+    }
+
+    /// List all active session IDs.
+    pub fn list_session_ids(&self) -> Vec<String> {
+        let sessions = self.sessions.lock();
+        sessions.keys().cloned().collect()
     }
 
     /// Get the foreground process name for a PTY session.

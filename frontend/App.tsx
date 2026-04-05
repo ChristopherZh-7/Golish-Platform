@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { logger } from "@/lib/logger";
 import { ActivityBar, type ActivityView } from "./components/ActivityBar/ActivityBar";
@@ -112,6 +113,7 @@ function App() {
   const { handleSplitPane, handleClosePane, handleNavigatePane } = usePaneControls(activeSessionId);
 
   const hasProject = useStore((s) => s.currentProjectName !== null);
+  const isOnHomeTab = useStore((s) => s.homeTabId !== null && s.activeSessionId === s.homeTabId);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -209,8 +211,22 @@ function App() {
               useStore.getState().addConversation(initialConv);
             }
 
-            // Create terminal in project root
-            await createTerminalTab(config.rootPath);
+            // Restore terminal tabs: create first tab immediately, rest lazily to avoid startup lag
+            const tabsToRestore = saved?.terminalTabs?.length
+              ? saved.terminalTabs.slice(0, 5)
+              : [{ workingDirectory: config.rootPath }];
+
+            if (tabsToRestore.length > 0) {
+              await createTerminalTab(tabsToRestore[0].workingDirectory, true);
+            }
+            if (tabsToRestore.length > 1) {
+              const remaining = tabsToRestore.slice(1);
+              setTimeout(async () => {
+                for (const tab of remaining) {
+                  await createTerminalTab(tab.workingDirectory, true);
+                }
+              }, 1000);
+            }
           }
         }
 
@@ -232,17 +248,27 @@ function App() {
     init();
   }, [openHomeTab, createTerminalTab]);
 
-  // Auto-save workspace state (conversations, chat history) on changes + window close
+  // Auto-save workspace state (conversations, chat history, terminal tabs) on changes + window close
   useEffect(() => {
     return createWorkspaceAutoSaver(
       () => useStore.getState().currentProjectName,
       (listener) => useStore.subscribe(listener),
       () => {
         const s = useStore.getState();
+        const seen = new Set<string>();
+        const terminalTabs = Object.values(s.sessions)
+          .filter((sess) => (sess.tabType ?? "terminal") === "terminal")
+          .filter((sess) => {
+            if (seen.has(sess.workingDirectory)) return false;
+            seen.add(sess.workingDirectory);
+            return true;
+          })
+          .map((sess) => ({ workingDirectory: sess.workingDirectory }));
         return {
           conversations: s.conversations,
           conversationOrder: s.conversationOrder,
           activeConversationId: s.activeConversationId,
+          terminalTabs,
         };
       },
     );
@@ -308,6 +334,23 @@ function App() {
       window.removeEventListener("beforeunload", handleBrowserCleanup);
     };
   }, []);
+
+  // Handle native menu events from Tauri backend
+  useEffect(() => {
+    const unlisteners: Array<() => void> = [];
+    (async () => {
+      unlisteners.push(await listen("menu-open-project", () => {
+        openHomeTab();
+      }));
+      unlisteners.push(await listen("menu-new-project", () => {
+        openHomeTab();
+      }));
+      unlisteners.push(await listen("menu-settings", () => {
+        openSettingsTab();
+      }));
+    })();
+    return () => { unlisteners.forEach((fn) => fn()); };
+  }, [openHomeTab, openSettingsTab]);
 
   // Keyboard shortcuts using refs pattern to avoid recreating the handler on every state change
   const keyboardContextRef = useKeyboardHandlerContext();
@@ -527,15 +570,17 @@ function App() {
 
         {/* Content - floating panels */}
         <div className="flex-1 flex overflow-hidden gap-2 px-2 pb-2 min-h-0 relative">
-          {/* Activity Bar - narrow icon strip */}
-          <ActivityBar
-            activeView={activityView}
-            onViewChange={setActivityView}
-            terminalOpen={bottomTerminalOpen}
-            onToggleTerminal={() => setBottomTerminalOpen((v) => !v)}
-            onOpenSettings={() => setSettingsOpen(true)}
-            onOpenBrowser={() => openBrowserTab()}
-          />
+          {/* Activity Bar - hidden when viewing the home tab */}
+          {!isOnHomeTab && (
+            <ActivityBar
+              activeView={activityView}
+              onViewChange={setActivityView}
+              terminalOpen={bottomTerminalOpen}
+              onToggleTerminal={() => setBottomTerminalOpen((v) => !v)}
+              onOpenSettings={() => setSettingsOpen(true)}
+              onOpenBrowser={() => openBrowserTab()}
+            />
+          )}
 
           {/* Left panel - only shown for settings view */}
           <div className={cn(
@@ -584,7 +629,7 @@ function App() {
           )}>
             {/* Center - TabBar + Pane content */}
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
-              {hasProject && <TabBar />}
+              {!isOnHomeTab && <TabBar />}
 
               <div className="flex-1 min-h-0 min-w-0 flex overflow-hidden">
                 <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden relative">
@@ -618,8 +663,8 @@ function App() {
               </div>
             </div>
 
-            {/* Right sidebar - AI Chat Panel (hidden until a project is opened) */}
-            {hasProject && (
+            {/* Right sidebar - AI Chat Panel (hidden on home tab) */}
+            {!isOnHomeTab && (
               <div className="w-[340px] flex-shrink-0 h-full rounded-xl bg-card overflow-hidden panel-float">
                 <AIChatPanel />
               </div>

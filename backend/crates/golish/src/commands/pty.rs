@@ -58,3 +58,14 @@ pub async fn pty_get_foreground_process(
 ) -> Result<Option<String>> {
     Ok(state.pty_manager.get_foreground_process(&session_id)?)
 }
+
+#[tauri::command]
+pub async fn set_active_terminal_session(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<()> {
+    tracing::info!("[active-terminal] Frontend reports active session: {}", session_id);
+    let mut active = state.active_terminal_session.lock();
+    *active = Some(session_id);
+    Ok(())
+}
