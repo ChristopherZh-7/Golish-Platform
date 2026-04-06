@@ -13,8 +13,38 @@ pub use golish_tools::*;
 // Penetration testing tool management (ported from Golish)
 pub mod pentest;
 
+// Wiki / knowledge-base storage
+pub mod wiki;
+
+// Target / scope management
+pub mod targets;
+
+// Credential vault (encrypted storage)
+pub mod vault;
+
+// Project export/import
+pub mod project_io;
+
 // Pentest AI tools (expose installed pentest tools to the AI agent)
 pub mod pentest_ai;
 
 // Interactive PTY tool (allows AI to control visible terminal sessions)
 pub mod pty_interactive;
+
+// Network topology visualization
+pub mod topology;
+
+// Pentest methodology templates
+pub mod methodology;
+
+// Terminal session recordings
+pub mod recordings;
+
+// Generic tool output parsing engine
+pub mod output_parser;
+
+// Vulnerability findings tracker
+pub mod findings;
+
+// Tool chain pipeline
+pub mod pipeline;

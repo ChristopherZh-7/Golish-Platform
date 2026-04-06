@@ -1,12 +1,16 @@
 import {
   ArrowLeftRight,
+  BookOpen,
   Clock,
   Columns,
   Database,
+  Download,
   FilePenLine,
   FileSearch,
   FileText,
+  Globe,
   Keyboard,
+  MessageSquare,
   Monitor,
   Palette,
   Plus,
@@ -14,11 +18,16 @@ import {
   Rows,
   Search,
   Settings,
+  Shield,
   Terminal,
   Trash2,
+  Upload,
+  Wrench,
   X,
 } from "lucide-react";
 import { useCallback, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { save, open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   CommandDialog,
   CommandEmpty,
@@ -31,6 +40,7 @@ import {
 } from "@/components/ui/command";
 import { indexDirectory, isIndexerInitialized, searchCode, searchFiles } from "@/lib/indexer";
 import { notify } from "@/lib/notify";
+import { getProjectPath } from "@/lib/projects";
 
 export type PageRoute = "main" | "testbed";
 
@@ -55,6 +65,15 @@ interface CommandPaletteProps {
   onSplitPaneRight?: () => void;
   onSplitPaneDown?: () => void;
   onClosePane?: () => void;
+  // Panel switching
+  onOpenBrowser?: () => void;
+  onOpenSecurity?: () => void;
+  onToggleToolManager?: () => void;
+  onToggleWiki?: () => void;
+  onToggleBottomTerminal?: () => void;
+  onFocusAiChat?: () => void;
+  onOpenShortcutsHelp?: () => void;
+  onOpenRecordings?: () => void;
 }
 
 // Types for search results
@@ -85,6 +104,14 @@ export function CommandPalette({
   onSplitPaneRight,
   onSplitPaneDown,
   onClosePane,
+  onOpenBrowser,
+  onOpenSecurity,
+  onToggleToolManager,
+  onToggleWiki,
+  onToggleBottomTerminal,
+  onFocusAiChat,
+  onOpenShortcutsHelp,
+  onOpenRecordings,
 }: CommandPaletteProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
@@ -168,6 +195,35 @@ export function CommandPalette({
       setIsSearching(false);
     }
   }, [searchQuery, onShowSearchResults]);
+
+  const handleExportProject = useCallback(async () => {
+    try {
+      const path = await save({
+        defaultPath: `golish-project-${new Date().toISOString().slice(0, 10)}.zip`,
+        filters: [{ name: "ZIP", extensions: ["zip"] }],
+      });
+      if (!path) return;
+      const result = await invoke<{ path: string; files_count: number; size_bytes: number }>("project_export", { outputPath: path, projectPath: getProjectPath() });
+      const sizeMb = (result.size_bytes / 1024 / 1024).toFixed(1);
+      notify.success(`Exported ${result.files_count} files (${sizeMb} MB)`);
+    } catch (e) {
+      notify.error(`Export failed: ${e}`);
+    }
+  }, []);
+
+  const handleImportProject = useCallback(async () => {
+    try {
+      const path = await openFileDialog({
+        filters: [{ name: "ZIP", extensions: ["zip"] }],
+        multiple: false,
+      });
+      if (!path) return;
+      const result = await invoke<{ files_count: number }>("project_import", { zipPath: path, overwrite: false, projectPath: getProjectPath() });
+      notify.success(`Imported ${result.files_count} files`);
+    } catch (e) {
+      notify.error(`Import failed: ${e}`);
+    }
+  }, []);
 
   return (
     <CommandDialog open={open} onOpenChange={onOpenChange}>
@@ -286,6 +342,54 @@ export function CommandPalette({
           </>
         )}
 
+        {/* Panels */}
+        <CommandGroup heading="Panels">
+          {onOpenBrowser && (
+            <CommandItem onSelect={() => runCommand(onOpenBrowser)}>
+              <Globe className="mr-2 size-icon-command-palette" />
+              <span>Open Browser</span>
+              <CommandShortcut>⌘B</CommandShortcut>
+            </CommandItem>
+          )}
+          {onOpenSecurity && (
+            <CommandItem onSelect={() => runCommand(onOpenSecurity)}>
+              <Shield className="mr-2 size-icon-command-palette" />
+              <span>Open Security</span>
+              <CommandShortcut>⌘⇧S</CommandShortcut>
+            </CommandItem>
+          )}
+          {onToggleToolManager && (
+            <CommandItem onSelect={() => runCommand(onToggleToolManager)}>
+              <Wrench className="mr-2 size-icon-command-palette" />
+              <span>Tool Manager</span>
+              <CommandShortcut>⌘⇧M</CommandShortcut>
+            </CommandItem>
+          )}
+          {onToggleWiki && (
+            <CommandItem onSelect={() => runCommand(onToggleWiki)}>
+              <BookOpen className="mr-2 size-icon-command-palette" />
+              <span>Wiki / Knowledge Base</span>
+              <CommandShortcut>⌘⇧W</CommandShortcut>
+            </CommandItem>
+          )}
+          {onToggleBottomTerminal && (
+            <CommandItem onSelect={() => runCommand(onToggleBottomTerminal)}>
+              <Terminal className="mr-2 size-icon-command-palette" />
+              <span>Toggle Terminal</span>
+              <CommandShortcut>⌘J</CommandShortcut>
+            </CommandItem>
+          )}
+          {onFocusAiChat && (
+            <CommandItem onSelect={() => runCommand(onFocusAiChat)}>
+              <MessageSquare className="mr-2 size-icon-command-palette" />
+              <span>Focus AI Chat</span>
+              <CommandShortcut>⌘L</CommandShortcut>
+            </CommandItem>
+          )}
+        </CommandGroup>
+
+        <CommandSeparator />
+
         {/* Code Search & Analysis */}
         <CommandGroup heading="Code Search">
           {onOpenQuickOpen && (
@@ -313,11 +417,30 @@ export function CommandPalette({
 
         <CommandSeparator />
 
+        {/* Project */}
+        <CommandGroup heading="Project">
+          <CommandItem onSelect={() => runCommand(handleExportProject)}>
+            <Download className="mr-2 size-icon-command-palette" />
+            <span>Export Project Data</span>
+          </CommandItem>
+          <CommandItem onSelect={() => runCommand(handleImportProject)}>
+            <Upload className="mr-2 size-icon-command-palette" />
+            <span>Import Project Data</span>
+          </CommandItem>
+          <CommandItem onSelect={() => runCommand(() => onOpenRecordings?.())}>
+            <Terminal className="mr-2 size-icon-command-palette" />
+            <span>Terminal Recordings</span>
+          </CommandItem>
+        </CommandGroup>
+
+        <CommandSeparator />
+
         {/* Help */}
         <CommandGroup heading="Help">
-          <CommandItem disabled>
+          <CommandItem onSelect={() => runCommand(() => onOpenShortcutsHelp?.())}>
             <Keyboard className="mr-2 size-icon-command-palette" />
             <span>Keyboard Shortcuts</span>
+            <CommandShortcut>⌘/</CommandShortcut>
           </CommandItem>
           <CommandItem disabled>
             <FileText className="mr-2 size-icon-command-palette" />

@@ -521,7 +521,7 @@ export const HomeView = memo(function HomeView() {
     async (projectName: string, rootPath: string) => {
       try {
         // Set as current project
-        useStore.getState().setCurrentProject(projectName);
+        useStore.getState().setCurrentProject(projectName, rootPath);
         setLastProjectName(projectName);
 
         // Try to load saved workspace state for this project

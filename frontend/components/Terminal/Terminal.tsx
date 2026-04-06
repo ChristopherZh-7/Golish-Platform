@@ -8,6 +8,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { logger } from "@/lib/logger";
 import { SyncOutputBuffer } from "@/lib/terminal/SyncOutputBuffer";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
+import { appendRecordingData } from "@/lib/terminal/recording";
 import { ThemeManager } from "@/lib/theme";
 import { useRenderMode, useTerminalClearRequest } from "@/store";
 import { ptyResize, ptyWrite } from "../../lib/tauri";
@@ -368,6 +369,7 @@ export function Terminal({ sessionId }: TerminalProps) {
           }
           // #endregion
           syncBufferRef.current.write(event.payload.data);
+          appendRecordingData(sessionId, event.payload.data);
         }
       });
 

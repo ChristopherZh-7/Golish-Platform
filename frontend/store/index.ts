@@ -109,7 +109,7 @@ export type AiStatus = "disconnected" | "initializing" | "ready" | "error";
  * - settings: Settings panel (no PTY, gear icon)
  * - home: Home tab (no PTY, home icon)
  */
-export type TabType = "terminal" | "settings" | "home" | "browser";
+export type TabType = "terminal" | "settings" | "home" | "browser" | "security";
 
 /**
  * Agent mode determines how tool approvals are handled:
@@ -402,6 +402,7 @@ interface GolishState extends AppearanceSlice, ContextSlice, ConversationSlice, 
 
   // Current project
   currentProjectName: string | null;
+  currentProjectPath: string | null;
 
   // AI configuration
   aiConfig: AiConfig;
@@ -671,6 +672,11 @@ interface GolishState extends AppearanceSlice, ContextSlice, ConversationSlice, 
    */
   openBrowserTab: (url?: string) => void;
   /**
+   * Open security view in a tab. If a security tab already exists, focus it.
+   * Otherwise, create a new security tab.
+   */
+  openSecurityTab: () => void;
+  /**
    * Get all session IDs belonging to a tab (root + all pane sessions).
    * Used by TabBar to perform backend cleanup before removing state.
    */
@@ -696,8 +702,8 @@ interface GolishState extends AppearanceSlice, ContextSlice, ConversationSlice, 
     destTabId: string,
     location: "left" | "right" | "top" | "bottom"
   ) => void;
-  /** Set the current project name (for workspace persistence). */
-  setCurrentProject: (name: string | null) => void;
+  /** Set the current project name and path (for workspace persistence). */
+  setCurrentProject: (name: string | null, path?: string | null) => void;
 }
 
 export const useStore = create<GolishState>()(
@@ -724,6 +730,7 @@ export const useStore = create<GolishState>()(
       activeSessionId: null,
       homeTabId: null,
       currentProjectName: null,
+      currentProjectPath: null,
       aiConfig: {
         provider: "",
         model: "",
@@ -1127,6 +1134,14 @@ export const useStore = create<GolishState>()(
               logger.debug("Failed to send command notification:", err);
             });
           }
+        }
+
+        if (pending && command && pending.output) {
+          window.dispatchEvent(
+            new CustomEvent("tool-output-completed", {
+              detail: { command, output: pending.output, sessionId },
+            })
+          );
         }
       },
 
@@ -2189,6 +2204,43 @@ export const useStore = create<GolishState>()(
           state.tabActivationHistory.push(browserId);
         }),
 
+      openSecurityTab: () =>
+        set((state) => {
+          const existingTab = Object.values(state.sessions).find(
+            (session) => session.tabType === "security"
+          );
+
+          if (existingTab) {
+            state.activeSessionId = existingTab.id;
+            state.tabHasNewActivity[existingTab.id] = false;
+            const histIdx = state.tabActivationHistory.indexOf(existingTab.id);
+            if (histIdx !== -1) {
+              state.tabActivationHistory.splice(histIdx, 1);
+            }
+            state.tabActivationHistory.push(existingTab.id);
+            return;
+          }
+
+          const securityId = `security-${Date.now()}`;
+          state.sessions[securityId] = {
+            id: securityId,
+            tabType: "security",
+            name: "Security",
+            workingDirectory: "",
+            createdAt: new Date().toISOString(),
+            mode: "terminal",
+          };
+          state.activeSessionId = securityId;
+
+          state.tabLayouts[securityId] = {
+            root: { type: "leaf", id: securityId, sessionId: securityId },
+            focusedPaneId: securityId,
+          };
+          state.tabHasNewActivity[securityId] = false;
+          state.tabOrder.push(securityId);
+          state.tabActivationHistory.push(securityId);
+        }),
+
       getTabSessionIds: (tabId) => {
         const layout = get().tabLayouts[tabId];
         if (!layout) return [];
@@ -2453,9 +2505,10 @@ export const useStore = create<GolishState>()(
           });
         }),
 
-      setCurrentProject: (name) =>
+      setCurrentProject: (name, path) =>
         set((state) => {
           state.currentProjectName = name;
+          state.currentProjectPath = path ?? null;
         }),
     })),
     { name: "golish" }

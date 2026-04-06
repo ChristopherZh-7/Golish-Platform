@@ -36,10 +36,19 @@ export interface KeyboardHandlerContext {
   handleClosePane: () => Promise<void>;
   handleNavigatePane: (direction: "up" | "down" | "left" | "right") => void;
 
+  // Panel switching callbacks
+  openBrowserTab: () => void;
+  openSecurityTab: () => void;
+  toggleToolManager: () => void;
+  toggleWiki: () => void;
+  toggleBottomTerminal: () => void;
+  focusAiChat: () => void;
+
   // Setters (for local state)
   setCommandPaletteOpen: (open: boolean) => void;
   setQuickOpenDialogOpen: (open: boolean) => void;
   setSidecarPanelOpen: (open: boolean) => void;
+  setShortcutsHelpOpen: (open: boolean) => void;
 }
 
 const defaultContext: KeyboardHandlerContext = {
@@ -54,9 +63,16 @@ const defaultContext: KeyboardHandlerContext = {
   handleSplitPane: async () => {},
   handleClosePane: async () => {},
   handleNavigatePane: () => {},
+  openBrowserTab: () => {},
+  openSecurityTab: () => {},
+  toggleToolManager: () => {},
+  toggleWiki: () => {},
+  toggleBottomTerminal: () => {},
+  focusAiChat: () => {},
   setCommandPaletteOpen: () => {},
   setQuickOpenDialogOpen: () => {},
   setSidecarPanelOpen: () => {},
+  setShortcutsHelpOpen: () => {},
 };
 
 /**
@@ -271,6 +287,55 @@ export function createKeyboardHandler(
         ctx.handleNavigatePane(direction);
         return;
       }
+    }
+
+    // Cmd+B: Open Browser
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key === "b") {
+      e.preventDefault();
+      ctx.openBrowserTab();
+      return;
+    }
+
+    // Cmd+Shift+S: Open Security
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "s") {
+      e.preventDefault();
+      ctx.openSecurityTab();
+      return;
+    }
+
+    // Cmd+Shift+M: Toggle Tool Manager
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "m") {
+      e.preventDefault();
+      ctx.toggleToolManager();
+      return;
+    }
+
+    // Cmd+Shift+W: Toggle Wiki
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "w") {
+      e.preventDefault();
+      ctx.toggleWiki();
+      return;
+    }
+
+    // Cmd+J: Toggle Bottom Terminal
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === "j") {
+      e.preventDefault();
+      ctx.toggleBottomTerminal();
+      return;
+    }
+
+    // Cmd+L: Focus AI Chat input
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === "l") {
+      e.preventDefault();
+      ctx.focusAiChat();
+      return;
+    }
+
+    // Cmd+/: Show Keyboard Shortcuts Help
+    if ((e.metaKey || e.ctrlKey) && e.key === "/") {
+      e.preventDefault();
+      ctx.setShortcutsHelpOpen(true);
+      return;
     }
   };
 }

@@ -41,6 +41,11 @@ const BrowserView = lazy(() =>
     default: m.BrowserView,
   }))
 );
+const SecurityView = lazy(() =>
+  import("@/components/SecurityView/SecurityView").then((m) => ({
+    default: m.SecurityView,
+  }))
+);
 
 // Loading fallback component for lazy-loaded tab content
 function TabLoadingFallback() {
@@ -117,6 +122,12 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
             <BrowserView initialUrl={workingDirectory} sessionId={sessionId} />
           </Suspense>
         );
+      case "security":
+        return (
+          <Suspense fallback={<TabLoadingFallback />}>
+            <SecurityView />
+          </Suspense>
+        );
       default:
         return (
           <>
@@ -140,7 +151,7 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
                   )}
                 </div>
                 <div
-                  className={`pane-bottom-terminal transition-all duration-300 ease-in-out origin-bottom ${
+                  className={`pane-bottom-terminal origin-bottom transition-[transform,opacity] duration-200 ease-in-out ${
                     isCommandRunning
                       ? "translate-y-full opacity-0 scale-y-0 h-0 pointer-events-none"
                       : "translate-y-0 opacity-100 scale-y-100"

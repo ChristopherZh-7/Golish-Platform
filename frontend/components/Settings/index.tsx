@@ -5,6 +5,7 @@ import {
   FileCode,
   FolderCode,
   Globe,
+  KeyRound,
   Loader2,
   Paintbrush,
   Puzzle,
@@ -62,6 +63,9 @@ const NetworkSettings = lazy(() =>
 const PentestEnvSettings = lazy(() =>
   import("./PentestEnvSettings").then((m) => ({ default: m.PentestEnvSettings }))
 );
+const VaultSettings = lazy(() =>
+  import("./VaultSettings").then((m) => ({ default: m.VaultSettings }))
+);
 
 interface SettingsDialogProps {
   open: boolean;
@@ -80,7 +84,8 @@ type SettingsSection =
   | "notifications"
   | "appearance"
   | "advanced"
-  | "pentest";
+  | "pentest"
+  | "vault";
 
 interface NavItemDef {
   id: SettingsSection;
@@ -91,6 +96,7 @@ interface NavItemDef {
 
 const NAV_ITEM_DEFS: NavItemDef[] = [
   { id: "pentest", labelKey: "settings.environment", icon: <Wrench className="w-4 h-4" />, descKey: "settings.envDescription" },
+  { id: "vault", labelKey: "settings.vault", icon: <KeyRound className="w-4 h-4" />, descKey: "settings.vaultDesc" },
   { id: "providers", labelKey: "settings.providers", icon: <Server className="w-4 h-4" />, descKey: "settings.providersDesc" },
   { id: "ai", labelKey: "settings.aiModels", icon: <Bot className="w-4 h-4" />, descKey: "settings.aiModelsDesc" },
   { id: "terminal", labelKey: "settings.terminal", icon: <Terminal className="w-4 h-4" />, descKey: "settings.terminal" },
@@ -202,6 +208,9 @@ export function SettingsContent({
   const renderContent = useCallback(() => {
     if (activeSection === "pentest") {
       return <PentestEnvSettings />;
+    }
+    if (activeSection === "vault") {
+      return <VaultSettings />;
     }
     if (!settings) return null;
     switch (activeSection) {
@@ -393,6 +402,9 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const renderContent = useCallback(() => {
     if (activeSection === "pentest") {
       return <PentestEnvSettings />;
+    }
+    if (activeSection === "vault") {
+      return <VaultSettings />;
     }
     if (!settings) return null;
 

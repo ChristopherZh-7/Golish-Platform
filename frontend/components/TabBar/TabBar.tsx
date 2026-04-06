@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Bot,
+  Columns,
   Copy,
   Globe,
   Home,
@@ -10,6 +11,7 @@ import {
   PanelLeft,
   Plus,
   Settings,
+  Shield,
   Terminal,
   X,
 } from "lucide-react";
@@ -45,6 +47,7 @@ import { shutdownAiSession } from "@/lib/ai";
 import { logger } from "@/lib/logger";
 import { ptyDestroy } from "@/lib/tauri";
 import { liveTerminalManager, TerminalInstanceManager } from "@/lib/terminal";
+import { TerminalRecordingControls } from "@/components/Terminal/TerminalRecordingControls";
 import { cn } from "@/lib/utils";
 import { useInputMode, useStore } from "@/store";
 import { type TabItemState, useTabBarState } from "@/store/selectors/tab-bar";
@@ -77,7 +80,12 @@ function buildTabNumberMap(tabs: TabItemState[]): Map<string, number> {
   return map;
 }
 
-export const TabBar = React.memo(function TabBar() {
+interface TabBarProps {
+  excludeTabIds?: string[];
+  showDropHint?: boolean;
+}
+
+export const TabBar = React.memo(function TabBar({ excludeTabIds, showDropHint }: TabBarProps = {}) {
   // Use optimized selector that avoids subscribing to entire Record objects
   const { tabs: allTabs, activeSessionId } = useTabBarState();
 
@@ -96,12 +104,19 @@ export const TabBar = React.memo(function TabBar() {
   });
 
   const tabs = React.useMemo(() => {
-    if (!activeConvTerminals || activeConvTerminals.length === 0) return allTabs;
-    return allTabs.filter((tab) => {
-      if (tab.tabType !== "terminal") return true;
-      return activeConvTerminals.includes(tab.id);
-    });
-  }, [allTabs, activeConvTerminals]);
+    let filtered = allTabs;
+    if (activeConvTerminals && activeConvTerminals.length > 0) {
+      filtered = filtered.filter((tab) => {
+        if (tab.tabType !== "terminal") return true;
+        return activeConvTerminals.includes(tab.id);
+      });
+    }
+    if (excludeTabIds && excludeTabIds.length > 0) {
+      const excludeSet = new Set(excludeTabIds);
+      filtered = filtered.filter((tab) => !excludeSet.has(tab.id));
+    }
+    return filtered;
+  }, [allTabs, activeConvTerminals, excludeTabIds]);
 
   const tabNumberById = React.useMemo(() => buildTabNumberMap(tabs), [tabs]);
 
@@ -263,33 +278,46 @@ export const TabBar = React.memo(function TabBar() {
       if (!ds.isDragging) return;
       setDragPos({ x: e.clientX, y: e.clientY });
 
-      let closestId: string | null = null;
-      let closestDist = Number.POSITIVE_INFINITY;
-      let closestSide: "left" | "right" = "left";
-      for (const [id, el] of tabRefs.current) {
-        if (id === ds.draggedId) continue;
-        const rect = el.getBoundingClientRect();
-        const centerX = rect.left + rect.width / 2;
-        const dist = Math.abs(e.clientX - centerX);
-        if (dist < closestDist) {
-          closestDist = dist;
-          closestId = id;
-          closestSide = e.clientX < centerX ? "left" : "right";
+      const yDelta = e.clientY - ds.startY;
+      window.dispatchEvent(new CustomEvent("tab-drag-split-hint", { detail: yDelta > 60 }));
+
+      if (Math.abs(yDelta) < 30) {
+        let closestId: string | null = null;
+        let closestDist = Number.POSITIVE_INFINITY;
+        let closestSide: "left" | "right" = "left";
+        for (const [id, el] of tabRefs.current) {
+          if (id === ds.draggedId) continue;
+          const rect = el.getBoundingClientRect();
+          const centerX = rect.left + rect.width / 2;
+          const dist = Math.abs(e.clientX - centerX);
+          if (dist < closestDist) {
+            closestDist = dist;
+            closestId = id;
+            closestSide = e.clientX < centerX ? "left" : "right";
+          }
         }
-      }
-      if (closestId) {
-        setDropIndicator({ targetId: closestId, side: closestSide });
+        if (closestId) {
+          setDropIndicator({ targetId: closestId, side: closestSide });
+        } else {
+          setDropIndicator(null);
+        }
       } else {
         setDropIndicator(null);
       }
     };
 
-    const handlePointerUp = () => {
+    const handlePointerUp = (e: PointerEvent) => {
       const ds = dragState.current;
-      if (ds.isDragging && ds.draggedId && dropIndicator) {
-        const homeTabId = tabs[0]?.tabType === "home" ? tabs[0].id : null;
-        if (dropIndicator.targetId !== homeTabId) {
-          reorderTab(ds.draggedId, dropIndicator.targetId);
+      window.dispatchEvent(new CustomEvent("tab-drag-split-hint", { detail: false }));
+      if (ds.isDragging && ds.draggedId) {
+        const yDelta = e.clientY - ds.startY;
+        if (yDelta > 60) {
+          window.dispatchEvent(new CustomEvent("split-tab-right", { detail: ds.draggedId }));
+        } else if (dropIndicator && Math.abs(yDelta) < 30) {
+          const homeTabId = tabs[0]?.tabType === "home" ? tabs[0].id : null;
+          if (dropIndicator.targetId !== homeTabId) {
+            reorderTab(ds.draggedId, dropIndicator.targetId);
+          }
         }
       }
       dragState.current = { draggedId: null, startX: 0, startY: 0, offsetX: 0, offsetY: 0, isDragging: false };
@@ -419,6 +447,11 @@ export const TabBar = React.memo(function TabBar() {
                   />
                 );
               })}
+              {showDropHint && (
+                <div className="h-6 px-2.5 flex items-center rounded-t-md border border-dashed border-accent/60 bg-accent/10 animate-in fade-in slide-in-from-right-2 duration-200">
+                  <span className="text-[10px] font-mono text-accent/70 whitespace-nowrap animate-pulse">Drop here</span>
+                </div>
+              )}
             </TabsList>
           </Tabs>
         </div>
@@ -442,6 +475,14 @@ export const TabBar = React.memo(function TabBar() {
             <p>New tab (⌘T)</p>
           </TooltipContent>
         </Tooltip>
+
+        {/* Recording controls for active terminal tab */}
+        {(() => {
+          const at = tabs.find((t) => t.id === activeSessionId);
+          return at?.tabType === "terminal" ? (
+            <TerminalRecordingControls sessionId={at.id} cols={80} rows={24} />
+          ) : null;
+        })()}
 
         {/* Active conversation label - shows which AI chat tab these terminals belong to */}
         {activeConvTitle && (
@@ -499,9 +540,11 @@ export const TabBar = React.memo(function TabBar() {
         const IconComp = draggedTab.tabType === "home" ? Home
           : draggedTab.tabType === "settings" ? Settings
           : draggedTab.tabType === "browser" ? Globe
+          : draggedTab.tabType === "security" ? Shield
           : draggedTab.mode === "agent" ? Bot : Terminal;
         const label = draggedTab.customName
           || (draggedTab.tabType === "browser" ? "Browser" : null)
+          || (draggedTab.tabType === "security" ? "Security" : null)
           || (draggedTab.tabType === "settings" ? draggedTab.name || "Settings" : null)
           || draggedTab.processName
           || draggedTab.workingDirectory.split(/[/\\]/).pop()
@@ -607,6 +650,15 @@ const TabItem = React.memo(function TabItem({
       };
     }
 
+    if (tabType === "security") {
+      return {
+        displayName: tab.customName || "Security",
+        dirName: "Security",
+        isCustomName: !!tab.customName,
+        isProcessName: false,
+      };
+    }
+
     const dir = tab.workingDirectory.split(/[/\\]/).pop() || "Terminal";
     const name = tab.customName || tab.processName || dir;
     return {
@@ -664,6 +716,8 @@ const TabItem = React.memo(function TabItem({
         return Settings;
       case "browser":
         return Globe;
+      case "security":
+        return Shield;
       default:
         return tab.mode === "agent" ? Bot : Terminal;
     }
@@ -822,6 +876,13 @@ const TabItem = React.memo(function TabItem({
           Move Right
         </ContextMenuItem>
         <ContextMenuSeparator />
+        {/* Split to right - available on all terminal tabs */}
+        {tabType === "terminal" && (
+          <ContextMenuItem onClick={() => window.dispatchEvent(new CustomEvent("split-tab-right", { detail: tab.id }))}>
+            <Columns className="size-icon-tab-bar" />
+            Split to Right
+          </ContextMenuItem>
+        )}
         {/* Convert to pane - only for terminal tabs */}
         {tabType === "terminal" && (
           <ContextMenuItem onClick={onConvertToPane}>

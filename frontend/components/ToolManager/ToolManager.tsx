@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
-  ArrowLeft, ArrowUpDown, BookOpen, Check, Code2, Copy, Download, FileText,
-  FolderOpen, Grid3X3, Loader2, List, Pencil, Plus, RefreshCw, Save, Search, Trash2, X,
+  ArrowLeft, ArrowUpDown, BookOpen, Check, ChevronDown, Code2, Copy, Download, FileText,
+  FolderOpen, Github, Grid3X3, Loader2, List, Pencil, Plus, RefreshCw, Save, Search, Trash2, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
@@ -16,6 +16,343 @@ import { useTranslation } from "react-i18next";
 type ToolWithMeta = ToolConfig & { categoryName?: string; subcategoryName?: string };
 type ViewMode = "grid" | "list";
 type SortKey = "name" | "status" | "category" | "runtime";
+
+interface OutputPattern {
+  type: string;
+  regex: string;
+  fields: Record<string, string>;
+}
+
+interface OutputConfigData {
+  format: string;
+  produces: string[];
+  detect?: string;
+  patterns: OutputPattern[];
+  fields: Record<string, string>;
+}
+
+const PRODUCE_TYPES = ["host", "port", "vulnerability", "url", "credential"];
+const OUTPUT_FORMATS = [
+  { value: "text", label: "Text (Regex)" },
+  { value: "json_lines", label: "JSON Lines" },
+  { value: "json", label: "JSON" },
+];
+
+function OutputMiniDropdown({
+  value,
+  onChange,
+  options,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: { value: string; label: string }[];
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const selected = options.find((o) => o.value === value);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        className={cn(
+          "flex items-center gap-1.5 px-2 py-1 text-[10px] rounded-md border transition-colors",
+          "bg-[var(--bg-hover)]/30 border-border/30 text-foreground",
+          "hover:bg-[var(--bg-hover)]/60 hover:border-border/50",
+          open && "border-accent/40 bg-[var(--bg-hover)]/50",
+        )}
+        onClick={() => setOpen(!open)}
+      >
+        <span className="truncate max-w-[100px]">{selected?.label ?? value}</span>
+        <ChevronDown className={cn("w-3 h-3 text-muted-foreground transition-transform", open && "rotate-180")} />
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1 min-w-[120px] max-h-48 overflow-y-auto rounded-lg border border-border/30 bg-card shadow-lg z-50 py-1">
+          {options.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              className={cn(
+                "w-full text-left px-3 py-1.5 text-[10px] transition-colors",
+                "hover:bg-[var(--bg-hover)]/60",
+                opt.value === value && "text-accent bg-accent/5 font-medium",
+              )}
+              onClick={() => { onChange(opt.value); setOpen(false); }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OutputParserEditor({
+  formData,
+  onChange,
+}: {
+  formData: Record<string, unknown>;
+  onChange: (output: OutputConfigData) => void;
+}) {
+  const existing = (formData.output as OutputConfigData | undefined) || {
+    format: "text",
+    produces: [],
+    detect: "",
+    patterns: [],
+    fields: {},
+  };
+
+  const [config, setConfig] = useState<OutputConfigData>(existing);
+  const [testInput, setTestInput] = useState("");
+  const [testResult, setTestResult] = useState<string | null>(null);
+
+  const update = useCallback((patch: Partial<OutputConfigData>) => {
+    const next = { ...config, ...patch };
+    setConfig(next);
+    onChange(next);
+  }, [config, onChange]);
+
+  const toggleProduce = useCallback((type: string) => {
+    const produces = config.produces.includes(type)
+      ? config.produces.filter((t) => t !== type)
+      : [...config.produces, type];
+    update({ produces });
+  }, [config.produces, update]);
+
+  const addPattern = useCallback(() => {
+    update({
+      patterns: [...config.patterns, { type: "host", regex: "", fields: {} }],
+    });
+  }, [config.patterns, update]);
+
+  const removePattern = useCallback((idx: number) => {
+    update({ patterns: config.patterns.filter((_, i) => i !== idx) });
+  }, [config.patterns, update]);
+
+  const updatePattern = useCallback((idx: number, patch: Partial<OutputPattern>) => {
+    const patterns = config.patterns.map((p, i) =>
+      i === idx ? { ...p, ...patch } : p
+    );
+    update({ patterns });
+  }, [config.patterns, update]);
+
+  const addField = useCallback(() => {
+    const fields = { ...config.fields, "": "" };
+    update({ fields });
+  }, [config.fields, update]);
+
+  const handleTestParse = useCallback(async () => {
+    if (!testInput.trim()) return;
+    try {
+      const result = await invoke<{ items: { data_type: string; fields: Record<string, string> }[] }>("output_parse", {
+        rawOutput: testInput,
+        config,
+        toolId: formData.id || null,
+        toolName: formData.name || null,
+      });
+      setTestResult(JSON.stringify(result.items, null, 2));
+    } catch (e) {
+      setTestResult(`Error: ${e}`);
+    }
+  }, [testInput, config, formData]);
+
+  return (
+    <div className="flex gap-4 h-full min-h-[400px]">
+      <div className="flex-1 min-w-0 space-y-4 overflow-y-auto">
+        {/* Format & Detection */}
+        <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
+          <div className="px-3 py-2 border-b border-border/8">
+            <span className="text-[11px] font-medium text-muted-foreground/40">Output Format</span>
+          </div>
+          <div className="p-3 space-y-3">
+            <div className="flex items-center gap-3">
+              <label className="text-[11px] text-muted-foreground/50 w-20 flex-shrink-0">Format</label>
+              <OutputMiniDropdown
+                value={config.format}
+                onChange={(v) => update({ format: v })}
+                options={OUTPUT_FORMATS}
+              />
+            </div>
+            <div className="flex items-center gap-3">
+              <label className="text-[11px] text-muted-foreground/50 w-20 flex-shrink-0">Detect</label>
+              <input
+                value={config.detect || ""}
+                onChange={(e) => update({ detect: e.target.value })}
+                placeholder="Regex to match command or output"
+                className="flex-1 px-2 py-1 text-[11px] font-mono rounded-md bg-transparent border border-border/20 text-foreground placeholder:text-muted-foreground/20 outline-none"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Produces */}
+        <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
+          <div className="px-3 py-2 border-b border-border/8">
+            <span className="text-[11px] font-medium text-muted-foreground/40">Produces</span>
+          </div>
+          <div className="p-3 flex flex-wrap gap-2">
+            {PRODUCE_TYPES.map((type) => (
+              <button
+                key={type}
+                type="button"
+                onClick={() => toggleProduce(type)}
+                className={cn(
+                  "px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors",
+                  config.produces.includes(type)
+                    ? "bg-accent/15 text-accent border border-accent/30"
+                    : "bg-muted/10 text-muted-foreground/40 border border-border/10 hover:border-border/30"
+                )}
+              >
+                {type}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Patterns (for text format) */}
+        {config.format === "text" && (
+          <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
+            <div className="px-3 py-2 border-b border-border/8 flex items-center justify-between">
+              <span className="text-[11px] font-medium text-muted-foreground/40">Regex Patterns</span>
+              <button type="button" onClick={addPattern}
+                className="text-[10px] text-accent/70 hover:text-accent transition-colors">
+                + Add Pattern
+              </button>
+            </div>
+            <div className="p-3 space-y-3">
+              {config.patterns.map((pattern, idx) => (
+                <div key={idx} className="rounded-lg border border-border/10 p-2.5 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <OutputMiniDropdown
+                        value={pattern.type}
+                        onChange={(v) => updatePattern(idx, { type: v })}
+                        options={PRODUCE_TYPES.map((t) => ({ value: t, label: t }))}
+                      />
+                    </div>
+                    <button type="button" onClick={() => removePattern(idx)}
+                      className="p-0.5 text-muted-foreground/30 hover:text-red-400 transition-colors">
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                  <input
+                    value={pattern.regex}
+                    onChange={(e) => updatePattern(idx, { regex: e.target.value })}
+                    placeholder="Regular expression with capture groups"
+                    className="w-full px-2 py-1 text-[11px] font-mono rounded-md bg-transparent border border-border/20 text-foreground placeholder:text-muted-foreground/20 outline-none"
+                  />
+                  <div className="text-[9px] text-muted-foreground/30 px-1">
+                    Fields: {Object.entries(pattern.fields).map(([k, v]) => `${k}=${v}`).join(", ") || "none"}
+                  </div>
+                  <input
+                    value={Object.entries(pattern.fields).map(([k, v]) => `${k}=${v}`).join(", ")}
+                    onChange={(e) => {
+                      const fields: Record<string, string> = {};
+                      for (const pair of e.target.value.split(",")) {
+                        const [k, v] = pair.split("=").map((s) => s.trim());
+                        if (k && v) fields[k] = v;
+                      }
+                      updatePattern(idx, { fields });
+                    }}
+                    placeholder='field=$1, field2=$2'
+                    className="w-full px-2 py-1 text-[10px] font-mono rounded-md bg-transparent border border-border/15 text-foreground placeholder:text-muted-foreground/20 outline-none"
+                  />
+                </div>
+              ))}
+              {config.patterns.length === 0 && (
+                <div className="text-center text-[10px] text-muted-foreground/30 py-2">
+                  No patterns defined. Click &quot;+ Add Pattern&quot; to create one.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Fields (for JSON format) */}
+        {(config.format === "json" || config.format === "json_lines") && (
+          <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
+            <div className="px-3 py-2 border-b border-border/8 flex items-center justify-between">
+              <span className="text-[11px] font-medium text-muted-foreground/40">JSON Field Mappings</span>
+              <button type="button" onClick={addField}
+                className="text-[10px] text-accent/70 hover:text-accent transition-colors">
+                + Add Field
+              </button>
+            </div>
+            <div className="p-3 space-y-2">
+              {Object.entries(config.fields).map(([key, path], idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <input
+                    value={key}
+                    onChange={(e) => {
+                      const newFields = { ...config.fields };
+                      delete newFields[key];
+                      newFields[e.target.value] = path;
+                      update({ fields: newFields });
+                    }}
+                    placeholder="field_name"
+                    className="w-28 px-2 py-1 text-[10px] font-mono rounded-md bg-transparent border border-border/20 text-foreground outline-none"
+                  />
+                  <span className="text-[10px] text-muted-foreground/30">→</span>
+                  <input
+                    value={path}
+                    onChange={(e) => {
+                      const newFields = { ...config.fields };
+                      newFields[key] = e.target.value;
+                      update({ fields: newFields });
+                    }}
+                    placeholder="$.json.path"
+                    className="flex-1 px-2 py-1 text-[10px] font-mono rounded-md bg-transparent border border-border/20 text-foreground outline-none"
+                  />
+                  <button type="button" onClick={() => {
+                    const newFields = { ...config.fields };
+                    delete newFields[key];
+                    update({ fields: newFields });
+                  }}
+                    className="p-0.5 text-muted-foreground/30 hover:text-red-400">
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Test panel */}
+      <div className="w-[300px] flex-shrink-0 flex flex-col rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
+        <div className="px-3 py-2 border-b border-border/8 flex items-center justify-between">
+          <span className="text-[11px] font-medium text-muted-foreground/40">Test Parser</span>
+          <button type="button" onClick={handleTestParse}
+            className="text-[10px] px-2 py-0.5 rounded bg-accent/15 text-accent hover:bg-accent/25 transition-colors">
+            Parse
+          </button>
+        </div>
+        <textarea
+          value={testInput}
+          onChange={(e) => setTestInput(e.target.value)}
+          placeholder="Paste tool output here to test parsing..."
+          className="flex-1 px-3 py-2 text-[10px] font-mono leading-[1.6] bg-transparent text-foreground outline-none resize-none border-b border-border/8"
+          style={{ tabSize: 2 }}
+        />
+        {testResult && (
+          <div className="max-h-[200px] overflow-y-auto px-3 py-2">
+            <pre className="text-[9px] font-mono text-emerald-400/70 whitespace-pre-wrap">{testResult}</pre>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export function ToolManager() {
   const { t } = useTranslation();
@@ -31,7 +368,7 @@ export function ToolManager() {
 
   // Editor state
   const [editingTool, setEditingTool] = useState<ToolWithMeta | null>(null);
-  const [editorMode, setEditorMode] = useState<"form" | "raw" | "skills">("form");
+  const [editorMode, setEditorMode] = useState<"form" | "raw" | "skills" | "output">("form");
   const [rawJson, setRawJson] = useState("");
   const [formData, setFormData] = useState<Record<string, unknown>>({});
   const [editorLoading, setEditorLoading] = useState(false);
@@ -50,6 +387,11 @@ export function ToolManager() {
   const [skillSaving, setSkillSaving] = useState(false);
   const [newSkillName, setNewSkillName] = useState("");
   const [showNewSkill, setShowNewSkill] = useState(false);
+
+  // GitHub import state
+  const [showGithubImport, setShowGithubImport] = useState(false);
+  const [githubUrl, setGithubUrl] = useState("");
+  const [githubAnalyzing, setGithubAnalyzing] = useState(false);
 
   // Context menu
   const [ctxMenu, setCtxMenu] = useState<{ tool: ToolWithMeta; x: number; y: number } | null>(null);
@@ -544,7 +886,7 @@ export function ToolManager() {
     }
   }, [editingTool, editorMode, rawJson, formData, loadData]);
 
-  const handleSwitchMode = useCallback((mode: "form" | "raw" | "skills") => {
+  const handleSwitchMode = useCallback((mode: "form" | "raw" | "skills" | "output") => {
     if (mode === "skills") {
       setEditorMode("skills");
       if (editingTool) {
@@ -553,6 +895,11 @@ export function ToolManager() {
         setSkillContent("");
         setSkillDirty(false);
       }
+      return;
+    }
+    if (mode === "output") {
+      syncRawToForm(rawJson);
+      setEditorMode("output");
       return;
     }
     if (mode === "raw") syncFormToRaw(formData);
@@ -657,6 +1004,76 @@ export function ToolManager() {
     setFormData(defaults);
     requestAnimationFrame(() => setEditorVisible(true));
   }, []);
+
+  // Import tool from GitHub URL
+  const handleGithubImport = useCallback(async () => {
+    const url = githubUrl.trim();
+    if (!url) return;
+    // Parse owner/repo from various formats
+    let owner = "", repo = "";
+    const ghMatch = url.match(/github\.com\/([^/]+)\/([^/\s#?]+)/);
+    if (ghMatch) {
+      owner = ghMatch[1];
+      repo = ghMatch[2].replace(/\.git$/, "");
+    } else if (url.includes("/") && !url.includes(" ")) {
+      const parts = url.split("/");
+      owner = parts[0];
+      repo = parts[1]?.replace(/\.git$/, "") || "";
+    }
+    if (!owner || !repo) {
+      setError("Invalid GitHub URL. Use owner/repo or https://github.com/owner/repo");
+      return;
+    }
+
+    setGithubAnalyzing(true);
+    setError(null);
+    try {
+      const suggestion = await invoke<{
+        name: string; description: string; icon: string; runtime: string;
+        runtime_version: string; ui: string; install_method: string;
+        install_source: string; executable: string; category: string;
+        subcategory: string; readme_excerpt: string;
+      }>("pentest_analyze_github_tool", { owner, repo });
+
+      const id = Math.random().toString(36).substring(2, 10);
+      const toolData: Record<string, unknown> = {
+        id,
+        name: suggestion.name,
+        description: suggestion.description,
+        icon: suggestion.icon,
+        executable: suggestion.executable,
+        runtime: suggestion.runtime,
+        runtimeVersion: suggestion.runtime_version,
+        ui: suggestion.ui,
+        params: [],
+        install: { method: suggestion.install_method, source: suggestion.install_source },
+      };
+      const json = JSON.stringify({ tool: toolData }, null, 2);
+      const placeholder: ToolWithMeta = {
+        ...toolData,
+        category: suggestion.category,
+        subcategory: suggestion.subcategory,
+        installed: false,
+        categoryName: suggestion.category,
+        subcategoryName: suggestion.subcategory,
+      } as unknown as ToolWithMeta;
+
+      setShowGithubImport(false);
+      setGithubUrl("");
+      setEditingTool(placeholder);
+      setEditorMode("form");
+      setEditorDirty(true);
+      setEditorLoading(false);
+      originalJsonRef.current = json;
+      setRawJson(json);
+      setFormData(toolData);
+      requestAnimationFrame(() => setEditorVisible(true));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setGithubAnalyzing(false);
+    }
+  }, [githubUrl]);
 
   // Context menu
   const handleContextMenu = useCallback((e: React.MouseEvent, tool: ToolWithMeta) => {
@@ -998,6 +1415,11 @@ export function ToolManager() {
                     editorMode === "skills" ? "bg-accent/15 text-accent" : "text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)]")}>
                   <BookOpen className="w-3 h-3" /> Skills
                 </button>
+                <button type="button" onClick={() => handleSwitchMode("output")}
+                  className={cn("flex items-center gap-1.5 px-3 py-1.5 text-[11px] transition-colors",
+                    editorMode === "output" ? "bg-accent/15 text-accent" : "text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)]")}>
+                  <ArrowUpDown className="w-3 h-3" /> Output
+                </button>
                 <button type="button" onClick={() => handleSwitchMode("raw")}
                   className={cn("flex items-center gap-1.5 px-3 py-1.5 text-[11px] transition-colors",
                     editorMode === "raw" ? "bg-accent/15 text-accent" : "text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)]")}>
@@ -1028,6 +1450,10 @@ export function ToolManager() {
               </p>
             </div>
             <div className="flex items-center gap-1.5">
+              <button type="button" onClick={() => setShowGithubImport(true)} title={t("toolManager.importGithub")}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium bg-accent/10 text-accent hover:bg-accent/20 transition-colors">
+                <Github className="w-3.5 h-3.5" /> {t("toolManager.importGithub")}
+              </button>
               <button type="button" onClick={handleAddTool} title={t("toolManager.addTool")}
                 className="p-2 rounded-lg text-muted-foreground/50 hover:text-accent hover:bg-[var(--bg-hover)] transition-colors">
                 <Plus className="w-4 h-4" />
@@ -1143,6 +1569,13 @@ export function ToolManager() {
                 )}
               </div>
             </div>
+          ) : editorMode === "output" ? (
+            <OutputParserEditor formData={formData} onChange={(output) => {
+              const updated = { ...formData, output };
+              setFormData(updated);
+              syncFormToRaw(updated);
+              setEditorDirty(true);
+            }} />
           ) : (
             <div className="flex gap-4 h-full">
               <div className="flex-1 min-w-0 space-y-4 overflow-y-auto">
@@ -1462,6 +1895,41 @@ export function ToolManager() {
                 className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">{t("toolManager.continueEditing")}</button>
               <button type="button" onClick={forceCloseEditor}
                 className="text-[12px] px-3 py-1.5 rounded-lg bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors">{t("toolManager.discardChanges")}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* GitHub import dialog */}
+      {showGithubImport && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => { setShowGithubImport(false); setGithubUrl(""); }}>
+          <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-6 shadow-xl max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 mb-4">
+              <Github className="w-5 h-5 text-accent" />
+              <h2 className="text-[15px] font-semibold text-foreground">{t("toolManager.importGithub")}</h2>
+            </div>
+            <p className="text-[11px] text-muted-foreground/50 mb-3">{t("toolManager.importGithubHint")}</p>
+            <input
+              value={githubUrl}
+              onChange={(e) => setGithubUrl(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleGithubImport(); }}
+              placeholder="owner/repo or https://github.com/owner/repo"
+              autoFocus
+              className="w-full h-9 px-3 text-[12px] font-mono bg-background rounded-lg border border-border/20 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40 transition-colors"
+            />
+            <div className="flex justify-end gap-2 mt-4">
+              <button type="button" onClick={() => { setShowGithubImport(false); setGithubUrl(""); }}
+                className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">
+                {t("common.cancel")}
+              </button>
+              <button type="button" onClick={handleGithubImport} disabled={githubAnalyzing || !githubUrl.trim()}
+                className={cn("flex items-center gap-1.5 text-[12px] px-4 py-1.5 rounded-lg font-medium transition-colors",
+                  githubUrl.trim()
+                    ? "bg-accent text-accent-foreground hover:bg-accent/90"
+                    : "bg-muted/30 text-muted-foreground/30 cursor-not-allowed")}>
+                {githubAnalyzing && <Loader2 className="w-3 h-3 animate-spin" />}
+                {t("toolManager.analyzeImport")}
+              </button>
             </div>
           </div>
         </div>
