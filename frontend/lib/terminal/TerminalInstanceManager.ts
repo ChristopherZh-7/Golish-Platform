@@ -15,16 +15,19 @@ import { logger } from "@/lib/logger";
  */
 
 import type { FitAddon } from "@xterm/addon-fit";
+import { SerializeAddon } from "@xterm/addon-serialize";
 import type { Terminal as XTerm } from "@xterm/xterm";
 
 interface TerminalInstance {
   terminal: XTerm;
   fitAddon: FitAddon;
+  serializeAddon: SerializeAddon;
   currentContainer: HTMLElement | null;
 }
 
 class TerminalInstanceManagerClass {
   private instances = new Map<string, TerminalInstance>();
+  private pendingScrollback = new Map<string, string>();
 
   private parkingLotEl: HTMLElement | null = null;
 
@@ -78,9 +81,12 @@ class TerminalInstanceManagerClass {
       const old = this.instances.get(sessionId);
       old?.terminal.dispose();
     }
+    const serializeAddon = new SerializeAddon();
+    terminal.loadAddon(serializeAddon);
     this.instances.set(sessionId, {
       terminal,
       fitAddon,
+      serializeAddon,
       currentContainer: null,
     });
   }
@@ -200,6 +206,44 @@ class TerminalInstanceManagerClass {
    */
   getSessionIds(): string[] {
     return Array.from(this.instances.keys());
+  }
+
+  /**
+   * Queue scrollback content to be written when the terminal for this session is created.
+   */
+  setPendingScrollback(sessionId: string, content: string): void {
+    if (content) {
+      this.pendingScrollback.set(sessionId, content);
+    }
+  }
+
+  /**
+   * Consume pending scrollback for a session (returns and removes it).
+   */
+  consumePendingScrollback(sessionId: string): string | undefined {
+    const content = this.pendingScrollback.get(sessionId);
+    if (content !== undefined) {
+      this.pendingScrollback.delete(sessionId);
+    }
+    return content;
+  }
+
+  /**
+   * Serialize terminal buffer content (preserves ANSI formatting).
+   * Returns empty string if session doesn't exist.
+   */
+  serialize(sessionId: string): string {
+    const instance = this.instances.get(sessionId);
+    if (!instance) return "";
+    try {
+      return instance.serializeAddon.serialize({
+        excludeModes: true,
+        excludeAltBuffer: true,
+      });
+    } catch (e) {
+      logger.warn(`[TerminalInstanceManager] Failed to serialize session ${sessionId}:`, e);
+      return "";
+    }
   }
 
   /**

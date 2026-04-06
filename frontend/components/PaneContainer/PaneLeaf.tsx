@@ -64,6 +64,7 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
     tabId,
     sessionId
   );
+  const terminalRestoreInProgress = useStore((s) => s.terminalRestoreInProgress);
 
   // Action is stable (doesn't change between renders)
   const focusPane = useStore((state) => state.focusPane);
@@ -119,10 +120,6 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
       default:
         return (
           <>
-            {/* Terminal portal target - the actual Terminal is rendered via TerminalLayer
-                using React portals to prevent unmount/remount when pane structure changes.
-                This div serves as the portal destination where the Terminal will appear.
-                onMouseDownCapture ensures focus switches even though xterm.js captures clicks. */}
             <div
               ref={terminalPortalRef}
               className={renderMode === "fullterm" ? "flex-1 min-h-0 p-1" : "hidden"}
@@ -131,7 +128,16 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
             {renderMode !== "fullterm" && (
               <>
                 <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden">
-                  <UnifiedTimeline sessionId={sessionId} />
+                  {terminalRestoreInProgress ? (
+                    <div className="h-full flex items-center justify-center">
+                      <div className="flex flex-col items-center gap-3 text-muted-foreground">
+                        <div className="w-5 h-5 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                        <span className="text-sm">Restoring session...</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <UnifiedTimeline sessionId={sessionId} />
+                  )}
                 </div>
                 <div
                   className={`pane-bottom-terminal transition-all duration-300 ease-in-out origin-bottom ${

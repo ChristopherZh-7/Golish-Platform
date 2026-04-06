@@ -96,7 +96,7 @@ export const TabBar = React.memo(function TabBar() {
   });
 
   const tabs = React.useMemo(() => {
-    if (!activeConvTerminals) return allTabs;
+    if (!activeConvTerminals || activeConvTerminals.length === 0) return allTabs;
     return allTabs.filter((tab) => {
       if (tab.tabType !== "terminal") return true;
       return activeConvTerminals.includes(tab.id);

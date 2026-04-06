@@ -166,6 +166,10 @@ function App() {
 
         logger.info("[App] Starting initialization...");
 
+        // #region agent log
+        fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'App.tsx:init',message:'App init start - checking localStorage state',data:{sessionsCount:Object.keys(useStore.getState().sessions).length,convTerminals:localStorage.getItem('golish-pentest-conv-terminals')?.slice(0,500),convData:localStorage.getItem('golish-pentest-conversations')?.slice(0,200),lastProject:localStorage.getItem('golish-last-project')},timestamp:Date.now(),hypothesisId:'A,C'})}).catch(()=>{});
+        // #endregion
+
         // Create home tab first (always visible, leftmost)
         openHomeTab();
 
@@ -199,6 +203,9 @@ function App() {
 
             // Restore conversations
             const saved = await loadWorkspaceState(lastProject);
+            // #region agent log
+            fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'App.tsx:restore',message:'loadWorkspaceState result',data:{hasSaved:!!saved,convCount:saved?.conversations?.length??0,termTabCount:saved?.terminalTabs?.length??0,activeConvId:saved?.activeConversationId},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
+            // #endregion
             if (saved && saved.conversations.length > 0) {
               const restoredConvs = saved.conversations.map(toChatConversation);
               useStore.getState().restoreConversations(
@@ -206,35 +213,46 @@ function App() {
                 saved.conversationOrder,
                 saved.activeConversationId,
               );
+              // #region agent log
+              fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'App.tsx:afterRestore',message:'After restoreConversations',data:{convIds:Object.keys(useStore.getState().conversations),convTerminals:JSON.stringify(useStore.getState().conversationTerminals).slice(0,300),lsTermData:localStorage.getItem('golish-pentest-conv-terminals')?.slice(0,300)},timestamp:Date.now(),hypothesisId:'E'})}).catch(()=>{});
+              // #endregion
             } else {
               const initialConv = createNewConversation();
               useStore.getState().addConversation(initialConv);
             }
 
-            // Restore terminal tabs: create first tab immediately, rest lazily to avoid startup lag
-            const tabsToRestore = saved?.terminalTabs?.length
-              ? saved.terminalTabs.slice(0, 5)
-              : [{ workingDirectory: config.rootPath }];
+            // Terminal tabs are restored per-conversation in AIChatPanel after localStorage merge.
+            // Only skip default terminal creation if saved data matches actual conversations.
+            const hasConvTerminals = (() => {
+              try {
+                const raw = localStorage.getItem("golish-pentest-conv-terminals");
+                if (!raw) return false;
+                const data = JSON.parse(raw) as Record<string, unknown>;
+                const convIds = Object.keys(useStore.getState().conversations);
+                return convIds.some((id) => id in data);
+              } catch { return false; }
+            })();
 
-            if (tabsToRestore.length > 0) {
-              await createTerminalTab(tabsToRestore[0].workingDirectory, true);
-            }
-            if (tabsToRestore.length > 1) {
-              const remaining = tabsToRestore.slice(1);
-              setTimeout(async () => {
-                for (const tab of remaining) {
-                  await createTerminalTab(tab.workingDirectory, true);
+            if (!hasConvTerminals) {
+              const wd = saved?.terminalTabs?.[0]?.workingDirectory ?? config.rootPath;
+              const termId = await createTerminalTab(wd, true);
+              if (termId) {
+                const activeConv = useStore.getState().activeConversationId;
+                if (activeConv) {
+                  useStore.getState().addTerminalToConversation(activeConv, termId);
                 }
-              }, 1000);
+                useStore.getState().setActiveSession(termId);
+              }
             }
           }
         }
 
-        // If no project was restored, just show the Home tab — no terminal, no chat
-        // The user must create or open a project first
-        const homeId = useStore.getState().homeTabId;
-        if (homeId) {
-          useStore.getState().setActiveSession(homeId);
+        // Only show home tab if no project was restored (no terminals to show)
+        if (!useStore.getState().currentProjectName) {
+          const homeId = useStore.getState().homeTabId;
+          if (homeId) {
+            useStore.getState().setActiveSession(homeId);
+          }
         }
 
         setIsLoading(false);
@@ -269,6 +287,9 @@ function App() {
           conversationOrder: s.conversationOrder,
           activeConversationId: s.activeConversationId,
           terminalTabs,
+          conversationTerminals: s.conversationTerminals,
+          sessions: s.sessions,
+          timelines: s.timelines,
         };
       },
     );

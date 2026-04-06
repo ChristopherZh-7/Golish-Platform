@@ -391,6 +391,10 @@ interface GolishState extends AppearanceSlice, ContextSlice, ConversationSlice, 
   appIsFocused: boolean;
   appIsVisible: boolean;
 
+  // Terminal restore loading state
+  terminalRestoreInProgress: boolean;
+  setTerminalRestoreInProgress: (inProgress: boolean) => void;
+
   // Sessions
   sessions: Record<string, Session>;
   activeSessionId: string | null;
@@ -710,6 +714,10 @@ export const useStore = create<GolishState>()(
       // App focus/visibility state
       appIsFocused: true,
       appIsVisible: true,
+
+      // Terminal restore loading
+      terminalRestoreInProgress: false,
+      setTerminalRestoreInProgress: (inProgress: boolean) => set((state) => { state.terminalRestoreInProgress = inProgress; }),
 
       // Core state
       sessions: {},
