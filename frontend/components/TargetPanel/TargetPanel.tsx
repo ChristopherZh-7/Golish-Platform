@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { QuickNotes } from "@/components/QuickNotes/QuickNotes";
 import {
   ChevronDown, Crosshair, Globe, Hash, Network,
-  Plus, Search, Shield, ShieldOff, Tag, Trash2, X,
+  Play, Plus, Radar, Search, Shield, ShieldOff, Tag, Trash2, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import { getProjectPath } from "@/lib/projects";
 import { useStore } from "@/store";
+import { scanTools, type ToolConfig } from "@/lib/pentest/api";
+import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
 
 interface Target {
   id: string;
@@ -116,6 +120,15 @@ export function TargetPanel() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showNewGroup, setShowNewGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
+  const [autoScan, setAutoScan] = useState(() => localStorage.getItem("golish-auto-scan") === "true");
+
+  const toggleAutoScan = useCallback(() => {
+    setAutoScan((prev) => {
+      const next = !prev;
+      localStorage.setItem("golish-auto-scan", String(next));
+      return next;
+    });
+  }, []);
 
   const loadTargets = useCallback(async () => {
     try {
@@ -128,6 +141,27 @@ export function TargetPanel() {
 
   useEffect(() => { loadTargets(); }, [loadTargets, currentProjectPath]);
 
+  const runAutoScan = useCallback(async (targetValue: string, targetType: string) => {
+    if (!autoScan) return;
+    const toolsForType: Record<string, string[]> = {
+      domain: ["nmap"],
+      ip: ["nmap"],
+      cidr: ["nmap"],
+      url: ["nmap"],
+      wildcard: [],
+    };
+    const toolIds = toolsForType[targetType] || ["nmap"];
+    for (const toolId of toolIds) {
+      const cmd = getToolCommand(toolId, targetValue);
+      const sessionId = await createTerminalTab();
+      if (sessionId) {
+        useStore.getState().setActiveSession(sessionId);
+        const { ptyWrite } = await import("@/lib/tauri");
+        setTimeout(() => { ptyWrite(sessionId, cmd + "\n").catch(() => {}); }, 500);
+      }
+    }
+  }, [autoScan, createTerminalTab, getToolCommand]);
+
   const handleAdd = useCallback(async () => {
     if (!addForm.value.trim()) return;
     try {
@@ -139,13 +173,22 @@ export function TargetPanel() {
         tags: addForm.tags ? addForm.tags.split(",").map((s) => s.trim()).filter(Boolean) : [],
         projectPath: getProjectPath(),
       });
+      const val = addForm.value.trim();
       setAddForm({ name: "", value: "", group: "default", notes: "", tags: "" });
       setShowAdd(false);
       loadTargets();
+      invoke("audit_log", { action: "target_added", category: "targets", details: val, projectPath: getProjectPath() }).catch(() => {});
+      // Detect type for auto-scan
+      const detectedType = /^https?:\/\//.test(val) ? "url"
+        : /\/\d{1,2}$/.test(val) ? "cidr"
+        : /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(val) ? "ip"
+        : /^\*\./.test(val) ? "wildcard"
+        : "domain";
+      runAutoScan(val, detectedType);
     } catch (e) {
       console.error("Failed to add target:", e);
     }
-  }, [addForm, loadTargets]);
+  }, [addForm, loadTargets, runAutoScan]);
 
   const handleBatchAdd = useCallback(async () => {
     if (!batchInput.trim()) return;
@@ -170,6 +213,7 @@ export function TargetPanel() {
     try {
       await invoke("target_delete", { id, projectPath: getProjectPath() });
       loadTargets();
+      invoke("audit_log", { action: "target_deleted", category: "targets", details: id, entityType: "target", entityId: id, projectPath: getProjectPath() }).catch(() => {});
     } catch (e) {
       console.error("Failed to delete target:", e);
     }
@@ -244,6 +288,75 @@ export function TargetPanel() {
     outOfScope: store.targets.filter((t) => t.scope === "out").length,
   }), [store.targets]);
 
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; target: Target } | null>(null);
+  const [tools, setTools] = useState<ToolConfig[]>([]);
+  const ctxRef = useRef<HTMLDivElement>(null);
+  const { createTerminalTab } = useCreateTerminalTab();
+
+  useEffect(() => {
+    scanTools().then((r) => setTools(r.tools || [])).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const close = (e: MouseEvent) => {
+      if (ctxRef.current && !ctxRef.current.contains(e.target as Node)) setCtxMenu(null);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [ctxMenu]);
+
+  const QUICK_TOOLS: Record<string, string[]> = {
+    domain: ["nmap", "subfinder", "httpx", "nuclei", "whatweb", "katana"],
+    ip: ["nmap", "masscan", "rustscan", "nuclei"],
+    cidr: ["nmap", "masscan", "rustscan"],
+    url: ["nikto", "ffuf", "gobuster", "dirsearch", "feroxbuster", "nuclei", "whatweb", "katana"],
+    wildcard: ["subfinder", "httpx"],
+  };
+
+  const getToolCommand = useCallback((toolId: string, targetValue: string) => {
+    const map: Record<string, string> = {
+      nmap: `nmap -sC -sV ${targetValue}`,
+      masscan: `masscan ${targetValue} -p1-65535 --rate=1000`,
+      rustscan: `rustscan -a ${targetValue}`,
+      subfinder: `subfinder -d ${targetValue}`,
+      httpx: `echo "${targetValue}" | httpx`,
+      nuclei: `nuclei -u ${targetValue}`,
+      nikto: `nikto -h ${targetValue}`,
+      ffuf: `ffuf -u ${targetValue}/FUZZ -w /usr/share/wordlists/common.txt`,
+      gobuster: `gobuster dir -u ${targetValue} -w /usr/share/wordlists/common.txt`,
+      dirsearch: `dirsearch -u ${targetValue}`,
+      feroxbuster: `feroxbuster -u ${targetValue}`,
+      whatweb: `whatweb ${targetValue}`,
+      katana: `katana -u ${targetValue}`,
+    };
+    return map[toolId] || `${toolId} ${targetValue}`;
+  }, []);
+
+  const handleRunTool = useCallback(async (toolId: string, target: Target) => {
+    const cmd = getToolCommand(toolId, target.value);
+    const sessionId = await createTerminalTab();
+    if (sessionId) {
+      useStore.getState().setActiveSession(sessionId);
+      // Close activity view so terminal is visible
+      window.dispatchEvent(new CustomEvent("close-activity-view"));
+      const { ptyWrite } = await import("@/lib/tauri");
+      setTimeout(async () => {
+        await ptyWrite(sessionId, cmd + "\n").catch(() => {});
+      }, 500);
+    }
+    setCtxMenu(null);
+  }, [createTerminalTab, getToolCommand]);
+
+  const contextToolList = useMemo(() => {
+    if (!ctxMenu) return [];
+    const relevantIds = QUICK_TOOLS[ctxMenu.target.type] || [];
+    return relevantIds.map((id) => {
+      const match = tools.find((t) => t.id === id || t.name.toLowerCase() === id);
+      return { id, name: match?.name || id, installed: !!match };
+    });
+  }, [ctxMenu, tools]);
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
@@ -256,6 +369,19 @@ export function TargetPanel() {
           </span>
         </div>
         <div className="flex items-center gap-1">
+          <button
+            className={cn(
+              "p-1.5 rounded transition-colors relative",
+              autoScan
+                ? "bg-accent/15 text-accent hover:bg-accent/25"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+            )}
+            onClick={toggleAutoScan}
+            title={autoScan ? "Auto-scan ON — New targets auto-trigger nmap" : "Auto-scan OFF — Click to enable"}
+          >
+            <Radar className="w-3.5 h-3.5" />
+            {autoScan && <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-accent" />}
+          </button>
           <button
             className="p-1.5 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
             onClick={() => { setShowBatch(true); setShowAdd(false); }}
@@ -445,6 +571,10 @@ export function TargetPanel() {
                   editingId === target.id && "bg-muted/20",
                 )}
                 onClick={() => setEditingId(editingId === target.id ? null : target.id)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setCtxMenu({ x: e.clientX, y: e.clientY, target });
+                }}
               >
                 <div className="flex items-center gap-2">
                   {/* Type icon */}
@@ -519,6 +649,7 @@ export function TargetPanel() {
                         }
                       }}
                     />
+                    <QuickNotes entityType="target" entityId={target.id} compact />
                   </div>
                 )}
               </div>
@@ -526,6 +657,34 @@ export function TargetPanel() {
           </div>
         )}
       </div>
+
+      {ctxMenu && createPortal(
+        <div
+          ref={ctxRef}
+          className="fixed z-[9999] min-w-[180px] rounded-lg border border-border/30 bg-[#1e1e2e] shadow-2xl py-1 overflow-hidden"
+          style={{ left: ctxMenu.x, top: ctxMenu.y }}
+        >
+          <div className="px-3 py-1.5 text-[10px] text-muted-foreground/40 font-medium uppercase tracking-wide">
+            Run tool on {ctxMenu.target.value}
+          </div>
+          <div className="border-t border-border/15 my-0.5" />
+          {contextToolList.length === 0 ? (
+            <div className="px-3 py-2 text-[10px] text-muted-foreground/30">No tools available</div>
+          ) : (
+            contextToolList.map((tool) => (
+              <button
+                key={tool.id}
+                onClick={() => handleRunTool(tool.id, ctxMenu.target)}
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-foreground/80 hover:bg-accent/10 transition-colors"
+              >
+                <Play className="w-3 h-3 text-accent/60" />
+                <span className="flex-1 text-left">{tool.name}</span>
+              </button>
+            ))
+          )}
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }

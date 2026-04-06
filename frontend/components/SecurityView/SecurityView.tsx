@@ -20,7 +20,12 @@ import { useTranslation } from "react-i18next";
 import { getProjectPath } from "@/lib/projects";
 import { useStore } from "@/store";
 
-type SecurityTab = "history" | "scanner" | "repeater" | "alerts";
+import { lazy, Suspense } from "react";
+const VaultSettings = lazy(() =>
+  import("@/components/Settings/VaultSettings").then((m) => ({ default: m.VaultSettings }))
+);
+
+type SecurityTab = "history" | "scanner" | "repeater" | "alerts" | "vault";
 
 export function SecurityView() {
   const { t } = useTranslation();
@@ -88,6 +93,7 @@ export function SecurityView() {
     { id: "scanner", label: t("security.scanner"), icon: ShieldAlert },
     { id: "repeater", label: t("security.repeater"), icon: Send },
     { id: "alerts", label: t("security.alerts"), icon: AlertTriangle },
+    { id: "vault", label: t("vault.title", "Credential Vault"), icon: KeyRound },
   ];
 
   return (
@@ -162,7 +168,11 @@ export function SecurityView() {
 
       {/* Content */}
       <div className="flex-1 overflow-hidden">
-        {checkingInstall ? (
+        {activeTab === "vault" ? (
+          <Suspense fallback={<div className="h-full flex items-center justify-center"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground/20" /></div>}>
+            <VaultSettings />
+          </Suspense>
+        ) : checkingInstall ? (
           <div className="h-full flex items-center justify-center">
             <Loader2 className="w-6 h-6 animate-spin text-muted-foreground/20" />
           </div>
@@ -229,7 +239,10 @@ function ZapNotInstalled({ onRetry }: { onRetry: () => void }) {
     setInstallError(null);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("pentest_install_runtime", { runtimeType: "brew:zap", proxyUrl: null });
+      const { getSettings } = await import("@/lib/settings");
+      const settings = await getSettings().catch(() => null);
+      const proxyUrl = settings?.network?.proxy_url || null;
+      await invoke("pentest_install_runtime", { runtimeType: "brew-cask:zap", proxyUrl });
       onRetry();
     } catch (e) {
       setInstallError(String(e));

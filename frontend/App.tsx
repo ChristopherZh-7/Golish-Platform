@@ -81,6 +81,21 @@ const PipelinePanelView = lazy(() =>
     default: m.PipelinePanel,
   }))
 );
+const AuditLogPanelView = lazy(() =>
+  import("./components/AuditLogPanel/AuditLogPanel").then((m) => ({
+    default: m.AuditLogPanel,
+  }))
+);
+const WordlistPanelView = lazy(() =>
+  import("./components/WordlistPanel/WordlistPanel").then((m) => ({
+    default: m.WordlistPanel,
+  }))
+);
+const VulnIntelPanelView = lazy(() =>
+  import("./components/VulnIntelPanel/VulnIntelPanel").then((m) => ({
+    default: m.VulnIntelPanel,
+  }))
+);
 const RecordingsPanelView = lazy(() =>
   import("./components/Terminal/RecordingsPanel").then((m) => ({
     default: m.RecordingsPanel,
@@ -461,6 +476,7 @@ function App() {
     const handleUnsplitTab = () => { setRightPanelTabs([]); setRightActiveTab(null); };
     const handleDragHint = (e: Event) => setShowSplitDropZone((e as CustomEvent<boolean>).detail);
     const handleToolOutput = async (e: Event) => {
+      if (localStorage.getItem("golish-auto-detect-output") === "false") return;
       const { command, output } = (e as CustomEvent<{ command: string; output: string; sessionId: string }>).detail;
       try {
         const detected = await invoke<{ tool_id: string; tool_name: string; output_config: { format: string; produces: string[]; patterns: unknown[]; fields: Record<string, string>; detect?: string } } | null>(
@@ -499,21 +515,79 @@ function App() {
         /* ignore */
       }
     };
+    const handleDetachTab = async (e: Event) => {
+      const { tabId, screenX, screenY } = (e as CustomEvent<{ tabId: string; screenX: number; screenY: number }>).detail;
+      const s = useStore.getState();
+      const session = s.sessions[tabId];
+      if (!session) return;
+      const tabType = session.tabType ?? "terminal";
+      if (tabType !== "terminal") return;
+
+      const title = session.customName
+        || session.processName
+        || session.workingDirectory?.split(/[/\\]/).pop()
+        || "Terminal";
+
+      try {
+        await invoke("create_detached_window", {
+          sessionId: tabId,
+          tabType,
+          title: `${title} — Detached`,
+          x: screenX - 50,
+          y: screenY - 20,
+          width: 800.0,
+          height: 500.0,
+        });
+        // Track as detached, switch to another tab
+        const detached = JSON.parse(localStorage.getItem("golish-detached-tabs") || "{}");
+        detached[tabId] = { title, tabType };
+        localStorage.setItem("golish-detached-tabs", JSON.stringify(detached));
+
+        // Switch active session to another available tab
+        const other = s.tabOrder.find((id) => id !== tabId && (s.sessions[id]?.tabType ?? "terminal") !== "home");
+        if (other) s.setActiveSession(other);
+        notify.info(`"${title}" detached to floating window`);
+      } catch (err) {
+        logger.error("[App] detach tab failed:", err);
+      }
+    };
+
     window.addEventListener("split-tab-right", handleSplitTab);
     window.addEventListener("unsplit-tab", handleUnsplitTab);
     window.addEventListener("tab-drag-split-hint", handleDragHint);
+    window.addEventListener("detach-tab", handleDetachTab);
     const handleRecordingSaved = () => {
       notify.success("Terminal recording saved");
     };
     window.addEventListener("tool-output-completed", handleToolOutput);
     window.addEventListener("recording-saved", handleRecordingSaved);
+
+    // Listen for detached window close events from Tauri
+    let unlistenDetachedClose: (() => void) | null = null;
+    listen<{ session_id: string }>("detached-window-closed", (event) => {
+      const { session_id } = event.payload;
+      const detached = JSON.parse(localStorage.getItem("golish-detached-tabs") || "{}");
+      delete detached[session_id];
+      localStorage.setItem("golish-detached-tabs", JSON.stringify(detached));
+      notify.info("Detached window closed — tab restored");
+    }).then((fn) => { unlistenDetachedClose = fn; });
+
     return () => {
       window.removeEventListener("split-tab-right", handleSplitTab);
       window.removeEventListener("unsplit-tab", handleUnsplitTab);
       window.removeEventListener("tab-drag-split-hint", handleDragHint);
+      window.removeEventListener("detach-tab", handleDetachTab);
       window.removeEventListener("tool-output-completed", handleToolOutput);
       window.removeEventListener("recording-saved", handleRecordingSaved);
+      unlistenDetachedClose?.();
     };
+  }, []);
+
+  // Allow child components (e.g. TargetPanel) to close the activity overlay
+  useEffect(() => {
+    const handler = () => setActivityView(null);
+    window.addEventListener("close-activity-view", handler);
+    return () => window.removeEventListener("close-activity-view", handler);
   }, []);
 
   // Handle native menu events from Tauri backend
@@ -941,10 +1015,52 @@ function App() {
             </div>
           </div>
 
+          {/* Audit log view */}
+          <div className={cn(
+            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
+            activityView === "auditLog"
+              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
+              : "opacity-0 translate-y-1 pointer-events-none z-0",
+          )}>
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
+              <Suspense fallback={null}>
+                <AuditLogPanelView />
+              </Suspense>
+            </div>
+          </div>
+
+          {/* Wordlists view */}
+          <div className={cn(
+            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
+            activityView === "wordlists"
+              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
+              : "opacity-0 translate-y-1 pointer-events-none z-0",
+          )}>
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
+              <Suspense fallback={null}>
+                <WordlistPanelView />
+              </Suspense>
+            </div>
+          </div>
+
+          {/* Vuln intel view */}
+          <div className={cn(
+            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
+            activityView === "vulnIntel"
+              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
+              : "opacity-0 translate-y-1 pointer-events-none z-0",
+          )}>
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
+              <Suspense fallback={null}>
+                <VulnIntelPanelView />
+              </Suspense>
+            </div>
+          </div>
+
           {/* Normal view - center + right panels */}
           <div className={cn(
             "flex-1 flex gap-2 min-w-0 transition-all duration-200 ease-out",
-            (activityView === "settings" || activityView === "toolManage" || activityView === "wiki" || activityView === "targets" || activityView === "topology" || activityView === "methodology" || activityView === "dashboard" || activityView === "findings" || activityView === "pipelines")
+            (activityView === "settings" || activityView === "toolManage" || activityView === "wiki" || activityView === "targets" || activityView === "topology" || activityView === "methodology" || activityView === "dashboard" || activityView === "findings" || activityView === "pipelines" || activityView === "auditLog" || activityView === "wordlists" || activityView === "vulnIntel")
               ? "opacity-0 scale-[0.98] pointer-events-none"
               : "opacity-100 scale-100 pointer-events-auto",
           )}>

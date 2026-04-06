@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use tracing::debug;
 use zip::write::SimpleFileOptions;
 
+use super::db::resolve_db_path;
+
 fn app_data_dir() -> PathBuf {
     let home = dirs::home_dir().expect("cannot resolve home directory");
     #[cfg(target_os = "macos")]
@@ -49,17 +51,13 @@ fn add_directory_to_zip(
     prefix: &str,
     count: &mut usize,
 ) -> Result<(), String> {
-    if !dir.exists() {
-        return Ok(());
-    }
+    if !dir.exists() { return Ok(()); }
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-
     let walker = walkdir::WalkDir::new(dir).into_iter().filter_map(|e| e.ok());
     for entry in walker {
         let path = entry.path();
         let rel = path.strip_prefix(dir).map_err(|e| e.to_string())?;
         let archive_path = format!("{}/{}", prefix, rel.to_string_lossy());
-
         if path.is_dir() {
             zip.add_directory(&archive_path, options).map_err(|e| e.to_string())?;
         } else {
@@ -78,9 +76,7 @@ fn add_file_to_zip(
     archive_name: &str,
     count: &mut usize,
 ) -> Result<(), String> {
-    if !file.exists() {
-        return Ok(());
-    }
+    if !file.exists() { return Ok(()); }
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     zip.start_file(archive_name, options).map_err(|e| e.to_string())?;
     let data = std::fs::read(file).map_err(|e| e.to_string())?;
@@ -102,36 +98,26 @@ pub async fn project_export(
     let mut zip = zip::ZipWriter::new(file);
     let mut count = 0usize;
 
-    // Global shared data
+    // Global shared data (file-based, unchanged)
     add_directory_to_zip(&mut zip, &base.join("wiki"), "wiki", &mut count)?;
     add_directory_to_zip(&mut zip, &base.join("toolsconfig"), "toolsconfig", &mut count)?;
     add_directory_to_zip(&mut zip, &base.join("skills"), "skills", &mut count)?;
 
-    // Project-specific data from .golish/ directory
+    // Project SQLite database
+    let db_path = resolve_db_path(project_path.as_deref());
+    add_file_to_zip(&mut zip, &db_path, "golish/data.db", &mut count)?;
+
+    // File-based project data (evidence, recordings stay as files)
     if let Some(ref gd) = golish_dir {
-        add_directory_to_zip(&mut zip, &gd.join("targets"), "golish/targets", &mut count)?;
-        add_directory_to_zip(&mut zip, &gd.join("vault"), "golish/vault", &mut count)?;
-        add_directory_to_zip(&mut zip, &gd.join("methodology"), "golish/methodology", &mut count)?;
-        add_directory_to_zip(&mut zip, &gd.join("topology"), "golish/topology", &mut count)?;
-        let findings_file = gd.join("findings.json");
-        if findings_file.exists() {
-            add_file_to_zip(&mut zip, &findings_file, "golish/findings.json", &mut count)?;
-        }
         add_directory_to_zip(&mut zip, &gd.join("recordings"), "golish/recordings", &mut count)?;
         add_directory_to_zip(&mut zip, &gd.join("evidence"), "golish/evidence", &mut count)?;
-        add_directory_to_zip(&mut zip, &gd.join("pipelines"), "golish/pipelines", &mut count)?;
     }
 
     zip.finish().map_err(|e| e.to_string())?;
-
     let meta = std::fs::metadata(&output).map_err(|e| e.to_string())?;
     debug!("[project_export] Exported {} files to {}", count, output_path);
 
-    Ok(ExportResult {
-        path: output_path,
-        size_bytes: meta.len(),
-        files_count: count,
-    })
+    Ok(ExportResult { path: output_path, size_bytes: meta.len(), files_count: count })
 }
 
 #[tauri::command]
@@ -146,16 +132,10 @@ pub async fn project_import(
     let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
 
     let mut result = ImportResult {
-        files_count: 0,
-        wiki_count: 0,
-        tools_count: 0,
-        has_targets: false,
-        has_vault: false,
-        has_skills: false,
-        has_methodology: false,
-        has_topology: false,
-        has_findings: false,
-        has_recordings: false,
+        files_count: 0, wiki_count: 0, tools_count: 0,
+        has_targets: false, has_vault: false, has_skills: false,
+        has_methodology: false, has_topology: false,
+        has_findings: false, has_recordings: false,
     };
 
     for i in 0..archive.len() {
@@ -163,13 +143,12 @@ pub async fn project_import(
         let name = entry.name().to_string();
 
         if entry.is_dir() {
-            let dir = resolve_import_path(&name, &base, golish_dir.as_ref());
+            let dir = resolve_import_path(&name, &base, golish_dir.as_ref(), project_path.as_deref());
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             continue;
         }
 
-        let target = resolve_import_path(&name, &base, golish_dir.as_ref());
-
+        let target = resolve_import_path(&name, &base, golish_dir.as_ref(), project_path.as_deref());
         if !overwrite && target.exists() {
             debug!("[project_import] Skipping existing file: {}", name);
             continue;
@@ -187,11 +166,13 @@ pub async fn project_import(
         if name.starts_with("wiki/") { result.wiki_count += 1; }
         if name.starts_with("toolsconfig/") { result.tools_count += 1; }
         if name.starts_with("skills/") { result.has_skills = true; }
-        if name.starts_with("golish/targets/") { result.has_targets = true; }
-        if name.starts_with("golish/vault/") { result.has_vault = true; }
-        if name.starts_with("golish/methodology/") { result.has_methodology = true; }
-        if name.starts_with("golish/topology/") { result.has_topology = true; }
-        if name.starts_with("golish/findings") { result.has_findings = true; }
+        if name == "golish/data.db" {
+            result.has_targets = true;
+            result.has_vault = true;
+            result.has_methodology = true;
+            result.has_topology = true;
+            result.has_findings = true;
+        }
         if name.starts_with("golish/recordings/") { result.has_recordings = true; }
     }
 
@@ -199,13 +180,15 @@ pub async fn project_import(
     Ok(result)
 }
 
-/// Routes archive paths: `golish/*` entries go to the project's `.golish/` dir,
-/// everything else goes to the global app data dir.
 fn resolve_import_path(
     archive_name: &str,
     global_base: &std::path::Path,
     golish_dir: Option<&PathBuf>,
+    project_path: Option<&str>,
 ) -> PathBuf {
+    if archive_name == "golish/data.db" {
+        return resolve_db_path(project_path);
+    }
     if let Some(rest) = archive_name.strip_prefix("golish/") {
         if let Some(gd) = golish_dir {
             return gd.join(rest);

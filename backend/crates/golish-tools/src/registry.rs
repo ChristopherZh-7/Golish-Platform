@@ -117,6 +117,21 @@ impl ToolRegistry {
             }
         }
 
+        // Resolve Brave Search API key from settings with env fallback
+        let brave_api_key = golish_settings::get_with_env_fallback(
+            &config.settings.api_keys.brave,
+            &["BRAVE_API_KEY"],
+            None,
+        );
+        if let Some(ref _key) = brave_api_key {
+            let brave_state = Arc::new(golish_web::BraveSearchState::from_api_key(brave_api_key));
+            let brave_tools = golish_web::create_brave_tools(brave_state);
+            for tool in brave_tools {
+                tools.insert(tool.name().to_string(), tool);
+            }
+            tracing::info!("Registered Brave Search tools (API key configured)");
+        }
+
         Self { tools, workspace }
     }
 

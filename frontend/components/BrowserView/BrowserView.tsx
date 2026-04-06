@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft, ArrowRight, ExternalLink, Globe, Loader2,
-  Lock, RotateCcw, X,
+  Lock, RotateCcw, Shield, ShieldOff, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
@@ -25,8 +25,39 @@ export function BrowserView({ initialUrl = "", sessionId }: BrowserViewProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const webviewCreated = useRef(false);
 
+  const [proxyEnabled, setProxyEnabled] = useState(false);
+  const [proxyLoading, setProxyLoading] = useState(false);
+
   const activeSessionId = useStore((s) => s.activeSessionId);
   const isBrowserActive = !sessionId || activeSessionId === sessionId;
+
+  useEffect(() => {
+    invoke("pentest_get_system_proxy")
+      .then((result) => {
+        const proxy = result as [string, number] | null;
+        if (proxy && proxy[0] === "127.0.0.1" && proxy[1] === 8090) {
+          setProxyEnabled(true);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const toggleProxy = useCallback(async () => {
+    setProxyLoading(true);
+    try {
+      if (proxyEnabled) {
+        await invoke("pentest_clear_system_proxy");
+        setProxyEnabled(false);
+      } else {
+        await invoke("pentest_set_system_proxy", { host: "127.0.0.1", port: 8090 });
+        setProxyEnabled(true);
+      }
+    } catch (e) {
+      console.error("[BrowserView] proxy toggle error:", e);
+    } finally {
+      setProxyLoading(false);
+    }
+  }, [proxyEnabled]);
 
   const normalizeUrl = (input: string): string => {
     const trimmed = input.trim();
@@ -172,6 +203,17 @@ export function BrowserView({ initialUrl = "", sessionId }: BrowserViewProps) {
     };
   }, []);
 
+  // Clear system proxy on app close if we set it
+  useEffect(() => {
+    const cleanup = () => {
+      if (proxyEnabled) {
+        invoke("pentest_clear_system_proxy").catch(() => {});
+      }
+    };
+    window.addEventListener("beforeunload", cleanup);
+    return () => window.removeEventListener("beforeunload", cleanup);
+  }, [proxyEnabled]);
+
   const canGoBack = historyIndex > 0;
   const canGoForward = historyIndex < history.length - 1;
 
@@ -203,6 +245,24 @@ export function BrowserView({ initialUrl = "", sessionId }: BrowserViewProps) {
             )}
           </div>
         </form>
+        <button
+          type="button"
+          onClick={toggleProxy}
+          disabled={proxyLoading}
+          title={proxyEnabled ? "ZAP Proxy ON (127.0.0.1:8090) — Click to disable" : "Enable ZAP Proxy (127.0.0.1:8090)"}
+          className={cn(
+            "p-1.5 rounded-md transition-all relative",
+            proxyLoading && "opacity-50 cursor-wait",
+            proxyEnabled
+              ? "text-orange-400 bg-orange-400/10 hover:bg-orange-400/20"
+              : "text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)]"
+          )}
+        >
+          {proxyEnabled ? <Shield className="w-3.5 h-3.5" /> : <ShieldOff className="w-3.5 h-3.5" />}
+          {proxyEnabled && (
+            <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-orange-400" />
+          )}
+        </button>
         <NavButton icon={ExternalLink} onClick={openExternal} disabled={!url} title={t("browser.openExternal")} />
       </div>
 

@@ -91,6 +91,26 @@ export function AiSettings({
             Use $TAVILY_API_KEY to reference an environment variable
           </p>
         </div>
+
+        <div className="space-y-2">
+          <label htmlFor="api-key-brave" className="text-sm text-foreground">
+            Brave Search API
+          </label>
+          <Input
+            id="api-key-brave"
+            type="password"
+            value={apiKeys.brave || ""}
+            onChange={(e) => onApiKeysChange({ ...apiKeys, brave: e.target.value || null })}
+            placeholder="BSA..."
+            className="bg-background border-border text-foreground"
+          />
+          <p className="text-xs text-muted-foreground">
+            Get your API key from{" "}
+            <a href="https://brave.com/search/api/" target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">
+              brave.com/search/api
+            </a>
+          </p>
+        </div>
       </div>
 
       {/* Synthesis Backend (Sidecar) */}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
-  ArrowLeft, ArrowUpDown, BookOpen, Check, ChevronDown, Code2, Copy, Download, FileText,
+  ArrowLeft, ArrowUpDown, ArrowUpCircle, BookOpen, Check, ChevronDown, Code2, Copy, Download, ExternalLink, FileText,
   FolderOpen, Github, Grid3X3, Loader2, List, Pencil, Plus, RefreshCw, Save, Search, Trash2, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -402,6 +402,11 @@ export function ToolManager() {
   const [installProgress, setInstallProgress] = useState<Record<string, string>>({});
   const [dlProgress, setDlProgress] = useState<{ downloaded: number; total: number } | null>(null);
 
+  // Tool update check
+  const [toolUpdates, setToolUpdates] = useState<{ tool_id: string; tool_name: string; current_version: string; latest_version: string; has_update: boolean; release_url: string }[]>([]);
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [showUpdates, setShowUpdates] = useState(false);
+
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     listen<{ downloaded: number; total: number }>("download-progress", (e) => {
@@ -425,11 +430,17 @@ export function ToolManager() {
         catMap.set(c.id, c.name);
         for (const s of c.items) subMap.set(`${c.id}/${s.id}`, s.name);
       }
-      const enriched: ToolWithMeta[] = (scanResult.tools || []).map((t) => ({
-        ...t,
-        categoryName: catMap.get(t.category) || t.category,
-        subcategoryName: subMap.get(`${t.category}/${t.subcategory}`) || t.subcategory,
-      }));
+      const seen = new Set<string>();
+      const enriched: ToolWithMeta[] = [];
+      for (const t of (scanResult.tools || [])) {
+        if (seen.has(t.id)) continue;
+        seen.add(t.id);
+        enriched.push({
+          ...t,
+          categoryName: catMap.get(t.category) || t.category,
+          subcategoryName: subMap.get(`${t.category}/${t.subcategory}`) || t.subcategory,
+        });
+      }
       setTools(enriched);
     } catch (e) {
       setError(t("toolManager.loadFailed", { error: e }));
@@ -785,6 +796,18 @@ export function ToolManager() {
     setUninstallTarget(null);
     await doUninstall(uninstallTarget);
   }, [uninstallTarget, doUninstall]);
+
+  const checkForUpdates = useCallback(async () => {
+    setCheckingUpdates(true);
+    try {
+      const updates = await invoke<typeof toolUpdates>("pentest_check_tool_updates");
+      setToolUpdates(updates);
+      setShowUpdates(true);
+    } catch {
+      setToolUpdates([]);
+    }
+    setCheckingUpdates(false);
+  }, []);
 
   // Editor functions (must be defined before handleAddTool and ctxAction which reference them)
   const openEditor = useCallback(async (tool: ToolWithMeta) => {
@@ -1458,6 +1481,11 @@ export function ToolManager() {
                 className="p-2 rounded-lg text-muted-foreground/50 hover:text-accent hover:bg-[var(--bg-hover)] transition-colors">
                 <Plus className="w-4 h-4" />
               </button>
+              <button type="button" onClick={checkForUpdates} disabled={checkingUpdates} title="Check for Updates"
+                className={cn("p-2 rounded-lg text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-30",
+                  toolUpdates.some((u) => u.has_update) && "text-amber-400")}>
+                <ArrowUpCircle className={cn("w-4 h-4", checkingUpdates && "animate-spin")} />
+              </button>
               <button type="button" onClick={loadData} disabled={loading} title={t("common.refresh")}
                 className="p-2 rounded-lg text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-30">
                 <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
@@ -1708,11 +1736,11 @@ export function ToolManager() {
           {/* Tool grid/list */}
           <div className="flex-1 overflow-y-auto px-6 py-4">
             {loading ? (
-              <div className="flex items-center justify-center h-32">
+              <div key="tm-loading" className="flex items-center justify-center h-32">
                 <Loader2 className="w-5 h-5 animate-spin text-muted-foreground/30" />
               </div>
             ) : filteredTools.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-32 gap-2">
+              <div key="tm-empty" className="flex flex-col items-center justify-center h-32 gap-2 overflow-hidden">
                 <span className="text-[12px] text-muted-foreground/40">
                   {search.trim() ? t("toolManager.noMatch") : t("toolManager.noTools")}
                 </span>
@@ -1724,11 +1752,11 @@ export function ToolManager() {
                 )}
               </div>
             ) : viewMode === "grid" ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              <div key="tm-grid" className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                 {filteredTools.map((tool) => <GridCard key={tool.id} tool={tool} />)}
               </div>
             ) : (
-              <div className="space-y-1">
+              <div key="tm-list" className="space-y-1">
                 {filteredTools.map((tool) => <ListRow key={tool.id} tool={tool} />)}
               </div>
             )}
@@ -1896,6 +1924,53 @@ export function ToolManager() {
               <button type="button" onClick={forceCloseEditor}
                 className="text-[12px] px-3 py-1.5 rounded-lg bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors">{t("toolManager.discardChanges")}</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tool updates dialog */}
+      {showUpdates && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowUpdates(false)}>
+          <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 mb-3">
+              <ArrowUpCircle className="w-4 h-4 text-accent" />
+              <h2 className="text-[14px] font-semibold flex-1">Tool Updates</h2>
+              <button onClick={() => setShowUpdates(false)} className="p-0.5 rounded hover:bg-muted/50">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            {toolUpdates.length === 0 ? (
+              <p className="text-[11px] text-muted-foreground/50 py-4 text-center">No tools with GitHub sources found.</p>
+            ) : (
+              <div className="space-y-1.5 max-h-[400px] overflow-y-auto">
+                {toolUpdates.map((u) => (
+                  <div key={u.tool_id} className={cn(
+                    "flex items-center gap-2 px-3 py-2 rounded-lg text-[11px]",
+                    u.has_update ? "bg-amber-500/5 border border-amber-500/20" : "bg-muted/10 border border-border/10",
+                  )}>
+                    <span className="flex-1 font-medium truncate">{u.tool_name}</span>
+                    <span className="text-muted-foreground/50 font-mono">{u.current_version || "?"}</span>
+                    {u.has_update && (
+                      <>
+                        <span className="text-muted-foreground/30">→</span>
+                        <span className="text-amber-400 font-mono font-medium">{u.latest_version}</span>
+                        {u.release_url && (
+                          <a href={u.release_url} target="_blank" rel="noopener noreferrer"
+                            className="p-0.5 text-accent/50 hover:text-accent transition-colors">
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        )}
+                      </>
+                    )}
+                    {!u.has_update && (
+                      <span className="text-green-400/60 flex items-center gap-1">
+                        <Check className="w-3 h-3" /> latest
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}

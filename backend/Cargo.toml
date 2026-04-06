@@ -200,6 +200,9 @@ regex = "1"
 # TOML settings file support
 toml = "0.8"
 
+# SQLite (embedded database)
+rusqlite = { version = "0.32", features = ["bundled"] }
+
 # TLS crypto provider (required for rustls 0.23+)
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 

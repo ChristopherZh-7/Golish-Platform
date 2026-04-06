@@ -251,6 +251,7 @@ export interface NvidiaSettings {
 export interface ApiKeysSettings {
   tavily: string | null;
   github: string | null;
+  brave: string | null;
 }
 
 /**
@@ -679,6 +680,7 @@ export const DEFAULT_SETTINGS: GolishSettings = {
   api_keys: {
     tavily: null,
     github: null,
+    brave: null,
   },
   ui: {
     theme: "dark",

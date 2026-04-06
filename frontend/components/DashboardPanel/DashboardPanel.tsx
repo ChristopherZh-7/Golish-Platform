@@ -43,8 +43,16 @@ interface VaultEntry {
   entry_type: string;
 }
 
+interface Finding {
+  id: string;
+  severity: string;
+  status: string;
+  created_at: string;
+  tool?: string;
+}
+
 interface FindingsStore {
-  findings: { id: string; severity: string; status: string }[];
+  findings: Finding[];
 }
 
 interface DashboardStats {
@@ -59,6 +67,132 @@ interface DashboardStats {
   findingsTotal: number;
   findingsBySeverity: Record<string, number>;
   findingsOpen: number;
+  findingsByTool: Record<string, number>;
+  findingsTimeline: { date: string; count: number }[];
+}
+
+const SEV_COLORS: Record<string, string> = {
+  critical: "#ef4444",
+  high: "#f97316",
+  medium: "#eab308",
+  low: "#3b82f6",
+  info: "#64748b",
+};
+
+function DonutChart({ data, size = 120 }: { data: { label: string; value: number; color: string }[]; size?: number }) {
+  const total = data.reduce((s, d) => s + d.value, 0);
+  if (total === 0) return null;
+  const cx = size / 2;
+  const cy = size / 2;
+  const r = (size - 16) / 2;
+  const innerR = r * 0.6;
+  let cumulative = 0;
+
+  const arcs = data.filter((d) => d.value > 0).map((d) => {
+    const startAngle = (cumulative / total) * 2 * Math.PI - Math.PI / 2;
+    cumulative += d.value;
+    const endAngle = (cumulative / total) * 2 * Math.PI - Math.PI / 2;
+    const largeArc = d.value / total > 0.5 ? 1 : 0;
+    const x1 = cx + r * Math.cos(startAngle);
+    const y1 = cy + r * Math.sin(startAngle);
+    const x2 = cx + r * Math.cos(endAngle);
+    const y2 = cy + r * Math.sin(endAngle);
+    const ix1 = cx + innerR * Math.cos(endAngle);
+    const iy1 = cy + innerR * Math.sin(endAngle);
+    const ix2 = cx + innerR * Math.cos(startAngle);
+    const iy2 = cy + innerR * Math.sin(startAngle);
+    const path = [
+      `M ${x1} ${y1}`,
+      `A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2}`,
+      `L ${ix1} ${iy1}`,
+      `A ${innerR} ${innerR} 0 ${largeArc} 0 ${ix2} ${iy2}`,
+      "Z",
+    ].join(" ");
+    return { ...d, path };
+  });
+
+  return (
+    <div className="flex items-center gap-3">
+      <svg width={size} height={size}>
+        {arcs.map((arc, i) => (
+          <path key={i} d={arc.path} fill={arc.color} opacity={0.8}>
+            <title>{arc.label}: {arc.value}</title>
+          </path>
+        ))}
+        <text x={cx} y={cy - 4} textAnchor="middle" className="fill-foreground text-lg font-bold">{total}</text>
+        <text x={cx} y={cy + 10} textAnchor="middle" className="fill-muted-foreground/50 text-[9px]">total</text>
+      </svg>
+      <div className="space-y-1">
+        {data.filter((d) => d.value > 0).map((d) => (
+          <div key={d.label} className="flex items-center gap-2 text-[10px]">
+            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: d.color }} />
+            <span className="text-muted-foreground/60 capitalize">{d.label}</span>
+            <span className="text-foreground/80 font-medium">{d.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BarChart({ data, height = 80 }: { data: { label: string; value: number }[]; height?: number }) {
+  const max = Math.max(...data.map((d) => d.value), 1);
+  if (data.length === 0) return null;
+
+  return (
+    <div className="flex items-end gap-1" style={{ height }}>
+      {data.map((d) => {
+        const barH = Math.max((d.value / max) * (height - 16), 2);
+        return (
+          <div key={d.label} className="flex-1 flex flex-col items-center gap-0.5 min-w-0">
+            <span className="text-[8px] text-muted-foreground/50">{d.value > 0 ? d.value : ""}</span>
+            <div
+              className="w-full rounded-t bg-accent/40 transition-all duration-500"
+              style={{ height: barH }}
+              title={`${d.label}: ${d.value}`}
+            />
+            <span className="text-[7px] text-muted-foreground/40 truncate w-full text-center">{d.label}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function MiniTimeline({ data }: { data: { date: string; count: number }[] }) {
+  if (data.length === 0) return null;
+  const max = Math.max(...data.map((d) => d.count), 1);
+  const w = 280;
+  const h = 60;
+  const padY = 4;
+  const usableH = h - padY * 2;
+  const stepX = data.length > 1 ? w / (data.length - 1) : w / 2;
+
+  const points = data.map((d, i) => ({
+    x: i * stepX,
+    y: padY + usableH - (d.count / max) * usableH,
+  }));
+
+  const line = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
+  const area = line + ` L ${points[points.length - 1].x} ${h} L 0 ${h} Z`;
+
+  return (
+    <svg width={w} height={h} className="overflow-visible">
+      <defs>
+        <linearGradient id="timeline-fill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.2" />
+          <stop offset="100%" stopColor="var(--accent)" stopOpacity="0.02" />
+        </linearGradient>
+      </defs>
+      <path d={area} fill="url(#timeline-fill)" />
+      <path d={line} fill="none" stroke="var(--accent)" strokeWidth="1.5" opacity="0.6" />
+      {points.map((p, i) => (
+        <circle key={i} cx={p.x} cy={p.y} r={2} fill="var(--accent)" opacity="0.8">
+          <title>{data[i].date}: {data[i].count}</title>
+        </circle>
+      ))}
+    </svg>
+  );
 }
 
 function StatCard({
@@ -161,6 +295,8 @@ export function DashboardPanel() {
     findingsTotal: 0,
     findingsBySeverity: {},
     findingsOpen: 0,
+    findingsByTool: {},
+    findingsTimeline: [],
   });
   const [loading, setLoading] = useState(true);
 
@@ -190,11 +326,21 @@ export function DashboardPanel() {
     }
 
     const findingsBySeverity: Record<string, number> = {};
+    const findingsByTool: Record<string, number> = {};
+    const dateMap: Record<string, number> = {};
     let findingsOpen = 0;
     for (const f of findingsData.findings) {
       findingsBySeverity[f.severity] = (findingsBySeverity[f.severity] || 0) + 1;
       if (f.status === "open" || f.status === "confirmed") findingsOpen++;
+      if (f.tool) findingsByTool[f.tool] = (findingsByTool[f.tool] || 0) + 1;
+      if (f.created_at) {
+        const day = f.created_at.slice(0, 10);
+        dateMap[day] = (dateMap[day] || 0) + 1;
+      }
     }
+    const findingsTimeline = Object.entries(dateMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, count]) => ({ date, count }));
 
     setStats({
       targetsTotal: targetData.targets.length,
@@ -208,6 +354,8 @@ export function DashboardPanel() {
       findingsTotal: findingsData.findings.length,
       findingsBySeverity,
       findingsOpen,
+      findingsByTool,
+      findingsTimeline,
     });
     setLoading(false);
   }, []);
@@ -293,33 +441,54 @@ export function DashboardPanel() {
           />
         </div>
 
-        {/* Findings severity breakdown */}
+        {/* Findings charts row */}
         {stats.findingsTotal > 0 && (
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <Bug className="w-3.5 h-3.5 text-muted-foreground/50" />
-              <span className="text-xs font-medium text-muted-foreground/70">
-                {t("dashboard.findingsSeverity", "Findings by Severity")}
-              </span>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            {/* Severity donut */}
+            <div className="rounded-lg bg-muted/10 border border-border/10 p-3 space-y-2">
+              <div className="flex items-center gap-2">
+                <Bug className="w-3.5 h-3.5 text-muted-foreground/50" />
+                <span className="text-[11px] font-medium text-muted-foreground/70">Severity Distribution</span>
+              </div>
+              <DonutChart
+                data={["critical", "high", "medium", "low", "info"].map((sev) => ({
+                  label: sev,
+                  value: stats.findingsBySeverity[sev] || 0,
+                  color: SEV_COLORS[sev],
+                }))}
+              />
             </div>
-            <div className="flex gap-2">
-              {(["critical", "high", "medium", "low", "info"] as const).map((sev) => {
-                const count = stats.findingsBySeverity[sev] || 0;
-                if (count === 0) return null;
-                const colors: Record<string, string> = {
-                  critical: "bg-red-500/15 text-red-400 border-red-500/20",
-                  high: "bg-orange-500/15 text-orange-400 border-orange-500/20",
-                  medium: "bg-yellow-500/15 text-yellow-400 border-yellow-500/20",
-                  low: "bg-blue-500/15 text-blue-400 border-blue-500/20",
-                  info: "bg-slate-500/15 text-slate-400 border-slate-500/20",
-                };
-                return (
-                  <div key={sev} className={cn("px-2.5 py-1 rounded-md border text-[10px] font-medium", colors[sev])}>
-                    {count} {sev}
-                  </div>
-                );
-              })}
-            </div>
+
+            {/* Findings by tool */}
+            {Object.keys(stats.findingsByTool).length > 0 && (
+              <div className="rounded-lg bg-muted/10 border border-border/10 p-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <Crosshair className="w-3.5 h-3.5 text-muted-foreground/50" />
+                  <span className="text-[11px] font-medium text-muted-foreground/70">Findings by Tool</span>
+                </div>
+                <BarChart
+                  data={Object.entries(stats.findingsByTool)
+                    .sort(([, a], [, b]) => b - a)
+                    .slice(0, 8)
+                    .map(([label, value]) => ({ label, value }))}
+                />
+              </div>
+            )}
+
+            {/* Findings timeline */}
+            {stats.findingsTimeline.length > 1 && (
+              <div className="rounded-lg bg-muted/10 border border-border/10 p-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <Activity className="w-3.5 h-3.5 text-muted-foreground/50" />
+                  <span className="text-[11px] font-medium text-muted-foreground/70">Findings Timeline</span>
+                </div>
+                <MiniTimeline data={stats.findingsTimeline} />
+                <div className="flex justify-between text-[8px] text-muted-foreground/30">
+                  <span>{stats.findingsTimeline[0].date}</span>
+                  <span>{stats.findingsTimeline[stats.findingsTimeline.length - 1].date}</span>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

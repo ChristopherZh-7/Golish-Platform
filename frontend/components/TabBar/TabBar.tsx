@@ -5,6 +5,7 @@ import {
   Bot,
   Columns,
   Copy,
+  ExternalLink,
   Globe,
   Home,
   Loader2,
@@ -311,7 +312,15 @@ export const TabBar = React.memo(function TabBar({ excludeTabIds, showDropHint }
       window.dispatchEvent(new CustomEvent("tab-drag-split-hint", { detail: false }));
       if (ds.isDragging && ds.draggedId) {
         const yDelta = e.clientY - ds.startY;
-        if (yDelta > 60) {
+        const isOutsideWindow =
+          e.clientX < 0 || e.clientY < 0 ||
+          e.clientX > window.innerWidth || e.clientY > window.innerHeight;
+
+        if (isOutsideWindow) {
+          window.dispatchEvent(new CustomEvent("detach-tab", {
+            detail: { tabId: ds.draggedId, screenX: e.screenX, screenY: e.screenY },
+          }));
+        } else if (yDelta > 60) {
           window.dispatchEvent(new CustomEvent("split-tab-right", { detail: ds.draggedId }));
         } else if (dropIndicator && Math.abs(yDelta) < 30) {
           const homeTabId = tabs[0]?.tabType === "home" ? tabs[0].id : null;
@@ -888,6 +897,16 @@ const TabItem = React.memo(function TabItem({
           <ContextMenuItem onClick={onConvertToPane}>
             <PanelLeft className="size-icon-tab-bar" />
             Convert to Pane
+          </ContextMenuItem>
+        )}
+        {tabType === "terminal" && (
+          <ContextMenuItem onClick={() => {
+            window.dispatchEvent(new CustomEvent("detach-tab", {
+              detail: { tabId: tab.id, screenX: window.screenX + 100, screenY: window.screenY + 100 },
+            }));
+          }}>
+            <ExternalLink className="size-icon-tab-bar" />
+            Detach to Window
           </ContextMenuItem>
         )}
         {tabType === "terminal" && (
