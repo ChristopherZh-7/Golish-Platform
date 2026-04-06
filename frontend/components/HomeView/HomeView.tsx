@@ -1,3 +1,4 @@
+import { homeDir } from "@tauri-apps/api/path";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import {
   ChevronDown,
@@ -552,10 +553,13 @@ export const HomeView = memo(function HomeView() {
   }, []);
 
   const handleOpenExistingProject = useCallback(async () => {
+    let defaultPath: string | undefined;
+    try { defaultPath = (await homeDir()) + "golish-platform"; } catch { /* ignore */ }
     const selected = await openFolderDialog({
       directory: true,
       multiple: false,
       title: "Open project folder",
+      defaultPath,
     });
     if (!selected) return;
     const folderName = selected.split("/").pop() || selected.split("\\").pop() || "untitled";
@@ -677,9 +681,12 @@ export const HomeView = memo(function HomeView() {
               variant="destructive"
               onClick={async () => {
                 if (deleteConfirm) {
+                  const wasCurrent = useStore.getState().currentProjectName === deleteConfirm.name;
                   await deleteProject(deleteConfirm.name);
-                  if (useStore.getState().currentProjectName === deleteConfirm.name) {
+                  if (wasCurrent) {
                     useStore.getState().setCurrentProject(null);
+                    localStorage.removeItem("golish-pentest-conversations");
+                    localStorage.removeItem("golish-pentest-conv-terminals");
                   }
                 }
                 setDeleteConfirm(null);

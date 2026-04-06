@@ -38,7 +38,8 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.name.trim() || !formData.rootPath.trim()) return;
-    onSubmit(formData);
+    const parentDir = formData.rootPath.replace(/\/$/, "");
+    onSubmit({ name: formData.name.trim(), rootPath: `${parentDir}/${formData.name.trim()}` });
     onClose();
   };
 
@@ -84,9 +85,9 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
-          {/* Root Path - shown first since it auto-fills name */}
+          {/* Parent directory - project will be created as a subdirectory */}
           <div>
-            <span className="block text-xs text-gray-400 mb-1.5">Project Directory</span>
+            <span className="block text-xs text-gray-400 mb-1.5">Parent Directory</span>
             <div className="flex items-center space-x-2">
               <label className="flex-1">
                 <input
@@ -120,6 +121,12 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
               />
             </label>
           </div>
+
+          {formData.rootPath && formData.name.trim() && (
+            <div className="text-xs text-gray-500 font-mono bg-[#0d1117] rounded-md px-3 py-2 border border-[#21262d]">
+              Project path: {formData.rootPath.replace(/\/$/, "")}/{formData.name.trim()}
+            </div>
+          )}
         </form>
 
         {/* Footer */}

@@ -204,8 +204,20 @@ function App() {
             // Restore conversations
             const saved = await loadWorkspaceState(lastProject);
             // #region agent log
-            fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'App.tsx:restore',message:'loadWorkspaceState result',data:{hasSaved:!!saved,convCount:saved?.conversations?.length??0,termTabCount:saved?.terminalTabs?.length??0,activeConvId:saved?.activeConversationId},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
+            fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'App.tsx:restore',message:'loadWorkspaceState result',data:{hasSaved:!!saved,convCount:saved?.conversations?.length??0,termTabCount:saved?.terminalTabs?.length??0,activeConvId:saved?.activeConversationId,hasTermData:!!saved?.conversationTerminalData,hasAiModel:saved?.aiModel!==undefined,hasApprovalMode:!!saved?.approvalMode},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
             // #endregion
+
+            // Hydrate localStorage from workspace.json (v2 data)
+            if (saved?.conversationTerminalData) {
+              localStorage.setItem("golish-pentest-conv-terminals", JSON.stringify(saved.conversationTerminalData));
+            }
+            if (saved?.aiModel !== undefined) {
+              localStorage.setItem("golish-pentest-ai-model", JSON.stringify(saved.aiModel));
+            }
+            if (saved?.approvalMode) {
+              localStorage.setItem("golish-approval-mode", saved.approvalMode);
+            }
+
             if (saved && saved.conversations.length > 0) {
               const restoredConvs = saved.conversations.map(toChatConversation);
               useStore.getState().restoreConversations(
@@ -591,8 +603,11 @@ function App() {
 
         {/* Content - floating panels */}
         <div className="flex-1 flex overflow-hidden gap-2 px-2 pb-2 min-h-0 relative">
-          {/* Activity Bar - hidden when viewing the home tab */}
-          {!isOnHomeTab && (
+          {/* Activity Bar - animated hide when viewing the home tab */}
+          <div className={cn(
+            "flex-shrink-0 transition-all duration-300 ease-out overflow-hidden",
+            isOnHomeTab ? "w-0 opacity-0" : "w-[48px] opacity-100"
+          )}>
             <ActivityBar
               activeView={activityView}
               onViewChange={setActivityView}
@@ -601,7 +616,7 @@ function App() {
               onOpenSettings={() => setSettingsOpen(true)}
               onOpenBrowser={() => openBrowserTab()}
             />
-          )}
+          </div>
 
           {/* Left panel - only shown for settings view */}
           <div className={cn(
@@ -650,7 +665,12 @@ function App() {
           )}>
             {/* Center - TabBar + Pane content */}
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
-              {!isOnHomeTab && <TabBar />}
+              <div className={cn(
+                "transition-all duration-300 ease-out overflow-hidden",
+                isOnHomeTab ? "max-h-0 opacity-0" : "max-h-[34px] opacity-100"
+              )}>
+                <TabBar />
+              </div>
 
               <div className="flex-1 min-h-0 min-w-0 flex overflow-hidden">
                 <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden relative">
@@ -684,12 +704,13 @@ function App() {
               </div>
             </div>
 
-            {/* Right sidebar - AI Chat Panel (hidden on home tab) */}
-            {!isOnHomeTab && (
-              <div className="w-[340px] flex-shrink-0 h-full rounded-xl bg-card overflow-hidden panel-float">
-                <AIChatPanel />
-              </div>
-            )}
+            {/* Right sidebar - AI Chat Panel (animated hide on home tab) */}
+            <div className={cn(
+              "flex-shrink-0 h-full rounded-xl bg-card overflow-hidden panel-float transition-all duration-300 ease-out",
+              isOnHomeTab ? "w-0 opacity-0" : "w-[340px] opacity-100"
+            )}>
+              <AIChatPanel />
+            </div>
           </div>
         </div>
 

@@ -213,10 +213,18 @@ pub async fn configure_bridge(bridge: &mut AgentBridge, state: &AppState, _sessi
     // Set up MCP tools from the global manager (if initialized)
     setup_bridge_mcp_tools(bridge, state).await;
 
-    // Register pentest AI tools so the agent can list and execute pentest tools
+    // Register pentest AI tools so the agent can list and execute pentest tools.
+    // PentestRunTool routes through PTY so output appears in the visible terminal.
+    // When the active terminal is busy, a new session is auto-created.
     {
-        let pentest_tools =
-            crate::tools::pentest_ai::create_pentest_ai_tools(state.pentest_config_manager.clone());
+        let pentest_tools = crate::tools::pentest_ai::create_pentest_ai_tools(
+            state.pentest_config_manager.clone(),
+            state.pty_manager.clone(),
+            state.pty_output_tap.clone(),
+            state.active_terminal_session.clone(),
+            state.pentest_busy_sessions.clone(),
+            state.ai_state.runtime.clone(),
+        );
         let mut registry = bridge.tool_registry().write().await;
         for tool in pentest_tools {
             tracing::info!("[pentest-ai] Registered tool: {}", tool.name());

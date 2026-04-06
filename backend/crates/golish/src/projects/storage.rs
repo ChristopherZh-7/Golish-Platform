@@ -144,16 +144,23 @@ async fn load_project_from_path(path: &PathBuf) -> Result<ProjectConfig> {
 
 /// Save a project configuration to disk (directory-based).
 pub async fn save_project(project: &ProjectConfig) -> Result<()> {
-    let dir = project_dir(&project.name);
+    // Create the project's actual directory (rootPath) if it doesn't exist
+    if !project.root_path.exists() {
+        tokio::fs::create_dir_all(&project.root_path)
+            .await
+            .context("Failed to create project root directory")?;
+        tracing::info!("Created project directory at {:?}", project.root_path);
+    }
 
+    // Save config to the central registry (~/.golish/projects/<slug>/)
+    let dir = project_dir(&project.name);
     tokio::fs::create_dir_all(&dir)
         .await
-        .context("Failed to create project directory")?;
+        .context("Failed to create project config directory")?;
 
     let path = dir.join("config.toml");
     let contents = toml::to_string_pretty(project).context("Failed to serialize project config")?;
 
-    // Atomic write
     let temp_path = path.with_extension("toml.tmp");
     tokio::fs::write(&temp_path, &contents)
         .await
@@ -167,8 +174,20 @@ pub async fn save_project(project: &ProjectConfig) -> Result<()> {
     Ok(())
 }
 
-/// Delete a project configuration (removes the entire project directory).
+/// Delete a project configuration, its local data, and the project directory itself.
 pub async fn delete_project(name: &str) -> Result<bool> {
+    // Remove the entire project directory (only if it contains .golish/, proving it's ours)
+    if let Ok(Some(config)) = load_project(name).await {
+        let local_dir = config.root_path.join(".golish");
+        if local_dir.exists() && config.root_path.exists() {
+            if let Err(e) = tokio::fs::remove_dir_all(&config.root_path).await {
+                tracing::warn!("Failed to remove project root {:?}: {}", config.root_path, e);
+            } else {
+                tracing::info!("Removed project directory {:?}", config.root_path);
+            }
+        }
+    }
+
     let dir = project_dir(name);
 
     if dir.exists() {
@@ -194,16 +213,36 @@ pub async fn delete_project(name: &str) -> Result<bool> {
     Ok(false)
 }
 
+/// Resolve the workspace state path: prefer `<rootPath>/.golish/workspace.json`,
+/// fall back to legacy `~/.golish/projects/<slug>/workspace.json`.
+async fn resolve_workspace_path(name: &str) -> Result<PathBuf> {
+    if let Some(config) = load_project(name).await? {
+        let local_dir = config.root_path.join(".golish");
+        let local_path = local_dir.join("workspace.json");
+        if local_path.exists() || !workspace_path(name).exists() {
+            return Ok(local_path);
+        }
+    }
+    Ok(workspace_path(name))
+}
+
 /// Save workspace state JSON for a project.
 pub async fn save_workspace(name: &str, json: &str) -> Result<()> {
-    let dir = project_dir(name);
-    tokio::fs::create_dir_all(&dir)
-        .await
-        .context("Failed to create project directory")?;
+    let path = if let Some(config) = load_project(name).await? {
+        let local_dir = config.root_path.join(".golish");
+        tokio::fs::create_dir_all(&local_dir)
+            .await
+            .context("Failed to create .golish directory")?;
+        local_dir.join("workspace.json")
+    } else {
+        let dir = project_dir(name);
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .context("Failed to create project directory")?;
+        workspace_path(name)
+    };
 
-    let path = workspace_path(name);
     let temp_path = path.with_extension("json.tmp");
-
     tokio::fs::write(&temp_path, json)
         .await
         .context("Failed to write workspace state")?;
@@ -217,7 +256,7 @@ pub async fn save_workspace(name: &str, json: &str) -> Result<()> {
 
 /// Load workspace state JSON for a project.
 pub async fn load_workspace(name: &str) -> Result<Option<String>> {
-    let path = workspace_path(name);
+    let path = resolve_workspace_path(name).await?;
 
     if !path.exists() {
         return Ok(None);

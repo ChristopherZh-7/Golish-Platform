@@ -2,6 +2,7 @@
 //!
 //! This module is only compiled when the `tauri` feature is enabled.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::ai::commands::WorkflowState;
@@ -43,6 +44,9 @@ pub struct AppState {
     pub pty_output_tap: Arc<PtyOutputTap>,
     /// Currently active (visible) terminal session ID, set by the frontend.
     pub active_terminal_session: Arc<Mutex<Option<String>>>,
+    /// Terminal sessions currently in use by pentest tool executions.
+    /// Shared across all AI tabs to prevent concurrent commands on the same terminal.
+    pub pentest_busy_sessions: Arc<Mutex<HashSet<String>>>,
 }
 
 impl AppState {
@@ -88,6 +92,7 @@ impl AppState {
             pentest_config_manager: Arc::new(golish_pentest::ConfigManager::with_defaults()),
             pty_output_tap: Arc::new(PtyOutputTap::new()),
             active_terminal_session: Arc::new(Mutex::new(None)),
+            pentest_busy_sessions: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -131,6 +136,7 @@ impl AppState {
             pentest_config_manager: Arc::new(golish_pentest::ConfigManager::with_defaults()),
             pty_output_tap: Arc::new(PtyOutputTap::new()),
             active_terminal_session: Arc::new(Mutex::new(None)),
+            pentest_busy_sessions: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 }
