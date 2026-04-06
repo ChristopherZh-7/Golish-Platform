@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  AlertTriangle, Bug, Check, ChevronDown, ChevronRight, ExternalLink,
-  Filter, Image, Info, Loader2, Paperclip, Plus, Search, Shield, ShieldAlert, Trash2, X,
+  AlertTriangle, Bug, Check, ChevronDown, ChevronRight, Download, ExternalLink,
+  Filter, Image, Info, Loader2, Merge, Paperclip, Plus, Search, Shield, ShieldAlert, Trash2, X,
 } from "lucide-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { QuickNotes } from "@/components/QuickNotes/QuickNotes";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import { useStore } from "@/store";
@@ -27,6 +28,7 @@ interface Finding {
   severity: Severity;
   cvss?: number;
   url: string;
+  target: string;
   description: string;
   steps: string;
   remediation: string;
@@ -198,6 +200,7 @@ export function FindingsPanel() {
   const handleDelete = useCallback(async (id: string) => {
     await invoke("findings_delete", { id, projectPath: getProjectPath() });
     load();
+    invoke("audit_log", { action: "finding_deleted", category: "findings", details: id, entityType: "finding", entityId: id, projectPath: getProjectPath() }).catch(() => {});
   }, [load]);
 
   const handleStatusChange = useCallback(async (finding: Finding, status: FindingStatus) => {
@@ -206,6 +209,7 @@ export function FindingsPanel() {
       projectPath: getProjectPath(),
     });
     load();
+    invoke("audit_log", { action: "finding_status_changed", category: "findings", details: `${finding.title} → ${status}`, entityType: "finding", entityId: finding.id, projectPath: getProjectPath() }).catch(() => {});
   }, [load]);
 
   const handleAddEvidence = useCallback(async (findingId: string) => {
@@ -257,6 +261,48 @@ export function FindingsPanel() {
     } catch { /* ignore */ }
   }, [evidencePaths]);
 
+  const exportFindings = useCallback((format: "json" | "csv") => {
+    const data = filtered.length > 0 ? filtered : findings;
+    let blob: Blob;
+    let filename: string;
+
+    if (format === "json") {
+      blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      filename = "findings.json";
+    } else {
+      const headers = ["Title", "Severity", "Status", "Tool", "Target", "Description", "Created"];
+      const rows = data.map((f) => [
+        `"${(f.title || "").replace(/"/g, '""')}"`,
+        f.severity,
+        f.status,
+        f.tool || "",
+        f.target || "",
+        `"${(f.description || "").replace(/"/g, '""')}"`,
+        f.created_at,
+      ]);
+      blob = new Blob([headers.join(",") + "\n" + rows.map((r) => r.join(",")).join("\n")], { type: "text/csv" });
+      filename = "findings.csv";
+    }
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [filtered, findings]);
+
+  const [showExportMenu, setShowExportMenu] = useState(false);
+
+  const handleDedup = useCallback(async () => {
+    try {
+      const removed = await invoke<number>("findings_deduplicate", { projectPath: getProjectPath() });
+      if (removed > 0) {
+        load();
+      }
+    } catch { /* ignore */ }
+  }, [load]);
+
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Header */}
@@ -269,13 +315,46 @@ export function FindingsPanel() {
               {stats.total}
             </span>
           </div>
-          <button
-            onClick={() => setShowAdd(!showAdd)}
-            className="flex items-center gap-1 px-2 py-1 text-[10px] rounded-md bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
-          >
-            <Plus className="w-3 h-3" />
-            Add
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={handleDedup}
+              disabled={findings.length < 2}
+              title="Merge duplicate findings"
+              className="flex items-center gap-1 px-2 py-1 text-[10px] rounded-md text-muted-foreground/50 hover:text-foreground hover:bg-muted/20 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <Merge className="w-3 h-3" />
+              Dedup
+            </button>
+            <div className="relative">
+              <button
+                onClick={() => setShowExportMenu(!showExportMenu)}
+                disabled={findings.length === 0}
+                className="flex items-center gap-1 px-2 py-1 text-[10px] rounded-md text-muted-foreground/50 hover:text-foreground hover:bg-muted/20 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                <Download className="w-3 h-3" />
+                Export
+              </button>
+              {showExportMenu && (
+                <div className="absolute right-0 top-full mt-1 bg-[#1e1e2e] border border-border/20 rounded-lg shadow-xl z-50 min-w-[100px] overflow-hidden">
+                  <button onClick={() => { exportFindings("json"); setShowExportMenu(false); }}
+                    className="w-full px-3 py-1.5 text-[10px] text-left text-foreground/80 hover:bg-accent/10 transition-colors">
+                    JSON
+                  </button>
+                  <button onClick={() => { exportFindings("csv"); setShowExportMenu(false); }}
+                    className="w-full px-3 py-1.5 text-[10px] text-left text-foreground/80 hover:bg-accent/10 transition-colors">
+                    CSV
+                  </button>
+                </div>
+              )}
+            </div>
+            <button
+              onClick={() => setShowAdd(!showAdd)}
+              className="flex items-center gap-1 px-2 py-1 text-[10px] rounded-md bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
+            >
+              <Plus className="w-3 h-3" />
+              Add
+            </button>
+          </div>
         </div>
 
         {/* Severity stats */}
@@ -485,6 +564,10 @@ export function FindingsPanel() {
                             })}
                           </div>
                         )}
+                      </div>
+
+                      <div className="pt-1 border-t border-border/10">
+                        <QuickNotes entityType="finding" entityId={finding.id} compact />
                       </div>
 
                       <div className="flex items-center gap-2 pt-1">

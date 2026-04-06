@@ -671,6 +671,10 @@ pub struct ApiKeysSettings {
     /// GitHub token for repository access
     #[serde(skip_serializing_if = "Option::is_none")]
     pub github: Option<String>,
+
+    /// Brave Search API key
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brave: Option<String>,
 }
 
 /// Tool enablement settings.

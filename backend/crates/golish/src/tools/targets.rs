@@ -1,26 +1,8 @@
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use tokio::fs;
 use uuid::Uuid;
 
-fn resolve_targets_path(project_path: Option<&str>) -> PathBuf {
-    if let Some(pp) = project_path {
-        if !pp.is_empty() {
-            return PathBuf::from(pp).join(".golish").join("targets.json");
-        }
-    }
-    let home = dirs::home_dir().expect("cannot resolve home directory");
-    #[cfg(target_os = "macos")]
-    let base = home
-        .join("Library")
-        .join("Application Support")
-        .join("golish-platform");
-    #[cfg(target_os = "windows")]
-    let base = home.join("AppData").join("Local").join("golish-platform");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let base = home.join(".golish-platform");
-    base.join("targets.json")
-}
+use super::db::open_db;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Target {
@@ -50,6 +32,27 @@ pub enum TargetType {
     Wildcard,
 }
 
+impl TargetType {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Domain => "domain",
+            Self::Ip => "ip",
+            Self::Cidr => "cidr",
+            Self::Url => "url",
+            Self::Wildcard => "wildcard",
+        }
+    }
+    fn from_str(s: &str) -> Self {
+        match s {
+            "ip" => Self::Ip,
+            "cidr" => Self::Cidr,
+            "url" => Self::Url,
+            "wildcard" => Self::Wildcard,
+            _ => Self::Domain,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Scope {
@@ -57,6 +60,21 @@ pub enum Scope {
     InScope,
     #[serde(rename = "out")]
     OutOfScope,
+}
+
+impl Scope {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::InScope => "in",
+            Self::OutOfScope => "out",
+        }
+    }
+    fn from_str(s: &str) -> Self {
+        match s {
+            "out" => Self::OutOfScope,
+            _ => Self::InScope,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,24 +91,6 @@ impl Default for TargetStore {
             groups: vec!["default".to_string()],
         }
     }
-}
-
-async fn load_store(project_path: Option<&str>) -> Result<TargetStore, String> {
-    let path = resolve_targets_path(project_path);
-    if !path.exists() {
-        return Ok(TargetStore::default());
-    }
-    let data = fs::read_to_string(&path).await.map_err(|e| e.to_string())?;
-    serde_json::from_str(&data).map_err(|e| e.to_string())
-}
-
-async fn save_store(store: &TargetStore, project_path: Option<&str>) -> Result<(), String> {
-    let path = resolve_targets_path(project_path);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
-    }
-    let data = serde_json::to_string_pretty(store).map_err(|e| e.to_string())?;
-    fs::write(&path, data).await.map_err(|e| e.to_string())
 }
 
 fn now_ts() -> u64 {
@@ -117,9 +117,57 @@ fn detect_type(value: &str) -> TargetType {
     TargetType::Domain
 }
 
+fn row_to_target(row: &rusqlite::Row) -> rusqlite::Result<Target> {
+    let tags_json: String = row.get(4)?;
+    let tt_str: String = row.get(2)?;
+    let scope_str: String = row.get(6)?;
+    Ok(Target {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        target_type: TargetType::from_str(&tt_str),
+        value: row.get(3)?,
+        tags: serde_json::from_str(&tags_json).unwrap_or_default(),
+        notes: row.get(5)?,
+        scope: Scope::from_str(&scope_str),
+        group: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+    })
+}
+
 #[tauri::command]
 pub async fn target_list(project_path: Option<String>) -> Result<TargetStore, String> {
-    load_store(project_path.as_deref()).await
+    let pp = project_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = open_db(pp.as_deref())?;
+        let mut stmt = conn
+            .prepare("SELECT id, name, target_type, value, tags, notes, scope, grp, created_at, updated_at FROM targets ORDER BY created_at")
+            .map_err(|e| e.to_string())?;
+        let targets: Vec<Target> = stmt
+            .query_map([], |row| row_to_target(row))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let groups: Vec<String> = {
+            let mut grp_stmt = conn
+                .prepare("SELECT name FROM target_groups ORDER BY name")
+                .map_err(|e| e.to_string())?;
+            let g: Vec<String> = grp_stmt
+                .query_map([], |row| row.get(0))
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+            g
+        };
+
+        Ok(TargetStore {
+            targets,
+            groups: if groups.is_empty() { vec!["default".to_string()] } else { groups },
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -133,111 +181,186 @@ pub async fn target_add(
     notes: Option<String>,
     project_path: Option<String>,
 ) -> Result<Target, String> {
-    let pp = project_path.as_deref();
-    let mut store = load_store(pp).await?;
-    let tt = target_type.unwrap_or_else(|| detect_type(&value));
-    let ts = now_ts();
-    let target = Target {
-        id: Uuid::new_v4().to_string()[..8].to_string(),
-        name: if name.is_empty() { value.clone() } else { name },
-        target_type: tt,
-        value,
-        tags: tags.unwrap_or_default(),
-        notes: notes.unwrap_or_default(),
-        scope: scope.unwrap_or(Scope::InScope),
-        group: group.unwrap_or_else(|| "default".to_string()),
-        created_at: ts,
-        updated_at: ts,
-    };
-    store.targets.push(target.clone());
-    save_store(&store, pp).await?;
-    Ok(target)
-}
-
-#[tauri::command]
-pub async fn target_batch_add(values: String, group: Option<String>, project_path: Option<String>) -> Result<Vec<Target>, String> {
-    let pp = project_path.as_deref();
-    let mut store = load_store(pp).await?;
-    let ts = now_ts();
-    let grp = group.unwrap_or_else(|| "default".to_string());
-    let mut added = Vec::new();
-
-    for line in values.lines() {
-        let v = line.trim();
-        if v.is_empty() || v.starts_with('#') {
-            continue;
-        }
-        if store.targets.iter().any(|t| t.value == v) {
-            continue;
-        }
-        let tt = detect_type(v);
+    tokio::task::spawn_blocking(move || {
+        let conn = open_db(project_path.as_deref())?;
+        let tt = target_type.unwrap_or_else(|| detect_type(&value));
+        let ts = now_ts();
         let target = Target {
             id: Uuid::new_v4().to_string()[..8].to_string(),
-            name: v.to_string(),
+            name: if name.is_empty() { value.clone() } else { name },
             target_type: tt,
-            value: v.to_string(),
-            tags: Vec::new(),
-            notes: String::new(),
-            scope: Scope::InScope,
-            group: grp.clone(),
+            value,
+            tags: tags.unwrap_or_default(),
+            notes: notes.unwrap_or_default(),
+            scope: scope.unwrap_or(Scope::InScope),
+            group: group.unwrap_or_else(|| "default".to_string()),
             created_at: ts,
             updated_at: ts,
         };
-        store.targets.push(target.clone());
-        added.push(target);
-    }
-
-    save_store(&store, pp).await?;
-    Ok(added)
+        let tags_json = serde_json::to_string(&target.tags).unwrap_or_else(|_| "[]".to_string());
+        conn.execute(
+            "INSERT INTO targets (id, name, target_type, value, tags, notes, scope, grp, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![target.id, target.name, target.target_type.as_str(), target.value, tags_json, target.notes, target.scope.as_str(), target.group, target.created_at, target.updated_at],
+        ).map_err(|e| e.to_string())?;
+        Ok(target)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub async fn target_update(id: String, name: Option<String>, scope: Option<Scope>, group: Option<String>, tags: Option<Vec<String>>, notes: Option<String>, project_path: Option<String>) -> Result<Target, String> {
-    let pp = project_path.as_deref();
-    let mut store = load_store(pp).await?;
-    let target = store.targets.iter_mut().find(|t| t.id == id).ok_or("Target not found")?;
-    if let Some(n) = name { target.name = n; }
-    if let Some(s) = scope { target.scope = s; }
-    if let Some(g) = group { target.group = g; }
-    if let Some(t) = tags { target.tags = t; }
-    if let Some(n) = notes { target.notes = n; }
-    target.updated_at = now_ts();
-    let result = target.clone();
-    save_store(&store, pp).await?;
-    Ok(result)
+pub async fn target_batch_add(
+    values: String,
+    group: Option<String>,
+    project_path: Option<String>,
+) -> Result<Vec<Target>, String> {
+    tokio::task::spawn_blocking(move || {
+        let conn = open_db(project_path.as_deref())?;
+        let ts = now_ts();
+        let grp = group.unwrap_or_else(|| "default".to_string());
+        let mut added = Vec::new();
+
+        let mut stmt = conn.prepare("SELECT value FROM targets").map_err(|e| e.to_string())?;
+        let existing: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        for line in values.lines() {
+            let v = line.trim();
+            if v.is_empty() || v.starts_with('#') {
+                continue;
+            }
+            if existing.iter().any(|e| e == v) {
+                continue;
+            }
+            let tt = detect_type(v);
+            let target = Target {
+                id: Uuid::new_v4().to_string()[..8].to_string(),
+                name: v.to_string(),
+                target_type: tt,
+                value: v.to_string(),
+                tags: Vec::new(),
+                notes: String::new(),
+                scope: Scope::InScope,
+                group: grp.clone(),
+                created_at: ts,
+                updated_at: ts,
+            };
+            conn.execute(
+                "INSERT INTO targets (id, name, target_type, value, tags, notes, scope, grp, created_at, updated_at) VALUES (?1,?2,?3,?4,'[]','','in',?5,?6,?7)",
+                params![target.id, target.name, target.target_type.as_str(), target.value, target.group, ts, ts],
+            ).map_err(|e| e.to_string())?;
+            added.push(target);
+        }
+        Ok(added)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn target_update(
+    id: String,
+    name: Option<String>,
+    scope: Option<Scope>,
+    group: Option<String>,
+    tags: Option<Vec<String>>,
+    notes: Option<String>,
+    project_path: Option<String>,
+) -> Result<Target, String> {
+    tokio::task::spawn_blocking(move || {
+        let conn = open_db(project_path.as_deref())?;
+        let ts = now_ts();
+
+        if let Some(n) = &name {
+            conn.execute("UPDATE targets SET name=?1, updated_at=?2 WHERE id=?3", params![n, ts, id])
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(s) = &scope {
+            conn.execute("UPDATE targets SET scope=?1, updated_at=?2 WHERE id=?3", params![s.as_str(), ts, id])
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(g) = &group {
+            conn.execute("UPDATE targets SET grp=?1, updated_at=?2 WHERE id=?3", params![g, ts, id])
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(t) = &tags {
+            let j = serde_json::to_string(t).unwrap_or_else(|_| "[]".to_string());
+            conn.execute("UPDATE targets SET tags=?1, updated_at=?2 WHERE id=?3", params![j, ts, id])
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(n) = &notes {
+            conn.execute("UPDATE targets SET notes=?1, updated_at=?2 WHERE id=?3", params![n, ts, id])
+                .map_err(|e| e.to_string())?;
+        }
+
+        let mut stmt = conn
+            .prepare("SELECT id, name, target_type, value, tags, notes, scope, grp, created_at, updated_at FROM targets WHERE id=?1")
+            .map_err(|e| e.to_string())?;
+        stmt.query_row(params![id], |row| row_to_target(row))
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn target_delete(id: String, project_path: Option<String>) -> Result<(), String> {
-    let pp = project_path.as_deref();
-    let mut store = load_store(pp).await?;
-    store.targets.retain(|t| t.id != id);
-    save_store(&store, pp).await
+    tokio::task::spawn_blocking(move || {
+        let conn = open_db(project_path.as_deref())?;
+        conn.execute("DELETE FROM targets WHERE id=?1", params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn target_add_group(name: String, project_path: Option<String>) -> Result<Vec<String>, String> {
-    let pp = project_path.as_deref();
-    let mut store = load_store(pp).await?;
-    if !store.groups.contains(&name) {
-        store.groups.push(name);
-    }
-    let groups = store.groups.clone();
-    save_store(&store, pp).await?;
-    Ok(groups)
+    tokio::task::spawn_blocking(move || {
+        let conn = open_db(project_path.as_deref())?;
+        conn.execute("INSERT OR IGNORE INTO target_groups (name) VALUES (?1)", params![name])
+            .map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT name FROM target_groups ORDER BY name").map_err(|e| e.to_string())?;
+        let groups: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(groups)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn target_delete_group(name: String, project_path: Option<String>) -> Result<(), String> {
-    let pp = project_path.as_deref();
-    let mut store = load_store(pp).await?;
-    store.groups.retain(|g| g != &name);
-    store.targets.retain(|t| t.group != name);
-    save_store(&store, pp).await
+    tokio::task::spawn_blocking(move || {
+        let conn = open_db(project_path.as_deref())?;
+        conn.execute("DELETE FROM target_groups WHERE name=?1", params![name])
+            .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM targets WHERE grp=?1", params![name])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn target_clear_all(project_path: Option<String>) -> Result<(), String> {
-    let store = TargetStore::default();
-    save_store(&store, project_path.as_deref()).await
+    tokio::task::spawn_blocking(move || {
+        let conn = open_db(project_path.as_deref())?;
+        conn.execute("DELETE FROM targets", []).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM target_groups", []).map_err(|e| e.to_string())?;
+        conn.execute("INSERT OR IGNORE INTO target_groups (name) VALUES ('default')", [])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

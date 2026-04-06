@@ -10,6 +10,7 @@ use anyhow::Result;
 use golish_core::Tool;
 use serde_json::{json, Value};
 
+use crate::brave::BraveSearchState;
 use crate::tavily::TavilyState;
 
 /// Get a required string argument from JSON.
@@ -421,6 +422,74 @@ impl Tool for WebMapTool {
 }
 
 // ============================================================================
+// brave_search
+// ============================================================================
+
+pub struct BraveSearchTool {
+    brave: Arc<BraveSearchState>,
+}
+
+impl BraveSearchTool {
+    pub fn new(brave: Arc<BraveSearchState>) -> Self {
+        Self { brave }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for BraveSearchTool {
+    fn name(&self) -> &'static str {
+        "brave_search"
+    }
+
+    fn description(&self) -> &'static str {
+        "Search the web using Brave Search API. Returns relevant results with titles, URLs, and descriptions. \
+         Use for privacy-focused web search with no tracking."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query"
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Number of results to return (default: 10, max: 20)",
+                    "default": 10
+                },
+                "freshness": {
+                    "type": "string",
+                    "description": "Freshness filter: 'pd' (past day), 'pw' (past week), 'pm' (past month)",
+                    "enum": ["pd", "pw", "pm"]
+                }
+            },
+            "required": ["query"]
+        })
+    }
+
+    async fn execute(&self, args: Value, _workspace_path: &Path) -> Result<Value> {
+        let query = args
+            .get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing required argument: query"))?;
+        let count = get_optional_u32(&args, "count");
+        let freshness = args.get("freshness").and_then(|v| v.as_str());
+
+        match self.brave.web_search(query, count, freshness).await {
+            Ok(results) => Ok(json!({
+                "query": results.query,
+                "results": results.results,
+                "infobox": results.infobox,
+                "result_count": results.results.len()
+            })),
+            Err(e) => Ok(json!({"error": e.to_string()})),
+        }
+    }
+}
+
+// ============================================================================
 // Helper functions for tool registration
 // ============================================================================
 
@@ -434,6 +503,11 @@ pub fn create_tavily_tools(tavily: Arc<TavilyState>) -> Vec<std::sync::Arc<dyn T
         std::sync::Arc::new(WebCrawlTool::new(tavily.clone())),
         std::sync::Arc::new(WebMapTool::new(tavily)),
     ]
+}
+
+/// Create Brave Search tool with shared state.
+pub fn create_brave_tools(brave: Arc<BraveSearchState>) -> Vec<std::sync::Arc<dyn Tool>> {
+    vec![std::sync::Arc::new(BraveSearchTool::new(brave))]
 }
 
 #[cfg(test)]

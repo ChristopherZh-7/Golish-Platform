@@ -4,13 +4,15 @@
 //! - Tavily web search integration
 //! - Web content fetching and extraction
 
+pub mod brave;
 pub mod tavily;
 pub mod tool;
 pub mod web_fetch;
 
+pub use brave::BraveSearchState;
 pub use tavily::TavilyState;
 pub use tool::{
-    create_tavily_tools, WebCrawlTool, WebExtractTool, WebMapTool, WebSearchAnswerTool,
-    WebSearchTool,
+    create_brave_tools, create_tavily_tools, BraveSearchTool, WebCrawlTool, WebExtractTool,
+    WebMapTool, WebSearchAnswerTool, WebSearchTool,
 };
 pub use web_fetch::{FetchResult, WebFetcher};

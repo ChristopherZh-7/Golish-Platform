@@ -1,27 +1,9 @@
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use tokio::fs;
 use uuid::Uuid;
 
-fn resolve_vault_path(project_path: Option<&str>) -> PathBuf {
-    if let Some(pp) = project_path {
-        if !pp.is_empty() {
-            return PathBuf::from(pp).join(".golish").join("vault.json");
-        }
-    }
-    let home = dirs::home_dir().expect("cannot resolve home directory");
-    #[cfg(target_os = "macos")]
-    let base = home
-        .join("Library")
-        .join("Application Support")
-        .join("golish-platform");
-    #[cfg(target_os = "windows")]
-    let base = home.join("AppData").join("Local").join("golish-platform");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let base = home.join(".golish-platform");
-    base.join("vault.json")
-}
+use super::db::open_db;
 
 fn derive_key() -> Vec<u8> {
     let seed = format!(
@@ -107,9 +89,29 @@ pub enum VaultEntryType {
     Other,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct VaultStore {
-    pub entries: Vec<VaultEntry>,
+impl VaultEntryType {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Password => "password",
+            Self::Token => "token",
+            Self::SshKey => "ssh_key",
+            Self::ApiKey => "api_key",
+            Self::Cookie => "cookie",
+            Self::Certificate => "certificate",
+            Self::Other => "other",
+        }
+    }
+    fn from_str(s: &str) -> Self {
+        match s {
+            "token" => Self::Token,
+            "ssh_key" => Self::SshKey,
+            "api_key" => Self::ApiKey,
+            "cookie" => Self::Cookie,
+            "certificate" => Self::Certificate,
+            "other" => Self::Other,
+            _ => Self::Password,
+        }
+    }
 }
 
 fn now_ts() -> u64 {
@@ -119,44 +121,38 @@ fn now_ts() -> u64 {
         .as_secs()
 }
 
-async fn load_store(project_path: Option<&str>) -> Result<VaultStore, String> {
-    let path = resolve_vault_path(project_path);
-    if !path.exists() {
-        return Ok(VaultStore::default());
-    }
-    let data = fs::read_to_string(&path).await.map_err(|e| e.to_string())?;
-    serde_json::from_str(&data).map_err(|e| e.to_string())
-}
-
-async fn save_store(store: &VaultStore, project_path: Option<&str>) -> Result<(), String> {
-    let path = resolve_vault_path(project_path);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
-    }
-    let data = serde_json::to_string_pretty(store).map_err(|e| e.to_string())?;
-    fs::write(&path, data).await.map_err(|e| e.to_string())
-}
-
-impl VaultEntry {
-    fn to_safe(&self) -> VaultEntrySafe {
-        VaultEntrySafe {
-            id: self.id.clone(),
-            name: self.name.clone(),
-            entry_type: self.entry_type.clone(),
-            username: self.username.clone(),
-            notes: self.notes.clone(),
-            project: self.project.clone(),
-            tags: self.tags.clone(),
-            created_at: self.created_at,
-            updated_at: self.updated_at,
-        }
-    }
+fn row_to_safe(row: &rusqlite::Row) -> rusqlite::Result<VaultEntrySafe> {
+    let et_str: String = row.get(2)?;
+    let tags_json: String = row.get(6)?;
+    Ok(VaultEntrySafe {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        entry_type: VaultEntryType::from_str(&et_str),
+        username: row.get(3)?,
+        notes: row.get(4)?,
+        project: row.get(5)?,
+        tags: serde_json::from_str(&tags_json).unwrap_or_default(),
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+    })
 }
 
 #[tauri::command]
 pub async fn vault_list(project_path: Option<String>) -> Result<Vec<VaultEntrySafe>, String> {
-    let store = load_store(project_path.as_deref()).await?;
-    Ok(store.entries.iter().map(|e| e.to_safe()).collect())
+    tokio::task::spawn_blocking(move || {
+        let conn = open_db(project_path.as_deref())?;
+        let mut stmt = conn
+            .prepare("SELECT id, name, entry_type, username, notes, project, tags, created_at, updated_at FROM vault_entries ORDER BY created_at DESC")
+            .map_err(|e| e.to_string())?;
+        let entries: Vec<VaultEntrySafe> = stmt
+            .query_map([], |row| row_to_safe(row))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(entries)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -170,32 +166,37 @@ pub async fn vault_add(
     tags: Option<Vec<String>>,
     project_path: Option<String>,
 ) -> Result<VaultEntrySafe, String> {
-    let pp = project_path.as_deref();
-    let mut store = load_store(pp).await?;
-    let ts = now_ts();
-    let entry = VaultEntry {
-        id: Uuid::new_v4().to_string()[..8].to_string(),
-        name,
-        entry_type,
-        value: obfuscate(&value),
-        username: username.unwrap_or_default(),
-        notes: notes.unwrap_or_default(),
-        project: project.unwrap_or_default(),
-        tags: tags.unwrap_or_default(),
-        created_at: ts,
-        updated_at: ts,
-    };
-    let safe = entry.to_safe();
-    store.entries.push(entry);
-    save_store(&store, pp).await?;
-    Ok(safe)
+    tokio::task::spawn_blocking(move || {
+        let conn = open_db(project_path.as_deref())?;
+        let ts = now_ts();
+        let id = Uuid::new_v4().to_string()[..8].to_string();
+        let un = username.unwrap_or_default();
+        let nt = notes.unwrap_or_default();
+        let pj = project.unwrap_or_default();
+        let tg = tags.unwrap_or_default();
+        let tags_json = serde_json::to_string(&tg).unwrap_or_else(|_| "[]".to_string());
+        let enc_value = obfuscate(&value);
+        conn.execute(
+            "INSERT INTO vault_entries (id, name, entry_type, value, username, notes, project, tags, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![id, name, entry_type.as_str(), enc_value, un, nt, pj, tags_json, ts, ts],
+        ).map_err(|e| e.to_string())?;
+        Ok(VaultEntrySafe { id, name, entry_type, username: un, notes: nt, project: pj, tags: tg, created_at: ts, updated_at: ts })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn vault_get_value(id: String, project_path: Option<String>) -> Result<String, String> {
-    let store = load_store(project_path.as_deref()).await?;
-    let entry = store.entries.iter().find(|e| e.id == id).ok_or("Entry not found")?;
-    deobfuscate(&entry.value)
+    tokio::task::spawn_blocking(move || {
+        let conn = open_db(project_path.as_deref())?;
+        let enc: String = conn
+            .query_row("SELECT value FROM vault_entries WHERE id=?1", params![id], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        deobfuscate(&enc)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -209,39 +210,50 @@ pub async fn vault_update(
     tags: Option<Vec<String>>,
     project_path: Option<String>,
 ) -> Result<VaultEntrySafe, String> {
-    let pp = project_path.as_deref();
-    let mut store = load_store(pp).await?;
-    let entry = store.entries.iter_mut().find(|e| e.id == id).ok_or("Entry not found")?;
-    if let Some(n) = name { entry.name = n; }
-    if let Some(v) = value { entry.value = obfuscate(&v); }
-    if let Some(u) = username { entry.username = u; }
-    if let Some(n) = notes { entry.notes = n; }
-    if let Some(p) = project { entry.project = p; }
-    if let Some(t) = tags { entry.tags = t; }
-    entry.updated_at = now_ts();
-    let safe = entry.to_safe();
-    save_store(&store, pp).await?;
-    Ok(safe)
+    tokio::task::spawn_blocking(move || {
+        let conn = open_db(project_path.as_deref())?;
+        let ts = now_ts();
+        if let Some(n) = &name { conn.execute("UPDATE vault_entries SET name=?1, updated_at=?2 WHERE id=?3", params![n, ts, id]).map_err(|e| e.to_string())?; }
+        if let Some(v) = &value { conn.execute("UPDATE vault_entries SET value=?1, updated_at=?2 WHERE id=?3", params![obfuscate(v), ts, id]).map_err(|e| e.to_string())?; }
+        if let Some(u) = &username { conn.execute("UPDATE vault_entries SET username=?1, updated_at=?2 WHERE id=?3", params![u, ts, id]).map_err(|e| e.to_string())?; }
+        if let Some(n) = &notes { conn.execute("UPDATE vault_entries SET notes=?1, updated_at=?2 WHERE id=?3", params![n, ts, id]).map_err(|e| e.to_string())?; }
+        if let Some(p) = &project { conn.execute("UPDATE vault_entries SET project=?1, updated_at=?2 WHERE id=?3", params![p, ts, id]).map_err(|e| e.to_string())?; }
+        if let Some(t) = &tags {
+            let j = serde_json::to_string(t).unwrap_or_else(|_| "[]".to_string());
+            conn.execute("UPDATE vault_entries SET tags=?1, updated_at=?2 WHERE id=?3", params![j, ts, id]).map_err(|e| e.to_string())?;
+        }
+        let mut stmt = conn.prepare("SELECT id, name, entry_type, username, notes, project, tags, created_at, updated_at FROM vault_entries WHERE id=?1").map_err(|e| e.to_string())?;
+        stmt.query_row(params![id], |row| row_to_safe(row)).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn vault_delete(id: String, project_path: Option<String>) -> Result<(), String> {
-    let pp = project_path.as_deref();
-    let mut store = load_store(pp).await?;
-    store.entries.retain(|e| e.id != id);
-    save_store(&store, pp).await
+    tokio::task::spawn_blocking(move || {
+        let conn = open_db(project_path.as_deref())?;
+        conn.execute("DELETE FROM vault_entries WHERE id=?1", params![id]).map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn vault_resolve(reference: String, project_path: Option<String>) -> Result<String, String> {
-    let name = reference
-        .trim_start_matches("{{vault:")
-        .trim_end_matches("}}");
-    let store = load_store(project_path.as_deref()).await?;
-    let entry = store
-        .entries
-        .iter()
-        .find(|e| e.name == name || e.id == name)
-        .ok_or_else(|| format!("Vault entry '{}' not found", name))?;
-    deobfuscate(&entry.value)
+    tokio::task::spawn_blocking(move || {
+        let name = reference.trim_start_matches("{{vault:").trim_end_matches("}}");
+        let conn = open_db(project_path.as_deref())?;
+        let enc: String = conn
+            .query_row(
+                "SELECT value FROM vault_entries WHERE name=?1 OR id=?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .map_err(|_| format!("Vault entry '{}' not found", name))?;
+        deobfuscate(&enc)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

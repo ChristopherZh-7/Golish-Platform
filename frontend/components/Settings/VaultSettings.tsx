@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  Copy, Eye, EyeOff, KeyRound, Link2, Plus, Trash2, X,
+  ChevronDown, Copy, Eye, EyeOff, KeyRound, Link2, Plus, Trash2, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
@@ -33,6 +33,65 @@ const TYPE_LABEL_KEYS: Record<string, string> = {
   certificate: "vault.certificate",
   other: "vault.other",
 };
+
+function VaultMiniDropdown({
+  value,
+  onChange,
+  options,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: { value: string; label: string }[];
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const selected = options.find((o) => o.value === value);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        className={cn(
+          "w-full flex items-center justify-between gap-1.5 px-2.5 py-1.5 text-xs rounded-md border transition-colors",
+          "bg-[var(--bg-hover)]/30 border-border/30 text-foreground",
+          "hover:bg-[var(--bg-hover)]/60 hover:border-border/50",
+          open && "border-accent/40 bg-[var(--bg-hover)]/50",
+        )}
+        onClick={() => setOpen(!open)}
+      >
+        <span className="truncate">{selected?.label ?? value}</span>
+        <ChevronDown className={cn("w-3 h-3 text-muted-foreground transition-transform flex-shrink-0", open && "rotate-180")} />
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1 w-full min-w-[120px] max-h-48 overflow-y-auto rounded-lg border border-border/30 bg-card shadow-lg z-50 py-1">
+          {options.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              className={cn(
+                "w-full text-left px-3 py-1.5 text-xs transition-colors",
+                "hover:bg-[var(--bg-hover)]/60",
+                opt.value === value && "text-accent bg-accent/5 font-medium",
+              )}
+              onClick={() => { onChange(opt.value); setOpen(false); }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function VaultSettings() {
   const { t } = useTranslation();
@@ -72,6 +131,7 @@ export function VaultSettings() {
       setAddForm({ name: "", type: "password", value: "", username: "", notes: "", project: "", tags: "" });
       setShowAdd(false);
       loadEntries();
+      invoke("audit_log", { action: "vault_entry_added", category: "vault", details: addForm.name.trim(), projectPath: getProjectPath() }).catch(() => {});
     } catch (e) {
       console.error("Failed to add entry:", e);
     }
@@ -83,6 +143,7 @@ export function VaultSettings() {
       await invoke("vault_delete", { id, projectPath: getProjectPath() });
       setRevealedIds((s) => { const n = new Set(s); n.delete(id); return n; });
       loadEntries();
+      invoke("audit_log", { action: "vault_entry_deleted", category: "vault", details: name, entityType: "vault", entityId: id, projectPath: getProjectPath() }).catch(() => {});
     } catch (e) {
       console.error("Failed to delete:", e);
     }
@@ -155,15 +216,11 @@ export function VaultSettings() {
             </div>
             <div>
               <label className="text-[11px] text-muted-foreground block mb-1">{t("vault.type")}</label>
-              <select
-                className="w-full text-xs bg-background border border-border/50 rounded px-2.5 py-1.5 outline-none focus:border-accent"
+              <VaultMiniDropdown
                 value={addForm.type}
-                onChange={(e) => setAddForm((f) => ({ ...f, type: e.target.value }))}
-              >
-                {ENTRY_TYPES.map((tt) => (
-                  <option key={tt} value={tt}>{t(TYPE_LABEL_KEYS[tt])}</option>
-                ))}
-              </select>
+                onChange={(v) => setAddForm((f) => ({ ...f, type: v }))}
+                options={ENTRY_TYPES.map((tt) => ({ value: tt, label: t(TYPE_LABEL_KEYS[tt]) }))}
+              />
             </div>
           </div>
           <div>

@@ -3,22 +3,19 @@ import ReactDOM from "react-dom/client";
 import "./index.css";
 import "./lib/i18n";
 
-/**
- * Check if we're running inside Tauri or in a browser.
- * When running in Tauri, window.__TAURI_INTERNALS__ is defined.
- */
 function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
-/**
- * Initialize the application.
- * In browser mode (not Tauri), load mocks before rendering.
- *
- * IMPORTANT: App is dynamically imported AFTER mocks are set up.
- * This ensures the mock event system is in place before hooks import
- * the listen() function from @tauri-apps/api/event.
- */
+function getDetachedParams(): { sessionId: string; tabType: string } | null {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("detached") !== "true") return null;
+  const sessionId = params.get("session");
+  const tabType = params.get("type") || "terminal";
+  if (!sessionId) return null;
+  return { sessionId, tabType };
+}
+
 async function initApp(): Promise<void> {
   if (!isTauri()) {
     console.log("[App] Running in browser mode - loading Tauri IPC mocks");
@@ -26,15 +23,24 @@ async function initApp(): Promise<void> {
     setupMocks();
   }
 
-  // Set up global error handlers BEFORE rendering
-  // This catches any errors during initialization or rendering
   const { setupGlobalErrorHandlers, ErrorBoundary } = await import("./components/ErrorBoundary");
   setupGlobalErrorHandlers();
 
-  // Dynamic import AFTER mocks are set up
-  // This ensures hooks get the patched listen() function
-  const { default: App } = await import("./App");
+  const detached = getDetachedParams();
 
+  if (detached) {
+    const { DetachedView } = await import("./components/DetachedView/DetachedView");
+    ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+      <React.StrictMode>
+        <ErrorBoundary>
+          <DetachedView sessionId={detached.sessionId} tabType={detached.tabType} />
+        </ErrorBoundary>
+      </React.StrictMode>
+    );
+    return;
+  }
+
+  const { default: App } = await import("./App");
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
       <ErrorBoundary>

@@ -10,6 +10,9 @@
 // Re-export everything from golish-tools
 pub use golish_tools::*;
 
+// SQLite database layer
+pub mod db;
+
 // Penetration testing tool management (ported from Golish)
 pub mod pentest;
 
@@ -48,3 +51,15 @@ pub mod findings;
 
 // Tool chain pipeline
 pub mod pipeline;
+
+// Quick notes
+pub mod notes;
+
+// Audit log
+pub mod audit;
+
+// Wordlist manager
+pub mod wordlists;
+
+// Vulnerability intelligence
+pub mod vuln_intel;

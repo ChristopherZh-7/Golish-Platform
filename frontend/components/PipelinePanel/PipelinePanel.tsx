@@ -7,6 +7,16 @@ import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
 import { getProjectPath } from "@/lib/projects";
 import { scanTools, type ToolConfig } from "@/lib/pentest/api";
+import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
+
+type ExecMode = "pipe" | "sequential" | "parallel" | "on_success" | "on_failure";
+const EXEC_LABELS: Record<ExecMode, { label: string; op: string; color: string }> = {
+  pipe: { label: "|", op: " | ", color: "text-blue-400" },
+  sequential: { label: "&&", op: " && ", color: "text-green-400" },
+  parallel: { label: "&", op: " & ", color: "text-yellow-400" },
+  on_success: { label: "&&", op: " && ", color: "text-emerald-400" },
+  on_failure: { label: "||", op: " || ", color: "text-red-400" },
+};
 
 interface PipelineStep {
   id: string;
@@ -15,6 +25,7 @@ interface PipelineStep {
   command_template: string;
   args: string[];
   input_from: string | null;
+  exec_mode: ExecMode;
   x: number;
   y: number;
 }
@@ -58,7 +69,9 @@ export function PipelinePanel() {
         scanTools(),
       ]);
       setPipelines(pipelineList);
-      setTools(toolList.filter((t) => t.ui === "cli"));
+      setTools((toolList.tools || []).filter((t) =>
+        t.ui === "cli" && t.installed && t.output && t.output.produces.length > 0
+      ));
     } catch { /* ignore */ }
     setLoading(false);
   }, []);
@@ -105,6 +118,7 @@ export function PipelinePanel() {
       command_template: tool.executable || tool.name,
       args: [],
       input_from: null,
+      exec_mode: "pipe",
       x: 40 + stepCount * 220,
       y: 80,
     };
@@ -124,6 +138,20 @@ export function PipelinePanel() {
     setShowToolPicker(false);
   }, [active]);
 
+  const cycleExecMode = useCallback((stepId: string) => {
+    if (!active) return;
+    const modes: ExecMode[] = ["pipe", "sequential", "parallel", "on_success", "on_failure"];
+    setActive({
+      ...active,
+      steps: active.steps.map((s) => {
+        if (s.id !== stepId) return s;
+        const idx = modes.indexOf(s.exec_mode || "pipe");
+        return { ...s, exec_mode: modes[(idx + 1) % modes.length] };
+      }),
+    });
+    setDirty(true);
+  }, [active]);
+
   const removeStep = useCallback((stepId: string) => {
     if (!active) return;
     setActive({
@@ -136,23 +164,31 @@ export function PipelinePanel() {
     setDirty(true);
   }, [active]);
 
+  const { createTerminalTab } = useCreateTerminalTab();
+
   const handleRun = useCallback(async () => {
     if (!active || active.steps.length === 0) return;
-    const commands = active.steps.map((step) => {
-      const args = step.args.length > 0 ? ` ${step.args.join(" ")}` : "";
-      return `${step.command_template}${args}`;
-    });
-    const chainedCommand = commands.join(" | ");
 
-    const store = useStore.getState();
-    const createTerminal = store.createSession;
-    const sessionId = await createTerminal("pipeline");
-    store.setActiveSession(sessionId);
-    await invoke("terminal_write", {
-      sessionId,
-      data: chainedCommand + "\n",
-    }).catch(() => {});
-  }, [active]);
+    let chainedCommand = "";
+    active.steps.forEach((step, idx) => {
+      const args = step.args.length > 0 ? ` ${step.args.join(" ")}` : "";
+      const cmd = `${step.command_template}${args}`;
+      if (idx === 0) {
+        chainedCommand = cmd;
+      } else {
+        const mode = step.exec_mode || "pipe";
+        chainedCommand += EXEC_LABELS[mode].op + cmd;
+      }
+    });
+
+    const sessionId = await createTerminalTab();
+    if (sessionId) {
+      useStore.getState().setActiveSession(sessionId);
+      setTimeout(async () => {
+        await invoke("terminal_write", { sessionId, data: chainedCommand + "\n" }).catch(() => {});
+      }, 300);
+    }
+  }, [active, createTerminalTab]);
 
   if (loading) {
     return (
@@ -289,12 +325,22 @@ export function PipelinePanel() {
                   <div className="flex items-start gap-3 min-w-max">
                     {active.steps.map((step, idx) => {
                       const hasConnection = idx > 0;
+                      const mode = step.exec_mode || "pipe";
+                      const modeInfo = EXEC_LABELS[mode];
                       return (
-                        <div key={step.id} className="flex items-center gap-3">
+                        <div key={step.id} className="flex items-center gap-1">
                           {hasConnection && (
-                            <div className="flex items-center text-muted-foreground/30">
-                              <ArrowRight className="w-5 h-5" />
-                            </div>
+                            <button
+                              onClick={() => cycleExecMode(step.id)}
+                              title={`Click to cycle: ${Object.keys(EXEC_LABELS).join(" → ")}`}
+                              className={cn(
+                                "flex flex-col items-center gap-0.5 px-2 py-1 rounded-md hover:bg-muted/20 transition-colors cursor-pointer",
+                                modeInfo.color,
+                              )}
+                            >
+                              <span className="text-[10px] font-mono font-bold">{modeInfo.label}</span>
+                              <ArrowRight className="w-4 h-4" />
+                            </button>
                           )}
                           <div className="w-[200px] rounded-lg border border-border/20 bg-card overflow-hidden group">
                             <div className="flex items-center gap-2 px-3 py-2 border-b border-border/15 bg-muted/10">

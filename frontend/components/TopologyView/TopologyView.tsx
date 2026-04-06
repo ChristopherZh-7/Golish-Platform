@@ -2,7 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getProjectPath } from "@/lib/projects";
 import {
+  Bug,
+  Diff,
   FolderOpen,
+  Minus,
   Network,
   Plus,
   RefreshCw,
@@ -11,9 +14,11 @@ import {
   Upload,
   X,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import { useStore } from "@/store";
 import cytoscape from "cytoscape";
+import { QuickNotes } from "@/components/QuickNotes/QuickNotes";
 
 interface TopoPort {
   port: number;
@@ -54,6 +59,40 @@ export function TopologyView() {
   const [showPaste, setShowPaste] = useState(false);
   const [pasteContent, setPasteContent] = useState("");
   const [selectedNode, setSelectedNode] = useState<TopoNode | null>(null);
+  const [nodeFindings, setNodeFindings] = useState<{ id: string; title: string; severity: string; status: string }[]>([]);
+
+  const [showDiff, setShowDiff] = useState(false);
+  const [diffA, setDiffA] = useState("");
+  const [diffB, setDiffB] = useState("");
+  const [diffResult, setDiffResult] = useState<{
+    new_hosts: string[]; removed_hosts: string[]; new_ports: string[]; removed_ports: string[]; changed_services: string[];
+  } | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+
+  useEffect(() => {
+    if (!selectedNode) { setNodeFindings([]); return; }
+    const host = selectedNode.ip || selectedNode.label;
+    invoke<{ id: string; title: string; severity: string; status: string }[]>("findings_for_host", {
+      host,
+      projectPath: getProjectPath(),
+    }).then(setNodeFindings).catch(() => setNodeFindings([]));
+  }, [selectedNode]);
+
+  const handleDiff = useCallback(async () => {
+    if (!diffA || !diffB || diffA === diffB) return;
+    setDiffLoading(true);
+    try {
+      const result = await invoke<typeof diffResult>("topo_diff", {
+        nameA: diffA,
+        nameB: diffB,
+        projectPath: getProjectPath(),
+      });
+      setDiffResult(result);
+    } catch {
+      setDiffResult(null);
+    }
+    setDiffLoading(false);
+  }, [diffA, diffB]);
 
   const loadSavedList = useCallback(async () => {
     try {
@@ -251,6 +290,7 @@ export function TopologyView() {
         projectPath: getProjectPath(),
       });
       await loadSavedList();
+      invoke("audit_log", { action: "topology_saved", category: "topology", details: currentName, projectPath: getProjectPath() }).catch(() => {});
     } catch (e) {
       console.error("Save failed:", e);
     }
@@ -295,6 +335,15 @@ export function TopologyView() {
           <Upload className="w-3.5 h-3.5" />
           {t("topology.import", "Import Scan")}
         </button>
+        {savedMaps.length >= 2 && (
+          <button
+            className="flex items-center gap-1 px-2 py-1 text-xs rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+            onClick={() => { setShowDiff(true); setDiffResult(null); }}
+          >
+            <Diff className="w-3.5 h-3.5" />
+            Compare
+          </button>
+        )}
         {cyRef.current && (
           <button
             className="flex items-center gap-1 px-2 py-1 text-xs rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
@@ -439,6 +488,33 @@ export function TopologyView() {
                     ))}
                   </div>
                 )}
+                {nodeFindings.length > 0 && (
+                  <div className="pt-1.5 border-t border-border/20">
+                    <div className="text-[10px] text-muted-foreground mb-1 flex items-center gap-1">
+                      <Bug className="w-2.5 h-2.5" />
+                      Findings ({nodeFindings.length}):
+                    </div>
+                    {nodeFindings.map((f) => {
+                      const sevColor: Record<string, string> = {
+                        critical: "bg-red-500",
+                        high: "bg-orange-500",
+                        medium: "bg-yellow-500",
+                        low: "bg-blue-500",
+                        info: "bg-slate-500",
+                      };
+                      return (
+                        <div key={f.id} className="flex items-center gap-1.5 py-0.5 text-[10px]">
+                          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${sevColor[f.severity] || "bg-slate-500"}`} />
+                          <span className="truncate flex-1">{f.title}</span>
+                          <span className="text-muted-foreground/40 capitalize text-[8px]">{f.status}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                <div className="pt-1.5 border-t border-border/20">
+                  <QuickNotes entityType="topology" entityId={selectedNode.ip || selectedNode.label} compact />
+                </div>
               </div>
             </div>
           )}
@@ -491,6 +567,117 @@ export function TopologyView() {
               >
                 {t("topology.parseAndVisualize", "Parse & Visualize")}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Diff dialog */}
+      {showDiff && (
+        <div className="absolute inset-0 z-30 bg-background/80 backdrop-blur-sm flex items-center justify-center">
+          <div className="w-[500px] max-h-[80vh] bg-card rounded-xl border border-border/50 shadow-2xl flex flex-col">
+            <div className="flex items-center gap-2 px-4 py-3 border-b border-border/30">
+              <Diff className="w-4 h-4 text-accent" />
+              <span className="text-sm font-medium">Compare Scans</span>
+              <div className="flex-1" />
+              <button className="p-1 rounded hover:bg-muted/50" onClick={() => setShowDiff(false)}>
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4 space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] text-muted-foreground/50 mb-1 block">Baseline (A)</label>
+                  <select value={diffA} onChange={(e) => setDiffA(e.target.value)}
+                    className="w-full text-xs px-2 py-1.5 rounded bg-background border border-border/50 text-foreground outline-none">
+                    <option value="">Select...</option>
+                    {savedMaps.map((m) => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-muted-foreground/50 mb-1 block">Current (B)</label>
+                  <select value={diffB} onChange={(e) => setDiffB(e.target.value)}
+                    className="w-full text-xs px-2 py-1.5 rounded bg-background border border-border/50 text-foreground outline-none">
+                    <option value="">Select...</option>
+                    {savedMaps.map((m) => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                </div>
+              </div>
+              <button
+                onClick={handleDiff}
+                disabled={!diffA || !diffB || diffA === diffB || diffLoading}
+                className={cn(
+                  "w-full py-1.5 text-xs rounded-md font-medium transition-colors",
+                  diffA && diffB && diffA !== diffB
+                    ? "bg-accent text-accent-foreground hover:bg-accent/90"
+                    : "bg-muted/20 text-muted-foreground/30 cursor-not-allowed",
+                )}
+              >
+                {diffLoading ? "Comparing..." : "Compare"}
+              </button>
+
+              {diffResult && (
+                <div className="space-y-2 max-h-[300px] overflow-y-auto border-t border-border/30 pt-3">
+                  {diffResult.new_hosts.length === 0 && diffResult.removed_hosts.length === 0 &&
+                    diffResult.new_ports.length === 0 && diffResult.removed_ports.length === 0 &&
+                    diffResult.changed_services.length === 0 ? (
+                    <p className="text-[11px] text-muted-foreground/50 text-center py-2">No differences found</p>
+                  ) : (
+                    <>
+                      {diffResult.new_hosts.length > 0 && (
+                        <div>
+                          <div className="text-[10px] text-green-400 font-medium mb-1 flex items-center gap-1">
+                            <Plus className="w-3 h-3" /> New Hosts ({diffResult.new_hosts.length})
+                          </div>
+                          {diffResult.new_hosts.map((h) => (
+                            <div key={h} className="text-[10px] font-mono text-green-400/70 pl-4">{h}</div>
+                          ))}
+                        </div>
+                      )}
+                      {diffResult.removed_hosts.length > 0 && (
+                        <div>
+                          <div className="text-[10px] text-red-400 font-medium mb-1 flex items-center gap-1">
+                            <Minus className="w-3 h-3" /> Removed Hosts ({diffResult.removed_hosts.length})
+                          </div>
+                          {diffResult.removed_hosts.map((h) => (
+                            <div key={h} className="text-[10px] font-mono text-red-400/70 pl-4">{h}</div>
+                          ))}
+                        </div>
+                      )}
+                      {diffResult.new_ports.length > 0 && (
+                        <div>
+                          <div className="text-[10px] text-green-400 font-medium mb-1 flex items-center gap-1">
+                            <Plus className="w-3 h-3" /> New Ports ({diffResult.new_ports.length})
+                          </div>
+                          {diffResult.new_ports.map((p) => (
+                            <div key={p} className="text-[10px] font-mono text-green-400/70 pl-4">{p}</div>
+                          ))}
+                        </div>
+                      )}
+                      {diffResult.removed_ports.length > 0 && (
+                        <div>
+                          <div className="text-[10px] text-red-400 font-medium mb-1 flex items-center gap-1">
+                            <Minus className="w-3 h-3" /> Closed Ports ({diffResult.removed_ports.length})
+                          </div>
+                          {diffResult.removed_ports.map((p) => (
+                            <div key={p} className="text-[10px] font-mono text-red-400/70 pl-4">{p}</div>
+                          ))}
+                        </div>
+                      )}
+                      {diffResult.changed_services.length > 0 && (
+                        <div>
+                          <div className="text-[10px] text-yellow-400 font-medium mb-1 flex items-center gap-1">
+                            <Diff className="w-3 h-3" /> Service Changes ({diffResult.changed_services.length})
+                          </div>
+                          {diffResult.changed_services.map((s) => (
+                            <div key={s} className="text-[10px] font-mono text-yellow-400/70 pl-4">{s}</div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>

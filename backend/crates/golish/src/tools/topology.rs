@@ -1,17 +1,18 @@
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
-use tokio::fs;
+
+use super::db::open_db;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TopoNode {
     pub id: String,
     pub label: String,
-    pub node_type: String, // "host", "network", "service", "gateway"
+    pub node_type: String,
     pub ip: Option<String>,
     pub ports: Vec<TopoPort>,
     pub os: Option<String>,
-    pub status: String, // "up", "down", "filtered"
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,17 +37,6 @@ pub struct TopologyData {
     pub scan_info: Option<String>,
 }
 
-fn topo_dir(project_path: Option<&str>) -> Result<PathBuf, String> {
-    if let Some(pp) = project_path {
-        if !pp.is_empty() {
-            return Ok(PathBuf::from(pp).join(".golish").join("topology"));
-        }
-    }
-    let base = dirs::data_dir().ok_or("Cannot resolve data dir")?;
-    Ok(base.join("golish-platform").join("topology"))
-}
-
-/// Parse nmap-style text output into topology data.
 fn parse_nmap_output(raw: &str) -> TopologyData {
     let mut nodes: Vec<TopoNode> = Vec::new();
     let mut edges: Vec<TopoEdge> = Vec::new();
@@ -60,7 +50,6 @@ fn parse_nmap_output(raw: &str) -> TopologyData {
             if let Some(host) = current_host.take() {
                 nodes.push(host);
             }
-
             if trimmed.starts_with("Nmap scan report for") {
                 let rest = trimmed.strip_prefix("Nmap scan report for ").unwrap_or("");
                 let (label, ip) = if let Some(paren_start) = rest.find('(') {
@@ -70,88 +59,55 @@ fn parse_nmap_output(raw: &str) -> TopologyData {
                 } else {
                     (rest.to_string(), Some(rest.to_string()))
                 };
-
                 let node_id = ip.clone().unwrap_or_else(|| label.clone());
                 current_host = Some(TopoNode {
-                    id: node_id,
-                    label,
-                    node_type: "host".to_string(),
-                    ip,
-                    ports: Vec::new(),
-                    os: None,
-                    status: "up".to_string(),
+                    id: node_id, label, node_type: "host".to_string(),
+                    ip, ports: Vec::new(), os: None, status: "up".to_string(),
                 });
             }
-
-            if trimmed.starts_with("Starting Nmap") {
-                scan_info = Some(trimmed.to_string());
-            }
+            if trimmed.starts_with("Starting Nmap") { scan_info = Some(trimmed.to_string()); }
         }
 
         if let Some(ref mut host) = current_host {
-            // Parse port lines like "80/tcp   open  http"
             if let Some(slash_pos) = trimmed.find('/') {
                 if slash_pos < 6 {
                     if let Ok(port_num) = trimmed[..slash_pos].parse::<u16>() {
                         let parts: Vec<&str> = trimmed.split_whitespace().collect();
                         if parts.len() >= 3 {
-                            let protocol = parts[0].split('/').nth(1).unwrap_or("tcp").to_string();
-                            let state = parts[1].to_string();
-                            let service = parts[2].to_string();
                             host.ports.push(TopoPort {
                                 port: port_num,
-                                protocol,
-                                state,
-                                service,
+                                protocol: parts[0].split('/').nth(1).unwrap_or("tcp").to_string(),
+                                state: parts[1].to_string(),
+                                service: parts[2].to_string(),
                             });
                         }
                     }
                 }
             }
-
             if trimmed.starts_with("OS details:") || trimmed.starts_with("Running:") {
                 host.os = Some(trimmed.to_string());
             }
         }
     }
 
-    if let Some(host) = current_host {
-        nodes.push(host);
-    }
+    if let Some(host) = current_host { nodes.push(host); }
 
-    // Build edges: create a network node and connect all hosts to it
     if !nodes.is_empty() {
         let network_prefixes = derive_networks(&nodes);
         for (net_id, net_label) in &network_prefixes {
-            let net_node = TopoNode {
-                id: net_id.clone(),
-                label: net_label.clone(),
-                node_type: "network".to_string(),
-                ip: None,
-                ports: Vec::new(),
-                os: None,
-                status: "up".to_string(),
-            };
-            nodes.push(net_node);
+            nodes.push(TopoNode {
+                id: net_id.clone(), label: net_label.clone(), node_type: "network".to_string(),
+                ip: None, ports: Vec::new(), os: None, status: "up".to_string(),
+            });
         }
-
         for node in nodes.iter().filter(|n| n.node_type == "host") {
             if let Some(ref ip) = node.ip {
-                let net = find_network(ip, &network_prefixes);
-                edges.push(TopoEdge {
-                    source: net,
-                    target: node.id.clone(),
-                    label: None,
-                });
+                edges.push(TopoEdge { source: find_network(ip, &network_prefixes), target: node.id.clone(), label: None });
             }
         }
     }
 
-    TopologyData {
-        nodes,
-        edges,
-        scan_info,
-    }
+    TopologyData { nodes, edges, scan_info }
 }
 
 fn derive_networks(nodes: &[TopoNode]) -> Vec<(String, String)> {
@@ -165,26 +121,23 @@ fn derive_networks(nodes: &[TopoNode]) -> Vec<(String, String)> {
             }
         }
     }
-    prefixes
-        .into_iter()
-        .map(|(prefix, _)| {
-            let id = format!("net-{}", prefix);
-            let label = format!("{}.0/24", prefix);
-            (id, label)
-        })
-        .collect()
+    prefixes.into_iter().map(|(prefix, _)| (format!("net-{}", prefix), format!("{}.0/24", prefix))).collect()
 }
 
 fn find_network(ip: &str, networks: &[(String, String)]) -> String {
     let parts: Vec<&str> = ip.split('.').collect();
     if parts.len() >= 3 {
-        let prefix = format!("{}.{}.{}", parts[0], parts[1], parts[2]);
-        let net_id = format!("net-{}", prefix);
-        if networks.iter().any(|(id, _)| id == &net_id) {
-            return net_id;
-        }
+        let net_id = format!("net-{}.{}.{}", parts[0], parts[1], parts[2]);
+        if networks.iter().any(|(id, _)| id == &net_id) { return net_id; }
     }
     "net-unknown".to_string()
+}
+
+fn now_ts() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 #[tauri::command]
@@ -194,46 +147,88 @@ pub async fn topo_parse(raw_output: String) -> Result<TopologyData, String> {
 
 #[tauri::command]
 pub async fn topo_save(name: String, data: TopologyData, project_path: Option<String>) -> Result<(), String> {
-    let dir = topo_dir(project_path.as_deref())?;
-    fs::create_dir_all(&dir).await.map_err(|e| e.to_string())?;
-    let path = dir.join(format!("{}.json", name));
-    let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
-    fs::write(&path, json).await.map_err(|e| e.to_string())
+    tokio::task::spawn_blocking(move || {
+        let conn = open_db(project_path.as_deref())?;
+        let json = serde_json::to_string(&data).map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR REPLACE INTO topology_scans (name, data, created_at) VALUES (?1,?2,?3)",
+            params![name, json, now_ts()],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn topo_list(project_path: Option<String>) -> Result<Vec<String>, String> {
-    let dir = topo_dir(project_path.as_deref())?;
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut names = Vec::new();
-    let mut entries = fs::read_dir(&dir).await.map_err(|e| e.to_string())?;
-    while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
-        let path = entry.path();
-        if path.extension().map_or(false, |e| e == "json") {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                names.push(stem.to_string());
-            }
-        }
-    }
-    Ok(names)
+    tokio::task::spawn_blocking(move || {
+        let conn = open_db(project_path.as_deref())?;
+        let mut stmt = conn.prepare("SELECT name FROM topology_scans ORDER BY created_at DESC").map_err(|e| e.to_string())?;
+        let names: Vec<String> = stmt.query_map([], |row| row.get(0)).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+        Ok(names)
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn topo_load(name: String, project_path: Option<String>) -> Result<TopologyData, String> {
-    let dir = topo_dir(project_path.as_deref())?;
-    let path = dir.join(format!("{}.json", name));
-    let content = fs::read_to_string(&path).await.map_err(|e| e.to_string())?;
-    serde_json::from_str(&content).map_err(|e| e.to_string())
+    tokio::task::spawn_blocking(move || {
+        let conn = open_db(project_path.as_deref())?;
+        let json: String = conn.query_row("SELECT data FROM topology_scans WHERE name=?1", params![name], |r| r.get(0)).map_err(|e| e.to_string())?;
+        serde_json::from_str(&json).map_err(|e| e.to_string())
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn topo_delete(name: String, project_path: Option<String>) -> Result<(), String> {
-    let dir = topo_dir(project_path.as_deref())?;
-    let path = dir.join(format!("{}.json", name));
-    if path.exists() {
-        fs::remove_file(&path).await.map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    tokio::task::spawn_blocking(move || {
+        let conn = open_db(project_path.as_deref())?;
+        conn.execute("DELETE FROM topology_scans WHERE name=?1", params![name]).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopoDiff {
+    pub new_hosts: Vec<String>,
+    pub removed_hosts: Vec<String>,
+    pub new_ports: Vec<String>,
+    pub removed_ports: Vec<String>,
+    pub changed_services: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn topo_diff(name_a: String, name_b: String, project_path: Option<String>) -> Result<TopoDiff, String> {
+    tokio::task::spawn_blocking(move || {
+        let conn = open_db(project_path.as_deref())?;
+
+        let json_a: String = conn.query_row("SELECT data FROM topology_scans WHERE name=?1", params![name_a], |r| r.get(0)).map_err(|e| e.to_string())?;
+        let json_b: String = conn.query_row("SELECT data FROM topology_scans WHERE name=?1", params![name_b], |r| r.get(0)).map_err(|e| e.to_string())?;
+        let data_a: TopologyData = serde_json::from_str(&json_a).map_err(|e| e.to_string())?;
+        let data_b: TopologyData = serde_json::from_str(&json_b).map_err(|e| e.to_string())?;
+
+        let hosts_a: HashMap<String, &TopoNode> = data_a.nodes.iter().filter(|n| n.node_type == "host").map(|n| (n.ip.clone().unwrap_or_else(|| n.label.clone()), n)).collect();
+        let hosts_b: HashMap<String, &TopoNode> = data_b.nodes.iter().filter(|n| n.node_type == "host").map(|n| (n.ip.clone().unwrap_or_else(|| n.label.clone()), n)).collect();
+
+        let new_hosts: Vec<String> = hosts_b.keys().filter(|h| !hosts_a.contains_key(*h)).cloned().collect();
+        let removed_hosts: Vec<String> = hosts_a.keys().filter(|h| !hosts_b.contains_key(*h)).cloned().collect();
+        let mut new_ports = Vec::new();
+        let mut removed_ports = Vec::new();
+        let mut changed_services = Vec::new();
+
+        for (host, node_b) in &hosts_b {
+            if let Some(node_a) = hosts_a.get(host) {
+                let ports_a: HashMap<(u16, &str), &str> = node_a.ports.iter().map(|p| ((p.port, p.protocol.as_str()), p.service.as_str())).collect();
+                let ports_b: HashMap<(u16, &str), &str> = node_b.ports.iter().map(|p| ((p.port, p.protocol.as_str()), p.service.as_str())).collect();
+                for ((port, proto), svc_b) in &ports_b {
+                    if let Some(svc_a) = ports_a.get(&(*port, *proto)) {
+                        if svc_a != svc_b { changed_services.push(format!("{}:{}/{} {} → {}", host, port, proto, svc_a, svc_b)); }
+                    } else { new_ports.push(format!("{}:{}/{}", host, port, proto)); }
+                }
+                for (port, proto) in ports_a.keys() {
+                    if !ports_b.contains_key(&(*port, *proto)) { removed_ports.push(format!("{}:{}/{}", host, port, proto)); }
+                }
+            }
+        }
+
+        Ok(TopoDiff { new_hosts, removed_hosts, new_ports, removed_ports, changed_services })
+    }).await.map_err(|e| e.to_string())?
 }
