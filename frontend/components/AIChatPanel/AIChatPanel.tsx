@@ -40,9 +40,28 @@ import { respondToToolApproval, setAgentMode, type AgentMode } from "@/lib/ai";
 import { useShallow } from "zustand/react/shallow";
 import { createNewConversation } from "@/store/slices/conversation";
 import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
+import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 
 const STORAGE_KEY = "golish-pentest-conversations";
+const TERMINAL_DATA_KEY = "golish-pentest-conv-terminals";
 const MAX_STORED_CONVS = 50;
+const MAX_SCROLLBACK_CHARS = 100_000;
+const MAX_BLOCK_OUTPUT_CHARS = 50_000;
+const MAX_SAVED_BLOCKS = 50;
+
+interface PersistedCommandBlock {
+  id: string;
+  type: "command";
+  timestamp: string;
+  data: { id: string; sessionId: string; command: string; output: string; exitCode: number | null; startTime: string; durationMs: number | null; workingDirectory: string; isCollapsed: boolean };
+}
+
+interface PersistedTerminal {
+  workingDirectory: string;
+  scrollback: string;
+  customName?: string;
+  timelineBlocks?: PersistedCommandBlock[];
+}
 const EMPTY_MESSAGES: ChatMessage[] = [];
 
 function ThinkingBlock({ content, isActive }: { content: string; isActive: boolean }) {
@@ -313,9 +332,17 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const unlistenRef = useRef<(() => void) | null>(null);
   const streamingMsgRef = useRef<string | null>(null);
   const generateTitleRef = useRef<((convId: string, firstMsg: string) => void) | null>(null);
+  const restoringTerminalsRef = useRef(false);
+  const termRestoreRanRef = useRef(false);
+  const pendingTermRestoreRef = useRef<Record<string, PersistedTerminal[]>>({});
+  const termSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load saved conversations into store on mount — merge with any already loaded by workspace auto-saver
+  // Then restore per-conversation terminals (with scrollback) from localStorage
   useEffect(() => {
+    // #region agent log
+    fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'AIChatPanel.tsx:mountEffect',message:'Mount effect start - reading localStorage',data:{storageKeyExists:!!localStorage.getItem(STORAGE_KEY),termDataKeyExists:!!localStorage.getItem(TERMINAL_DATA_KEY),termDataPreview:localStorage.getItem(TERMINAL_DATA_KEY)?.slice(0,500),convDataPreview:localStorage.getItem(STORAGE_KEY)?.slice(0,300),storeConvCount:Object.keys(useStore.getState().conversations).length,storeConvTerminals:JSON.stringify(useStore.getState().conversationTerminals).slice(0,300)},timestamp:Date.now(),hypothesisId:'B,E'})}).catch(()=>{});
+    // #endregion
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
@@ -342,7 +369,132 @@ export const AIChatPanel = memo(function AIChatPanel() {
         }
       }
     } catch { /* ignore */ }
-  }, []);
+
+    // Restore ALL terminals per conversation (active first, then defer the rest for lazy load)
+    (async () => {
+      try {
+        if (termRestoreRanRef.current) return;
+        termRestoreRanRef.current = true;
+        const termRaw = localStorage.getItem(TERMINAL_DATA_KEY);
+        // #region agent log
+        fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'AIChatPanel.tsx:termRestore',message:'Terminal restore - reading termData from localStorage',data:{termRawExists:!!termRaw,termRawPreview:termRaw?.slice(0,500),termRestoreRanAlready:termRestoreRanRef.current},timestamp:Date.now(),hypothesisId:'B,D'})}).catch(()=>{});
+        // #endregion
+        if (!termRaw) return;
+        restoringTerminalsRef.current = true;
+        useStore.getState().setTerminalRestoreInProgress(true);
+        const termData = JSON.parse(termRaw) as Record<string, PersistedTerminal[]>;
+        const store = useStore.getState();
+        const activeId = store.activeConversationId;
+
+        // #region agent log
+        fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'AIChatPanel.tsx:termRestoreDetail',message:'Terminal restore details',data:{termDataKeys:Object.keys(termData),activeId,convIds:Object.keys(store.conversations),existingConvTerminals:JSON.stringify(store.conversationTerminals).slice(0,200)},timestamp:Date.now(),hypothesisId:'D,E'})}).catch(()=>{});
+        // #endregion
+
+        // Eagerly restore ALL terminals for the active conversation
+        if (activeId && termData[activeId] && store.conversations[activeId]) {
+          const savedTerminals = termData[activeId];
+          const existingTerms = store.conversationTerminals[activeId] ?? [];
+
+          const toCreate = savedTerminals.filter((_, i) => i >= existingTerms.length);
+          for (let i = 0; i < Math.min(savedTerminals.length, existingTerms.length); i++) {
+            const termInfo = savedTerminals[i];
+            const existingTermId = existingTerms[i];
+            if (termInfo.scrollback && TerminalInstanceManager.has(existingTermId)) {
+              const inst = TerminalInstanceManager.get(existingTermId);
+              if (inst) inst.terminal.write(termInfo.scrollback);
+            } else if (termInfo.scrollback) {
+              TerminalInstanceManager.setPendingScrollback(existingTermId, termInfo.scrollback);
+            }
+            if (termInfo.customName) useStore.getState().setCustomTabName(existingTermId, termInfo.customName);
+            if (termInfo.timelineBlocks?.length) {
+              const blocksToRestore = termInfo.timelineBlocks;
+              const tid = existingTermId;
+              useStore.setState((state) => {
+                if (!state.timelines[tid]) state.timelines[tid] = [];
+                for (const block of blocksToRestore) state.timelines[tid].push({ ...block, data: { ...block.data, sessionId: tid } });
+              });
+            }
+          }
+
+          if (toCreate.length > 0) {
+            const createdIds = await Promise.all(toCreate.map(t => createTerminalTab(t.workingDirectory, true, t.scrollback)));
+            for (let i = 0; i < createdIds.length; i++) {
+              const termId = createdIds[i];
+              if (!termId) continue;
+              useStore.getState().addTerminalToConversation(activeId, termId);
+              if (existingTerms.length === 0 && i === 0) useStore.getState().setActiveSession(termId);
+              const termInfo = toCreate[i];
+              if (termInfo.customName) useStore.getState().setCustomTabName(termId, termInfo.customName);
+              if (termInfo.timelineBlocks?.length) {
+                const blocksToRestore = termInfo.timelineBlocks;
+                const tid = termId;
+                useStore.setState((state) => {
+                  if (!state.timelines[tid]) state.timelines[tid] = [];
+                  for (const block of blocksToRestore) state.timelines[tid].push({ ...block, data: { ...block.data, sessionId: tid } });
+                });
+              }
+            }
+          }
+          // #region agent log
+          fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'AIChatPanel.tsx:termRestoreActive',message:'Restored active conv terminals (parallel)',data:{activeId,existingCount:existingTerms.length,createdCount:toCreate.length,finalTermIds:useStore.getState().conversationTerminals[activeId]},timestamp:Date.now(),hypothesisId:'PERF_PARALLEL'})}).catch(()=>{});
+          // #endregion
+        }
+
+        // Active conversation is ready — dismiss the loading spinner
+        useStore.getState().setTerminalRestoreInProgress(false);
+        const savedActiveSessionId = useStore.getState().activeSessionId;
+
+        // Pre-create terminals for other conversations in the background (one conv at a time)
+        const otherConvs = Object.entries(termData).filter(
+          ([convId, terminals]) => convId !== activeId && store.conversations[convId] && terminals.length > 0
+        );
+        for (const [convId, savedTerms] of otherConvs) {
+          const existingTerms = useStore.getState().conversationTerminals[convId] ?? [];
+          if (existingTerms.length >= savedTerms.length) continue;
+          const toCreate = savedTerms.slice(existingTerms.length);
+          const createdIds = await Promise.all(toCreate.map(t => createTerminalTab(t.workingDirectory, true, t.scrollback)));
+          for (let i = 0; i < createdIds.length; i++) {
+            const termId = createdIds[i];
+            if (!termId) continue;
+            useStore.getState().addTerminalToConversation(convId, termId);
+            const termInfo = toCreate[i];
+            if (termInfo.customName) useStore.getState().setCustomTabName(termId, termInfo.customName);
+            if (termInfo.timelineBlocks?.length) {
+              const blocksToRestore = termInfo.timelineBlocks;
+              const tid = termId;
+              useStore.setState((state) => {
+                if (!state.timelines[tid]) state.timelines[tid] = [];
+                for (const block of blocksToRestore) state.timelines[tid].push({ ...block, data: { ...block.data, sessionId: tid } });
+              });
+            }
+          }
+          for (let i = 0; i < Math.min(savedTerms.length, existingTerms.length); i++) {
+            const termInfo = savedTerms[i];
+            const existingTermId = existingTerms[i];
+            if (termInfo.scrollback) TerminalInstanceManager.setPendingScrollback(existingTermId, termInfo.scrollback);
+            if (termInfo.customName) useStore.getState().setCustomTabName(existingTermId, termInfo.customName);
+            if (termInfo.timelineBlocks?.length) {
+              const blocksToRestore = termInfo.timelineBlocks;
+              const tid = existingTermId;
+              useStore.setState((state) => {
+                if (!state.timelines[tid]) state.timelines[tid] = [];
+                for (const block of blocksToRestore) state.timelines[tid].push({ ...block, data: { ...block.data, sessionId: tid } });
+              });
+            }
+          }
+        }
+        // Restore active tab after background pre-creation (addSession switches active tab)
+        if (savedActiveSessionId && useStore.getState().activeSessionId !== savedActiveSessionId) {
+          useStore.getState().setActiveSession(savedActiveSessionId);
+        }
+      } catch (e) {
+        console.warn("[AIChatPanel] Failed to restore conversation terminals:", e);
+        useStore.getState().setTerminalRestoreInProgress(false);
+      } finally {
+        restoringTerminalsRef.current = false;
+      }
+    })();
+  }, [createTerminalTab]);
 
   // Persist conversations to localStorage immediately on every change
   useEffect(() => {
@@ -358,6 +510,67 @@ export const AIChatPanel = memo(function AIChatPanel() {
           messages: c.messages.map((m: ChatMessage) => ({ ...m, isStreaming: false })),
         }));
       localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+
+      // Skip terminal data save while restore is in progress (prevents overwriting scrollback)
+      if (restoringTerminalsRef.current) return;
+
+      // Debounce terminal data serialization (expensive: serializes all xterm buffers)
+      if (termSaveTimerRef.current) clearTimeout(termSaveTimerRef.current);
+      termSaveTimerRef.current = setTimeout(() => {
+        try {
+          const store = useStore.getState();
+          let existingTermData: Record<string, PersistedTerminal[]> = {};
+          try {
+            const raw = localStorage.getItem(TERMINAL_DATA_KEY);
+            if (raw) existingTermData = JSON.parse(raw);
+          } catch { /* ignore */ }
+          const termData: Record<string, PersistedTerminal[]> = {};
+          for (const c of toSave) {
+            const termIds = store.conversationTerminals[c.id] ?? [];
+            if (termIds.length === 0) {
+              if (existingTermData[c.id]) termData[c.id] = existingTermData[c.id];
+              continue;
+            }
+            const terminals: PersistedTerminal[] = [];
+            for (let i = 0; i < termIds.length; i++) {
+              const tid = termIds[i];
+              const session = store.sessions[tid];
+              if (!session?.workingDirectory) continue;
+              let scrollback = TerminalInstanceManager.serialize(tid);
+              if (scrollback.length > MAX_SCROLLBACK_CHARS) scrollback = scrollback.slice(-MAX_SCROLLBACK_CHARS);
+              if (!scrollback && existingTermData[c.id]?.[i]?.scrollback) scrollback = existingTermData[c.id][i].scrollback;
+              const customName = session.customName || existingTermData[c.id]?.[i]?.customName;
+              const blocks: PersistedCommandBlock[] = [];
+              const timeline = store.timelines[tid];
+              if (timeline) {
+                for (const block of timeline) {
+                  if (block.type === "command") {
+                    let output = block.data.output;
+                    if (output.length > MAX_BLOCK_OUTPUT_CHARS) output = output.slice(-MAX_BLOCK_OUTPUT_CHARS);
+                    blocks.push({ id: block.id, type: "command", timestamp: block.timestamp, data: { ...block.data, output } });
+                  }
+                }
+              }
+              const entry: PersistedTerminal = { workingDirectory: session.workingDirectory, scrollback, customName };
+              entry.timelineBlocks = blocks.slice(-MAX_SAVED_BLOCKS);
+              if (!entry.timelineBlocks.length && existingTermData[c.id]?.[i]?.timelineBlocks?.length) {
+                entry.timelineBlocks = existingTermData[c.id][i].timelineBlocks;
+              }
+              terminals.push(entry);
+            }
+            if (terminals.length > 0) {
+              termData[c.id] = terminals;
+            } else if (existingTermData[c.id]) {
+              termData[c.id] = existingTermData[c.id];
+            }
+          }
+          // #region agent log
+          const _termCounts = Object.fromEntries(Object.entries(termData).map(([k,v])=>[k,{count:v.length,blocks:v.map(t=>t.timelineBlocks?.length??0)}]));
+          fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'AIChatPanel.tsx:saveEffect-write',message:'Save ALL terminals (debounced)',data:{termDataKeys:Object.keys(termData),termCounts:_termCounts},timestamp:Date.now(),hypothesisId:'PERF_DEBOUNCE'})}).catch(()=>{});
+          // #endregion
+          localStorage.setItem(TERMINAL_DATA_KEY, JSON.stringify(termData));
+        } catch { /* ignore */ }
+      }, 500);
     } catch { /* ignore */ }
   }, [conversations]);
 
@@ -599,7 +812,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
     }
   }, [activeConvId]);
 
-  // When switching conversations, activate the first terminal belonging to that conversation
+  // When switching conversations, activate its terminal or lazily restore from saved data
   useEffect(() => {
     if (!activeConvId) return;
     const store = useStore.getState();
@@ -609,8 +822,38 @@ export const AIChatPanel = memo(function AIChatPanel() {
       if (store.sessions[firstTerminal] && store.activeSessionId !== firstTerminal) {
         store.setActiveSession(firstTerminal);
       }
+      return;
     }
-  }, [activeConvId]);
+    // Lazy restore: create ALL terminals in parallel when user switches to this conversation
+    const pendingTerminals = pendingTermRestoreRef.current[activeConvId];
+    if (pendingTerminals) {
+      delete pendingTermRestoreRef.current[activeConvId];
+      (async () => {
+        restoringTerminalsRef.current = true;
+        try {
+          const createdIds = await Promise.all(pendingTerminals.map(p => createTerminalTab(p.workingDirectory, true, p.scrollback)));
+          for (let i = 0; i < createdIds.length; i++) {
+            const termId = createdIds[i];
+            if (!termId) continue;
+            const pending = pendingTerminals[i];
+            useStore.getState().addTerminalToConversation(activeConvId, termId);
+            if (i === 0) useStore.getState().setActiveSession(termId);
+            if (pending.customName) useStore.getState().setCustomTabName(termId, pending.customName);
+            if (pending.timelineBlocks?.length) {
+              const blocksToRestore = pending.timelineBlocks;
+              const tid = termId;
+              useStore.setState((state) => {
+                if (!state.timelines[tid]) state.timelines[tid] = [];
+                for (const block of blocksToRestore) state.timelines[tid].push({ ...block, data: { ...block.data, sessionId: tid } });
+              });
+            }
+          }
+        } finally {
+          restoringTerminalsRef.current = false;
+        }
+      })();
+    }
+  }, [activeConvId, createTerminalTab]);
 
   // Custom scrollbar state
   const [tabsHovered, setTabsHovered] = useState(false);
@@ -922,17 +1165,32 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
     setInput("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
 
-    // Ensure the conversation has a linked terminal tab
+    // Ensure the conversation has a linked terminal tab and it's active
     const convTerminals = useStore.getState().conversationTerminals[conv.id] ?? [];
+    let activeTermId: string | null = null;
     if (convTerminals.length === 0) {
       try {
-        const termId = await createTerminalTab();
-        if (termId) {
-          useStore.getState().addTerminalToConversation(conv.id, termId);
+        activeTermId = await createTerminalTab();
+        if (activeTermId) {
+          useStore.getState().addTerminalToConversation(conv.id, activeTermId);
         }
       } catch (e) {
         console.warn("[AIChatPanel] Failed to create terminal for conversation:", e);
       }
+    } else {
+      activeTermId = convTerminals[0];
+      const store = useStore.getState();
+      if (store.sessions[activeTermId] && store.activeSessionId !== activeTermId) {
+        store.setActiveSession(activeTermId);
+      }
+    }
+
+    // Explicitly sync active terminal to backend before AI processes the prompt
+    if (activeTermId) {
+      try {
+        const { setActiveTerminalSession } = await import("@/lib/tauri");
+        await setActiveTerminalSession(activeTermId);
+      } catch { /* ignore */ }
     }
 
     // Initialize session if needed

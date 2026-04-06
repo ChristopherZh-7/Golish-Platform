@@ -175,6 +175,22 @@ export function Terminal({ sessionId }: TerminalProps) {
         syncBuffer.attach(terminal);
         syncBufferRef.current = syncBuffer;
       }
+
+      const reattachScrollback = TerminalInstanceManager.consumePendingScrollback(sessionId);
+      // #region agent log
+      fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'Terminal.tsx:reattach',message:'Reattach - consume pending',data:{sid:sessionId.slice(0,8),len:reattachScrollback?.length??0,has:!!reattachScrollback,bufRows:terminal.buffer?.active?.length??0},timestamp:Date.now(),hypothesisId:'H'})}).catch(()=>{});
+      // #endregion
+      if (reattachScrollback) {
+        terminal.write(reattachScrollback);
+      }
+      // #region agent log
+      const _sid = sessionId;
+      const _term = terminal;
+      requestAnimationFrame(() => { requestAnimationFrame(() => {
+        const ser = TerminalInstanceManager.serialize(_sid);
+        fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'Terminal.tsx:reattachSettled',message:'Buffer after reattach settled',data:{sid:_sid.slice(0,8),serializedLen:ser.length,serializedPreview:ser.slice(0,300),bufActiveLen:_term.buffer?.active?.length??0,bufBaseY:_term.buffer?.active?.baseY??0},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+      }); });
+      // #endregion
     } else {
       // Fresh instance: Create new terminal
       terminal = new XTerm({
@@ -276,6 +292,20 @@ export function Terminal({ sessionId }: TerminalProps) {
       const syncBuffer = new SyncOutputBuffer();
       syncBuffer.attach(terminal);
       syncBufferRef.current = syncBuffer;
+
+      // Restore saved scrollback if available (written before PTY output starts streaming)
+      const savedScrollback = TerminalInstanceManager.consumePendingScrollback(sessionId);
+      // #region agent log
+      fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'Terminal.tsx:fresh',message:'Fresh mount - consume pending',data:{sid:sessionId.slice(0,8),len:savedScrollback?.length??0,has:!!savedScrollback},timestamp:Date.now(),hypothesisId:'H'})}).catch(()=>{});
+      // #endregion
+      if (savedScrollback) {
+        console.log(`[Terminal] Restoring scrollback for ${sessionId.slice(0,8)}: ${savedScrollback.length} chars`);
+        terminal.write(savedScrollback, () => {
+          // #region agent log
+          fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'Terminal.tsx:writeCallback',message:'Scrollback write processed by xterm',data:{sid:sessionId.slice(0,8),bufActiveLen:terminal.buffer?.active?.length??0,bufBaseY:terminal.buffer?.active?.baseY??0,bufCursorY:terminal.buffer?.active?.cursorY??0},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+          // #endregion
+        });
+      }
     }
 
     // Store refs for use in callbacks
@@ -320,9 +350,23 @@ export function Terminal({ sessionId }: TerminalProps) {
     // Set up event listeners asynchronously
     (async () => {
       // Set up terminal output listener
+      let firstPtyLogged = false;
       const unlistenOutput = await listen<TerminalOutputEvent>("terminal_output", (event) => {
         if (aborted) return;
         if (event.payload.session_id === sessionId && syncBufferRef.current) {
+          // #region agent log
+          if (!firstPtyLogged) {
+            firstPtyLogged = true;
+            const escaped = event.payload.data.slice(0,300).replace(/\x1b/g,'ESC').replace(/[\x00-\x1f]/g,(c: string)=>`\\x${c.charCodeAt(0).toString(16).padStart(2,'0')}`);
+            const serBefore = TerminalInstanceManager.serialize(sessionId);
+            fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'Terminal.tsx:firstPtyOutput',message:'First PTY output',data:{sid:sessionId.slice(0,8),dataLen:event.payload.data.length,dataPreview:escaped,bufBeforeLen:serBefore.length,bufBeforePreview:serBefore.slice(0,200)},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
+            const _sid2 = sessionId; const _term2 = terminal;
+            setTimeout(() => {
+              const serAfter = TerminalInstanceManager.serialize(_sid2);
+              fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'Terminal.tsx:bufferAfter2s',message:'Buffer state 2s after first PTY',data:{sid:_sid2.slice(0,8),serializedLen:serAfter.length,serializedPreview:serAfter.slice(0,500),bufActiveLen:_term2.buffer?.active?.length??0,bufBaseY:_term2.buffer?.active?.baseY??0,viewportY:_term2.buffer?.active?.viewportY??0},timestamp:Date.now(),hypothesisId:'H2,H3'})}).catch(()=>{});
+            }, 2000);
+          }
+          // #endregion
           syncBufferRef.current.write(event.payload.data);
         }
       });

@@ -10,7 +10,9 @@
 
 import { logger } from "@/lib/logger";
 import { loadProjectWorkspace, saveProjectWorkspace } from "@/lib/projects";
+import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import type { ChatConversation, ChatMessage } from "@/store/slices/conversation";
+import type { Session, UnifiedBlock } from "@/store";
 
 const LAST_PROJECT_KEY = "golish-last-project";
 const SAVE_DEBOUNCE_MS = 1000;
@@ -142,6 +144,9 @@ export function createWorkspaceAutoSaver(
     conversationOrder: string[];
     activeConversationId: string | null;
     terminalTabs: PersistedTerminalTab[];
+    conversationTerminals: Record<string, string[]>;
+    sessions: Record<string, Session>;
+    timelines: Record<string, UnifiedBlock[]>;
   },
 ): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -151,11 +156,12 @@ export function createWorkspaceAutoSaver(
     if (!name) return;
     const { conversations, conversationOrder, activeConversationId, terminalTabs } = getState();
     saveWorkspaceState(name, conversations, conversationOrder, activeConversationId, terminalTabs);
+    saveToLocalStorageSync();
   };
 
   const saveToLocalStorageSync = () => {
     try {
-      const { conversations, conversationOrder } = getState();
+      const { conversations, conversationOrder, conversationTerminals, sessions, timelines } = getState();
       const toSave = conversationOrder
         .map((id) => conversations[id])
         .filter((c) => c && c.messages.length > 0)
@@ -169,6 +175,58 @@ export function createWorkspaceAutoSaver(
           isStreaming: false,
         }));
       localStorage.setItem(LOCAL_STORAGE_BACKUP_KEY, JSON.stringify(toSave));
+
+      const MAX_SB = 100_000;
+      const MAX_BLOCK_OUTPUT = 50_000;
+      const MAX_BLOCKS = 50;
+      let existingTermData: Record<string, Array<{ workingDirectory: string; scrollback: string; customName?: string; timelineBlocks?: Array<{ id: string; type: "command"; timestamp: string; data: Record<string, unknown> }> }>> = {};
+      try {
+        const raw = localStorage.getItem("golish-pentest-conv-terminals");
+        if (raw) existingTermData = JSON.parse(raw);
+      } catch { /* ignore */ }
+      const termData: Record<string, Array<{ workingDirectory: string; scrollback: string; customName?: string; timelineBlocks?: Array<{ id: string; type: "command"; timestamp: string; data: Record<string, unknown> }> }>> = {};
+      for (const c of toSave) {
+        const termIds = conversationTerminals[c.id] ?? [];
+        if (termIds.length === 0) {
+          if (existingTermData[c.id]) termData[c.id] = existingTermData[c.id];
+          continue;
+        }
+        const terminals: Array<{ workingDirectory: string; scrollback: string; customName?: string; timelineBlocks?: Array<{ id: string; type: "command"; timestamp: string; data: Record<string, unknown> }> }> = [];
+        for (let i = 0; i < termIds.length; i++) {
+          const tid = termIds[i];
+          const sess = sessions[tid];
+          if (!sess?.workingDirectory) continue;
+          let scrollback = TerminalInstanceManager.serialize(tid);
+          if (scrollback.length > MAX_SB) scrollback = scrollback.slice(-MAX_SB);
+          if (!scrollback && existingTermData[c.id]?.[i]?.scrollback) {
+            scrollback = existingTermData[c.id][i].scrollback;
+          }
+          const customName = sess.customName || existingTermData[c.id]?.[i]?.customName;
+          const blocks: Array<{ id: string; type: "command"; timestamp: string; data: Record<string, unknown> }> = [];
+          const timeline = timelines[tid];
+          if (timeline) {
+            for (const block of timeline) {
+              if (block.type === "command") {
+                let output = block.data.output;
+                if (output.length > MAX_BLOCK_OUTPUT) output = output.slice(-MAX_BLOCK_OUTPUT);
+                blocks.push({ id: block.id, type: "command", timestamp: block.timestamp, data: { ...block.data, output } });
+              }
+            }
+          }
+          const entry: { workingDirectory: string; scrollback: string; customName?: string; timelineBlocks?: Array<{ id: string; type: "command"; timestamp: string; data: Record<string, unknown> }> } = { workingDirectory: sess.workingDirectory, scrollback, customName };
+          entry.timelineBlocks = blocks.slice(-MAX_BLOCKS);
+          if (!entry.timelineBlocks.length && existingTermData[c.id]?.[i]?.timelineBlocks?.length) {
+            entry.timelineBlocks = existingTermData[c.id][i].timelineBlocks;
+          }
+          terminals.push(entry);
+        }
+        if (terminals.length > 0) {
+          termData[c.id] = terminals;
+        } else if (existingTermData[c.id]) {
+          termData[c.id] = existingTermData[c.id];
+        }
+      }
+      localStorage.setItem("golish-pentest-conv-terminals", JSON.stringify(termData));
     } catch { /* ignore */ }
   };
 
@@ -180,7 +238,31 @@ export function createWorkspaceAutoSaver(
   const unsubscribe = subscribe(debouncedSave);
 
   const handleBeforeUnload = () => {
+    // #region agent log
+    try {
+      const { conversationOrder, conversationTerminals, sessions, timelines } = getState();
+      const termIds = Object.values(conversationTerminals).flat();
+      const tlBlockCounts = Object.fromEntries(termIds.map(id=>[id, timelines[id]?.filter((b: {type:string})=>b.type==='command').length??0]));
+      const xb = new XMLHttpRequest();
+      xb.open('POST','http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',false);
+      xb.setRequestHeader('Content-Type','application/json');
+      xb.setRequestHeader('X-Debug-Session-Id','4e8d76');
+      xb.send(JSON.stringify({sessionId:'4e8d76',location:'workspace-storage.ts:beforeUnload',message:'beforeunload - saving with timeline blocks',data:{convCount:conversationOrder.length,termIds,tlBlockCounts},timestamp:Date.now(),hypothesisId:'TL_SAVE'}));
+    } catch {}
+    // #endregion
     saveToLocalStorageSync();
+    // #region agent log
+    try {
+      const saved = localStorage.getItem('golish-pentest-conv-terminals');
+      let savedBlockInfo = 'N/A';
+      if (saved) { try { const p = JSON.parse(saved); savedBlockInfo = JSON.stringify(Object.fromEntries(Object.entries(p).map(([k,v])=>[k,(v as Array<{timelineBlocks?:unknown[]}>)[0]?.timelineBlocks?.length??0]))); } catch {} }
+      const xb2 = new XMLHttpRequest();
+      xb2.open('POST','http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',false);
+      xb2.setRequestHeader('Content-Type','application/json');
+      xb2.setRequestHeader('X-Debug-Session-Id','4e8d76');
+      xb2.send(JSON.stringify({sessionId:'4e8d76',location:'workspace-storage.ts:afterSaveSync',message:'After save - timeline blocks in localStorage',data:{savedBlockCounts:savedBlockInfo},timestamp:Date.now(),hypothesisId:'TL_SAVE'}));
+    } catch {}
+    // #endregion
     save();
   };
   window.addEventListener("beforeunload", handleBeforeUnload);

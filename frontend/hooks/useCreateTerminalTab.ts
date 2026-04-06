@@ -3,6 +3,7 @@ import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
 import { getGitBranch, gitStatus, ptyCreate } from "@/lib/tauri";
 import { useStore } from "@/store";
+import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 
 /**
  * Hook that provides a function to create new terminal tabs.
@@ -11,7 +12,11 @@ import { useStore } from "@/store";
  */
 export function useCreateTerminalTab() {
   const createTerminalTab = useCallback(
-    async (workingDirectory?: string, skipConversationLink?: boolean): Promise<string | null> => {
+    async (
+      workingDirectory?: string,
+      skipConversationLink?: boolean,
+      scrollback?: string,
+    ): Promise<string | null> => {
       const {
         addSession,
         updateGitBranch,
@@ -23,6 +28,11 @@ export function useCreateTerminalTab() {
 
       try {
         const session = await ptyCreate(workingDirectory);
+
+        // Queue scrollback BEFORE addSession triggers React rendering
+        if (scrollback) {
+          TerminalInstanceManager.setPendingScrollback(session.id, scrollback);
+        }
 
         addSession({
           id: session.id,
