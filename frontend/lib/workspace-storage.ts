@@ -1,8 +1,12 @@
 /**
  * Workspace state persistence — per-project.
  *
- * Each project stores its conversation state in
- * ~/.golish/projects/<slug>/workspace.json via backend IPC.
+ * All project-specific data is persisted to <rootPath>/.golish/workspace.json
+ * via backend IPC. This includes conversations, terminal scrollback, timeline
+ * command blocks, AI model selection, and approval mode.
+ *
+ * localStorage serves only as a sync backup for beforeunload and is
+ * hydrated from workspace.json on load.
  *
  * A lightweight localStorage key tracks the last-opened project
  * so the app can auto-restore on restart.
@@ -12,19 +16,39 @@ import { logger } from "@/lib/logger";
 import { loadProjectWorkspace, saveProjectWorkspace } from "@/lib/projects";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import type { ChatConversation, ChatMessage } from "@/store/slices/conversation";
-import type { Session, UnifiedBlock } from "@/store";
+import type { CommandBlock, Session, UnifiedBlock } from "@/store";
 
 const LAST_PROJECT_KEY = "golish-last-project";
 const SAVE_DEBOUNCE_MS = 1000;
 
-/** Serializable workspace state — only what needs to survive a restart. */
+const MAX_SCROLLBACK = 100_000;
+const MAX_BLOCK_OUTPUT = 50_000;
+const MAX_BLOCKS = 50;
+
+export interface PersistedCommandBlock {
+  id: string;
+  type: "command";
+  timestamp: string;
+  data: CommandBlock;
+}
+
+export interface PersistedTerminalData {
+  workingDirectory: string;
+  scrollback: string;
+  customName?: string;
+  timelineBlocks?: PersistedCommandBlock[];
+}
+
 export interface PersistedWorkspaceState {
-  version: 1;
+  version: 1 | 2;
   savedAt: number;
   conversations: PersistedConversation[];
   conversationOrder: string[];
   activeConversationId: string | null;
   terminalTabs?: PersistedTerminalTab[];
+  conversationTerminalData?: Record<string, PersistedTerminalData[]>;
+  aiModel?: { model: string; provider: string } | null;
+  approvalMode?: string;
 }
 
 interface PersistedConversation {
@@ -79,10 +103,13 @@ export async function saveWorkspaceState(
   conversationOrder: string[],
   activeConversationId: string | null,
   terminalTabs?: PersistedTerminalTab[],
+  conversationTerminalData?: Record<string, PersistedTerminalData[]>,
+  aiModel?: { model: string; provider: string } | null,
+  approvalMode?: string,
 ): Promise<void> {
   try {
     const state: PersistedWorkspaceState = {
-      version: 1,
+      version: 2,
       savedAt: Date.now(),
       conversations: conversationOrder
         .map((id) => conversations[id])
@@ -91,12 +118,16 @@ export async function saveWorkspaceState(
       conversationOrder,
       activeConversationId,
       terminalTabs,
+      conversationTerminalData,
+      aiModel,
+      approvalMode,
     };
 
     await saveProjectWorkspace(projectName, JSON.stringify(state));
     logger.debug("[WorkspaceStorage] Saved for project:", projectName, {
       conversations: state.conversations.length,
       terminalTabs: terminalTabs?.length ?? 0,
+      terminalDataConvs: conversationTerminalData ? Object.keys(conversationTerminalData).length : 0,
     });
   } catch (e) {
     logger.warn("[WorkspaceStorage] Failed to save:", e);
@@ -113,7 +144,7 @@ export async function loadWorkspaceState(
 
     const state = JSON.parse(raw) as PersistedWorkspaceState;
 
-    if (state.version !== 1 || !Array.isArray(state.conversations)) {
+    if ((state.version !== 1 && state.version !== 2) || !Array.isArray(state.conversations)) {
       logger.warn("[WorkspaceStorage] Invalid format, discarding");
       return null;
     }
@@ -151,17 +182,76 @@ export function createWorkspaceAutoSaver(
 ): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null;
 
+  const buildTerminalData = (): Record<string, PersistedTerminalData[]> => {
+    const { conversationOrder, conversations, conversationTerminals, sessions, timelines } = getState();
+    const convIds = conversationOrder.filter((id) => conversations[id]?.messages?.length > 0);
+    let existingTermData: Record<string, PersistedTerminalData[]> = {};
+    try {
+      const raw = localStorage.getItem("golish-pentest-conv-terminals");
+      if (raw) existingTermData = JSON.parse(raw);
+    } catch { /* ignore */ }
+    const termData: Record<string, PersistedTerminalData[]> = {};
+    for (const cid of convIds) {
+      const termIds = conversationTerminals[cid] ?? [];
+      if (termIds.length === 0) {
+        if (existingTermData[cid]) termData[cid] = existingTermData[cid];
+        continue;
+      }
+      const terminals: PersistedTerminalData[] = [];
+      for (let i = 0; i < termIds.length; i++) {
+        const tid = termIds[i];
+        const sess = sessions[tid];
+        if (!sess?.workingDirectory) continue;
+        let scrollback = TerminalInstanceManager.serialize(tid);
+        if (scrollback.length > MAX_SCROLLBACK) scrollback = scrollback.slice(-MAX_SCROLLBACK);
+        if (!scrollback && existingTermData[cid]?.[i]?.scrollback) {
+          scrollback = existingTermData[cid][i].scrollback;
+        }
+        const customName = sess.customName || existingTermData[cid]?.[i]?.customName;
+        const blocks: PersistedCommandBlock[] = [];
+        const timeline = timelines[tid];
+        if (timeline) {
+          for (const block of timeline) {
+            if (block.type === "command") {
+              let output = block.data.output;
+              if (output.length > MAX_BLOCK_OUTPUT) output = output.slice(-MAX_BLOCK_OUTPUT);
+              blocks.push({ id: block.id, type: "command", timestamp: block.timestamp, data: { ...block.data, output } });
+            }
+          }
+        }
+        const entry: PersistedTerminalData = { workingDirectory: sess.workingDirectory, scrollback, customName };
+        entry.timelineBlocks = blocks.slice(-MAX_BLOCKS);
+        if (!entry.timelineBlocks.length && existingTermData[cid]?.[i]?.timelineBlocks?.length) {
+          entry.timelineBlocks = existingTermData[cid][i].timelineBlocks;
+        }
+        terminals.push(entry);
+      }
+      if (terminals.length > 0) {
+        termData[cid] = terminals;
+      } else if (existingTermData[cid]) {
+        termData[cid] = existingTermData[cid];
+      }
+    }
+    return termData;
+  };
+
   const save = () => {
     const name = getProjectName();
     if (!name) return;
     const { conversations, conversationOrder, activeConversationId, terminalTabs } = getState();
-    saveWorkspaceState(name, conversations, conversationOrder, activeConversationId, terminalTabs);
-    saveToLocalStorageSync();
+    const termData = buildTerminalData();
+
+    let aiModel: { model: string; provider: string } | null = null;
+    try { aiModel = JSON.parse(localStorage.getItem("golish-pentest-ai-model") || "null"); } catch { /* ignore */ }
+    const approvalMode = localStorage.getItem("golish-approval-mode") || undefined;
+
+    saveWorkspaceState(name, conversations, conversationOrder, activeConversationId, terminalTabs, termData, aiModel, approvalMode);
+    saveToLocalStorageSync(termData);
   };
 
-  const saveToLocalStorageSync = () => {
+  const saveToLocalStorageSync = (prebuiltTermData?: Record<string, PersistedTerminalData[]>) => {
     try {
-      const { conversations, conversationOrder, conversationTerminals, sessions, timelines } = getState();
+      const { conversations, conversationOrder } = getState();
       const toSave = conversationOrder
         .map((id) => conversations[id])
         .filter((c) => c && c.messages.length > 0)
@@ -175,57 +265,7 @@ export function createWorkspaceAutoSaver(
           isStreaming: false,
         }));
       localStorage.setItem(LOCAL_STORAGE_BACKUP_KEY, JSON.stringify(toSave));
-
-      const MAX_SB = 100_000;
-      const MAX_BLOCK_OUTPUT = 50_000;
-      const MAX_BLOCKS = 50;
-      let existingTermData: Record<string, Array<{ workingDirectory: string; scrollback: string; customName?: string; timelineBlocks?: Array<{ id: string; type: "command"; timestamp: string; data: Record<string, unknown> }> }>> = {};
-      try {
-        const raw = localStorage.getItem("golish-pentest-conv-terminals");
-        if (raw) existingTermData = JSON.parse(raw);
-      } catch { /* ignore */ }
-      const termData: Record<string, Array<{ workingDirectory: string; scrollback: string; customName?: string; timelineBlocks?: Array<{ id: string; type: "command"; timestamp: string; data: Record<string, unknown> }> }>> = {};
-      for (const c of toSave) {
-        const termIds = conversationTerminals[c.id] ?? [];
-        if (termIds.length === 0) {
-          if (existingTermData[c.id]) termData[c.id] = existingTermData[c.id];
-          continue;
-        }
-        const terminals: Array<{ workingDirectory: string; scrollback: string; customName?: string; timelineBlocks?: Array<{ id: string; type: "command"; timestamp: string; data: Record<string, unknown> }> }> = [];
-        for (let i = 0; i < termIds.length; i++) {
-          const tid = termIds[i];
-          const sess = sessions[tid];
-          if (!sess?.workingDirectory) continue;
-          let scrollback = TerminalInstanceManager.serialize(tid);
-          if (scrollback.length > MAX_SB) scrollback = scrollback.slice(-MAX_SB);
-          if (!scrollback && existingTermData[c.id]?.[i]?.scrollback) {
-            scrollback = existingTermData[c.id][i].scrollback;
-          }
-          const customName = sess.customName || existingTermData[c.id]?.[i]?.customName;
-          const blocks: Array<{ id: string; type: "command"; timestamp: string; data: Record<string, unknown> }> = [];
-          const timeline = timelines[tid];
-          if (timeline) {
-            for (const block of timeline) {
-              if (block.type === "command") {
-                let output = block.data.output;
-                if (output.length > MAX_BLOCK_OUTPUT) output = output.slice(-MAX_BLOCK_OUTPUT);
-                blocks.push({ id: block.id, type: "command", timestamp: block.timestamp, data: { ...block.data, output } });
-              }
-            }
-          }
-          const entry: { workingDirectory: string; scrollback: string; customName?: string; timelineBlocks?: Array<{ id: string; type: "command"; timestamp: string; data: Record<string, unknown> }> } = { workingDirectory: sess.workingDirectory, scrollback, customName };
-          entry.timelineBlocks = blocks.slice(-MAX_BLOCKS);
-          if (!entry.timelineBlocks.length && existingTermData[c.id]?.[i]?.timelineBlocks?.length) {
-            entry.timelineBlocks = existingTermData[c.id][i].timelineBlocks;
-          }
-          terminals.push(entry);
-        }
-        if (terminals.length > 0) {
-          termData[c.id] = terminals;
-        } else if (existingTermData[c.id]) {
-          termData[c.id] = existingTermData[c.id];
-        }
-      }
+      const termData = prebuiltTermData ?? buildTerminalData();
       localStorage.setItem("golish-pentest-conv-terminals", JSON.stringify(termData));
     } catch { /* ignore */ }
   };
@@ -250,7 +290,8 @@ export function createWorkspaceAutoSaver(
       xb.send(JSON.stringify({sessionId:'4e8d76',location:'workspace-storage.ts:beforeUnload',message:'beforeunload - saving with timeline blocks',data:{convCount:conversationOrder.length,termIds,tlBlockCounts},timestamp:Date.now(),hypothesisId:'TL_SAVE'}));
     } catch {}
     // #endregion
-    saveToLocalStorageSync();
+    const termData = buildTerminalData();
+    saveToLocalStorageSync(termData);
     // #region agent log
     try {
       const saved = localStorage.getItem('golish-pentest-conv-terminals');

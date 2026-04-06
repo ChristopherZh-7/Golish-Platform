@@ -41,6 +41,7 @@ import { useShallow } from "zustand/react/shallow";
 import { createNewConversation } from "@/store/slices/conversation";
 import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
+import type { PersistedCommandBlock, PersistedTerminalData } from "@/lib/workspace-storage";
 
 const STORAGE_KEY = "golish-pentest-conversations";
 const TERMINAL_DATA_KEY = "golish-pentest-conv-terminals";
@@ -49,19 +50,7 @@ const MAX_SCROLLBACK_CHARS = 100_000;
 const MAX_BLOCK_OUTPUT_CHARS = 50_000;
 const MAX_SAVED_BLOCKS = 50;
 
-interface PersistedCommandBlock {
-  id: string;
-  type: "command";
-  timestamp: string;
-  data: { id: string; sessionId: string; command: string; output: string; exitCode: number | null; startTime: string; durationMs: number | null; workingDirectory: string; isCollapsed: boolean };
-}
-
-interface PersistedTerminal {
-  workingDirectory: string;
-  scrollback: string;
-  customName?: string;
-  timelineBlocks?: PersistedCommandBlock[];
-}
+type PersistedTerminal = PersistedTerminalData;
 const EMPTY_MESSAGES: ChatMessage[] = [];
 
 function ThinkingBlock({ content, isActive }: { content: string; isActive: boolean }) {

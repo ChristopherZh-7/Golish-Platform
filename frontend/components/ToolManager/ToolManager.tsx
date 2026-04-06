@@ -478,9 +478,9 @@ export function ToolManager() {
   }, []);
 
   const closeEditor = useCallback(() => {
-    if (editorDirty) { setShowCloseConfirm(true); return; }
+    if (editorDirty || skillDirty) { setShowCloseConfirm(true); return; }
     animateClose();
-  }, [editorDirty, animateClose]);
+  }, [editorDirty, skillDirty, animateClose]);
 
   const forceCloseEditor = useCallback(() => {
     setShowCloseConfirm(false);
@@ -981,7 +981,7 @@ export function ToolManager() {
                 <div className="flex items-center gap-2">
                   {editingTool.icon && <span className="text-[14px]">{editingTool.icon}</span>}
                   <h1 className="text-[16px] font-semibold text-foreground">{editingTool.name}</h1>
-                  {editorDirty && <span className="w-2 h-2 rounded-full bg-accent/60 flex-shrink-0" title={t("toolManager.unsavedChanges")} />}
+                  {(editorDirty || skillDirty) && <span className="w-2 h-2 rounded-full bg-accent/60 flex-shrink-0" title={t("toolManager.unsavedChanges")} />}
                 </div>
                 <p className="text-[11px] text-muted-foreground/50 mt-0.5">{t("toolManager.editToolConfig")}</p>
               </div>
@@ -1004,7 +1004,13 @@ export function ToolManager() {
                   <Code2 className="w-3 h-3" /> {t("toolManager.json")}
                 </button>
               </div>
-              {editorMode !== "skills" && (
+              {editorMode === "skills" ? (
+                <button type="button" onClick={handleSaveSkill} disabled={skillSaving || !skillDirty}
+                  className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-colors",
+                    skillDirty ? "bg-accent text-accent-foreground hover:bg-accent/90" : "bg-muted/30 text-muted-foreground/30 cursor-not-allowed")}>
+                  {skillSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />} {t("common.save")}
+                </button>
+              ) : (
                 <button type="button" onClick={handleSave} disabled={saving || !editorDirty}
                   className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-colors",
                     editorDirty ? "bg-accent text-accent-foreground hover:bg-accent/90" : "bg-muted/30 text-muted-foreground/30 cursor-not-allowed")}>

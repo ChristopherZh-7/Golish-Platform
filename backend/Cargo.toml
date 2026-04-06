@@ -29,6 +29,7 @@ members = [
     "crates/golish-json-repair",
     "crates/golish-mcp",
     "crates/golish-pentest",
+    "crates/golish-pentest-mcp",
 ]
 # Default members for fast inner-loop development (excludes Tauri app, evals, benchmarks)
 default-members = [
@@ -57,6 +58,7 @@ default-members = [
     "crates/golish-json-repair",
     "crates/golish-mcp",
     "crates/golish-pentest",
+    "crates/golish-pentest-mcp",
 ]
 resolver = "2"
 
@@ -93,6 +95,7 @@ golish-swebench = { path = "crates/golish-swebench" }
 rig-zai-sdk = { path = "crates/rig-zai-sdk" }
 rig-gemini-vertex = { path = "crates/rig-gemini-vertex" }
 golish-pentest = { path = "crates/golish-pentest" }
+golish-pentest-mcp = { path = "crates/golish-pentest-mcp" }
 
 # Tauri (optional - only for GUI app)
 tauri = { version = "2", features = ["unstable"] }
