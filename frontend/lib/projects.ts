@@ -6,6 +6,17 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { useStore } from "@/store";
+
+/** Get the current project's root path from the store. */
+export function getProjectPath(): string | null {
+  return useStore.getState().currentProjectPath;
+}
+
+/** Helper to create a projectPath param for backend invoke calls. */
+export function ppParam() {
+  return { projectPath: getProjectPath() };
+}
 
 /** Project form data for creating/updating a project. */
 export interface ProjectFormData {

@@ -922,10 +922,12 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const handleNewChat = useCallback(() => {
     const conv = createNewConversation();
     addConversation(conv);
-    // Auto-create a terminal for the new conversation
     void createTerminalTab();
     setInput("");
     setShowHistory(false);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
   }, [addConversation, createTerminalTab]);
 
   const handleCloseTab = useCallback(
@@ -1465,6 +1467,7 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
         <div className="rounded-lg border border-[var(--border-subtle)] bg-background overflow-hidden focus-within:border-muted-foreground/30 transition-colors">
           <textarea
             ref={textareaRef}
+            data-ai-chat-input
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}

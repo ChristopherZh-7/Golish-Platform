@@ -1,7 +1,9 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
+import { getProjectPath } from "@/lib/projects";
 import { logger } from "@/lib/logger";
 import { ActivityBar, type ActivityView } from "./components/ActivityBar/ActivityBar";
 import { CommandPalette, type PageRoute } from "./components/CommandPalette";
@@ -44,6 +46,46 @@ const ToolManagerView = lazy(() =>
     default: m.ToolManager,
   }))
 );
+const WikiPanelView = lazy(() =>
+  import("./components/WikiPanel/WikiPanel").then((m) => ({
+    default: m.WikiPanel,
+  }))
+);
+const TargetPanelView = lazy(() =>
+  import("./components/TargetPanel/TargetPanel").then((m) => ({
+    default: m.TargetPanel,
+  }))
+);
+const TopologyPanelView = lazy(() =>
+  import("./components/TopologyView/TopologyView").then((m) => ({
+    default: m.TopologyView,
+  }))
+);
+const MethodologyPanelView = lazy(() =>
+  import("./components/MethodologyPanel/MethodologyPanel").then((m) => ({
+    default: m.MethodologyPanel,
+  }))
+);
+const DashboardPanelView = lazy(() =>
+  import("./components/DashboardPanel/DashboardPanel").then((m) => ({
+    default: m.DashboardPanel,
+  }))
+);
+const FindingsPanelView = lazy(() =>
+  import("./components/FindingsPanel/FindingsPanel").then((m) => ({
+    default: m.FindingsPanel,
+  }))
+);
+const PipelinePanelView = lazy(() =>
+  import("./components/PipelinePanel/PipelinePanel").then((m) => ({
+    default: m.PipelinePanel,
+  }))
+);
+const RecordingsPanelView = lazy(() =>
+  import("./components/Terminal/RecordingsPanel").then((m) => ({
+    default: m.RecordingsPanel,
+  }))
+);
 const ContextPanel = lazy(() =>
   import("./components/Sidecar/ContextPanel").then((m) => ({
     default: m.ContextPanel,
@@ -62,6 +104,11 @@ const ComponentTestbed = lazy(() =>
 const QuickOpenDialog = lazy(() =>
   import("./components/QuickOpenDialog").then((m) => ({
     default: m.QuickOpenDialog,
+  }))
+);
+const KeyboardShortcutsHelp = lazy(() =>
+  import("./components/KeyboardShortcutsHelp/KeyboardShortcutsHelp").then((m) => ({
+    default: m.KeyboardShortcutsHelp,
   }))
 );
 
@@ -96,6 +143,7 @@ function App() {
   const openSettingsTab = useStore((state) => state.openSettingsTab);
   const openHomeTab = useStore((state) => state.openHomeTab);
   const openBrowserTab = useStore((state) => state.openBrowserTab);
+  const openSecurityTab = useStore((state) => state.openSecurityTab);
 
   // Panel state from store (replaces local useState)
   const gitPanelOpen = useStore((state) => state.gitPanelOpen);
@@ -114,15 +162,41 @@ function App() {
 
   const hasProject = useStore((s) => s.currentProjectName !== null);
   const isOnHomeTab = useStore((s) => s.homeTabId !== null && s.activeSessionId === s.homeTabId);
+  const hasBrowserTab = useStore((s) => Object.values(s.sessions).some((sess) => sess.tabType === "browser"));
+  const hasSecurityTab = useStore((s) => Object.values(s.sessions).some((sess) => sess.tabType === "security"));
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [quickOpenDialogOpen, setQuickOpenDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState("providers");
+  const [settingsSection, setSettingsSection] = useState("environment");
   const [currentPage, setCurrentPage] = useState<PageRoute>("main");
   const [activityView, setActivityView] = useState<ActivityView>(null);
   const [bottomTerminalOpen, setBottomTerminalOpen] = useState(true);
+  const [shortcutsHelpOpen, setShortcutsHelpOpen] = useState(false);
+  const [recordingsPanelOpen, setRecordingsPanelOpen] = useState(false);
+  const [rightPanelTabs, setRightPanelTabs] = useState<string[]>([]);
+  const [rightActiveTab, setRightActiveTab] = useState<string | null>(null);
+  const [showSplitDropZone, setShowSplitDropZone] = useState(false);
+  const [showMergeDropZone, setShowMergeDropZone] = useState(false);
+  const [splitDragGhost, setSplitDragGhost] = useState<{ x: number; y: number; name: string } | null>(null);
+  const splitDragRef = useRef<{ startX: number; startY: number; dragging: boolean; tabId: string | null }>({ startX: 0, startY: 0, dragging: false, tabId: null });
+  const splitTabId = rightActiveTab;
+  const hasSplit = rightPanelTabs.length > 0;
+
+  const closeRightTab = useCallback((tabId?: string) => {
+    const target = tabId || rightActiveTab;
+    if (!target) return;
+    setRightPanelTabs((prev) => {
+      const next = prev.filter((id) => id !== target);
+      if (next.length === 0) {
+        setRightActiveTab(null);
+      } else if (rightActiveTab === target) {
+        setRightActiveTab(next[next.length - 1]);
+      }
+      return next;
+    });
+  }, [rightActiveTab]);
 
   // Subscribe to file editor sidebar store to sync open state
   // This allows openFile() calls from anywhere to open the sidebar
@@ -199,7 +273,7 @@ function App() {
           const config = await getProjectConfig(lastProject);
 
           if (config) {
-            useStore.getState().setCurrentProject(lastProject);
+            useStore.getState().setCurrentProject(lastProject, config.rootPath);
 
             // Restore conversations
             const saved = await loadWorkspaceState(lastProject);
@@ -368,6 +442,80 @@ function App() {
     };
   }, []);
 
+  // Handle tab split events from TabBar
+  useEffect(() => {
+    const handleSplitTab = (e: Event) => {
+      const tabId = (e as CustomEvent<string>).detail;
+      setRightPanelTabs((prev) => {
+        if (prev.includes(tabId)) return prev;
+        const s = useStore.getState();
+        if (s.activeSessionId === tabId) {
+          const other = s.tabOrder.find((id) => id !== tabId && !prev.includes(id) && (s.sessions[id]?.tabType ?? "terminal") !== "home");
+          if (other) s.setActiveSession(other);
+        }
+        return [...prev, tabId];
+      });
+      setRightActiveTab(tabId);
+      setShowSplitDropZone(false);
+    };
+    const handleUnsplitTab = () => { setRightPanelTabs([]); setRightActiveTab(null); };
+    const handleDragHint = (e: Event) => setShowSplitDropZone((e as CustomEvent<boolean>).detail);
+    const handleToolOutput = async (e: Event) => {
+      const { command, output } = (e as CustomEvent<{ command: string; output: string; sessionId: string }>).detail;
+      try {
+        const detected = await invoke<{ tool_id: string; tool_name: string; output_config: { format: string; produces: string[]; patterns: unknown[]; fields: Record<string, string>; detect?: string } } | null>(
+          "output_detect_tool", { command, rawOutput: output }
+        );
+        if (!detected) return;
+        const parsed = await invoke<{ items: { data_type: string; fields: Record<string, string> }[] }>(
+          "output_parse", { rawOutput: output, config: detected.output_config, toolId: detected.tool_id, toolName: detected.tool_name }
+        );
+        if (!parsed.items.length) return;
+        const pp = getProjectPath();
+        const produces = detected.output_config.produces;
+
+        if (produces.includes("host") || produces.includes("port")) {
+          const data = await invoke<{ nodes: unknown[]; edges: unknown[] }>("topo_parse", { rawOutput: output, projectPath: pp });
+          if (data.nodes.length > 0) {
+            notify.success(`${detected.tool_name}: ${data.nodes.length} hosts → Topology`);
+            await invoke("topo_save", { name: `${detected.tool_name}-${Date.now()}`, data, projectPath: pp });
+          }
+        }
+
+        if (produces.includes("vulnerability")) {
+          const vulnItems = parsed.items
+            .filter((it) => it.data_type === "vulnerability")
+            .map((it) => it.fields);
+          if (vulnItems.length > 0) {
+            const added = await invoke<number>("findings_import_parsed", {
+              items: vulnItems, toolName: detected.tool_name, projectPath: pp,
+            });
+            if (added > 0) {
+              notify.success(`${detected.tool_name}: ${added} findings imported`);
+            }
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    window.addEventListener("split-tab-right", handleSplitTab);
+    window.addEventListener("unsplit-tab", handleUnsplitTab);
+    window.addEventListener("tab-drag-split-hint", handleDragHint);
+    const handleRecordingSaved = () => {
+      notify.success("Terminal recording saved");
+    };
+    window.addEventListener("tool-output-completed", handleToolOutput);
+    window.addEventListener("recording-saved", handleRecordingSaved);
+    return () => {
+      window.removeEventListener("split-tab-right", handleSplitTab);
+      window.removeEventListener("unsplit-tab", handleUnsplitTab);
+      window.removeEventListener("tab-drag-split-hint", handleDragHint);
+      window.removeEventListener("tool-output-completed", handleToolOutput);
+      window.removeEventListener("recording-saved", handleRecordingSaved);
+    };
+  }, []);
+
   // Handle native menu events from Tauri backend
   useEffect(() => {
     const unlisteners: Array<() => void> = [];
@@ -400,6 +548,27 @@ function App() {
     handleSplitPane,
     handleClosePane,
     handleNavigatePane,
+    openBrowserTab: () => { setActivityView(null); openBrowserTab(); },
+    openSecurityTab: () => { setActivityView(null); openSecurityTab(); },
+    toggleToolManager: () => setActivityView((v) => v === "toolManage" ? null : "toolManage"),
+    toggleWiki: () => setActivityView((v) => v === "wiki" ? null : "wiki"),
+    toggleBottomTerminal: () => {
+      setActivityView(null);
+      const s = useStore.getState();
+      const currentTabType = s.activeSessionId ? (s.sessions[s.activeSessionId]?.tabType ?? "terminal") : "terminal";
+      if (currentTabType !== "terminal") {
+        const termTab = s.tabOrder.find((id) => (s.sessions[id]?.tabType ?? "terminal") === "terminal");
+        if (termTab) { s.setActiveSession(termTab); return; }
+      }
+      setBottomTerminalOpen((v) => !v);
+    },
+    focusAiChat: () => {
+      setActivityView(null);
+      requestAnimationFrame(() => {
+        const el = document.querySelector<HTMLTextAreaElement>('[data-ai-chat-input]');
+        el?.focus();
+      });
+    },
     setCommandPaletteOpen,
     setQuickOpenDialogOpen,
     setSidecarPanelOpen: (open: boolean) => {
@@ -409,6 +578,7 @@ function App() {
         closePanels();
       }
     },
+    setShortcutsHelpOpen,
   };
 
   // Set up the keyboard event listener once
@@ -612,9 +782,26 @@ function App() {
               activeView={activityView}
               onViewChange={setActivityView}
               terminalOpen={bottomTerminalOpen}
-              onToggleTerminal={() => setBottomTerminalOpen((v) => !v)}
+              onToggleTerminal={() => {
+                setActivityView(null);
+                const s = useStore.getState();
+                const currentTabType = s.activeSessionId ? (s.sessions[s.activeSessionId]?.tabType ?? "terminal") : "terminal";
+                if (currentTabType !== "terminal") {
+                  const termTab = s.tabOrder.find(
+                    (id) => (s.sessions[id]?.tabType ?? "terminal") === "terminal"
+                  );
+                  if (termTab) {
+                    s.setActiveSession(termTab);
+                    return;
+                  }
+                }
+                setBottomTerminalOpen((v) => !v);
+              }}
               onOpenSettings={() => setSettingsOpen(true)}
-              onOpenBrowser={() => openBrowserTab()}
+              onOpenBrowser={() => { setActivityView(null); openBrowserTab(); }}
+              onOpenSecurity={() => { setActivityView(null); openSecurityTab(); }}
+              browserOpen={hasBrowserTab}
+              securityOpen={hasSecurityTab}
             />
           </div>
 
@@ -656,52 +843,259 @@ function App() {
             </div>
           </div>
 
+          {/* Wiki view - overlays entire center+right area */}
+          <div className={cn(
+            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
+            activityView === "wiki"
+              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
+              : "opacity-0 translate-y-1 pointer-events-none z-0",
+          )}>
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
+              <Suspense fallback={null}>
+                <WikiPanelView />
+              </Suspense>
+            </div>
+          </div>
+
+          {/* Target view - overlays entire center+right area */}
+          <div className={cn(
+            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
+            activityView === "targets"
+              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
+              : "opacity-0 translate-y-1 pointer-events-none z-0",
+          )}>
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
+              <Suspense fallback={null}>
+                <TargetPanelView />
+              </Suspense>
+            </div>
+          </div>
+
+          {/* Topology view */}
+          <div className={cn(
+            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
+            activityView === "topology"
+              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
+              : "opacity-0 translate-y-1 pointer-events-none z-0",
+          )}>
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float relative">
+              <Suspense fallback={null}>
+                <TopologyPanelView />
+              </Suspense>
+            </div>
+          </div>
+
+          {/* Methodology view */}
+          <div className={cn(
+            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
+            activityView === "methodology"
+              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
+              : "opacity-0 translate-y-1 pointer-events-none z-0",
+          )}>
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float relative">
+              <Suspense fallback={null}>
+                <MethodologyPanelView />
+              </Suspense>
+            </div>
+          </div>
+
+          {/* Dashboard view */}
+          <div className={cn(
+            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
+            activityView === "dashboard"
+              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
+              : "opacity-0 translate-y-1 pointer-events-none z-0",
+          )}>
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
+              <Suspense fallback={null}>
+                <DashboardPanelView />
+              </Suspense>
+            </div>
+          </div>
+
+          {/* Findings view */}
+          <div className={cn(
+            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
+            activityView === "findings"
+              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
+              : "opacity-0 translate-y-1 pointer-events-none z-0",
+          )}>
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
+              <Suspense fallback={null}>
+                <FindingsPanelView />
+              </Suspense>
+            </div>
+          </div>
+
+          {/* Pipelines view */}
+          <div className={cn(
+            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
+            activityView === "pipelines"
+              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
+              : "opacity-0 translate-y-1 pointer-events-none z-0",
+          )}>
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
+              <Suspense fallback={null}>
+                <PipelinePanelView />
+              </Suspense>
+            </div>
+          </div>
+
           {/* Normal view - center + right panels */}
           <div className={cn(
             "flex-1 flex gap-2 min-w-0 transition-all duration-200 ease-out",
-            (activityView === "settings" || activityView === "toolManage")
+            (activityView === "settings" || activityView === "toolManage" || activityView === "wiki" || activityView === "targets" || activityView === "topology" || activityView === "methodology" || activityView === "dashboard" || activityView === "findings" || activityView === "pipelines")
               ? "opacity-0 scale-[0.98] pointer-events-none"
               : "opacity-100 scale-100 pointer-events-auto",
           )}>
-            {/* Center - TabBar + Pane content */}
-            <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
+            {/* Center - TabBar + Pane content (with optional split) */}
+            <div className={cn("flex-1 min-w-0 flex gap-2 overflow-hidden relative transition-all duration-300 ease-out", hasSplit ? "flex-row" : "flex-col")}>
+              {/* Left column (or full width when no split) */}
               <div className={cn(
-                "transition-all duration-300 ease-out overflow-hidden",
-                isOnHomeTab ? "max-h-0 opacity-0" : "max-h-[34px] opacity-100"
+                "flex flex-col overflow-hidden rounded-xl bg-card panel-float relative transition-all duration-300 ease-out",
+                hasSplit ? "flex-1 min-w-0" : "flex-1",
               )}>
-                <TabBar />
-              </div>
-
-              <div className="flex-1 min-h-0 min-w-0 flex overflow-hidden">
-                <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden relative">
-                  {tabLayouts.map(({ tabId, root }) => (
-                    <div
-                      key={tabId}
-                      className={`absolute inset-0 ${tabId === activeSessionId ? "visible" : "invisible pointer-events-none"}`}
-                    >
-                      <PaneContainer node={root} tabId={tabId} />
-                    </div>
-                  ))}
-                  {!activeSessionId && (
-                    <div className="flex items-center justify-center h-full">
-                      <span className="text-muted-foreground">No active session</span>
-                    </div>
-                  )}
+                <div className={cn(
+                  "transition-all duration-300 ease-out overflow-hidden",
+                  isOnHomeTab ? "max-h-0 opacity-0" : "max-h-[34px] opacity-100"
+                )}>
+                  <TabBar excludeTabIds={rightPanelTabs} showDropHint={showMergeDropZone} />
                 </div>
 
-                <Suspense fallback={null}>
-                  <GitPanel open={gitPanelOpen} onOpenChange={handleGitPanelOpenChange} />
-                </Suspense>
-                <Suspense fallback={null}>
-                  <ContextPanel open={contextPanelOpen} onOpenChange={handleContextPanelOpenChange} />
-                </Suspense>
-                <Suspense fallback={null}>
-                  <FileEditorSidebarPanel
-                    open={fileEditorPanelOpen}
-                    onOpenChange={handleFileEditorPanelOpenChange}
-                  />
-                </Suspense>
+                <div className="flex-1 min-h-0 min-w-0 flex overflow-hidden">
+                  <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden relative">
+                    {tabLayouts.map(({ tabId, root }) => {
+                      const isActive = hasSplit
+                        ? tabId === activeSessionId && !rightPanelTabs.includes(tabId)
+                        : tabId === activeSessionId;
+                      return (
+                        <div
+                          key={tabId}
+                          className={`absolute inset-0 ${isActive ? "" : "invisible pointer-events-none [&_.pane-bottom-terminal]:!hidden"}`}
+                        >
+                          <PaneContainer node={root} tabId={tabId} />
+                        </div>
+                      );
+                    })}
+                    {!activeSessionId && (
+                      <div className="flex items-center justify-center h-full">
+                        <span className="text-muted-foreground">No active session</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <Suspense fallback={null}>
+                    <GitPanel open={gitPanelOpen} onOpenChange={handleGitPanelOpenChange} />
+                  </Suspense>
+                  <Suspense fallback={null}>
+                    <ContextPanel open={contextPanelOpen} onOpenChange={handleContextPanelOpenChange} />
+                  </Suspense>
+                  <Suspense fallback={null}>
+                    <FileEditorSidebarPanel
+                      open={fileEditorPanelOpen}
+                      onOpenChange={handleFileEditorPanelOpenChange}
+                    />
+                  </Suspense>
+                </div>
               </div>
+
+              {/* Right split column */}
+              {hasSplit && (
+                <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float animate-in slide-in-from-right-4 fade-in duration-300">
+                  <div className="h-[34px] flex items-center border-b border-border/30 flex-shrink-0 overflow-x-auto">
+                    {rightPanelTabs.map((rTabId) => {
+                      const rSession = useStore.getState().sessions[rTabId];
+                      const rName = rSession?.customName
+                        || rSession?.processName
+                        || rSession?.workingDirectory?.split(/[/\\]/).pop()
+                        || "Terminal";
+                      const isRightActive = rTabId === rightActiveTab;
+                      return (
+                        <div
+                          key={rTabId}
+                          className={cn(
+                            "flex items-center gap-1.5 px-3 py-1 h-full relative cursor-grab active:cursor-grabbing select-none text-[11px] font-mono transition-colors",
+                            isRightActive ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                          )}
+                          onClick={() => setRightActiveTab(rTabId)}
+                          onPointerDown={(e) => {
+                            if ((e.target as HTMLElement).closest("button")) return;
+                            e.preventDefault();
+                            splitDragRef.current = { startX: e.clientX, startY: e.clientY, dragging: false, tabId: rTabId };
+                            (e.target as HTMLElement).setPointerCapture(e.pointerId);
+                          }}
+                          onPointerMove={(e) => {
+                            const ref = splitDragRef.current;
+                            if (!ref.startX && !ref.startY) return;
+                            const dx = e.clientX - ref.startX;
+                            const dist = Math.sqrt(dx * dx + (e.clientY - ref.startY) ** 2);
+                            if (!ref.dragging && dist > 8) {
+                              ref.dragging = true;
+                              document.documentElement.classList.add("tab-dragging");
+                            }
+                            if (ref.dragging) {
+                              setShowMergeDropZone(dx < -40);
+                              setSplitDragGhost({ x: e.clientX, y: e.clientY, name: rName });
+                            }
+                          }}
+                          onPointerUp={(e) => {
+                            const ref = splitDragRef.current;
+                            if (ref.dragging && (e.clientX - ref.startX) < -40) closeRightTab(rTabId);
+                            splitDragRef.current = { startX: 0, startY: 0, dragging: false, tabId: null };
+                            setShowMergeDropZone(false);
+                            setSplitDragGhost(null);
+                            document.documentElement.classList.remove("tab-dragging");
+                          }}
+                        >
+                          {isRightActive && <span className="absolute bottom-0 left-0 right-0 h-px bg-accent" />}
+                          <span className="truncate max-w-[140px]">{rName}</span>
+                          <button
+                            className="p-0.5 rounded hover:bg-background/50 text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
+                            onClick={(e) => { e.stopPropagation(); closeRightTab(rTabId); }}
+                            title="Close split"
+                            onPointerDown={(e) => e.stopPropagation()}
+                          >
+                            <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                              <line x1="2" y1="2" x2="8" y2="8" />
+                              <line x1="8" y1="2" x2="2" y2="8" />
+                            </svg>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="flex-1 min-h-0 min-w-0 relative">
+                    {rightPanelTabs.map((rTabId) => {
+                      const layout = tabLayouts.find((l) => l.tabId === rTabId);
+                      if (!layout) return null;
+                      return (
+                        <div
+                          key={rTabId}
+                          className={`absolute inset-0 ${rTabId === rightActiveTab ? "visible" : "invisible pointer-events-none"}`}
+                        >
+                          <PaneContainer node={layout.root} tabId={rTabId} />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Split drop zone indicator */}
+              {showSplitDropZone && (
+                <div className="absolute inset-0 z-20 pointer-events-none flex animate-in fade-in duration-200">
+                  <div className="flex-1" />
+                  <div className="w-1/2 m-2 rounded-xl border-2 border-dashed border-accent/60 bg-accent/8 flex items-center justify-center backdrop-blur-[2px] animate-in slide-in-from-right-2 duration-300">
+                    <div className="flex flex-col items-center gap-1.5 animate-pulse">
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="text-accent/60">
+                        <rect x="3" y="3" width="18" height="18" rx="2" />
+                        <line x1="12" y1="3" x2="12" y2="21" />
+                      </svg>
+                      <span className="text-xs text-accent/60 font-medium">Split Right</span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Right sidebar - AI Chat Panel (animated hide on home tab) */}
@@ -737,6 +1131,28 @@ function App() {
           onSplitPaneDown={() => handleSplitPane("horizontal")}
           onClosePane={handleClosePane}
           onOpenQuickOpen={() => setQuickOpenDialogOpen(true)}
+          onOpenBrowser={() => { setActivityView(null); openBrowserTab(); }}
+          onOpenSecurity={() => { setActivityView(null); openSecurityTab(); }}
+          onToggleToolManager={() => setActivityView((v) => v === "toolManage" ? null : "toolManage")}
+          onToggleWiki={() => setActivityView((v) => v === "wiki" ? null : "wiki")}
+          onToggleBottomTerminal={() => {
+            setActivityView(null);
+            const s = useStore.getState();
+            const currentTabType = s.activeSessionId ? (s.sessions[s.activeSessionId]?.tabType ?? "terminal") : "terminal";
+            if (currentTabType !== "terminal") {
+              const termTab = s.tabOrder.find((id) => (s.sessions[id]?.tabType ?? "terminal") === "terminal");
+              if (termTab) { s.setActiveSession(termTab); return; }
+            }
+            setBottomTerminalOpen((v) => !v);
+          }}
+          onFocusAiChat={() => {
+            setActivityView(null);
+            requestAnimationFrame(() => {
+              document.querySelector<HTMLTextAreaElement>('[data-ai-chat-input]')?.focus();
+            });
+          }}
+          onOpenShortcutsHelp={() => setShortcutsHelpOpen(true)}
+          onOpenRecordings={() => setRecordingsPanelOpen(true)}
         />
 
         <Suspense fallback={null}>
@@ -763,7 +1179,42 @@ function App() {
           <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
         </Suspense>
 
+        <Suspense fallback={null}>
+          <KeyboardShortcutsHelp open={shortcutsHelpOpen} onOpenChange={setShortcutsHelpOpen} />
+        </Suspense>
+
+        {/* Terminal Recordings Panel - overlay */}
+        {recordingsPanelOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+            <div className="w-[800px] h-[500px] max-w-[90vw] max-h-[80vh] rounded-xl overflow-hidden shadow-2xl">
+              <Suspense fallback={null}>
+                <RecordingsPanelView onClose={() => setRecordingsPanelOpen(false)} />
+              </Suspense>
+            </div>
+          </div>
+        )}
+
         <SidecarNotifications />
+
+        {/* Floating ghost tab following cursor during right-panel drag */}
+        {splitDragGhost && createPortal(
+          <div
+            className="fixed z-[9999] pointer-events-none flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-card/95 border border-accent/70 text-foreground text-[11px] font-mono shadow-2xl backdrop-blur-md ring-1 ring-accent/20"
+            style={{
+              left: splitDragGhost.x,
+              top: splitDragGhost.y,
+              transform: "translate(-50%, -120%)",
+              transition: "box-shadow 0.2s ease",
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-accent flex-shrink-0">
+              <polyline points="4 17 10 11 4 5" />
+              <line x1="12" y1="19" x2="12" y2="5" />
+            </svg>
+            <span className="truncate max-w-[120px]">{splitDragGhost.name}</span>
+          </div>,
+          document.body
+        )}
       </div>
     </TerminalPortalProvider>
   );
