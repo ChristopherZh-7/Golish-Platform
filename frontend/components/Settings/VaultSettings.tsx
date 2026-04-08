@@ -178,27 +178,24 @@ export function VaultSettings() {
   }, []);
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <div className="flex items-center gap-2 mb-1">
-          <KeyRound className="w-5 h-5 text-accent" />
-          <h2 className="text-lg font-semibold">{t("vault.title")}</h2>
-          <span className="text-xs text-muted-foreground ml-auto">
-            {t("vault.total", { count: entries.length })}
-          </span>
-        </div>
-        <p className="text-xs text-muted-foreground">{t("vault.description")}</p>
+    <div className="h-full flex flex-col">
+      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border/10 flex-shrink-0">
+        <span className="text-[11px] text-muted-foreground/40">
+          {entries.length} {t("vault.credentials", "credentials")}
+        </span>
+        <span className="text-[10px] text-muted-foreground/20 ml-1">
+          {t("vault.refHint", "Reference: {{vault:name}}")}
+        </span>
+        <div className="flex-1" />
+        <button
+          className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] rounded-md font-medium bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
+          onClick={() => setShowAdd(!showAdd)}
+        >
+          <Plus className="w-3 h-3" />
+          {t("vault.addEntry")}
+        </button>
       </div>
-
-      {/* Add button */}
-      <button
-        className="flex items-center gap-2 px-3 py-2 text-xs rounded-lg border border-dashed border-border/50 hover:border-accent/50 hover:bg-accent/5 text-muted-foreground hover:text-foreground transition-colors w-full"
-        onClick={() => setShowAdd(!showAdd)}
-      >
-        <Plus className="w-3.5 h-3.5" />
-        {t("vault.addEntry")}
-      </button>
+      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
 
       {/* Add form */}
       {showAdd && (
@@ -273,77 +270,59 @@ export function VaultSettings() {
         </div>
       )}
 
-      {/* Entries list */}
       {entries.length === 0 && !showAdd ? (
-        <div className="text-center py-12 text-muted-foreground">
-          <KeyRound className="w-8 h-8 mx-auto mb-2 opacity-30" />
-          <p className="text-xs">{t("vault.noEntries")}</p>
+        <div className="flex flex-col items-center justify-center py-16 text-muted-foreground/20">
+          <KeyRound className="w-10 h-10 mb-3" />
+          <p className="text-[12px] font-medium">{t("vault.noEntries")}</p>
+          <p className="text-[10px] text-muted-foreground/15 mt-1 max-w-xs text-center">
+            {t("vault.description")}
+          </p>
         </div>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-1.5">
           {entries.map((entry) => (
             <div
               key={entry.id}
-              className="p-3 rounded-lg border border-border/30 hover:border-border/50 transition-colors group"
+              className="px-3 py-2.5 rounded-lg border border-border/15 hover:border-border/30 bg-[var(--bg-hover)]/10 transition-colors group"
             >
               <div className="flex items-center gap-2">
-                <KeyRound className="w-3.5 h-3.5 text-accent flex-shrink-0" />
-                <span className="text-sm font-medium text-foreground flex-1 truncate">{entry.name}</span>
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted/40 text-muted-foreground">
+                <KeyRound className="w-3 h-3 text-accent/60 flex-shrink-0" />
+                <span className="text-[12px] font-medium text-foreground/80 flex-1 truncate">{entry.name}</span>
+                <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-muted/20 text-muted-foreground/50 font-medium">
                   {t(TYPE_LABEL_KEYS[entry.type] || entry.type)}
                 </span>
-
-                {/* Actions */}
                 <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button
-                    className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground"
-                    onClick={() => handleRevealToggle(entry.id)}
-                    title={revealedIds.has(entry.id) ? t("vault.hideValue") : t("vault.showValue")}
-                  >
+                  <button className="p-1 rounded hover:bg-muted/30 text-muted-foreground/40 hover:text-foreground" onClick={() => handleRevealToggle(entry.id)}>
                     {revealedIds.has(entry.id) ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
                   </button>
-                  <button
-                    className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground"
-                    onClick={() => handleCopyValue(entry.id)}
-                    title={t("vault.copyValue")}
-                  >
+                  <button className="p-1 rounded hover:bg-muted/30 text-muted-foreground/40 hover:text-foreground" onClick={() => handleCopyValue(entry.id)}>
                     <Copy className="w-3 h-3" />
                   </button>
-                  <button
-                    className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-accent"
-                    onClick={() => handleCopyRef(entry.name)}
-                    title={t("vault.copyRef")}
-                  >
+                  <button className="p-1 rounded hover:bg-muted/30 text-muted-foreground/40 hover:text-accent" onClick={() => handleCopyRef(entry.name)}>
                     <Link2 className="w-3 h-3" />
                   </button>
-                  <button
-                    className="p-1 rounded hover:bg-red-500/20 text-muted-foreground hover:text-red-400"
-                    onClick={() => handleDelete(entry.id, entry.name)}
-                  >
+                  <button className="p-1 rounded hover:bg-red-500/15 text-muted-foreground/40 hover:text-red-400" onClick={() => handleDelete(entry.id, entry.name)}>
                     <Trash2 className="w-3 h-3" />
                   </button>
                 </div>
               </div>
-
-              {/* Metadata row */}
-              <div className="flex items-center gap-3 mt-1 ml-5 text-[11px] text-muted-foreground">
-                {entry.username && <span>@{entry.username}</span>}
-                {entry.project && <span className="text-accent/70">{entry.project}</span>}
-                {entry.notes && <span className="truncate max-w-[200px]">{entry.notes}</span>}
-              </div>
-
-              {/* Revealed value */}
-              {revealedIds.has(entry.id) && revealedValues[entry.id] && (
-                <div className="mt-2 ml-5">
-                  <pre className="text-xs font-mono bg-background border border-border/30 rounded px-2.5 py-1.5 whitespace-pre-wrap break-all text-foreground/80 max-h-[120px] overflow-y-auto">
-                    {revealedValues[entry.id]}
-                  </pre>
+              {(entry.username || entry.project || entry.notes) && (
+                <div className="flex items-center gap-3 mt-1 ml-5 text-[10px] text-muted-foreground/40">
+                  {entry.username && <span>@{entry.username}</span>}
+                  {entry.project && <span className="text-accent/50">{entry.project}</span>}
+                  {entry.notes && <span className="truncate max-w-[200px]">{entry.notes}</span>}
                 </div>
+              )}
+              {revealedIds.has(entry.id) && revealedValues[entry.id] && (
+                <pre className="mt-2 ml-5 text-[10px] font-mono bg-background/50 border border-border/15 rounded-md px-2.5 py-1.5 whitespace-pre-wrap break-all text-foreground/60 max-h-[100px] overflow-y-auto">
+                  {revealedValues[entry.id]}
+                </pre>
               )}
             </div>
           ))}
         </div>
       )}
+      </div>
     </div>
   );
 }

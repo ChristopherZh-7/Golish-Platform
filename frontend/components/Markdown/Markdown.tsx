@@ -310,7 +310,7 @@ export const Markdown = memo(function Markdown({
       hr: () => <hr className="my-4 border-[var(--border-medium)]" />,
       // Strong and emphasis
       strong: ({ children }: { children?: ReactNode }) => (
-        <strong className="font-bold text-accent">{children}</strong>
+        <strong className="font-bold text-foreground">{children}</strong>
       ),
       em: ({ children }: { children?: ReactNode }) => (
         <em className="italic text-[var(--success)]">{children}</em>

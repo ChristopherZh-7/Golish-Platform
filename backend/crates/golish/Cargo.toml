@@ -75,6 +75,7 @@ reqwest.workspace = true
 zip.workspace = true
 walkdir.workspace = true
 regex = "1"
+quick-xml = { workspace = true }
 rusqlite = { workspace = true }
 
 # OpenTelemetry for Langfuse tracing

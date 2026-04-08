@@ -151,6 +151,44 @@ export function AppearanceSettings({
       {/* Divider */}
       <div className="border-t border-[var(--border-medium)]" />
 
+      {/* UI Scale */}
+      <div className="space-y-4">
+        <h3 className="text-sm font-medium text-foreground">UI Scale</h3>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium text-foreground">Zoom Level</span>
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {Math.round((displaySettings.uiScale ?? 1.0) * 100)}%
+            </span>
+          </div>
+          <Slider
+            value={[(displaySettings.uiScale ?? 1.0) * 100]}
+            onValueChange={([v]: number[]) => update({ uiScale: Math.round(v) / 100 })}
+            min={75}
+            max={150}
+            step={5}
+            className="w-full"
+          />
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-muted-foreground">
+              Scale the entire UI (75% – 150%). Useful if text or buttons feel too small.
+            </p>
+            {(displaySettings.uiScale ?? 1.0) !== 1.0 && (
+              <button
+                type="button"
+                className="text-xs text-accent hover:underline"
+                onClick={() => update({ uiScale: 1.0 })}
+              >
+                Reset to 100%
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Divider */}
+      <div className="border-t border-[var(--border-medium)]" />
+
       {/* Input Caret */}
       <div className="space-y-4">
         <h3 className="text-sm font-medium text-foreground">Input Caret</h3>
@@ -518,6 +556,7 @@ export function AppearanceSettings({
               showContextUsage: true,
               showMcpBadge: true,
               hideAiSettingsInShellMode: displaySettings.hideAiSettingsInShellMode,
+              uiScale: displaySettings.uiScale ?? 1.0,
             })
           }
           className="text-xs text-accent hover:underline disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed"
@@ -546,6 +585,7 @@ export function AppearanceSettings({
               showContextUsage: false,
               showMcpBadge: false,
               hideAiSettingsInShellMode: displaySettings.hideAiSettingsInShellMode,
+              uiScale: displaySettings.uiScale ?? 1.0,
             })
           }
           className="text-xs text-accent hover:underline disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed"

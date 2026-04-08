@@ -22,7 +22,8 @@ describe("Appearance Slice", () => {
     it("should have all visibility settings defaulting to true and behavior flags to false", () => {
       const settings = store.getState().displaySettings;
       expect(settings.hideAiSettingsInShellMode).toBe(false);
-      const { hideAiSettingsInShellMode: _, ...visibilitySettings } = settings;
+      expect(settings.uiScale).toBe(1.0);
+      const { hideAiSettingsInShellMode: _, uiScale: _s, ...visibilitySettings } = settings;
       for (const value of Object.values(visibilitySettings)) {
         expect(value).toBe(true);
       }
@@ -53,11 +54,13 @@ describe("Appearance Slice", () => {
         showContextUsage: false,
         showMcpBadge: false,
         hideAiSettingsInShellMode: false,
+        uiScale: 1.0,
       };
       store.getState().setDisplaySettings(allHidden);
       const result = store.getState().displaySettings;
       expect(result.hideAiSettingsInShellMode).toBe(false);
-      const { hideAiSettingsInShellMode: _, ...visibilityOnly } = result;
+      expect(result.uiScale).toBe(1.0);
+      const { hideAiSettingsInShellMode: _, uiScale: _s, ...visibilityOnly } = result;
       for (const value of Object.values(visibilityOnly)) {
         expect(value).toBe(false);
       }

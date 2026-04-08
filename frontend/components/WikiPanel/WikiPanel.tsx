@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Bold, BookOpen, ChevronDown, ChevronRight, Code, Eye, FileCode2, FileText, FolderOpen, FolderPlus,
-  Heading1, Heading2, Heading3, Italic, Link2, List, ListOrdered, Loader2, Pencil, Plus, Quote,
-  Search, Shield, Strikethrough, Table, Trash2, X,
+  Bold, BookOpen, ChevronDown, ChevronRight, Code, FileCode2, FileText, FolderOpen, FolderPlus,
+  Heading1, Heading2, Heading3, Italic, Link2, List, ListOrdered, Loader2, Plus, Quote,
+  Search, Strikethrough, Table, Trash2, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { Markdown } from "@/components/Markdown/Markdown";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 interface WikiEntry {
   path: string;
@@ -42,7 +41,7 @@ function extToLang(name: string): string | null {
 }
 
 function isMarkdown(name: string): boolean {
-  return name.endsWith(".md") || name.endsWith(".txt");
+  return name.endsWith(".md");
 }
 
 function FileIcon({ name, className }: { name: string; className?: string }) {
@@ -201,7 +200,7 @@ function MarkdownToolbar({
   );
 }
 
-export function WikiPanel() {
+export function WikiPanel({ initialPath }: { initialPath?: string | null }) {
   const { t } = useTranslation();
   const [tree, setTree] = useState<WikiEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -210,7 +209,6 @@ export function WikiPanel() {
   const [content, setContent] = useState("");
   const [originalContent, setOriginalContent] = useState("");
   const [dirty, setDirty] = useState(false);
-  const [mode, setMode] = useState<"edit" | "preview">("edit");
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState<WikiSearchResult[] | null>(null);
@@ -224,12 +222,6 @@ export function WikiPanel() {
   const [newName, setNewName] = useState("");
   const newNameRef = useRef<HTMLInputElement>(null);
 
-  // CVE creation dialog
-  const [showCveDialog, setShowCveDialog] = useState(false);
-  const [cveId, setCveId] = useState("");
-  const [cveTitle, setCveTitle] = useState("");
-  const [cvePocLang, setCvePocLang] = useState("py");
-  const [cveCreating, setCveCreating] = useState(false);
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -247,6 +239,12 @@ export function WikiPanel() {
 
   useEffect(() => { loadTree(); }, [loadTree]);
 
+  useEffect(() => {
+    if (initialPath && !loading) {
+      openFile(initialPath);
+    }
+  }, [initialPath, loading]);
+
   const openFile = useCallback(async (path: string, fileName?: string) => {
     if (dirty && activePath) {
       try { await invoke("wiki_write", { path: activePath, content }); } catch { /* ignore */ }
@@ -258,7 +256,6 @@ export function WikiPanel() {
       setContent(data);
       setOriginalContent(data);
       setDirty(false);
-      setMode(isMarkdown(path) ? "edit" : "edit");
       setSearchResults(null);
     } catch (e) {
       setError(t("wiki.loadFailed", { error: String(e) }));
@@ -322,24 +319,6 @@ export function WikiPanel() {
     setNewName("");
   }, [creating, newName, loadTree, openFile]);
 
-  const handleCreateCve = useCallback(async () => {
-    if (!cveId.trim() || !cveTitle.trim()) return;
-    setCveCreating(true);
-    try {
-      const readmePath: string = await invoke("wiki_create_cve", {
-        cveId: cveId.trim(),
-        title: cveTitle.trim(),
-        pocLang: cvePocLang || null,
-      });
-      await loadTree();
-      setExpandedDirs((prev) => new Set([...prev, cveId.trim()]));
-      openFile(readmePath, "README.md");
-      setShowCveDialog(false);
-      setCveId("");
-      setCveTitle("");
-    } catch (e) { setError(String(e)); }
-    finally { setCveCreating(false); }
-  }, [cveId, cveTitle, cvePocLang, loadTree, openFile]);
 
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return;
@@ -473,10 +452,6 @@ export function WikiPanel() {
           </p>
         </div>
         <div className="flex items-center gap-1.5">
-          <button type="button" onClick={() => setShowCveDialog(true)} title={t("wiki.newCve")}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium bg-accent/10 text-accent hover:bg-accent/20 transition-colors">
-            <Shield className="w-3.5 h-3.5" /> {t("wiki.newCve")}
-          </button>
           <button type="button" onClick={() => startCreate("file", "")} title={t("wiki.newFile")}
             className="p-2 rounded-lg text-muted-foreground/50 hover:text-accent hover:bg-[var(--bg-hover)] transition-colors">
             <Plus className="w-4 h-4" />
@@ -572,45 +547,37 @@ export function WikiPanel() {
                     </span>
                   )}
                 </div>
-                <div className="flex items-center gap-1">
-                  {isMd && (
-                    <div className="flex items-center rounded-md border border-border/15 overflow-hidden">
-                      <button type="button" onClick={() => setMode("edit")}
-                        className={cn("flex items-center gap-1 px-2.5 py-1 text-[11px] transition-colors",
-                          mode === "edit" ? "bg-accent/15 text-accent" : "text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)]")}>
-                        <Pencil className="w-3 h-3" /> {t("wiki.edit")}
-                      </button>
-                      <button type="button" onClick={() => setMode("preview")}
-                        className={cn("flex items-center gap-1 px-2.5 py-1 text-[11px] transition-colors",
-                          mode === "preview" ? "bg-accent/15 text-accent" : "text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)]")}>
-                        <Eye className="w-3 h-3" /> {t("wiki.preview")}
-                      </button>
-                    </div>
-                  )}
-                </div>
               </div>
 
-              <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
-                {isMd && mode === "preview" ? (
-                  <div className="flex-1 overflow-y-auto px-6 py-4">
-                    <div className="prose prose-invert prose-sm max-w-none">
-                      <Markdown content={content} />
+              {isMd ? (
+                <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+                  <MarkdownToolbar textareaRef={editorRef} onChange={handleContentChange} content={content} />
+                  <div className="flex-1 flex min-h-0 overflow-hidden">
+                    <div className="flex-1 min-w-0 flex flex-col overflow-hidden border-r border-border/10">
+                      <WikiEditor
+                        ref={editorRef}
+                        value={content}
+                        onChange={handleContentChange}
+                        language={null}
+                      />
+                    </div>
+                    <div className="flex-1 min-w-0 overflow-y-auto px-6 py-4">
+                      <div className="prose prose-invert prose-sm max-w-none">
+                        <Markdown content={content} />
+                      </div>
                     </div>
                   </div>
-                ) : (
-                  <>
-                    {isMd && mode === "edit" && (
-                      <MarkdownToolbar textareaRef={editorRef} onChange={handleContentChange} content={content} />
-                    )}
-                    <WikiEditor
-                      ref={editorRef}
-                      value={content}
-                      onChange={handleContentChange}
-                      language={codeLang}
-                    />
-                  </>
-                )}
-              </div>
+                </div>
+              ) : (
+                <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+                  <WikiEditor
+                    ref={editorRef}
+                    value={content}
+                    onChange={handleContentChange}
+                    language={codeLang}
+                  />
+                </div>
+              )}
             </>
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center gap-3">
@@ -641,64 +608,6 @@ export function WikiPanel() {
         </div>
       )}
 
-      {/* CVE creation dialog */}
-      {showCveDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowCveDialog(false)}>
-          <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-6 shadow-xl max-w-md w-full" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-2 mb-4">
-              <Shield className="w-5 h-5 text-accent" />
-              <h2 className="text-[15px] font-semibold text-foreground">{t("wiki.newCve")}</h2>
-            </div>
-            <div className="space-y-3">
-              <div>
-                <label className="text-[11px] text-muted-foreground/60 mb-1 block">{t("wiki.cveId")}</label>
-                <input value={cveId} onChange={(e) => setCveId(e.target.value)}
-                  placeholder="CVE-2024-XXXX"
-                  className="w-full h-8 px-3 text-[12px] font-mono bg-background rounded-lg border border-border/20 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40 transition-colors"
-                />
-              </div>
-              <div>
-                <label className="text-[11px] text-muted-foreground/60 mb-1 block">{t("wiki.cveTitle")}</label>
-                <input value={cveTitle} onChange={(e) => setCveTitle(e.target.value)}
-                  placeholder={t("wiki.cveTitlePlaceholder")}
-                  className="w-full h-8 px-3 text-[12px] bg-background rounded-lg border border-border/20 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40 transition-colors"
-                />
-              </div>
-              <div>
-                <label className="text-[11px] text-muted-foreground/60 mb-1 block">{t("wiki.pocLang")}</label>
-                <Select value={cvePocLang} onValueChange={setCvePocLang}>
-                  <SelectTrigger className="h-8 text-[12px] border-border/20 bg-background">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="py" className="text-[12px]">Python (.py)</SelectItem>
-                    <SelectItem value="go" className="text-[12px]">Go (.go)</SelectItem>
-                    <SelectItem value="sh" className="text-[12px]">Bash (.sh)</SelectItem>
-                    <SelectItem value="js" className="text-[12px]">JavaScript (.js)</SelectItem>
-                    <SelectItem value="rs" className="text-[12px]">Rust (.rs)</SelectItem>
-                    <SelectItem value="rb" className="text-[12px]">Ruby (.rb)</SelectItem>
-                    <SelectItem value="java" className="text-[12px]">Java (.java)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div className="flex justify-end gap-2 mt-5">
-              <button type="button" onClick={() => setShowCveDialog(false)}
-                className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">
-                {t("common.cancel")}
-              </button>
-              <button type="button" onClick={handleCreateCve} disabled={cveCreating || !cveId.trim() || !cveTitle.trim()}
-                className={cn("flex items-center gap-1.5 text-[12px] px-4 py-1.5 rounded-lg font-medium transition-colors",
-                  cveId.trim() && cveTitle.trim()
-                    ? "bg-accent text-accent-foreground hover:bg-accent/90"
-                    : "bg-muted/30 text-muted-foreground/30 cursor-not-allowed")}>
-                {cveCreating && <Loader2 className="w-3 h-3 animate-spin" />}
-                {t("wiki.createCve")}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

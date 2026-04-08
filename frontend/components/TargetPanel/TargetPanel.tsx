@@ -3,9 +3,10 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { QuickNotes } from "@/components/QuickNotes/QuickNotes";
 import {
-  ChevronDown, Crosshair, Globe, Hash, Network,
-  Play, Plus, Radar, Search, Shield, ShieldOff, Tag, Trash2, X,
+  Check, ChevronDown, Crosshair, Globe, Hash, Map, Network,
+  Play, Plus, Radar, Search, Settings2, Shield, ShieldOff, Tag, Trash2, X,
 } from "lucide-react";
+import { TopologyView } from "@/components/TopologyView/TopologyView";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import { getProjectPath } from "@/lib/projects";
@@ -29,6 +30,36 @@ interface Target {
 interface TargetStore {
   targets: Target[];
   groups: string[];
+}
+
+const AUTO_SCAN_CONFIG_KEY = "golish-auto-scan-tools";
+
+const DEFAULT_AUTO_SCAN_TOOLS: Record<string, string[]> = {
+  domain: ["nmap"],
+  ip: ["nmap"],
+  cidr: ["nmap"],
+  url: ["nmap"],
+  wildcard: [],
+};
+
+const ALL_TOOLS_BY_TYPE: Record<string, string[]> = {
+  domain: ["nmap", "subfinder", "httpx", "nuclei", "whatweb", "katana"],
+  ip: ["nmap", "masscan", "rustscan", "nuclei"],
+  cidr: ["nmap", "masscan", "rustscan"],
+  url: ["nmap", "nikto", "ffuf", "gobuster", "dirsearch", "feroxbuster", "nuclei", "whatweb", "katana"],
+  wildcard: ["subfinder", "httpx"],
+};
+
+function loadAutoScanConfig(): Record<string, string[]> {
+  try {
+    const raw = localStorage.getItem(AUTO_SCAN_CONFIG_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch { /* ignore */ }
+  return { ...DEFAULT_AUTO_SCAN_TOOLS };
+}
+
+function saveAutoScanConfig(config: Record<string, string[]>) {
+  localStorage.setItem(AUTO_SCAN_CONFIG_KEY, JSON.stringify(config));
 }
 
 const TYPE_ICONS: Record<string, React.ReactNode> = {
@@ -106,9 +137,12 @@ function MiniDropdown({
   );
 }
 
+type TargetTab = "targets" | "topology";
+
 export function TargetPanel() {
   const { t } = useTranslation();
   const currentProjectPath = useStore((s) => s.currentProjectPath);
+  const [activeTab, setActiveTab] = useState<TargetTab>("targets");
   const [store, setStore] = useState<TargetStore>({ targets: [], groups: ["default"] });
   const [search, setSearch] = useState("");
   const [scopeFilter, setScopeFilter] = useState<"all" | "in" | "out">("all");
@@ -121,6 +155,10 @@ export function TargetPanel() {
   const [showNewGroup, setShowNewGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
   const [autoScan, setAutoScan] = useState(() => localStorage.getItem("golish-auto-scan") === "true");
+  const [showAutoScanConfig, setShowAutoScanConfig] = useState(false);
+  const [autoScanConfig, setAutoScanConfig] = useState<Record<string, string[]>>(loadAutoScanConfig);
+  const autoScanConfigRef = useRef<HTMLDivElement>(null);
+  const { createTerminalTab } = useCreateTerminalTab();
 
   const toggleAutoScan = useCallback(() => {
     setAutoScan((prev) => {
@@ -128,6 +166,46 @@ export function TargetPanel() {
       localStorage.setItem("golish-auto-scan", String(next));
       return next;
     });
+  }, []);
+
+  const toggleAutoScanTool = useCallback((type: string, toolId: string) => {
+    setAutoScanConfig((prev) => {
+      const current = prev[type] ?? [];
+      const next = current.includes(toolId)
+        ? current.filter((t) => t !== toolId)
+        : [...current, toolId];
+      const updated = { ...prev, [type]: next };
+      saveAutoScanConfig(updated);
+      return updated;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!showAutoScanConfig) return;
+    const close = (e: MouseEvent) => {
+      if (autoScanConfigRef.current && !autoScanConfigRef.current.contains(e.target as Node)) setShowAutoScanConfig(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [showAutoScanConfig]);
+
+  const getToolCommand = useCallback((toolId: string, targetValue: string) => {
+    const map: Record<string, string> = {
+      nmap: `nmap -sC -sV ${targetValue}`,
+      masscan: `masscan ${targetValue} -p1-65535 --rate=1000`,
+      rustscan: `rustscan -a ${targetValue}`,
+      subfinder: `subfinder -d ${targetValue}`,
+      httpx: `echo "${targetValue}" | httpx`,
+      nuclei: `nuclei -u ${targetValue}`,
+      nikto: `nikto -h ${targetValue}`,
+      ffuf: `ffuf -u ${targetValue}/FUZZ -w /usr/share/wordlists/common.txt`,
+      gobuster: `gobuster dir -u ${targetValue} -w /usr/share/wordlists/common.txt`,
+      dirsearch: `dirsearch -u ${targetValue}`,
+      feroxbuster: `feroxbuster -u ${targetValue}`,
+      whatweb: `whatweb ${targetValue}`,
+      katana: `katana -u ${targetValue}`,
+    };
+    return map[toolId] || `${toolId} ${targetValue}`;
   }, []);
 
   const loadTargets = useCallback(async () => {
@@ -143,14 +221,8 @@ export function TargetPanel() {
 
   const runAutoScan = useCallback(async (targetValue: string, targetType: string) => {
     if (!autoScan) return;
-    const toolsForType: Record<string, string[]> = {
-      domain: ["nmap"],
-      ip: ["nmap"],
-      cidr: ["nmap"],
-      url: ["nmap"],
-      wildcard: [],
-    };
-    const toolIds = toolsForType[targetType] || ["nmap"];
+    const toolIds = autoScanConfig[targetType] ?? [];
+    if (toolIds.length === 0) return;
     for (const toolId of toolIds) {
       const cmd = getToolCommand(toolId, targetValue);
       const sessionId = await createTerminalTab();
@@ -160,7 +232,7 @@ export function TargetPanel() {
         setTimeout(() => { ptyWrite(sessionId, cmd + "\n").catch(() => {}); }, 500);
       }
     }
-  }, [autoScan, createTerminalTab, getToolCommand]);
+  }, [autoScan, autoScanConfig, createTerminalTab, getToolCommand]);
 
   const handleAdd = useCallback(async () => {
     if (!addForm.value.trim()) return;
@@ -291,7 +363,6 @@ export function TargetPanel() {
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; target: Target } | null>(null);
   const [tools, setTools] = useState<ToolConfig[]>([]);
   const ctxRef = useRef<HTMLDivElement>(null);
-  const { createTerminalTab } = useCreateTerminalTab();
 
   useEffect(() => {
     scanTools().then((r) => setTools(r.tools || [])).catch(() => {});
@@ -306,39 +377,11 @@ export function TargetPanel() {
     return () => document.removeEventListener("mousedown", close);
   }, [ctxMenu]);
 
-  const QUICK_TOOLS: Record<string, string[]> = {
-    domain: ["nmap", "subfinder", "httpx", "nuclei", "whatweb", "katana"],
-    ip: ["nmap", "masscan", "rustscan", "nuclei"],
-    cidr: ["nmap", "masscan", "rustscan"],
-    url: ["nikto", "ffuf", "gobuster", "dirsearch", "feroxbuster", "nuclei", "whatweb", "katana"],
-    wildcard: ["subfinder", "httpx"],
-  };
-
-  const getToolCommand = useCallback((toolId: string, targetValue: string) => {
-    const map: Record<string, string> = {
-      nmap: `nmap -sC -sV ${targetValue}`,
-      masscan: `masscan ${targetValue} -p1-65535 --rate=1000`,
-      rustscan: `rustscan -a ${targetValue}`,
-      subfinder: `subfinder -d ${targetValue}`,
-      httpx: `echo "${targetValue}" | httpx`,
-      nuclei: `nuclei -u ${targetValue}`,
-      nikto: `nikto -h ${targetValue}`,
-      ffuf: `ffuf -u ${targetValue}/FUZZ -w /usr/share/wordlists/common.txt`,
-      gobuster: `gobuster dir -u ${targetValue} -w /usr/share/wordlists/common.txt`,
-      dirsearch: `dirsearch -u ${targetValue}`,
-      feroxbuster: `feroxbuster -u ${targetValue}`,
-      whatweb: `whatweb ${targetValue}`,
-      katana: `katana -u ${targetValue}`,
-    };
-    return map[toolId] || `${toolId} ${targetValue}`;
-  }, []);
-
   const handleRunTool = useCallback(async (toolId: string, target: Target) => {
     const cmd = getToolCommand(toolId, target.value);
     const sessionId = await createTerminalTab();
     if (sessionId) {
       useStore.getState().setActiveSession(sessionId);
-      // Close activity view so terminal is visible
       window.dispatchEvent(new CustomEvent("close-activity-view"));
       const { ptyWrite } = await import("@/lib/tauri");
       setTimeout(async () => {
@@ -350,7 +393,7 @@ export function TargetPanel() {
 
   const contextToolList = useMemo(() => {
     if (!ctxMenu) return [];
-    const relevantIds = QUICK_TOOLS[ctxMenu.target.type] || [];
+    const relevantIds = ALL_TOOLS_BY_TYPE[ctxMenu.target.type] || [];
     return relevantIds.map((id) => {
       const match = tools.find((t) => t.id === id || t.name.toLowerCase() === id);
       return { id, name: match?.name || id, installed: !!match };
@@ -360,28 +403,109 @@ export function TargetPanel() {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
-        <div className="flex items-center gap-2">
-          <Crosshair className="w-4 h-4 text-accent" />
-          <h2 className="text-sm font-semibold">{t("targets.title")}</h2>
-          <span className="text-xs text-muted-foreground">
-            {t("targets.total", { count: stats.total })}
-          </span>
-        </div>
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-border/50">
         <div className="flex items-center gap-1">
           <button
+            type="button"
             className={cn(
-              "p-1.5 rounded transition-colors relative",
-              autoScan
-                ? "bg-accent/15 text-accent hover:bg-accent/25"
-                : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+              "flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md transition-colors",
+              activeTab === "targets"
+                ? "bg-accent/15 text-accent font-medium"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted/40",
             )}
-            onClick={toggleAutoScan}
-            title={autoScan ? "Auto-scan ON — New targets auto-trigger nmap" : "Auto-scan OFF — Click to enable"}
+            onClick={() => setActiveTab("targets")}
           >
-            <Radar className="w-3.5 h-3.5" />
-            {autoScan && <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-accent" />}
+            <Crosshair className="w-3.5 h-3.5" />
+            {t("targets.title")}
+            <span className="text-[10px] text-muted-foreground/60 tabular-nums">{stats.total}</span>
           </button>
+          <button
+            type="button"
+            className={cn(
+              "flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md transition-colors",
+              activeTab === "topology"
+                ? "bg-accent/15 text-accent font-medium"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted/40",
+            )}
+            onClick={() => setActiveTab("topology")}
+          >
+            <Map className="w-3.5 h-3.5" />
+            {t("activity.topology")}
+          </button>
+        </div>
+        {activeTab === "targets" && (
+        <div className="flex items-center gap-1">
+          <div className="relative flex items-center">
+            <button
+              className={cn(
+                "p-1.5 rounded-l transition-colors relative",
+                autoScan
+                  ? "bg-accent/15 text-accent hover:bg-accent/25"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+              )}
+              onClick={toggleAutoScan}
+              title={autoScan ? "Auto-scan ON" : "Auto-scan OFF"}
+            >
+              <Radar className="w-3.5 h-3.5" />
+              {autoScan && <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-accent" />}
+            </button>
+            <button
+              className={cn(
+                "p-1.5 rounded-r transition-colors border-l border-border/20",
+                showAutoScanConfig
+                  ? "bg-accent/15 text-accent"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+              )}
+              onClick={() => setShowAutoScanConfig(!showAutoScanConfig)}
+              title="Configure auto-scan tools"
+            >
+              <Settings2 className="w-3 h-3" />
+            </button>
+            {showAutoScanConfig && (
+              <div
+                ref={autoScanConfigRef}
+                className="absolute top-full right-0 mt-1 w-[280px] rounded-lg border border-border/30 bg-card shadow-lg z-50 py-2 max-h-[400px] overflow-y-auto"
+              >
+                <div className="px-3 pb-1.5 text-[10px] text-muted-foreground/50 font-medium uppercase tracking-wide">
+                  Auto-scan tools by target type
+                </div>
+                {Object.entries(ALL_TOOLS_BY_TYPE).map(([type, availableTools]) => {
+                  const selected = autoScanConfig[type] ?? [];
+                  return (
+                    <div key={type} className="px-3 py-1.5">
+                      <div className="flex items-center gap-1.5 mb-1">
+                        {TYPE_ICONS[type] || <Globe className="w-3 h-3" />}
+                        <span className="text-[11px] font-medium text-foreground/80 capitalize">{type}</span>
+                        <span className="text-[10px] text-muted-foreground/50 ml-auto">
+                          {selected.length}/{availableTools.length}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {availableTools.map((tool) => {
+                          const active = selected.includes(tool);
+                          return (
+                            <button
+                              key={tool}
+                              className={cn(
+                                "flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded border transition-colors",
+                                active
+                                  ? "bg-accent/15 border-accent/30 text-accent"
+                                  : "bg-muted/20 border-border/20 text-muted-foreground hover:border-border/40 hover:text-foreground"
+                              )}
+                              onClick={() => toggleAutoScanTool(type, tool)}
+                            >
+                              {active && <Check className="w-2.5 h-2.5" />}
+                              {tool}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
           <button
             className="p-1.5 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
             onClick={() => { setShowBatch(true); setShowAdd(false); }}
@@ -406,8 +530,13 @@ export function TargetPanel() {
             </button>
           )}
         </div>
+        )}
       </div>
 
+      {activeTab === "topology" ? (
+        <div className="flex-1 min-h-0"><TopologyView /></div>
+      ) : (
+      <>
       {/* Filter bar */}
       <div className="flex items-center gap-2 px-4 py-2 border-b border-border/30">
         <div className="flex-1 relative">
@@ -684,6 +813,8 @@ export function TargetPanel() {
           )}
         </div>,
         document.body,
+      )}
+      </>
       )}
     </div>
   );

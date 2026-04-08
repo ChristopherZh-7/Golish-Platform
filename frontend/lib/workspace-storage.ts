@@ -278,32 +278,8 @@ export function createWorkspaceAutoSaver(
   const unsubscribe = subscribe(debouncedSave);
 
   const handleBeforeUnload = () => {
-    // #region agent log
-    try {
-      const { conversationOrder, conversationTerminals, sessions, timelines } = getState();
-      const termIds = Object.values(conversationTerminals).flat();
-      const tlBlockCounts = Object.fromEntries(termIds.map(id=>[id, timelines[id]?.filter((b: {type:string})=>b.type==='command').length??0]));
-      const xb = new XMLHttpRequest();
-      xb.open('POST','http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',false);
-      xb.setRequestHeader('Content-Type','application/json');
-      xb.setRequestHeader('X-Debug-Session-Id','4e8d76');
-      xb.send(JSON.stringify({sessionId:'4e8d76',location:'workspace-storage.ts:beforeUnload',message:'beforeunload - saving with timeline blocks',data:{convCount:conversationOrder.length,termIds,tlBlockCounts},timestamp:Date.now(),hypothesisId:'TL_SAVE'}));
-    } catch {}
-    // #endregion
     const termData = buildTerminalData();
     saveToLocalStorageSync(termData);
-    // #region agent log
-    try {
-      const saved = localStorage.getItem('golish-pentest-conv-terminals');
-      let savedBlockInfo = 'N/A';
-      if (saved) { try { const p = JSON.parse(saved); savedBlockInfo = JSON.stringify(Object.fromEntries(Object.entries(p).map(([k,v])=>[k,(v as Array<{timelineBlocks?:unknown[]}>)[0]?.timelineBlocks?.length??0]))); } catch {} }
-      const xb2 = new XMLHttpRequest();
-      xb2.open('POST','http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',false);
-      xb2.setRequestHeader('Content-Type','application/json');
-      xb2.setRequestHeader('X-Debug-Session-Id','4e8d76');
-      xb2.send(JSON.stringify({sessionId:'4e8d76',location:'workspace-storage.ts:afterSaveSync',message:'After save - timeline blocks in localStorage',data:{savedBlockCounts:savedBlockInfo},timestamp:Date.now(),hypothesisId:'TL_SAVE'}));
-    } catch {}
-    // #endregion
     save();
   };
   window.addEventListener("beforeunload", handleBeforeUnload);

@@ -899,7 +899,7 @@ const TabItem = React.memo(function TabItem({
             Convert to Pane
           </ContextMenuItem>
         )}
-        {tabType === "terminal" && (
+        {(tabType === "terminal" || tabType === "security") && (
           <ContextMenuItem onClick={() => {
             window.dispatchEvent(new CustomEvent("detach-tab", {
               detail: { tabId: tab.id, screenX: window.screenX + 100, screenY: window.screenY + 100 },

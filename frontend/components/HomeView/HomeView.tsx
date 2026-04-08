@@ -206,11 +206,13 @@ export const ProjectRow = memo(function ProjectRow({
   return (
     <div className="border-b border-[#30363d]/50 last:border-0">
       {/* Project header */}
-      <button
-        type="button"
+      <div
+        role="button"
+        tabIndex={0}
         onClick={onToggle}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); } }}
         onContextMenu={onContextMenu}
-        className="w-full flex items-center justify-between p-3 hover:bg-[#1c2128] transition-colors group text-left"
+        className="w-full flex items-center justify-between p-3 hover:bg-[#1c2128] transition-colors group text-left cursor-pointer"
       >
         <div className="flex items-center min-w-0 mr-4">
           <div className="mr-2 flex-shrink-0 hover:bg-[#30363d] rounded p-0.5 transition-colors">
@@ -246,7 +248,7 @@ export const ProjectRow = memo(function ProjectRow({
             <X size={14} />
           </button>
         </div>
-      </button>
+      </div>
 
       {/* Expanded branches */}
       {isExpanded && project.branches.length > 0 && (
@@ -773,11 +775,13 @@ export const HomeView = memo(function HomeView() {
                 </div>
                 <div className="space-y-0.5">
                   {savedProjects.map((proj) => (
-                    <button
+                    <div
                       key={proj.name}
-                      type="button"
+                      role="button"
+                      tabIndex={0}
                       onClick={() => handleOpenProject(proj.name, proj.rootPath)}
-                      className={`w-full flex items-center justify-between px-3 py-2.5 rounded-md hover:bg-[#161b22] transition-colors text-left group ${
+                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleOpenProject(proj.name, proj.rootPath); } }}
+                      className={`w-full flex items-center justify-between px-3 py-2.5 rounded-md hover:bg-[#161b22] transition-colors text-left group cursor-pointer ${
                         proj.name === currentProjectName ? "bg-[#161b22]" : ""
                       }`}
                     >
@@ -805,7 +809,7 @@ export const HomeView = memo(function HomeView() {
                           <X size={12} className="text-gray-500" />
                         </button>
                       </div>
-                    </button>
+                    </div>
                   ))}
                 </div>
               </div>
