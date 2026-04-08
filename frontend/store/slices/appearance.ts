@@ -46,6 +46,8 @@ export interface DisplaySettings {
   showMcpBadge: boolean;
   /** Hide AI-specific status bar items (model badge, token usage, agent mode, MCP) when in shell mode. */
   hideAiSettingsInShellMode: boolean;
+  /** Global UI scale factor (0.75 – 1.5). Applied via CSS zoom on the app root. */
+  uiScale: number;
 }
 
 export const defaultDisplaySettings: DisplaySettings = {
@@ -65,6 +67,7 @@ export const defaultDisplaySettings: DisplaySettings = {
   showContextUsage: true,
   showMcpBadge: true,
   hideAiSettingsInShellMode: false,
+  uiScale: 1.0,
 };
 
 function loadDisplaySettings(): DisplaySettings {

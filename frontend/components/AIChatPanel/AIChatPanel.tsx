@@ -329,9 +329,6 @@ export const AIChatPanel = memo(function AIChatPanel() {
   // Load saved conversations into store on mount — merge with any already loaded by workspace auto-saver
   // Then restore per-conversation terminals (with scrollback) from localStorage
   useEffect(() => {
-    // #region agent log
-    fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'AIChatPanel.tsx:mountEffect',message:'Mount effect start - reading localStorage',data:{storageKeyExists:!!localStorage.getItem(STORAGE_KEY),termDataKeyExists:!!localStorage.getItem(TERMINAL_DATA_KEY),termDataPreview:localStorage.getItem(TERMINAL_DATA_KEY)?.slice(0,500),convDataPreview:localStorage.getItem(STORAGE_KEY)?.slice(0,300),storeConvCount:Object.keys(useStore.getState().conversations).length,storeConvTerminals:JSON.stringify(useStore.getState().conversationTerminals).slice(0,300)},timestamp:Date.now(),hypothesisId:'B,E'})}).catch(()=>{});
-    // #endregion
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
@@ -365,19 +362,12 @@ export const AIChatPanel = memo(function AIChatPanel() {
         if (termRestoreRanRef.current) return;
         termRestoreRanRef.current = true;
         const termRaw = localStorage.getItem(TERMINAL_DATA_KEY);
-        // #region agent log
-        fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'AIChatPanel.tsx:termRestore',message:'Terminal restore - reading termData from localStorage',data:{termRawExists:!!termRaw,termRawPreview:termRaw?.slice(0,500),termRestoreRanAlready:termRestoreRanRef.current},timestamp:Date.now(),hypothesisId:'B,D'})}).catch(()=>{});
-        // #endregion
         if (!termRaw) return;
         restoringTerminalsRef.current = true;
         useStore.getState().setTerminalRestoreInProgress(true);
         const termData = JSON.parse(termRaw) as Record<string, PersistedTerminal[]>;
         const store = useStore.getState();
         const activeId = store.activeConversationId;
-
-        // #region agent log
-        fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'AIChatPanel.tsx:termRestoreDetail',message:'Terminal restore details',data:{termDataKeys:Object.keys(termData),activeId,convIds:Object.keys(store.conversations),existingConvTerminals:JSON.stringify(store.conversationTerminals).slice(0,200)},timestamp:Date.now(),hypothesisId:'D,E'})}).catch(()=>{});
-        // #endregion
 
         // Eagerly restore ALL terminals for the active conversation
         if (activeId && termData[activeId] && store.conversations[activeId]) {
@@ -424,9 +414,6 @@ export const AIChatPanel = memo(function AIChatPanel() {
               }
             }
           }
-          // #region agent log
-          fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'AIChatPanel.tsx:termRestoreActive',message:'Restored active conv terminals (parallel)',data:{activeId,existingCount:existingTerms.length,createdCount:toCreate.length,finalTermIds:useStore.getState().conversationTerminals[activeId]},timestamp:Date.now(),hypothesisId:'PERF_PARALLEL'})}).catch(()=>{});
-          // #endregion
         }
 
         // Active conversation is ready — dismiss the loading spinner
@@ -553,10 +540,6 @@ export const AIChatPanel = memo(function AIChatPanel() {
               termData[c.id] = existingTermData[c.id];
             }
           }
-          // #region agent log
-          const _termCounts = Object.fromEntries(Object.entries(termData).map(([k,v])=>[k,{count:v.length,blocks:v.map(t=>t.timelineBlocks?.length??0)}]));
-          fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'AIChatPanel.tsx:saveEffect-write',message:'Save ALL terminals (debounced)',data:{termDataKeys:Object.keys(termData),termCounts:_termCounts},timestamp:Date.now(),hypothesisId:'PERF_DEBOUNCE'})}).catch(()=>{});
-          // #endregion
           localStorage.setItem(TERMINAL_DATA_KEY, JSON.stringify(termData));
         } catch { /* ignore */ }
       }, 500);

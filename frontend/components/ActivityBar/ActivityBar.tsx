@@ -5,14 +5,11 @@ import {
   Bug,
   ClipboardList,
   Crosshair,
-  BookOpen,
   GitBranch,
   Layers,
-  Network,
   Wrench,
   Settings,
   Terminal,
-  Globe,
   Shield,
   ScrollText,
   BookText,
@@ -32,9 +29,9 @@ import {
 } from "@/components/ui/tooltip";
 import { useTranslation } from "react-i18next";
 
-export type ActivityView = "dashboard" | "wiki" | "targets" | "topology" | "methodology" | "findings" | "pipelines" | "auditLog" | "wordlists" | "vulnIntel" | "toolManage" | "settings" | null;
+export type ActivityView = "dashboard" | "wiki" | "targets" | "methodology" | "findings" | "pipelines" | "auditLog" | "wordlists" | "vulnIntel" | "toolManage" | "settings" | null;
 
-type BarItemId = "dashboard" | "targets" | "topology" | "findings" | "pipelines" | "auditLog" | "wordlists" | "vulnIntel" | "security" | "browser" | "terminal" | "wiki" | "methodology" | "toolManage";
+type BarItemId = "dashboard" | "targets" | "findings" | "pipelines" | "auditLog" | "wordlists" | "vulnIntel" | "security" | "terminal" | "wiki" | "methodology" | "toolManage";
 
 interface BarItem {
   id: BarItemId;
@@ -52,10 +49,8 @@ interface BarGroup {
 const UPPER_DEFAULTS: BarItem[] = [
   { id: "dashboard", icon: Layers, label: "activity.dashboard" },
   { id: "targets", icon: Crosshair, label: "activity.targets" },
-  { id: "topology", icon: Network, label: "activity.topology" },
   { id: "findings", icon: Bug, label: "activity.findings" },
   { id: "security", icon: Shield, label: "activity.security" },
-  { id: "browser", icon: Globe, label: "activity.browser" },
   { id: "terminal", icon: Terminal, label: "activity.terminal" },
 ];
 
@@ -65,7 +60,7 @@ const LOWER_GROUPS: BarGroup[] = [
     icon: FolderOpen,
     label: "activity.knowledge",
     items: [
-      { id: "wiki", icon: BookOpen, label: "activity.wiki" },
+      { id: "vulnIntel", icon: AlertTriangle, label: "activity.vulnKb" },
       { id: "methodology", icon: ClipboardList, label: "activity.methodology" },
       { id: "wordlists", icon: BookText, label: "activity.wordlists" },
     ],
@@ -84,7 +79,6 @@ const LOWER_GROUPS: BarGroup[] = [
     icon: MoreHorizontal,
     label: "activity.system",
     items: [
-      { id: "vulnIntel", icon: AlertTriangle, label: "activity.vulnIntel" },
       { id: "auditLog", icon: ScrollText, label: "activity.auditLog" },
     ],
   },
@@ -99,22 +93,18 @@ interface ActivityBarProps {
   terminalOpen?: boolean;
   onToggleTerminal?: () => void;
   onOpenSettings?: () => void;
-  onOpenBrowser?: () => void;
   onOpenSecurity?: () => void;
-  browserOpen?: boolean;
   securityOpen?: boolean;
 }
 
-const VIEW_ITEMS: BarItemId[] = ["dashboard", "targets", "topology", "findings", "pipelines", "auditLog", "wordlists", "vulnIntel", "wiki", "methodology", "toolManage"];
+const VIEW_ITEMS: BarItemId[] = ["dashboard", "targets", "findings", "pipelines", "auditLog", "wordlists", "vulnIntel", "wiki", "methodology", "toolManage"];
 
 export const ActivityBar = memo(function ActivityBar({
   activeView,
   onViewChange,
   terminalOpen,
   onToggleTerminal,
-  onOpenBrowser,
   onOpenSecurity,
-  browserOpen,
   securityOpen,
 }: ActivityBarProps) {
   const { t } = useTranslation();
@@ -156,20 +146,17 @@ export const ActivityBar = memo(function ActivityBar({
       setExpandedGroup(null);
     } else if (item.id === "security") {
       onOpenSecurity?.();
-    } else if (item.id === "browser") {
-      onOpenBrowser?.();
     } else if (item.id === "terminal") {
       onToggleTerminal?.();
     }
-  }, [activeView, onViewChange, onOpenSecurity, onOpenBrowser, onToggleTerminal]);
+  }, [activeView, onViewChange, onOpenSecurity, onToggleTerminal]);
 
   const getItemActive = useCallback((item: BarItem) => {
     if (VIEW_ITEMS.includes(item.id)) return activeView === item.id;
-    if (item.id === "browser") return !!browserOpen;
     if (item.id === "terminal") return !!terminalOpen;
     if (item.id === "security") return !!securityOpen;
     return false;
-  }, [activeView, browserOpen, terminalOpen, securityOpen]);
+  }, [activeView, terminalOpen, securityOpen]);
 
   const isGroupActive = useCallback((group: BarGroup) => {
     return group.items.some((item) => getItemActive(item));

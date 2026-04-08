@@ -7,7 +7,7 @@ import {
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { scanTools, deleteTool, getCategories, fetchGitHubRelease, downloadAndExtract, installRuntime, createPythonEnv, listPythonEnvs, listInstalledJava, listAvailableJava, installJavaVersion, listSkills, readSkill, writeSkill, deleteSkill, type SkillFileInfo } from "@/lib/pentest/api";
+import { scanTools, deleteTool, getCategories, fetchGitHubRelease, downloadAndExtract, cancelDownload, installRuntime, createPythonEnv, listPythonEnvs, listInstalledJava, listAvailableJava, installJavaVersion, listSkills, readSkill, writeSkill, deleteSkill, type SkillFileInfo } from "@/lib/pentest/api";
 import type { ToolConfig, ToolCategory } from "@/lib/pentest/types";
 import { getSettings } from "@/lib/settings";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -362,6 +362,7 @@ export function ToolManager() {
   const [search, setSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const cancelRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
   const [sortKey, setSortKey] = useState<SortKey>("name");
@@ -409,10 +410,33 @@ export function ToolManager() {
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
+    let lastUpdate = 0;
+    let rafId: number | null = null;
+    let pending: { downloaded: number; total: number } | null = null;
+
+    const flush = () => {
+      if (pending) {
+        setDlProgress(pending);
+        pending = null;
+      }
+      rafId = null;
+      lastUpdate = Date.now();
+    };
+
     listen<{ downloaded: number; total: number }>("download-progress", (e) => {
-      setDlProgress(e.payload);
+      pending = e.payload;
+      const now = Date.now();
+      if (now - lastUpdate >= 250) {
+        flush();
+      } else if (!rafId) {
+        rafId = window.setTimeout(flush, 250 - (now - lastUpdate));
+      }
     }).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
+
+    return () => {
+      unlisten?.();
+      if (rafId) clearTimeout(rafId);
+    };
   }, []);
 
   const loadData = useCallback(async () => {
@@ -461,7 +485,17 @@ export function ToolManager() {
     return s?.network?.proxy_url || undefined;
   }, []);
 
+  const handleCancelInstall = useCallback(() => {
+    cancelRef.current = true;
+    cancelDownload().catch(() => {});
+    setBusy(null);
+    setDlProgress(null);
+    setInstallProgress({});
+  }, []);
+
   const handleInstall = useCallback(async (tool: ToolWithMeta) => {
+    if (busy) return;
+    cancelRef.current = false;
     const method = tool.install?.method;
     if (!method) { setError(t("toolManager.noInstallMethod", { name: tool.name })); return; }
 
@@ -600,6 +634,7 @@ export function ToolManager() {
           console.log(`[Install] ${tool.name}: 开始下载 ${binaryAsset.name} from ${binaryAsset.browser_download_url}`);
           setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.downloadRelease") }));
           const result = await downloadAndExtract({ url: binaryAsset.browser_download_url, fileName: binaryAsset.name, useProxy: !!proxyUrl });
+          if (cancelRef.current) return;
           console.log(`[Install] ${tool.name}: 下载结果:`, JSON.stringify(result));
           if (!result.success) throw new Error(result.error || t("install.downloadFailed"));
           setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.installing") }));
@@ -720,9 +755,10 @@ export function ToolManager() {
       setDlProgress(null);
       setInstallProgress((p) => { const n = { ...p }; delete n[tool.id]; return n; });
     }
-  }, [getProxy, loadData]);
+  }, [busy, getProxy, loadData]);
 
   const doUninstall = useCallback(async (tool: ToolWithMeta) => {
+    if (busy) return;
     setBusy(tool.id);
     try {
       const toolDir = tool.executable.split("/")[0];
@@ -733,7 +769,7 @@ export function ToolManager() {
     } finally {
       setBusy(null);
     }
-  }, [loadData]);
+  }, [busy, loadData]);
 
   const [depPicker, setDepPicker] = useState<{ tool: ToolWithMeta; files: string[] } | null>(null);
   const [execPicker, setExecPicker] = useState<{
@@ -1305,6 +1341,14 @@ export function ToolManager() {
               <Loader2 className="w-3.5 h-3.5 animate-spin text-accent/60" />
             )}
             {progress && <span className="text-[10px] text-accent/50 whitespace-nowrap max-w-[80px] truncate">{progress}</span>}
+            <button
+              type="button"
+              onClick={handleCancelInstall}
+              className="p-0.5 rounded text-muted-foreground/40 hover:text-destructive transition-colors"
+              title={t("common.cancel")}
+            >
+              <X className="w-3 h-3" />
+            </button>
           </div>
         ) : tool.installed ? (
           <button type="button" onClick={() => handleUninstall(tool)}

@@ -56,11 +56,6 @@ const TargetPanelView = lazy(() =>
     default: m.TargetPanel,
   }))
 );
-const TopologyPanelView = lazy(() =>
-  import("./components/TopologyView/TopologyView").then((m) => ({
-    default: m.TopologyView,
-  }))
-);
 const MethodologyPanelView = lazy(() =>
   import("./components/MethodologyPanel/MethodologyPanel").then((m) => ({
     default: m.MethodologyPanel,
@@ -157,7 +152,6 @@ function App() {
   const setRenderMode = useStore((state) => state.setRenderMode);
   const openSettingsTab = useStore((state) => state.openSettingsTab);
   const openHomeTab = useStore((state) => state.openHomeTab);
-  const openBrowserTab = useStore((state) => state.openBrowserTab);
   const openSecurityTab = useStore((state) => state.openSecurityTab);
 
   // Panel state from store (replaces local useState)
@@ -175,9 +169,15 @@ function App() {
   const { createTerminalTab } = useCreateTerminalTab();
   const { handleSplitPane, handleClosePane, handleNavigatePane } = usePaneControls(activeSessionId);
 
+  const uiScale = useStore((s) => s.displaySettings.uiScale);
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--ui-scale", `${uiScale}`);
+    return () => { root.style.removeProperty("--ui-scale"); };
+  }, [uiScale]);
+
   const hasProject = useStore((s) => s.currentProjectName !== null);
   const isOnHomeTab = useStore((s) => s.homeTabId !== null && s.activeSessionId === s.homeTabId);
-  const hasBrowserTab = useStore((s) => Object.values(s.sessions).some((sess) => sess.tabType === "browser"));
   const hasSecurityTab = useStore((s) => Object.values(s.sessions).some((sess) => sess.tabType === "security"));
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -255,10 +255,6 @@ function App() {
 
         logger.info("[App] Starting initialization...");
 
-        // #region agent log
-        fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'App.tsx:init',message:'App init start - checking localStorage state',data:{sessionsCount:Object.keys(useStore.getState().sessions).length,convTerminals:localStorage.getItem('golish-pentest-conv-terminals')?.slice(0,500),convData:localStorage.getItem('golish-pentest-conversations')?.slice(0,200),lastProject:localStorage.getItem('golish-last-project')},timestamp:Date.now(),hypothesisId:'A,C'})}).catch(()=>{});
-        // #endregion
-
         // Create home tab first (always visible, leftmost)
         openHomeTab();
 
@@ -292,9 +288,6 @@ function App() {
 
             // Restore conversations
             const saved = await loadWorkspaceState(lastProject);
-            // #region agent log
-            fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'App.tsx:restore',message:'loadWorkspaceState result',data:{hasSaved:!!saved,convCount:saved?.conversations?.length??0,termTabCount:saved?.terminalTabs?.length??0,activeConvId:saved?.activeConversationId,hasTermData:!!saved?.conversationTerminalData,hasAiModel:saved?.aiModel!==undefined,hasApprovalMode:!!saved?.approvalMode},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
-            // #endregion
 
             // Hydrate localStorage from workspace.json (v2 data)
             if (saved?.conversationTerminalData) {
@@ -314,9 +307,6 @@ function App() {
                 saved.conversationOrder,
                 saved.activeConversationId,
               );
-              // #region agent log
-              fetch('http://127.0.0.1:7743/ingest/c2581ce7-f104-4330-b1e0-a5f012cf928e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8d76'},body:JSON.stringify({sessionId:'4e8d76',location:'App.tsx:afterRestore',message:'After restoreConversations',data:{convIds:Object.keys(useStore.getState().conversations),convTerminals:JSON.stringify(useStore.getState().conversationTerminals).slice(0,300),lsTermData:localStorage.getItem('golish-pentest-conv-terminals')?.slice(0,300)},timestamp:Date.now(),hypothesisId:'E'})}).catch(()=>{});
-              // #endregion
             } else {
               const initialConv = createNewConversation();
               useStore.getState().addConversation(initialConv);
@@ -491,7 +481,7 @@ function App() {
         const produces = detected.output_config.produces;
 
         if (produces.includes("host") || produces.includes("port")) {
-          const data = await invoke<{ nodes: unknown[]; edges: unknown[] }>("topo_parse", { rawOutput: output, projectPath: pp });
+          const data = await invoke<{ nodes: unknown[]; edges: unknown[] }>("topo_parse", { rawOutput: output });
           if (data.nodes.length > 0) {
             notify.success(`${detected.tool_name}: ${data.nodes.length} hosts → Topology`);
             await invoke("topo_save", { name: `${detected.tool_name}-${Date.now()}`, data, projectPath: pp });
@@ -521,6 +511,26 @@ function App() {
       const session = s.sessions[tabId];
       if (!session) return;
       const tabType = session.tabType ?? "terminal";
+
+      if (tabType === "security") {
+        const pseudoId = `security-all-${Date.now()}`;
+        try {
+          await invoke("create_detached_window", {
+            sessionId: pseudoId,
+            tabType: "security-all",
+            title: "Security — Detached",
+            x: screenX - 50,
+            y: screenY - 20,
+            width: 1000.0,
+            height: 700.0,
+          });
+          notify.info("Security detached to floating window");
+        } catch (err) {
+          logger.error("[App] detach security tab failed:", err);
+        }
+        return;
+      }
+
       if (tabType !== "terminal") return;
 
       const title = session.customName
@@ -538,12 +548,10 @@ function App() {
           width: 800.0,
           height: 500.0,
         });
-        // Track as detached, switch to another tab
         const detached = JSON.parse(localStorage.getItem("golish-detached-tabs") || "{}");
         detached[tabId] = { title, tabType };
         localStorage.setItem("golish-detached-tabs", JSON.stringify(detached));
 
-        // Switch active session to another available tab
         const other = s.tabOrder.find((id) => id !== tabId && (s.sessions[id]?.tabType ?? "terminal") !== "home");
         if (other) s.setActiveSession(other);
         notify.info(`"${title}" detached to floating window`);
@@ -552,10 +560,37 @@ function App() {
       }
     };
 
+    const handleDetachSecurityTab = async (e: Event) => {
+      const { tabId, screenX, screenY } = (e as CustomEvent<{ tabId: string; screenX: number; screenY: number }>).detail;
+      const tabLabels: Record<string, string> = {
+        history: "HTTP History", sitemap: "Site Map", scanner: "Scanner",
+        repeater: "Repeater", alerts: "Alerts", audit: "Audit Log",
+        passive: "Passive Scan", vault: "Credential Vault",
+      };
+      const title = tabLabels[tabId] || tabId;
+      const pseudoId = `security-${tabId}-${Date.now()}`;
+
+      try {
+        await invoke("create_detached_window", {
+          sessionId: pseudoId,
+          tabType: `security-${tabId}`,
+          title: `${title} — Detached`,
+          x: screenX - 50,
+          y: screenY - 20,
+          width: 900.0,
+          height: 600.0,
+        });
+        notify.info(`"${title}" detached to floating window`);
+      } catch (err) {
+        logger.error("[App] detach security tab failed:", err);
+      }
+    };
+
     window.addEventListener("split-tab-right", handleSplitTab);
     window.addEventListener("unsplit-tab", handleUnsplitTab);
     window.addEventListener("tab-drag-split-hint", handleDragHint);
     window.addEventListener("detach-tab", handleDetachTab);
+    window.addEventListener("detach-security-tab", handleDetachSecurityTab);
     const handleRecordingSaved = () => {
       notify.success("Terminal recording saved");
     };
@@ -577,6 +612,7 @@ function App() {
       window.removeEventListener("unsplit-tab", handleUnsplitTab);
       window.removeEventListener("tab-drag-split-hint", handleDragHint);
       window.removeEventListener("detach-tab", handleDetachTab);
+      window.removeEventListener("detach-security-tab", handleDetachSecurityTab);
       window.removeEventListener("tool-output-completed", handleToolOutput);
       window.removeEventListener("recording-saved", handleRecordingSaved);
       unlistenDetachedClose?.();
@@ -622,7 +658,7 @@ function App() {
     handleSplitPane,
     handleClosePane,
     handleNavigatePane,
-    openBrowserTab: () => { setActivityView(null); openBrowserTab(); },
+    openBrowserTab: () => { setActivityView(null); openSecurityTab(); },
     openSecurityTab: () => { setActivityView(null); openSecurityTab(); },
     toggleToolManager: () => setActivityView((v) => v === "toolManage" ? null : "toolManage"),
     toggleWiki: () => setActivityView((v) => v === "wiki" ? null : "wiki"),
@@ -841,7 +877,15 @@ function App() {
 
   return (
     <TerminalPortalProvider>
-      <div className="h-screen w-screen bg-background flex flex-col overflow-hidden app-bg-layered" data-bottom-terminal={bottomTerminalOpen ? "open" : "closed"}>
+      <div
+        className="bg-background flex flex-col overflow-hidden app-bg-layered"
+        data-bottom-terminal={bottomTerminalOpen ? "open" : "closed"}
+        style={{
+          zoom: uiScale,
+          width: `calc(100vw / ${uiScale})`,
+          height: `calc(100vh / ${uiScale})`,
+        }}
+      >
         {/* macOS traffic lights + window drag region */}
         <div className="h-[38px] w-full titlebar-drag flex-shrink-0" data-tauri-drag-region />
 
@@ -872,9 +916,7 @@ function App() {
                 setBottomTerminalOpen((v) => !v);
               }}
               onOpenSettings={() => setSettingsOpen(true)}
-              onOpenBrowser={() => { setActivityView(null); openBrowserTab(); }}
               onOpenSecurity={() => { setActivityView(null); openSecurityTab(); }}
-              browserOpen={hasBrowserTab}
               securityOpen={hasSecurityTab}
             />
           </div>
@@ -941,20 +983,6 @@ function App() {
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
               <Suspense fallback={null}>
                 <TargetPanelView />
-              </Suspense>
-            </div>
-          </div>
-
-          {/* Topology view */}
-          <div className={cn(
-            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
-            activityView === "topology"
-              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
-              : "opacity-0 translate-y-1 pointer-events-none z-0",
-          )}>
-            <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float relative">
-              <Suspense fallback={null}>
-                <TopologyPanelView />
               </Suspense>
             </div>
           </div>
@@ -1060,7 +1088,7 @@ function App() {
           {/* Normal view - center + right panels */}
           <div className={cn(
             "flex-1 flex gap-2 min-w-0 transition-all duration-200 ease-out",
-            (activityView === "settings" || activityView === "toolManage" || activityView === "wiki" || activityView === "targets" || activityView === "topology" || activityView === "methodology" || activityView === "dashboard" || activityView === "findings" || activityView === "pipelines" || activityView === "auditLog" || activityView === "wordlists" || activityView === "vulnIntel")
+            (activityView === "settings" || activityView === "toolManage" || activityView === "wiki" || activityView === "targets" || activityView === "methodology" || activityView === "dashboard" || activityView === "findings" || activityView === "pipelines" || activityView === "auditLog" || activityView === "wordlists" || activityView === "vulnIntel")
               ? "opacity-0 scale-[0.98] pointer-events-none"
               : "opacity-100 scale-100 pointer-events-auto",
           )}>
@@ -1247,7 +1275,7 @@ function App() {
           onSplitPaneDown={() => handleSplitPane("horizontal")}
           onClosePane={handleClosePane}
           onOpenQuickOpen={() => setQuickOpenDialogOpen(true)}
-          onOpenBrowser={() => { setActivityView(null); openBrowserTab(); }}
+          onOpenBrowser={() => { setActivityView(null); openSecurityTab(); }}
           onOpenSecurity={() => { setActivityView(null); openSecurityTab(); }}
           onToggleToolManager={() => setActivityView((v) => v === "toolManage" ? null : "toolManage")}
           onToggleWiki={() => setActivityView((v) => v === "wiki" ? null : "wiki")}

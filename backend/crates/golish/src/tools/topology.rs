@@ -37,13 +37,35 @@ pub struct TopologyData {
     pub scan_info: Option<String>,
 }
 
+fn strip_ansi(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if next.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
 fn parse_nmap_output(raw: &str) -> TopologyData {
+    let clean = strip_ansi(raw);
     let mut nodes: Vec<TopoNode> = Vec::new();
     let mut edges: Vec<TopoEdge> = Vec::new();
     let mut current_host: Option<TopoNode> = None;
     let mut scan_info: Option<String> = None;
 
-    for line in raw.lines() {
+    for line in clean.lines() {
         let trimmed = line.trim();
 
         if trimmed.starts_with("Starting Nmap") || trimmed.starts_with("Nmap scan report") {
