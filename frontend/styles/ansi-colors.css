@@ -170,7 +170,7 @@
 
 /* Default text styling for ANSI output containers */
 .ansi-output {
-  font-family: "JetBrains Mono", Menlo, Monaco, Consolas, monospace;
+  font-family: "SF Mono", Menlo, Monaco, "JetBrains Mono", Consolas, monospace;
   color: var(--ansi-default-fg);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;

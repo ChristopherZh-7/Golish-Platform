@@ -1,8 +1,7 @@
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::db::open_db;
+use crate::state::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Note {
@@ -15,113 +14,121 @@ pub struct Note {
     pub updated_at: u64,
 }
 
-fn now_ts() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+fn ts(dt: chrono::DateTime<chrono::Utc>) -> u64 {
+    dt.timestamp() as u64
 }
 
-fn row_to_note(row: &rusqlite::Row) -> rusqlite::Result<Note> {
-    Ok(Note {
-        id: row.get(0)?,
-        entity_type: row.get(1)?,
-        entity_id: row.get(2)?,
-        content: row.get(3)?,
-        color: row.get(4)?,
-        created_at: row.get(5)?,
-        updated_at: row.get(6)?,
-    })
+#[derive(sqlx::FromRow)]
+struct NoteRow {
+    id: Uuid,
+    entity_type: String,
+    entity_id: String,
+    content: String,
+    color: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<NoteRow> for Note {
+    fn from(r: NoteRow) -> Self {
+        Note {
+            id: r.id.to_string(),
+            entity_type: r.entity_type,
+            entity_id: r.entity_id,
+            content: r.content,
+            color: r.color,
+            created_at: ts(r.created_at),
+            updated_at: ts(r.updated_at),
+        }
+    }
 }
 
 #[tauri::command]
 pub async fn notes_list(
+    state: tauri::State<'_, AppState>,
     entity_type: Option<String>,
     entity_id: Option<String>,
     project_path: Option<String>,
 ) -> Result<Vec<Note>, String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        let mut sql = "SELECT id, entity_type, entity_id, content, color, created_at, updated_at FROM notes WHERE 1=1".to_string();
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-
-        if let Some(ref et) = entity_type {
-            sql.push_str(&format!(" AND entity_type=?{}", param_values.len() + 1));
-            param_values.push(Box::new(et.clone()));
-        }
-        if let Some(ref eid) = entity_id {
-            sql.push_str(&format!(" AND entity_id=?{}", param_values.len() + 1));
-            param_values.push(Box::new(eid.clone()));
-        }
-        sql.push_str(" ORDER BY created_at DESC");
-
-        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|b| b.as_ref()).collect();
-        let notes: Vec<Note> = stmt
-            .query_map(params_ref.as_slice(), |row| row_to_note(row))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
-        Ok(notes)
-    })
+    let pool = &*state.db_pool;
+    let rows = sqlx::query_as::<_, NoteRow>(
+        r#"SELECT id, entity_type, entity_id, content, color, created_at, updated_at
+           FROM notes
+           WHERE ($1::text IS NULL OR entity_type = $1)
+             AND ($2::text IS NULL OR entity_id = $2)
+             AND project_path IS NOT DISTINCT FROM $3
+           ORDER BY created_at DESC"#,
+    )
+    .bind(entity_type.as_deref())
+    .bind(entity_id.as_deref())
+    .bind(project_path.as_deref())
+    .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().map(Note::from).collect())
 }
 
 #[tauri::command]
 pub async fn notes_add(
+    state: tauri::State<'_, AppState>,
     entity_type: String,
     entity_id: String,
     content: String,
     color: Option<String>,
     project_path: Option<String>,
 ) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        let ts = now_ts();
-        let id = Uuid::new_v4().to_string();
-        let c = color.unwrap_or_else(|| "yellow".to_string());
-        conn.execute(
-            "INSERT INTO notes (id, entity_type, entity_id, content, color, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            params![id, entity_type, entity_id, content, c, ts, ts],
-        ).map_err(|e| e.to_string())?;
-        Ok(id)
-    })
+    let pool = &*state.db_pool;
+    let c = color.unwrap_or_else(|| "yellow".to_string());
+    let id: Uuid = sqlx::query_scalar(
+        r#"INSERT INTO notes (entity_type, entity_id, content, color, project_path)
+           VALUES ($1, $2, $3, $4, $5) RETURNING id"#,
+    )
+    .bind(&entity_type)
+    .bind(&entity_id)
+    .bind(&content)
+    .bind(&c)
+    .bind(project_path.as_deref())
+    .fetch_one(pool)
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    Ok(id.to_string())
 }
 
 #[tauri::command]
 pub async fn notes_update(
+    state: tauri::State<'_, AppState>,
     id: String,
     content: String,
     color: Option<String>,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        let ts = now_ts();
-        conn.execute(
-            "UPDATE notes SET content=?1, updated_at=?2 WHERE id=?3",
-            params![content, ts, id],
-        ).map_err(|e| e.to_string())?;
-        if let Some(c) = color {
-            conn.execute("UPDATE notes SET color=?1 WHERE id=?2", params![c, id])
-                .map_err(|e| e.to_string())?;
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    let pool = &*state.db_pool;
+    let _ = project_path;
+    let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let c = color.unwrap_or_else(|| "yellow".to_string());
+    sqlx::query("UPDATE notes SET content=$1, color=$2, updated_at=NOW() WHERE id=$3")
+        .bind(&content)
+        .bind(&c)
+        .bind(uid)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn notes_delete(id: String, project_path: Option<String>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        conn.execute("DELETE FROM notes WHERE id=?1", params![id]).map_err(|e| e.to_string())?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+pub async fn notes_delete(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    project_path: Option<String>,
+) -> Result<(), String> {
+    let pool = &*state.db_pool;
+    let _ = project_path;
+    let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    sqlx::query("DELETE FROM notes WHERE id=$1")
+        .bind(uid)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }

@@ -482,6 +482,16 @@ pub fn format_for_summarizer(events: &[TranscriptEvent]) -> String {
             AiEvent::ToolOutputChunk { .. } => {} // Streaming output, not needed for summarization
             AiEvent::PromptGenerationStarted { .. } => {} // Internal sub-agent detail
             AiEvent::PromptGenerationCompleted { .. } => {} // Internal sub-agent detail
+            AiEvent::AskHumanRequest { question, input_type, .. } => {
+                output.push_str(&format!("\n**[Ask Human - {}]** {}\n", input_type, question));
+            }
+            AiEvent::AskHumanResponse { response, skipped, .. } => {
+                if *skipped {
+                    output.push_str("\n*[User skipped the question]*\n");
+                } else {
+                    output.push_str(&format!("\n**[User Response]** {}\n", response));
+                }
+            }
         }
     }
 
@@ -1946,7 +1956,9 @@ mod should_transcript_tests {
                 | AiEvent::WebSearchResult { .. }
                 | AiEvent::WebFetchResult { .. }
                 | AiEvent::PromptGenerationStarted { .. }
-                | AiEvent::PromptGenerationCompleted { .. } => {}
+                | AiEvent::PromptGenerationCompleted { .. }
+                | AiEvent::AskHumanRequest { .. }
+                | AiEvent::AskHumanResponse { .. } => {}
             }
         }
 

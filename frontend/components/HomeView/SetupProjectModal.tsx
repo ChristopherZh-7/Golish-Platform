@@ -17,7 +17,9 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
   const [formData, setFormData] = useState<ProjectFormData>({
     name: "",
     rootPath: "",
+    targets: [],
   });
+  const [targetsText, setTargetsText] = useState("");
 
   useEffect(() => {
     if (isOpen && !formData.rootPath) {
@@ -39,7 +41,16 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
     e.preventDefault();
     if (!formData.name.trim() || !formData.rootPath.trim()) return;
     const parentDir = formData.rootPath.replace(/\/$/, "");
-    onSubmit({ name: formData.name.trim(), rootPath: `${parentDir}/${formData.name.trim()}` });
+    const targets = targetsText
+      .split(/[\n,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    onSubmit({
+      name: formData.name.trim(),
+      rootPath: `${parentDir}/${formData.name.trim()}`,
+      targets: targets.length > 0 ? targets : undefined,
+    });
+    setTargetsText("");
     onClose();
   };
 
@@ -119,6 +130,25 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
                 placeholder="my-project"
                 className="w-full bg-[#0d1117] border border-[#30363d] rounded-md px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-[#58a6ff] focus:ring-1 focus:ring-[#58a6ff] transition-colors"
               />
+            </label>
+          </div>
+
+          {/* Targets (optional) */}
+          <div>
+            <label className="block">
+              <span className="block text-xs text-gray-400 mb-1.5">
+                Targets <span className="text-gray-600">(optional)</span>
+              </span>
+              <textarea
+                value={targetsText}
+                onChange={(e) => setTargetsText(e.target.value)}
+                placeholder={"example.com\n192.168.1.0/24\nhttps://app.example.com"}
+                rows={3}
+                className="w-full bg-[#0d1117] border border-[#30363d] rounded-md px-3 py-2 text-sm text-gray-200 placeholder-gray-600 font-mono focus:outline-none focus:border-[#58a6ff] focus:ring-1 focus:ring-[#58a6ff] transition-colors resize-none"
+              />
+              <span className="block text-[11px] text-gray-600 mt-1">
+                One per line or comma-separated. AI will auto-start reconnaissance.
+              </span>
             </label>
           </div>
 

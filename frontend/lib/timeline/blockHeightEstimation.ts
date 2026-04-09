@@ -5,6 +5,7 @@ const BASE_HEIGHTS = {
   command: 52, // Header with command text
   agent_message: 80, // Minimal message with border
   system_hook: 44, // Collapsed hook card
+  pipeline_progress: 60, // Header + progress bar
 } as const;
 
 // Approximate characters per line at typical viewport width
@@ -16,6 +17,7 @@ const MAX_HEIGHTS = {
   command: 500,
   agent_message: 800,
   system_hook: 200,
+  pipeline_progress: 400,
 } as const;
 
 /**
@@ -73,6 +75,14 @@ export function estimateBlockHeight(block: UnifiedBlock): number {
       // Base height plus some for expanded state
       const expandedHeight = hooks.length * 24;
       return Math.min(BASE_HEIGHTS.system_hook + expandedHeight, MAX_HEIGHTS.system_hook);
+    }
+
+    case "pipeline_progress": {
+      const stepCount = block.data.steps.length;
+      return Math.min(
+        BASE_HEIGHTS.pipeline_progress + stepCount * 28 + 24,
+        MAX_HEIGHTS.pipeline_progress,
+      );
     }
 
     default:

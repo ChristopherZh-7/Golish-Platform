@@ -273,6 +273,7 @@ where
         additional_tool_definitions: vec![],
         custom_tool_executor: None,
         coordinator: None, // Evals use legacy path
+        db_tracker: None,
     };
 
     // Detect capabilities from provider/model
@@ -496,6 +497,7 @@ where
         additional_tool_definitions: additional_tools,
         custom_tool_executor: custom_executor,
         coordinator: None, // Evals use legacy path
+        db_tracker: None,
     };
 
     // Detect capabilities from provider/model
@@ -834,6 +836,7 @@ where
             additional_tool_definitions: vec![],
             custom_tool_executor: None,
             coordinator: None, // Evals use legacy path
+            db_tracker: None,
         };
 
         let loop_config = AgenticLoopConfig {

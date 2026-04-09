@@ -75,36 +75,58 @@ pub async fn get_ai_conversation_length(state: State<'_, AppState>) -> Result<us
 }
 
 /// List recent AI conversation sessions.
+/// Uses PostgreSQL if available, falls back to file-based listing.
 ///
 /// # Arguments
 /// * `limit` - Maximum number of sessions to return (0 for all)
 #[tauri::command]
-pub async fn list_ai_sessions(limit: Option<usize>) -> Result<Vec<SessionListingInfo>, String> {
-    golish_sess::list_recent_sessions(limit.unwrap_or(20))
-        .await
-        .map_err(|e| e.to_string())
+pub async fn list_ai_sessions(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<SessionListingInfo>, String> {
+    let lim = limit.unwrap_or(20);
+    match golish_sess::db::list_sessions_from_db(&state.db_pool, lim).await {
+        Ok(sessions) if !sessions.is_empty() => Ok(sessions),
+        _ => golish_sess::list_recent_sessions(lim)
+            .await
+            .map_err(|e| e.to_string()),
+    }
 }
 
 /// Find a specific session by its identifier.
+/// Uses PostgreSQL if available, falls back to file-based search.
 ///
 /// # Arguments
 /// * `identifier` - The session identifier (file stem)
 #[tauri::command]
-pub async fn find_ai_session(identifier: String) -> Result<Option<SessionListingInfo>, String> {
-    golish_sess::find_session(&identifier)
-        .await
-        .map_err(|e| e.to_string())
+pub async fn find_ai_session(
+    state: State<'_, AppState>,
+    identifier: String,
+) -> Result<Option<SessionListingInfo>, String> {
+    match golish_sess::db::find_session_from_db(&state.db_pool, &identifier).await {
+        Ok(Some(session)) => Ok(Some(session)),
+        _ => golish_sess::find_session(&identifier)
+            .await
+            .map_err(|e| e.to_string()),
+    }
 }
 
 /// Load a full session with all messages by its identifier.
+/// Uses PostgreSQL if available, falls back to file-based loading.
 ///
 /// # Arguments
 /// * `identifier` - The session identifier (file stem)
 #[tauri::command]
-pub async fn load_ai_session(identifier: String) -> Result<Option<QbitSessionSnapshot>, String> {
-    golish_sess::load_session(&identifier)
-        .await
-        .map_err(|e| e.to_string())
+pub async fn load_ai_session(
+    state: State<'_, AppState>,
+    identifier: String,
+) -> Result<Option<QbitSessionSnapshot>, String> {
+    match golish_sess::db::load_session_from_db(&state.db_pool, &identifier).await {
+        Ok(Some(session)) => Ok(Some(session)),
+        _ => golish_sess::load_session(&identifier)
+            .await
+            .map_err(|e| e.to_string()),
+    }
 }
 
 /// Enable or disable session persistence.
@@ -150,13 +172,17 @@ pub async fn finalize_ai_session(state: State<'_, AppState>) -> Result<Option<St
 /// * `output_path` - Path where the transcript should be saved
 #[tauri::command]
 pub async fn export_ai_session_transcript(
+    state: State<'_, AppState>,
     identifier: String,
     output_path: String,
 ) -> Result<(), String> {
-    let session = golish_sess::load_session(&identifier)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("Session '{}' not found", identifier))?;
+    let session = match golish_sess::db::load_session_from_db(&state.db_pool, &identifier).await {
+        Ok(Some(s)) => s,
+        _ => golish_sess::load_session(&identifier)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Session '{}' not found", identifier))?,
+    };
 
     // Format as markdown transcript
     let mut transcript = format!(
@@ -209,11 +235,14 @@ pub async fn restore_ai_session(
     session_id: String,
     identifier: String,
 ) -> Result<QbitSessionSnapshot, String> {
-    // First load the session
-    let session = golish_sess::load_session(&identifier)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("Session '{}' not found", identifier))?;
+    // Load from DB first, fall back to file
+    let session = match golish_sess::db::load_session_from_db(&state.db_pool, &identifier).await {
+        Ok(Some(s)) => s,
+        _ => golish_sess::load_session(&identifier)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Session '{}' not found", identifier))?,
+    };
 
     // Get the per-session bridge and restore the conversation history
     let bridge = state

@@ -140,7 +140,7 @@ export const golishTheme: GolishTheme = {
 
   typography: {
     terminal: {
-      fontFamily: "'JetBrains Mono', monospace",
+      fontFamily: "SF Mono, Menlo, Monaco, 'JetBrains Mono', monospace",
       fontSize: 14,
     },
     ui: {

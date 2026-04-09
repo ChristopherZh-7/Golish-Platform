@@ -42,11 +42,11 @@ export const golishEditorTheme = EditorView.theme(
       backgroundColor: palette.bgPrimary,
       color: palette.textPrimary,
       fontSize: "12px",
-      fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+      fontFamily: "'SF Mono', Menlo, Monaco, 'JetBrains Mono', ui-monospace, monospace",
     },
     ".cm-content": {
       caretColor: palette.accent,
-      fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+      fontFamily: "'SF Mono', Menlo, Monaco, 'JetBrains Mono', ui-monospace, monospace",
     },
     ".cm-cursor, .cm-dropCursor": {
       borderLeftColor: palette.accent,
@@ -119,7 +119,7 @@ export const golishEditorTheme = EditorView.theme(
       backgroundColor: palette.bgSecondary,
       color: palette.textPrimary,
       padding: "2px 8px",
-      fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+      fontFamily: "'SF Mono', Menlo, Monaco, 'JetBrains Mono', ui-monospace, monospace",
       fontSize: "12px",
     },
     ".cm-vim-panel input": {

@@ -1,21 +1,6 @@
-import { Loader2, Sparkles } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LiveTerminalBlock } from "@/components/LiveTerminalBlock";
-import { Markdown } from "@/components/Markdown";
-import { SubAgentCard } from "@/components/SubAgentCard";
-import { SystemHooksCard } from "@/components/SystemHooksCard";
-import { StaticThinkingBlock } from "@/components/ThinkingBlock";
-import {
-  MainToolGroup,
-  ToolDetailsModal,
-  ToolGroupDetailsModal,
-  ToolItem,
-} from "@/components/ToolCallDisplay";
-import { UdiffResultBlock } from "@/components/UdiffResultBlock";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
-import { WorkflowTree } from "@/components/WorkflowTree";
-import type { RenderBlock } from "@/lib/timeline";
-import { type AnyToolCall, groupConsecutiveToolsByAny } from "@/lib/toolGrouping";
 import { useSessionState } from "@/store/selectors/session";
 import { VirtualizedTimeline } from "./VirtualizedTimeline";
 
@@ -30,50 +15,14 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
   // Destructure for convenience (these are already stable references from the memoized selector)
   const {
     timeline,
-    streamingBlocks,
     pendingCommand,
-    isAgentThinking,
-    thinkingContent,
-    activeWorkflow,
-    activeSubAgents,
     workingDirectory,
-    isCompacting,
   } = sessionState;
 
-  const { streamingBlockRevision, streamingTextLength } = sessionState;
-
-  const sortedTimeline = useMemo(() => {
-    // The timeline is naturally sorted by insertion order (oldest -> newest).
-    // We skip the expensive map-sort-map with Date parsing to improve performance.
-    // If strict sorting is absolutely required, it should be done at insertion time in the store.
-    const blocks = timeline;
-
-    // Filter out system_hook blocks that have a subsequent agent_message
-    // (they'll be rendered inline within that message instead)
-    // Use a single reverse pass to identify which system_hooks to keep: O(n) instead of O(n²)
-    let hasSeenAgentMessage = false;
-    const systemHooksToKeep = new Set<string>();
-
-    for (let i = blocks.length - 1; i >= 0; i--) {
-      if (blocks[i].type === "agent_message") {
-        hasSeenAgentMessage = true;
-      } else if (blocks[i].type === "system_hook" && !hasSeenAgentMessage) {
-        systemHooksToKeep.add(blocks[i].id);
-      }
-    }
-
-    return blocks.filter(
-      (block) => block.type !== "system_hook" || systemHooksToKeep.has(block.id)
-    );
-  }, [timeline]);
+  // Terminal-only: just use timeline blocks directly (command blocks)
+  const sortedTimeline = timeline;
   const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
-
-  // State for selected tool to show in modal
-  const [selectedTool, setSelectedTool] = useState<AnyToolCall | null>(null);
-
-  // State for selected tool group to show in modal
-  const [selectedToolGroup, setSelectedToolGroup] = useState<AnyToolCall[] | null>(null);
 
   // Track if user is scrolled to bottom (for auto-scroll behavior)
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -99,182 +48,87 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
     return () => container.removeEventListener("scroll", handleScroll);
   }, []);
 
-  // Consolidated memo: Filter, group, and transform streaming blocks in one pass
-  // This replaces the previous 3-memo chain (filteredStreamingBlocks -> groupedBlocks -> renderBlocks)
-  // which would cascade recalculations every 16ms during streaming
-  //
-  // Stages:
-  // 1. Filter out workflow tool calls (they show in WorkflowTree instead)
-  // 2. Group consecutive tool calls for cleaner display
-  // 3. Transform to replace sub_agent tool calls with SubAgentCard blocks inline
-  const renderBlocks = useMemo((): RenderBlock[] => {
-    // Stage 1: Filter out workflow tool calls
-    const filteredBlocks = streamingBlocks.filter((block) => {
-      if (block.type !== "tool") return true;
-      const toolCall = block.toolCall;
-
-      // Hide the run_workflow tool call itself since WorkflowTree shows the workflow
-      if (toolCall.name === "run_workflow") return false;
-
-      // Hide tool calls from the active workflow (they show nested in WorkflowTree)
-      if (activeWorkflow) {
-        const source = toolCall.source;
-        if (source?.type === "workflow" && source.workflowId === activeWorkflow.workflowId) {
-          return false;
-        }
-      }
-
-      return true;
-    });
-
-    // Stage 2: Group consecutive tool calls
-    const groupedBlocks = groupConsecutiveToolsByAny(filteredBlocks);
-
-    // Stage 3: Transform grouped blocks, replacing sub_agent tool calls with SubAgentCard blocks inline
-    // This ensures sub-agents appear at their correct position in the timeline (where they were spawned)
-    const matchedParentIds = new Set<string>();
-    const result: RenderBlock[] = [];
-
-    for (const block of groupedBlocks) {
-      if (block.type === "tool") {
-        // Single tool - replace sub-agent spawns with SubAgentCard at this position
-        if (block.toolCall.name.startsWith("sub_agent_")) {
-          // Match sub-agent by the tool call's ID (which equals the sub-agent's parentRequestId)
-          const matchingSubAgent = activeSubAgents.find(
-            (a) =>
-              a.parentRequestId === block.toolCall.id && !matchedParentIds.has(a.parentRequestId)
-          );
-          if (matchingSubAgent) {
-            matchedParentIds.add(matchingSubAgent.parentRequestId);
-            result.push({ type: "sub_agent", subAgent: matchingSubAgent });
-          }
-          continue;
-        }
-      } else if (block.type === "tool_group") {
-        // Tool group - process tools in order, replacing sub_agent tools with SubAgentCards inline
-        // We need to maintain the original order: if update_plan comes before sub_agent_explorer,
-        // the update_plan should appear first in the result
-        const processedBlocks: RenderBlock[] = [];
-        const regularTools: typeof block.tools = [];
-
-        for (const tool of block.tools) {
-          if (tool.name.startsWith("sub_agent_")) {
-            // First, flush any accumulated regular tools as a group/single tool
-            if (regularTools.length > 0) {
-              if (regularTools.length === 1) {
-                processedBlocks.push({ type: "tool", toolCall: regularTools[0] });
-              } else {
-                processedBlocks.push({ type: "tool_group", tools: [...regularTools] });
-              }
-              regularTools.length = 0;
-            }
-            // Then add the sub-agent at this position
-            const matchingSubAgent = activeSubAgents.find(
-              (a) => a.parentRequestId === tool.id && !matchedParentIds.has(a.parentRequestId)
-            );
-            if (matchingSubAgent) {
-              matchedParentIds.add(matchingSubAgent.parentRequestId);
-              processedBlocks.push({ type: "sub_agent", subAgent: matchingSubAgent });
-            }
-          } else {
-            regularTools.push(tool);
-          }
-        }
-
-        // Flush any remaining regular tools
-        if (regularTools.length > 0) {
-          if (regularTools.length === 1) {
-            processedBlocks.push({ type: "tool", toolCall: regularTools[0] });
-          } else {
-            processedBlocks.push({ type: "tool_group", tools: [...regularTools] });
-          }
-        }
-
-        result.push(...processedBlocks);
-        continue;
-      }
-
-      result.push(block);
-    }
-
-    // Fallback: Add any remaining sub-agents that weren't matched to tool calls
-    // This can happen if activeSubAgents state updates before streamingBlocks
-    for (const subAgent of activeSubAgents) {
-      if (!matchedParentIds.has(subAgent.parentRequestId)) {
-        result.push({ type: "sub_agent", subAgent });
-      }
-    }
-
-    return result;
-  }, [streamingBlocks, activeWorkflow, activeSubAgents]);
-
   // Reference for pending scroll animation frame
   const pendingScrollRef = useRef<number | null>(null);
 
+  const scrollDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const scrollToBottom = useCallback(() => {
-    // Cancel any pending scroll to avoid stacking multiple scrolls
     if (pendingScrollRef.current !== null) {
       cancelAnimationFrame(pendingScrollRef.current);
     }
+    if (scrollDebounceRef.current !== null) {
+      clearTimeout(scrollDebounceRef.current);
+    }
 
-    // Use double-RAF to ensure DOM layout has completed for complex components
-    // (tool call cards with syntax highlighting, diffs, etc.)
-    pendingScrollRef.current = requestAnimationFrame(() => {
+    // Debounce rapid scroll requests to prevent animation fighting
+    scrollDebounceRef.current = setTimeout(() => {
       pendingScrollRef.current = requestAnimationFrame(() => {
-        if (containerRef.current) {
-          programmaticScrollRef.current = true;
-          containerRef.current.scrollTop = containerRef.current.scrollHeight;
-          // Reset flag after scroll event has been processed
-          requestAnimationFrame(() => {
-            programmaticScrollRef.current = false;
-          });
-        }
-        pendingScrollRef.current = null;
+        pendingScrollRef.current = requestAnimationFrame(() => {
+          if (containerRef.current) {
+            programmaticScrollRef.current = true;
+            containerRef.current.scrollTo({
+              top: containerRef.current.scrollHeight,
+              behavior: "smooth",
+            });
+            setTimeout(() => {
+              programmaticScrollRef.current = false;
+            }, 400);
+          }
+          pendingScrollRef.current = null;
+        });
       });
-    });
+      scrollDebounceRef.current = null;
+    }, 50);
   }, []);
 
-  // Force-scroll to bottom when command state changes (start or end)
+  // Force-scroll to bottom when command state changes (start or end).
+  // When a command finishes, the LiveTerminalBlock unmounts and a static
+  // CommandBlock renders. We delay the scroll slightly to let the new block
+  // layout with its estimated min-height, preventing a "jump" effect.
   const hasPendingCommand = !!pendingCommand?.command;
   const prevHadPendingRef = useRef(hasPendingCommand);
+  const [showLiveBlock, setShowLiveBlock] = useState(hasPendingCommand);
+  const [liveBlockFading, setLiveBlockFading] = useState(false);
+
   useEffect(() => {
     const wasRunning = prevHadPendingRef.current;
     prevHadPendingRef.current = hasPendingCommand;
+
     if (wasRunning !== hasPendingCommand) {
-      setIsAtBottom(true);
-      requestAnimationFrame(() => scrollToBottom());
+      if (wasRunning && !hasPendingCommand) {
+        // Command just finished — fade out then unmount
+        setLiveBlockFading(true);
+        setTimeout(() => {
+          setShowLiveBlock(false);
+          setLiveBlockFading(false);
+          setIsAtBottom(true);
+          scrollToBottom();
+        }, 200);
+      } else {
+        // Command starting — show immediately
+        setShowLiveBlock(true);
+        setLiveBlockFading(false);
+        setIsAtBottom(true);
+        requestAnimationFrame(() => scrollToBottom());
+      }
     }
   }, [hasPendingCommand, scrollToBottom]);
 
-  // Auto-scroll to bottom when new content arrives (only if user is at bottom)
-  const hasThinkingContent = !!thinkingContent;
-  const hasActiveWorkflow = !!activeWorkflow;
-  const workflowStepCount = activeWorkflow?.steps.length ?? 0;
-  const hasActiveSubAgents = activeSubAgents.length > 0;
-  const subAgentToolCallCount = activeSubAgents.reduce((acc, a) => acc + a.toolCalls.length, 0);
-  // Throttle streaming text scroll triggers to every ~50 characters
-  const streamingTextBucket = Math.floor(streamingTextLength / 50);
+  // Auto-scroll only when NEW blocks appear (not on content height changes from expand/collapse)
+  const prevTimelineLengthRef = useRef(timeline.length);
   // biome-ignore lint/correctness/useExhaustiveDependencies: intentional triggers for auto-scroll
   useEffect(() => {
-    // Only auto-scroll if user is at the bottom - don't interrupt if they've scrolled up to read
-    if (isAtBottom) {
+    const grew = timeline.length > prevTimelineLengthRef.current;
+    prevTimelineLengthRef.current = timeline.length;
+    if (isAtBottom && (grew || hasPendingCommand)) {
       scrollToBottom();
     }
   }, [
     scrollToBottom,
     isAtBottom,
     timeline.length,
-    streamingBlocks.length,
-    streamingTextBucket,
-    renderBlocks.length,
     hasPendingCommand,
-    hasThinkingContent,
-    hasActiveWorkflow,
-    workflowStepCount,
-    hasActiveSubAgents,
-    subAgentToolCallCount,
-    isCompacting,
-    streamingBlockRevision,
   ]);
 
   // Cleanup pending scroll on unmount
@@ -283,182 +137,57 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
       if (pendingScrollRef.current !== null) {
         cancelAnimationFrame(pendingScrollRef.current);
       }
+      if (scrollDebounceRef.current !== null) {
+        clearTimeout(scrollDebounceRef.current);
+      }
     };
   }, []);
 
-  // Empty state - only show if no timeline, no streaming, no thinking, and no command running
-  // Check for both command AND output (output may exist even without command_start if shell integration isn't installed)
+  // Empty state - only show if no timeline and no command running
   const hasRunningCommand = pendingCommand?.command || pendingCommand?.output;
-  const isEmpty =
-    timeline.length === 0 &&
-    streamingBlocks.length === 0 &&
-    !hasRunningCommand &&
-    !isAgentThinking &&
-    !thinkingContent;
+  const isEmpty = timeline.length === 0 && !hasRunningCommand;
+
+  // Pipeline-sourced commands are shown inside PipelineProgressBlock (expandable rows),
+  // so filter them out of the main timeline to avoid duplication.
+  const filteredTimeline = useMemo(
+    () => sortedTimeline.filter(
+      (block) => !(block.type === "command" && block.data.source === "pipeline"),
+    ),
+    [sortedTimeline],
+  );
 
   return (
-    <div ref={containerRef} className="flex-1 min-h-0 min-w-0 overflow-auto p-2 space-y-2">
-      {isEmpty ? (
-        <WelcomeScreen />
-      ) : (
-        <>
-          {/* Virtualized timeline blocks - only visible blocks are rendered */}
-          <VirtualizedTimeline
-            blocks={sortedTimeline}
-            sessionId={sessionId}
-            containerRef={containerRef}
-            shouldScrollToBottom={isAtBottom}
-            workingDirectory={workingDirectory}
-          />
-
-          {/* Streaming output for running command */}
-          {/* Show if we have a command OR if we have buffered output (fallback for missing command_start) */}
-          {(pendingCommand?.command || pendingCommand?.output) && (
-            <LiveTerminalBlock
+    <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden">
+      <div ref={containerRef} className="flex-1 min-h-0 min-w-0 overflow-auto p-2 space-y-2">
+        {isEmpty ? (
+          <WelcomeScreen />
+        ) : (
+          <>
+            <VirtualizedTimeline
+              blocks={filteredTimeline}
               sessionId={sessionId}
-              command={pendingCommand?.command || null}
-              interactive
+              containerRef={containerRef}
+              shouldScrollToBottom={isAtBottom}
+              workingDirectory={workingDirectory}
             />
-          )}
 
-          {/* Thinking indicator - shown while waiting for first content (when no thinking content yet) */}
-          {isAgentThinking &&
-            streamingBlocks.length === 0 &&
-            !thinkingContent &&
-            !activeWorkflow && (
-              <div className="ml-6 border-l-2 border-l-[var(--ansi-magenta)] bg-card/50 rounded-r-md p-2">
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-[var(--ansi-magenta)]" />
-                  <span>Thinking...</span>
-                </div>
+            {showLiveBlock && (pendingCommand?.command || pendingCommand?.output) && (
+              <div
+                className="transition-opacity duration-200"
+                style={{ opacity: liveBlockFading ? 0 : 1 }}
+              >
+                <LiveTerminalBlock
+                  sessionId={sessionId}
+                  command={pendingCommand?.command || null}
+                  interactive
+                />
               </div>
             )}
+          </>
+        )}
 
-          {/* Agent response - contains thinking (if any), streaming content, sub-agents, and workflow tree */}
-          {(thinkingContent ||
-            streamingBlocks.length > 0 ||
-            activeWorkflow ||
-            activeSubAgents.length > 0) && (
-            <div className="ml-6 border-l-2 border-l-[var(--ansi-magenta)] bg-card/50 rounded-r-md p-2 space-y-2">
-              {/* Extended thinking block - REMOVED (using interleaved blocks instead) */}
-              {/* {thinkingContent && <StreamingThinkingBlock sessionId={sessionId} />} */}
-
-              {/* Streaming text, tool calls, and sub-agents (grouped and interleaved for cleaner display) */}
-              {renderBlocks.map((block, blockIndex) => {
-                if (block.type === "thinking") {
-                  const isLast = blockIndex === renderBlocks.length - 1 && !activeWorkflow;
-                  return (
-                    <div
-                      // biome-ignore lint/suspicious/noArrayIndexKey: blocks are appended and never reordered
-                      key={`thinking-${blockIndex}`}
-                      className="mb-2"
-                    >
-                      <StaticThinkingBlock
-                        content={block.content}
-                        isThinking={isLast && isAgentThinking}
-                        defaultExpanded
-                      />
-                    </div>
-                  );
-                }
-                if (block.type === "text") {
-                  const isLast = blockIndex === renderBlocks.length - 1 && !activeWorkflow;
-                  return (
-                    // biome-ignore lint/suspicious/noArrayIndexKey: blocks are appended and never reordered
-                    <div key={`text-${blockIndex}`}>
-                      <Markdown
-                        content={block.content}
-                        className="text-[14px] font-medium leading-relaxed text-foreground/85"
-                        streaming
-                        sessionId={sessionId}
-                        workingDirectory={workingDirectory}
-                      />
-                      {isLast && (
-                        <span className="inline-block w-2 h-4 bg-[var(--ansi-magenta)] animate-pulse ml-0.5 align-middle" />
-                      )}
-                    </div>
-                  );
-                }
-                if (block.type === "sub_agent") {
-                  return (
-                    <SubAgentCard key={block.subAgent.parentRequestId} subAgent={block.subAgent} />
-                  );
-                }
-                if (block.type === "tool_group") {
-                  return (
-                    <MainToolGroup
-                      key={`group-${block.tools[0].id}`}
-                      tools={block.tools}
-                      onViewToolDetails={setSelectedTool}
-                      onViewGroupDetails={() => setSelectedToolGroup(block.tools)}
-                    />
-                  );
-                }
-                if (block.type === "udiff_result") {
-                  return (
-                    <UdiffResultBlock
-                      // biome-ignore lint/suspicious/noArrayIndexKey: blocks are appended and never reordered
-                      key={`udiff-${blockIndex}`}
-                      response={block.response}
-                      durationMs={block.durationMs}
-                    />
-                  );
-                }
-                if (block.type === "system_hooks") {
-                  return (
-                    <SystemHooksCard
-                      // biome-ignore lint/suspicious/noArrayIndexKey: blocks are appended and never reordered
-                      key={`hooks-${blockIndex}`}
-                      hooks={block.hooks}
-                    />
-                  );
-                }
-                // Single tool - show with inline name
-                if (block.type === "tool") {
-                  return (
-                    <ToolItem
-                      key={block.toolCall.id}
-                      tool={block.toolCall}
-                      showInlineName
-                      onViewDetails={setSelectedTool}
-                    />
-                  );
-                }
-                return null;
-              })}
-
-              {/* Workflow tree - hierarchical display of workflow steps and tool calls */}
-              {activeWorkflow && <WorkflowTree sessionId={sessionId} />}
-            </div>
-          )}
-
-          {/* Context compaction indicator */}
-          {isCompacting && (
-            <div className="ml-6 border-l-2 border-l-[var(--ansi-yellow)] bg-card/50 rounded-r-md p-3">
-              <div className="flex items-center gap-2 text-sm">
-                <Sparkles className="w-4 h-4 animate-pulse text-[var(--ansi-yellow)]" />
-                <span className="font-medium text-foreground/85">Compacting context...</span>
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground ml-6">
-                Summarizing conversation history to free up context space.
-              </p>
-            </div>
-          )}
-        </>
-      )}
-
-      {/* Scroll anchor */}
-      <div ref={bottomRef} />
-
-      {/* Tool Details Modal */}
-      <ToolDetailsModal tool={selectedTool} onClose={() => setSelectedTool(null)} />
-
-      {/* Tool Group Details Modal */}
-      <ToolGroupDetailsModal
-        tools={selectedToolGroup}
-        onClose={() => setSelectedToolGroup(null)}
-        onViewToolDetails={setSelectedTool}
-      />
+        <div ref={bottomRef} />
+      </div>
     </div>
   );
 });

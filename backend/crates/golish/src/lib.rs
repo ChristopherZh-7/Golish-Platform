@@ -29,6 +29,8 @@ use ai::{
     execute_ai_tool, export_ai_session_transcript, finalize_ai_session, find_ai_session,
     generate_commit_message, get_agent_mode, get_ai_conversation_length,
     get_ai_conversation_length_session, get_api_request_stats, get_approval_patterns,
+    get_audit_log, get_db_token_usage_stats, get_memory_count, get_tool_call_stats,
+    list_recent_memories, search_memories,
     restore_ai_conversation,
     get_available_tools, get_context_summary, get_context_trim_config, get_context_utilization,
     get_hitl_config, get_loop_detector_stats, get_loop_protection_config, get_openai_api_key,
@@ -46,7 +48,8 @@ use ai::{
     send_ai_prompt_session, send_ai_prompt_with_attachments, set_agent_mode,
     set_ai_session_persistence, set_hitl_config, set_loop_protection_config, set_sub_agent_model,
     set_tool_policy, set_tool_policy_config, shutdown_ai_agent, shutdown_ai_session,
-    signal_frontend_ready, start_workflow, step_workflow, update_ai_workspace,
+    check_recon_tools_cmd, run_recon_pipeline, signal_frontend_ready, start_workflow, step_workflow,
+    update_ai_workspace,
 };
 use commands::*;
 use indexer::{
@@ -205,10 +208,27 @@ pub fn run_gui() {
                 }
             };
 
+        // Create a lazy connection pool: no connections are opened now.
+        // The background task below will start PG, then the pool auto-connects
+        // on the first query after PG is ready.
+        let db_config = golish_db::DbConfig::default();
+        let db_pool = Arc::new(
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(10)
+                .min_connections(0)
+                .acquire_timeout(std::time::Duration::from_secs(30))
+                .connect_lazy(&db_config.connection_string())
+                .expect("Failed to create lazy PG pool"),
+        );
+
         // Create AppState using the same SettingsManager (no redundant disk read)
-        let app_state =
-            AppState::with_settings_manager(settings_manager, langfuse_active, telemetry_stats)
-                .await;
+        let app_state = AppState::with_settings_manager(
+            settings_manager,
+            langfuse_active,
+            telemetry_stats,
+            db_pool,
+        )
+        .await;
 
         // Apply proxy settings as environment variables so all HTTP clients
         // (including rig-core's internal reqwest) automatically use them
@@ -218,6 +238,25 @@ pub fn run_gui() {
         }
 
         (telemetry_guard, app_state)
+    });
+
+    // Start embedded PostgreSQL in the background (avoids blocking UI on binary download).
+    // GolishDb::start() handles downloading binaries (if needed), starting the server,
+    // creating the database, and running migrations. The lazy pool created above will
+    // auto-connect when the first query is executed after PG is up.
+    tauri::async_runtime::spawn(async move {
+        tracing::info!("Starting embedded PostgreSQL database (background)...");
+        match golish_db::GolishDb::start(golish_db::DbConfig::default()).await {
+            Ok(_db) => {
+                tracing::info!("Embedded PostgreSQL is fully ready");
+                // Leak the GolishDb handle so the embedded server stays alive
+                // for the lifetime of the app. The lazy pool handles connections.
+                std::mem::forget(_db);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to start embedded PostgreSQL");
+            }
+        }
     });
 
     // Initialize HistoryManager in the background (deferred to avoid blocking startup)
@@ -786,6 +825,13 @@ pub fn run_gui() {
             is_ai_session_persistence_enabled,
             finalize_ai_session,
             restore_ai_session,
+            // Analytics / DB commands
+            get_tool_call_stats,
+            get_db_token_usage_stats,
+            get_audit_log,
+            search_memories,
+            list_recent_memories,
+            get_memory_count,
             // HITL commands
             get_approval_patterns,
             get_tool_approval_pattern,
@@ -903,6 +949,8 @@ pub fn run_gui() {
             get_workflow_state,
             list_workflow_sessions,
             cancel_workflow,
+            run_recon_pipeline,
+            check_recon_tools_cmd,
             // Settings commands
             get_settings,
             update_settings,
@@ -1091,6 +1139,7 @@ pub fn run_gui() {
             tools::targets::target_add,
             tools::targets::target_batch_add,
             tools::targets::target_update,
+            tools::targets::target_update_status,
             tools::targets::target_delete,
             tools::targets::target_add_group,
             tools::targets::target_delete_group,
@@ -1160,6 +1209,9 @@ pub fn run_gui() {
             tools::vuln_intel::intel_search_remote,
             tools::vuln_intel::intel_search_remote_page,
             tools::vuln_intel::intel_match_targets,
+            // IME switching (macOS)
+            ime_get_source,
+            ime_set_source,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

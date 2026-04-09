@@ -160,8 +160,32 @@ export interface Session {
 }
 
 // Unified timeline block types
+export type PipelineStepStatus = "pending" | "running" | "success" | "failed" | "skipped";
+
+export interface PipelineStepExecution {
+  stepId: string;
+  name: string;
+  command: string;
+  status: PipelineStepStatus;
+  output?: string;
+  exitCode?: number | null;
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+}
+
+export interface PipelineExecution {
+  pipelineId: string;
+  pipelineName: string;
+  target: string;
+  steps: PipelineStepExecution[];
+  status: "pending" | "running" | "completed" | "failed";
+  startedAt: string;
+  finishedAt?: string;
+}
+
 export type UnifiedBlock =
-  | { id: string; type: "command"; timestamp: string; data: CommandBlock }
+  | { id: string; type: "command"; timestamp: string; data: CommandBlock & { source?: "manual" | "pipeline" } }
   | {
       id: string;
       type: "agent_message";
@@ -179,6 +203,12 @@ export type UnifiedBlock =
       type: "agent_streaming";
       timestamp: string;
       data: { content: string; toolCalls?: ToolCall[] };
+    }
+  | {
+      id: string;
+      type: "pipeline_progress";
+      timestamp: string;
+      data: PipelineExecution;
     };
 
 export interface CommandBlock {
@@ -305,6 +335,15 @@ export interface ActiveToolCall {
   streamingOutput?: string;
 }
 
+/** Pending ask_human request from the AI agent */
+export interface AskHumanRequest {
+  requestId: string;
+  question: string;
+  inputType: "credentials" | "choice" | "freetext" | "confirmation";
+  options: string[];
+  context: string;
+}
+
 /** Streaming block types for interleaved text and tool calls */
 export type StreamingBlock =
   | { type: "text"; content: string }
@@ -413,6 +452,8 @@ interface GolishState extends AppearanceSlice, ContextSlice, ConversationSlice, 
   // Terminal state
   pendingCommand: Record<string, PendingCommand | null>;
   lastSentCommand: Record<string, string | null>;
+  /** When true, next command block for this session will be tagged as pipeline-sourced */
+  pipelineCommandSource: Record<string, boolean>;
 
   // Agent state
   /** Buffer of text deltas per session - avoids string concatenation in hot path */
@@ -426,6 +467,7 @@ interface GolishState extends AppearanceSlice, ContextSlice, ConversationSlice, 
   isAgentThinking: Record<string, boolean>; // True when waiting for first content from agent
   isAgentResponding: Record<string, boolean>; // True when agent is actively responding (from started to completed)
   pendingToolApproval: Record<string, ToolCall | null>;
+  pendingAskHuman: Record<string, AskHumanRequest | null>;
   processedToolRequests: Record<string, Set<string>>; // Track processed request IDs per session to prevent duplicates
   activeToolCalls: Record<string, ActiveToolCall[]>; // Tool calls currently in progress per session
 
@@ -492,6 +534,12 @@ interface GolishState extends AppearanceSlice, ContextSlice, ConversationSlice, 
   clearBlocks: (sessionId: string) => void;
   requestTerminalClear: (sessionId: string) => void;
 
+  // Pipeline execution actions
+  startPipelineExecution: (sessionId: string, execution: PipelineExecution) => void;
+  updatePipelineStep: (sessionId: string, executionId: string, stepId: string, update: Partial<PipelineStepExecution>) => void;
+  completePipelineExecution: (sessionId: string, executionId: string, status: "completed" | "failed") => void;
+  setPipelineCommandSource: (sessionId: string, isPipeline: boolean) => void;
+
   // Agent actions
   addAgentMessage: (sessionId: string, message: AgentMessage) => void;
   /** Append a text delta to the streaming buffer (efficient - no string concat) */
@@ -503,6 +551,8 @@ interface GolishState extends AppearanceSlice, ContextSlice, ConversationSlice, 
   setAgentThinking: (sessionId: string, thinking: boolean) => void;
   setAgentResponding: (sessionId: string, responding: boolean) => void;
   setPendingToolApproval: (sessionId: string, tool: ToolCall | null) => void;
+  setPendingAskHuman: (sessionId: string, request: AskHumanRequest) => void;
+  clearPendingAskHuman: (sessionId: string) => void;
   markToolRequestProcessed: (sessionId: string, requestId: string) => void;
   isToolRequestProcessed: (sessionId: string, requestId: string) => boolean;
   updateToolCallStatus: (
@@ -739,6 +789,7 @@ export const useStore = create<GolishState>()(
       timelines: {},
       pendingCommand: {},
       lastSentCommand: {},
+      pipelineCommandSource: {},
       agentStreamingBuffer: {},
       agentStreaming: {},
       streamingBlocks: {},
@@ -748,6 +799,7 @@ export const useStore = create<GolishState>()(
       isAgentThinking: {},
       isAgentResponding: {},
       pendingToolApproval: {},
+      pendingAskHuman: {},
       processedToolRequests: {},
       activeToolCalls: {},
       thinkingContent: {},
@@ -801,6 +853,7 @@ export const useStore = create<GolishState>()(
           state.isAgentThinking[session.id] = false;
           state.isAgentResponding[session.id] = false;
           state.pendingToolApproval[session.id] = null;
+          state.pendingAskHuman[session.id] = null;
           state.activeToolCalls[session.id] = [];
           state.thinkingContent[session.id] = "";
           state.isThinkingExpanded[session.id] = true;
@@ -860,6 +913,7 @@ export const useStore = create<GolishState>()(
           delete state.isAgentThinking[sessionId];
           delete state.isAgentResponding[sessionId];
           delete state.pendingToolApproval[sessionId];
+          delete state.pendingAskHuman[sessionId];
           delete state.processedToolRequests[sessionId];
           delete state.activeToolCalls[sessionId];
           delete state.thinkingContent[sessionId];
@@ -904,6 +958,14 @@ export const useStore = create<GolishState>()(
             state.tabActivationHistory.splice(idx, 1);
           }
           state.tabActivationHistory.push(sessionId);
+
+          // 1:1 reverse sync: if this terminal belongs to a conversation, activate it
+          for (const [convId, terminals] of Object.entries(state.conversationTerminals)) {
+            if (terminals.includes(sessionId) && state.activeConversationId !== convId) {
+              state.activeConversationId = convId;
+              break;
+            }
+          }
 
           // Notify backend of active terminal session for visible command execution
           const session = state.sessions[sessionId];
@@ -1029,17 +1091,16 @@ export const useStore = create<GolishState>()(
             if (!state.timelines[sessionId]) {
               state.timelines[sessionId] = [];
             }
+            const source = state.pipelineCommandSource[sessionId] ? "pipeline" as const : undefined;
             state.timelines[sessionId].push({
               id: blockId,
               type: "command",
-              // Use completion time for ordering in the unified timeline.
               timestamp: new Date().toISOString(),
-              data: block,
+              data: { ...block, source },
             });
           }
 
           if (pending) {
-            // Mark tab as having new activity (if inactive)
             markTabNewActivityInDraft(state, sessionId);
           }
           state.pendingCommand[sessionId] = null;
@@ -1105,16 +1166,18 @@ export const useStore = create<GolishState>()(
               if (!state.timelines[sessionId]) {
                 state.timelines[sessionId] = [];
               }
+              const source = state.pipelineCommandSource[sessionId] ? "pipeline" as const : undefined;
               state.timelines[sessionId].push({
                 id: blockId,
                 type: "command",
-                // Use completion time for ordering in the unified timeline.
                 timestamp: new Date().toISOString(),
-                data: block,
+                data: { ...block, source },
               });
+              if (source === "pipeline") {
+                state.pipelineCommandSource[sessionId] = false;
+              }
             }
 
-            // Mark tab as having new activity (if inactive)
             markTabNewActivityInDraft(state, sessionId);
 
             state.pendingCommand[sessionId] = null;
@@ -1201,6 +1264,47 @@ export const useStore = create<GolishState>()(
       requestTerminalClear: (sessionId) =>
         set((state) => {
           state.terminalClearRequest[sessionId] = (state.terminalClearRequest[sessionId] ?? 0) + 1;
+        }),
+
+      // Pipeline execution actions
+      startPipelineExecution: (sessionId, execution) =>
+        set((state) => {
+          if (!state.timelines[sessionId]) state.timelines[sessionId] = [];
+          state.timelines[sessionId].push({
+            id: `pipeline-${execution.pipelineId}-${Date.now()}`,
+            type: "pipeline_progress",
+            timestamp: new Date().toISOString(),
+            data: execution,
+          });
+        }),
+
+      updatePipelineStep: (sessionId, executionId, stepId, update) =>
+        set((state) => {
+          const timeline = state.timelines[sessionId];
+          if (!timeline) return;
+          const block = timeline.find(
+            (b) => b.type === "pipeline_progress" && b.id === executionId
+          );
+          if (!block || block.type !== "pipeline_progress") return;
+          const step = block.data.steps.find((s) => s.stepId === stepId);
+          if (step) Object.assign(step, update);
+        }),
+
+      completePipelineExecution: (sessionId, executionId, status) =>
+        set((state) => {
+          const timeline = state.timelines[sessionId];
+          if (!timeline) return;
+          const block = timeline.find(
+            (b) => b.type === "pipeline_progress" && b.id === executionId
+          );
+          if (!block || block.type !== "pipeline_progress") return;
+          block.data.status = status;
+          block.data.finishedAt = new Date().toISOString();
+        }),
+
+      setPipelineCommandSource: (sessionId, isPipeline) =>
+        set((state) => {
+          state.pipelineCommandSource[sessionId] = isPipeline;
         }),
 
       // Agent actions
@@ -1298,6 +1402,16 @@ export const useStore = create<GolishState>()(
       setPendingToolApproval: (sessionId, tool) =>
         set((state) => {
           state.pendingToolApproval[sessionId] = tool;
+        }),
+
+      setPendingAskHuman: (sessionId, request) =>
+        set((state) => {
+          state.pendingAskHuman[sessionId] = request;
+        }),
+
+      clearPendingAskHuman: (sessionId) =>
+        set((state) => {
+          state.pendingAskHuman[sessionId] = null;
         }),
 
       markToolRequestProcessed: (sessionId, requestId) =>
@@ -1935,6 +2049,7 @@ export const useStore = create<GolishState>()(
           delete state.isAgentThinking[sessionIdToRemove];
           delete state.isAgentResponding[sessionIdToRemove];
           delete state.pendingToolApproval[sessionIdToRemove];
+          delete state.pendingAskHuman[sessionIdToRemove];
           delete state.processedToolRequests[sessionIdToRemove];
           delete state.activeToolCalls[sessionIdToRemove];
           delete state.thinkingContent[sessionIdToRemove];
@@ -2292,6 +2407,7 @@ export const useStore = create<GolishState>()(
             delete state.isAgentThinking[tabId];
             delete state.isAgentResponding[tabId];
             delete state.pendingToolApproval[tabId];
+            delete state.pendingAskHuman[tabId];
             delete state.processedToolRequests[tabId];
             delete state.activeToolCalls[tabId];
             delete state.thinkingContent[tabId];
@@ -2329,6 +2445,7 @@ export const useStore = create<GolishState>()(
             delete state.isAgentThinking[sessionId];
             delete state.isAgentResponding[sessionId];
             delete state.pendingToolApproval[sessionId];
+            delete state.pendingAskHuman[sessionId];
             delete state.processedToolRequests[sessionId];
             delete state.activeToolCalls[sessionId];
             delete state.thinkingContent[sessionId];
@@ -2562,6 +2679,9 @@ export const useAgentInitialized = (sessionId: string) =>
 
 export const usePendingToolApproval = (sessionId: string) =>
   useStore((state) => state.pendingToolApproval[sessionId] ?? null);
+
+export const usePendingAskHuman = (sessionId: string) =>
+  useStore((state) => state.pendingAskHuman[sessionId] ?? null);
 
 // Timeline selectors
 export const useSessionTimeline = (sessionId: string) =>

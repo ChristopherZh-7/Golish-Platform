@@ -10,9 +10,6 @@
 // Re-export everything from golish-tools
 pub use golish_tools::*;
 
-// SQLite database layer
-pub mod db;
-
 // Penetration testing tool management (ported from Golish)
 pub mod pentest;
 
@@ -63,3 +60,6 @@ pub mod wordlists;
 
 // Vulnerability intelligence
 pub mod vuln_intel;
+
+// AI bridge tools (expose targets/findings/vault to the AI agent)
+pub mod pentest_bridge;

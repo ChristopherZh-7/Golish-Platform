@@ -50,7 +50,7 @@ export function RecordingsPanel({ onClose }: { onClose: () => void }) {
       cursorBlink: false,
       disableStdin: true,
       fontSize: 13,
-      fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, monospace',
+      fontFamily: '"SF Mono", Menlo, Monaco, "JetBrains Mono", Consolas, monospace',
       theme: ThemeManager.getCurrentTheme(),
       cols: activeRecording.meta.width || 80,
       rows: activeRecording.meta.height || 24,

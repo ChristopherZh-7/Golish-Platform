@@ -15,7 +15,7 @@ interface LiveTerminalBlockProps {
 export const CODE_STYLE = {
   fontSize: "12px",
   lineHeight: 1.4,
-  fontFamily: "JetBrains Mono, Menlo, Monaco, Consolas, monospace",
+  fontFamily: "SF Mono, Menlo, Monaco, JetBrains Mono, Consolas, monospace",
 } as const;
 
 export function LiveTerminalBlock({ sessionId, command, interactive }: LiveTerminalBlockProps) {

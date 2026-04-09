@@ -44,7 +44,7 @@ export function TerminalSettings({ settings, onChange }: TerminalSettingsProps) 
           id="terminal-font-family"
           value={settings.font_family}
           onChange={(e) => updateField("font_family", e.target.value)}
-          placeholder="JetBrains Mono"
+          placeholder="SF Mono"
         />
         <p className="text-xs text-muted-foreground">Monospace font for the terminal</p>
       </div>

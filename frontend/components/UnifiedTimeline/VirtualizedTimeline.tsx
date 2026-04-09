@@ -1,5 +1,5 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { memo, useEffect } from "react";
+import { memo, useEffect, useRef } from "react";
 import { TimelineBlockErrorBoundary } from "@/components/TimelineBlockErrorBoundary";
 import { estimateBlockHeight } from "@/lib/timeline/blockHeightEstimation";
 import type { UnifiedBlock as UnifiedBlockType } from "@/store";
@@ -43,9 +43,12 @@ export const VirtualizedTimeline = memo(function VirtualizedTimeline({
     overscan: 5, // Render 5 extra items above/below viewport for smooth scrolling
   });
 
-  // Scroll to bottom when new blocks are added and user is at bottom
+  // Only scroll to bottom when NEW blocks are added (not on height changes from expand/collapse)
+  const prevBlocksLengthRef = useRef(blocks.length);
   useEffect(() => {
-    if (shouldScrollToBottom && blocks.length > 0) {
+    const grew = blocks.length > prevBlocksLengthRef.current;
+    prevBlocksLengthRef.current = blocks.length;
+    if (shouldScrollToBottom && grew) {
       virtualizer.scrollToIndex(blocks.length - 1, { align: "end" });
     }
   }, [blocks.length, shouldScrollToBottom, virtualizer]);

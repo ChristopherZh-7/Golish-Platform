@@ -60,6 +60,10 @@ rig-openai-responses = { path = "../rig-openai-responses" }
 # HTTP client (needed for llm_client.rs)
 reqwest = { workspace = true }
 
+# Database (session persistence + analytics tracking)
+sqlx = { workspace = true }
+golish-db = { workspace = true }
+
 [features]
 default = []
 

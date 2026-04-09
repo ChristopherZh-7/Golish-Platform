@@ -226,3 +226,47 @@ export const handleToolOutputChunk: EventHandler<{
   // Append the chunk to the tool's streaming output
   state.appendToolStreamingOutput(ctx.sessionId, event.request_id, event.chunk);
 };
+
+/**
+ * Handle ask_human_request event.
+ * AI is requesting input from the user (barrier tool — pauses execution).
+ */
+export const handleAskHumanRequest: EventHandler<{
+  type: "ask_human_request";
+  request_id: string;
+  question: string;
+  input_type: string;
+  options: string[];
+  context: string;
+  session_id: string;
+  seq?: number;
+}> = (event, ctx) => {
+  const state = ctx.getState();
+
+  state.setAgentThinking(ctx.sessionId, false);
+  ctx.flushSessionDeltas(ctx.sessionId);
+
+  state.setPendingAskHuman(ctx.sessionId, {
+    requestId: event.request_id,
+    question: event.question,
+    inputType: event.input_type as "credentials" | "choice" | "freetext" | "confirmation",
+    options: event.options ?? [],
+    context: event.context ?? "",
+  });
+};
+
+/**
+ * Handle ask_human_response event.
+ * User responded to an ask_human request.
+ */
+export const handleAskHumanResponse: EventHandler<{
+  type: "ask_human_response";
+  request_id: string;
+  response: string;
+  skipped: boolean;
+  session_id: string;
+  seq?: number;
+}> = (event, ctx) => {
+  const state = ctx.getState();
+  state.clearPendingAskHuman(ctx.sessionId);
+};

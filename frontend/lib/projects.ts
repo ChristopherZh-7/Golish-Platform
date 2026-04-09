@@ -22,6 +22,8 @@ export function ppParam() {
 export interface ProjectFormData {
   name: string;
   rootPath: string;
+  /** Optional initial targets (domains, IPs, CIDRs, URLs) for auto-recon */
+  targets?: string[];
 }
 
 /** Project data returned from the backend. */

@@ -15,6 +15,7 @@ use crate::sidecar::{SidecarConfig, SidecarState};
 use crate::telemetry::TelemetryStats;
 use crate::tools::pty_interactive::PtyOutputTap;
 use parking_lot::Mutex;
+use sqlx::PgPool;
 use tokio::sync::RwLock;
 
 pub struct AppState {
@@ -47,6 +48,10 @@ pub struct AppState {
     /// Terminal sessions currently in use by pentest tool executions.
     /// Shared across all AI tabs to prevent concurrent commands on the same terminal.
     pub pentest_busy_sessions: Arc<Mutex<HashSet<String>>>,
+    /// PostgreSQL connection pool (from golish-db).
+    /// Created lazily via `connect_lazy` — connections are established
+    /// on first query after the background PG server finishes starting.
+    pub db_pool: Arc<PgPool>,
 }
 
 impl AppState {
@@ -57,15 +62,17 @@ impl AppState {
     /// # Arguments
     /// * `langfuse_active` - Whether Langfuse tracing is enabled and properly configured.
     /// * `telemetry_stats` - Optional telemetry stats for monitoring (only when Langfuse is active).
-    pub async fn new(langfuse_active: bool, telemetry_stats: Option<Arc<TelemetryStats>>) -> Self {
-        // Initialize settings manager first (needed by TavilyState in the future)
+    pub async fn new(
+        langfuse_active: bool,
+        telemetry_stats: Option<Arc<TelemetryStats>>,
+        db_pool: Arc<PgPool>,
+    ) -> Self {
         let settings_manager = Arc::new(
             SettingsManager::new()
                 .await
                 .expect("Failed to initialize settings manager"),
         );
 
-        // Load settings and create SidecarConfig from them
         let settings = settings_manager.get().await;
         let sidecar_config = SidecarConfig::from_golish_settings(&settings.sidecar);
         tracing::debug!(
@@ -73,8 +80,6 @@ impl AppState {
             sidecar_config.enabled
         );
 
-        // Create global sidecar state for UI commands.
-        // Note: Agent bridges create their OWN SidecarState instances for per-session isolation.
         let sidecar_state = Arc::new(SidecarState::with_config(sidecar_config.clone()));
 
         Self {
@@ -93,6 +98,7 @@ impl AppState {
             pty_output_tap: Arc::new(PtyOutputTap::new()),
             active_terminal_session: Arc::new(Mutex::new(None)),
             pentest_busy_sessions: Arc::new(Mutex::new(HashSet::new())),
+            db_pool,
         }
     }
 
@@ -108,8 +114,8 @@ impl AppState {
         settings_manager: Arc<SettingsManager>,
         langfuse_active: bool,
         telemetry_stats: Option<Arc<TelemetryStats>>,
+        db_pool: Arc<PgPool>,
     ) -> Self {
-        // Load settings and create SidecarConfig from them
         let settings = settings_manager.get().await;
         let sidecar_config = SidecarConfig::from_golish_settings(&settings.sidecar);
         tracing::debug!(
@@ -117,8 +123,6 @@ impl AppState {
             sidecar_config.enabled
         );
 
-        // Create global sidecar state for UI commands.
-        // Note: Agent bridges create their OWN SidecarState instances for per-session isolation.
         let sidecar_state = Arc::new(SidecarState::with_config(sidecar_config.clone()));
 
         Self {
@@ -137,6 +141,7 @@ impl AppState {
             pty_output_tap: Arc::new(PtyOutputTap::new()),
             active_terminal_session: Arc::new(Mutex::new(None)),
             pentest_busy_sessions: Arc::new(Mutex::new(HashSet::new())),
+            db_pool,
         }
     }
 }

@@ -1,18 +1,29 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { emit, listen } from "@tauri-apps/api/event";
 import { QuickNotes } from "@/components/QuickNotes/QuickNotes";
 import {
-  Check, ChevronDown, Crosshair, Globe, Hash, Map, Network,
-  Play, Plus, Radar, Search, Settings2, Shield, ShieldOff, Tag, Trash2, X,
+  ChevronDown, Crosshair, Globe, Hash, Map as MapIcon, Network,
+  Play, Plus, Radar, Search, Server, Shield, ShieldOff, Tag, Trash2, Wifi, X, Zap,
 } from "lucide-react";
 import { TopologyView } from "@/components/TopologyView/TopologyView";
+import { stripAllAnsi } from "@/lib/ansi";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import { getProjectPath } from "@/lib/projects";
 import { useStore } from "@/store";
 import { scanTools, type ToolConfig } from "@/lib/pentest/api";
 import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
+
+type TargetStatus = "new" | "recon" | "recondone" | "scanning" | "tested";
+
+interface PortInfo {
+  port: number;
+  protocol?: string;
+  service?: string;
+  state?: string;
+}
 
 interface Target {
   id: string;
@@ -23,6 +34,11 @@ interface Target {
   notes: string;
   scope: "in" | "out";
   group: string;
+  status: TargetStatus;
+  source: string;
+  parent_id: string | null;
+  ports: PortInfo[];
+  technologies: string[];
   created_at: number;
   updated_at: number;
 }
@@ -32,15 +48,19 @@ interface TargetStore {
   groups: string[];
 }
 
-const AUTO_SCAN_CONFIG_KEY = "golish-auto-scan-tools";
+interface PipelineInfo {
+  id: string;
+  name: string;
+  description: string;
+  workflow_id?: string;
+  steps: { id: string; command_template: string; tool_name: string; args: string[] }[];
+}
 
-const DEFAULT_AUTO_SCAN_TOOLS: Record<string, string[]> = {
-  domain: ["nmap"],
-  ip: ["nmap"],
-  cidr: ["nmap"],
-  url: ["nmap"],
-  wildcard: [],
-};
+interface ToolCheckResult {
+  tools: { name: string; installed: boolean }[];
+  all_ready: boolean;
+  missing: string[];
+}
 
 const ALL_TOOLS_BY_TYPE: Record<string, string[]> = {
   domain: ["nmap", "subfinder", "httpx", "nuclei", "whatweb", "katana"],
@@ -49,18 +69,6 @@ const ALL_TOOLS_BY_TYPE: Record<string, string[]> = {
   url: ["nmap", "nikto", "ffuf", "gobuster", "dirsearch", "feroxbuster", "nuclei", "whatweb", "katana"],
   wildcard: ["subfinder", "httpx"],
 };
-
-function loadAutoScanConfig(): Record<string, string[]> {
-  try {
-    const raw = localStorage.getItem(AUTO_SCAN_CONFIG_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch { /* ignore */ }
-  return { ...DEFAULT_AUTO_SCAN_TOOLS };
-}
-
-function saveAutoScanConfig(config: Record<string, string[]>) {
-  localStorage.setItem(AUTO_SCAN_CONFIG_KEY, JSON.stringify(config));
-}
 
 const TYPE_ICONS: Record<string, React.ReactNode> = {
   domain: <Globe className="w-3.5 h-3.5 text-blue-400" />,
@@ -76,6 +84,14 @@ const TYPE_LABELS: Record<string, string> = {
   cidr: "targets.cidr",
   url: "targets.url",
   wildcard: "targets.wildcard",
+};
+
+const STATUS_CONFIG: Record<TargetStatus, { label: string; color: string; bg: string }> = {
+  new: { label: "New", color: "text-gray-400", bg: "bg-gray-500/10" },
+  recon: { label: "Recon", color: "text-blue-400", bg: "bg-blue-500/10" },
+  recondone: { label: "Recon Done", color: "text-cyan-400", bg: "bg-cyan-500/10" },
+  scanning: { label: "Scanning", color: "text-yellow-400", bg: "bg-yellow-500/10" },
+  tested: { label: "Tested", color: "text-green-400", bg: "bg-green-500/10" },
 };
 
 function MiniDropdown({
@@ -154,40 +170,15 @@ export function TargetPanel() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showNewGroup, setShowNewGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
-  const [autoScan, setAutoScan] = useState(() => localStorage.getItem("golish-auto-scan") === "true");
-  const [showAutoScanConfig, setShowAutoScanConfig] = useState(false);
-  const [autoScanConfig, setAutoScanConfig] = useState<Record<string, string[]>>(loadAutoScanConfig);
-  const autoScanConfigRef = useRef<HTMLDivElement>(null);
+  const [autoPipeline, setAutoPipeline] = useState(() => localStorage.getItem("golish-auto-pipeline") === "true");
+  const [pipelineMenuOpen, setPipelineMenuOpen] = useState(false);
+  const [pipelineList, setPipelineList] = useState<PipelineInfo[]>([]);
+  const [toolCheck, setToolCheck] = useState<Map<string, boolean>>(new Map());
+  const [selectedPipelineId, setSelectedPipelineId] = useState<string>(
+    () => localStorage.getItem("golish-auto-pipeline-id") || ""
+  );
+  const pipelineMenuRef = useRef<HTMLDivElement>(null);
   const { createTerminalTab } = useCreateTerminalTab();
-
-  const toggleAutoScan = useCallback(() => {
-    setAutoScan((prev) => {
-      const next = !prev;
-      localStorage.setItem("golish-auto-scan", String(next));
-      return next;
-    });
-  }, []);
-
-  const toggleAutoScanTool = useCallback((type: string, toolId: string) => {
-    setAutoScanConfig((prev) => {
-      const current = prev[type] ?? [];
-      const next = current.includes(toolId)
-        ? current.filter((t) => t !== toolId)
-        : [...current, toolId];
-      const updated = { ...prev, [type]: next };
-      saveAutoScanConfig(updated);
-      return updated;
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!showAutoScanConfig) return;
-    const close = (e: MouseEvent) => {
-      if (autoScanConfigRef.current && !autoScanConfigRef.current.contains(e.target as Node)) setShowAutoScanConfig(false);
-    };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [showAutoScanConfig]);
 
   const getToolCommand = useCallback((toolId: string, targetValue: string) => {
     const map: Record<string, string> = {
@@ -219,23 +210,232 @@ export function TargetPanel() {
 
   useEffect(() => { loadTargets(); }, [loadTargets, currentProjectPath]);
 
-  const runAutoScan = useCallback(async (targetValue: string, targetType: string) => {
-    if (!autoScan) return;
-    const toolIds = autoScanConfig[targetType] ?? [];
-    if (toolIds.length === 0) return;
-    for (const toolId of toolIds) {
-      const cmd = getToolCommand(toolId, targetValue);
-      const sessionId = await createTerminalTab();
-      if (sessionId) {
-        useStore.getState().setActiveSession(sessionId);
-        const { ptyWrite } = await import("@/lib/tauri");
-        setTimeout(() => { ptyWrite(sessionId, cmd + "\n").catch(() => {}); }, 500);
+  useEffect(() => {
+    const REFRESH_TOOLS = new Set(["manage_targets", "record_finding"]);
+    const unlisten = listen<{ type: string; tool_name?: string }>("ai-event", (event) => {
+      if (event.payload.type === "tool_result" && event.payload.tool_name && REFRESH_TOOLS.has(event.payload.tool_name)) {
+        loadTargets();
+      }
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, [loadTargets]);
+
+  useEffect(() => {
+    async function loadPipelines() {
+      try {
+        const [pList, check] = await Promise.all([
+          invoke<PipelineInfo[]>("pipeline_list", { projectPath: getProjectPath() }),
+          invoke<ToolCheckResult>("check_recon_tools_cmd"),
+        ]);
+        setPipelineList(pList);
+
+        const statusMap = new Map<string, boolean>();
+        for (const t of check.tools) statusMap.set(t.name, t.installed);
+        setToolCheck(statusMap);
+
+        const storedId = localStorage.getItem("golish-auto-pipeline-id");
+        if ((!storedId || !pList.find((p) => p.id === storedId)) && pList.length > 0) {
+          const defaultId = pList.find((p) => p.workflow_id === "recon_basic")?.id ?? pList[0].id;
+          setSelectedPipelineId(defaultId);
+          localStorage.setItem("golish-auto-pipeline-id", defaultId);
+        }
+      } catch (e) {
+        console.error("Failed to load pipelines:", e);
       }
     }
-  }, [autoScan, autoScanConfig, createTerminalTab, getToolCommand]);
+    loadPipelines();
+  }, [currentProjectPath]);
+
+  useEffect(() => {
+    if (!pipelineMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (pipelineMenuRef.current && !pipelineMenuRef.current.contains(e.target as Node)) {
+        setPipelineMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [pipelineMenuOpen]);
+
+  const toggleAutoPipeline = useCallback(() => {
+    setAutoPipeline((prev) => {
+      const next = !prev;
+      localStorage.setItem("golish-auto-pipeline", String(next));
+      return next;
+    });
+  }, []);
+
+  const sendPipelineResultsToAI = useCallback((
+    sessionId: string,
+    blockId: string,
+    pipelineName: string,
+    target: string,
+  ) => {
+    const store = useStore.getState();
+    const convId = store.activeConversationId;
+    if (!convId) return;
+
+    const timeline = store.timelines[sessionId] ?? [];
+    const pipelineBlock = timeline.find(
+      (b) => b.type === "pipeline_progress" && b.id === blockId,
+    );
+    if (!pipelineBlock || pipelineBlock.type !== "pipeline_progress") return;
+
+    const resultsText = pipelineBlock.data.steps
+      .filter((s) => s.output?.trim())
+      .map((s) => {
+        const output = stripAllAnsi(s.output || "").slice(0, 2000);
+        return `### \`${s.command}\` (exit: ${s.exitCode ?? "?"})\n\`\`\`\n${output}\n\`\`\``;
+      })
+      .join("\n\n");
+
+    if (!resultsText) return;
+
+    const analysisPrompt = `[Pipeline "${pipelineName}" completed for target: ${target}]\n\nPlease analyze these reconnaissance results and provide a brief summary of findings:\n\n${resultsText}`;
+
+    window.dispatchEvent(new CustomEvent("pipeline-analysis-request", {
+      detail: { convId, prompt: analysisPrompt },
+    }));
+  }, []);
+
+  const runPipelineOnTarget = useCallback(async (targetValue: string) => {
+    try {
+      const pipelines = await invoke<PipelineInfo[]>("pipeline_list", { projectPath: getProjectPath() });
+      const selected = selectedPipelineId ? pipelines.find((p) => p.id === selectedPipelineId) : null;
+      const recon = selected ?? pipelines.find((p) => p.workflow_id === "recon_basic") ?? pipelines[0];
+      if (!recon || recon.steps.length === 0) return;
+
+      const steps = recon.steps
+        .map((s) => {
+          const cmd = s.command_template || "";
+          const args = (s.args || []).join(" ");
+          const command = `${cmd} ${args}`.replace(/\{target\}/g, targetValue).trim();
+          return { stepId: s.id, name: s.tool_name || cmd, command };
+        })
+        .filter((s) => s.command);
+      if (steps.length === 0) return;
+
+      // Use the active conversation's terminal (1:1 model)
+      const store = useStore.getState();
+      const convId = store.activeConversationId;
+      const convTerminals = convId ? store.conversationTerminals[convId] ?? [] : [];
+      let sessionId: string = convTerminals[0] ?? "";
+
+      if (!sessionId) {
+        const newId = await createTerminalTab();
+        if (!newId) return;
+        sessionId = newId;
+      }
+      useStore.getState().setActiveSession(sessionId);
+      window.dispatchEvent(new CustomEvent("close-activity-view"));
+
+      // Create pipeline progress block
+      const execution = {
+        pipelineId: recon.id,
+        pipelineName: recon.name || recon.id,
+        target: targetValue,
+        steps: steps.map((s) => ({
+          stepId: s.stepId,
+          name: s.name,
+          command: s.command,
+          status: "pending" as const,
+        })),
+        status: "running" as const,
+        startedAt: new Date().toISOString(),
+      };
+      useStore.getState().startPipelineExecution(sessionId, execution);
+
+      // Update conversation title to reflect the target being scanned
+      if (convId) {
+        useStore.getState().updateConversation(convId, { title: targetValue });
+      }
+
+      const timeline = useStore.getState().timelines[sessionId] ?? [];
+      const progressBlock = timeline[timeline.length - 1];
+      const blockId = progressBlock?.id ?? "";
+
+      // Execute steps sequentially
+      const { ptyWrite } = await import("@/lib/tauri");
+      await new Promise((r) => setTimeout(r, 500));
+
+      for (let i = 0; i < steps.length; i++) {
+        const step = steps[i];
+
+        useStore.getState().updatePipelineStep(sessionId, blockId, step.stepId, {
+          status: "running",
+          startedAt: new Date().toISOString(),
+        });
+
+        // Tag subsequent command blocks as pipeline-sourced
+        useStore.getState().setPipelineCommandSource(sessionId, true);
+
+        const cmdBlockCountBefore = (useStore.getState().timelines[sessionId] ?? [])
+          .filter((b) => b.type === "command").length;
+
+        await ptyWrite(sessionId, step.command + "\n");
+
+        // Wait for the command to complete (new command block appears)
+        const stepStartTime = Date.now();
+        await new Promise<void>((resolve) => {
+          const check = () => {
+            const currentCmdCount = (useStore.getState().timelines[sessionId!] ?? [])
+              .filter((b) => b.type === "command").length;
+            if (currentCmdCount > cmdBlockCountBefore) {
+              resolve();
+              return;
+            }
+            if (Date.now() - stepStartTime > 120000) {
+              resolve();
+              return;
+            }
+            setTimeout(check, 300);
+          };
+          setTimeout(check, 500);
+        });
+
+        // Get exit code and output from the last command block
+        const updatedTimeline = useStore.getState().timelines[sessionId] ?? [];
+        const lastCmdBlock = [...updatedTimeline].reverse().find((b) => b.type === "command");
+        const exitCode = lastCmdBlock?.type === "command" ? lastCmdBlock.data.exitCode : null;
+        const cmdOutput = lastCmdBlock?.type === "command" ? lastCmdBlock.data.output : "";
+        const success = exitCode === null || exitCode === 0;
+        const finishedAt = new Date().toISOString();
+        const durationMs = Date.now() - stepStartTime;
+
+        useStore.getState().updatePipelineStep(sessionId, blockId, step.stepId, {
+          status: success ? "success" : "failed",
+          exitCode,
+          finishedAt,
+          durationMs,
+          output: cmdOutput || "",
+        });
+
+        if (!success) {
+          for (let j = i + 1; j < steps.length; j++) {
+            useStore.getState().updatePipelineStep(sessionId, blockId, steps[j].stepId, {
+              status: "skipped",
+            });
+          }
+          useStore.getState().completePipelineExecution(sessionId, blockId, "failed");
+          useStore.getState().setPipelineCommandSource(sessionId, false);
+          sendPipelineResultsToAI(sessionId, blockId, recon.name || recon.id, targetValue);
+          return;
+        }
+      }
+
+      useStore.getState().completePipelineExecution(sessionId, blockId, "completed");
+      useStore.getState().setPipelineCommandSource(sessionId, false);
+      sendPipelineResultsToAI(sessionId, blockId, recon.name || recon.id, targetValue);
+    } catch (e) {
+      console.error("Failed to run pipeline:", e);
+    }
+  }, [createTerminalTab, selectedPipelineId]);
+
+  const [addError, setAddError] = useState<string | null>(null);
 
   const handleAdd = useCallback(async () => {
     if (!addForm.value.trim()) return;
+    setAddError(null);
     try {
       await invoke("target_add", {
         name: addForm.name,
@@ -249,18 +449,21 @@ export function TargetPanel() {
       setAddForm({ name: "", value: "", group: "default", notes: "", tags: "" });
       setShowAdd(false);
       loadTargets();
+      emit("targets-changed").catch(() => {});
       invoke("audit_log", { action: "target_added", category: "targets", details: val, projectPath: getProjectPath() }).catch(() => {});
-      // Detect type for auto-scan
-      const detectedType = /^https?:\/\//.test(val) ? "url"
-        : /\/\d{1,2}$/.test(val) ? "cidr"
-        : /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(val) ? "ip"
-        : /^\*\./.test(val) ? "wildcard"
-        : "domain";
-      runAutoScan(val, detectedType);
+      if (autoPipeline) {
+        runPipelineOnTarget(val);
+      }
     } catch (e) {
+      const msg = String(e);
+      if (msg.includes("duplicate") || msg.includes("unique") || msg.includes("already exists")) {
+        setAddError("Target already exists");
+      } else {
+        setAddError(msg.slice(0, 100));
+      }
       console.error("Failed to add target:", e);
     }
-  }, [addForm, loadTargets, runAutoScan]);
+  }, [addForm, loadTargets, autoPipeline, runPipelineOnTarget]);
 
   const handleBatchAdd = useCallback(async () => {
     if (!batchInput.trim()) return;
@@ -334,6 +537,13 @@ export function TargetPanel() {
       console.error("Failed to clear:", e);
     }
   }, [t, loadTargets]);
+
+  const handleStartRecon = useCallback(async () => {
+    const inScopeTargets = store.targets.filter((t) => t.scope === "in");
+    for (const target of inScopeTargets) {
+      await runPipelineOnTarget(target.value);
+    }
+  }, [store.targets, runPipelineOnTarget]);
 
   const filtered = useMemo(() => {
     let list = store.targets;
@@ -429,83 +639,118 @@ export function TargetPanel() {
             )}
             onClick={() => setActiveTab("topology")}
           >
-            <Map className="w-3.5 h-3.5" />
+            <MapIcon className="w-3.5 h-3.5" />
             {t("activity.topology")}
           </button>
         </div>
         {activeTab === "targets" && (
         <div className="flex items-center gap-1">
-          <div className="relative flex items-center">
+          <div className="relative" ref={pipelineMenuRef}>
             <button
               className={cn(
-                "p-1.5 rounded-l transition-colors relative",
-                autoScan
+                "p-1.5 rounded transition-colors relative",
+                autoPipeline
                   ? "bg-accent/15 text-accent hover:bg-accent/25"
                   : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
               )}
-              onClick={toggleAutoScan}
-              title={autoScan ? "Auto-scan ON" : "Auto-scan OFF"}
+              onClick={() => setPipelineMenuOpen(!pipelineMenuOpen)}
+              title={autoPipeline ? "Auto-pipeline ON — click to configure" : "Auto-pipeline OFF — click to configure"}
             >
               <Radar className="w-3.5 h-3.5" />
-              {autoScan && <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-accent" />}
+              {autoPipeline && <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-accent" />}
             </button>
-            <button
-              className={cn(
-                "p-1.5 rounded-r transition-colors border-l border-border/20",
-                showAutoScanConfig
-                  ? "bg-accent/15 text-accent"
-                  : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-              )}
-              onClick={() => setShowAutoScanConfig(!showAutoScanConfig)}
-              title="Configure auto-scan tools"
-            >
-              <Settings2 className="w-3 h-3" />
-            </button>
-            {showAutoScanConfig && (
-              <div
-                ref={autoScanConfigRef}
-                className="absolute top-full right-0 mt-1 w-[280px] rounded-lg border border-border/30 bg-card shadow-lg z-50 py-2 max-h-[400px] overflow-y-auto"
-              >
-                <div className="px-3 pb-1.5 text-[10px] text-muted-foreground/50 font-medium uppercase tracking-wide">
-                  Auto-scan tools by target type
+
+            {pipelineMenuOpen && (
+              <div className="absolute top-full right-0 mt-1 w-[260px] rounded-lg border border-border/30 bg-card shadow-xl z-50 overflow-hidden">
+                <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border/20">
+                  <Radar className="w-3 h-3 text-muted-foreground flex-shrink-0" />
+                  <span className="text-[11px] font-medium text-foreground flex-1">Auto Pipeline</span>
+                  <button
+                    className={cn(
+                      "w-7 h-3.5 rounded-full transition-colors relative flex-shrink-0",
+                      autoPipeline ? "bg-accent" : "bg-muted-foreground/30"
+                    )}
+                    onClick={toggleAutoPipeline}
+                  >
+                    <span className={cn(
+                      "absolute left-0 top-[3px] w-2 h-2 rounded-full bg-white shadow-sm transition-transform",
+                      autoPipeline ? "translate-x-[16px]" : "translate-x-[2px]"
+                    )} />
+                  </button>
                 </div>
-                {Object.entries(ALL_TOOLS_BY_TYPE).map(([type, availableTools]) => {
-                  const selected = autoScanConfig[type] ?? [];
-                  return (
-                    <div key={type} className="px-3 py-1.5">
-                      <div className="flex items-center gap-1.5 mb-1">
-                        {TYPE_ICONS[type] || <Globe className="w-3 h-3" />}
-                        <span className="text-[11px] font-medium text-foreground/80 capitalize">{type}</span>
-                        <span className="text-[10px] text-muted-foreground/50 ml-auto">
-                          {selected.length}/{availableTools.length}
-                        </span>
-                      </div>
-                      <div className="flex flex-wrap gap-1">
-                        {availableTools.map((tool) => {
-                          const active = selected.includes(tool);
-                          return (
-                            <button
-                              key={tool}
-                              className={cn(
-                                "flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded border transition-colors",
-                                active
-                                  ? "bg-accent/15 border-accent/30 text-accent"
-                                  : "bg-muted/20 border-border/20 text-muted-foreground hover:border-border/40 hover:text-foreground"
-                              )}
-                              onClick={() => toggleAutoScanTool(type, tool)}
-                            >
-                              {active && <Check className="w-2.5 h-2.5" />}
-                              {tool}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })}
+
+                <div className="max-h-[300px] overflow-y-auto py-0.5">
+                  {pipelineList.length === 0 ? (
+                    <div className="px-3 py-3 text-[10px] text-muted-foreground text-center">No pipelines available</div>
+                  ) : (
+                    pipelineList.map((pipeline) => {
+                      const isSelected = pipeline.id === selectedPipelineId;
+                      const stepTools = pipeline.steps.map((s) => s.command_template).filter(Boolean);
+                      const uniqueTools = [...new Set(stepTools)];
+                      const toolAvail = uniqueTools.map((t) => ({ name: t, installed: toolCheck.get(t) ?? false }));
+                      const allAvail = toolAvail.length > 0 && toolAvail.every((t) => t.installed);
+                      const someAvail = toolAvail.some((t) => t.installed);
+
+                      return (
+                        <button
+                          key={pipeline.id}
+                          className={cn(
+                            "w-full text-left px-3 py-2 hover:bg-muted/30 transition-colors",
+                            isSelected && "bg-accent/5"
+                          )}
+                          onClick={() => {
+                            setSelectedPipelineId(pipeline.id);
+                            localStorage.setItem("golish-auto-pipeline-id", pipeline.id);
+                          }}
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <span className={cn(
+                              "w-2.5 h-2.5 rounded-full border-[1.5px] flex-shrink-0 flex items-center justify-center",
+                              isSelected ? "border-accent" : "border-muted-foreground/30"
+                            )}>
+                              {isSelected && <span className="w-1 h-1 rounded-full bg-accent" />}
+                            </span>
+                            <span className="text-[11px] font-medium flex-1 truncate">{pipeline.name}</span>
+                            <span className={cn(
+                              "w-1.5 h-1.5 rounded-full flex-shrink-0",
+                              allAvail ? "bg-green-400" : someAvail ? "bg-yellow-400" : "bg-red-400"
+                            )} title={allAvail ? "All tools available" : `Missing: ${toolAvail.filter((t) => !t.installed).map((t) => t.name).join(", ")}`} />
+                          </div>
+                          {pipeline.description && (
+                            <p className="text-[10px] text-muted-foreground/50 mt-0.5 ml-4 line-clamp-1">{pipeline.description}</p>
+                          )}
+                          <div className="flex flex-wrap gap-0.5 mt-1 ml-4">
+                            {toolAvail.map((tool) => (
+                              <span
+                                key={tool.name}
+                                className={cn(
+                                  "text-[9px] px-1 py-px rounded font-mono",
+                                  tool.installed
+                                    ? "bg-green-500/10 text-green-400/80"
+                                    : "bg-red-500/10 text-red-400/80"
+                                )}
+                              >
+                                {tool.name}
+                              </span>
+                            ))}
+                          </div>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
               </div>
             )}
           </div>
+          {stats.total > 0 && (
+            <button
+              className="p-1.5 rounded hover:bg-accent/20 text-muted-foreground hover:text-accent transition-colors"
+              onClick={handleStartRecon}
+              title="Run pipeline on all in-scope targets"
+            >
+              <Play className="w-3.5 h-3.5" />
+            </button>
+          )}
           <button
             className="p-1.5 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
             onClick={() => { setShowBatch(true); setShowAdd(false); }}
@@ -632,10 +877,13 @@ export function TargetPanel() {
               onChange={(e) => setAddForm((f) => ({ ...f, notes: e.target.value }))}
             />
           </div>
+          {addError && (
+            <p className="text-[11px] text-red-400">{addError}</p>
+          )}
           <div className="flex justify-end gap-2">
             <button
               className="px-3 py-1 text-xs rounded bg-muted/50 hover:bg-muted text-foreground"
-              onClick={() => setShowAdd(false)}
+              onClick={() => { setShowAdd(false); setAddError(null); }}
             >{t("common.cancel")}</button>
             <button
               className="px-3 py-1 text-xs rounded bg-accent text-accent-foreground hover:bg-accent/90"
@@ -726,6 +974,24 @@ export function TargetPanel() {
                   {/* Value */}
                   <span className="text-xs font-mono text-foreground flex-1 truncate">{target.value}</span>
 
+                  {/* Status badge */}
+                  {target.status && target.status !== "new" && (() => {
+                    const cfg = STATUS_CONFIG[target.status] || STATUS_CONFIG.new;
+                    return (
+                      <span className={cn("text-[10px] px-1.5 py-0.5 rounded font-medium", cfg.color, cfg.bg)}>
+                        {cfg.label}
+                      </span>
+                    );
+                  })()}
+
+                  {/* Port count indicator */}
+                  {target.ports && target.ports.length > 0 && (
+                    <span className="flex items-center gap-0.5 text-[10px] text-emerald-400/80" title={`${target.ports.length} open port(s)`}>
+                      <Wifi className="w-2.5 h-2.5" />
+                      {target.ports.length}
+                    </span>
+                  )}
+
                   {/* Type label */}
                   <span className="text-[10px] text-muted-foreground px-1.5 py-0.5 rounded bg-muted/30">
                     {t(TYPE_LABELS[target.type] || target.type)}
@@ -767,6 +1033,48 @@ export function TargetPanel() {
                         <span className="font-medium">{t("targets.name")}:</span> {target.name}
                       </div>
                     )}
+
+                    {/* Source */}
+                    {target.source && target.source !== "manual" && (
+                      <div className="text-[11px] text-muted-foreground">
+                        <span className="font-medium">Source:</span> {target.source}
+                      </div>
+                    )}
+
+                    {/* Technologies */}
+                    {target.technologies && target.technologies.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1">
+                        <Zap className="w-3 h-3 text-purple-400 shrink-0" />
+                        {target.technologies.map((tech) => (
+                          <span key={tech} className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400">
+                            {tech}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Ports */}
+                    {target.ports && target.ports.length > 0 && (
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-1 text-[11px] text-muted-foreground font-medium">
+                          <Server className="w-3 h-3" />
+                          Open Ports ({target.ports.length})
+                        </div>
+                        <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 pl-4">
+                          {target.ports.slice(0, 20).map((p: PortInfo) => (
+                            <div key={`${p.port}-${p.protocol || ""}`} className="text-[10px] font-mono text-muted-foreground">
+                              <span className="text-emerald-400">{p.port}</span>
+                              {p.protocol && <span className="text-muted-foreground/50">/{p.protocol}</span>}
+                              {p.service && <span className="text-foreground/60 ml-1">{p.service}</span>}
+                            </div>
+                          ))}
+                          {target.ports.length > 20 && (
+                            <div className="text-[10px] text-muted-foreground/50">+{target.ports.length - 20} more</div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
                     <textarea
                       className="w-full text-[11px] bg-background border border-border/50 rounded px-2 py-1 outline-none focus:border-accent resize-none"
                       placeholder={t("targets.notes")}

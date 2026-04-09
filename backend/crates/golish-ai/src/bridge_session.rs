@@ -38,7 +38,10 @@ impl AgentBridge {
 
         let workspace = self.workspace.read().await.clone();
         match QbitSessionManager::new(workspace, &self.model_name, &self.provider_name).await {
-            Ok(manager) => {
+            Ok(mut manager) => {
+                if let Some(ref pool) = self.db_pool {
+                    manager.set_db_pool(pool.clone());
+                }
                 *manager_guard = Some(manager);
                 tracing::debug!("Session started for persistence");
             }

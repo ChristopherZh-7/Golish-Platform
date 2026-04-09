@@ -230,7 +230,7 @@ hide_banner = false
 # shell = "/bin/zsh"
 
 # Font family for terminal
-font_family = "JetBrains Mono"
+font_family = "SF Mono"
 
 # Font size in pixels
 font_size = 14

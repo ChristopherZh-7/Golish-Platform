@@ -280,7 +280,9 @@ impl CaptureContext {
             | AiEvent::SystemHooksInjected { .. }
             | AiEvent::ToolOutputChunk { .. }
             | AiEvent::PromptGenerationStarted { .. }
-            | AiEvent::PromptGenerationCompleted { .. } => {
+            | AiEvent::PromptGenerationCompleted { .. }
+            | AiEvent::AskHumanRequest { .. }
+            | AiEvent::AskHumanResponse { .. } => {
                 // These events are not captured (ToolOutputChunk is streaming output)
             }
         }

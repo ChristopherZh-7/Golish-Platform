@@ -30,6 +30,7 @@ members = [
     "crates/golish-mcp",
     "crates/golish-pentest",
     "crates/golish-pentest-mcp",
+    "crates/golish-db",
 ]
 # Default members for fast inner-loop development (excludes Tauri app, evals, benchmarks)
 default-members = [
@@ -59,6 +60,7 @@ default-members = [
     "crates/golish-mcp",
     "crates/golish-pentest",
     "crates/golish-pentest-mcp",
+    "crates/golish-db",
 ]
 resolver = "2"
 
@@ -96,6 +98,11 @@ rig-zai-sdk = { path = "crates/rig-zai-sdk" }
 rig-gemini-vertex = { path = "crates/rig-gemini-vertex" }
 golish-pentest = { path = "crates/golish-pentest" }
 golish-pentest-mcp = { path = "crates/golish-pentest-mcp" }
+golish-db = { path = "crates/golish-db" }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate"] }
+pg-embed = { version = "1", features = ["rt_tokio"] }
 
 # Tauri (optional - only for GUI app)
 tauri = { version = "2", features = ["unstable"] }
@@ -203,8 +210,6 @@ quick-xml = "0.37"
 # TOML settings file support
 toml = "0.8"
 
-# SQLite (embedded database)
-rusqlite = { version = "0.32", features = ["bundled"] }
 
 # TLS crypto provider (required for rustls 0.23+)
 rustls = { version = "0.23", default-features = false, features = ["ring"] }

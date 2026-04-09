@@ -11,6 +11,8 @@ pub use commands::{
     execute_ai_tool, export_ai_session_transcript, finalize_ai_session, find_ai_session,
     generate_commit_message, get_agent_mode, get_ai_conversation_length,
     get_ai_conversation_length_session, get_api_request_stats, get_approval_patterns,
+    get_audit_log, get_db_token_usage_stats, get_memory_count, get_tool_call_stats,
+    list_recent_memories, search_memories,
     get_available_tools, get_context_summary, get_context_trim_config, get_context_utilization,
     get_hitl_config, get_loop_detector_stats, get_loop_protection_config, get_openai_api_key,
     get_openrouter_api_key, get_plan, get_project_settings, get_remaining_tokens,
@@ -28,6 +30,6 @@ pub use commands::{
     send_ai_prompt_session, send_ai_prompt_with_attachments, set_agent_mode,
     set_ai_session_persistence, set_hitl_config, set_loop_protection_config, set_sub_agent_model,
     set_tool_policy, set_tool_policy_config, shutdown_ai_agent, shutdown_ai_session,
-    signal_frontend_ready, start_workflow, step_workflow, update_ai_workspace, AiState,
-    CommitMessageResponse,
+    check_recon_tools_cmd, run_recon_pipeline, signal_frontend_ready, start_workflow, step_workflow,
+    update_ai_workspace, AiState, CommitMessageResponse,
 };

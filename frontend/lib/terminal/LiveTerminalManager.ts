@@ -88,7 +88,7 @@ class LiveTerminalManagerClass {
       cursorInactiveStyle: "none",
       disableStdin: true,
       fontSize: 12,
-      fontFamily: "JetBrains Mono, Menlo, Monaco, Consolas, monospace",
+      fontFamily: "SF Mono, Menlo, Monaco, JetBrains Mono, Consolas, monospace",
       fontWeight: "normal",
       fontWeightBold: "bold",
       lineHeight: 1.4,

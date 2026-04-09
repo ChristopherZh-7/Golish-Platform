@@ -520,7 +520,7 @@ export const HomeView = memo(function HomeView() {
 
   /** Open a project: load its workspace state, set as current, create terminal */
   const handleOpenProject = useCallback(
-    async (projectName: string, rootPath: string) => {
+    async (projectName: string, rootPath: string): Promise<string | null> => {
       try {
         // Set as current project
         useStore.getState().setCurrentProject(projectName, rootPath);
@@ -541,10 +541,12 @@ export const HomeView = memo(function HomeView() {
           useStore.getState().restoreConversations([conv], [conv.id], conv.id);
         }
 
-        // Create a terminal in the project root
-        createTerminalTab(rootPath);
+        // Create a terminal in the project root and return the session ID
+        const sessionId = await createTerminalTab(rootPath);
+        return sessionId;
       } catch (error) {
         logger.error("Failed to open project:", error);
+        return null;
       }
     },
     [createTerminalTab],
@@ -644,8 +646,22 @@ export const HomeView = memo(function HomeView() {
         await saveProject(data);
         setIsSetupModalOpen(false);
         fetchData(false);
-        // Open the newly created project
-        handleOpenProject(data.name, data.rootPath);
+        await handleOpenProject(data.name, data.rootPath);
+
+        if (data.targets && data.targets.length > 0) {
+          const { invoke } = await import("@tauri-apps/api/core");
+          const { emit } = await import("@tauri-apps/api/event");
+          try {
+            await invoke("target_batch_add", {
+              values: data.targets.join("\n"),
+              group: "default",
+              projectPath: data.rootPath,
+            });
+            await emit("targets-changed");
+          } catch (e) {
+            logger.error("Failed to batch-add targets:", e);
+          }
+        }
       } catch (error) {
         logger.error("Failed to save project:", error);
       }

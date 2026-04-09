@@ -1,8 +1,8 @@
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::db::open_db;
+use crate::state::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Target {
@@ -18,6 +18,15 @@ pub struct Target {
     pub scope: Scope,
     #[serde(default)]
     pub group: String,
+    pub status: TargetStatus,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    #[serde(default)]
+    pub ports: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub technologies: Vec<String>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -77,6 +86,37 @@ impl Scope {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum TargetStatus {
+    New,
+    Recon,
+    ReconDone,
+    Scanning,
+    Tested,
+}
+
+impl TargetStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Recon => "recon",
+            Self::ReconDone => "recon_done",
+            Self::Scanning => "scanning",
+            Self::Tested => "tested",
+        }
+    }
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "recon" => Self::Recon,
+            "recon_done" => Self::ReconDone,
+            "scanning" => Self::Scanning,
+            "tested" => Self::Tested,
+            _ => Self::New,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TargetStore {
     pub targets: Vec<Target>,
@@ -91,13 +131,6 @@ impl Default for TargetStore {
             groups: vec!["default".to_string()],
         }
     }
-}
-
-fn now_ts() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 fn detect_type(value: &str) -> TargetType {
@@ -117,61 +150,96 @@ fn detect_type(value: &str) -> TargetType {
     TargetType::Domain
 }
 
-fn row_to_target(row: &rusqlite::Row) -> rusqlite::Result<Target> {
-    let tags_json: String = row.get(4)?;
-    let tt_str: String = row.get(2)?;
-    let scope_str: String = row.get(6)?;
-    Ok(Target {
-        id: row.get(0)?,
-        name: row.get(1)?,
-        target_type: TargetType::from_str(&tt_str),
-        value: row.get(3)?,
-        tags: serde_json::from_str(&tags_json).unwrap_or_default(),
-        notes: row.get(5)?,
-        scope: Scope::from_str(&scope_str),
-        group: row.get(7)?,
-        created_at: row.get(8)?,
-        updated_at: row.get(9)?,
-    })
+fn ts_from_chrono(dt: chrono::DateTime<chrono::Utc>) -> u64 {
+    dt.timestamp() as u64
+}
+
+#[derive(sqlx::FromRow)]
+struct TargetRow {
+    id: Uuid,
+    name: String,
+    target_type: String,
+    value: String,
+    tags: serde_json::Value,
+    notes: String,
+    scope: String,
+    grp: String,
+    status: String,
+    source: String,
+    parent_id: Option<Uuid>,
+    ports: serde_json::Value,
+    technologies: serde_json::Value,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<TargetRow> for Target {
+    fn from(r: TargetRow) -> Self {
+        Target {
+            id: r.id.to_string(),
+            name: r.name,
+            target_type: TargetType::from_str(&r.target_type),
+            value: r.value,
+            tags: serde_json::from_value(r.tags).unwrap_or_default(),
+            notes: r.notes,
+            scope: Scope::from_str(&r.scope),
+            group: r.grp,
+            status: TargetStatus::from_str(&r.status),
+            source: r.source,
+            parent_id: r.parent_id.map(|u| u.to_string()),
+            ports: serde_json::from_value(r.ports).unwrap_or_default(),
+            technologies: serde_json::from_value(r.technologies).unwrap_or_default(),
+            created_at: ts_from_chrono(r.created_at),
+            updated_at: ts_from_chrono(r.updated_at),
+        }
+    }
+}
+
+async fn pool_from_state(state: &AppState) -> &PgPool {
+    &state.db_pool
 }
 
 #[tauri::command]
-pub async fn target_list(project_path: Option<String>) -> Result<TargetStore, String> {
-    let pp = project_path.clone();
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(pp.as_deref())?;
-        let mut stmt = conn
-            .prepare("SELECT id, name, target_type, value, tags, notes, scope, grp, created_at, updated_at FROM targets ORDER BY created_at")
-            .map_err(|e| e.to_string())?;
-        let targets: Vec<Target> = stmt
-            .query_map([], |row| row_to_target(row))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
+pub async fn target_list(
+    state: tauri::State<'_, AppState>,
+    project_path: Option<String>,
+) -> Result<TargetStore, String> {
+    let pool = pool_from_state(&state).await;
 
-        let groups: Vec<String> = {
-            let mut grp_stmt = conn
-                .prepare("SELECT name FROM target_groups ORDER BY name")
-                .map_err(|e| e.to_string())?;
-            let g: Vec<String> = grp_stmt
-                .query_map([], |row| row.get(0))
-                .map_err(|e| e.to_string())?
-                .filter_map(|r| r.ok())
-                .collect();
-            g
-        };
-
-        Ok(TargetStore {
-            targets,
-            groups: if groups.is_empty() { vec!["default".to_string()] } else { groups },
-        })
-    })
+    let rows = sqlx::query_as::<_, TargetRow>(
+        r#"SELECT id, name, target_type::text, value, tags, notes, scope::text, grp,
+                  status::text, source, parent_id, ports, technologies, created_at, updated_at
+           FROM targets WHERE project_path IS NOT DISTINCT FROM $1
+           ORDER BY created_at"#,
+    )
+    .bind(project_path.as_deref())
+    .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    let targets: Vec<Target> = rows.into_iter().map(Target::from).collect();
+
+    let groups: Vec<String> = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM target_groups WHERE project_path IS NOT DISTINCT FROM $1 ORDER BY name",
+    )
+    .bind(project_path.as_deref())
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(TargetStore {
+        targets,
+        groups: if groups.is_empty() {
+            vec!["default".to_string()]
+        } else {
+            groups
+        },
+    })
 }
 
 #[tauri::command]
 pub async fn target_add(
+    state: tauri::State<'_, AppState>,
     name: String,
     value: String,
     target_type: Option<TargetType>,
@@ -180,187 +248,408 @@ pub async fn target_add(
     tags: Option<Vec<String>>,
     notes: Option<String>,
     project_path: Option<String>,
+    source: Option<String>,
+    parent_id: Option<String>,
 ) -> Result<Target, String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        let tt = target_type.unwrap_or_else(|| detect_type(&value));
-        let ts = now_ts();
-        let target = Target {
-            id: Uuid::new_v4().to_string()[..8].to_string(),
-            name: if name.is_empty() { value.clone() } else { name },
-            target_type: tt,
-            value,
-            tags: tags.unwrap_or_default(),
-            notes: notes.unwrap_or_default(),
-            scope: scope.unwrap_or(Scope::InScope),
-            group: group.unwrap_or_else(|| "default".to_string()),
-            created_at: ts,
-            updated_at: ts,
-        };
-        let tags_json = serde_json::to_string(&target.tags).unwrap_or_else(|_| "[]".to_string());
-        conn.execute(
-            "INSERT INTO targets (id, name, target_type, value, tags, notes, scope, grp, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-            params![target.id, target.name, target.target_type.as_str(), target.value, tags_json, target.notes, target.scope.as_str(), target.group, target.created_at, target.updated_at],
-        ).map_err(|e| e.to_string())?;
-        Ok(target)
-    })
+    let pool = pool_from_state(&state).await;
+    let tt = target_type.unwrap_or_else(|| detect_type(&value));
+    let sc = scope.unwrap_or(Scope::InScope);
+    let grp = group.unwrap_or_else(|| "default".to_string());
+    let tags_json = serde_json::to_value(tags.unwrap_or_default()).unwrap_or_default();
+    let n = if name.is_empty() { value.clone() } else { name };
+    let nt = notes.unwrap_or_default();
+    let src = source.unwrap_or_else(|| "manual".to_string());
+    let pid: Option<Uuid> = parent_id.and_then(|s| s.parse().ok());
+
+    let row = sqlx::query_as::<_, TargetRow>(
+        r#"INSERT INTO targets (name, target_type, value, tags, notes, scope, grp, project_path, source, parent_id)
+           VALUES ($1, $2::target_type, $3, $4, $5, $6::scope_type, $7, $8, $9, $10)
+           RETURNING id, name, target_type::text, value, tags, notes, scope::text, grp,
+                     status::text, source, parent_id, ports, technologies, created_at, updated_at"#,
+    )
+    .bind(&n)
+    .bind(tt.as_str())
+    .bind(&value)
+    .bind(&tags_json)
+    .bind(&nt)
+    .bind(sc.as_str())
+    .bind(&grp)
+    .bind(project_path.as_deref())
+    .bind(&src)
+    .bind(pid)
+    .fetch_one(pool)
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    Ok(Target::from(row))
 }
 
 #[tauri::command]
 pub async fn target_batch_add(
+    state: tauri::State<'_, AppState>,
     values: String,
     group: Option<String>,
     project_path: Option<String>,
 ) -> Result<Vec<Target>, String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        let ts = now_ts();
-        let grp = group.unwrap_or_else(|| "default".to_string());
-        let mut added = Vec::new();
+    let pool = pool_from_state(&state).await;
+    let grp = group.unwrap_or_else(|| "default".to_string());
 
-        let mut stmt = conn.prepare("SELECT value FROM targets").map_err(|e| e.to_string())?;
-        let existing: Vec<String> = stmt
-            .query_map([], |row| row.get(0))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
-        drop(stmt);
-
-        for line in values.lines() {
-            let v = line.trim();
-            if v.is_empty() || v.starts_with('#') {
-                continue;
-            }
-            if existing.iter().any(|e| e == v) {
-                continue;
-            }
-            let tt = detect_type(v);
-            let target = Target {
-                id: Uuid::new_v4().to_string()[..8].to_string(),
-                name: v.to_string(),
-                target_type: tt,
-                value: v.to_string(),
-                tags: Vec::new(),
-                notes: String::new(),
-                scope: Scope::InScope,
-                group: grp.clone(),
-                created_at: ts,
-                updated_at: ts,
-            };
-            conn.execute(
-                "INSERT INTO targets (id, name, target_type, value, tags, notes, scope, grp, created_at, updated_at) VALUES (?1,?2,?3,?4,'[]','','in',?5,?6,?7)",
-                params![target.id, target.name, target.target_type.as_str(), target.value, target.group, ts, ts],
-            ).map_err(|e| e.to_string())?;
-            added.push(target);
-        }
-        Ok(added)
-    })
+    let existing: Vec<String> = sqlx::query_scalar(
+        "SELECT value FROM targets WHERE project_path IS NOT DISTINCT FROM $1",
+    )
+    .bind(project_path.as_deref())
+    .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    let mut added = Vec::new();
+    for line in values.lines() {
+        let v = line.trim();
+        if v.is_empty() || v.starts_with('#') {
+            continue;
+        }
+        if existing.iter().any(|e| e == v) {
+            continue;
+        }
+        let tt = detect_type(v);
+        let row = sqlx::query_as::<_, TargetRow>(
+            r#"INSERT INTO targets (name, target_type, value, tags, scope, grp, project_path)
+               VALUES ($1, $2::target_type, $3, '[]', 'in'::scope_type, $4, $5)
+               RETURNING id, name, target_type::text, value, tags, notes, scope::text, grp,
+                         status::text, source, parent_id, ports, technologies, created_at, updated_at"#,
+        )
+        .bind(v)
+        .bind(tt.as_str())
+        .bind(v)
+        .bind(&grp)
+        .bind(project_path.as_deref())
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        added.push(Target::from(row));
+    }
+    Ok(added)
 }
 
 #[tauri::command]
 pub async fn target_update(
+    state: tauri::State<'_, AppState>,
     id: String,
     name: Option<String>,
     scope: Option<Scope>,
     group: Option<String>,
     tags: Option<Vec<String>>,
     notes: Option<String>,
+    status: Option<TargetStatus>,
+    ports: Option<Vec<serde_json::Value>>,
+    technologies: Option<Vec<String>>,
     project_path: Option<String>,
 ) -> Result<Target, String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        let ts = now_ts();
+    let pool = pool_from_state(&state).await;
+    let _ = project_path;
+    let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
-        if let Some(n) = &name {
-            conn.execute("UPDATE targets SET name=?1, updated_at=?2 WHERE id=?3", params![n, ts, id])
-                .map_err(|e| e.to_string())?;
-        }
-        if let Some(s) = &scope {
-            conn.execute("UPDATE targets SET scope=?1, updated_at=?2 WHERE id=?3", params![s.as_str(), ts, id])
-                .map_err(|e| e.to_string())?;
-        }
-        if let Some(g) = &group {
-            conn.execute("UPDATE targets SET grp=?1, updated_at=?2 WHERE id=?3", params![g, ts, id])
-                .map_err(|e| e.to_string())?;
-        }
-        if let Some(t) = &tags {
-            let j = serde_json::to_string(t).unwrap_or_else(|_| "[]".to_string());
-            conn.execute("UPDATE targets SET tags=?1, updated_at=?2 WHERE id=?3", params![j, ts, id])
-                .map_err(|e| e.to_string())?;
-        }
-        if let Some(n) = &notes {
-            conn.execute("UPDATE targets SET notes=?1, updated_at=?2 WHERE id=?3", params![n, ts, id])
-                .map_err(|e| e.to_string())?;
-        }
-
-        let mut stmt = conn
-            .prepare("SELECT id, name, target_type, value, tags, notes, scope, grp, created_at, updated_at FROM targets WHERE id=?1")
+    if let Some(n) = &name {
+        sqlx::query("UPDATE targets SET name=$1, updated_at=NOW() WHERE id=$2")
+            .bind(n)
+            .bind(uid)
+            .execute(pool)
+            .await
             .map_err(|e| e.to_string())?;
-        stmt.query_row(params![id], |row| row_to_target(row))
-            .map_err(|e| e.to_string())
-    })
+    }
+    if let Some(s) = &scope {
+        sqlx::query("UPDATE targets SET scope=$1::scope_type, updated_at=NOW() WHERE id=$2")
+            .bind(s.as_str())
+            .bind(uid)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    if let Some(g) = &group {
+        sqlx::query("UPDATE targets SET grp=$1, updated_at=NOW() WHERE id=$2")
+            .bind(g)
+            .bind(uid)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    if let Some(t) = &tags {
+        let j = serde_json::to_value(t).unwrap_or_default();
+        sqlx::query("UPDATE targets SET tags=$1, updated_at=NOW() WHERE id=$2")
+            .bind(&j)
+            .bind(uid)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    if let Some(n) = &notes {
+        sqlx::query("UPDATE targets SET notes=$1, updated_at=NOW() WHERE id=$2")
+            .bind(n)
+            .bind(uid)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    if let Some(st) = &status {
+        sqlx::query("UPDATE targets SET status=$1::target_status, updated_at=NOW() WHERE id=$2")
+            .bind(st.as_str())
+            .bind(uid)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    if let Some(p) = &ports {
+        let j = serde_json::to_value(p).unwrap_or_default();
+        sqlx::query("UPDATE targets SET ports=$1, updated_at=NOW() WHERE id=$2")
+            .bind(&j)
+            .bind(uid)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    if let Some(t) = &technologies {
+        let j = serde_json::to_value(t).unwrap_or_default();
+        sqlx::query("UPDATE targets SET technologies=$1, updated_at=NOW() WHERE id=$2")
+            .bind(&j)
+            .bind(uid)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    let row = sqlx::query_as::<_, TargetRow>(
+        r#"SELECT id, name, target_type::text, value, tags, notes, scope::text, grp,
+                  status::text, source, parent_id, ports, technologies, created_at, updated_at
+           FROM targets WHERE id=$1"#,
+    )
+    .bind(uid)
+    .fetch_one(pool)
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    Ok(Target::from(row))
 }
 
 #[tauri::command]
-pub async fn target_delete(id: String, project_path: Option<String>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        conn.execute("DELETE FROM targets WHERE id=?1", params![id])
-            .map_err(|e| e.to_string())?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+pub async fn target_delete(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    project_path: Option<String>,
+) -> Result<(), String> {
+    let pool = pool_from_state(&state).await;
+    let _ = project_path;
+    let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    sqlx::query("DELETE FROM targets WHERE id=$1")
+        .bind(uid)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn target_add_group(name: String, project_path: Option<String>) -> Result<Vec<String>, String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        conn.execute("INSERT OR IGNORE INTO target_groups (name) VALUES (?1)", params![name])
-            .map_err(|e| e.to_string())?;
-        let mut stmt = conn.prepare("SELECT name FROM target_groups ORDER BY name").map_err(|e| e.to_string())?;
-        let groups: Vec<String> = stmt
-            .query_map([], |row| row.get(0))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
-        Ok(groups)
-    })
+pub async fn target_add_group(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    project_path: Option<String>,
+) -> Result<Vec<String>, String> {
+    let pool = pool_from_state(&state).await;
+    sqlx::query(
+        "INSERT INTO target_groups (name, project_path) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+    )
+    .bind(&name)
+    .bind(project_path.as_deref())
+    .execute(pool)
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    let groups: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM target_groups WHERE project_path IS NOT DISTINCT FROM $1 ORDER BY name",
+    )
+    .bind(project_path.as_deref())
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(groups)
 }
 
 #[tauri::command]
-pub async fn target_delete_group(name: String, project_path: Option<String>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        conn.execute("DELETE FROM target_groups WHERE name=?1", params![name])
-            .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM targets WHERE grp=?1", params![name])
-            .map_err(|e| e.to_string())?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+pub async fn target_delete_group(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    project_path: Option<String>,
+) -> Result<(), String> {
+    let pool = pool_from_state(&state).await;
+    sqlx::query("DELETE FROM target_groups WHERE name=$1 AND project_path IS NOT DISTINCT FROM $2")
+        .bind(&name)
+        .bind(project_path.as_deref())
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM targets WHERE grp=$1 AND project_path IS NOT DISTINCT FROM $2")
+        .bind(&name)
+        .bind(project_path.as_deref())
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn target_clear_all(project_path: Option<String>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        conn.execute("DELETE FROM targets", []).map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM target_groups", []).map_err(|e| e.to_string())?;
-        conn.execute("INSERT OR IGNORE INTO target_groups (name) VALUES ('default')", [])
-            .map_err(|e| e.to_string())?;
-        Ok(())
-    })
+pub async fn target_clear_all(
+    state: tauri::State<'_, AppState>,
+    project_path: Option<String>,
+) -> Result<(), String> {
+    let pool = pool_from_state(&state).await;
+    sqlx::query("DELETE FROM targets WHERE project_path IS NOT DISTINCT FROM $1")
+        .bind(project_path.as_deref())
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM target_groups WHERE project_path IS NOT DISTINCT FROM $1")
+        .bind(project_path.as_deref())
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query(
+        "INSERT INTO target_groups (name, project_path) VALUES ('default', $1) ON CONFLICT DO NOTHING",
+    )
+    .bind(project_path.as_deref())
+    .execute(pool)
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn target_update_status(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    status: TargetStatus,
+    project_path: Option<String>,
+) -> Result<Target, String> {
+    let pool = pool_from_state(&state).await;
+    let _ = project_path;
+    let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
+
+    sqlx::query("UPDATE targets SET status=$1::target_status, updated_at=NOW() WHERE id=$2")
+        .bind(status.as_str())
+        .bind(uid)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let row = sqlx::query_as::<_, TargetRow>(
+        r#"SELECT id, name, target_type::text, value, tags, notes, scope::text, grp,
+                  status::text, source, parent_id, ports, technologies, created_at, updated_at
+           FROM targets WHERE id=$1"#,
+    )
+    .bind(uid)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(Target::from(row))
+}
+
+// ============================================================================
+// Standalone DB functions for AI tool integration (no Tauri state needed)
+// ============================================================================
+
+pub async fn db_target_add(
+    pool: &PgPool,
+    name: &str,
+    value: &str,
+    target_type: Option<&str>,
+    project_path: Option<&str>,
+    source: &str,
+    parent_id: Option<Uuid>,
+) -> Result<Target, String> {
+    let tt = target_type.map(TargetType::from_str).unwrap_or_else(|| detect_type(value));
+    let n = if name.is_empty() { value } else { name };
+
+    let row = sqlx::query_as::<_, TargetRow>(
+        r#"INSERT INTO targets (name, target_type, value, tags, notes, scope, grp, project_path, source, parent_id)
+           VALUES ($1, $2::target_type, $3, '[]', '', 'in'::scope_type, 'default', $4, $5, $6)
+           ON CONFLICT DO NOTHING
+           RETURNING id, name, target_type::text, value, tags, notes, scope::text, grp,
+                     status::text, source, parent_id, ports, technologies, created_at, updated_at"#,
+    )
+    .bind(n)
+    .bind(tt.as_str())
+    .bind(value)
+    .bind(project_path)
+    .bind(source)
+    .bind(parent_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    match row {
+        Some(r) => Ok(Target::from(r)),
+        None => {
+            let existing = sqlx::query_as::<_, TargetRow>(
+                r#"SELECT id, name, target_type::text, value, tags, notes, scope::text, grp,
+                          status::text, source, parent_id, ports, technologies, created_at, updated_at
+                   FROM targets WHERE value=$1 AND project_path IS NOT DISTINCT FROM $2 LIMIT 1"#,
+            )
+            .bind(value)
+            .bind(project_path)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+            Ok(Target::from(existing))
+        }
+    }
+}
+
+pub async fn db_target_list(
+    pool: &PgPool,
+    project_path: Option<&str>,
+) -> Result<Vec<Target>, String> {
+    let rows = sqlx::query_as::<_, TargetRow>(
+        r#"SELECT id, name, target_type::text, value, tags, notes, scope::text, grp,
+                  status::text, source, parent_id, ports, technologies, created_at, updated_at
+           FROM targets WHERE project_path IS NOT DISTINCT FROM $1
+           ORDER BY created_at"#,
+    )
+    .bind(project_path)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(rows.into_iter().map(Target::from).collect())
+}
+
+pub async fn db_target_update_status(
+    pool: &PgPool,
+    id: Uuid,
+    status: &str,
+) -> Result<(), String> {
+    sqlx::query("UPDATE targets SET status=$1::target_status, updated_at=NOW() WHERE id=$2")
+        .bind(status)
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub async fn db_target_update_recon(
+    pool: &PgPool,
+    id: Uuid,
+    ports: &serde_json::Value,
+    technologies: &serde_json::Value,
+) -> Result<(), String> {
+    sqlx::query(
+        "UPDATE targets SET ports=$1, technologies=$2, updated_at=NOW() WHERE id=$3",
+    )
+    .bind(ports)
+    .bind(technologies)
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }

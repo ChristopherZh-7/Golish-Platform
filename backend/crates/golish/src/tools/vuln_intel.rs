@@ -1,34 +1,8 @@
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use tokio::fs;
+use uuid::Uuid;
 
-fn intel_base() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_default();
-    #[cfg(target_os = "macos")]
-    let base = home
-        .join("Library")
-        .join("Application Support")
-        .join("golish-platform")
-        .join("vuln_intel");
-    #[cfg(target_os = "windows")]
-    let base = home
-        .join("AppData")
-        .join("Local")
-        .join("golish-platform")
-        .join("vuln_intel");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let base = home.join(".golish-platform").join("vuln_intel");
-    base
-}
-
-fn feeds_path() -> PathBuf {
-    intel_base().join("feeds.json")
-}
-
-fn cache_path() -> PathBuf {
-    intel_base().join("cache.json")
-}
+use crate::state::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VulnFeed {
@@ -53,70 +27,60 @@ pub struct VulnEntry {
     pub affected_products: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct FeedStore {
-    feeds: Vec<VulnFeed>,
+fn ts_from_dt(dt: chrono::DateTime<chrono::Utc>) -> u64 {
+    dt.timestamp() as u64
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct CacheStore {
-    entries: Vec<VulnEntry>,
-    last_updated: Option<u64>,
+#[derive(sqlx::FromRow)]
+struct FeedRow {
+    id: String,
+    name: String,
+    feed_type: String,
+    url: String,
+    enabled: bool,
+    last_fetched: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-async fn load_feeds() -> FeedStore {
-    let mut store: FeedStore = if let Ok(data) = fs::read_to_string(feeds_path()).await {
-        serde_json::from_str(&data).unwrap_or_default()
-    } else {
-        let mut s = FeedStore::default();
-        s.feeds = default_feeds();
-        return s;
-    };
-
-    let defaults = default_feeds();
-    for d in defaults {
-        if !store.feeds.iter().any(|f| f.id == d.id) {
-            store.feeds.push(d);
+impl From<FeedRow> for VulnFeed {
+    fn from(r: FeedRow) -> Self {
+        Self {
+            id: r.id,
+            name: r.name,
+            feed_type: r.feed_type,
+            url: r.url,
+            enabled: r.enabled,
+            last_fetched: r.last_fetched.map(ts_from_dt),
         }
     }
-    store
 }
 
-async fn save_feeds(store: &FeedStore) -> Result<(), String> {
-    fs::create_dir_all(intel_base()).await.map_err(|e| e.to_string())?;
-    let json = serde_json::to_string_pretty(store).map_err(|e| e.to_string())?;
-    fs::write(feeds_path(), json).await.map_err(|e| e.to_string())
+#[derive(sqlx::FromRow)]
+struct EntryRow {
+    cve_id: String,
+    title: String,
+    description: String,
+    sev: String,
+    cvss_score: Option<f64>,
+    published: String,
+    source: String,
+    refs: serde_json::Value,
+    affected_products: serde_json::Value,
 }
 
-async fn load_cache() -> CacheStore {
-    if let Ok(data) = fs::read_to_string(cache_path()).await {
-        serde_json::from_str(&data).unwrap_or_default()
-    } else {
-        CacheStore::default()
+impl From<EntryRow> for VulnEntry {
+    fn from(r: EntryRow) -> Self {
+        Self {
+            cve_id: r.cve_id,
+            title: r.title,
+            description: r.description,
+            severity: r.sev,
+            cvss_score: r.cvss_score,
+            published: r.published,
+            source: r.source,
+            references: serde_json::from_value(r.refs).unwrap_or_default(),
+            affected_products: serde_json::from_value(r.affected_products).unwrap_or_default(),
+        }
     }
-}
-
-async fn save_cache(store: &CacheStore) -> Result<(), String> {
-    fs::create_dir_all(intel_base()).await.map_err(|e| e.to_string())?;
-    let json = serde_json::to_string_pretty(store).map_err(|e| e.to_string())?;
-    fs::write(cache_path(), json).await.map_err(|e| e.to_string())
-}
-
-fn nvd_recent_url(days_back: i64) -> String {
-    let end = Utc::now();
-    let start = end - Duration::days(days_back);
-    format!(
-        "https://services.nvd.nist.gov/rest/json/cves/2.0?resultsPerPage=200&pubStartDate={}&pubEndDate={}",
-        start.format("%Y-%m-%dT00:00:00.000"),
-        end.format("%Y-%m-%dT23:59:59.999"),
-    )
-}
-
-fn now_ts() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 fn default_feeds() -> Vec<VulnFeed> {
@@ -148,121 +112,213 @@ fn default_feeds() -> Vec<VulnFeed> {
     ]
 }
 
+async fn ensure_default_feeds(pool: &sqlx::PgPool) -> Result<(), String> {
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vuln_feeds")
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if count == 0 {
+        for feed in default_feeds() {
+            sqlx::query(
+                "INSERT INTO vuln_feeds (id, name, feed_type, url, enabled) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+            )
+            .bind(&feed.id)
+            .bind(&feed.name)
+            .bind(&feed.feed_type)
+            .bind(&feed.url)
+            .bind(feed.enabled)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn nvd_recent_url(days_back: i64) -> String {
+    let end = Utc::now();
+    let start = end - Duration::days(days_back);
+    format!(
+        "https://services.nvd.nist.gov/rest/json/cves/2.0?resultsPerPage=200&pubStartDate={}&pubEndDate={}",
+        start.format("%Y-%m-%dT00:00:00.000"),
+        end.format("%Y-%m-%dT23:59:59.999"),
+    )
+}
+
+async fn upsert_entries(pool: &sqlx::PgPool, entries: &[VulnEntry]) -> Result<(), String> {
+    for e in entries {
+        let refs_json = serde_json::to_value(&e.references).unwrap_or_else(|_| serde_json::json!([]));
+        let products_json = serde_json::to_value(&e.affected_products).unwrap_or_else(|_| serde_json::json!([]));
+
+        sqlx::query(
+            r#"INSERT INTO vuln_entries (id, cve_id, title, description, sev, cvss_score, published, source, refs, affected_products)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+               ON CONFLICT (cve_id) DO UPDATE SET
+                 title = CASE WHEN LENGTH($3) > LENGTH(vuln_entries.title) THEN $3 ELSE vuln_entries.title END,
+                 description = CASE WHEN LENGTH($4) > LENGTH(vuln_entries.description) THEN $4 ELSE vuln_entries.description END,
+                 sev = CASE WHEN vuln_entries.cvss_score IS NULL AND $6 IS NOT NULL THEN $5 ELSE vuln_entries.sev END,
+                 cvss_score = COALESCE($6, vuln_entries.cvss_score),
+                 source = CASE WHEN vuln_entries.source NOT LIKE '%' || $8 || '%' THEN vuln_entries.source || ' + ' || $8 ELSE vuln_entries.source END,
+                 refs = vuln_entries.refs || $9,
+                 affected_products = vuln_entries.affected_products || $10,
+                 fetched_at = NOW()"#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(&e.cve_id)
+        .bind(&e.title)
+        .bind(&e.description)
+        .bind(&e.severity)
+        .bind(e.cvss_score)
+        .bind(&e.published)
+        .bind(&e.source)
+        .bind(&refs_json)
+        .bind(&products_json)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
-pub async fn intel_list_feeds() -> Result<Vec<VulnFeed>, String> {
-    Ok(load_feeds().await.feeds)
+pub async fn intel_list_feeds(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<VulnFeed>, String> {
+    let pool = &*state.db_pool;
+    ensure_default_feeds(pool).await?;
+    let rows: Vec<FeedRow> = sqlx::query_as("SELECT id, name, feed_type, url, enabled, last_fetched FROM vuln_feeds")
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().map(VulnFeed::from).collect())
 }
 
 #[tauri::command]
 pub async fn intel_add_feed(
+    state: tauri::State<'_, AppState>,
     name: String,
     feed_type: String,
     url: String,
 ) -> Result<String, String> {
+    let pool = &*state.db_pool;
     let id = uuid::Uuid::new_v4().to_string();
-    let feed = VulnFeed {
-        id: id.clone(),
-        name,
-        feed_type,
-        url,
-        enabled: true,
-        last_fetched: None,
-    };
-    let mut store = load_feeds().await;
-    store.feeds.push(feed);
-    save_feeds(&store).await?;
+    sqlx::query(
+        "INSERT INTO vuln_feeds (id, name, feed_type, url, enabled) VALUES ($1, $2, $3, $4, true)",
+    )
+    .bind(&id)
+    .bind(&name)
+    .bind(&feed_type)
+    .bind(&url)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(id)
 }
 
 #[tauri::command]
-pub async fn intel_toggle_feed(id: String, enabled: bool) -> Result<(), String> {
-    let mut store = load_feeds().await;
-    if let Some(f) = store.feeds.iter_mut().find(|f| f.id == id) {
-        f.enabled = enabled;
-    }
-    save_feeds(&store).await
+pub async fn intel_toggle_feed(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    let pool = &*state.db_pool;
+    sqlx::query("UPDATE vuln_feeds SET enabled=$1 WHERE id=$2")
+        .bind(enabled)
+        .bind(&id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn intel_delete_feed(id: String) -> Result<(), String> {
-    let mut store = load_feeds().await;
-    store.feeds.retain(|f| f.id != id);
-    save_feeds(&store).await
+pub async fn intel_delete_feed(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let pool = &*state.db_pool;
+    sqlx::query("DELETE FROM vuln_feeds WHERE id=$1")
+        .bind(&id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn intel_fetch() -> Result<Vec<VulnEntry>, String> {
-    let mut feeds_store = load_feeds().await;
-    let mut all_entries: Vec<VulnEntry> = Vec::new();
+pub async fn intel_fetch(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<VulnEntry>, String> {
+    let pool = &*state.db_pool;
+    ensure_default_feeds(pool).await?;
+
+    let feeds: Vec<FeedRow> = sqlx::query_as(
+        "SELECT id, name, feed_type, url, enabled, last_fetched FROM vuln_feeds WHERE enabled = true",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;
 
-    for feed in feeds_store.feeds.iter_mut() {
-        if !feed.enabled {
-            continue;
-        }
+    let mut all_entries: Vec<VulnEntry> = Vec::new();
 
-        match feed.feed_type.as_str() {
-            "cisa_kev" => {
-                if let Ok(entries) = fetch_cisa_kev(&client, &feed.url).await {
-                    all_entries.extend(entries);
-                    feed.last_fetched = Some(now_ts());
-                }
-            }
+    for feed in &feeds {
+        let result = match feed.feed_type.as_str() {
+            "cisa_kev" => fetch_cisa_kev(&client, &feed.url).await,
             "nvd" => {
-                let url = if feed.url.is_empty() {
-                    nvd_recent_url(120)
-                } else {
-                    feed.url.clone()
-                };
-                if let Ok(entries) = fetch_nvd(&client, &url).await {
-                    all_entries.extend(entries);
-                    feed.last_fetched = Some(now_ts());
-                }
+                let url = if feed.url.is_empty() { nvd_recent_url(120) } else { feed.url.clone() };
+                fetch_nvd(&client, &url).await
             }
-            "nvd_recent" => {
-                let url = nvd_recent_url(120);
-                if let Ok(entries) = fetch_nvd(&client, &url).await {
-                    all_entries.extend(entries);
-                    feed.last_fetched = Some(now_ts());
-                }
-            }
-            "rss" => {
-                if let Ok(entries) = fetch_rss(&client, &feed.url, &feed.name).await {
-                    all_entries.extend(entries);
-                    feed.last_fetched = Some(now_ts());
-                }
-            }
-            _ => {}
+            "nvd_recent" => fetch_nvd(&client, &nvd_recent_url(120)).await,
+            "rss" => fetch_rss(&client, &feed.url, &feed.name).await,
+            _ => continue,
+        };
+
+        if let Ok(entries) = result {
+            all_entries.extend(entries);
+            sqlx::query("UPDATE vuln_feeds SET last_fetched=NOW() WHERE id=$1")
+                .bind(&feed.id)
+                .execute(pool)
+                .await
+                .map_err(|e| e.to_string())?;
         }
     }
 
-    save_feeds(&feeds_store).await?;
-
     all_entries = merge_and_enrich(all_entries);
-
     enrich_missing_cvss(&client, &mut all_entries).await;
-
     all_entries.sort_by(|a, b| b.published.cmp(&a.published));
 
-    let cache = CacheStore {
-        entries: all_entries.clone(),
-        last_updated: Some(now_ts()),
-    };
-    save_cache(&cache).await?;
+    upsert_entries(pool, &all_entries).await?;
 
     Ok(all_entries)
 }
 
 #[tauri::command]
-pub async fn intel_get_cached() -> Result<Vec<VulnEntry>, String> {
-    Ok(load_cache().await.entries)
+pub async fn intel_get_cached(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<VulnEntry>, String> {
+    let pool = &*state.db_pool;
+    let rows: Vec<EntryRow> = sqlx::query_as(
+        "SELECT cve_id, title, description, sev, cvss_score, published, source, refs, affected_products \
+         FROM vuln_entries ORDER BY published DESC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().map(VulnEntry::from).collect())
 }
 
 #[tauri::command]
-pub async fn intel_fetch_page(page: u32) -> Result<Vec<VulnEntry>, String> {
+pub async fn intel_fetch_page(
+    state: tauri::State<'_, AppState>,
+    page: u32,
+) -> Result<Vec<VulnEntry>, String> {
+    let pool = &*state.db_pool;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -271,7 +327,6 @@ pub async fn intel_fetch_page(page: u32) -> Result<Vec<VulnEntry>, String> {
     let days_back = 120 + (page as i64 * 120);
     let days_start = days_back;
     let days_end = days_back - 120;
-
     let end = Utc::now() - Duration::days(days_end);
     let start = Utc::now() - Duration::days(days_start);
     let url = format!(
@@ -280,20 +335,25 @@ pub async fn intel_fetch_page(page: u32) -> Result<Vec<VulnEntry>, String> {
         end.format("%Y-%m-%dT23:59:59.999"),
     );
 
-    let mut new_entries = fetch_nvd(&client, &url).await?;
+    let new_entries = fetch_nvd(&client, &url).await?;
+    upsert_entries(pool, &new_entries).await?;
 
-    let mut cache = load_cache().await;
-    cache.entries.append(&mut new_entries);
-    cache.entries = merge_and_enrich(cache.entries);
-    cache.entries.sort_by(|a, b| b.published.cmp(&a.published));
-    cache.last_updated = Some(now_ts());
-    save_cache(&cache).await?;
-
-    Ok(cache.entries)
+    let rows: Vec<EntryRow> = sqlx::query_as(
+        "SELECT cve_id, title, description, sev, cvss_score, published, source, refs, affected_products \
+         FROM vuln_entries ORDER BY published DESC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().map(VulnEntry::from).collect())
 }
 
 #[tauri::command]
-pub async fn intel_search_remote(query: String) -> Result<Vec<VulnEntry>, String> {
+pub async fn intel_search_remote(
+    state: tauri::State<'_, AppState>,
+    query: String,
+) -> Result<Vec<VulnEntry>, String> {
+    let pool = &*state.db_pool;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -317,23 +377,18 @@ pub async fn intel_search_remote(query: String) -> Result<Vec<VulnEntry>, String
     let mut entries = fetch_nvd(&client, &url).await?;
     entries.sort_by(|a, b| b.published.cmp(&a.published));
 
-    let mut cache = load_cache().await;
-    for entry in &entries {
-        if !cache.entries.iter().any(|e| e.cve_id == entry.cve_id) {
-            cache.entries.push(entry.clone());
-        }
-    }
-    cache.entries.sort_by(|a, b| b.published.cmp(&a.published));
-    save_cache(&cache).await?;
+    upsert_entries(pool, &entries).await?;
 
     Ok(entries)
 }
 
 #[tauri::command]
 pub async fn intel_search_remote_page(
+    state: tauri::State<'_, AppState>,
     query: String,
     start_index: u32,
 ) -> Result<Vec<VulnEntry>, String> {
+    let pool = &*state.db_pool;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -348,59 +403,80 @@ pub async fn intel_search_remote_page(
     let mut entries = fetch_nvd(&client, &url).await?;
     entries.sort_by(|a, b| b.published.cmp(&a.published));
 
-    let mut cache = load_cache().await;
-    for entry in &entries {
-        if !cache.entries.iter().any(|e| e.cve_id == entry.cve_id) {
-            cache.entries.push(entry.clone());
-        }
-    }
-    save_cache(&cache).await?;
+    upsert_entries(pool, &entries).await?;
 
     Ok(entries)
 }
 
 #[tauri::command]
-pub async fn intel_search(query: String) -> Result<Vec<VulnEntry>, String> {
-    let cache = load_cache().await;
-    let q = query.to_lowercase();
-    let mut results: Vec<VulnEntry> = cache
-        .entries
-        .into_iter()
-        .filter(|e| {
-            e.cve_id.to_lowercase().contains(&q)
-                || e.title.to_lowercase().contains(&q)
-                || e.description.to_lowercase().contains(&q)
-                || e.affected_products.iter().any(|p| p.to_lowercase().contains(&q))
-        })
-        .collect();
-    results.sort_by(|a, b| b.published.cmp(&a.published));
-    Ok(results)
+pub async fn intel_search(
+    state: tauri::State<'_, AppState>,
+    query: String,
+) -> Result<Vec<VulnEntry>, String> {
+    let pool = &*state.db_pool;
+    let pattern = format!("%{}%", query.to_lowercase());
+    let rows: Vec<EntryRow> = sqlx::query_as(
+        "SELECT cve_id, title, description, sev, cvss_score, published, source, refs, affected_products \
+         FROM vuln_entries \
+         WHERE LOWER(cve_id) LIKE $1 OR LOWER(title) LIKE $1 OR LOWER(description) LIKE $1 \
+         ORDER BY published DESC",
+    )
+    .bind(&pattern)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().map(VulnEntry::from).collect())
 }
 
 #[tauri::command]
-pub async fn intel_match_targets(project_path: Option<String>) -> Result<Vec<VulnEntry>, String> {
-    let cache = load_cache().await;
-    if cache.entries.is_empty() {
-        return Ok(vec![]);
+pub async fn intel_match_targets(
+    state: tauri::State<'_, AppState>,
+    project_path: Option<String>,
+) -> Result<Vec<VulnEntry>, String> {
+    let pool = &*state.db_pool;
+    let _ = project_path;
+
+    let target_rows: Vec<(String, serde_json::Value)> = sqlx::query_as(
+        "SELECT name, tags FROM targets",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut keywords = Vec::new();
+    for (name, tags) in &target_rows {
+        let lower = name.to_lowercase();
+        if lower.len() >= 3 {
+            keywords.push(lower);
+        }
+        if let Some(arr) = tags.as_array() {
+            for tag in arr {
+                if let Some(s) = tag.as_str() {
+                    let lower = s.to_lowercase();
+                    if lower.len() >= 3 {
+                        keywords.push(lower);
+                    }
+                }
+            }
+        }
     }
+    keywords.sort();
+    keywords.dedup();
 
-    let targets_path = if let Some(pp) = &project_path {
-        PathBuf::from(pp).join(".golish").join("targets").join("targets.json")
-    } else {
-        return Ok(vec![]);
-    };
-
-    let target_data = fs::read_to_string(&targets_path)
-        .await
-        .unwrap_or_default();
-
-    let keywords: Vec<String> = extract_target_keywords(&target_data);
     if keywords.is_empty() {
         return Ok(vec![]);
     }
 
-    let matched: Vec<VulnEntry> = cache
-        .entries
+    let rows: Vec<EntryRow> = sqlx::query_as(
+        "SELECT cve_id, title, description, sev, cvss_score, published, source, refs, affected_products \
+         FROM vuln_entries ORDER BY published DESC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let entries: Vec<VulnEntry> = rows.into_iter().map(VulnEntry::from).collect();
+    let matched: Vec<VulnEntry> = entries
         .into_iter()
         .filter(|entry| {
             let text = format!(
@@ -415,35 +491,6 @@ pub async fn intel_match_targets(project_path: Option<String>) -> Result<Vec<Vul
         .collect();
 
     Ok(matched)
-}
-
-fn extract_target_keywords(target_json: &str) -> Vec<String> {
-    let mut keywords = Vec::new();
-    let parsed: serde_json::Value = serde_json::from_str(target_json).unwrap_or_default();
-
-    if let Some(targets) = parsed.get("targets").and_then(|t| t.as_array()) {
-        for t in targets {
-            if let Some(name) = t.get("name").and_then(|n| n.as_str()) {
-                let lower = name.to_lowercase();
-                if lower.len() >= 3 {
-                    keywords.push(lower);
-                }
-            }
-            if let Some(tags) = t.get("tags").and_then(|t| t.as_array()) {
-                for tag in tags {
-                    if let Some(s) = tag.as_str() {
-                        let lower = s.to_lowercase();
-                        if lower.len() >= 3 {
-                            keywords.push(lower);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    keywords.sort();
-    keywords.dedup();
-    keywords
 }
 
 fn merge_and_enrich(entries: Vec<VulnEntry>) -> Vec<VulnEntry> {
@@ -506,8 +553,7 @@ async fn enrich_missing_cvss(client: &reqwest::Client, entries: &mut [VulnEntry]
                         if let Some(cve) = item.get("cve") {
                             if let Some(metrics) = cve.get("metrics") {
                                 for key in ["cvssMetricV31", "cvssMetricV30", "cvssMetricV2"] {
-                                    if let Some(arr) = metrics.get(key).and_then(|m| m.as_array())
-                                    {
+                                    if let Some(arr) = metrics.get(key).and_then(|m| m.as_array()) {
                                         if let Some(first) = arr.first() {
                                             if let Some(data) = first.get("cvssData") {
                                                 if let Some(score) = data
@@ -544,47 +590,18 @@ async fn fetch_cisa_kev(
     client: &reqwest::Client,
     url: &str,
 ) -> Result<Vec<VulnEntry>, String> {
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
+    let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
     let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
 
     let mut entries = Vec::new();
     if let Some(vulns) = body.get("vulnerabilities").and_then(|v| v.as_array()) {
         for v in vulns.iter() {
-            let cve_id = v
-                .get("cveID")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .to_string();
-            let title = v
-                .get("vulnerabilityName")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .to_string();
-            let description = v
-                .get("shortDescription")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .to_string();
-            let published = v
-                .get("dateAdded")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .to_string();
-            let vendor = v
-                .get("vendorProject")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .to_string();
-            let product = v
-                .get("product")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .to_string();
+            let cve_id = v.get("cveID").and_then(|s| s.as_str()).unwrap_or("").to_string();
+            let title = v.get("vulnerabilityName").and_then(|s| s.as_str()).unwrap_or("").to_string();
+            let description = v.get("shortDescription").and_then(|s| s.as_str()).unwrap_or("").to_string();
+            let published = v.get("dateAdded").and_then(|s| s.as_str()).unwrap_or("").to_string();
+            let vendor = v.get("vendorProject").and_then(|s| s.as_str()).unwrap_or("").to_string();
+            let product = v.get("product").and_then(|s| s.as_str()).unwrap_or("").to_string();
 
             entries.push(VulnEntry {
                 cve_id,
@@ -626,17 +643,9 @@ async fn fetch_nvd(
                 Some(c) => c,
                 None => continue,
             };
-            let cve_id = cve
-                .get("id")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .to_string();
+            let cve_id = cve.get("id").and_then(|s| s.as_str()).unwrap_or("").to_string();
 
-            let descriptions = cve
-                .get("descriptions")
-                .and_then(|d| d.as_array())
-                .cloned()
-                .unwrap_or_default();
+            let descriptions = cve.get("descriptions").and_then(|d| d.as_array()).cloned().unwrap_or_default();
             let description = descriptions
                 .iter()
                 .find(|d| d.get("lang").and_then(|l| l.as_str()) == Some("en"))
@@ -650,11 +659,7 @@ async fn fetch_nvd(
                 description.clone()
             };
 
-            let published = cve
-                .get("published")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .to_string();
+            let published = cve.get("published").and_then(|s| s.as_str()).unwrap_or("").to_string();
 
             let mut severity = "info".to_string();
             let mut cvss_score: Option<f64> = None;
@@ -713,12 +718,7 @@ async fn fetch_rss(
     url: &str,
     source_name: &str,
 ) -> Result<Vec<VulnEntry>, String> {
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
+    let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
     let xml_text = resp.text().await.map_err(|e| e.to_string())?;
 
     let mut reader = quick_xml::Reader::from_str(&xml_text);
@@ -757,9 +757,7 @@ async fn fetch_rss(
                         "title" => title.push_str(&text),
                         "link" => link.push_str(&text),
                         "description" | "summary" | "content" => description.push_str(&text),
-                        "pubDate" | "published" | "updated" | "dc:date" => {
-                            pub_date.push_str(&text)
-                        }
+                        "pubDate" | "published" | "updated" | "dc:date" => pub_date.push_str(&text),
                         _ => {}
                     }
                 }
@@ -793,11 +791,7 @@ async fn fetch_rss(
                         cvss_score: None,
                         published: pub_date.clone(),
                         source: source_name.to_string(),
-                        references: if link.is_empty() {
-                            vec![]
-                        } else {
-                            vec![link.clone()]
-                        },
+                        references: if link.is_empty() { vec![] } else { vec![link.clone()] },
                         affected_products: vec![],
                     });
                 }

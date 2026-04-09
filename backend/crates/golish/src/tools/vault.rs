@@ -1,9 +1,8 @@
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::db::open_db;
+use crate::state::AppState;
 
 fn derive_key() -> Vec<u8> {
     let seed = format!(
@@ -18,6 +17,14 @@ fn derive_key() -> Vec<u8> {
         key.push(bytes[i % bytes.len()].wrapping_add(i as u8).wrapping_mul(7));
     }
     key
+}
+
+pub fn obfuscate_value(plain: &str) -> String {
+    obfuscate(plain)
+}
+
+pub fn deobfuscate_value(encoded: &str) -> Result<String, String> {
+    deobfuscate(encoded)
 }
 
 fn obfuscate(plain: &str) -> String {
@@ -121,42 +128,60 @@ fn now_ts() -> u64 {
         .as_secs()
 }
 
-fn row_to_safe(row: &rusqlite::Row) -> rusqlite::Result<VaultEntrySafe> {
-    let et_str: String = row.get(2)?;
-    let tags_json: String = row.get(6)?;
-    Ok(VaultEntrySafe {
-        id: row.get(0)?,
-        name: row.get(1)?,
-        entry_type: VaultEntryType::from_str(&et_str),
-        username: row.get(3)?,
-        notes: row.get(4)?,
-        project: row.get(5)?,
-        tags: serde_json::from_str(&tags_json).unwrap_or_default(),
-        created_at: row.get(7)?,
-        updated_at: row.get(8)?,
-    })
+fn ts_from_dt(dt: chrono::DateTime<chrono::Utc>) -> u64 {
+    dt.timestamp() as u64
+}
+
+#[derive(sqlx::FromRow)]
+struct VaultRow {
+    id: Uuid,
+    name: String,
+    entry_type: String,
+    username: String,
+    notes: String,
+    project: String,
+    tags: serde_json::Value,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<VaultRow> for VaultEntrySafe {
+    fn from(r: VaultRow) -> Self {
+        Self {
+            id: r.id.to_string(),
+            name: r.name,
+            entry_type: VaultEntryType::from_str(&r.entry_type),
+            username: r.username,
+            notes: r.notes,
+            project: r.project,
+            tags: serde_json::from_value(r.tags).unwrap_or_default(),
+            created_at: ts_from_dt(r.created_at),
+            updated_at: ts_from_dt(r.updated_at),
+        }
+    }
 }
 
 #[tauri::command]
-pub async fn vault_list(project_path: Option<String>) -> Result<Vec<VaultEntrySafe>, String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        let mut stmt = conn
-            .prepare("SELECT id, name, entry_type, username, notes, project, tags, created_at, updated_at FROM vault_entries ORDER BY created_at DESC")
-            .map_err(|e| e.to_string())?;
-        let entries: Vec<VaultEntrySafe> = stmt
-            .query_map([], |row| row_to_safe(row))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
-        Ok(entries)
-    })
+pub async fn vault_list(
+    state: tauri::State<'_, AppState>,
+    project_path: Option<String>,
+) -> Result<Vec<VaultEntrySafe>, String> {
+    let pool = &*state.db_pool;
+    let _ = project_path;
+    let rows: Vec<VaultRow> = sqlx::query_as(
+        "SELECT id, name, entry_type::TEXT, username, notes, project, tags, created_at, updated_at \
+         FROM vault_entries ORDER BY created_at DESC",
+    )
+    .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    Ok(rows.into_iter().map(VaultEntrySafe::from).collect())
 }
 
 #[tauri::command]
 pub async fn vault_add(
+    state: tauri::State<'_, AppState>,
     name: String,
     entry_type: VaultEntryType,
     value: String,
@@ -166,41 +191,67 @@ pub async fn vault_add(
     tags: Option<Vec<String>>,
     project_path: Option<String>,
 ) -> Result<VaultEntrySafe, String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        let ts = now_ts();
-        let id = Uuid::new_v4().to_string()[..8].to_string();
-        let un = username.unwrap_or_default();
-        let nt = notes.unwrap_or_default();
-        let pj = project.unwrap_or_default();
-        let tg = tags.unwrap_or_default();
-        let tags_json = serde_json::to_string(&tg).unwrap_or_else(|_| "[]".to_string());
-        let enc_value = obfuscate(&value);
-        conn.execute(
-            "INSERT INTO vault_entries (id, name, entry_type, value, username, notes, project, tags, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-            params![id, name, entry_type.as_str(), enc_value, un, nt, pj, tags_json, ts, ts],
-        ).map_err(|e| e.to_string())?;
-        Ok(VaultEntrySafe { id, name, entry_type, username: un, notes: nt, project: pj, tags: tg, created_at: ts, updated_at: ts })
-    })
+    let pool = &*state.db_pool;
+    let _ = project_path;
+    let ts = now_ts();
+    let id = Uuid::new_v4();
+    let short_id = id.to_string()[..8].to_string();
+    let un = username.unwrap_or_default();
+    let nt = notes.unwrap_or_default();
+    let pj = project.unwrap_or_default();
+    let tg = tags.unwrap_or_default();
+    let tags_json = serde_json::to_value(&tg).unwrap_or_else(|_| serde_json::json!([]));
+    let enc_value = obfuscate(&value);
+
+    sqlx::query(
+        r#"INSERT INTO vault_entries (id, name, entry_type, value, username, notes, project, tags)
+           VALUES ($1, $2, $3::vault_entry_type, $4, $5, $6, $7, $8)"#,
+    )
+    .bind(id)
+    .bind(&name)
+    .bind(entry_type.as_str())
+    .bind(&enc_value)
+    .bind(&un)
+    .bind(&nt)
+    .bind(&pj)
+    .bind(&tags_json)
+    .execute(pool)
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    Ok(VaultEntrySafe {
+        id: short_id,
+        name,
+        entry_type,
+        username: un,
+        notes: nt,
+        project: pj,
+        tags: tg,
+        created_at: ts,
+        updated_at: ts,
+    })
 }
 
 #[tauri::command]
-pub async fn vault_get_value(id: String, project_path: Option<String>) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        let enc: String = conn
-            .query_row("SELECT value FROM vault_entries WHERE id=?1", params![id], |r| r.get(0))
-            .map_err(|e| e.to_string())?;
-        deobfuscate(&enc)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+pub async fn vault_get_value(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    project_path: Option<String>,
+) -> Result<String, String> {
+    let pool = &*state.db_pool;
+    let _ = project_path;
+    let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let enc: String = sqlx::query_scalar("SELECT value FROM vault_entries WHERE id=$1")
+        .bind(uid)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    deobfuscate(&enc)
 }
 
 #[tauri::command]
 pub async fn vault_update(
+    state: tauri::State<'_, AppState>,
     id: String,
     name: Option<String>,
     value: Option<String>,
@@ -210,50 +261,80 @@ pub async fn vault_update(
     tags: Option<Vec<String>>,
     project_path: Option<String>,
 ) -> Result<VaultEntrySafe, String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        let ts = now_ts();
-        if let Some(n) = &name { conn.execute("UPDATE vault_entries SET name=?1, updated_at=?2 WHERE id=?3", params![n, ts, id]).map_err(|e| e.to_string())?; }
-        if let Some(v) = &value { conn.execute("UPDATE vault_entries SET value=?1, updated_at=?2 WHERE id=?3", params![obfuscate(v), ts, id]).map_err(|e| e.to_string())?; }
-        if let Some(u) = &username { conn.execute("UPDATE vault_entries SET username=?1, updated_at=?2 WHERE id=?3", params![u, ts, id]).map_err(|e| e.to_string())?; }
-        if let Some(n) = &notes { conn.execute("UPDATE vault_entries SET notes=?1, updated_at=?2 WHERE id=?3", params![n, ts, id]).map_err(|e| e.to_string())?; }
-        if let Some(p) = &project { conn.execute("UPDATE vault_entries SET project=?1, updated_at=?2 WHERE id=?3", params![p, ts, id]).map_err(|e| e.to_string())?; }
-        if let Some(t) = &tags {
-            let j = serde_json::to_string(t).unwrap_or_else(|_| "[]".to_string());
-            conn.execute("UPDATE vault_entries SET tags=?1, updated_at=?2 WHERE id=?3", params![j, ts, id]).map_err(|e| e.to_string())?;
-        }
-        let mut stmt = conn.prepare("SELECT id, name, entry_type, username, notes, project, tags, created_at, updated_at FROM vault_entries WHERE id=?1").map_err(|e| e.to_string())?;
-        stmt.query_row(params![id], |row| row_to_safe(row)).map_err(|e| e.to_string())
-    })
+    let pool = &*state.db_pool;
+    let _ = project_path;
+    let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
+
+    if let Some(n) = &name {
+        sqlx::query("UPDATE vault_entries SET name=$1, updated_at=NOW() WHERE id=$2")
+            .bind(n).bind(uid).execute(pool).await.map_err(|e| e.to_string())?;
+    }
+    if let Some(v) = &value {
+        sqlx::query("UPDATE vault_entries SET value=$1, updated_at=NOW() WHERE id=$2")
+            .bind(obfuscate(v)).bind(uid).execute(pool).await.map_err(|e| e.to_string())?;
+    }
+    if let Some(u) = &username {
+        sqlx::query("UPDATE vault_entries SET username=$1, updated_at=NOW() WHERE id=$2")
+            .bind(u).bind(uid).execute(pool).await.map_err(|e| e.to_string())?;
+    }
+    if let Some(n) = &notes {
+        sqlx::query("UPDATE vault_entries SET notes=$1, updated_at=NOW() WHERE id=$2")
+            .bind(n).bind(uid).execute(pool).await.map_err(|e| e.to_string())?;
+    }
+    if let Some(p) = &project {
+        sqlx::query("UPDATE vault_entries SET project=$1, updated_at=NOW() WHERE id=$2")
+            .bind(p).bind(uid).execute(pool).await.map_err(|e| e.to_string())?;
+    }
+    if let Some(t) = &tags {
+        let j = serde_json::to_value(t).unwrap_or_else(|_| serde_json::json!([]));
+        sqlx::query("UPDATE vault_entries SET tags=$1, updated_at=NOW() WHERE id=$2")
+            .bind(&j).bind(uid).execute(pool).await.map_err(|e| e.to_string())?;
+    }
+
+    let row: VaultRow = sqlx::query_as(
+        "SELECT id, name, entry_type::TEXT, username, notes, project, tags, created_at, updated_at \
+         FROM vault_entries WHERE id=$1",
+    )
+    .bind(uid)
+    .fetch_one(pool)
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    Ok(VaultEntrySafe::from(row))
 }
 
 #[tauri::command]
-pub async fn vault_delete(id: String, project_path: Option<String>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        conn.execute("DELETE FROM vault_entries WHERE id=?1", params![id]).map_err(|e| e.to_string())?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+pub async fn vault_delete(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    project_path: Option<String>,
+) -> Result<(), String> {
+    let pool = &*state.db_pool;
+    let _ = project_path;
+    let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    sqlx::query("DELETE FROM vault_entries WHERE id=$1")
+        .bind(uid)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn vault_resolve(reference: String, project_path: Option<String>) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || {
-        let name = reference.trim_start_matches("{{vault:").trim_end_matches("}}");
-        let conn = open_db(project_path.as_deref())?;
-        let enc: String = conn
-            .query_row(
-                "SELECT value FROM vault_entries WHERE name=?1 OR id=?1",
-                params![name],
-                |r| r.get(0),
-            )
-            .map_err(|_| format!("Vault entry '{}' not found", name))?;
-        deobfuscate(&enc)
-    })
+pub async fn vault_resolve(
+    state: tauri::State<'_, AppState>,
+    reference: String,
+    project_path: Option<String>,
+) -> Result<String, String> {
+    let pool = &*state.db_pool;
+    let _ = project_path;
+    let name = reference.trim_start_matches("{{vault:").trim_end_matches("}}");
+    let enc: String = sqlx::query_scalar(
+        "SELECT value FROM vault_entries WHERE name=$1 OR id::TEXT=$1",
+    )
+    .bind(name)
+    .fetch_one(pool)
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|_| format!("Vault entry '{}' not found", name))?;
+    deobfuscate(&enc)
 }

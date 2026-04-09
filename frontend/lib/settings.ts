@@ -696,7 +696,7 @@ export const DEFAULT_SETTINGS: GolishSettings = {
   },
   terminal: {
     shell: null,
-    font_family: "JetBrains Mono",
+    font_family: "SF Mono",
     font_size: 14,
     scrollback: 10000,
     fullterm_commands: [],
