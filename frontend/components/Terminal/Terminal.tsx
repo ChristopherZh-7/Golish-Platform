@@ -188,7 +188,7 @@ export function Terminal({ sessionId }: TerminalProps) {
         cursorStyle: "block",
         cursorInactiveStyle: "none",
         fontSize: 14,
-        fontFamily: "JetBrains Mono, Menlo, Monaco, Consolas, monospace",
+        fontFamily: "Menlo, Monaco, Consolas, 'Liberation Mono', monospace",
         allowProposedApi: true,
         scrollback: 10000,
         smoothScrollDuration: 0,

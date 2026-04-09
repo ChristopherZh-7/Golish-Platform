@@ -74,6 +74,13 @@ export function StaticTerminalOutput({
 
   const lineCount = output.split("\n").length;
 
+  // Estimated min-height prevents layout shift when the xterm.js terminal
+  // hasn't rendered yet (fixes output "jumping up" on fast commands).
+  const estimatedMinHeight = useMemo(() => {
+    const lineHeightPx = 17;
+    return Math.min(lineCount * lineHeightPx, 400);
+  }, [lineCount]);
+
   // Effect to create terminal (runs once on mount)
   useEffect(() => {
     if (!containerRef.current) return;
@@ -84,7 +91,7 @@ export function StaticTerminalOutput({
         cursorInactiveStyle: "none",
         disableStdin: true,
         fontSize: 12,
-        fontFamily: "JetBrains Mono, Menlo, Monaco, Consolas, monospace",
+        fontFamily: "SF Mono, Menlo, Monaco, JetBrains Mono, Consolas, monospace",
         fontWeight: "normal",
         fontWeightBold: "bold",
         lineHeight: 1.4,
@@ -240,6 +247,7 @@ export function StaticTerminalOutput({
     <>
       <div
         ref={containerRef}
+        style={{ minHeight: estimatedMinHeight }}
         className="overflow-hidden [&_.xterm-viewport]:!overflow-hidden [&_.xterm-screen]:!h-auto"
       />
       {popupPosition && (

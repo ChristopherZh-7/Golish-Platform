@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   Activity,
   Bug,
@@ -363,6 +364,16 @@ export function DashboardPanel() {
   useEffect(() => {
     loadStats();
   }, [loadStats, currentProjectPath]);
+
+  useEffect(() => {
+    const REFRESH_TOOLS = new Set(["manage_targets", "record_finding", "credential_vault"]);
+    const unlisten = listen<{ type: string; tool_name?: string }>("ai-event", (event) => {
+      if (event.payload.type === "tool_result" && event.payload.tool_name && REFRESH_TOOLS.has(event.payload.tool_name)) {
+        loadStats();
+      }
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, [loadStats]);
 
   const overallProgress = useMemo(() => {
     if (stats.methodProjects.length === 0) return null;

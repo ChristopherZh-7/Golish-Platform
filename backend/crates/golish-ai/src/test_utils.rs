@@ -626,6 +626,7 @@ impl TestContext {
             additional_tool_definitions: vec![],
             custom_tool_executor: None,
             coordinator: None, // Tests use legacy path
+            db_tracker: None,
         }
     }
 

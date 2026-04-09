@@ -53,4 +53,7 @@ pub use runner::{
 
 // Re-export workflow definitions for convenience
 pub use definitions::git_commit::{GitCommitResult, GitCommitState, GitCommitWorkflow};
+pub use definitions::recon_basic::{
+    AvailableTools, PortInfo, ReconBasicWorkflow, ReconStage, ReconState, TargetReconData,
+};
 pub use definitions::{create_default_registry, register_builtin_workflows};

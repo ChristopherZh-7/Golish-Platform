@@ -278,7 +278,15 @@ export async function readTextFile(
   workingDirectory: string,
   relativePath: string
 ): Promise<string> {
-  // Use the read_prompt command which reads file contents
   const fullPath = `${workingDirectory}/${relativePath}`;
   return invoke("read_prompt", { path: fullPath });
+}
+
+// IME (Input Method) switching — macOS only, no-op on other platforms
+export async function imeGetSource(): Promise<string | null> {
+  return invoke("ime_get_source");
+}
+
+export async function imeSetSource(sourceId: string): Promise<boolean> {
+  return invoke("ime_set_source", { sourceId });
 }

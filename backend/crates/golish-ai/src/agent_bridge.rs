@@ -183,6 +183,12 @@ pub struct AgentBridge {
     // OpenAI reasoning effort level (if set)
     pub(crate) openai_reasoning_effort: Option<String>,
 
+    // Database pool for session persistence dual-write
+    pub(crate) db_pool: Option<Arc<sqlx::PgPool>>,
+
+    // Database tracker for background recording (tool calls, tokens, logs)
+    pub(crate) db_tracker: Option<crate::db_tracking::DbTracker>,
+
     // Factory for creating sub-agent model override clients (optional)
     pub(crate) model_factory: Option<Arc<super::llm_client::LlmClientFactory>>,
 
@@ -972,6 +978,8 @@ impl AgentBridge {
             settings_manager: None,
             openai_web_search_config,
             openai_reasoning_effort,
+            db_pool: None,
+            db_tracker: None,
             model_factory,
             openrouter_provider_preferences,
             skill_cache: Arc::new(RwLock::new(Vec::new())),
@@ -1539,6 +1547,7 @@ impl AgentBridge {
             },
             custom_tool_executor: self.mcp_tool_executor.read().await.clone(),
             coordinator: self.coordinator.as_ref(),
+            db_tracker: self.db_tracker.as_ref(),
         }
     }
 
@@ -1670,6 +1679,15 @@ impl AgentBridge {
     // ========================================================================
     // Configuration Methods
     // ========================================================================
+
+    /// Set the database pool for session persistence dual-write and activity tracking.
+    pub fn set_db_pool(&mut self, pool: Arc<sqlx::PgPool>) {
+        self.db_tracker = Some(crate::db_tracking::DbTracker::new(
+            pool.clone(),
+            uuid::Uuid::new_v4(),
+        ));
+        self.db_pool = Some(pool);
+    }
 
     /// Set the PtyManager for executing commands in user's terminal
     pub fn set_pty_manager(&mut self, pty_manager: Arc<PtyManager>) {

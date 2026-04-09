@@ -159,6 +159,31 @@ pub enum AiEvent {
     /// Error occurred during processing
     Error { message: String, error_type: String },
 
+    // Human-in-the-loop interaction events
+    /// AI agent is requesting input from the user (barrier tool — pauses execution)
+    AskHumanRequest {
+        request_id: String,
+        /// The question or information the AI needs
+        question: String,
+        /// Type of input expected: "credentials", "choice", "freetext", "confirmation"
+        input_type: String,
+        /// Options for "choice" type (empty for other types)
+        #[serde(default)]
+        options: Vec<String>,
+        /// Additional context about why this is needed
+        #[serde(default)]
+        context: String,
+    },
+
+    /// User responded to an ask_human request
+    AskHumanResponse {
+        request_id: String,
+        /// The user's text response
+        response: String,
+        /// Whether the user skipped this request
+        skipped: bool,
+    },
+
     // Sub-agent events
     /// Sub-agent started executing a task
     SubAgentStarted {
@@ -434,6 +459,8 @@ impl AiEvent {
             AiEvent::WebFetchResult { .. } => "web_fetch_result",
             AiEvent::PromptGenerationStarted { .. } => "prompt_generation_started",
             AiEvent::PromptGenerationCompleted { .. } => "prompt_generation_completed",
+            AiEvent::AskHumanRequest { .. } => "ask_human_request",
+            AiEvent::AskHumanResponse { .. } => "ask_human_response",
         }
     }
 }

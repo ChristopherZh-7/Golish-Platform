@@ -725,6 +725,13 @@ export function ToolManager() {
             lastUpdated: new Date().toISOString().slice(0, 10),
           });
         }
+      } else if (method === "gem") {
+        const pkg = tool.install?.source || tool.name;
+        setInstallProgress((p) => ({ ...p, [tool.id]: `Installing ${pkg} via gem...` }));
+        const gemResult = await installRuntime(`gem:${pkg}`, proxyUrl);
+        if (!gemResult.success) {
+          throw new Error(gemResult.message || `gem install ${pkg} failed`);
+        }
       }
 
       if (tool.runtime === "python" && tool.runtimeVersion) {
@@ -1205,6 +1212,7 @@ export function ToolManager() {
     if (!method || method === "manual") return t("toolManager.manual");
     if (method === "github") return "GitHub";
     if (method === "homebrew") return "Homebrew";
+    if (method === "gem") return "RubyGem";
     return method;
   };
 

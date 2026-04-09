@@ -37,6 +37,8 @@ import {
   handleSubAgentToolResult,
 } from "./sub-agent-handlers";
 import {
+  handleAskHumanRequest,
+  handleAskHumanResponse,
   handleToolApprovalRequest,
   handleToolAutoApproved,
   handleToolOutputChunk,
@@ -71,6 +73,10 @@ export const eventHandlerRegistry: EventHandlerRegistry = {
   tool_auto_approved: handleToolAutoApproved,
   tool_result: handleToolResult,
   tool_output_chunk: handleToolOutputChunk,
+
+  // Human-in-the-loop interaction events
+  ask_human_request: handleAskHumanRequest,
+  ask_human_response: handleAskHumanResponse,
 
   // Workflow events
   workflow_started: handleWorkflowStarted,

@@ -1,31 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use tracing::debug;
 
-fn recordings_dir(project_path: Option<&str>) -> Result<PathBuf, String> {
-    if let Some(pp) = project_path {
-        let dir = PathBuf::from(pp).join(".golish").join("recordings");
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        return Ok(dir);
-    }
-    let home = dirs::home_dir().ok_or("cannot resolve home directory")?;
-    #[cfg(target_os = "macos")]
-    let dir = home
-        .join("Library")
-        .join("Application Support")
-        .join("golish-platform")
-        .join("recordings");
-    #[cfg(target_os = "windows")]
-    let dir = home
-        .join("AppData")
-        .join("Local")
-        .join("golish-platform")
-        .join("recordings");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let dir = home.join(".golish-platform").join("recordings");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir)
-}
+use crate::state::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordingMeta {
@@ -42,73 +17,155 @@ pub struct RecordingMeta {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Recording {
     pub meta: RecordingMeta,
-    pub events: Vec<(f64, String)>, // (elapsed_seconds, data)
+    pub events: Vec<(f64, String)>,
+}
+
+#[derive(sqlx::FromRow)]
+struct RecordingRow {
+    id: String,
+    title: String,
+    session_id: String,
+    width: i16,
+    height: i16,
+    duration_ms: i64,
+    event_count: i32,
+    events: serde_json::Value,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(sqlx::FromRow)]
+struct MetaRow {
+    id: String,
+    title: String,
+    session_id: String,
+    width: i16,
+    height: i16,
+    duration_ms: i64,
+    event_count: i32,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<MetaRow> for RecordingMeta {
+    fn from(r: MetaRow) -> Self {
+        Self {
+            id: r.id,
+            title: r.title,
+            session_id: r.session_id,
+            width: r.width as u16,
+            height: r.height as u16,
+            duration_ms: r.duration_ms as u64,
+            event_count: r.event_count as usize,
+            created_at: r.created_at.to_rfc3339(),
+        }
+    }
+}
+
+impl From<RecordingRow> for Recording {
+    fn from(r: RecordingRow) -> Self {
+        let events: Vec<(f64, String)> =
+            serde_json::from_value(r.events).unwrap_or_default();
+        Self {
+            meta: RecordingMeta {
+                id: r.id,
+                title: r.title,
+                session_id: r.session_id,
+                width: r.width as u16,
+                height: r.height as u16,
+                duration_ms: r.duration_ms as u64,
+                event_count: r.event_count as usize,
+                created_at: r.created_at.to_rfc3339(),
+            },
+            events,
+        }
+    }
 }
 
 #[tauri::command]
 pub async fn recording_save(
+    state: tauri::State<'_, AppState>,
     recording: Recording,
-    project_path: Option<String>,
+    _project_path: Option<String>,
 ) -> Result<String, String> {
-    let dir = recordings_dir(project_path.as_deref())?;
-    let path = dir.join(format!("{}.json", recording.meta.id));
-    let json = serde_json::to_string(&recording).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
-    debug!(
+    let pool = &*state.db_pool;
+    let events_json = serde_json::to_value(&recording.events).map_err(|e| e.to_string())?;
+
+    sqlx::query(
+        "INSERT INTO recordings (id, title, session_id, width, height, duration_ms, event_count, events, project_path) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+         ON CONFLICT (id) DO UPDATE SET \
+           title = EXCLUDED.title, events = EXCLUDED.events, \
+           duration_ms = EXCLUDED.duration_ms, event_count = EXCLUDED.event_count",
+    )
+    .bind(&recording.meta.id)
+    .bind(&recording.meta.title)
+    .bind(&recording.meta.session_id)
+    .bind(recording.meta.width as i16)
+    .bind(recording.meta.height as i16)
+    .bind(recording.meta.duration_ms as i64)
+    .bind(recording.meta.event_count as i32)
+    .bind(&events_json)
+    .bind(&_project_path)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    tracing::debug!(
         "[recording_save] Saved recording {} ({} events)",
-        recording.meta.id, recording.meta.event_count
+        recording.meta.id,
+        recording.meta.event_count
     );
-    Ok(recording.meta.id.clone())
+    Ok(recording.meta.id)
 }
 
 #[tauri::command]
 pub async fn recording_load(
+    state: tauri::State<'_, AppState>,
     id: String,
-    project_path: Option<String>,
+    _project_path: Option<String>,
 ) -> Result<Recording, String> {
-    let dir = recordings_dir(project_path.as_deref())?;
-    let path = dir.join(format!("{id}.json"));
-    if !path.exists() {
-        return Err(format!("Recording {id} not found"));
-    }
-    let data = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&data).map_err(|e| e.to_string())
+    let pool = &*state.db_pool;
+    let row: RecordingRow = sqlx::query_as(
+        "SELECT id, title, session_id, width, height, duration_ms, event_count, events, created_at \
+         FROM recordings WHERE id = $1",
+    )
+    .bind(&id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| format!("Recording {id} not found"))?;
+
+    Ok(Recording::from(row))
 }
 
 #[tauri::command]
 pub async fn recording_list(
-    project_path: Option<String>,
+    state: tauri::State<'_, AppState>,
+    _project_path: Option<String>,
 ) -> Result<Vec<RecordingMeta>, String> {
-    let dir = recordings_dir(project_path.as_deref())?;
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut list = Vec::new();
-    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if path.extension().is_some_and(|e| e == "json") {
-            if let Ok(data) = std::fs::read_to_string(&path) {
-                if let Ok(rec) = serde_json::from_str::<Recording>(&data) {
-                    list.push(rec.meta);
-                }
-            }
-        }
-    }
-    list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    Ok(list)
+    let pool = &*state.db_pool;
+    let rows: Vec<MetaRow> = sqlx::query_as(
+        "SELECT id, title, session_id, width, height, duration_ms, event_count, created_at \
+         FROM recordings ORDER BY created_at DESC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(rows.into_iter().map(RecordingMeta::from).collect())
 }
 
 #[tauri::command]
 pub async fn recording_delete(
+    state: tauri::State<'_, AppState>,
     id: String,
-    project_path: Option<String>,
+    _project_path: Option<String>,
 ) -> Result<(), String> {
-    let dir = recordings_dir(project_path.as_deref())?;
-    let path = dir.join(format!("{id}.json"));
-    if path.exists() {
-        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
-        debug!("[recording_delete] Deleted recording {id}");
-    }
+    let pool = &*state.db_pool;
+    sqlx::query("DELETE FROM recordings WHERE id = $1")
+        .bind(&id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    tracing::debug!("[recording_delete] Deleted recording {id}");
     Ok(())
 }

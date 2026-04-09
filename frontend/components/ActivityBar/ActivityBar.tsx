@@ -29,7 +29,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useTranslation } from "react-i18next";
 
-export type ActivityView = "dashboard" | "wiki" | "targets" | "methodology" | "findings" | "pipelines" | "auditLog" | "wordlists" | "vulnIntel" | "toolManage" | "settings" | null;
+export type ActivityView = "dashboard" | "wiki" | "targets" | "methodology" | "findings" | "pipelines" | "auditLog" | "wordlists" | "vulnIntel" | "toolManage" | "settings" | "security" | null;
 
 type BarItemId = "dashboard" | "targets" | "findings" | "pipelines" | "auditLog" | "wordlists" | "vulnIntel" | "security" | "terminal" | "wiki" | "methodology" | "toolManage";
 
@@ -86,6 +86,23 @@ const LOWER_GROUPS: BarGroup[] = [
 
 const ITEM_HEIGHT = 44;
 const DRAG_THRESHOLD = 4;
+const ACTIVITY_ORDER_KEY = "golish-activity-bar-order";
+
+function loadSavedOrder(): BarItem[] | null {
+  try {
+    const raw = localStorage.getItem(ACTIVITY_ORDER_KEY);
+    if (!raw) return null;
+    const ids = JSON.parse(raw) as BarItemId[];
+    const lookup = new Map(UPPER_DEFAULTS.map((i) => [i.id, i]));
+    const ordered = ids.map((id) => lookup.get(id)).filter(Boolean) as BarItem[];
+    for (const item of UPPER_DEFAULTS) {
+      if (!ordered.find((o) => o.id === item.id)) ordered.push(item);
+    }
+    return ordered;
+  } catch {
+    return null;
+  }
+}
 
 interface ActivityBarProps {
   activeView: ActivityView;
@@ -93,22 +110,18 @@ interface ActivityBarProps {
   terminalOpen?: boolean;
   onToggleTerminal?: () => void;
   onOpenSettings?: () => void;
-  onOpenSecurity?: () => void;
-  securityOpen?: boolean;
 }
 
-const VIEW_ITEMS: BarItemId[] = ["dashboard", "targets", "findings", "pipelines", "auditLog", "wordlists", "vulnIntel", "wiki", "methodology", "toolManage"];
+const VIEW_ITEMS: BarItemId[] = ["dashboard", "targets", "findings", "pipelines", "auditLog", "wordlists", "vulnIntel", "wiki", "methodology", "toolManage", "security"];
 
 export const ActivityBar = memo(function ActivityBar({
   activeView,
   onViewChange,
   terminalOpen,
   onToggleTerminal,
-  onOpenSecurity,
-  securityOpen,
 }: ActivityBarProps) {
   const { t } = useTranslation();
-  const [upperItems] = useState(UPPER_DEFAULTS);
+  const [upperItems, setUpperItems] = useState(() => loadSavedOrder() ?? UPPER_DEFAULTS);
   const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
   const groupRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const flyoutRef = useRef<HTMLDivElement | null>(null);
@@ -144,19 +157,16 @@ export const ActivityBar = memo(function ActivityBar({
       const viewId = item.id as ActivityView;
       onViewChange(activeView === viewId ? null : viewId);
       setExpandedGroup(null);
-    } else if (item.id === "security") {
-      onOpenSecurity?.();
     } else if (item.id === "terminal") {
       onToggleTerminal?.();
     }
-  }, [activeView, onViewChange, onOpenSecurity, onToggleTerminal]);
+  }, [activeView, onViewChange, onToggleTerminal]);
 
   const getItemActive = useCallback((item: BarItem) => {
     if (VIEW_ITEMS.includes(item.id)) return activeView === item.id;
     if (item.id === "terminal") return !!terminalOpen;
-    if (item.id === "security") return !!securityOpen;
     return false;
-  }, [activeView, terminalOpen, securityOpen]);
+  }, [activeView, terminalOpen]);
 
   const isGroupActive = useCallback((group: BarGroup) => {
     return group.items.some((item) => getItemActive(item));
@@ -203,7 +213,18 @@ export const ActivityBar = memo(function ActivityBar({
       document.removeEventListener("pointerup", onUp);
 
       if (dragStartRef.current?.moved) {
-        // drag reorder removed for simplicity - upper items are fixed
+        const targetIdx = hoverIndexRef.current;
+        if (targetIdx !== index) {
+          setUpperItems((prev) => {
+            const next = [...prev];
+            const [moved] = next.splice(index, 1);
+            next.splice(targetIdx, 0, moved);
+            try {
+              localStorage.setItem(ACTIVITY_ORDER_KEY, JSON.stringify(next.map((i) => i.id)));
+            } catch { /* ignore */ }
+            return next;
+          });
+        }
       } else if (dragStartRef.current && !dragStartRef.current.moved) {
         handleClick(item);
       }

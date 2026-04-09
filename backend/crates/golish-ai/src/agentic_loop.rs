@@ -28,11 +28,11 @@ use golish_tools::ToolRegistry;
 
 use super::system_hooks::{format_system_hooks, HookRegistry, PostToolContext};
 use super::tool_definitions::{
-    get_all_tool_definitions_with_config, get_run_command_tool_definition,
-    get_sub_agent_tool_definitions, sanitize_schema, ToolConfig,
+    get_all_tool_definitions_with_config, get_ask_human_tool_definition,
+    get_run_command_tool_definition, get_sub_agent_tool_definitions, sanitize_schema, ToolConfig,
 };
 use super::tool_executors::{
-    execute_plan_tool, execute_web_fetch_tool, normalize_run_pty_cmd_args,
+    execute_ask_human_tool, execute_plan_tool, execute_web_fetch_tool, normalize_run_pty_cmd_args,
 };
 use super::tool_provider_impl::DefaultToolProvider;
 use crate::hitl::ApprovalRecorder;
@@ -765,6 +765,8 @@ pub struct AgenticLoopContext<'a> {
     /// Event coordinator for message-passing based event management (optional).
     /// When available, approval registration uses the coordinator instead of pending_approvals.
     pub coordinator: Option<&'a CoordinatorHandle>,
+    /// Database tracker for background recording of tool calls, token usage, etc.
+    pub db_tracker: Option<&'a crate::db_tracking::DbTracker>,
 }
 
 /// Result of a single tool execution.
@@ -1043,6 +1045,17 @@ where
     // Check if this is an update_plan tool call
     if tool_name == "update_plan" {
         let (value, success) = execute_plan_tool(ctx.plan_manager, ctx.event_tx, tool_args).await;
+        return Ok(ToolExecutionResult { value, success });
+    }
+
+    // Check if this is an ask_human barrier tool call
+    if tool_name == "ask_human" {
+        let (value, success) = execute_ask_human_tool(
+            tool_args,
+            ctx.event_tx,
+            ctx.coordinator,
+            ctx.pending_approvals,
+        ).await;
         return Ok(ToolExecutionResult { value, success });
     }
 
@@ -1920,6 +1933,9 @@ where
     // Add run_command (wrapper for run_pty_cmd with better naming)
     tools.push(get_run_command_tool_definition());
 
+    // Add ask_human barrier tool (HITL: AI asks user for input)
+    tools.push(get_ask_human_tool_definition());
+
     // Add any additional tools (e.g., SWE-bench test tool)
     tools.extend(ctx.additional_tool_definitions.iter().cloned());
 
@@ -1974,6 +1990,15 @@ where
 
     // Note: Context compaction is now handled by the summarizer agent
     // which is triggered via should_compact() in the agentic loop
+
+    // Audit: record agent turn start
+    if let Some(tracker) = ctx.db_tracker {
+        tracker.audit(
+            "agent_turn_start",
+            "ai",
+            &format!("model={} provider={}", ctx.model_name, ctx.provider_name),
+        );
+    }
 
     let mut accumulated_response = String::new();
     // Thinking history tracking - only used when supports_thinking is true
@@ -3213,6 +3238,19 @@ where
     chat_message_span.record("langfuse.observation.output", output_for_span.as_str());
     agent_span.record("langfuse.observation.output", output_for_span.as_str());
 
+    // Record token usage to DB
+    if let Some(tracker) = ctx.db_tracker {
+        if total_usage.input_tokens > 0 || total_usage.output_tokens > 0 {
+            tracker.record_token_usage(
+                total_usage.input_tokens,
+                total_usage.output_tokens,
+                ctx.model_name,
+                ctx.provider_name,
+                0,
+            );
+        }
+    }
+
     // Convert accumulated_thinking to Option (None if empty)
     let reasoning = if accumulated_thinking.is_empty() {
         None
@@ -3626,6 +3664,11 @@ where
         return (blocked_result, vec![]);
     }
 
+    // Start DB tracking for tool call timing
+    let db_guard = ctx
+        .db_tracker
+        .map(|t| t.start_tool_call(&tool_id, tool_name, &tool_args));
+
     // Execute tool with HITL approval check
     let result = execute_with_hitl_generic(
         tool_name,
@@ -3641,6 +3684,41 @@ where
         value: json!({ "error": e.to_string() }),
         success: false,
     });
+
+    // Finish DB tracking with result
+    if let (Some(tracker), Some(guard)) = (ctx.db_tracker, db_guard) {
+        let result_text = serde_json::to_string(&result.value).unwrap_or_default();
+        tracker.finish_tool_call(guard, result.success, &result_text);
+
+        // Record search logs for web search tools
+        if tool_name.starts_with("tavily_") || tool_name.starts_with("web_search") {
+            let query = tool_args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let result_preview = serde_json::to_string(&result.value)
+                .ok()
+                .map(|s| if s.len() > 10000 { s[..10000].to_string() } else { s });
+            tracker.record_search(
+                if tool_name.starts_with("tavily_") { "tavily" } else { "web" },
+                query,
+                result_preview.as_deref(),
+            );
+        }
+
+        // Record terminal logs for shell/PTY commands
+        if tool_name == "run_pty_cmd" || tool_name == "run_command" || tool_name == "run_shell_cmd" {
+            let output = result.value.get("output")
+                .or_else(|| result.value.get("stdout"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !output.is_empty() {
+                tracker.record_terminal_output("stdout", output);
+            }
+            if let Some(stderr) = result.value.get("stderr").and_then(|v| v.as_str()) {
+                if !stderr.is_empty() {
+                    tracker.record_terminal_output("stderr", stderr);
+                }
+            }
+        }
+    }
 
     // Record tool result in span
     let result_str = serde_json::to_string(&result.value).unwrap_or_default();

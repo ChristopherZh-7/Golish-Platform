@@ -11,6 +11,13 @@ import { dispatchEvent, type EventHandlerContext } from "./ai-events";
 const lastSeenSeq = new Map<string, number>();
 
 /**
+ * Throttle signal_frontend_ready calls to prevent HMR-induced spam.
+ * Tracks the last signal time per session; ignores calls within the cooldown window.
+ */
+const lastSignaledAt = new Map<string, number>();
+const SIGNAL_COOLDOWN_MS = 3000;
+
+/**
  * Reset sequence tracking for a session.
  * Called when a session is removed or when the app needs to reset state.
  */
@@ -192,12 +199,13 @@ export function useAiEvents() {
         if (isMounted) {
           unlistenRef.current = unlisten;
 
-          // Signal frontend ready for all existing sessions
-          // This triggers the backend to replay any buffered events
+          const now = Date.now();
           const sessions = Object.keys(useStore.getState().sessions);
           for (const sessionId of sessions) {
+            const last = lastSignaledAt.get(sessionId) ?? 0;
+            if (now - last < SIGNAL_COOLDOWN_MS) continue;
+            lastSignaledAt.set(sessionId, now);
             signalFrontendReady(sessionId).catch((err) => {
-              // Backend command may not exist yet during development
               logger.debug("Failed to signal frontend ready:", err);
             });
           }

@@ -36,6 +36,7 @@ golish-synthesis = { path = "../golish-synthesis" }
 golish-skills = { path = "../golish-skills" }
 golish-mcp = { path = "../golish-mcp" }
 golish-pentest = { path = "../golish-pentest" }
+golish-db = { path = "../golish-db" }
 
 # Domain crate
 golish-ai = { path = "../golish-ai" }
@@ -76,7 +77,7 @@ zip.workspace = true
 walkdir.workspace = true
 regex = "1"
 quick-xml = { workspace = true }
-rusqlite = { workspace = true }
+sqlx = { workspace = true }
 
 # OpenTelemetry for Langfuse tracing
 opentelemetry.workspace = true

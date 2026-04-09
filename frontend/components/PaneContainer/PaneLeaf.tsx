@@ -15,7 +15,6 @@
  */
 
 import React, { lazy, Suspense, useCallback } from "react";
-import { ToolApprovalDialog } from "@/components/AgentChat";
 import { UnifiedInput } from "@/components/UnifiedInput";
 import { UnifiedTimeline } from "@/components/UnifiedTimeline";
 import { ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -159,7 +158,6 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
                 >
                   <UnifiedInput sessionId={sessionId} />
                 </div>
-                <ToolApprovalDialog sessionId={sessionId} />
               </>
             )}
           </>

@@ -1,8 +1,7 @@
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use super::db::open_db;
+use crate::state::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TopoNode {
@@ -155,57 +154,82 @@ fn find_network(ip: &str, networks: &[(String, String)]) -> String {
     "net-unknown".to_string()
 }
 
-fn now_ts() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 #[tauri::command]
 pub async fn topo_parse(raw_output: String) -> Result<TopologyData, String> {
     Ok(parse_nmap_output(&raw_output))
 }
 
 #[tauri::command]
-pub async fn topo_save(name: String, data: TopologyData, project_path: Option<String>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        let json = serde_json::to_string(&data).map_err(|e| e.to_string())?;
-        conn.execute(
-            "INSERT OR REPLACE INTO topology_scans (name, data, created_at) VALUES (?1,?2,?3)",
-            params![name, json, now_ts()],
-        ).map_err(|e| e.to_string())?;
-        Ok(())
-    }).await.map_err(|e| e.to_string())?
+pub async fn topo_save(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    data: TopologyData,
+    project_path: Option<String>,
+) -> Result<(), String> {
+    let pool = &*state.db_pool;
+    let json = serde_json::to_value(&data).map_err(|e| e.to_string())?;
+    sqlx::query(
+        r#"INSERT INTO topology_scans (name, data, project_path)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (name, project_path) DO UPDATE SET data = $2, created_at = NOW()"#,
+    )
+    .bind(&name)
+    .bind(&json)
+    .bind(project_path.as_deref())
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn topo_list(project_path: Option<String>) -> Result<Vec<String>, String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        let mut stmt = conn.prepare("SELECT name FROM topology_scans ORDER BY created_at DESC").map_err(|e| e.to_string())?;
-        let names: Vec<String> = stmt.query_map([], |row| row.get(0)).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
-        Ok(names)
-    }).await.map_err(|e| e.to_string())?
+pub async fn topo_list(
+    state: tauri::State<'_, AppState>,
+    project_path: Option<String>,
+) -> Result<Vec<String>, String> {
+    let pool = &*state.db_pool;
+    let names: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM topology_scans WHERE project_path IS NOT DISTINCT FROM $1 ORDER BY created_at DESC",
+    )
+    .bind(project_path.as_deref())
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(names)
 }
 
 #[tauri::command]
-pub async fn topo_load(name: String, project_path: Option<String>) -> Result<TopologyData, String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        let json: String = conn.query_row("SELECT data FROM topology_scans WHERE name=?1", params![name], |r| r.get(0)).map_err(|e| e.to_string())?;
-        serde_json::from_str(&json).map_err(|e| e.to_string())
-    }).await.map_err(|e| e.to_string())?
+pub async fn topo_load(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    project_path: Option<String>,
+) -> Result<TopologyData, String> {
+    let pool = &*state.db_pool;
+    let data: serde_json::Value = sqlx::query_scalar(
+        "SELECT data FROM topology_scans WHERE name=$1 AND project_path IS NOT DISTINCT FROM $2",
+    )
+    .bind(&name)
+    .bind(project_path.as_deref())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    serde_json::from_value(data).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn topo_delete(name: String, project_path: Option<String>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        conn.execute("DELETE FROM topology_scans WHERE name=?1", params![name]).map_err(|e| e.to_string())?;
-        Ok(())
-    }).await.map_err(|e| e.to_string())?
+pub async fn topo_delete(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    project_path: Option<String>,
+) -> Result<(), String> {
+    let pool = &*state.db_pool;
+    sqlx::query("DELETE FROM topology_scans WHERE name=$1 AND project_path IS NOT DISTINCT FROM $2")
+        .bind(&name)
+        .bind(project_path.as_deref())
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,39 +242,56 @@ pub struct TopoDiff {
 }
 
 #[tauri::command]
-pub async fn topo_diff(name_a: String, name_b: String, project_path: Option<String>) -> Result<TopoDiff, String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
+pub async fn topo_diff(
+    state: tauri::State<'_, AppState>,
+    name_a: String,
+    name_b: String,
+    project_path: Option<String>,
+) -> Result<TopoDiff, String> {
+    let pool = &*state.db_pool;
+    let data_a: serde_json::Value = sqlx::query_scalar(
+        "SELECT data FROM topology_scans WHERE name=$1 AND project_path IS NOT DISTINCT FROM $2",
+    )
+    .bind(&name_a)
+    .bind(project_path.as_deref())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let data_b: serde_json::Value = sqlx::query_scalar(
+        "SELECT data FROM topology_scans WHERE name=$1 AND project_path IS NOT DISTINCT FROM $2",
+    )
+    .bind(&name_b)
+    .bind(project_path.as_deref())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
 
-        let json_a: String = conn.query_row("SELECT data FROM topology_scans WHERE name=?1", params![name_a], |r| r.get(0)).map_err(|e| e.to_string())?;
-        let json_b: String = conn.query_row("SELECT data FROM topology_scans WHERE name=?1", params![name_b], |r| r.get(0)).map_err(|e| e.to_string())?;
-        let data_a: TopologyData = serde_json::from_str(&json_a).map_err(|e| e.to_string())?;
-        let data_b: TopologyData = serde_json::from_str(&json_b).map_err(|e| e.to_string())?;
+    let data_a: TopologyData = serde_json::from_value(data_a).map_err(|e| e.to_string())?;
+    let data_b: TopologyData = serde_json::from_value(data_b).map_err(|e| e.to_string())?;
 
-        let hosts_a: HashMap<String, &TopoNode> = data_a.nodes.iter().filter(|n| n.node_type == "host").map(|n| (n.ip.clone().unwrap_or_else(|| n.label.clone()), n)).collect();
-        let hosts_b: HashMap<String, &TopoNode> = data_b.nodes.iter().filter(|n| n.node_type == "host").map(|n| (n.ip.clone().unwrap_or_else(|| n.label.clone()), n)).collect();
+    let hosts_a: HashMap<String, &TopoNode> = data_a.nodes.iter().filter(|n| n.node_type == "host").map(|n| (n.ip.clone().unwrap_or_else(|| n.label.clone()), n)).collect();
+    let hosts_b: HashMap<String, &TopoNode> = data_b.nodes.iter().filter(|n| n.node_type == "host").map(|n| (n.ip.clone().unwrap_or_else(|| n.label.clone()), n)).collect();
 
-        let new_hosts: Vec<String> = hosts_b.keys().filter(|h| !hosts_a.contains_key(*h)).cloned().collect();
-        let removed_hosts: Vec<String> = hosts_a.keys().filter(|h| !hosts_b.contains_key(*h)).cloned().collect();
-        let mut new_ports = Vec::new();
-        let mut removed_ports = Vec::new();
-        let mut changed_services = Vec::new();
+    let new_hosts: Vec<String> = hosts_b.keys().filter(|h| !hosts_a.contains_key(*h)).cloned().collect();
+    let removed_hosts: Vec<String> = hosts_a.keys().filter(|h| !hosts_b.contains_key(*h)).cloned().collect();
+    let mut new_ports = Vec::new();
+    let mut removed_ports = Vec::new();
+    let mut changed_services = Vec::new();
 
-        for (host, node_b) in &hosts_b {
-            if let Some(node_a) = hosts_a.get(host) {
-                let ports_a: HashMap<(u16, &str), &str> = node_a.ports.iter().map(|p| ((p.port, p.protocol.as_str()), p.service.as_str())).collect();
-                let ports_b: HashMap<(u16, &str), &str> = node_b.ports.iter().map(|p| ((p.port, p.protocol.as_str()), p.service.as_str())).collect();
-                for ((port, proto), svc_b) in &ports_b {
-                    if let Some(svc_a) = ports_a.get(&(*port, *proto)) {
-                        if svc_a != svc_b { changed_services.push(format!("{}:{}/{} {} → {}", host, port, proto, svc_a, svc_b)); }
-                    } else { new_ports.push(format!("{}:{}/{}", host, port, proto)); }
-                }
-                for (port, proto) in ports_a.keys() {
-                    if !ports_b.contains_key(&(*port, *proto)) { removed_ports.push(format!("{}:{}/{}", host, port, proto)); }
-                }
+    for (host, node_b) in &hosts_b {
+        if let Some(node_a) = hosts_a.get(host) {
+            let ports_a: HashMap<(u16, &str), &str> = node_a.ports.iter().map(|p| ((p.port, p.protocol.as_str()), p.service.as_str())).collect();
+            let ports_b: HashMap<(u16, &str), &str> = node_b.ports.iter().map(|p| ((p.port, p.protocol.as_str()), p.service.as_str())).collect();
+            for ((port, proto), svc_b) in &ports_b {
+                if let Some(svc_a) = ports_a.get(&(*port, *proto)) {
+                    if svc_a != svc_b { changed_services.push(format!("{}:{}/{} {} -> {}", host, port, proto, svc_a, svc_b)); }
+                } else { new_ports.push(format!("{}:{}/{}", host, port, proto)); }
+            }
+            for (port, proto) in ports_a.keys() {
+                if !ports_b.contains_key(&(*port, *proto)) { removed_ports.push(format!("{}:{}/{}", host, port, proto)); }
             }
         }
+    }
 
-        Ok(TopoDiff { new_hosts, removed_hosts, new_ports, removed_ports, changed_services })
-    }).await.map_err(|e| e.to_string())?
+    Ok(TopoDiff { new_hosts, removed_hosts, new_ports, removed_ports, changed_services })
 }

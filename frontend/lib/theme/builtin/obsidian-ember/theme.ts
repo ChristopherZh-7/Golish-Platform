@@ -134,7 +134,7 @@ export const obsidianEmber: GolishTheme = {
 
   typography: {
     terminal: {
-      fontFamily: "Rodin, RodinNTLG, Avenir Next, Helvetica Neue, sans-serif",
+      fontFamily: "SF Mono, Menlo, Monaco, 'JetBrains Mono', Consolas, monospace",
       fontSize: 14,
     },
     ui: {

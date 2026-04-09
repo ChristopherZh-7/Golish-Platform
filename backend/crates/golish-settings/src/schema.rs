@@ -1307,7 +1307,7 @@ impl Default for TerminalSettings {
     fn default() -> Self {
         Self {
             shell: None,
-            font_family: "JetBrains Mono".to_string(),
+            font_family: "SF Mono".to_string(),
             font_size: 14,
             scrollback: 10000,
             fullterm_commands: Vec::new(),

@@ -63,7 +63,7 @@
 
   /* Font families */
   --font-sans: "Source Sans 3", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-mono: "SF Mono", Menlo, Monaco, "JetBrains Mono", ui-monospace, monospace;
 }
 
 /* Default fallback values - will be overridden by theme manager */

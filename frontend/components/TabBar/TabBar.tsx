@@ -379,17 +379,40 @@ export const TabBar = React.memo(function TabBar({ excludeTabIds, showDropHint }
         }
       }
 
-      // Remove terminal from its conversation
+      // Remove terminal from its conversation and auto-create a replacement
       const store = useStore.getState();
       const convId = store.getConversationForTerminal(tabId);
+      const oldDir = store.sessions[tabId]?.workingDirectory;
       if (convId) {
         store.removeTerminalFromConversation(convId, tabId);
       }
 
       // Remove all frontend state for the tab
       closeTab(tabId);
+
+      // If the closed terminal was linked to a conversation, create a replacement
+      // so the 1:1 conversation-terminal binding is preserved
+      if (tabType === "terminal" && convId) {
+        const newId = await createTerminalTab(oldDir, true);
+        if (newId) {
+          const s = useStore.getState();
+          s.addTerminalToConversation(convId, newId);
+          s.setActiveSession(newId);
+        }
+      } else if (tabType === "terminal") {
+        const s = useStore.getState();
+        const hasTerminals = s.tabOrder.some(
+          (id) => (s.sessions[id]?.tabType ?? "terminal") === "terminal"
+        );
+        if (!hasTerminals) {
+          const newId = await createTerminalTab();
+          if (newId) {
+            s.setActiveSession(newId);
+          }
+        }
+      }
     },
-    [getTabSessionIds, closeTab]
+    [getTabSessionIds, closeTab, createTerminalTab]
   );
 
   return (

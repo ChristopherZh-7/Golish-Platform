@@ -1,10 +1,9 @@
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
 use uuid::Uuid;
 
-use super::db::open_db;
+use crate::state::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MethodologyTemplate {
@@ -186,88 +185,137 @@ pub async fn method_list_templates() -> Result<Vec<MethodologyTemplate>, String>
 
 #[tauri::command]
 pub async fn method_start_project(
-    template_id: String, project_name: String, project_path: Option<String>,
+    state: tauri::State<'_, AppState>,
+    template_id: String,
+    project_name: String,
+    project_path: Option<String>,
 ) -> Result<ProjectMethodology, String> {
+    let pool = &*state.db_pool;
     let templates = built_in_templates();
     let template = templates.iter().find(|t| t.id == template_id).ok_or("Template not found")?;
     let now = chrono::Utc::now().to_rfc3339();
     let project = ProjectMethodology {
-        id: Uuid::new_v4().to_string(), template_id: template.id.clone(), template_name: template.name.clone(),
-        project_name, phases: template.phases.clone(), created_at: now.clone(), updated_at: now,
+        id: Uuid::new_v4().to_string(),
+        template_id: template.id.clone(),
+        template_name: template.name.clone(),
+        project_name,
+        phases: template.phases.clone(),
+        created_at: now.clone(),
+        updated_at: now,
     };
-    let data = serde_json::to_string(&project).map_err(|e| e.to_string())?;
-    let id = project.id.clone();
-    let ts = now_ts();
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        conn.execute("INSERT INTO methodology_projects (id, data, updated_at) VALUES (?1,?2,?3)", params![id, data, ts])
-            .map_err(|e| e.to_string())?;
-        Ok::<_, String>(())
-    }).await.map_err(|e| e.to_string())??;
+    let data = serde_json::to_value(&project).map_err(|e| e.to_string())?;
+    let uid: Uuid = project.id.parse().unwrap_or_else(|_| Uuid::new_v4());
+    sqlx::query(
+        "INSERT INTO methodology_projects (id, data, project_path) VALUES ($1, $2, $3)",
+    )
+    .bind(uid)
+    .bind(&data)
+    .bind(project_path.as_deref())
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(project)
 }
 
-fn now_ts() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
+#[tauri::command]
+pub async fn method_list_projects(
+    state: tauri::State<'_, AppState>,
+    project_path: Option<String>,
+) -> Result<Vec<ProjectMethodology>, String> {
+    let pool = &*state.db_pool;
+    let rows: Vec<serde_json::Value> = sqlx::query_scalar(
+        "SELECT data FROM methodology_projects WHERE project_path IS NOT DISTINCT FROM $1 ORDER BY updated_at DESC",
+    )
+    .bind(project_path.as_deref())
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let projects: Vec<ProjectMethodology> = rows
+        .into_iter()
+        .filter_map(|j| serde_json::from_value(j).ok())
+        .collect();
+    Ok(projects)
 }
 
 #[tauri::command]
-pub async fn method_list_projects(project_path: Option<String>) -> Result<Vec<ProjectMethodology>, String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        let mut stmt = conn.prepare("SELECT data FROM methodology_projects ORDER BY updated_at DESC").map_err(|e| e.to_string())?;
-        let projects: Vec<ProjectMethodology> = stmt
-            .query_map([], |row| { let j: String = row.get(0)?; Ok(j) })
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .filter_map(|j| serde_json::from_str(&j).ok())
-            .collect();
-        Ok(projects)
-    }).await.map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub async fn method_load_project(id: String, project_path: Option<String>) -> Result<ProjectMethodology, String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        let json: String = conn.query_row("SELECT data FROM methodology_projects WHERE id=?1", params![id], |r| r.get(0)).map_err(|e| e.to_string())?;
-        serde_json::from_str(&json).map_err(|e| e.to_string())
-    }).await.map_err(|e| e.to_string())?
+pub async fn method_load_project(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    project_path: Option<String>,
+) -> Result<ProjectMethodology, String> {
+    let pool = &*state.db_pool;
+    let _ = project_path;
+    let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let data: serde_json::Value = sqlx::query_scalar(
+        "SELECT data FROM methodology_projects WHERE id=$1",
+    )
+    .bind(uid)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    serde_json::from_value(data).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn method_update_item(
-    project_id: String, phase_id: String, item_id: String,
-    checked: Option<bool>, notes: Option<String>, project_path: Option<String>,
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+    phase_id: String,
+    item_id: String,
+    checked: Option<bool>,
+    notes: Option<String>,
+    project_path: Option<String>,
 ) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        let json: String = conn.query_row("SELECT data FROM methodology_projects WHERE id=?1", params![project_id], |r| r.get(0)).map_err(|e| e.to_string())?;
-        let mut project: ProjectMethodology = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    let pool = &*state.db_pool;
+    let _ = project_path;
+    let uid: Uuid = project_id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
-        for phase in &mut project.phases {
-            if phase.id == phase_id {
-                for item in &mut phase.items {
-                    if item.id == item_id {
-                        if let Some(c) = checked { item.checked = c; }
-                        if let Some(ref n) = notes { item.notes = n.clone(); }
-                    }
+    let data: serde_json::Value = sqlx::query_scalar(
+        "SELECT data FROM methodology_projects WHERE id=$1",
+    )
+    .bind(uid)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut project: ProjectMethodology = serde_json::from_value(data).map_err(|e| e.to_string())?;
+
+    for phase in &mut project.phases {
+        if phase.id == phase_id {
+            for item in &mut phase.items {
+                if item.id == item_id {
+                    if let Some(c) = checked { item.checked = c; }
+                    if let Some(ref n) = notes { item.notes = n.clone(); }
                 }
             }
         }
-        project.updated_at = chrono::Utc::now().to_rfc3339();
-        let new_json = serde_json::to_string(&project).map_err(|e| e.to_string())?;
-        conn.execute("UPDATE methodology_projects SET data=?1, updated_at=?2 WHERE id=?3", params![new_json, now_ts(), project_id])
-            .map_err(|e| e.to_string())?;
-        Ok(())
-    }).await.map_err(|e| e.to_string())?
+    }
+    project.updated_at = chrono::Utc::now().to_rfc3339();
+    let new_data = serde_json::to_value(&project).map_err(|e| e.to_string())?;
+
+    sqlx::query("UPDATE methodology_projects SET data=$1, updated_at=NOW() WHERE id=$2")
+        .bind(&new_data)
+        .bind(uid)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn method_delete_project(id: String, project_path: Option<String>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open_db(project_path.as_deref())?;
-        conn.execute("DELETE FROM methodology_projects WHERE id=?1", params![id]).map_err(|e| e.to_string())?;
-        Ok(())
-    }).await.map_err(|e| e.to_string())?
+pub async fn method_delete_project(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    project_path: Option<String>,
+) -> Result<(), String> {
+    let pool = &*state.db_pool;
+    let _ = project_path;
+    let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    sqlx::query("DELETE FROM methodology_projects WHERE id=$1")
+        .bind(uid)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }

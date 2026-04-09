@@ -602,6 +602,36 @@ pub fn convert_to_cli_json(event: &AiEvent) -> CliJsonEvent {
                 "duration_ms": duration_ms
             }),
         ),
+
+        AiEvent::AskHumanRequest {
+            request_id,
+            question,
+            input_type,
+            options,
+            context,
+        } => CliJsonEvent::new(
+            "ask_human_request",
+            serde_json::json!({
+                "request_id": request_id,
+                "question": question,
+                "input_type": input_type,
+                "options": options,
+                "context": context
+            }),
+        ),
+
+        AiEvent::AskHumanResponse {
+            request_id,
+            response,
+            skipped,
+        } => CliJsonEvent::new(
+            "ask_human_response",
+            serde_json::json!({
+                "request_id": request_id,
+                "response": response,
+                "skipped": skipped
+            }),
+        ),
     }
 }
 

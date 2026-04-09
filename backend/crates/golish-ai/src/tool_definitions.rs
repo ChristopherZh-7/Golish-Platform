@@ -222,6 +222,42 @@ pub fn get_run_command_tool_definition() -> ToolDefinition {
     }
 }
 
+/// Get the ask_human tool definition.
+///
+/// This barrier tool pauses the agentic loop and asks the user for input.
+/// Used when the AI needs credentials, decisions, or guidance it cannot
+/// determine on its own.
+pub fn get_ask_human_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "ask_human".to_string(),
+        description: "Ask the user for information, credentials, or a decision. Use when you need input you cannot determine on your own: login credentials, scope decisions, authorization for risky actions, or expert guidance. This pauses execution until the user responds.".to_string(),
+        parameters: sanitize_schema(json!({
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The question or information request to show the user"
+                },
+                "input_type": {
+                    "type": "string",
+                    "enum": ["credentials", "choice", "freetext", "confirmation"],
+                    "description": "Type of input expected: 'credentials' for username/password, 'choice' for selection from options, 'freetext' for open text input, 'confirmation' for yes/no"
+                },
+                "options": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Options for 'choice' type (ignored for other types)"
+                },
+                "context": {
+                    "type": "string",
+                    "description": "Additional context about why you need this information"
+                }
+            },
+            "required": ["question", "input_type"]
+        })),
+    }
+}
+
 /// Get sub-agent tool definitions from the registry.
 pub async fn get_sub_agent_tool_definitions(registry: &SubAgentRegistry) -> Vec<ToolDefinition> {
     registry

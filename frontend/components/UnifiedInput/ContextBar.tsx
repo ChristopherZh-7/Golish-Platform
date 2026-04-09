@@ -1,15 +1,13 @@
 import { ArrowDown, ArrowUp, Folder, GitBranch, Package } from "lucide-react";
-import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
 import { useUnifiedInputState } from "@/store/selectors/unified-input";
 import { selectDisplaySettings } from "@/store/slices";
 
 interface ContextBarProps {
   sessionId: string;
-  isAgentBusy: boolean;
 }
 
-export function ContextBar({ sessionId, isAgentBusy }: ContextBarProps) {
+export function ContextBar({ sessionId }: ContextBarProps) {
   const workingDirectory = useStore((state) => state.sessions[sessionId]?.workingDirectory);
   const openGitPanel = useStore((state) => state.openGitPanel);
   const { virtualEnv, gitBranch, gitStatus } = useUnifiedInputState(sessionId);
@@ -30,10 +28,7 @@ export function ContextBar({ sessionId, isAgentBusy }: ContextBarProps) {
   return (
     <div>
       <div
-        className={cn(
-          "flex items-center gap-2 px-3 py-1",
-          isAgentBusy && "agent-loading-shimmer"
-        )}
+        className="flex items-center gap-2 px-3 py-1"
       >
         {/* Path badge - Warp style */}
         {pathVisible && (

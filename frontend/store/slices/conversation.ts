@@ -138,9 +138,21 @@ export const createConversationSlice: SliceCreator<ConversationSlice> = (set, ge
     }),
 
   setActiveConversation: (convId) =>
-    set((state) => {
+    set((state: any) => {
       if (state.conversations[convId]) {
         state.activeConversationId = convId;
+        // 1:1 sync: switch center timeline to this conversation's terminal
+        const terminals = state.conversationTerminals[convId];
+        if (terminals && terminals.length > 0 && state.activeSessionId !== terminals[0]) {
+          state.activeSessionId = terminals[0];
+          // Update activation history
+          if (state.tabActivationHistory) {
+            state.tabActivationHistory = state.tabActivationHistory.filter(
+              (id: string) => id !== terminals[0]
+            );
+            state.tabActivationHistory.push(terminals[0]);
+          }
+        }
       }
     }),
 
@@ -256,12 +268,8 @@ export const createConversationSlice: SliceCreator<ConversationSlice> = (set, ge
 
   addTerminalToConversation: (convId, terminalId) =>
     set((state) => {
-      if (!state.conversationTerminals[convId]) {
-        state.conversationTerminals[convId] = [];
-      }
-      if (!state.conversationTerminals[convId].includes(terminalId)) {
-        state.conversationTerminals[convId].push(terminalId);
-      }
+      // 1:1 model: each conversation has exactly one terminal
+      state.conversationTerminals[convId] = [terminalId];
     }),
 
   removeTerminalFromConversation: (convId, terminalId) =>

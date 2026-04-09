@@ -11,12 +11,23 @@ import {
   AlertCircle,
   Wrench,
   Loader2,
+  Bot,
+  GitBranch,
+  CheckCircle2,
+  XCircle,
+  Zap,
+  KeyRound,
+  List,
+  MessageSquare,
+  ShieldQuestion,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PROVIDER_GROUPS, formatModelName } from "@/lib/models";
 import {
   initAiSession,
   sendPromptSession,
+  sendPromptWithAttachments,
+  createTextPayload,
   onAiEvent,
   shutdownAiSession,
   restoreAiConversation,
@@ -41,7 +52,7 @@ import { useShallow } from "zustand/react/shallow";
 import { createNewConversation } from "@/store/slices/conversation";
 import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
-import type { PersistedCommandBlock, PersistedTerminalData } from "@/lib/workspace-storage";
+import type { PersistedTerminalData } from "@/lib/workspace-storage";
 
 const STORAGE_KEY = "golish-pentest-conversations";
 const TERMINAL_DATA_KEY = "golish-pentest-conv-terminals";
@@ -187,6 +198,329 @@ function CollapsibleToolCall({
   );
 }
 
+// === AskHuman inline card ===
+
+interface AskHumanState {
+  requestId: string;
+  sessionId: string;
+  question: string;
+  inputType: "credentials" | "choice" | "freetext" | "confirmation";
+  options: string[];
+  context: string;
+}
+
+const INPUT_TYPE_ICONS: Record<string, typeof KeyRound> = {
+  credentials: KeyRound,
+  choice: List,
+  freetext: MessageSquare,
+  confirmation: ShieldQuestion,
+};
+
+function AskHumanInline({
+  request,
+  onSubmit,
+  onSkip,
+}: {
+  request: AskHumanState;
+  onSubmit: (response: string) => void;
+  onSkip: () => void;
+}) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [freetext, setFreetext] = useState("");
+  const [selectedOptions, setSelectedOptions] = useState<Set<string>>(new Set());
+
+  const Icon = INPUT_TYPE_ICONS[request.inputType] || MessageSquare;
+
+  const handleSubmit = () => {
+    let response = "";
+    switch (request.inputType) {
+      case "credentials":
+        response = JSON.stringify({ username, password });
+        break;
+      case "choice":
+        response = Array.from(selectedOptions).join(", ");
+        break;
+      case "freetext":
+        response = freetext;
+        break;
+      case "confirmation":
+        response = "yes";
+        break;
+    }
+    onSubmit(response);
+  };
+
+  return (
+    <div className="mx-4 my-2 rounded-lg border border-[#e0af68]/30 bg-[#e0af68]/5 p-3">
+      <div className="flex items-center gap-2 text-[12px] font-medium text-[#e0af68] mb-2">
+        <Icon className="w-3.5 h-3.5" />
+        AI Needs Your Input
+      </div>
+      <p className="text-[13px] text-foreground mb-2 whitespace-pre-wrap">{request.question}</p>
+      {request.context && (
+        <p className="text-[11px] text-muted-foreground/60 mb-2 italic">{request.context}</p>
+      )}
+
+      {request.inputType === "credentials" && (
+        <div className="space-y-2 mb-2">
+          <input
+            type="text"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            className="w-full px-2.5 py-1.5 rounded-md bg-background border border-border/50 text-[12px] focus:outline-none focus:border-accent"
+            placeholder="Username..."
+          />
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full px-2.5 py-1.5 rounded-md bg-background border border-border/50 text-[12px] focus:outline-none focus:border-accent"
+            placeholder="Password..."
+            onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
+          />
+        </div>
+      )}
+
+      {request.inputType === "choice" && (
+        <div className="space-y-1 mb-2">
+          {request.options.map((opt) => (
+            <button
+              key={opt}
+              type="button"
+              onClick={() => setSelectedOptions((prev) => {
+                const next = new Set(prev);
+                if (next.has(opt)) next.delete(opt); else next.add(opt);
+                return next;
+              })}
+              className={cn(
+                "w-full text-left px-2.5 py-1.5 rounded-md border text-[12px] transition-colors",
+                selectedOptions.has(opt)
+                  ? "bg-accent/10 border-accent/50 text-accent"
+                  : "bg-background border-border/50 hover:border-muted-foreground/30",
+              )}
+            >
+              {opt}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {request.inputType === "freetext" && (
+        <textarea
+          value={freetext}
+          onChange={(e) => setFreetext(e.target.value)}
+          className="w-full px-2.5 py-1.5 rounded-md bg-background border border-border/50 text-[12px] focus:outline-none focus:border-accent min-h-[60px] resize-y mb-2"
+          placeholder="Type your response..."
+        />
+      )}
+
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={handleSubmit}
+          className="px-3 py-1 text-[11px] rounded-md bg-accent text-accent-foreground hover:bg-accent/80 font-medium transition-colors"
+        >
+          {request.inputType === "confirmation" ? "Confirm" : "Submit"}
+        </button>
+        <button
+          type="button"
+          onClick={onSkip}
+          className="px-3 py-1 text-[11px] rounded-md border border-border/50 text-muted-foreground hover:bg-muted/50 transition-colors"
+        >
+          Skip
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// === Workflow Progress ===
+
+interface WorkflowState {
+  id: string;
+  name: string;
+  currentStep: string;
+  stepIndex: number;
+  totalSteps: number;
+  completedSteps: Array<{ name: string; output?: string; durationMs: number }>;
+  status: "running" | "completed" | "error";
+  error?: string;
+  totalDurationMs?: number;
+}
+
+function WorkflowProgress({ workflow }: { workflow: WorkflowState }) {
+  const [expanded, setExpanded] = useState(false);
+  const progress = workflow.totalSteps > 0
+    ? (workflow.completedSteps.length / workflow.totalSteps) * 100
+    : 0;
+
+  return (
+    <div className="mx-4 my-2 rounded-lg border border-border/30 bg-background/50 p-3">
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-2 w-full text-left"
+      >
+        <GitBranch className="w-3.5 h-3.5 text-accent flex-shrink-0" />
+        <span className="text-[12px] font-medium text-foreground flex-1">{workflow.name}</span>
+        {workflow.status === "running" && <Loader2 className="w-3 h-3 animate-spin text-accent" />}
+        {workflow.status === "completed" && <CheckCircle2 className="w-3 h-3 text-green-500" />}
+        {workflow.status === "error" && <XCircle className="w-3 h-3 text-destructive" />}
+        <ChevronDown className={cn("w-3 h-3 text-muted-foreground transition-transform", !expanded && "-rotate-90")} />
+      </button>
+
+      <div className="mt-2 h-1 rounded-full bg-muted/50 overflow-hidden">
+        <div
+          className={cn(
+            "h-full rounded-full transition-all duration-300",
+            workflow.status === "error" ? "bg-destructive" : "bg-accent",
+          )}
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+
+      <div className="mt-1 text-[10px] text-muted-foreground/60">
+        {workflow.status === "running" && `Step ${workflow.stepIndex + 1}/${workflow.totalSteps}: ${workflow.currentStep}`}
+        {workflow.status === "completed" && `Completed in ${(workflow.totalDurationMs ?? 0) / 1000}s`}
+        {workflow.status === "error" && `Error: ${workflow.error}`}
+      </div>
+
+      {expanded && workflow.completedSteps.length > 0 && (
+        <div className="mt-2 space-y-1">
+          {workflow.completedSteps.map((step, i) => (
+            <div key={`${step.name}-${i}`} className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <CheckCircle2 className="w-2.5 h-2.5 text-green-500 flex-shrink-0" />
+              <span>{step.name}</span>
+              <span className="ml-auto text-[10px] text-muted-foreground/40">{(step.durationMs / 1000).toFixed(1)}s</span>
+            </div>
+          ))}
+          {workflow.status === "running" && (
+            <div className="flex items-center gap-1.5 text-[11px] text-accent">
+              <Loader2 className="w-2.5 h-2.5 animate-spin flex-shrink-0" />
+              <span>{workflow.currentStep}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// === Sub-agent Card ===
+
+interface SubAgentState {
+  agentId: string;
+  agentName: string;
+  task: string;
+  status: "running" | "completed" | "error";
+  response?: string;
+  error?: string;
+  durationMs?: number;
+}
+
+function SubAgentCard({ agent }: { agent: SubAgentState }) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="rounded-md border border-border/30 bg-background/50 p-2">
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-1.5 w-full text-left text-[11px]"
+      >
+        <Bot className="w-3 h-3 text-[#bb9af7] flex-shrink-0" />
+        <span className="font-medium text-muted-foreground">{agent.agentName}</span>
+        {agent.status === "running" && <Loader2 className="w-2.5 h-2.5 animate-spin text-accent ml-auto" />}
+        {agent.status === "completed" && <CheckCircle2 className="w-2.5 h-2.5 text-green-500 ml-auto" />}
+        {agent.status === "error" && <XCircle className="w-2.5 h-2.5 text-destructive ml-auto" />}
+      </button>
+      <div className="mt-1 text-[10px] text-muted-foreground/60 line-clamp-2">{agent.task}</div>
+      {expanded && agent.response && (
+        <div className="mt-1.5 text-[11px] text-muted-foreground/80 whitespace-pre-wrap max-h-[100px] overflow-auto border-t border-border/20 pt-1.5">
+          {agent.response.length > 500 ? `${agent.response.slice(0, 500)}...` : agent.response}
+        </div>
+      )}
+      {expanded && agent.error && (
+        <div className="mt-1.5 text-[11px] text-destructive">{agent.error}</div>
+      )}
+    </div>
+  );
+}
+
+// === Compaction Notice ===
+
+function CompactionNotice({ active, tokensBefore }: { active: boolean; tokensBefore?: number }) {
+  return (
+    <div className="mx-4 my-2 flex items-center gap-2 rounded-md bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground/70">
+      {active ? (
+        <>
+          <Loader2 className="w-3 h-3 animate-spin text-accent" />
+          <span>Compacting context{tokensBefore ? ` (${(tokensBefore / 1000).toFixed(0)}K tokens)` : ""}...</span>
+        </>
+      ) : (
+        <>
+          <Zap className="w-3 h-3 text-accent" />
+          <span>Context compacted{tokensBefore ? ` from ${(tokensBefore / 1000).toFixed(0)}K tokens` : ""}</span>
+        </>
+      )}
+    </div>
+  );
+}
+
+// === Task Plan ===
+
+interface TaskPlanState {
+  version: number;
+  steps: Array<{ step: string; status: "pending" | "in_progress" | "completed" }>;
+  summary: { total: number; completed: number; in_progress: number; pending: number };
+}
+
+function TaskPlanCard({ plan }: { plan: TaskPlanState }) {
+  const [expanded, setExpanded] = useState(true);
+  const progress = plan.summary.total > 0
+    ? (plan.summary.completed / plan.summary.total) * 100
+    : 0;
+
+  return (
+    <div className="mx-4 my-2 rounded-lg border border-border/30 bg-background/50 p-3">
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-2 w-full text-left"
+      >
+        <List className="w-3.5 h-3.5 text-accent flex-shrink-0" />
+        <span className="text-[12px] font-medium text-foreground">
+          Task Plan ({plan.summary.completed}/{plan.summary.total})
+        </span>
+        <ChevronDown className={cn("w-3 h-3 text-muted-foreground transition-transform ml-auto", !expanded && "-rotate-90")} />
+      </button>
+
+      <div className="mt-2 h-1 rounded-full bg-muted/50 overflow-hidden">
+        <div className="h-full rounded-full bg-accent transition-all duration-300" style={{ width: `${progress}%` }} />
+      </div>
+
+      {expanded && (
+        <div className="mt-2 space-y-1">
+          {plan.steps.map((step, i) => (
+            <div key={`${step.step}-${i}`} className="flex items-center gap-1.5 text-[11px]">
+              {step.status === "completed" && <CheckCircle2 className="w-2.5 h-2.5 text-green-500 flex-shrink-0" />}
+              {step.status === "in_progress" && <Loader2 className="w-2.5 h-2.5 animate-spin text-accent flex-shrink-0" />}
+              {step.status === "pending" && <div className="w-2.5 h-2.5 rounded-full border border-muted-foreground/30 flex-shrink-0" />}
+              <span className={cn(
+                step.status === "completed" ? "text-muted-foreground/60 line-through" :
+                step.status === "in_progress" ? "text-accent" : "text-muted-foreground",
+              )}>
+                {step.step}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MessageBlock({
   message,
   pendingApproval,
@@ -222,12 +556,8 @@ function MessageBlock({
           <AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
           <span>{message.error}</span>
         </div>
-      ) : isUser ? (
-        <div className="text-[13px] text-foreground leading-[1.6] whitespace-pre-wrap">
-          {message.content}
-        </div>
       ) : (
-        <div className="text-[13px] text-foreground leading-[1.6]">
+        <div className="text-[12px] text-foreground leading-[1.55]">
           <Markdown content={message.content || (message.isStreaming ? "..." : "")} />
         </div>
       )}
@@ -292,6 +622,25 @@ export const AIChatPanel = memo(function AIChatPanel() {
     maxTokens: number;
   } | null>(null);
 
+  // AskHuman state
+  const [askHumanRequest, setAskHumanRequest] = useState<AskHumanState | null>(null);
+
+  // Workflow state
+  const [activeWorkflow, setActiveWorkflow] = useState<WorkflowState | null>(null);
+
+  // Sub-agent state
+  const [activeSubAgents, setActiveSubAgents] = useState<SubAgentState[]>([]);
+
+  // Task plan state
+  const [taskPlan, setTaskPlan] = useState<TaskPlanState | null>(null);
+
+  // Context compaction state
+  const [compactionState, setCompactionState] = useState<{ active: boolean; tokensBefore?: number } | null>(null);
+
+  // Image attachments for sending with prompt
+  const [imageAttachments, setImageAttachments] = useState<Array<{ data: string; mediaType: string; name: string }>>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   // Store actions
   const {
     addConversation,
@@ -299,10 +648,6 @@ export const AIChatPanel = memo(function AIChatPanel() {
     setActiveConversation,
     updateConversation: updateConv,
     addConversationMessage,
-    appendMessageDelta,
-    appendMessageThinking,
-    addMessageToolCall,
-    updateMessageToolResult,
     finalizeStreamingMessage,
     setMessageError,
     setConversationStreaming,
@@ -316,6 +661,8 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const [pentestTools, setPentestTools] = useState<ToolConfig[]>([]);
   const [configuredProviders, setConfiguredProviders] = useState<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const chatAtBottomRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const tabsRef = useRef<HTMLDivElement>(null);
   const unlistenRef = useRef<(() => void) | null>(null);
@@ -356,7 +703,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
       }
     } catch { /* ignore */ }
 
-    // Restore ALL terminals per conversation (active first, then defer the rest for lazy load)
+    // Restore one terminal per conversation (1:1 model)
     (async () => {
       try {
         if (termRestoreRanRef.current) return;
@@ -369,15 +716,11 @@ export const AIChatPanel = memo(function AIChatPanel() {
         const store = useStore.getState();
         const activeId = store.activeConversationId;
 
-        // Eagerly restore ALL terminals for the active conversation
-        if (activeId && termData[activeId] && store.conversations[activeId]) {
-          const savedTerminals = termData[activeId];
-          const existingTerms = store.conversationTerminals[activeId] ?? [];
-
-          const toCreate = savedTerminals.filter((_, i) => i >= existingTerms.length);
-          for (let i = 0; i < Math.min(savedTerminals.length, existingTerms.length); i++) {
-            const termInfo = savedTerminals[i];
-            const existingTermId = existingTerms[i];
+        // Helper: restore a single terminal for a conversation (first saved terminal only)
+        const restoreTerminalForConv = async (convId: string, termInfo: PersistedTerminal, isActiveConv: boolean) => {
+          const existing = useStore.getState().conversationTerminals[convId] ?? [];
+          if (existing.length > 0) {
+            const existingTermId = existing[0];
             if (termInfo.scrollback && TerminalInstanceManager.has(existingTermId)) {
               const inst = TerminalInstanceManager.get(existingTermId);
               if (inst) inst.terminal.write(termInfo.scrollback);
@@ -390,76 +733,56 @@ export const AIChatPanel = memo(function AIChatPanel() {
               const tid = existingTermId;
               useStore.setState((state) => {
                 if (!state.timelines[tid]) state.timelines[tid] = [];
-                for (const block of blocksToRestore) state.timelines[tid].push({ ...block, data: { ...block.data, sessionId: tid } });
+                for (const block of blocksToRestore) {
+                  if (block.type === "command") {
+                    state.timelines[tid].push({ ...block, data: { ...block.data, sessionId: tid } });
+                  } else {
+                    state.timelines[tid].push(block as any);
+                  }
+                }
               });
             }
+            return;
           }
-
-          if (toCreate.length > 0) {
-            const createdIds = await Promise.all(toCreate.map(t => createTerminalTab(t.workingDirectory, true, t.scrollback)));
-            for (let i = 0; i < createdIds.length; i++) {
-              const termId = createdIds[i];
-              if (!termId) continue;
-              useStore.getState().addTerminalToConversation(activeId, termId);
-              if (existingTerms.length === 0 && i === 0) useStore.getState().setActiveSession(termId);
-              const termInfo = toCreate[i];
-              if (termInfo.customName) useStore.getState().setCustomTabName(termId, termInfo.customName);
-              if (termInfo.timelineBlocks?.length) {
-                const blocksToRestore = termInfo.timelineBlocks;
-                const tid = termId;
-                useStore.setState((state) => {
-                  if (!state.timelines[tid]) state.timelines[tid] = [];
-                  for (const block of blocksToRestore) state.timelines[tid].push({ ...block, data: { ...block.data, sessionId: tid } });
-                });
+          const termId = await createTerminalTab(termInfo.workingDirectory, true, termInfo.scrollback);
+          if (!termId) return;
+          useStore.getState().addTerminalToConversation(convId, termId);
+          if (isActiveConv) useStore.getState().setActiveSession(termId);
+          if (termInfo.customName) useStore.getState().setCustomTabName(termId, termInfo.customName);
+          if (termInfo.timelineBlocks?.length) {
+            const blocksToRestore = termInfo.timelineBlocks;
+            const tid = termId;
+            useStore.setState((state) => {
+              if (!state.timelines[tid]) state.timelines[tid] = [];
+              for (const block of blocksToRestore) {
+                if (block.type === "command") {
+                  state.timelines[tid].push({ ...block, data: { ...block.data, sessionId: tid } });
+                } else {
+                  state.timelines[tid].push(block as any);
+                }
               }
-            }
+            });
           }
+        };
+
+        // Eagerly restore terminal for the active conversation
+        if (activeId && termData[activeId]?.[0] && store.conversations[activeId]) {
+          await restoreTerminalForConv(activeId, termData[activeId][0], true);
         }
 
-        // Active conversation is ready — dismiss the loading spinner
         useStore.getState().setTerminalRestoreInProgress(false);
         const savedActiveSessionId = useStore.getState().activeSessionId;
 
-        // Pre-create terminals for other conversations in the background (one conv at a time)
+        // Pre-create terminals for other conversations in the background
         const otherConvs = Object.entries(termData).filter(
           ([convId, terminals]) => convId !== activeId && store.conversations[convId] && terminals.length > 0
         );
         for (const [convId, savedTerms] of otherConvs) {
-          const existingTerms = useStore.getState().conversationTerminals[convId] ?? [];
-          if (existingTerms.length >= savedTerms.length) continue;
-          const toCreate = savedTerms.slice(existingTerms.length);
-          const createdIds = await Promise.all(toCreate.map(t => createTerminalTab(t.workingDirectory, true, t.scrollback)));
-          for (let i = 0; i < createdIds.length; i++) {
-            const termId = createdIds[i];
-            if (!termId) continue;
-            useStore.getState().addTerminalToConversation(convId, termId);
-            const termInfo = toCreate[i];
-            if (termInfo.customName) useStore.getState().setCustomTabName(termId, termInfo.customName);
-            if (termInfo.timelineBlocks?.length) {
-              const blocksToRestore = termInfo.timelineBlocks;
-              const tid = termId;
-              useStore.setState((state) => {
-                if (!state.timelines[tid]) state.timelines[tid] = [];
-                for (const block of blocksToRestore) state.timelines[tid].push({ ...block, data: { ...block.data, sessionId: tid } });
-              });
-            }
-          }
-          for (let i = 0; i < Math.min(savedTerms.length, existingTerms.length); i++) {
-            const termInfo = savedTerms[i];
-            const existingTermId = existingTerms[i];
-            if (termInfo.scrollback) TerminalInstanceManager.setPendingScrollback(existingTermId, termInfo.scrollback);
-            if (termInfo.customName) useStore.getState().setCustomTabName(existingTermId, termInfo.customName);
-            if (termInfo.timelineBlocks?.length) {
-              const blocksToRestore = termInfo.timelineBlocks;
-              const tid = existingTermId;
-              useStore.setState((state) => {
-                if (!state.timelines[tid]) state.timelines[tid] = [];
-                for (const block of blocksToRestore) state.timelines[tid].push({ ...block, data: { ...block.data, sessionId: tid } });
-              });
-            }
-          }
+          const existing = useStore.getState().conversationTerminals[convId] ?? [];
+          if (existing.length > 0) continue;
+          await restoreTerminalForConv(convId, savedTerms[0], false);
         }
-        // Restore active tab after background pre-creation (addSession switches active tab)
+
         if (savedActiveSessionId && useStore.getState().activeSessionId !== savedActiveSessionId) {
           useStore.getState().setActiveSession(savedActiveSessionId);
         }
@@ -474,7 +797,13 @@ export const AIChatPanel = memo(function AIChatPanel() {
 
   // Persist conversations to localStorage immediately on every change
   useEffect(() => {
-    if (conversations.length === 0) return;
+    if (conversations.length === 0) {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify([]));
+        localStorage.setItem(TERMINAL_DATA_KEY, JSON.stringify({}));
+      } catch { /* ignore */ }
+      return;
+    }
     try {
       const toSave = conversations
         .filter((c) => c.messages.length > 0)
@@ -516,7 +845,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
               if (scrollback.length > MAX_SCROLLBACK_CHARS) scrollback = scrollback.slice(-MAX_SCROLLBACK_CHARS);
               if (!scrollback && existingTermData[c.id]?.[i]?.scrollback) scrollback = existingTermData[c.id][i].scrollback;
               const customName = session.customName || existingTermData[c.id]?.[i]?.customName;
-              const blocks: PersistedCommandBlock[] = [];
+              const blocks: Array<import("@/lib/workspace-storage").PersistedTimelineBlock> = [];
               const timeline = store.timelines[tid];
               if (timeline) {
                 for (const block of timeline) {
@@ -524,6 +853,8 @@ export const AIChatPanel = memo(function AIChatPanel() {
                     let output = block.data.output;
                     if (output.length > MAX_BLOCK_OUTPUT_CHARS) output = output.slice(-MAX_BLOCK_OUTPUT_CHARS);
                     blocks.push({ id: block.id, type: "command", timestamp: block.timestamp, data: { ...block.data, output } });
+                  } else if (block.type === "pipeline_progress") {
+                    blocks.push({ id: block.id, type: "pipeline_progress", timestamp: block.timestamp, data: block.data });
                   }
                 }
               }
@@ -601,6 +932,21 @@ export const AIChatPanel = memo(function AIChatPanel() {
         setPentestTools(result.tools.filter((t) => t.installed));
       }
     }).catch(() => {});
+  }, []);
+
+  // Listen for pipeline analysis requests from TargetPanel
+  const sendAutoPromptRef = useRef<((prompt: string) => void) | null>(null);
+  useEffect(() => {
+    const handlePipelineAnalysis = (e: Event) => {
+      const { convId, prompt } = (e as CustomEvent<{ convId: string; prompt: string }>).detail;
+      const store = useStore.getState();
+      if (store.activeConversationId !== convId) return;
+      if (sendAutoPromptRef.current) {
+        sendAutoPromptRef.current(prompt);
+      }
+    };
+    window.addEventListener("pipeline-analysis-request", handlePipelineAnalysis);
+    return () => window.removeEventListener("pipeline-analysis-request", handlePipelineAnalysis);
   }, []);
 
   // Load configured providers from settings
@@ -754,6 +1100,131 @@ export const AIChatPanel = memo(function AIChatPanel() {
               streamingMsgRef.current = null;
               break;
             }
+
+            // AskHuman events
+            case "ask_human_request": {
+              setAskHumanRequest({
+                requestId: event.request_id,
+                sessionId: event.session_id,
+                question: event.question,
+                inputType: (event.input_type || "freetext") as AskHumanState["inputType"],
+                options: event.options ?? [],
+                context: event.context ?? "",
+              });
+              break;
+            }
+
+            // Sub-agent events
+            case "sub_agent_started": {
+              setActiveSubAgents((prev) => [
+                ...prev.filter((a) => a.agentId !== event.agent_id),
+                {
+                  agentId: event.agent_id,
+                  agentName: event.agent_name,
+                  task: event.task,
+                  status: "running",
+                },
+              ]);
+              break;
+            }
+            case "sub_agent_completed": {
+              setActiveSubAgents((prev) =>
+                prev.map((a) =>
+                  a.agentId === event.agent_id
+                    ? { ...a, status: "completed" as const, response: event.response, durationMs: event.duration_ms }
+                    : a,
+                ),
+              );
+              break;
+            }
+            case "sub_agent_error": {
+              setActiveSubAgents((prev) =>
+                prev.map((a) =>
+                  a.agentId === event.agent_id
+                    ? { ...a, status: "error" as const, error: event.error }
+                    : a,
+                ),
+              );
+              break;
+            }
+
+            // Workflow events
+            case "workflow_started": {
+              setActiveWorkflow({
+                id: event.workflow_id,
+                name: event.workflow_name,
+                currentStep: "",
+                stepIndex: 0,
+                totalSteps: 0,
+                completedSteps: [],
+                status: "running",
+              });
+              break;
+            }
+            case "workflow_step_started": {
+              setActiveWorkflow((prev) =>
+                prev?.id === event.workflow_id
+                  ? { ...prev, currentStep: event.step_name, stepIndex: event.step_index, totalSteps: event.total_steps }
+                  : prev,
+              );
+              break;
+            }
+            case "workflow_step_completed": {
+              setActiveWorkflow((prev) =>
+                prev?.id === event.workflow_id
+                  ? {
+                      ...prev,
+                      completedSteps: [
+                        ...prev.completedSteps,
+                        { name: event.step_name, output: event.output ?? undefined, durationMs: event.duration_ms },
+                      ],
+                    }
+                  : prev,
+              );
+              break;
+            }
+            case "workflow_completed": {
+              setActiveWorkflow((prev) =>
+                prev?.id === event.workflow_id
+                  ? { ...prev, status: "completed" as const, totalDurationMs: event.total_duration_ms }
+                  : prev,
+              );
+              break;
+            }
+            case "workflow_error": {
+              setActiveWorkflow((prev) =>
+                prev?.id === event.workflow_id
+                  ? { ...prev, status: "error" as const, error: event.error }
+                  : prev,
+              );
+              break;
+            }
+
+            // Plan events
+            case "plan_updated": {
+              setTaskPlan({
+                version: event.version,
+                steps: event.steps,
+                summary: event.summary,
+              });
+              break;
+            }
+
+            // Compaction events
+            case "compaction_started": {
+              setCompactionState({ active: true, tokensBefore: event.tokens_before });
+              break;
+            }
+            case "compaction_completed": {
+              setCompactionState({ active: false, tokensBefore: event.tokens_before });
+              setTimeout(() => setCompactionState(null), 5000);
+              break;
+            }
+            case "compaction_failed": {
+              setCompactionState(null);
+              store.setMessageError(convId, `Context compaction failed: ${event.error}`);
+              break;
+            }
           }
         });
 
@@ -816,7 +1287,13 @@ export const AIChatPanel = memo(function AIChatPanel() {
               const tid = termId;
               useStore.setState((state) => {
                 if (!state.timelines[tid]) state.timelines[tid] = [];
-                for (const block of blocksToRestore) state.timelines[tid].push({ ...block, data: { ...block.data, sessionId: tid } });
+                for (const block of blocksToRestore) {
+                  if (block.type === "command") {
+                    state.timelines[tid].push({ ...block, data: { ...block.data, sessionId: tid } });
+                  } else {
+                    state.timelines[tid].push(block as any);
+                  }
+                }
               });
             }
           }
@@ -897,15 +1374,60 @@ export const AIChatPanel = memo(function AIChatPanel() {
     window.addEventListener("mouseup", onUp);
   }, []);
 
-  // Auto-scroll on new messages
+  // Track user intent for auto-scroll: only wheel/touch events can set/clear this
+  const userScrolledUpRef = useRef(false);
+
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    const isAtBottom = () => {
+      const { scrollTop, scrollHeight, clientHeight } = container;
+      return scrollHeight - scrollTop - clientHeight < 80;
+    };
+
+    // Only wheel events control the userScrolledUp flag — scroll events from
+    // programmatic scrollTop assignment must NOT accidentally re-enable auto-scroll
+    const handleWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) {
+        userScrolledUpRef.current = true;
+      } else if (e.deltaY > 0) {
+        requestAnimationFrame(() => {
+          if (isAtBottom()) userScrolledUpRef.current = false;
+        });
+      }
+    };
+
+    const handleScroll = () => {
+      chatAtBottomRef.current = isAtBottom();
+    };
+
+    container.addEventListener("wheel", handleWheel, { passive: true });
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      container.removeEventListener("wheel", handleWheel);
+      container.removeEventListener("scroll", handleScroll);
+    };
+  }, []);
+
+  // Auto-scroll: only when user hasn't deliberately scrolled up
+  useEffect(() => {
+    if (!userScrolledUpRef.current) {
+      const container = messagesContainerRef.current;
+      if (container) {
+        container.scrollTop = container.scrollHeight;
+      }
+    }
   }, [messages]);
 
-  const handleNewChat = useCallback(() => {
+  const handleNewChat = useCallback(async () => {
     const conv = createNewConversation();
     addConversation(conv);
-    void createTerminalTab();
+    const termId = await createTerminalTab(undefined, true);
+    if (termId) {
+      useStore.getState().addTerminalToConversation(conv.id, termId);
+      useStore.getState().setActiveSession(termId);
+    }
     setInput("");
     setShowHistory(false);
     requestAnimationFrame(() => {
@@ -916,28 +1438,34 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const handleCloseTab = useCallback(
     (convId: string, e: React.MouseEvent) => {
       e.stopPropagation();
-      const store = useStore.getState();
-      const conv = store.conversations[convId];
+      const storeBefore = useStore.getState();
+      const conv = storeBefore.conversations[convId];
       if (conv?.aiInitialized) {
         shutdownAiSession(conv.aiSessionId).catch(() => {});
       }
 
       // Close all terminals belonging to this conversation
-      const terminalIds = store.conversationTerminals[convId] ?? [];
+      const terminalIds = storeBefore.conversationTerminals[convId] ?? [];
       for (const termId of terminalIds) {
-        store.closeTab(termId);
+        storeBefore.closeTab(termId);
       }
 
       removeConv(convId);
 
-      // If no conversations left, create a fresh one
-      const remaining = store.conversationOrder.filter((id) => id !== convId);
-      if (remaining.length === 0) {
+      // Re-read store AFTER removal to get updated state
+      const storeAfter = useStore.getState();
+      if (storeAfter.conversationOrder.length === 0) {
         const fresh = createNewConversation();
         addConversation(fresh);
+        void createTerminalTab(undefined, true).then((termId) => {
+          if (termId) {
+            useStore.getState().addTerminalToConversation(fresh.id, termId);
+            useStore.getState().setActiveSession(termId);
+          }
+        });
       }
     },
-    [removeConv, addConversation],
+    [removeConv, addConversation, createTerminalTab],
   );
 
   const handleModelSelect = useCallback(
@@ -1138,24 +1666,38 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
     }
     setInput("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
+    userScrolledUpRef.current = false;
 
     // Ensure the conversation has a linked terminal tab and it's active
-    const convTerminals = useStore.getState().conversationTerminals[conv.id] ?? [];
+    const storeNow = useStore.getState();
+    const convTerminals = storeNow.conversationTerminals[conv.id] ?? [];
     let activeTermId: string | null = null;
     if (convTerminals.length === 0) {
-      try {
-        activeTermId = await createTerminalTab();
-        if (activeTermId) {
-          useStore.getState().addTerminalToConversation(conv.id, activeTermId);
+      // No terminal linked — prefer adopting the currently active terminal over creating a new one
+      const currentActive = storeNow.activeSessionId;
+      if (currentActive && storeNow.sessions[currentActive]) {
+        // Check this terminal isn't already owned by another conversation
+        const ownerConv = storeNow.getConversationForTerminal(currentActive);
+        if (!ownerConv || ownerConv === conv.id) {
+          activeTermId = currentActive;
+          storeNow.addTerminalToConversation(conv.id, currentActive);
         }
-      } catch (e) {
-        console.warn("[AIChatPanel] Failed to create terminal for conversation:", e);
+      }
+      // If no existing terminal could be adopted, create a new one
+      if (!activeTermId) {
+        try {
+          activeTermId = await createTerminalTab(undefined, true);
+          if (activeTermId) {
+            useStore.getState().addTerminalToConversation(conv.id, activeTermId);
+          }
+        } catch (e) {
+          console.warn("[AIChatPanel] Failed to create terminal for conversation:", e);
+        }
       }
     } else {
       activeTermId = convTerminals[0];
-      const store = useStore.getState();
-      if (store.sessions[activeTermId] && store.activeSessionId !== activeTermId) {
-        store.setActiveSession(activeTermId);
+      if (storeNow.sessions[activeTermId] && storeNow.activeSessionId !== activeTermId) {
+        storeNow.setActiveSession(activeTermId);
       }
     }
 
@@ -1189,17 +1731,46 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
     try {
       setConversationStreaming(conv.id, true);
       console.debug("[AIChatPanel] Sending prompt to session:", conv.aiSessionId);
-      await sendPromptSession(conv.aiSessionId, prompt);
-      // Safety timeout: if streaming is still active after 120s, reset
+
+      if (imageAttachments.length > 0) {
+        const payload = createTextPayload(prompt);
+        for (const img of imageAttachments) {
+          payload.parts.push({
+            type: "image",
+            data: img.data,
+            media_type: img.mediaType,
+          });
+        }
+        await sendPromptWithAttachments(conv.aiSessionId, payload);
+        setImageAttachments([]);
+      } else {
+        await sendPromptSession(conv.aiSessionId, prompt);
+      }
+      // Safety timeout: if streaming is still active after 30s with no new content, reset.
+      // Some models don't send a proper stop signal.
       const convId = conv.id;
-      setTimeout(() => {
+      let lastMsgLength = 0;
+      let idleChecks = 0;
+      const checkInterval = setInterval(() => {
         const s = useStore.getState();
         const c = s.conversations[convId];
-        if (c?.isStreaming) {
-          console.warn("[AIChatPanel] Safety timeout: resetting stuck streaming for", convId);
-          s.finalizeStreamingMessage(convId);
+        if (!c?.isStreaming) {
+          clearInterval(checkInterval);
+          return;
         }
-      }, 120_000);
+        const currentLength = c.messages[c.messages.length - 1]?.content?.length ?? 0;
+        if (currentLength === lastMsgLength) {
+          idleChecks++;
+          if (idleChecks >= 3) {
+            console.warn("[AIChatPanel] Idle timeout: resetting stuck streaming for", convId);
+            s.finalizeStreamingMessage(convId);
+            clearInterval(checkInterval);
+          }
+        } else {
+          lastMsgLength = currentLength;
+          idleChecks = 0;
+        }
+      }, 5_000);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       setMessageError(conv.id, errMsg);
@@ -1216,6 +1787,89 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
     setMessageError,
     t,
   ]);
+
+  // Auto-send prompt (for pipeline analysis)
+  const sendAutoPrompt = useCallback(async (text: string) => {
+    if (isStreaming) return;
+    if (!activeConvId) return;
+    const conv = useStore.getState().conversations[activeConvId];
+    if (!conv) return;
+
+    const userMsg: ChatMessage = {
+      id: `auto-${Date.now()}`,
+      role: "user",
+      content: text,
+      timestamp: Date.now(),
+    };
+    addConversationMessage(conv.id, userMsg);
+
+    const initialized = await initializeSession(conv);
+    if (!initialized) return;
+
+    try {
+      setConversationStreaming(conv.id, true);
+      await sendPromptSession(conv.aiSessionId, text);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      setMessageError(conv.id, errMsg);
+    }
+  }, [isStreaming, activeConvId, initializeSession, addConversationMessage, setConversationStreaming, setMessageError]);
+
+  sendAutoPromptRef.current = sendAutoPrompt;
+
+  // AskHuman handlers
+  const handleAskHumanSubmit = useCallback(async (response: string) => {
+    if (!askHumanRequest) return;
+    try {
+      await respondToToolApproval(askHumanRequest.sessionId, {
+        request_id: askHumanRequest.requestId,
+        approved: true,
+        reason: response,
+        remember: false,
+        always_allow: false,
+      });
+    } catch (err) {
+      console.error("[AIChatPanel] Failed to respond to ask_human:", err);
+    }
+    setAskHumanRequest(null);
+  }, [askHumanRequest]);
+
+  const handleAskHumanSkip = useCallback(async () => {
+    if (!askHumanRequest) return;
+    try {
+      await respondToToolApproval(askHumanRequest.sessionId, {
+        request_id: askHumanRequest.requestId,
+        approved: false,
+        reason: undefined,
+        remember: false,
+        always_allow: false,
+      });
+    } catch (err) {
+      console.error("[AIChatPanel] Failed to skip ask_human:", err);
+    }
+    setAskHumanRequest(null);
+  }, [askHumanRequest]);
+
+  // Image attachment handler
+  const handleImageUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+    for (const file of Array.from(files)) {
+      if (!file.type.startsWith("image/")) continue;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64 = (reader.result as string).split(",")[1];
+        if (base64) {
+          setImageAttachments((prev) => [
+            ...prev,
+            { data: base64, mediaType: file.type, name: file.name },
+          ]);
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+    e.target.value = "";
+  }, []);
 
   const handleApprovalModeChange = useCallback((mode: ApprovalMode) => {
     setApprovalMode(mode);
@@ -1386,7 +2040,7 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
 
       {/* Messages */}
       {!showHistory && (
-        <div className="flex-1 overflow-y-auto overflow-x-hidden">
+        <div ref={messagesContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden">
           {messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full select-none gap-4">
               <div className="flex items-center gap-1.5">
@@ -1439,6 +2093,34 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
                   }}
                 />
               ))}
+
+              {/* Task Plan */}
+              {taskPlan && <TaskPlanCard plan={taskPlan} />}
+
+              {/* Active Workflow */}
+              {activeWorkflow && <WorkflowProgress workflow={activeWorkflow} />}
+
+              {/* Active Sub-agents */}
+              {activeSubAgents.length > 0 && (
+                <div className="mx-4 my-2 space-y-1.5">
+                  {activeSubAgents.map((agent) => (
+                    <SubAgentCard key={agent.agentId} agent={agent} />
+                  ))}
+                </div>
+              )}
+
+              {/* Context Compaction */}
+              {compactionState && <CompactionNotice active={compactionState.active} tokensBefore={compactionState.tokensBefore} />}
+
+              {/* AskHuman Dialog */}
+              {askHumanRequest && (
+                <AskHumanInline
+                  request={askHumanRequest}
+                  onSubmit={handleAskHumanSubmit}
+                  onSkip={handleAskHumanSkip}
+                />
+              )}
+
               <div ref={messagesEndRef} />
             </div>
           )}
@@ -1448,6 +2130,27 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
       {/* Input Area */}
       <div className="p-3 flex-shrink-0">
         <div className="rounded-lg border border-[var(--border-subtle)] bg-background overflow-hidden focus-within:border-muted-foreground/30 transition-colors">
+          {/* Image attachment preview */}
+          {imageAttachments.length > 0 && (
+            <div className="flex items-center gap-1.5 px-3 pt-2 flex-wrap">
+              {imageAttachments.map((img, i) => (
+                <div key={`${img.name}-${i}`} className="relative group">
+                  <img
+                    src={`data:${img.mediaType};base64,${img.data}`}
+                    alt={img.name}
+                    className="w-12 h-12 rounded-md object-cover border border-border/30"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setImageAttachments((prev) => prev.filter((_, j) => j !== i))}
+                    className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <X className="w-2.5 h-2.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           <textarea
             ref={textareaRef}
             data-ai-chat-input
@@ -1569,9 +2272,18 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
                 type="button"
                 title={t("ai.uploadImage")}
                 className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors"
+                onClick={() => fileInputRef.current?.click()}
               >
                 <Image className="w-3.5 h-3.5" />
               </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={handleImageUpload}
+              />
               {isStreaming ? (
                 <button
                   type="button"

@@ -10,7 +10,6 @@ import { CommandPalette, type PageRoute } from "./components/CommandPalette";
 import { PaneContainer } from "./components/PaneContainer";
 import { AIChatPanel } from "./components/AIChatPanel/AIChatPanel";
 import { SidecarNotifications } from "./components/Sidecar";
-import { TabBar } from "./components/TabBar";
 import { TerminalLayer } from "./components/Terminal";
 import { Skeleton } from "./components/ui/skeleton";
 import {
@@ -106,6 +105,11 @@ const SidecarPanel = lazy(() =>
     default: m.SidecarPanel,
   }))
 );
+const SecurityPanelView = lazy(() =>
+  import("./components/SecurityView/SecurityView").then((m) => ({
+    default: m.SecurityView,
+  }))
+);
 const ComponentTestbed = lazy(() =>
   import("./pages/ComponentTestbed").then((m) => ({
     default: m.ComponentTestbed,
@@ -143,6 +147,33 @@ import {
 import { useFileEditorSidebarStore } from "./store/file-editor-sidebar";
 import { useAppState } from "./store/selectors";
 
+function CenterSessionIndicator() {
+  const session = useStore((s) => {
+    if (!s.activeSessionId) return null;
+    return s.sessions[s.activeSessionId] ?? null;
+  });
+  const convTitle = useStore((s) => {
+    const convId = s.activeConversationId;
+    if (!convId) return null;
+    return s.conversations[convId]?.title ?? null;
+  });
+
+  if (!session) return null;
+
+  const dirName = session.workingDirectory?.split(/[/\\]/).pop() || "";
+  const displayName = convTitle || session.customName || session.processName || dirName || "Terminal";
+
+  return (
+    <div className="h-[34px] flex items-center px-3 gap-2 border-b border-border/20 flex-shrink-0 select-none">
+      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0" />
+      <span className="text-[11px] font-medium text-foreground/70 truncate">{displayName}</span>
+      {dirName && displayName !== dirName && (
+        <span className="text-[10px] text-foreground/40 truncate ml-auto font-mono">{dirName}</span>
+      )}
+    </div>
+  );
+}
+
 function App() {
   // Get store state using optimized selectors that only subscribe to needed data
   const { activeSessionId, focusedWorkingDirectory: workingDirectory, tabLayouts } = useAppState();
@@ -152,7 +183,7 @@ function App() {
   const setRenderMode = useStore((state) => state.setRenderMode);
   const openSettingsTab = useStore((state) => state.openSettingsTab);
   const openHomeTab = useStore((state) => state.openHomeTab);
-  const openSecurityTab = useStore((state) => state.openSecurityTab);
+  // Security is now an activity view, no longer a tab
 
   // Panel state from store (replaces local useState)
   const gitPanelOpen = useStore((state) => state.gitPanelOpen);
@@ -176,9 +207,8 @@ function App() {
     return () => { root.style.removeProperty("--ui-scale"); };
   }, [uiScale]);
 
-  const hasProject = useStore((s) => s.currentProjectName !== null);
   const isOnHomeTab = useStore((s) => s.homeTabId !== null && s.activeSessionId === s.homeTabId);
-  const hasSecurityTab = useStore((s) => Object.values(s.sessions).some((sess) => sess.tabType === "security"));
+  
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -193,10 +223,15 @@ function App() {
   const [rightPanelTabs, setRightPanelTabs] = useState<string[]>([]);
   const [rightActiveTab, setRightActiveTab] = useState<string | null>(null);
   const [showSplitDropZone, setShowSplitDropZone] = useState(false);
-  const [showMergeDropZone, setShowMergeDropZone] = useState(false);
+  const [, setShowMergeDropZone] = useState(false);
+  const [rightPanelWidth, setRightPanelWidth] = useState(() => {
+    const saved = localStorage.getItem("golish-right-panel-width");
+    return saved ? Number(saved) : 340;
+  });
+  const rightPanelWidthRef = useRef(rightPanelWidth);
+  useEffect(() => { rightPanelWidthRef.current = rightPanelWidth; }, [rightPanelWidth]);
   const [splitDragGhost, setSplitDragGhost] = useState<{ x: number; y: number; name: string } | null>(null);
   const splitDragRef = useRef<{ startX: number; startY: number; dragging: boolean; tabId: string | null }>({ startX: 0, startY: 0, dragging: false, tabId: null });
-  const splitTabId = rightActiveTab;
   const hasSplit = rightPanelTabs.length > 0;
 
   const closeRightTab = useCallback((tabId?: string) => {
@@ -212,6 +247,37 @@ function App() {
       return next;
     });
   }, [rightActiveTab]);
+
+  const handlePanelResizeStart = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = rightPanelWidthRef.current;
+    const panel = document.querySelector<HTMLElement>("[data-right-panel]");
+
+    document.documentElement.style.cursor = "col-resize";
+    document.documentElement.style.userSelect = "none";
+    if (panel) panel.style.transition = "none";
+
+    const onMove = (ev: PointerEvent) => {
+      const delta = startX - ev.clientX;
+      const w = Math.max(220, Math.min(600, startWidth + delta));
+      rightPanelWidthRef.current = w;
+      if (panel) panel.style.width = `${w}px`;
+    };
+
+    const onUp = () => {
+      document.documentElement.style.cursor = "";
+      document.documentElement.style.userSelect = "";
+      if (panel) panel.style.transition = "";
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      setRightPanelWidth(rightPanelWidthRef.current);
+      localStorage.setItem("golish-right-panel-width", String(rightPanelWidthRef.current));
+    };
+
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+  }, []);
 
   // Subscribe to file editor sidebar store to sync open state
   // This allows openFile() calls from anywhere to open the sidebar
@@ -621,9 +687,17 @@ function App() {
 
   // Allow child components (e.g. TargetPanel) to close the activity overlay
   useEffect(() => {
-    const handler = () => setActivityView(null);
-    window.addEventListener("close-activity-view", handler);
-    return () => window.removeEventListener("close-activity-view", handler);
+    const closeHandler = () => setActivityView(null);
+    const openHandler = (e: Event) => {
+      const view = (e as CustomEvent<ActivityView>).detail;
+      if (view) setActivityView(view);
+    };
+    window.addEventListener("close-activity-view", closeHandler);
+    window.addEventListener("open-activity-view", openHandler);
+    return () => {
+      window.removeEventListener("close-activity-view", closeHandler);
+      window.removeEventListener("open-activity-view", openHandler);
+    };
   }, []);
 
   // Handle native menu events from Tauri backend
@@ -658,8 +732,8 @@ function App() {
     handleSplitPane,
     handleClosePane,
     handleNavigatePane,
-    openBrowserTab: () => { setActivityView(null); openSecurityTab(); },
-    openSecurityTab: () => { setActivityView(null); openSecurityTab(); },
+    openBrowserTab: () => setActivityView((v) => v === "security" ? null : "security"),
+    openSecurityTab: () => setActivityView((v) => v === "security" ? null : "security"),
     toggleToolManager: () => setActivityView((v) => v === "toolManage" ? null : "toolManage"),
     toggleWiki: () => setActivityView((v) => v === "wiki" ? null : "wiki"),
     toggleBottomTerminal: () => {
@@ -891,10 +965,10 @@ function App() {
 
         {/* Content - floating panels */}
         <div className="flex-1 flex overflow-hidden gap-2 px-2 pb-2 min-h-0 relative">
-          {/* Activity Bar - animated hide when viewing the home tab */}
+          {/* Activity Bar - instant hide when viewing the home tab */}
           <div className={cn(
-            "flex-shrink-0 transition-all duration-300 ease-out overflow-hidden",
-            isOnHomeTab ? "w-0 opacity-0" : "w-[48px] opacity-100"
+            "flex-shrink-0 overflow-hidden",
+            isOnHomeTab ? "w-0" : "w-[48px]"
           )}>
             <ActivityBar
               activeView={activityView}
@@ -916,27 +990,26 @@ function App() {
                 setBottomTerminalOpen((v) => !v);
               }}
               onOpenSettings={() => setSettingsOpen(true)}
-              onOpenSecurity={() => { setActivityView(null); openSecurityTab(); }}
-              securityOpen={hasSecurityTab}
+              
             />
           </div>
 
           {/* Left panel - only shown for settings view */}
           <div className={cn(
-            "flex-shrink-0 h-full rounded-xl bg-card overflow-hidden panel-float transition-all duration-200 ease-out",
+            "flex-shrink-0 h-full rounded-xl bg-card overflow-hidden panel-float",
             activityView === "settings"
-              ? "w-[220px] opacity-100"
-              : "w-0 opacity-0 pointer-events-none -mr-2"
+              ? "w-[220px]"
+              : "w-0 pointer-events-none -mr-2"
           )}>
             {renderLeftPanel()}
           </div>
 
           {/* Settings view - overlays center+right area */}
           <div className={cn(
-            "absolute inset-0 left-[284px] flex transition-all duration-200 ease-out px-2 pb-2 pt-0",
+            "absolute inset-0 left-[284px] flex transition-opacity duration-150 ease-out px-2 pb-2 pt-0",
             activityView === "settings"
-              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
-              : "opacity-0 translate-y-1 pointer-events-none z-0",
+              ? "opacity-100 pointer-events-auto z-10"
+              : "opacity-0 pointer-events-none z-0",
           )}>
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
               <Suspense fallback={null}>
@@ -947,10 +1020,10 @@ function App() {
 
           {/* Tool Manager view - overlays entire center+right area */}
           <div className={cn(
-            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
+            "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
             activityView === "toolManage"
-              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
-              : "opacity-0 translate-y-1 pointer-events-none z-0",
+              ? "opacity-100 pointer-events-auto z-10"
+              : "opacity-0 pointer-events-none z-0",
           )}>
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
               <Suspense fallback={null}>
@@ -961,10 +1034,10 @@ function App() {
 
           {/* Wiki view - overlays entire center+right area */}
           <div className={cn(
-            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
+            "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
             activityView === "wiki"
-              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
-              : "opacity-0 translate-y-1 pointer-events-none z-0",
+              ? "opacity-100 pointer-events-auto z-10"
+              : "opacity-0 pointer-events-none z-0",
           )}>
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
               <Suspense fallback={null}>
@@ -975,10 +1048,10 @@ function App() {
 
           {/* Target view - overlays entire center+right area */}
           <div className={cn(
-            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
+            "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
             activityView === "targets"
-              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
-              : "opacity-0 translate-y-1 pointer-events-none z-0",
+              ? "opacity-100 pointer-events-auto z-10"
+              : "opacity-0 pointer-events-none z-0",
           )}>
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
               <Suspense fallback={null}>
@@ -989,10 +1062,10 @@ function App() {
 
           {/* Methodology view */}
           <div className={cn(
-            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
+            "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
             activityView === "methodology"
-              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
-              : "opacity-0 translate-y-1 pointer-events-none z-0",
+              ? "opacity-100 pointer-events-auto z-10"
+              : "opacity-0 pointer-events-none z-0",
           )}>
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float relative">
               <Suspense fallback={null}>
@@ -1003,10 +1076,10 @@ function App() {
 
           {/* Dashboard view */}
           <div className={cn(
-            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
+            "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
             activityView === "dashboard"
-              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
-              : "opacity-0 translate-y-1 pointer-events-none z-0",
+              ? "opacity-100 pointer-events-auto z-10"
+              : "opacity-0 pointer-events-none z-0",
           )}>
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
               <Suspense fallback={null}>
@@ -1017,10 +1090,10 @@ function App() {
 
           {/* Findings view */}
           <div className={cn(
-            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
+            "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
             activityView === "findings"
-              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
-              : "opacity-0 translate-y-1 pointer-events-none z-0",
+              ? "opacity-100 pointer-events-auto z-10"
+              : "opacity-0 pointer-events-none z-0",
           )}>
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
               <Suspense fallback={null}>
@@ -1031,10 +1104,10 @@ function App() {
 
           {/* Pipelines view */}
           <div className={cn(
-            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
+            "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
             activityView === "pipelines"
-              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
-              : "opacity-0 translate-y-1 pointer-events-none z-0",
+              ? "opacity-100 pointer-events-auto z-10"
+              : "opacity-0 pointer-events-none z-0",
           )}>
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
               <Suspense fallback={null}>
@@ -1045,10 +1118,10 @@ function App() {
 
           {/* Audit log view */}
           <div className={cn(
-            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
+            "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
             activityView === "auditLog"
-              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
-              : "opacity-0 translate-y-1 pointer-events-none z-0",
+              ? "opacity-100 pointer-events-auto z-10"
+              : "opacity-0 pointer-events-none z-0",
           )}>
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
               <Suspense fallback={null}>
@@ -1059,10 +1132,10 @@ function App() {
 
           {/* Wordlists view */}
           <div className={cn(
-            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
+            "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
             activityView === "wordlists"
-              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
-              : "opacity-0 translate-y-1 pointer-events-none z-0",
+              ? "opacity-100 pointer-events-auto z-10"
+              : "opacity-0 pointer-events-none z-0",
           )}>
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
               <Suspense fallback={null}>
@@ -1073,10 +1146,10 @@ function App() {
 
           {/* Vuln intel view */}
           <div className={cn(
-            "absolute inset-0 left-[64px] flex transition-all duration-200 ease-out pr-2 pb-2 pt-0",
+            "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
             activityView === "vulnIntel"
-              ? "opacity-100 translate-y-0 pointer-events-auto z-10"
-              : "opacity-0 translate-y-1 pointer-events-none z-0",
+              ? "opacity-100 pointer-events-auto z-10"
+              : "opacity-0 pointer-events-none z-0",
           )}>
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
               <Suspense fallback={null}>
@@ -1085,26 +1158,38 @@ function App() {
             </div>
           </div>
 
+          {/* Security view */}
+          <div className={cn(
+            "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
+            activityView === "security"
+              ? "opacity-100 pointer-events-auto z-10"
+              : "opacity-0 pointer-events-none z-0",
+          )}>
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
+              <Suspense fallback={null}>
+                <SecurityPanelView />
+              </Suspense>
+            </div>
+          </div>
+
           {/* Normal view - center + right panels */}
           <div className={cn(
-            "flex-1 flex gap-2 min-w-0 transition-all duration-200 ease-out",
-            (activityView === "settings" || activityView === "toolManage" || activityView === "wiki" || activityView === "targets" || activityView === "methodology" || activityView === "dashboard" || activityView === "findings" || activityView === "pipelines" || activityView === "auditLog" || activityView === "wordlists" || activityView === "vulnIntel")
-              ? "opacity-0 scale-[0.98] pointer-events-none"
-              : "opacity-100 scale-100 pointer-events-auto",
+            "flex-1 flex gap-1 min-w-0 transition-opacity duration-150 ease-out",
+            (activityView === "settings" || activityView === "toolManage" || activityView === "wiki" || activityView === "targets" || activityView === "methodology" || activityView === "dashboard" || activityView === "findings" || activityView === "pipelines" || activityView === "auditLog" || activityView === "wordlists" || activityView === "vulnIntel" || activityView === "security")
+              ? "opacity-0 pointer-events-none"
+              : "opacity-100 pointer-events-auto",
           )}>
             {/* Center - TabBar + Pane content (with optional split) */}
-            <div className={cn("flex-1 min-w-0 flex gap-2 overflow-hidden relative transition-all duration-300 ease-out", hasSplit ? "flex-row" : "flex-col")}>
+            <div className={cn("flex-1 min-w-0 flex gap-2 overflow-hidden relative", hasSplit ? "flex-row" : "flex-col")}>
               {/* Left column (or full width when no split) */}
               <div className={cn(
-                "flex flex-col overflow-hidden rounded-xl bg-card panel-float relative transition-all duration-300 ease-out",
+                "flex flex-col overflow-hidden rounded-xl bg-card panel-float relative",
                 hasSplit ? "flex-1 min-w-0" : "flex-1",
               )}>
-                <div className={cn(
-                  "transition-all duration-300 ease-out overflow-hidden",
-                  isOnHomeTab ? "max-h-0 opacity-0" : "max-h-[34px] opacity-100"
-                )}>
-                  <TabBar excludeTabIds={rightPanelTabs} showDropHint={showMergeDropZone} />
-                </div>
+                {/* 1:1 model: minimal session indicator instead of TabBar */}
+                {!isOnHomeTab && (
+                  <CenterSessionIndicator />
+                )}
 
                 <div className="flex-1 min-h-0 min-w-0 flex overflow-hidden">
                   <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden relative">
@@ -1242,11 +1327,25 @@ function App() {
               )}
             </div>
 
+            {/* Resize handle between center and right panels */}
+            {!isOnHomeTab && (
+              <div className="flex-shrink-0 w-0 relative z-10">
+                <div
+                  className="absolute inset-y-3 -left-1 w-2 cursor-col-resize hover:bg-accent/20 active:bg-accent/40 transition-colors rounded-full"
+                  onPointerDown={handlePanelResizeStart}
+                />
+              </div>
+            )}
+
             {/* Right sidebar - AI Chat Panel (animated hide on home tab) */}
-            <div className={cn(
-              "flex-shrink-0 h-full rounded-xl bg-card overflow-hidden panel-float transition-all duration-300 ease-out",
-              isOnHomeTab ? "w-0 opacity-0" : "w-[340px] opacity-100"
-            )}>
+            <div
+              data-right-panel
+              className={cn(
+                "flex-shrink-0 h-full rounded-xl bg-card overflow-hidden panel-float",
+                isOnHomeTab && "w-0"
+              )}
+              style={isOnHomeTab ? undefined : { width: rightPanelWidth }}
+            >
               <AIChatPanel />
             </div>
           </div>
@@ -1275,8 +1374,8 @@ function App() {
           onSplitPaneDown={() => handleSplitPane("horizontal")}
           onClosePane={handleClosePane}
           onOpenQuickOpen={() => setQuickOpenDialogOpen(true)}
-          onOpenBrowser={() => { setActivityView(null); openSecurityTab(); }}
-          onOpenSecurity={() => { setActivityView(null); openSecurityTab(); }}
+          onOpenBrowser={() => setActivityView((v) => v === "security" ? null : "security")}
+          onOpenSecurity={() => setActivityView((v) => v === "security" ? null : "security")}
           onToggleToolManager={() => setActivityView((v) => v === "toolManage" ? null : "toolManage")}
           onToggleWiki={() => setActivityView((v) => v === "wiki" ? null : "wiki")}
           onToggleBottomTerminal={() => {

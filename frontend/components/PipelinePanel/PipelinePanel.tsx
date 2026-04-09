@@ -1,13 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  ArrowRight, ChevronDown, GitBranch, Loader2, Play, Plus, Save, Trash2, X,
+  ArrowRight, GitBranch, Loader2, Play, Plus, Save, Trash2, X,
+  Shield, Globe, Server, Cpu, Wrench,
+  AlertTriangle, CheckCircle2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
 import { getProjectPath } from "@/lib/projects";
 import { scanTools, type ToolConfig } from "@/lib/pentest/api";
 import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
+import { checkReconTools, type ReconToolCheck } from "@/lib/ai";
 
 type ExecMode = "pipe" | "sequential" | "parallel" | "on_success" | "on_failure";
 const EXEC_LABELS: Record<ExecMode, { label: string; op: string; color: string }> = {
@@ -18,12 +21,23 @@ const EXEC_LABELS: Record<ExecMode, { label: string; op: string; color: string }
   on_failure: { label: "||", op: " || ", color: "text-red-400" },
 };
 
+const STEP_TYPE_META: Record<string, { icon: typeof Shield; color: string; label: string }> = {
+  dns_lookup: { icon: Globe, color: "text-blue-400", label: "DNS Lookup" },
+  subdomain_enum: { icon: Globe, color: "text-cyan-400", label: "Subdomain Enum" },
+  http_probe: { icon: Globe, color: "text-green-400", label: "HTTP Probe" },
+  port_scan: { icon: Server, color: "text-red-400", label: "Port Scan" },
+  tech_fingerprint: { icon: Cpu, color: "text-purple-400", label: "Tech Fingerprint" },
+  shell_command: { icon: Wrench, color: "text-muted-foreground", label: "Shell" },
+};
+
 interface PipelineStep {
   id: string;
+  step_type: string;
   tool_name: string;
   tool_id: string;
   command_template: string;
   args: string[];
+  params: Record<string, unknown>;
   input_from: string | null;
   exec_mode: ExecMode;
   x: number;
@@ -39,6 +53,8 @@ interface Pipeline {
   id: string;
   name: string;
   description: string;
+  is_template: boolean;
+  workflow_id?: string;
   steps: PipelineStep[];
   connections: PipelineConnection[];
   created_at: number;
@@ -59,6 +75,9 @@ export function PipelinePanel() {
   const [loading, setLoading] = useState(true);
   const [dirty, setDirty] = useState(false);
   const [showToolPicker, setShowToolPicker] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [toolCheck, setToolCheck] = useState<ReconToolCheck | null>(null);
+  const [checkingTools, setCheckingTools] = useState(false);
   const canvasRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
@@ -70,7 +89,7 @@ export function PipelinePanel() {
       ]);
       setPipelines(pipelineList);
       setTools((toolList.tools || []).filter((t) =>
-        t.ui === "cli" && t.installed && t.output && t.output.produces.length > 0
+        t.ui === "cli" && t.installed
       ));
     } catch { /* ignore */ }
     setLoading(false);
@@ -78,11 +97,24 @@ export function PipelinePanel() {
 
   useEffect(() => { load(); }, [load, currentProjectPath]);
 
+  useEffect(() => {
+    if (active?.workflow_id === "recon_basic") {
+      setCheckingTools(true);
+      checkReconTools()
+        .then(setToolCheck)
+        .catch(() => setToolCheck(null))
+        .finally(() => setCheckingTools(false));
+    } else {
+      setToolCheck(null);
+    }
+  }, [active?.id, active?.workflow_id]);
+
   const handleNew = useCallback(() => {
     setActive({
       id: "",
       name: "New Pipeline",
       description: "",
+      is_template: false,
       steps: [],
       connections: [],
       created_at: 0,
@@ -106,17 +138,19 @@ export function PipelinePanel() {
     await invoke("pipeline_delete", { id, projectPath: getProjectPath() });
     if (active?.id === id) setActive(null);
     load();
-  }, [active, load]);
+  }, [active, load, pipelines]);
 
   const addStep = useCallback((tool: ToolWithMeta) => {
     if (!active) return;
     const stepCount = active.steps.length;
     const newStep: PipelineStep = {
       id: uuid(),
+      step_type: "shell_command",
       tool_name: tool.name,
       tool_id: tool.id,
       command_template: tool.executable || tool.name,
       args: [],
+      params: {},
       input_from: null,
       exec_mode: "pipe",
       x: 40 + stepCount * 220,
@@ -167,28 +201,43 @@ export function PipelinePanel() {
   const { createTerminalTab } = useCreateTerminalTab();
 
   const handleRun = useCallback(async () => {
-    if (!active || active.steps.length === 0) return;
+    if (!active || active.steps.length === 0 || running) return;
+    if (toolCheck && !toolCheck.all_ready) return;
 
-    let chainedCommand = "";
-    active.steps.forEach((step, idx) => {
-      const args = step.args.length > 0 ? ` ${step.args.join(" ")}` : "";
-      const cmd = `${step.command_template}${args}`;
-      if (idx === 0) {
-        chainedCommand = cmd;
-      } else {
-        const mode = step.exec_mode || "pipe";
-        chainedCommand += EXEC_LABELS[mode].op + cmd;
+    const store = useStore.getState();
+    const targets = store.targets?.map((t: { value: string }) => t.value) || [];
+    const targetStr = targets[0] || "";
+
+    setRunning(true);
+    try {
+      let chainedCommand = "";
+      active.steps.forEach((step, idx) => {
+        const args = step.args.length > 0 ? ` ${step.args.join(" ")}` : "";
+        let cmd = `${step.command_template}${args}`;
+        cmd = cmd.replaceAll("{target}", targetStr);
+
+        if (idx === 0 || !chainedCommand) {
+          chainedCommand = cmd;
+        } else {
+          const mode = step.exec_mode || "sequential";
+          chainedCommand += EXEC_LABELS[mode as ExecMode]?.op ?? " && ";
+          chainedCommand += cmd;
+        }
+      });
+
+      if (!chainedCommand) return;
+
+      const sessionId = await createTerminalTab();
+      if (sessionId) {
+        store.setActiveSession(sessionId);
+        setTimeout(async () => {
+          await invoke("terminal_write", { sessionId, data: chainedCommand + "\n" }).catch(() => {});
+        }, 300);
       }
-    });
-
-    const sessionId = await createTerminalTab();
-    if (sessionId) {
-      useStore.getState().setActiveSession(sessionId);
-      setTimeout(async () => {
-        await invoke("terminal_write", { sessionId, data: chainedCommand + "\n" }).catch(() => {});
-      }, 300);
+    } finally {
+      setRunning(false);
     }
-  }, [active, createTerminalTab]);
+  }, [active, createTerminalTab, running, toolCheck]);
 
   if (loading) {
     return (
@@ -198,12 +247,16 @@ export function PipelinePanel() {
     );
   }
 
+  const isReconBasic = active?.workflow_id === "recon_basic";
+  const hasMissingTools = isReconBasic && toolCheck !== null && !toolCheck.all_ready;
+  const runDisabled = !active || active.steps.length === 0 || running || hasMissingTools || checkingTools;
+
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Header */}
       <div className="flex-shrink-0 px-4 py-3 border-b border-border/30 flex items-center gap-3">
         <GitBranch className="w-4 h-4 text-accent" />
-        <h2 className="text-sm font-semibold flex-1">Tool Pipelines</h2>
+        <h2 className="text-sm font-semibold flex-1">Pipelines</h2>
         <button
           onClick={handleNew}
           className="flex items-center gap-1 px-2 py-1 text-[10px] rounded-md bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
@@ -219,7 +272,7 @@ export function PipelinePanel() {
           {pipelines.length === 0 && !active ? (
             <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground/30 px-4 text-center">
               <GitBranch className="w-6 h-6" />
-              <p className="text-[10px]">No pipelines yet. Create one to chain tools together.</p>
+              <p className="text-[10px]">No pipelines yet.</p>
             </div>
           ) : (
             <div className="py-1">
@@ -234,7 +287,11 @@ export function PipelinePanel() {
                       : "text-muted-foreground/60 hover:bg-muted/10 hover:text-foreground"
                   )}
                 >
-                  <GitBranch className="w-3 h-3 flex-shrink-0" />
+                  {p.workflow_id ? (
+                    <Shield className="w-3 h-3 flex-shrink-0 text-emerald-400" />
+                  ) : (
+                    <GitBranch className="w-3 h-3 flex-shrink-0" />
+                  )}
                   <span className="flex-1 truncate">{p.name}</span>
                   <span className="text-[9px] text-muted-foreground/30">{p.steps.length}</span>
                   <button
@@ -261,6 +318,11 @@ export function PipelinePanel() {
                   className="text-sm font-medium bg-transparent outline-none flex-1 text-foreground"
                   placeholder="Pipeline name"
                 />
+                {isReconBasic && (
+                  <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 flex-shrink-0">
+                    Recon
+                  </span>
+                )}
                 <button
                   onClick={() => setShowToolPicker(!showToolPicker)}
                   className="flex items-center gap-1 px-2 py-1 text-[10px] rounded-md border border-border/20 text-muted-foreground/50 hover:text-foreground hover:border-border/40 transition-colors"
@@ -270,16 +332,25 @@ export function PipelinePanel() {
                 </button>
                 <button
                   onClick={handleRun}
-                  disabled={active.steps.length === 0}
+                  disabled={runDisabled}
+                  title={hasMissingTools ? `Missing tools: ${toolCheck!.missing.join(", ")}` : undefined}
                   className={cn(
                     "flex items-center gap-1 px-2 py-1 text-[10px] rounded-md transition-colors",
-                    active.steps.length > 0
+                    !runDisabled
                       ? "bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25"
                       : "bg-muted/10 text-muted-foreground/30 cursor-not-allowed"
                   )}
                 >
-                  <Play className="w-3 h-3" />
-                  Run
+                  {running ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : checkingTools ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : hasMissingTools ? (
+                    <AlertTriangle className="w-3 h-3 text-amber-400" />
+                  ) : (
+                    <Play className="w-3 h-3" />
+                  )}
+                  {checkingTools ? "Checking..." : hasMissingTools ? "Tools Missing" : "Run"}
                 </button>
                 <button
                   onClick={handleSave}
@@ -295,6 +366,64 @@ export function PipelinePanel() {
                   Save
                 </button>
               </div>
+
+              {/* Description */}
+              {active.description && (
+                <div className="flex-shrink-0 px-4 py-1.5 border-b border-border/10 text-[10px] text-muted-foreground/50">
+                  {active.description}
+                </div>
+              )}
+
+              {/* Tool status for recon_basic */}
+              {isReconBasic && toolCheck && (
+                <div className={cn(
+                  "flex-shrink-0 px-4 py-2.5 border-b flex flex-col gap-2",
+                  toolCheck.all_ready
+                    ? "border-emerald-500/10 bg-emerald-500/5"
+                    : "border-amber-500/15 bg-amber-500/5"
+                )}>
+                  <div className="flex items-center gap-2">
+                    {toolCheck.all_ready ? (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                    ) : (
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                    )}
+                    <span className={cn(
+                      "text-[11px] font-medium",
+                      toolCheck.all_ready ? "text-emerald-400" : "text-amber-400"
+                    )}>
+                      {toolCheck.all_ready
+                        ? "All tools ready"
+                        : `${toolCheck.missing.length} tool${toolCheck.missing.length > 1 ? "s" : ""} missing`}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {toolCheck.tools.map((t) => (
+                      <span
+                        key={t.name}
+                        className={cn(
+                          "inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded-md border",
+                          t.installed
+                            ? "border-emerald-500/15 bg-emerald-500/5 text-emerald-400"
+                            : "border-amber-500/20 bg-amber-500/5 text-amber-400"
+                        )}
+                      >
+                        {t.installed ? (
+                          <CheckCircle2 className="w-2.5 h-2.5" />
+                        ) : (
+                          <AlertTriangle className="w-2.5 h-2.5" />
+                        )}
+                        {t.name}
+                      </span>
+                    ))}
+                  </div>
+                  {!toolCheck.all_ready && (
+                    <p className="text-[10px] text-amber-400/70">
+                      Install missing tools in the Tool Manager before running this pipeline.
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* Tool picker dropdown */}
               {showToolPicker && (
@@ -325,8 +454,11 @@ export function PipelinePanel() {
                   <div className="flex items-start gap-3 min-w-max">
                     {active.steps.map((step, idx) => {
                       const hasConnection = idx > 0;
-                      const mode = step.exec_mode || "pipe";
-                      const modeInfo = EXEC_LABELS[mode];
+                      const mode = step.exec_mode || "sequential";
+                      const modeInfo = EXEC_LABELS[mode as ExecMode] || EXEC_LABELS.sequential;
+                      const meta = STEP_TYPE_META[step.step_type] || STEP_TYPE_META.shell_command;
+                      const StepIcon = meta.icon;
+
                       return (
                         <div key={step.id} className="flex items-center gap-1">
                           {hasConnection && (
@@ -334,17 +466,29 @@ export function PipelinePanel() {
                               onClick={() => cycleExecMode(step.id)}
                               title={`Click to cycle: ${Object.keys(EXEC_LABELS).join(" → ")}`}
                               className={cn(
-                                "flex flex-col items-center gap-0.5 px-2 py-1 rounded-md hover:bg-muted/20 transition-colors cursor-pointer",
+                                "flex flex-col items-center gap-0.5 px-2 py-1 rounded-md transition-colors hover:bg-muted/20 cursor-pointer",
                                 modeInfo.color,
                               )}
                             >
-                              <span className="text-[10px] font-mono font-bold">{modeInfo.label}</span>
                               <ArrowRight className="w-4 h-4" />
                             </button>
                           )}
                           <div className="w-[200px] rounded-lg border border-border/20 bg-card overflow-hidden group">
                             <div className="flex items-center gap-2 px-3 py-2 border-b border-border/15 bg-muted/10">
-                              <span className="text-[11px] font-medium flex-1 truncate">{step.tool_name}</span>
+                              <StepIcon className={cn("w-3.5 h-3.5", meta.color)} />
+                              <input
+                                value={step.tool_name}
+                                onChange={(e) => {
+                                  setActive({
+                                    ...active,
+                                    steps: active.steps.map((s) =>
+                                      s.id === step.id ? { ...s, tool_name: e.target.value } : s
+                                    ),
+                                  });
+                                  setDirty(true);
+                                }}
+                                className="text-[11px] font-medium flex-1 truncate bg-transparent outline-none text-foreground"
+                              />
                               <button
                                 onClick={() => removeStep(step.id)}
                                 className="p-0.5 text-muted-foreground/30 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
@@ -357,10 +501,12 @@ export function PipelinePanel() {
                               <input
                                 value={step.command_template}
                                 onChange={(e) => {
-                                  const steps = active.steps.map((s) =>
-                                    s.id === step.id ? { ...s, command_template: e.target.value } : s
-                                  );
-                                  setActive({ ...active, steps });
+                                  setActive({
+                                    ...active,
+                                    steps: active.steps.map((s) =>
+                                      s.id === step.id ? { ...s, command_template: e.target.value } : s
+                                    ),
+                                  });
                                   setDirty(true);
                                 }}
                                 className="w-full px-1.5 py-1 text-[10px] font-mono rounded bg-muted/10 border border-border/10 text-foreground outline-none"
@@ -370,13 +516,15 @@ export function PipelinePanel() {
                                 value={step.args.join(" ")}
                                 onChange={(e) => {
                                   const args = e.target.value.split(/\s+/).filter(Boolean);
-                                  const steps = active.steps.map((s) =>
-                                    s.id === step.id ? { ...s, args } : s
-                                  );
-                                  setActive({ ...active, steps });
+                                  setActive({
+                                    ...active,
+                                    steps: active.steps.map((s) =>
+                                      s.id === step.id ? { ...s, args } : s
+                                    ),
+                                  });
                                   setDirty(true);
                                 }}
-                                placeholder="e.g. -d example.com -silent"
+                                placeholder="e.g. -d {target} -silent"
                                 className="w-full px-1.5 py-1 text-[10px] font-mono rounded bg-muted/10 border border-border/10 text-foreground placeholder:text-muted-foreground/20 outline-none"
                               />
                             </div>
@@ -392,7 +540,7 @@ export function PipelinePanel() {
             <div className="flex-1 flex flex-col items-center justify-center gap-3 text-muted-foreground/30">
               <GitBranch className="w-10 h-10" />
               <p className="text-sm">Select or create a pipeline</p>
-              <p className="text-[10px]">Chain tools together to automate reconnaissance workflows</p>
+              <p className="text-[10px]">Chain tools together or run built-in reconnaissance workflows</p>
             </div>
           )}
         </div>

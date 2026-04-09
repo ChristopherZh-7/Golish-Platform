@@ -389,6 +389,21 @@ export type AiEvent = AiEventBase &
         type: "warning";
         message: string;
       }
+    // Human-in-the-loop interaction events
+    | {
+        type: "ask_human_request";
+        request_id: string;
+        question: string;
+        input_type: string;
+        options: string[];
+        context: string;
+      }
+    | {
+        type: "ask_human_response";
+        request_id: string;
+        response: string;
+        skipped: boolean;
+      }
   );
 
 export interface ToolDefinition {
@@ -652,6 +667,124 @@ export async function getSessionAiConfig(sessionId: string): Promise<SessionAiCo
  */
 export async function sendPromptSession(sessionId: string, prompt: string): Promise<string> {
   return invoke("send_ai_prompt_session", { sessionId, prompt });
+}
+
+/**
+ * Start a named workflow and return its session ID.
+ */
+export async function startWorkflow(
+  workflowName: string,
+  input: Record<string, unknown>
+): Promise<{ session_id: string; workflow_name: string }> {
+  return invoke("start_workflow", { workflowName, input });
+}
+
+/**
+ * Run a workflow to completion (blocking until done).
+ */
+export async function runWorkflowToCompletion(
+  sessionId: string
+): Promise<string> {
+  return invoke("run_workflow_to_completion", { sessionId });
+}
+
+/**
+ * Run the recon_basic pipeline directly (no AI bridge required).
+ * Pass sessionId to route workflow progress events to the correct tab.
+ */
+export async function runReconPipeline(
+  targets: string[],
+  projectName: string,
+  projectPath: string,
+  sessionId?: string
+): Promise<string> {
+  return invoke("run_recon_pipeline", {
+    targets,
+    projectName,
+    projectPath,
+    sessionId: sessionId ?? null,
+  });
+}
+
+export interface ToolStatus {
+  name: string;
+  installed: boolean;
+}
+
+export interface ReconToolCheck {
+  tools: ToolStatus[];
+  all_ready: boolean;
+  missing: string[];
+}
+
+export async function checkReconTools(): Promise<ReconToolCheck> {
+  return invoke("check_recon_tools_cmd");
+}
+
+/**
+ * Trigger automatic reconnaissance for a set of targets.
+ *
+ * Phase 1: Runs the `recon_basic` pipeline (DNS, HTTP, ports, tech fingerprint).
+ * The pipeline writes results directly to the targets table.
+ *
+ * Phase 2: If an AI session is available, sends the summary for analysis.
+ * If AI isn't ready yet, the data is already in the DB — no loss.
+ *
+ * @param sessionId - The terminal session ID (for AI follow-up, can be empty)
+ * @param targets - Array of target values (domains, IPs, URLs)
+ * @param projectName - Name of the project for context
+ * @param projectPath - Project root path
+ */
+export async function triggerAutoRecon(
+  sessionId: string,
+  targets: string[],
+  projectName: string,
+  projectPath: string = ""
+): Promise<string> {
+  const summary = await runReconPipeline(targets, projectName, projectPath, sessionId || undefined);
+  console.log(`[recon] Pipeline complete for "${projectName}". Summary:\n`, summary);
+
+  try {
+    const { useStore } = await import("@/store");
+    const store = useStore.getState();
+    const activeConvId = store.activeConversationId;
+    if (activeConvId) {
+      const ts = Date.now();
+      store.addConversationMessage(activeConvId, {
+        id: `recon-summary-${ts}`,
+        role: "assistant" as const,
+        content: `**Recon Complete** — Project "${projectName}"\n\n${summary}`,
+        timestamp: ts,
+      });
+
+      if (sessionId) {
+        try {
+          const aiReady = await isAiSessionInitialized(sessionId);
+          if (aiReady) {
+            const analysisPrompt =
+              `Here are the reconnaissance results for project "${projectName}":\n\n` +
+              `${summary}\n\n` +
+              `Please analyze these findings, highlight any security concerns, and suggest concrete next steps for further investigation.`;
+            store.addConversationMessage(activeConvId, {
+              id: `recon-prompt-${ts}`,
+              role: "user" as const,
+              content: "Please analyze the findings and suggest next steps.",
+              timestamp: ts + 1,
+            });
+            await sendPromptSession(sessionId, analysisPrompt);
+          } else {
+            console.log("[recon] AI session not initialized yet, skipping auto-analysis");
+          }
+        } catch (e) {
+          console.warn("[recon] Failed to send recon summary to AI for analysis:", e);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("[recon] Failed to inject recon results into chat:", e);
+  }
+
+  return summary;
 }
 
 /**
@@ -1814,4 +1947,76 @@ export async function generateCommitMessage(
     diff,
     fileSummary,
   });
+}
+
+// =============================================================================
+// Analytics / DB commands
+// =============================================================================
+
+export interface ToolCallStats {
+  name: string;
+  total_count: number;
+  total_duration_ms: number;
+  avg_duration_ms: number;
+}
+
+export interface DbTokenUsageStats {
+  total_tokens_in: number;
+  total_tokens_out: number;
+  total_cost_in: number;
+  total_cost_out: number;
+}
+
+export interface AuditEntry {
+  id: number;
+  action: string;
+  category: string;
+  details: string;
+  entity_type: string | null;
+  entity_id: string | null;
+  project_path: string | null;
+  created_at: string;
+}
+
+export interface MemoryEntry {
+  id: string;
+  content: string;
+  mem_type: string;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export async function getToolCallStats(
+  sessionId?: string
+): Promise<ToolCallStats[]> {
+  return invoke("get_tool_call_stats", { sessionId });
+}
+
+export async function getDbTokenUsageStats(): Promise<DbTokenUsageStats> {
+  return invoke("get_db_token_usage_stats", {});
+}
+
+export async function getAuditLog(
+  projectPath?: string,
+  category?: string,
+  limit?: number
+): Promise<AuditEntry[]> {
+  return invoke("get_audit_log", { projectPath, category, limit });
+}
+
+export async function searchMemories(
+  query: string,
+  limit?: number
+): Promise<MemoryEntry[]> {
+  return invoke("search_memories", { query, limit });
+}
+
+export async function listRecentMemories(
+  limit?: number
+): Promise<MemoryEntry[]> {
+  return invoke("list_recent_memories", { limit });
+}
+
+export async function getMemoryCount(): Promise<number> {
+  return invoke("get_memory_count", {});
 }

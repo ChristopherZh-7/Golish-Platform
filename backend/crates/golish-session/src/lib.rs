@@ -2,8 +2,11 @@
 //!
 //! This module provides session archiving, conversation logs, and transcript export
 //! capabilities by integrating with golish-core's session module.
+//!
+//! Supports dual persistence: file-based (via golish-core) and PostgreSQL (via golish-db).
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -16,6 +19,8 @@ use golish_core::session::{
     find_session_by_identifier, list_recent_sessions as list_sessions_internal, MessageRole,
     SessionArchive, SessionArchiveMetadata, SessionMessage,
 };
+
+pub mod db;
 
 /// Role of a message in the conversation (simplified for Qbit).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -206,6 +211,8 @@ pub struct QbitSessionManager {
     sidecar_session_id: Option<String>,
     /// Agent mode used in this session ("default", "auto-approve", "planning")
     agent_mode: Option<String>,
+    /// Optional PostgreSQL persistence handle for dual-write
+    db_handle: Option<db::DbSessionHandle>,
 }
 
 impl QbitSessionManager {
@@ -248,7 +255,16 @@ impl QbitSessionManager {
             transcript: Vec::new(),
             sidecar_session_id: None,
             agent_mode: None,
+            db_handle: None,
         })
+    }
+
+    /// Set the database pool for dual-write persistence.
+    pub fn set_db_pool(&mut self, pool: Arc<sqlx::PgPool>) {
+        self.db_handle = Some(db::DbSessionHandle {
+            pool,
+            session_uuid: uuid::Uuid::new_v4(),
+        });
     }
 
     /// Update the workspace path and label.
@@ -369,6 +385,18 @@ impl QbitSessionManager {
             }
         }
 
+        // Dual-write to PostgreSQL if configured
+        if let Some(ref handle) = self.db_handle {
+            let snapshot = self.build_snapshot();
+            let pool = handle.pool.clone();
+            let uuid = handle.session_uuid;
+            tokio::spawn(async move {
+                if let Err(e) = db::save_session_to_db(&pool, &snapshot, &uuid).await {
+                    tracing::warn!("Failed to save session to DB: {}", e);
+                }
+            });
+        }
+
         Ok(path)
     }
 
@@ -419,7 +447,38 @@ impl QbitSessionManager {
             }
         }
 
+        // Dual-write to PostgreSQL if configured (finalize = mark completed)
+        if let Some(ref handle) = self.db_handle {
+            let snapshot = self.build_snapshot();
+            let pool = handle.pool.clone();
+            let uuid = handle.session_uuid;
+            tokio::spawn(async move {
+                if let Err(e) = db::finalize_session_in_db(&pool, &snapshot, &uuid).await {
+                    tracing::warn!("Failed to finalize session in DB: {}", e);
+                }
+            });
+        }
+
         Ok(path)
+    }
+
+    /// Build a QbitSessionSnapshot from current state (for DB persistence).
+    fn build_snapshot(&self) -> QbitSessionSnapshot {
+        QbitSessionSnapshot {
+            workspace_label: self.workspace_label.clone(),
+            workspace_path: self.workspace_path.display().to_string(),
+            model: self.model.clone(),
+            provider: self.provider.clone(),
+            started_at: Utc::now(),
+            ended_at: Utc::now(),
+            total_messages: self.messages.len(),
+            distinct_tools: self.tools_used.iter().cloned().collect(),
+            transcript: self.transcript.clone(),
+            messages: self.messages.clone(),
+            sidecar_session_id: self.sidecar_session_id.clone(),
+            total_tokens: None,
+            agent_mode: self.agent_mode.clone(),
+        }
     }
 
     /// Get the current message count.

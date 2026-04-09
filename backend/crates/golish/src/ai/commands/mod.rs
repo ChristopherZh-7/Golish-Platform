@@ -11,6 +11,7 @@ use super::agent_bridge::AgentBridge;
 use crate::state::AppState;
 use golish_core::runtime::QbitRuntime;
 
+pub mod analytics;
 pub mod commit_writer;
 pub mod config;
 pub mod context;
@@ -26,6 +27,7 @@ pub mod summarizer;
 pub mod workflow;
 
 // Re-export all commands for easier access
+pub use analytics::*;
 pub use commit_writer::*;
 pub use config::*;
 pub use context::*;
@@ -189,6 +191,7 @@ pub async fn configure_bridge(bridge: &mut AgentBridge, state: &AppState, _sessi
     }
     bridge.set_sidecar_state(sidecar_state);
     bridge.set_settings_manager(state.settings_manager.clone());
+    bridge.set_db_pool(state.db_pool.clone());
     let settings = state.settings_manager.get().await;
 
     // Find matching codebase and get memory file
@@ -228,6 +231,19 @@ pub async fn configure_bridge(bridge: &mut AgentBridge, state: &AppState, _sessi
         let mut registry = bridge.tool_registry().write().await;
         for tool in pentest_tools {
             tracing::info!("[pentest-ai] Registered tool: {}", tool.name());
+            registry.register_tool(tool);
+        }
+    }
+
+    // Register pentest bridge tools (targets, findings, vault) so the AI agent
+    // can record recon data and vulnerability findings directly into the database.
+    {
+        let bridge_tools = crate::tools::pentest_bridge::create_pentest_bridge_tools(
+            state.db_pool.clone(),
+        );
+        let mut registry = bridge.tool_registry().write().await;
+        for tool in bridge_tools {
+            tracing::info!("[pentest-bridge] Registered tool: {}", tool.name());
             registry.register_tool(tool);
         }
     }

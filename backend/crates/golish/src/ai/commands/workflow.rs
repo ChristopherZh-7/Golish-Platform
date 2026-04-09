@@ -939,3 +939,219 @@ pub async fn cancel_workflow(state: State<'_, AppState>, session_id: String) -> 
 
     Ok(())
 }
+
+/// Run the recon_basic pipeline without requiring AI initialization.
+///
+/// Runs DNS, HTTP, port scan, and tech fingerprinting, then writes
+/// results directly to the targets table. Emits step events for UI.
+#[tauri::command]
+pub async fn run_recon_pipeline(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    targets: Vec<String>,
+    project_name: String,
+    project_path: String,
+    session_id: Option<String>,
+) -> Result<String, String> {
+    use crate::tools::targets::{db_target_list, db_target_update_recon, db_target_update_status};
+    use golish_workflow::ReconState;
+    use tauri::Emitter;
+
+    #[derive(serde::Serialize)]
+    struct RoutedEvent<'a> {
+        session_id: &'a str,
+        #[serde(flatten)]
+        event: &'a AiEvent,
+    }
+
+    let emit_session_id = session_id.unwrap_or_default();
+    let emit = |event: &AiEvent| {
+        if !emit_session_id.is_empty() {
+            let _ = app.emit(
+                "ai-event",
+                &RoutedEvent {
+                    session_id: &emit_session_id,
+                    event,
+                },
+            );
+        }
+    };
+
+    let registry = state.workflow_state.registry.read().await;
+    let workflow = registry
+        .get("recon_basic")
+        .ok_or("recon_basic workflow not registered")?;
+
+    let executor: Arc<dyn WorkflowLlmExecutor> = Arc::new(NoopLlmExecutor);
+    let graph = workflow.build_graph(executor);
+    let runner = WorkflowRunner::new(graph, state.workflow_state.storage.clone());
+
+    let proxy_url = state
+        .settings_manager
+        .get()
+        .await
+        .network
+        .proxy_url
+        .clone();
+
+    let input = json!({
+        "targets": targets,
+        "project_name": project_name,
+        "project_path": project_path,
+        "proxy_url": proxy_url,
+    });
+
+    let initial_state = workflow.init_state(input).map_err(|e| e.to_string())?;
+    let wf_id = uuid::Uuid::new_v4().to_string();
+    let state_key = workflow.state_key().to_string();
+    let total_steps = workflow.task_count();
+
+    runner
+        .start_session_with_id(&wf_id, "", workflow.start_task())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let Ok(Some(session)) = state.workflow_state.storage.get(&wf_id).await {
+        session.context.set(&state_key, initial_state).await;
+        state
+            .workflow_state
+            .storage
+            .save(session)
+            .await
+            .map_err(|e| format!("Failed to save session: {}", e))?;
+    }
+
+    emit(&AiEvent::WorkflowStarted {
+        workflow_id: wf_id.clone(),
+        workflow_name: "recon_basic".to_string(),
+        session_id: wf_id.clone(),
+    });
+
+    tracing::info!(
+        "[recon] Starting recon_basic pipeline for {} targets",
+        targets.len()
+    );
+
+    let step_names = [
+        "initialize",
+        "dns_lookup",
+        "http_probe",
+        "port_scan",
+        "tech_fingerprint",
+        "summarize",
+    ];
+
+    let mut final_output = String::new();
+    for (idx, step_name) in step_names.iter().enumerate() {
+        let start = std::time::Instant::now();
+
+        emit(&AiEvent::WorkflowStepStarted {
+            workflow_id: wf_id.clone(),
+            step_name: step_name.to_string(),
+            step_index: idx,
+            total_steps,
+        });
+
+        let result = match runner.step(&wf_id).await {
+            Ok(r) => r,
+            Err(e) => {
+                let err_msg = e.to_string();
+                tracing::error!("[recon] Step '{}' failed: {}", step_name, err_msg);
+                emit(&AiEvent::WorkflowStepCompleted {
+                    workflow_id: wf_id.clone(),
+                    step_name: step_name.to_string(),
+                    output: Some(format!("Error: {}", err_msg)),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                });
+                emit(&AiEvent::WorkflowError {
+                    workflow_id: wf_id.clone(),
+                    step_name: Some(step_name.to_string()),
+                    error: err_msg.clone(),
+                });
+                return Err(err_msg);
+            }
+        };
+
+        emit(&AiEvent::WorkflowStepCompleted {
+            workflow_id: wf_id.clone(),
+            step_name: step_name.to_string(),
+            output: result.output.clone(),
+            duration_ms: start.elapsed().as_millis() as u64,
+        });
+
+        if let Some(ref output) = result.output {
+            final_output = output.clone();
+        }
+
+        match result.status {
+            WorkflowStatus::Completed | WorkflowStatus::Error(_) => break,
+            _ => {}
+        }
+    }
+
+    // Persist results to database
+    let project_path_opt = if project_path.is_empty() {
+        None
+    } else {
+        Some(project_path.as_str())
+    };
+
+    if let Ok(Some(session)) = state.workflow_state.storage.get(&wf_id).await {
+        if let Some(recon_state) = session.context.get::<ReconState>(&state_key).await {
+            let pool = &*state.db_pool;
+            let existing = db_target_list(pool, project_path_opt)
+                .await
+                .unwrap_or_default();
+
+            for result in &recon_state.results {
+                if let Some(target) = existing.iter().find(|t| t.value == result.value) {
+                    let ports_json = serde_json::to_value(&result.ports).unwrap_or_default();
+                    let techs_json =
+                        serde_json::to_value(&result.technologies).unwrap_or_default();
+
+                    if let Ok(id) = uuid::Uuid::parse_str(&target.id) {
+                        let _ =
+                            db_target_update_recon(pool, id, &ports_json, &techs_json).await;
+                        let _ = db_target_update_status(pool, id, "recon_done").await;
+                    }
+                }
+            }
+
+            tracing::info!(
+                "[recon] Persisted recon data for {} targets to database",
+                recon_state.results.len()
+            );
+        }
+    }
+
+    emit(&AiEvent::WorkflowCompleted {
+        workflow_id: wf_id,
+        final_output: final_output.clone(),
+        total_duration_ms: 0,
+    });
+
+    tracing::info!("[recon] Pipeline completed");
+    Ok(final_output)
+}
+
+/// Check if all required recon tools are installed.
+/// Returns tool status so the frontend can block pipeline execution if tools are missing.
+#[tauri::command]
+pub async fn check_recon_tools_cmd() -> Result<serde_json::Value, String> {
+    let result = golish_workflow::definitions::recon_basic::check_recon_tools();
+    serde_json::to_value(&result).map_err(|e| e.to_string())
+}
+
+struct NoopLlmExecutor;
+
+#[async_trait::async_trait]
+impl WorkflowLlmExecutor for NoopLlmExecutor {
+    async fn complete(
+        &self,
+        _system_prompt: &str,
+        _user_prompt: &str,
+        _context: HashMap<String, serde_json::Value>,
+    ) -> anyhow::Result<String> {
+        Err(anyhow::anyhow!("LLM not available in recon pipeline"))
+    }
+}

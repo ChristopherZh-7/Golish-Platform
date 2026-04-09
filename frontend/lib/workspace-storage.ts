@@ -29,14 +29,23 @@ export interface PersistedCommandBlock {
   id: string;
   type: "command";
   timestamp: string;
-  data: CommandBlock;
+  data: CommandBlock & { source?: "manual" | "pipeline" };
 }
+
+export interface PersistedPipelineBlock {
+  id: string;
+  type: "pipeline_progress";
+  timestamp: string;
+  data: import("@/store").PipelineExecution;
+}
+
+export type PersistedTimelineBlock = PersistedCommandBlock | PersistedPipelineBlock;
 
 export interface PersistedTerminalData {
   workingDirectory: string;
   scrollback: string;
   customName?: string;
-  timelineBlocks?: PersistedCommandBlock[];
+  timelineBlocks?: PersistedTimelineBlock[];
 }
 
 export interface PersistedWorkspaceState {
@@ -208,7 +217,7 @@ export function createWorkspaceAutoSaver(
           scrollback = existingTermData[cid][i].scrollback;
         }
         const customName = sess.customName || existingTermData[cid]?.[i]?.customName;
-        const blocks: PersistedCommandBlock[] = [];
+        const blocks: PersistedTimelineBlock[] = [];
         const timeline = timelines[tid];
         if (timeline) {
           for (const block of timeline) {
@@ -216,6 +225,8 @@ export function createWorkspaceAutoSaver(
               let output = block.data.output;
               if (output.length > MAX_BLOCK_OUTPUT) output = output.slice(-MAX_BLOCK_OUTPUT);
               blocks.push({ id: block.id, type: "command", timestamp: block.timestamp, data: { ...block.data, output } });
+            } else if (block.type === "pipeline_progress") {
+              blocks.push({ id: block.id, type: "pipeline_progress", timestamp: block.timestamp, data: block.data });
             }
           }
         }
