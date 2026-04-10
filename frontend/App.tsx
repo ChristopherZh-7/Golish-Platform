@@ -378,6 +378,9 @@ function App() {
               useStore.getState().addConversation(initialConv);
             }
 
+            // Signal that workspace data is hydrated and ready for terminal restoration
+            useStore.getState().setWorkspaceDataReady(true);
+
             // Terminal tabs are restored per-conversation in AIChatPanel after localStorage merge.
             // Only skip default terminal creation if saved data matches actual conversations.
             const hasConvTerminals = (() => {
@@ -406,6 +409,7 @@ function App() {
 
         // Only show home tab if no project was restored (no terminals to show)
         if (!useStore.getState().currentProjectName) {
+          useStore.getState().setWorkspaceDataReady(true);
           const homeId = useStore.getState().homeTabId;
           if (homeId) {
             useStore.getState().setActiveSession(homeId);
@@ -416,6 +420,7 @@ function App() {
       } catch (e) {
         logger.error("Failed to initialize:", e);
         setError(e instanceof Error ? e.message : String(e));
+        useStore.getState().setWorkspaceDataReady(true);
         setIsLoading(false);
       }
     }

@@ -673,9 +673,13 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const pendingTermRestoreRef = useRef<Record<string, PersistedTerminal[]>>({});
   const termSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const workspaceDataReady = useStore((s) => s.workspaceDataReady);
+
   // Load saved conversations into store on mount — merge with any already loaded by workspace auto-saver
   // Then restore per-conversation terminals (with scrollback) from localStorage
+  // Wait for workspaceDataReady so that App init has hydrated localStorage from workspace.json
   useEffect(() => {
+    if (!workspaceDataReady) return;
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
@@ -793,7 +797,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
         restoringTerminalsRef.current = false;
       }
     })();
-  }, [createTerminalTab]);
+  }, [createTerminalTab, workspaceDataReady]);
 
   // Persist conversations to localStorage immediately on every change
   useEffect(() => {

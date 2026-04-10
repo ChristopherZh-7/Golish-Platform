@@ -434,6 +434,10 @@ interface GolishState extends AppearanceSlice, ContextSlice, ConversationSlice, 
   terminalRestoreInProgress: boolean;
   setTerminalRestoreInProgress: (inProgress: boolean) => void;
 
+  // Workspace data has been hydrated into localStorage from workspace.json
+  workspaceDataReady: boolean;
+  setWorkspaceDataReady: (ready: boolean) => void;
+
   // Sessions
   sessions: Record<string, Session>;
   activeSessionId: string | null;
@@ -774,6 +778,9 @@ export const useStore = create<GolishState>()(
       // Terminal restore loading
       terminalRestoreInProgress: false,
       setTerminalRestoreInProgress: (inProgress: boolean) => set((state) => { state.terminalRestoreInProgress = inProgress; }),
+
+      workspaceDataReady: false,
+      setWorkspaceDataReady: (ready: boolean) => set((state) => { state.workspaceDataReady = ready; }),
 
       // Core state
       sessions: {},
