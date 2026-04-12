@@ -158,9 +158,17 @@ interface GolishState
   terminalRestoreInProgress: boolean;
   setTerminalRestoreInProgress: (inProgress: boolean) => void;
 
-  // Workspace data has been hydrated into localStorage from workspace.json
   workspaceDataReady: boolean;
   setWorkspaceDataReady: (ready: boolean) => void;
+
+  pendingTerminalRestoreData: Record<string, import("@/lib/workspace-storage").PersistedTerminalData[]> | null;
+  setPendingTerminalRestoreData: (data: Record<string, import("@/lib/workspace-storage").PersistedTerminalData[]> | null) => void;
+
+  selectedAiModel: { model: string; provider: string } | null;
+  setSelectedAiModel: (model: { model: string; provider: string } | null) => void;
+
+  approvalMode: string;
+  setApprovalMode: (mode: string) => void;
 
   // Sessions
   sessions: Record<string, Session>;
@@ -589,6 +597,24 @@ export const useStore = create<GolishState>()(
       setWorkspaceDataReady: (ready: boolean) =>
         set((state) => {
           state.workspaceDataReady = ready;
+        }),
+
+      pendingTerminalRestoreData: null,
+      setPendingTerminalRestoreData: (data) =>
+        set((state) => {
+          state.pendingTerminalRestoreData = data as any;
+        }),
+
+      selectedAiModel: null,
+      setSelectedAiModel: (model) =>
+        set((state) => {
+          state.selectedAiModel = model;
+        }),
+
+      approvalMode: "ask",
+      setApprovalMode: (mode) =>
+        set((state) => {
+          state.approvalMode = mode;
         }),
 
       // Core state

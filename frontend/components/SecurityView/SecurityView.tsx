@@ -863,18 +863,14 @@ interface ScanEndpoint {
   addedAt: number;
 }
 
-const SCAN_QUEUE_KEY = "golish-scan-queue";
-
-function loadScanQueue(): ScanEndpoint[] {
-  try {
-    const raw = localStorage.getItem(SCAN_QUEUE_KEY);
-    if (!raw) return [];
-    return JSON.parse(raw).map((e: ScanEndpoint) => ({ ...e, status: e.status === "scanning" || e.status === "spidering" ? "queued" : e.status }));
-  } catch { return []; }
-}
-
-function saveScanQueue(q: ScanEndpoint[]) {
-  localStorage.setItem(SCAN_QUEUE_KEY, JSON.stringify(q.map((e) => ({ url: e.url, status: e.status, alerts: e.alerts, addedAt: e.addedAt, scanId: e.scanId, progress: e.progress }))));
+function saveScanQueueToDb(q: ScanEndpoint[], pp: string | null) {
+  invoke("scan_queue_save_all", {
+    endpoints: q.map((e) => ({
+      url: e.url, status: e.status, alerts: e.alerts,
+      addedAt: e.addedAt, scanId: e.scanId, progress: e.progress,
+    })),
+    projectPath: pp,
+  }).catch(() => {});
 }
 
 function zapAlertsToFindings(alerts: ZapAlert[]): Record<string, string>[] {
@@ -908,7 +904,7 @@ function ScannerPanel({ initialUrl, onUrlConsumed }: { initialUrl?: string | nul
   const { t } = useTranslation();
   const projectPath = useStore((s) => s.currentProjectPath);
   const [targetUrl, setTargetUrl] = useState("");
-  const [endpoints, setEndpoints] = useState<ScanEndpoint[]>(loadScanQueue);
+  const [endpoints, setEndpoints] = useState<ScanEndpoint[]>([]);
   const [selectedUrl, setSelectedUrl] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -917,9 +913,18 @@ function ScannerPanel({ initialUrl, onUrlConsumed }: { initialUrl?: string | nul
   const [showCredSelector, setShowCredSelector] = useState(false);
 
   useEffect(() => {
-    invoke<VaultEntrySafe[]>("vault_list", { projectPath: getProjectPath() })
-      .then((v) => setVaultEntries(Array.isArray(v) ? v : []))
-      .catch(() => {});
+    const pp = getProjectPath();
+    Promise.all([
+      invoke<VaultEntrySafe[]>("vault_list", { projectPath: pp }).catch(() => []),
+      invoke<ScanEndpoint[]>("scan_queue_list", { projectPath: pp }).catch(() => []),
+    ]).then(([v, q]) => {
+      setVaultEntries(Array.isArray(v) ? v : []);
+      const restored = (Array.isArray(q) ? q : []).map((e) => ({
+        ...e,
+        status: (e.status === "scanning" || e.status === "spidering" ? "queued" : e.status) as ScanEndpoint["status"],
+      }));
+      if (restored.length > 0) setEndpoints(restored);
+    });
   }, [projectPath]);
 
   useEffect(() => {
@@ -927,7 +932,7 @@ function ScannerPanel({ initialUrl, onUrlConsumed }: { initialUrl?: string | nul
       const exists = endpoints.some((e) => e.url === initialUrl);
       if (!exists) {
         const ep: ScanEndpoint = { url: initialUrl, scanId: null, progress: 0, status: "queued", alerts: [], addedAt: Date.now() };
-        setEndpoints((prev) => { const next = [...prev, ep]; saveScanQueue(next); return next; });
+        setEndpoints((prev) => { const next = [...prev, ep]; saveScanQueueToDb(next, projectPath); return next; });
       }
       setSelectedUrl(initialUrl);
       onUrlConsumed?.();
@@ -939,15 +944,16 @@ function ScannerPanel({ initialUrl, onUrlConsumed }: { initialUrl?: string | nul
     if (!url) return;
     if (endpoints.some((e) => e.url === url)) { setSelectedUrl(url); setTargetUrl(""); return; }
     const ep: ScanEndpoint = { url, scanId: null, progress: 0, status: "queued", alerts: [], addedAt: Date.now() };
-    setEndpoints((prev) => { const next = [...prev, ep]; saveScanQueue(next); return next; });
+    setEndpoints((prev) => { const next = [...prev, ep]; saveScanQueueToDb(next, projectPath); return next; });
     setSelectedUrl(url);
     setTargetUrl("");
   }, [targetUrl, endpoints]);
 
   const handleRemoveEndpoint = useCallback((url: string) => {
-    setEndpoints((prev) => { const next = prev.filter((e) => e.url !== url); saveScanQueue(next); return next; });
+    setEndpoints((prev) => { const next = prev.filter((e) => e.url !== url); saveScanQueueToDb(next, projectPath); return next; });
+    invoke("scan_queue_remove", { url, projectPath }).catch(() => {});
     if (selectedUrl === url) setSelectedUrl(null);
-  }, [selectedUrl]);
+  }, [selectedUrl, projectPath]);
 
   const applyCredential = useCallback(async () => {
     if (!selectedCredential) return;
@@ -1016,7 +1022,7 @@ function ScannerPanel({ initialUrl, onUrlConsumed }: { initialUrl?: string | nul
               ...e, progress: prog.progress, alerts,
               status: isComplete ? "complete" as const : "scanning" as const,
             } : e);
-            saveScanQueue(next);
+            saveScanQueueToDb(next, projectPath);
             return next;
           });
         } catch { /* ignore */ }
@@ -1036,8 +1042,9 @@ function ScannerPanel({ initialUrl, onUrlConsumed }: { initialUrl?: string | nul
   }, [endpoints]);
 
   const handleClearCompleted = useCallback(() => {
-    setEndpoints((prev) => { const next = prev.filter((e) => e.status !== "complete"); saveScanQueue(next); return next; });
-  }, []);
+    setEndpoints((prev) => { const next = prev.filter((e) => e.status !== "complete"); saveScanQueueToDb(next, projectPath); return next; });
+    invoke("scan_queue_clear_completed", { projectPath }).catch(() => {});
+  }, [projectPath]);
 
   const sel = endpoints.find((e) => e.url === selectedUrl);
   const totalAlerts = endpoints.reduce((acc, e) => acc + e.alerts.length, 0);
@@ -2795,16 +2802,8 @@ interface CustomRuleMatch {
   matchSnippet: string;
 }
 
-const CUSTOM_RULES_KEY = "golish-custom-passive-rules";
-
-function loadCustomRules(): CustomPassiveRule[] {
-  try {
-    return JSON.parse(localStorage.getItem(CUSTOM_RULES_KEY) || "[]");
-  } catch { return []; }
-}
-
-function saveCustomRules(rules: CustomPassiveRule[]) {
-  localStorage.setItem(CUSTOM_RULES_KEY, JSON.stringify(rules));
+function saveCustomRulesToDb(rules: CustomPassiveRule[], pp: string | null) {
+  invoke("custom_rules_save_all", { rules, projectPath: pp }).catch(() => {});
 }
 
 function PassiveScanPanel() {
@@ -2815,7 +2814,8 @@ function PassiveScanPanel() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState<"zap" | "custom">("zap");
-  const [customRules, setCustomRules] = useState<CustomPassiveRule[]>(loadCustomRules);
+  const projectPath = useStore((s) => s.currentProjectPath);
+  const [customRules, setCustomRules] = useState<CustomPassiveRule[]>([]);
   const [editing, setEditing] = useState<CustomPassiveRule | null>(null);
   const [matches, setMatches] = useState<CustomRuleMatch[]>([]);
   const [scanning, setScanning] = useState(false);
@@ -2826,9 +2826,10 @@ function PassiveScanPanel() {
       setLoading(true);
       try {
         type ZapJson = Record<string, unknown>;
-        const [recordsResult, scannersResult] = await Promise.all([
+        const [recordsResult, scannersResult, dbRules] = await Promise.all([
           invoke<ZapJson>("zap_api_call", { component: "pscan", actionType: "view", method: "recordsToScan", params: {} }).catch(() => ({})),
           invoke<ZapJson>("zap_api_call", { component: "pscan", actionType: "view", method: "scanners", params: {} }).catch(() => ({})),
+          invoke<CustomPassiveRule[]>("custom_rules_list", { projectPath: getProjectPath() }).catch(() => []),
         ]);
         if (cancelled) return;
         const recordsVal = recordsResult?.recordsToScan;
@@ -2844,6 +2845,7 @@ function PassiveScanPanel() {
           const anyEnabled = scanners.some((r: Record<string, string>) => r.enabled === "true");
           setEnabled(anyEnabled);
         }
+        if (Array.isArray(dbRules) && dbRules.length > 0) setCustomRules(dbRules);
       } catch { /* ignore */ }
       if (!cancelled) setLoading(false);
     })();
@@ -2890,20 +2892,22 @@ function PassiveScanPanel() {
     setCustomRules((prev) => {
       const existing = prev.findIndex((r) => r.id === rule.id);
       const next = existing >= 0 ? prev.map((r) => r.id === rule.id ? rule : r) : [...prev, rule];
-      saveCustomRules(next);
+      saveCustomRulesToDb(next, projectPath);
       return next;
     });
+    invoke("custom_rules_upsert", { rule, projectPath }).catch(() => {});
     setEditing(null);
-  }, []);
+  }, [projectPath]);
 
   const handleDeleteCustomRule = useCallback((id: string) => {
     setCustomRules((prev) => {
       const next = prev.filter((r) => r.id !== id);
-      saveCustomRules(next);
+      saveCustomRulesToDb(next, projectPath);
       return next;
     });
+    invoke("custom_rules_delete", { id }).catch(() => {});
     setMatches((prev) => prev.filter((m) => m.ruleId !== id));
-  }, []);
+  }, [projectPath]);
 
   const handleRunCustomScan = useCallback(async () => {
     const enabledRules = customRules.filter((r) => r.enabled);

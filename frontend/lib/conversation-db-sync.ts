@@ -83,11 +83,16 @@ function chatMessageToDbRow(
 }
 
 function dbBlockToUnifiedBlock(row: TimelineBlockRow): UnifiedBlock {
+  let data = row.data;
+  if (row.blockType === "command" && data && typeof data === "object") {
+    data = { ...data, isCollapsed: false };
+  }
+
   const base = {
     id: row.id,
     type: row.blockType as UnifiedBlock["type"],
     timestamp: row.timestamp ?? new Date().toISOString(),
-    data: row.data,
+    data,
   };
 
   if (row.blockType === "sub_agent_activity" && row.batchId) {
@@ -183,6 +188,8 @@ async function saveConversationsToDb(
   timelines: Record<string, UnifiedBlock[]>,
   projectPath: string,
   activeConversationId: string | null,
+  aiModel: { model: string; provider: string } | null,
+  approvalMode: string,
 ): Promise<void> {
   const convIds = conversationOrder.filter((id) => conversations[id]);
 
@@ -282,19 +289,10 @@ async function saveConversationsToDb(
     }
   } catch { /* best effort */ }
 
-  // Save preferences
-  let aiModel: { model: string; provider: string } | null = null;
-  try {
-    aiModel = JSON.parse(
-      localStorage.getItem("golish-pentest-ai-model") || "null"
-    );
-  } catch { /* ignore */ }
-  const approvalMode = localStorage.getItem("golish-approval-mode") || null;
-
   await convSavePreferences(projectPath, {
     activeConversationId,
     aiModel,
-    approvalMode,
+    approvalMode: approvalMode || null,
     approvalPatterns: null,
   });
 }
@@ -314,24 +312,34 @@ export function createDbAutoSaver(
     conversationTerminals: Record<string, string[]>;
     sessions: Record<string, Session>;
     timelines: Record<string, UnifiedBlock[]>;
+    selectedAiModel: { model: string; provider: string } | null;
+    approvalMode: string;
   },
 ): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let saving = false;
+  let lastSnapshot: string | null = null;
 
   const save = async () => {
     const projectPath = getProjectPath();
-    if (!projectPath) {
-      console.warn("[ConvDbSync] Skipping save: no projectPath");
-      return;
-    }
+    if (!projectPath) return;
     if (saving) return;
+
+    const state = getState();
+    const snapshot = JSON.stringify([
+      state.conversationOrder,
+      Object.keys(state.conversations).length,
+      Object.values(state.conversationTerminals),
+      Object.keys(state.timelines).map((k) => [k, state.timelines[k]?.length ?? 0]),
+      state.activeConversationId,
+      state.selectedAiModel,
+      state.approvalMode,
+    ]);
+    if (snapshot === lastSnapshot) return;
 
     saving = true;
     try {
-      const state = getState();
-      const convCount = Object.keys(state.conversations).length;
-      console.log("[ConvDbSync] Saving to DB:", { projectPath, convCount });
+      lastSnapshot = snapshot;
       await saveConversationsToDb(
         state.conversations,
         state.conversationOrder,
@@ -340,10 +348,12 @@ export function createDbAutoSaver(
         state.timelines,
         projectPath,
         state.activeConversationId,
+        state.selectedAiModel,
+        state.approvalMode,
       );
-      console.log("[ConvDbSync] Save complete");
     } catch (e) {
       console.error("[ConvDbSync] Save FAILED:", e);
+      lastSnapshot = null;
     } finally {
       saving = false;
     }

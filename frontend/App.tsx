@@ -275,7 +275,7 @@ function App() {
       document.removeEventListener("pointermove", onMove);
       document.removeEventListener("pointerup", onUp);
       setRightPanelWidth(rightPanelWidthRef.current);
-      localStorage.setItem("golish-right-panel-width", String(rightPanelWidthRef.current));
+      try { localStorage.setItem("golish-right-panel-width", String(rightPanelWidthRef.current)); } catch { /* ignore */ }
     };
 
     document.addEventListener("pointermove", onMove);
@@ -360,12 +360,8 @@ function App() {
 
             if (saved && saved.conversations.length > 0) {
               // DB has data — use it
-              if (saved.aiModel) {
-                localStorage.setItem("golish-pentest-ai-model", JSON.stringify(saved.aiModel));
-              }
-              if (saved.approvalMode) {
-                localStorage.setItem("golish-approval-mode", saved.approvalMode);
-              }
+              if (saved.aiModel) useStore.getState().setSelectedAiModel(saved.aiModel);
+              if (saved.approvalMode) useStore.getState().setApprovalMode(saved.approvalMode);
 
               useStore.getState().restoreConversations(
                 saved.conversations,
@@ -374,27 +370,22 @@ function App() {
               );
 
               if (Object.keys(saved.terminalData).length > 0) {
-                const termDataForLocalStorage: Record<string, Array<{
-                  workingDirectory: string;
-                  scrollback: string;
-                  customName?: string;
-                  timelineBlocks?: Array<{ id: string; type: string; timestamp: string; data: unknown; batchId?: string }>;
-                }>> = {};
+                const termRestoreData: Record<string, import("@/lib/workspace-storage").PersistedTerminalData[]> = {};
                 for (const [convId, terminals] of Object.entries(saved.terminalData)) {
-                  termDataForLocalStorage[convId] = terminals.map((t) => ({
+                  termRestoreData[convId] = terminals.map((t) => ({
                     workingDirectory: t.workingDirectory,
                     scrollback: t.scrollback,
                     customName: t.customName ?? undefined,
                     timelineBlocks: t.timelineBlocks.map((b) => ({
                       id: b.id,
-                      type: b.type,
+                      type: b.type as any,
                       timestamp: b.timestamp ?? new Date().toISOString(),
-                      data: b.data,
+                      data: b.data as any,
                       batchId: (b as { batchId?: string }).batchId,
                     })),
                   }));
                 }
-                localStorage.setItem("golish-pentest-conv-terminals", JSON.stringify(termDataForLocalStorage));
+                useStore.getState().setPendingTerminalRestoreData(termRestoreData);
               }
 
               useStore.getState().setWorkspaceDataReady(true);
@@ -411,18 +402,11 @@ function App() {
                 }
               }
             } else {
-              // DB empty — fall back to legacy workspace.json/localStorage
+              // DB empty — fall back to legacy workspace.json
               const legacy = await loadWorkspaceState(lastProject);
 
-              if (legacy?.conversationTerminalData) {
-                localStorage.setItem("golish-pentest-conv-terminals", JSON.stringify(legacy.conversationTerminalData));
-              }
-              if (legacy?.aiModel !== undefined) {
-                localStorage.setItem("golish-pentest-ai-model", JSON.stringify(legacy.aiModel));
-              }
-              if (legacy?.approvalMode) {
-                localStorage.setItem("golish-approval-mode", legacy.approvalMode);
-              }
+              if (legacy?.aiModel) useStore.getState().setSelectedAiModel(legacy.aiModel);
+              if (legacy?.approvalMode) useStore.getState().setApprovalMode(legacy.approvalMode);
 
               if (legacy && legacy.conversations.length > 0) {
                 const restoredConvs = legacy.conversations.map(toChatConversation);
@@ -436,17 +420,16 @@ function App() {
                 useStore.getState().addConversation(initialConv);
               }
 
+              if (legacy?.conversationTerminalData) {
+                useStore.getState().setPendingTerminalRestoreData(legacy.conversationTerminalData);
+              }
+
               useStore.getState().setWorkspaceDataReady(true);
 
-              const hasConvTerminals = (() => {
-                try {
-                  const raw = localStorage.getItem("golish-pentest-conv-terminals");
-                  if (!raw) return false;
-                  const data = JSON.parse(raw) as Record<string, unknown>;
-                  const convIds = Object.keys(useStore.getState().conversations);
-                  return convIds.some((id) => id in data);
-                } catch { return false; }
-              })();
+              const hasConvTerminals = legacy?.conversationTerminalData
+                && Object.keys(legacy.conversationTerminalData).some(
+                  (id) => id in useStore.getState().conversations
+                );
 
               if (!hasConvTerminals) {
                 const wd = legacy?.terminalTabs?.[0]?.workingDirectory ?? config.rootPath;
@@ -498,6 +481,8 @@ function App() {
           conversationTerminals: s.conversationTerminals,
           sessions: s.sessions,
           timelines: s.timelines,
+          selectedAiModel: s.selectedAiModel,
+          approvalMode: s.approvalMode,
         };
       },
     );
@@ -667,7 +652,7 @@ function App() {
         });
         const detached = JSON.parse(localStorage.getItem("golish-detached-tabs") || "{}");
         detached[tabId] = { title, tabType };
-        localStorage.setItem("golish-detached-tabs", JSON.stringify(detached));
+        try { localStorage.setItem("golish-detached-tabs", JSON.stringify(detached)); } catch { /* ignore */ }
 
         const other = s.tabOrder.find((id) => id !== tabId && (s.sessions[id]?.tabType ?? "terminal") !== "home");
         if (other) s.setActiveSession(other);
@@ -720,7 +705,7 @@ function App() {
       const { session_id } = event.payload;
       const detached = JSON.parse(localStorage.getItem("golish-detached-tabs") || "{}");
       delete detached[session_id];
-      localStorage.setItem("golish-detached-tabs", JSON.stringify(detached));
+      try { localStorage.setItem("golish-detached-tabs", JSON.stringify(detached)); } catch { /* ignore */ }
       notify.info("Detached window closed — tab restored");
     }).then((fn) => { unlistenDetachedClose = fn; });
 

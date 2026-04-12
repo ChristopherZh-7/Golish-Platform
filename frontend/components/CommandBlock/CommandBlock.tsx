@@ -34,7 +34,7 @@ const OUTPUT_COLLAPSED_HEIGHT = 120;
 
 export function CommandBlock({ block, sessionId, onToggleCollapse, source }: CommandBlockProps) {
   const isSuccess = block.exitCode === 0;
-  const [outputExpanded, setOutputExpanded] = useState(false);
+  const [outputExpanded, setOutputExpanded] = useState(true);
 
   // Strip OSC sequences but keep ANSI color codes for rendering
   const cleanOutput = useMemo(() => stripOscSequences(block.output), [block.output]);

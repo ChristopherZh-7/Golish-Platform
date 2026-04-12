@@ -304,6 +304,10 @@ export function DashboardPanel() {
   const loadStats = useCallback(async () => {
     setLoading(true);
     const pp = getProjectPath();
+    if (!pp) {
+      setLoading(false);
+      return;
+    }
 
     const results = await Promise.allSettled([
       invoke<TargetStore>("target_list", { projectPath: pp }),
@@ -314,7 +318,9 @@ export function DashboardPanel() {
     ]);
 
     const targetRaw = results[0].status === "fulfilled" ? results[0].value : null;
-    const targetData = targetRaw && targetRaw.targets ? targetRaw : { targets: [], groups: [] };
+    const targetData = targetRaw && targetRaw.targets
+      ? { targets: targetRaw.targets, groups: targetRaw.groups ?? [] }
+      : { targets: [], groups: [] };
     const methodRaw = results[1].status === "fulfilled" ? results[1].value : [];
     const methodData = Array.isArray(methodRaw) ? methodRaw : [];
     const topoRaw = results[2].status === "fulfilled" ? results[2].value : [];
