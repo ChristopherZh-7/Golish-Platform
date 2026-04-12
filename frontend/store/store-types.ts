@@ -1,0 +1,386 @@
+/**
+ * Domain types for the Golish store.
+ *
+ * All type definitions that were previously inline in store/index.ts
+ * are centralized here for reuse across slices and components.
+ */
+
+import type { ApprovalPattern, ReasoningEffort } from "@/lib/ai";
+import type { RiskLevel } from "@/lib/tools";
+
+export type { ApprovalPattern, ReasoningEffort, RiskLevel };
+
+// Plan types
+export type StepStatus = "pending" | "in_progress" | "completed";
+
+export interface PlanStep {
+  step: string;
+  status: StepStatus;
+}
+
+export interface PlanSummary {
+  total: number;
+  completed: number;
+  in_progress: number;
+  pending: number;
+}
+
+export interface TaskPlan {
+  explanation: string | null;
+  steps: PlanStep[];
+  summary: PlanSummary;
+  version: number;
+  updated_at: string;
+}
+
+// Session types
+export type SessionMode = "terminal" | "agent";
+export type InputMode = "terminal" | "agent" | "auto";
+export type RenderMode = "timeline" | "fullterm";
+export type AiStatus = "disconnected" | "initializing" | "ready" | "error";
+export type TabType = "terminal" | "settings" | "home" | "browser" | "security";
+export type AgentMode = "default" | "auto-approve" | "planning";
+
+export interface AiConfig {
+  provider: string;
+  model: string;
+  status: AiStatus;
+  errorMessage?: string;
+  reasoningEffort?: ReasoningEffort;
+  vertexConfig?: {
+    workspace: string;
+    credentialsPath: string;
+    projectId: string;
+    location: string;
+  };
+}
+
+export type DetailViewMode = "timeline" | "plan" | "tool-detail";
+
+export interface Session {
+  id: string;
+  tabType?: TabType;
+  name: string;
+  workingDirectory: string;
+  createdAt: string;
+  mode: SessionMode;
+  inputMode?: InputMode;
+  agentMode?: AgentMode;
+  renderMode?: RenderMode;
+  customName?: string;
+  processName?: string;
+  virtualEnv?: string | null;
+  gitBranch?: string | null;
+  aiConfig?: AiConfig;
+  plan?: TaskPlan;
+  detailViewMode?: DetailViewMode;
+  toolDetailRequestIds?: string[] | null;
+}
+
+// Pipeline types
+export type PipelineStepStatus =
+  | "pending"
+  | "running"
+  | "success"
+  | "failed"
+  | "skipped";
+
+export interface PipelineSubTarget {
+  target: string;
+  status: PipelineStepStatus;
+  output?: string;
+  exitCode?: number | null;
+  durationMs?: number;
+}
+
+export interface PipelineStepExecution {
+  stepId: string;
+  name: string;
+  command: string;
+  status: PipelineStepStatus;
+  output?: string;
+  exitCode?: number | null;
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+  discoveredTargets?: string[];
+  subTargets?: PipelineSubTarget[];
+  subAgents?: ActiveSubAgent[];
+}
+
+export interface PipelineExecution {
+  pipelineId: string;
+  pipelineName: string;
+  target: string;
+  steps: PipelineStepExecution[];
+  status: "pending" | "running" | "completed" | "failed";
+  startedAt: string;
+  finishedAt?: string;
+}
+
+// Tool call types
+export type ToolCallSource =
+  | { type: "main" }
+  | { type: "sub_agent"; agentId: string; agentName: string }
+  | {
+      type: "workflow";
+      workflowId: string;
+      workflowName: string;
+      stepName?: string;
+      stepIndex?: number;
+    };
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  status:
+    | "pending"
+    | "approved"
+    | "denied"
+    | "running"
+    | "completed"
+    | "error";
+  result?: unknown;
+  executedByAgent?: boolean;
+  riskLevel?: RiskLevel;
+  stats?: ApprovalPattern;
+  suggestion?: string;
+  canLearn?: boolean;
+  autoApproved?: boolean;
+  autoApprovalReason?: string;
+  source?: ToolCallSource;
+}
+
+export interface ActiveToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  status: "running" | "completed" | "error";
+  result?: unknown;
+  startedAt: string;
+  completedAt?: string;
+  executedByAgent?: boolean;
+  source?: ToolCallSource;
+  streamingOutput?: string;
+}
+
+export interface AskHumanRequest {
+  requestId: string;
+  question: string;
+  inputType: "credentials" | "choice" | "freetext" | "confirmation";
+  options: string[];
+  context: string;
+}
+
+// Streaming block types
+export type StreamingBlock =
+  | { type: "text"; content: string }
+  | { type: "tool"; toolCall: ActiveToolCall }
+  | { type: "udiff_result"; response: string; durationMs: number }
+  | { type: "system_hooks"; hooks: string[] }
+  | { type: "thinking"; content: string };
+
+export type FinalizedStreamingBlock =
+  | { type: "text"; content: string }
+  | { type: "tool"; toolCall: ToolCall }
+  | { type: "udiff_result"; response: string; durationMs: number }
+  | { type: "system_hooks"; hooks: string[] }
+  | { type: "thinking"; content: string };
+
+export type CompactionResult =
+  | {
+      status: "success";
+      tokensBefore: number;
+      messagesBefore: number;
+      messagesAfter: number;
+      summaryLength: number;
+      summary?: string;
+      summarizerInput?: string;
+    }
+  | {
+      status: "failed";
+      tokensBefore: number;
+      messagesBefore: number;
+      error: string;
+      summarizerInput?: string;
+    };
+
+// Message types
+export interface CommandBlock {
+  id: string;
+  sessionId: string;
+  command: string;
+  output: string;
+  exitCode: number | null;
+  startTime: string;
+  durationMs: number | null;
+  workingDirectory: string;
+  isCollapsed: boolean;
+}
+
+export interface AgentMessage {
+  id: string;
+  sessionId: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  timestamp: string;
+  isStreaming?: boolean;
+  attachments?: {
+    type: "image";
+    data: string;
+    media_type?: string;
+    filename?: string;
+  }[];
+  toolCalls?: ToolCall[];
+  streamingHistory?: FinalizedStreamingBlock[];
+  thinkingContent?: string;
+  workflow?: ActiveWorkflow;
+  subAgents?: ActiveSubAgent[];
+  systemHooks?: string[];
+  inputTokens?: number;
+  outputTokens?: number;
+  compaction?: CompactionResult;
+  workingDirectory?: string;
+}
+
+// AI tool execution
+export interface AiToolExecution {
+  requestId: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  status: "running" | "completed" | "error";
+  result?: unknown;
+  startedAt: string;
+  completedAt?: string;
+  durationMs?: number;
+  autoApproved?: boolean;
+  riskLevel?: string;
+  streamingOutput?: string;
+  source?: ToolCallSource;
+  planStepIndex?: number;
+}
+
+// Unified timeline block
+export type UnifiedBlock =
+  | {
+      id: string;
+      type: "command";
+      timestamp: string;
+      data: CommandBlock & { source?: "manual" | "pipeline" };
+    }
+  | {
+      id: string;
+      type: "agent_message";
+      timestamp: string;
+      data: AgentMessage;
+    }
+  | {
+      id: string;
+      type: "system_hook";
+      timestamp: string;
+      data: { hooks: string[] };
+    }
+  | {
+      id: string;
+      type: "agent_streaming";
+      timestamp: string;
+      data: { content: string; toolCalls?: ToolCall[] };
+    }
+  | {
+      id: string;
+      type: "pipeline_progress";
+      timestamp: string;
+      data: PipelineExecution;
+    }
+  | {
+      id: string;
+      type: "sub_agent_activity";
+      timestamp: string;
+      data: ActiveSubAgent;
+      batchId?: string;
+    }
+  | {
+      id: string;
+      type: "ai_tool_execution";
+      timestamp: string;
+      data: AiToolExecution;
+    };
+
+// Workflow types
+export type WorkflowStatus = "idle" | "running" | "completed" | "error";
+
+export interface WorkflowStep {
+  name: string;
+  index: number;
+  status: "pending" | "running" | "completed" | "error";
+  output?: string | null;
+  durationMs?: number;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface ActiveWorkflow {
+  workflowId: string;
+  workflowName: string;
+  sessionId: string;
+  status: WorkflowStatus;
+  steps: WorkflowStep[];
+  currentStepIndex: number;
+  totalSteps: number;
+  startedAt: string;
+  completedAt?: string;
+  totalDurationMs?: number;
+  finalOutput?: string;
+  error?: string;
+  toolCalls?: ActiveToolCall[];
+}
+
+// Sub-agent types
+export interface SubAgentToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  status: "running" | "completed" | "error";
+  result?: unknown;
+  startedAt: string;
+  completedAt?: string;
+}
+
+export interface SubAgentEntry {
+  kind: "text" | "tool_call";
+  text?: string;
+  toolCallId?: string;
+}
+
+export interface ActiveSubAgent {
+  agentId: string;
+  agentName: string;
+  parentRequestId: string;
+  task: string;
+  depth: number;
+  status: "running" | "completed" | "error";
+  toolCalls: SubAgentToolCall[];
+  entries: SubAgentEntry[];
+  response?: string;
+  error?: string;
+  streamingText?: string;
+  startedAt: string;
+  completedAt?: string;
+  durationMs?: number;
+  promptGeneration?: {
+    status: "generating" | "completed" | "failed";
+    architectSystemPrompt: string;
+    architectUserMessage: string;
+    generatedPrompt?: string;
+    durationMs?: number;
+  };
+}
+
+// Terminal types
+export interface PendingCommand {
+  command: string | null;
+  output: string;
+  startTime: string;
+  workingDirectory: string;
+}

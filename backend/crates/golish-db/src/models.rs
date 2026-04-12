@@ -276,6 +276,62 @@ pub struct NewAgentLog {
     pub task: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "plan_status", rename_all = "snake_case")]
+pub enum PlanStatus {
+    Planning,
+    InProgress,
+    Paused,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+// ============================================================================
+// Execution Plans (structured task plans for continuation)
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ExecutionPlan {
+    pub id: Uuid,
+    pub session_id: Option<Uuid>,
+    pub project_path: Option<String>,
+    pub title: String,
+    pub description: String,
+    pub steps: serde_json::Value,
+    pub status: PlanStatus,
+    pub current_step: i32,
+    pub context: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanStep {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    pub status: String,
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub result: Option<String>,
+    #[serde(default)]
+    pub started_at: Option<String>,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct NewExecutionPlan {
+    pub session_id: Option<Uuid>,
+    pub project_path: Option<String>,
+    pub title: String,
+    pub description: String,
+    pub steps: serde_json::Value,
+}
+
 // ============================================================================
 // Pentest Data Models (migrated from SQLite)
 // ============================================================================
