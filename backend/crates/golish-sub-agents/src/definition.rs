@@ -23,6 +23,23 @@ pub struct SubAgentContext {
 
     /// Current depth in the agent hierarchy (to prevent infinite recursion)
     pub depth: usize,
+
+    /// Which agent delegated to this one (e.g. "main-agent", "pentester")
+    #[serde(default)]
+    pub parent_agent: Option<String>,
+
+    /// Associated task ID for multi-step plans
+    #[serde(default)]
+    pub task_id: Option<String>,
+
+    /// Associated subtask ID within a plan
+    #[serde(default)]
+    pub subtask_id: Option<String>,
+
+    /// Summaries of previously completed subtasks in the current plan,
+    /// giving this agent awareness of what has already been done.
+    #[serde(default)]
+    pub execution_history: Vec<String>,
 }
 
 /// Result returned by a sub-agent after execution
@@ -360,6 +377,10 @@ mod tests {
         assert!(context.conversation_summary.is_none());
         assert!(context.variables.is_empty());
         assert_eq!(context.depth, 0);
+        assert!(context.parent_agent.is_none());
+        assert!(context.task_id.is_none());
+        assert!(context.subtask_id.is_none());
+        assert!(context.execution_history.is_empty());
     }
 
     #[test]
@@ -372,6 +393,10 @@ mod tests {
             conversation_summary: Some("Previous context".to_string()),
             variables,
             depth: 2,
+            parent_agent: Some("main-agent".to_string()),
+            task_id: Some("task-001".to_string()),
+            subtask_id: Some("subtask-001".to_string()),
+            execution_history: vec!["Step 1: Scanned ports".to_string()],
         };
 
         assert_eq!(context.original_request, "Do something");
@@ -384,6 +409,9 @@ mod tests {
             &serde_json::json!("value")
         );
         assert_eq!(context.depth, 2);
+        assert_eq!(context.parent_agent, Some("main-agent".to_string()));
+        assert_eq!(context.task_id, Some("task-001".to_string()));
+        assert_eq!(context.execution_history.len(), 1);
     }
 
     // ===========================================

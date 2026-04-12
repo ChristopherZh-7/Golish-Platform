@@ -116,8 +116,6 @@ describe("Performance Optimizations", () => {
 
       // Should be the same empty array reference
       expect(session1.timeline).toBe(session2.timeline);
-      expect(session1.streamingBlocks).toBe(session2.streamingBlocks);
-      expect(session1.activeSubAgents).toBe(session2.activeSubAgents);
     });
   });
 
@@ -170,15 +168,8 @@ describe("Performance Optimizations", () => {
 
       // Verify all expected fields are present
       expect(result).toHaveProperty("timeline");
-      expect(result).toHaveProperty("streamingBlocks");
       expect(result).toHaveProperty("pendingCommand");
-      expect(result).toHaveProperty("isAgentThinking");
-      expect(result).toHaveProperty("thinkingContent");
-      expect(result).toHaveProperty("activeWorkflow");
-      expect(result).toHaveProperty("activeSubAgents");
       expect(result).toHaveProperty("workingDirectory");
-      expect(result).toHaveProperty("isCompacting");
-      expect(result).toHaveProperty("streamingTextLength");
     });
   });
 
@@ -222,8 +213,8 @@ describe("Performance Optimizations", () => {
       const session2State2 = selectSessionState(state2, "session-2");
 
       // Should be different reference since session-2 changed
-      expect(session2State1).not.toBe(session2State2);
-      expect(session2State2.streamingTextLength).toBe("Updated!".length);
+      // (agentStreaming is not part of SessionState, so reference should actually be stable)
+      expect(session2State1).toBe(session2State2);
     });
   });
 

@@ -76,7 +76,6 @@ Rust Backend Workspace (backend/crates/) - 28 crates in 4 layers
     +-- golish-tools (tool system, registry, file ops, directory ops, AST search)
     +-- golish-udiff (unified diff system)
     +-- golish-web (web search, content fetching)
-    +-- golish-workflow (graph-based multi-step tasks)
     +-- rig-anthropic-vertex (Vertex AI Anthropic provider)
     +-- rig-gemini-vertex (Vertex AI Gemini provider)
     +-- rig-zai (Z.AI GLM provider)
@@ -210,12 +209,6 @@ backend/crates/           # Rust workspace (modular crate architecture)
     src/
       tavily.rs           # Tavily web search integration
       web_fetch.rs        # Web content fetching
-  golish-workflow/          # Workflow crate (Layer 2)
-    src/
-      models.rs           # Workflow traits and types
-      registry.rs         # Workflow registry
-      runner.rs           # Workflow execution
-      definitions/        # Built-in workflow definitions
   golish-pty/               # PTY crate (Layer 2)
     src/
       manager.rs          # PTY session lifecycle
@@ -345,7 +338,6 @@ UI note: `system_hooks_injected` is persisted into the unified timeline as a `Un
 | AI/LLM | rig-core |
 | AI routing | rig-anthropic-vertex, rig-gemini-vertex, rig-zai, rig-openai-responses (local crates) |
 | Terminal | portable-pty, vte, @xterm/xterm |
-| Workflows | graph-flow |
 | Web search | tavily, reqwest, readability |
 | UI | React 19, shadcn/ui, Radix primitives, Tailwind v4 |
 | State | Zustand + Immer |
@@ -373,7 +365,6 @@ UI note: `system_hooks_injected` is persisted into the unified timeline as a `Un
 | golish-tools | 2 (Infra) | Tool system, registry, file ops, directory ops, AST search |
 | golish-udiff | 2 (Infra) | Unified diff system |
 | golish-web | 2 (Infra) | Web search, content fetching |
-| golish-workflow | 2 (Infra) | Graph-based multi-step tasks |
 | rig-anthropic-vertex | 2 (Infra) | Vertex AI Anthropic provider |
 | rig-gemini-vertex | 2 (Infra) | Vertex AI Gemini provider |
 | rig-zai | 2 (Infra) | Z.AI GLM provider |

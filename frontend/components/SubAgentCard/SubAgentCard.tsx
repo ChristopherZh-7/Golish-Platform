@@ -4,8 +4,14 @@ import {
   ChevronDown,
   ChevronRight,
   Clock,
+  Code2,
+  Download,
+  FileCode2,
   Loader2,
   Maximize2,
+  Search,
+  Settings2,
+  Terminal,
   Wand2,
   XCircle,
 } from "lucide-react";
@@ -13,11 +19,52 @@ import { memo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import type { ActiveSubAgent, SubAgentToolCall } from "@/store";
+import type { ActiveSubAgent, SubAgentEntry, SubAgentToolCall } from "@/store";
 import { SubAgentDetailsModal } from "./SubAgentDetailsModal";
 
 interface SubAgentCardProps {
   subAgent: ActiveSubAgent;
+  autoCollapse?: boolean;
+  /** Compact inline style for nesting inside pipeline steps */
+  compact?: boolean;
+}
+
+const AGENT_COLORS: Record<string, string> = {
+  planner: "var(--ansi-blue)",
+  coder: "var(--ansi-green)",
+  researcher: "var(--ansi-yellow)",
+  reviewer: "var(--ansi-cyan)",
+  explorer: "var(--ansi-yellow)",
+  analyst: "var(--ansi-cyan)",
+  js_harvester: "#f59e0b",
+  js_analyzer: "#f59e0b",
+  executor: "var(--ansi-magenta)",
+};
+
+const AGENT_ICONS: Record<string, typeof Bot> = {
+  coder: Code2,
+  researcher: Search,
+  explorer: Search,
+  planner: Settings2,
+  js_harvester: Download,
+  js_analyzer: FileCode2,
+  executor: Terminal,
+};
+
+function getAgentColor(agentName: string): string {
+  const lower = agentName.toLowerCase();
+  for (const [key, color] of Object.entries(AGENT_COLORS)) {
+    if (lower.includes(key)) return color;
+  }
+  return "var(--ansi-magenta)";
+}
+
+function getAgentIcon(agentName: string): typeof Bot {
+  const lower = agentName.toLowerCase();
+  for (const [key, icon] of Object.entries(AGENT_ICONS)) {
+    if (lower.includes(key)) return icon;
+  }
+  return Bot;
 }
 
 /** Status icon component */
@@ -65,20 +112,27 @@ function formatDuration(ms?: number): string {
 
 /** Individual tool call row */
 const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall }) {
-  const [isExpanded, setIsExpanded] = useState(false);
+  const isShellCmd = tool.name === "run_pty_cmd" || tool.name === "run_command";
+  const [isExpanded, setIsExpanded] = useState(isShellCmd);
   const status =
     tool.status === "completed" ? "completed" : tool.status === "error" ? "error" : "running";
 
-  // Get primary argument for display
   const primaryArg = (() => {
     const args = tool.args;
     if (typeof args === "object" && args !== null) {
+      if ("command" in args) return String(args.command);
       if ("path" in args) return String(args.path);
       if ("file_path" in args) return String(args.file_path);
-      if ("command" in args) return String(args.command);
       if ("pattern" in args) return String(args.pattern);
+      if ("url" in args) return String(args.url);
     }
     return null;
+  })();
+
+  const shellOutput = (() => {
+    if (!isShellCmd || !tool.result || typeof tool.result !== "object") return null;
+    const r = tool.result as Record<string, unknown>;
+    return (r.stdout as string) || (r.output as string) || null;
   })();
 
   return (
@@ -90,9 +144,21 @@ const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall
           <ChevronRight className="h-3 w-3 text-muted-foreground" />
         )}
         <StatusIcon status={status} size="sm" />
-        <span className="font-mono text-[var(--ansi-cyan)]">{tool.name}</span>
+        {isShellCmd ? (
+          <Terminal className="h-3 w-3 text-[var(--ansi-green)] flex-shrink-0" />
+        ) : null}
+        <span className="font-mono text-[var(--ansi-cyan)]">
+          {isShellCmd ? "" : tool.name}
+        </span>
         {primaryArg && (
-          <span className="truncate text-muted-foreground" title={primaryArg}>
+          <span
+            className={cn(
+              "truncate font-mono",
+              isShellCmd ? "text-[var(--ansi-green)]/80" : "text-muted-foreground"
+            )}
+            title={primaryArg}
+          >
+            {isShellCmd && <span className="text-muted-foreground/50 mr-1">$</span>}
             {primaryArg}
           </span>
         )}
@@ -106,16 +172,27 @@ const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall
       </CollapsibleTrigger>
       <CollapsibleContent className="px-4 py-1">
         <div className="space-y-1 text-xs">
-          {/* Arguments */}
-          <div>
-            <span className="text-muted-foreground">Args:</span>
-            <pre className="mt-0.5 rounded bg-muted px-2 py-1 text-[10px]">
-              {JSON.stringify(tool.args, null, 2)}
+          {/* Shell command output */}
+          {isShellCmd && shellOutput && (
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-[var(--ansi-black)]/20 px-2 py-1.5 text-[10px] font-mono text-foreground/80">
+              {shellOutput.length > 3000
+                ? `${shellOutput.slice(0, 3000)}\n... (truncated)`
+                : shellOutput}
             </pre>
-          </div>
+          )}
 
-          {/* Result (if available) */}
-          {tool.result !== undefined && (
+          {/* Non-shell arguments */}
+          {!isShellCmd && (
+            <div>
+              <span className="text-muted-foreground">Args:</span>
+              <pre className="mt-0.5 rounded bg-muted px-2 py-1 text-[10px]">
+                {JSON.stringify(tool.args, null, 2)}
+              </pre>
+            </div>
+          )}
+
+          {/* Non-shell result */}
+          {!isShellCmd && tool.result !== undefined && (
             <div>
               <span className="text-muted-foreground">Result:</span>
               <pre className="mt-0.5 max-h-40 overflow-auto rounded bg-muted px-2 py-1 text-[10px]">
@@ -125,53 +202,212 @@ const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall
               </pre>
             </div>
           )}
+
+          {/* Shell error output */}
+          {isShellCmd && tool.result && typeof tool.result === "object" && (tool.result as Record<string, unknown>).error && (
+            <div className="rounded bg-[var(--ansi-red)]/10 px-2 py-1 text-[10px] text-[var(--ansi-red)]">
+              {String((tool.result as Record<string, unknown>).error)}
+            </div>
+          )}
         </div>
       </CollapsibleContent>
     </Collapsible>
   );
 });
 
-/** Number of tool calls to show by default */
-const VISIBLE_TOOL_CALLS = 3;
+/** Number of entries to show by default (from the end) */
+const VISIBLE_TAIL_ENTRIES = 8;
+
+/** Render a text entry inline */
+function TextEntryRow({ text }: { text: string }) {
+  if (!text.trim()) return null;
+  return (
+    <div className="text-xs text-muted-foreground/80 px-1.5 border-l-2 border-accent/30 ml-1 my-1">
+      <span className="whitespace-pre-wrap line-clamp-6">{text}</span>
+    </div>
+  );
+}
+
+/** Render interleaved entries (text + tool calls) */
+function InterleavedEntries({
+  entries,
+  toolCalls,
+  showAll,
+  onToggleShowAll,
+}: {
+  entries: SubAgentEntry[];
+  toolCalls: SubAgentToolCall[];
+  showAll: boolean;
+  onToggleShowAll?: () => void;
+}) {
+  const toolMap = new Map(toolCalls.map((t) => [t.id, t]));
+  const totalEntries = entries.length;
+  const hiddenCount = showAll ? 0 : Math.max(0, totalEntries - VISIBLE_TAIL_ENTRIES);
+  const visibleEntries = showAll ? entries : entries.slice(-VISIBLE_TAIL_ENTRIES);
+
+  return (
+    <div className="space-y-0.5">
+      {hiddenCount > 0 && onToggleShowAll && (
+        <button
+          type="button"
+          onClick={onToggleShowAll}
+          className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+        >
+          <ChevronRight className="h-3 w-3" />
+          <span>{hiddenCount} previous entries</span>
+        </button>
+      )}
+      {showAll && hiddenCount > 0 && onToggleShowAll && (
+        <button
+          type="button"
+          onClick={onToggleShowAll}
+          className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+        >
+          <ChevronDown className="h-3 w-3" />
+          <span>Hide {totalEntries - VISIBLE_TAIL_ENTRIES} entries</span>
+        </button>
+      )}
+      {visibleEntries.map((entry, i) => {
+        if (entry.kind === "text") {
+          return entry.text ? <TextEntryRow key={`text-${i}`} text={entry.text} /> : null;
+        }
+        const tool = entry.toolCallId ? toolMap.get(entry.toolCallId) : undefined;
+        return tool ? <ToolCallRow key={tool.id} tool={tool} /> : null;
+      })}
+    </div>
+  );
+}
+
+/** Compact inline sub-agent row for nesting inside pipeline steps */
+const CompactSubAgentCard = memo(function CompactSubAgentCard({
+  subAgent,
+}: { subAgent: ActiveSubAgent }) {
+  const [isExpanded, setIsExpanded] = useState(subAgent.status === "running");
+  const [showAll, setShowAll] = useState(false);
+  const agentColor = getAgentColor(subAgent.agentName);
+  const AgentIcon = getAgentIcon(subAgent.agentName);
+  const totalToolCalls = subAgent.toolCalls.length;
+  const hasEntries = subAgent.entries.length > 0;
+
+  return (
+    <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
+      <CollapsibleTrigger className="group flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-xs hover:bg-accent/50">
+        {isExpanded ? (
+          <ChevronDown className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+        ) : (
+          <ChevronRight className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+        )}
+        <StatusIcon status={subAgent.status} size="sm" />
+        <AgentIcon className="h-3 w-3 flex-shrink-0" style={{ color: agentColor }} />
+        <span className="font-mono text-[var(--ansi-cyan)] truncate">
+          {subAgent.agentName || subAgent.agentId}
+        </span>
+        {totalToolCalls > 0 && (
+          <span className="text-[10px] text-muted-foreground flex-shrink-0">
+            {totalToolCalls} tool{totalToolCalls > 1 ? "s" : ""}
+          </span>
+        )}
+        {subAgent.durationMs !== undefined && (
+          <span className="ml-auto text-[10px] text-muted-foreground flex-shrink-0">
+            {formatDuration(subAgent.durationMs)}
+          </span>
+        )}
+      </CollapsibleTrigger>
+
+      <CollapsibleContent className="pl-5 pr-1 pb-0.5">
+        {hasEntries ? (
+          <InterleavedEntries
+            entries={subAgent.entries}
+            toolCalls={subAgent.toolCalls}
+            showAll={showAll}
+            onToggleShowAll={() => setShowAll((v) => !v)}
+          />
+        ) : (
+          subAgent.toolCalls.slice(-3).map((tool) => (
+            <ToolCallRow key={tool.id} tool={tool} />
+          ))
+        )}
+        {subAgent.status === "completed" && subAgent.response && (
+          <div className="text-[10px] text-muted-foreground/60 line-clamp-2 border-t border-border/20 pt-0.5 mt-0.5">
+            {subAgent.response.length > 200
+              ? `${subAgent.response.slice(0, 200)}...`
+              : subAgent.response}
+          </div>
+        )}
+        {subAgent.error && (
+          <div className="text-[10px] text-[var(--ansi-red)] mt-0.5">Error: {subAgent.error}</div>
+        )}
+      </CollapsibleContent>
+    </Collapsible>
+  );
+});
 
 /** Sub-agent card component */
-export const SubAgentCard = memo(function SubAgentCard({ subAgent }: SubAgentCardProps) {
-  const [isExpanded, setIsExpanded] = useState(subAgent.status === "running");
-  const [showAllToolCalls, setShowAllToolCalls] = useState(false);
+export const SubAgentCard = memo(function SubAgentCard({
+  subAgent,
+  autoCollapse,
+  compact,
+}: SubAgentCardProps) {
+  if (compact) {
+    return <CompactSubAgentCard subAgent={subAgent} />;
+  }
+
+  const defaultExpanded = autoCollapse ? false : true;
+  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+  const [showAllEntries, setShowAllEntries] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
 
-  // Calculate which tool calls to show
   const totalToolCalls = subAgent.toolCalls.length;
-  const hiddenCount = Math.max(0, totalToolCalls - VISIBLE_TOOL_CALLS);
-  const visibleToolCalls = showAllToolCalls
-    ? subAgent.toolCalls
-    : subAgent.toolCalls.slice(-VISIBLE_TOOL_CALLS);
+  const hasEntries = subAgent.entries.length > 0;
 
   const hasExpandableContent =
-    totalToolCalls > 0 || !!subAgent.error || !!subAgent.promptGeneration;
+    hasEntries || totalToolCalls > 0 || !!subAgent.error || !!subAgent.promptGeneration || !!subAgent.task;
+
+  const agentColor = getAgentColor(subAgent.agentName);
+  const AgentIcon = getAgentIcon(subAgent.agentName);
 
   return (
     <>
-      <div className="mt-1 mb-3 rounded-lg border border-border bg-card">
+      <div
+        data-agent-block={`sub-agent-${subAgent.parentRequestId}`}
+        className={cn(
+          "mt-1 mb-1.5 rounded-lg border bg-card overflow-hidden transition-all scroll-mt-4",
+          subAgent.status === "running"
+            ? "border-l-2 animate-[pulse-border_2s_ease-in-out_infinite]"
+            : "border border-border",
+          "target:ring-2 target:ring-accent/40 target:ring-offset-1 target:ring-offset-background"
+        )}
+        style={subAgent.status === "running" ? {
+          borderLeftColor: agentColor,
+          boxShadow: `inset 2px 0 8px -4px ${agentColor}40`,
+        } : undefined}
+      >
         {hasExpandableContent ? (
           <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
             <div className="flex items-center gap-2 px-3 py-2">
-              <CollapsibleTrigger className="flex flex-1 items-center gap-2 hover:bg-accent/30 rounded -ml-1 pl-1 py-0.5">
+              <CollapsibleTrigger className="flex flex-1 items-center gap-2 hover:bg-accent/30 rounded -ml-1 pl-1 py-0.5 min-w-0">
                 {isExpanded ? (
-                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                  <ChevronDown className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                 ) : (
-                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                  <ChevronRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                 )}
-                <Bot className="h-4 w-4 text-[var(--ansi-magenta)]" />
-                <span className="font-medium text-sm">{subAgent.agentName}</span>
+                <AgentIcon className="h-4 w-4 flex-shrink-0" style={{ color: agentColor }} />
+                <span className="font-medium text-sm truncate">
+                  {subAgent.agentName || subAgent.agentId}
+                </span>
                 <StatusBadge status={subAgent.status} />
                 {subAgent.depth > 1 && (
-                  <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                  <Badge variant="outline" className="text-[10px] px-1.5 py-0 flex-shrink-0">
                     depth {subAgent.depth}
                   </Badge>
                 )}
+                {totalToolCalls > 0 && (
+                  <span className="text-[10px] text-muted-foreground flex-shrink-0">
+                    {totalToolCalls} tool{totalToolCalls > 1 ? "s" : ""}
+                  </span>
+                )}
               </CollapsibleTrigger>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-shrink-0">
                 {subAgent.durationMs !== undefined && (
                   <span className="text-xs text-muted-foreground">
                     {formatDuration(subAgent.durationMs)}
@@ -189,6 +425,13 @@ export const SubAgentCard = memo(function SubAgentCard({ subAgent }: SubAgentCar
             </div>
 
             <CollapsibleContent className="px-3 pb-2">
+              {/* Task description */}
+              {subAgent.task && (
+                <div className="mb-1.5 text-xs text-muted-foreground line-clamp-2 px-1.5">
+                  {subAgent.task}
+                </div>
+              )}
+
               {/* Prompt generation info */}
               {subAgent.promptGeneration && (
                 <div className="mb-1.5">
@@ -250,42 +493,32 @@ export const SubAgentCard = memo(function SubAgentCard({ subAgent }: SubAgentCar
                 </div>
               )}
 
-              {/* Tool calls */}
-              {totalToolCalls > 0 && (
+              {/* Interleaved text + tool calls */}
+              {hasEntries ? (
+                <InterleavedEntries
+                  entries={subAgent.entries}
+                  toolCalls={subAgent.toolCalls}
+                  showAll={showAllEntries}
+                  onToggleShowAll={() => setShowAllEntries((v) => !v)}
+                />
+              ) : totalToolCalls > 0 ? (
                 <div className="space-y-0.5">
-                  {/* Show "N previous tool calls" expander if there are hidden calls */}
-                  {hiddenCount > 0 && !showAllToolCalls && (
-                    <button
-                      type="button"
-                      onClick={() => setShowAllToolCalls(true)}
-                      className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-                    >
-                      <ChevronRight className="h-3 w-3" />
-                      <span>
-                        {hiddenCount} previous tool call{hiddenCount > 1 ? "s" : ""}
-                      </span>
-                    </button>
-                  )}
-
-                  {/* Show collapse button when expanded */}
-                  {showAllToolCalls && hiddenCount > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => setShowAllToolCalls(false)}
-                      className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-                    >
-                      <ChevronDown className="h-3 w-3" />
-                      <span>Hide {hiddenCount} tool calls</span>
-                    </button>
-                  )}
-
-                  {visibleToolCalls.map((tool) => (
+                  {subAgent.toolCalls.map((tool) => (
                     <ToolCallRow key={tool.id} tool={tool} />
                   ))}
                 </div>
+              ) : null}
+
+              {/* Response preview (completed agents) */}
+              {subAgent.status === "completed" && subAgent.response && (
+                <div className="mt-1.5 text-xs text-muted-foreground/80 line-clamp-3 px-1.5 border-t border-border/30 pt-1.5">
+                  {subAgent.response.length > 300
+                    ? `${subAgent.response.slice(0, 300)}...`
+                    : subAgent.response}
+                </div>
               )}
 
-              {/* Error indicator (when failed) */}
+              {/* Error indicator */}
               {subAgent.error && (
                 <div className="mt-2 rounded bg-[var(--ansi-red)]/10 px-2 py-1.5 text-xs text-[var(--ansi-red)]">
                   <span className="font-medium">Error: </span>
@@ -296,17 +529,19 @@ export const SubAgentCard = memo(function SubAgentCard({ subAgent }: SubAgentCar
           </Collapsible>
         ) : (
           <div className="flex items-center gap-2 px-3 py-2">
-            <div className="flex flex-1 items-center gap-2 -ml-1 pl-1 py-0.5">
-              <Bot className="h-4 w-4 text-[var(--ansi-magenta)]" />
-              <span className="font-medium text-sm">{subAgent.agentName}</span>
+            <div className="flex flex-1 items-center gap-2 -ml-1 pl-1 py-0.5 min-w-0">
+              <AgentIcon className="h-4 w-4 flex-shrink-0" style={{ color: agentColor }} />
+              <span className="font-medium text-sm truncate">
+                {subAgent.agentName || subAgent.agentId}
+              </span>
               <StatusBadge status={subAgent.status} />
               {subAgent.depth > 1 && (
-                <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                <Badge variant="outline" className="text-[10px] px-1.5 py-0 flex-shrink-0">
                   depth {subAgent.depth}
                 </Badge>
               )}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-shrink-0">
               {subAgent.durationMs !== undefined && (
                 <span className="text-xs text-muted-foreground">
                   {formatDuration(subAgent.durationMs)}

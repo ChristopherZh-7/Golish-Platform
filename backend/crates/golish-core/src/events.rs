@@ -213,6 +213,14 @@ pub enum AiEvent {
         parent_request_id: String,
     },
 
+    /// Sub-agent streaming text delta (thinking/reasoning/output)
+    SubAgentTextDelta {
+        agent_id: String,
+        delta: String,
+        accumulated: String,
+        parent_request_id: String,
+    },
+
     /// Sub-agent completed its task
     SubAgentCompleted {
         agent_id: String,
@@ -437,6 +445,7 @@ impl AiEvent {
             AiEvent::SubAgentStarted { .. } => "sub_agent_started",
             AiEvent::SubAgentToolRequest { .. } => "sub_agent_tool_request",
             AiEvent::SubAgentToolResult { .. } => "sub_agent_tool_result",
+            AiEvent::SubAgentTextDelta { .. } => "sub_agent_text_delta",
             AiEvent::SubAgentCompleted { .. } => "sub_agent_completed",
             AiEvent::SubAgentError { .. } => "sub_agent_error",
             AiEvent::ContextWarning { .. } => "context_warning",
@@ -1034,6 +1043,12 @@ mod tests {
                     success: true,
                     result: json!({"content": "file contents"}),
                     request_id: "req-1".to_string(),
+                    parent_request_id: "parent-1".to_string(),
+                },
+                AiEvent::SubAgentTextDelta {
+                    agent_id: "a1".to_string(),
+                    delta: "Analyzing".to_string(),
+                    accumulated: "Analyzing".to_string(),
                     parent_request_id: "parent-1".to_string(),
                 },
                 AiEvent::SubAgentCompleted {

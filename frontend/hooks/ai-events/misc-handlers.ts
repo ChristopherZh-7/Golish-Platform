@@ -20,13 +20,19 @@ export const handlePlanUpdated: EventHandler<{
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
-  ctx.getState().setPlan(ctx.sessionId, {
+  const plan = {
     version: event.version,
     summary: event.summary,
     steps: event.steps,
     explanation: event.explanation,
     updated_at: new Date().toISOString(),
-  });
+  };
+  const state = ctx.getState();
+  state.setPlan(ctx.sessionId, plan);
+  state.syncPlanToPipeline(ctx.sessionId, plan);
+
+  // Auto-switch left pane to plan detail view when a plan is created/updated
+  state.setDetailViewMode(ctx.sessionId, "plan");
 };
 
 /**

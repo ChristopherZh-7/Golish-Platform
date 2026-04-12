@@ -6,6 +6,8 @@ const BASE_HEIGHTS = {
   agent_message: 80, // Minimal message with border
   system_hook: 44, // Collapsed hook card
   pipeline_progress: 60, // Header + progress bar
+  sub_agent_activity: 52, // Header with agent name + status
+  ai_tool_execution: 56, // Header + command preview
 } as const;
 
 // Approximate characters per line at typical viewport width
@@ -18,6 +20,8 @@ const MAX_HEIGHTS = {
   agent_message: 800,
   system_hook: 200,
   pipeline_progress: 400,
+  sub_agent_activity: 600,
+  ai_tool_execution: 400,
 } as const;
 
 /**
@@ -81,8 +85,29 @@ export function estimateBlockHeight(block: UnifiedBlock): number {
       const stepCount = block.data.steps.length;
       return Math.min(
         BASE_HEIGHTS.pipeline_progress + stepCount * 28 + 24,
-        MAX_HEIGHTS.pipeline_progress,
+        MAX_HEIGHTS.pipeline_progress
       );
+    }
+
+    case "sub_agent_activity": {
+      const agent = block.data;
+      let height = BASE_HEIGHTS.sub_agent_activity;
+      if (agent.status === "running" || agent.toolCalls.length > 0) {
+        height += Math.min(agent.toolCalls.length, 3) * 28;
+        if (agent.toolCalls.length > 3) height += 24;
+      }
+      if (agent.promptGeneration) height += 28;
+      if (agent.error) height += 32;
+      return Math.min(height, MAX_HEIGHTS.sub_agent_activity);
+    }
+
+    case "ai_tool_execution": {
+      let height = BASE_HEIGHTS.ai_tool_execution;
+      const exec = block.data;
+      if (exec.streamingOutput || exec.result) {
+        height += 80;
+      }
+      return Math.min(height, MAX_HEIGHTS.ai_tool_execution);
     }
 
     default:

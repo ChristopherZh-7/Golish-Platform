@@ -248,9 +248,32 @@ pub struct Memory {
     pub tool_name: Option<String>,
     pub doc_type: String,
     pub project_path: Option<String>,
-    pub embedding_dim: Option<i32>,
     pub metadata: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct AgentLog {
+    pub id: Uuid,
+    pub session_id: Uuid,
+    pub task_id: Option<Uuid>,
+    pub subtask_id: Option<Uuid>,
+    pub initiator: AgentType,
+    pub executor: AgentType,
+    pub task: String,
+    pub result: Option<String>,
+    pub duration_ms: Option<i32>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug)]
+pub struct NewAgentLog {
+    pub session_id: Uuid,
+    pub task_id: Option<Uuid>,
+    pub subtask_id: Option<Uuid>,
+    pub initiator: AgentType,
+    pub executor: AgentType,
+    pub task: String,
 }
 
 // ============================================================================
@@ -431,6 +454,7 @@ pub struct NewMemory {
     pub mem_type: MemoryType,
     pub tool_name: Option<String>,
     pub doc_type: String,
+    pub project_path: Option<String>,
     pub embedding: Option<Vec<f32>>,
     pub metadata: Option<serde_json::Value>,
 }

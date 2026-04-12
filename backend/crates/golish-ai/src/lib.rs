@@ -9,7 +9,7 @@
 //! - HITL (Human-in-the-Loop) approval system
 //! - Loop detection and protection
 //! - Sub-agent execution
-//! - Workflow execution (graph-flow based multi-step workflows)
+//! - Memory tools (search, store, list long-term memories)
 //!
 //! # Architecture
 //!
@@ -27,7 +27,7 @@
 //! - **ToolExecutors**: Executes AI tools (file ops, shell, etc.)
 //! - **ApprovalRecorder**: HITL approval tracking and auto-approval
 //! - **LoopDetector**: Detects and prevents infinite agent loops
-//! - **WorkflowRunner**: Executes multi-step graph-based workflows
+//! - **SystemHooks**: Extensible hook system for agent orchestration
 
 // Modules merged from standalone crates
 pub mod hitl;
@@ -49,6 +49,7 @@ pub mod codex_prompt;
 pub mod event_coordinator;
 pub mod llm_client;
 pub mod memory_file;
+pub mod memory_gatekeeper;
 pub mod summarizer;
 pub mod system_hooks;
 pub mod system_prompt;

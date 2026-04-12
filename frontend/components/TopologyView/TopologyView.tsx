@@ -247,7 +247,7 @@ export function TopologyView() {
   const loadSavedList = useCallback(async () => {
     try {
       const list = await invoke<string[]>("topo_list", { projectPath: getProjectPath() });
-      setSavedMaps(list);
+      setSavedMaps(Array.isArray(list) ? list : []);
     } catch {
       /* ignore */
     }

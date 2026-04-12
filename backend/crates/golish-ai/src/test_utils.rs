@@ -976,9 +976,7 @@ mod tests {
     fn test_sub_agent_context() -> SubAgentContext {
         SubAgentContext {
             original_request: "Test request".to_string(),
-            conversation_summary: None,
-            variables: std::collections::HashMap::new(),
-            depth: 0,
+            ..Default::default()
         }
     }
 
@@ -2965,6 +2963,7 @@ mod tests {
             conversation_summary: Some("User asked to analyze code quality".to_string()),
             variables: parent_variables.clone(),
             depth: 1,
+            ..Default::default()
         };
 
         // Create a simple mock model that returns text immediately (no tool calls)
@@ -3033,9 +3032,8 @@ mod tests {
 
         let parent_at_max_depth = SubAgentContext {
             original_request: "Test".to_string(),
-            conversation_summary: None,
-            variables: std::collections::HashMap::new(),
             depth: MAX_AGENT_DEPTH - 1, // One below max
+            ..Default::default()
         };
 
         // Simulate what the agentic loop does: check depth before calling sub-agent

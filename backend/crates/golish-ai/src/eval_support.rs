@@ -283,6 +283,8 @@ where
         capabilities,
         require_hitl: config.require_hitl,
         is_sub_agent: false,
+        enable_reflector: false,
+        tool_names_for_reflector: None,
     };
 
     // Create initial history with user prompt
@@ -507,6 +509,8 @@ where
         capabilities,
         require_hitl: config.require_hitl,
         is_sub_agent: false,
+        enable_reflector: false,
+        tool_names_for_reflector: None,
     };
 
     // Create initial history with user prompt
@@ -843,6 +847,8 @@ where
             capabilities: capabilities.clone(),
             require_hitl: config.require_hitl,
             is_sub_agent: false,
+            enable_reflector: false,
+            tool_names_for_reflector: None,
         };
 
         // Add user message to current history

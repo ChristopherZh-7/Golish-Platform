@@ -17,6 +17,7 @@ use super::commits::{BoundaryReason, PatchManager};
 use super::events::{CommitBoundaryDetector, EventType, SessionEvent, SidecarEvent};
 use super::session::Session;
 use golish_artifacts::ArtifactManager;
+use golish_core::utils::truncate_str;
 use golish_synthesis::{
     create_state_synthesizer, create_title_synthesizer, generate_template_message,
     SessionTitleInput, StateSynthesisInput, SynthesisBackend, SynthesisConfig, SynthesisInput,
@@ -458,9 +459,8 @@ async fn update_session_files(
 
             // Add tool output/result if present
             if let Some(output) = &event.tool_output {
-                // Truncate output for log readability
-                let truncated = if output.len() > 500 {
-                    format!("{}...", &output[..500])
+                let truncated = if output.chars().count() > 500 {
+                    format!("{}...", truncate_str(output, 500))
                 } else {
                     output.clone()
                 };
@@ -493,9 +493,8 @@ async fn update_session_files(
             // This avoids intermediate template updates and reduces LLM calls
         }
         EventType::UserPrompt { intent, .. } => {
-            // Log user prompts
-            let truncated = if intent.len() > 100 {
-                format!("{}...", &intent[..100])
+            let truncated = if intent.chars().count() > 100 {
+                format!("{}...", truncate_str(intent, 100))
             } else {
                 intent.clone()
             };
@@ -533,9 +532,8 @@ async fn update_session_files(
             }
         }
         EventType::AiResponse { content, .. } => {
-            // Log agent responses (truncated)
-            let truncated = if content.len() > 100 {
-                format!("{}...", &content[..100])
+            let truncated = if content.chars().count() > 100 {
+                format!("{}...", truncate_str(content, 100))
             } else {
                 content.clone()
             };
@@ -928,10 +926,10 @@ async fn get_file_diff(cwd: &std::path::Path, file_path: &str) -> String {
                 "(new file)".to_string()
             } else {
                 // Truncate very long diffs
-                if diff.len() > 2000 {
+                if diff.chars().count() > 2000 {
                     format!(
                         "{}...\n(truncated, {} more lines)",
-                        &diff[..2000],
+                        truncate_str(&diff, 2000),
                         diff.lines().count().saturating_sub(50)
                     )
                 } else {

@@ -168,6 +168,130 @@ pub fn list_sessions(limit: usize) -> Result<Vec<SessionListing>> {
     Ok(sessions)
 }
 
+/// Get the sessions directory for a specific workspace (project).
+///
+/// Returns `{workspace}/.golish/sessions/` when workspace is a real path,
+/// or falls back to the global `~/.golish/sessions/`.
+pub fn get_sessions_dir_for(workspace: &std::path::Path) -> Result<PathBuf> {
+    let ws_str = workspace.to_string_lossy();
+    let dir = if ws_str != "." && !ws_str.is_empty() {
+        workspace.join(".golish").join("sessions")
+    } else {
+        return get_sessions_dir();
+    };
+
+    fs::create_dir_all(&dir).context("Failed to create project sessions directory")?;
+    Ok(dir)
+}
+
+/// Find a session by identifier, searching in a specific workspace first,
+/// then falling back to the global sessions directory.
+pub fn find_session_in_workspace(
+    identifier: &str,
+    workspace: &std::path::Path,
+) -> Result<Option<SessionListing>> {
+    let project_dir = get_sessions_dir_for(workspace)?;
+    if let Some(session) = find_session_in_dir(identifier, &project_dir)? {
+        return Ok(Some(session));
+    }
+    find_session(identifier)
+}
+
+/// List sessions from a specific workspace, merged with global sessions.
+pub fn list_sessions_for_workspace(
+    limit: usize,
+    workspace: &std::path::Path,
+) -> Result<Vec<SessionListing>> {
+    let mut sessions = Vec::new();
+
+    let project_dir = get_sessions_dir_for(workspace)?;
+    if project_dir.exists() {
+        sessions.extend(collect_sessions_from_dir(&project_dir)?);
+    }
+
+    let global_dir = get_sessions_dir()?;
+    if global_dir.exists() {
+        sessions.extend(collect_sessions_from_dir(&global_dir)?);
+    }
+
+    sessions.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+
+    if limit > 0 && sessions.len() > limit {
+        sessions.truncate(limit);
+    }
+
+    Ok(sessions)
+}
+
+fn find_session_in_dir(
+    identifier: &str,
+    dir: &std::path::Path,
+) -> Result<Option<SessionListing>> {
+    if !dir.exists() {
+        return Ok(None);
+    }
+
+    let entries: Vec<_> = fs::read_dir(dir)?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "json")
+                .unwrap_or(false)
+        })
+        .collect();
+
+    for entry in entries {
+        let path = entry.path();
+        let filename = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+
+        if filename.contains(identifier) {
+            if let Ok(content) = fs::read_to_string(&path) {
+                if let Ok(snapshot) = serde_json::from_str::<SessionSnapshot>(&content) {
+                    if snapshot.metadata.session_id.starts_with(identifier)
+                        || filename.contains(identifier)
+                    {
+                        return Ok(Some(SessionListing::from_snapshot(snapshot, path)));
+                    }
+                }
+            }
+        } else if let Ok(content) = fs::read_to_string(&path) {
+            if let Ok(snapshot) = serde_json::from_str::<SessionSnapshot>(&content) {
+                if snapshot.metadata.session_id.starts_with(identifier) {
+                    return Ok(Some(SessionListing::from_snapshot(snapshot, path)));
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn collect_sessions_from_dir(dir: &std::path::Path) -> Result<Vec<SessionListing>> {
+    let mut sessions = Vec::new();
+    if !dir.exists() {
+        return Ok(sessions);
+    }
+
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.extension().map(|ext| ext == "json").unwrap_or(false) {
+            continue;
+        }
+        if let Ok(content) = fs::read_to_string(&path) {
+            if let Ok(snapshot) = serde_json::from_str::<SessionSnapshot>(&content) {
+                sessions.push(SessionListing::from_snapshot(snapshot, path));
+            }
+        }
+    }
+
+    Ok(sessions)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

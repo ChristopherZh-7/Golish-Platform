@@ -117,11 +117,21 @@ pub struct SessionArchive {
 impl SessionArchive {
     /// Create a new session archive.
     ///
-    /// This is an async constructor for compatibility with vtcode-core's interface,
-    /// though our implementation doesn't actually require async operations during creation.
+    /// Uses the workspace_path from metadata to derive a per-project sessions dir
+    /// (`{workspace}/.golish/sessions/`). Falls back to `~/.golish/sessions/` when
+    /// workspace is "." or empty.
     pub async fn new(metadata: SessionArchiveMetadata) -> Result<Self> {
-        let sessions_dir =
-            storage::get_sessions_dir().context("Failed to get sessions directory")?;
+        let sessions_dir = if !metadata.workspace_path.is_empty()
+            && metadata.workspace_path != "."
+        {
+            let dir = PathBuf::from(&metadata.workspace_path)
+                .join(".golish")
+                .join("sessions");
+            std::fs::create_dir_all(&dir).context("Failed to create project sessions directory")?;
+            dir
+        } else {
+            storage::get_sessions_dir().context("Failed to get sessions directory")?
+        };
 
         Ok(Self {
             metadata,

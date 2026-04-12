@@ -313,13 +313,16 @@ export function DashboardPanel() {
       invoke<FindingsStore>("findings_list", { projectPath: pp }),
     ]);
 
-    const targetData =
-      results[0].status === "fulfilled" ? results[0].value : { targets: [], groups: [] };
-    const methodData = results[1].status === "fulfilled" ? results[1].value : [];
-    const topoData = results[2].status === "fulfilled" ? results[2].value : [];
-    const vaultData = results[3].status === "fulfilled" ? results[3].value : [];
-    const findingsData =
-      results[4].status === "fulfilled" ? results[4].value : { findings: [] };
+    const targetRaw = results[0].status === "fulfilled" ? results[0].value : null;
+    const targetData = targetRaw && targetRaw.targets ? targetRaw : { targets: [], groups: [] };
+    const methodRaw = results[1].status === "fulfilled" ? results[1].value : [];
+    const methodData = Array.isArray(methodRaw) ? methodRaw : [];
+    const topoRaw = results[2].status === "fulfilled" ? results[2].value : [];
+    const topoData = Array.isArray(topoRaw) ? topoRaw : [];
+    const vaultRaw = results[3].status === "fulfilled" ? results[3].value : [];
+    const vaultData = Array.isArray(vaultRaw) ? vaultRaw : [];
+    const findingsRaw = results[4].status === "fulfilled" ? results[4].value : null;
+    const findingsData = findingsRaw && findingsRaw.findings ? findingsRaw : { findings: [] };
 
     const vaultByType: Record<string, number> = {};
     for (const e of vaultData) {

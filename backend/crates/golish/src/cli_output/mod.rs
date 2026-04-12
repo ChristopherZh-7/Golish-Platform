@@ -278,6 +278,21 @@ pub fn convert_to_cli_json(event: &AiEvent) -> CliJsonEvent {
             }),
         ),
 
+        AiEvent::SubAgentTextDelta {
+            agent_id,
+            delta,
+            accumulated,
+            parent_request_id,
+        } => CliJsonEvent::new(
+            "sub_agent_text_delta",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "delta": delta,
+                "accumulated": accumulated,
+                "parent_request_id": parent_request_id
+            }),
+        ),
+
         AiEvent::SubAgentCompleted {
             agent_id,
             response,
@@ -874,6 +889,9 @@ fn handle_ai_event_terminal(event: &AiEvent) -> Result<()> {
                 agent_name,
                 truncate(task, 80)
             );
+        }
+        AiEvent::SubAgentTextDelta { .. } => {
+            // Streaming delta — not shown in terminal mode
         }
         AiEvent::SubAgentCompleted {
             response,

@@ -225,8 +225,8 @@ describe("UnifiedTimeline React.memo Optimization", () => {
       const state2 = useStore.getState();
       const result2 = selectSessionState(state2, "stable-ref-test");
 
-      // streamingBlocks should be the same reference since they didn't change
-      expect(result1.streamingBlocks).toBe(result2.streamingBlocks);
+      // Cached selector should return the same reference when inputs don't change
+      expect(result1.timeline).toBe(result2.timeline);
     });
   });
 
@@ -253,7 +253,7 @@ describe("UnifiedTimeline React.memo Optimization", () => {
       expect(container).toBeDefined();
     });
 
-    it("activeSubAgents should not cause recalculation when empty", async () => {
+    it("selector should not recalculate when unrelated state changes", async () => {
       createSession("subagent-test");
 
       const { selectSessionState } = await import("../../store/selectors/session");
@@ -261,14 +261,14 @@ describe("UnifiedTimeline React.memo Optimization", () => {
       const state1 = useStore.getState();
       const result1 = selectSessionState(state1, "subagent-test");
 
-      // Trigger any state update (should not affect activeSubAgents)
+      // Trigger unrelated state update (agentStreaming is not part of SessionState)
       useStore.getState().updateAgentStreaming("subagent-test", "Hello");
 
       const state2 = useStore.getState();
       const result2 = selectSessionState(state2, "subagent-test");
 
-      // Empty activeSubAgents should be stable reference
-      expect(result1.activeSubAgents).toBe(result2.activeSubAgents);
+      // SessionState should be stable since timeline/pendingCommand/workingDirectory didn't change
+      expect(result1).toBe(result2);
     });
   });
 });

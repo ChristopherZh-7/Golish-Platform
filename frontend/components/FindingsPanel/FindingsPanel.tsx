@@ -136,7 +136,7 @@ export function FindingsPanel() {
     setLoading(true);
     try {
       const store = await invoke<FindingsStore>("findings_list", { projectPath: getProjectPath() });
-      setFindings(store.findings || []);
+      setFindings(store?.findings || []);
     } catch {
       setFindings([]);
     } finally {
@@ -146,8 +146,9 @@ export function FindingsPanel() {
 
   useEffect(() => { load(); }, [load, currentProjectPath]);
 
+  const safeFindings = findings ?? [];
   const filtered = useMemo(() => {
-    let list = findings;
+    let list = safeFindings;
     if (severityFilter !== "all") list = list.filter((f) => f.severity === severityFilter);
     if (statusFilter !== "all") list = list.filter((f) => f.status === statusFilter);
     if (search.trim()) {
@@ -163,13 +164,12 @@ export function FindingsPanel() {
       const order: Severity[] = ["critical", "high", "medium", "low", "info"];
       return order.indexOf(a.severity) - order.indexOf(b.severity);
     });
-  }, [findings, severityFilter, statusFilter, search]);
-
+  }, [safeFindings, severityFilter, statusFilter, search]);
   const stats = useMemo(() => {
-    const s = { critical: 0, high: 0, medium: 0, low: 0, info: 0, total: findings.length };
-    for (const f of findings) s[f.severity]++;
+    const s = { critical: 0, high: 0, medium: 0, low: 0, info: 0, total: safeFindings.length };
+    for (const f of safeFindings) s[f.severity]++;
     return s;
-  }, [findings]);
+  }, [safeFindings]);
 
   const handleAdd = useCallback(async () => {
     if (!addForm.title.trim()) return;

@@ -70,7 +70,7 @@ export function WordlistPanel() {
     setLoading(true);
     try {
       const list = await invoke<WordlistMeta[]>("wordlist_list");
-      setWordlists(list);
+      setWordlists(Array.isArray(list) ? list : []);
     } catch {
       setWordlists([]);
     }
@@ -180,14 +180,15 @@ export function WordlistPanel() {
     });
   }, []);
 
-  const filtered = filterCat === "all" ? wordlists : wordlists.filter((w) => w.category === filterCat);
+  const safeWordlists = wordlists ?? [];
+  const filtered = filterCat === "all" ? safeWordlists : safeWordlists.filter((w) => w.category === filterCat);
 
   return (
     <div className="h-full flex flex-col bg-background/95">
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border/20">
         <BookText className="w-3.5 h-3.5 text-accent/70" />
         <span className="text-[11px] font-medium flex-1">Wordlists</span>
-        <span className="text-[9px] text-muted-foreground/40">{wordlists.length} lists</span>
+        <span className="text-[9px] text-muted-foreground/40">{safeWordlists.length} lists</span>
         {mergeIds.size >= 2 && (
           <div className="flex items-center gap-1">
             <input
@@ -294,7 +295,7 @@ export function WordlistPanel() {
       <div className="flex-1 overflow-y-auto px-3 py-2 space-y-1">
         {filtered.length === 0 ? (
           <div className="text-center text-[11px] text-muted-foreground/30 py-12">
-            {wordlists.length === 0 ? "No wordlists imported yet" : "No wordlists in this category"}
+            {safeWordlists.length === 0 ? "No wordlists imported yet" : "No wordlists in this category"}
           </div>
         ) : (
           filtered.map((wl) => (

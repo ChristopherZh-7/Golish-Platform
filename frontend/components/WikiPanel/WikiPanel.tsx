@@ -228,8 +228,8 @@ export function WikiPanel({ initialPath }: { initialPath?: string | null }) {
   const loadTree = useCallback(async () => {
     setLoading(true);
     try {
-      const data: WikiEntry[] = await invoke("wiki_list");
-      setTree(data);
+      const data = await invoke("wiki_list");
+      setTree(Array.isArray(data) ? data as WikiEntry[] : []);
     } catch (e) {
       setError(t("wiki.loadFailed", { error: String(e) }));
     } finally {
@@ -344,6 +344,7 @@ export function WikiPanel({ initialPath }: { initialPath?: string | null }) {
   }, []);
 
   const flatFileCount = useCallback((entries: WikiEntry[]): number => {
+    if (!Array.isArray(entries)) return 0;
     let count = 0;
     for (const e of entries) {
       if (e.is_dir && e.children) count += flatFileCount(e.children);

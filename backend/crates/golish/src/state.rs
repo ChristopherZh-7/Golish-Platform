@@ -5,7 +5,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::ai::commands::WorkflowState;
 use crate::ai::AiState;
 use crate::commands::CommandIndex;
 use crate::indexer::IndexerState;
@@ -14,6 +13,7 @@ use crate::settings::SettingsManager;
 use crate::sidecar::{SidecarConfig, SidecarState};
 use crate::telemetry::TelemetryStats;
 use crate::tools::pty_interactive::PtyOutputTap;
+use golish_db::DbReadyGate;
 use parking_lot::Mutex;
 use sqlx::PgPool;
 use tokio::sync::RwLock;
@@ -21,7 +21,6 @@ use tokio::sync::RwLock;
 pub struct AppState {
     pub pty_manager: Arc<PtyManager>,
     pub ai_state: AiState,
-    pub workflow_state: Arc<WorkflowState>,
     pub indexer_state: Arc<IndexerState>,
     pub settings_manager: Arc<SettingsManager>,
     /// Sidecar configuration - used to create per-session SidecarState instances.
@@ -52,6 +51,10 @@ pub struct AppState {
     /// Created lazily via `connect_lazy` — connections are established
     /// on first query after the background PG server finishes starting.
     pub db_pool: Arc<PgPool>,
+    /// Readiness gate for the embedded PostgreSQL server. Consumers should
+    /// check `db_ready.is_ready()` before issuing queries to avoid timeouts
+    /// during the startup window.
+    pub db_ready: DbReadyGate,
 }
 
 impl AppState {
@@ -66,6 +69,7 @@ impl AppState {
         langfuse_active: bool,
         telemetry_stats: Option<Arc<TelemetryStats>>,
         db_pool: Arc<PgPool>,
+        db_ready: DbReadyGate,
     ) -> Self {
         let settings_manager = Arc::new(
             SettingsManager::new()
@@ -85,7 +89,6 @@ impl AppState {
         Self {
             pty_manager: Arc::new(PtyManager::new()),
             ai_state: AiState::new(),
-            workflow_state: Arc::new(WorkflowState::new()),
             indexer_state: Arc::new(IndexerState::new()),
             settings_manager,
             sidecar_config,
@@ -99,6 +102,7 @@ impl AppState {
             active_terminal_session: Arc::new(Mutex::new(None)),
             pentest_busy_sessions: Arc::new(Mutex::new(HashSet::new())),
             db_pool,
+            db_ready,
         }
     }
 
@@ -115,6 +119,7 @@ impl AppState {
         langfuse_active: bool,
         telemetry_stats: Option<Arc<TelemetryStats>>,
         db_pool: Arc<PgPool>,
+        db_ready: DbReadyGate,
     ) -> Self {
         let settings = settings_manager.get().await;
         let sidecar_config = SidecarConfig::from_golish_settings(&settings.sidecar);
@@ -128,7 +133,6 @@ impl AppState {
         Self {
             pty_manager: Arc::new(PtyManager::new()),
             ai_state: AiState::new(),
-            workflow_state: Arc::new(WorkflowState::new()),
             indexer_state: Arc::new(IndexerState::new()),
             settings_manager,
             sidecar_config,
@@ -142,6 +146,7 @@ impl AppState {
             active_terminal_session: Arc::new(Mutex::new(None)),
             pentest_busy_sessions: Arc::new(Mutex::new(HashSet::new())),
             db_pool,
+            db_ready,
         }
     }
 }

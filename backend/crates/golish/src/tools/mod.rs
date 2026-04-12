@@ -63,3 +63,6 @@ pub mod vuln_intel;
 
 // AI bridge tools (expose targets/findings/vault to the AI agent)
 pub mod pentest_bridge;
+
+// Frontend conversation & timeline persistence (replaces workspace.json)
+pub mod conversation_store;

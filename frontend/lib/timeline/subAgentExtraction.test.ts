@@ -61,6 +61,7 @@ describe("extractSubAgentBlocks", () => {
         depth: 1,
         status: "completed",
         toolCalls: [],
+        entries: [],
         startedAt: "2024-01-01T00:00:00Z",
       };
 
@@ -99,6 +100,7 @@ describe("extractSubAgentBlocks", () => {
         depth: 1,
         status: "completed",
         toolCalls: [],
+        entries: [],
         startedAt: "2024-01-01T00:00:00Z",
       };
 
@@ -110,6 +112,7 @@ describe("extractSubAgentBlocks", () => {
         depth: 1,
         status: "completed",
         toolCalls: [],
+        entries: [],
         startedAt: "2024-01-01T00:00:01Z",
       };
 
@@ -155,6 +158,7 @@ describe("extractSubAgentBlocks", () => {
         depth: 1,
         status: "completed",
         toolCalls: [],
+        entries: [],
         startedAt: "2024-01-01T00:00:00Z",
       };
 
@@ -198,6 +202,7 @@ describe("extractSubAgentBlocks", () => {
         depth: 1,
         status: "completed",
         toolCalls: [],
+        entries: [],
         startedAt: "2024-01-01T00:00:00Z",
       };
 
@@ -238,6 +243,7 @@ describe("extractSubAgentBlocks", () => {
         depth: 1,
         status: "completed",
         toolCalls: [],
+        entries: [],
         startedAt: "2024-01-01T00:00:00Z",
       };
 
@@ -277,6 +283,7 @@ describe("extractSubAgentBlocks", () => {
         depth: 1,
         status: "completed",
         toolCalls: [],
+        entries: [],
         startedAt: "2024-01-01T00:00:00Z",
       };
 
@@ -312,6 +319,7 @@ describe("extractSubAgentBlocks", () => {
         depth: 1,
         status: "completed",
         toolCalls: [],
+        entries: [],
         startedAt: "2024-01-01T00:00:00Z",
       };
 
@@ -323,6 +331,7 @@ describe("extractSubAgentBlocks", () => {
         depth: 1,
         status: "completed",
         toolCalls: [],
+        entries: [],
         startedAt: "2024-01-01T00:00:01Z",
       };
 
@@ -358,6 +367,7 @@ describe("extractSubAgentBlocks", () => {
         depth: 1,
         status: "completed",
         toolCalls: [],
+        entries: [],
         startedAt: "2024-01-01T00:00:00Z",
       };
 
@@ -393,6 +403,7 @@ describe("extractSubAgentBlocks", () => {
         depth: 1,
         status: "running",
         toolCalls: [],
+        entries: [],
         startedAt: "2024-01-01T00:00:00Z",
       };
 
@@ -438,6 +449,7 @@ describe("extractSubAgentBlocks", () => {
         depth: 1,
         status: "completed",
         toolCalls: [],
+        entries: [],
         startedAt: "2024-01-01T00:00:00Z",
       };
 

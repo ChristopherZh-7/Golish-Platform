@@ -261,6 +261,13 @@ export type AiEvent = AiEventBase &
         parent_request_id: string;
       }
     | {
+        type: "sub_agent_text_delta";
+        agent_id: string;
+        delta: string;
+        accumulated: string;
+        parent_request_id: string;
+      }
+    | {
         type: "sub_agent_error";
         agent_id: string;
         error: string;

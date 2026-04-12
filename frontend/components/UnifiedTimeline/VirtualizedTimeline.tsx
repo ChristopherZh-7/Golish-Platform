@@ -1,11 +1,10 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import { TimelineBlockErrorBoundary } from "@/components/TimelineBlockErrorBoundary";
 import { estimateBlockHeight } from "@/lib/timeline/blockHeightEstimation";
-import type { UnifiedBlock as UnifiedBlockType } from "@/store";
+import type { UnifiedBlock as UnifiedBlockType, ActiveSubAgent } from "@/store";
 import { UnifiedBlock } from "./UnifiedBlock";
 
-// Static style constants for virtualized items
 const virtualItemBaseStyle = {
   position: "absolute",
   top: 0,
@@ -21,14 +20,46 @@ interface VirtualizedTimelineProps {
   workingDirectory: string;
 }
 
-// Minimum block count before enabling virtualization
-// Below this threshold, direct rendering is more efficient
 const VIRTUALIZATION_THRESHOLD = 50;
 
+type SubAgentBlock = UnifiedBlockType & { type: "sub_agent_activity"; data: ActiveSubAgent; batchId?: string };
+
 /**
- * Renders timeline blocks using virtualization for improved performance.
- * Only blocks visible in the viewport (plus overscan) are rendered to the DOM.
+ * Groups consecutive sub_agent_activity blocks by batchId.
+ * Blocks are split into separate groups when batchId differs or a non-agent block intervenes.
  */
+function computeSubAgentGroups(blocks: UnifiedBlockType[]): Map<number, { isLeader: true; agents: ActiveSubAgent[] } | { isHidden: true }> {
+  const groups = new Map<number, { isLeader: true; agents: ActiveSubAgent[] } | { isHidden: true }>();
+  let i = 0;
+  while (i < blocks.length) {
+    if (blocks[i].type === "sub_agent_activity") {
+      const start = i;
+      const agents: ActiveSubAgent[] = [];
+      const firstBlock = blocks[i] as SubAgentBlock;
+      const batchId = firstBlock.batchId;
+      agents.push(firstBlock.data);
+      i++;
+
+      while (i < blocks.length && blocks[i].type === "sub_agent_activity") {
+        const block = blocks[i] as SubAgentBlock;
+        if (batchId && block.batchId !== batchId) break;
+        agents.push(block.data);
+        i++;
+      }
+
+      if (agents.length > 1) {
+        groups.set(start, { isLeader: true, agents });
+        for (let j = start + 1; j < start + agents.length; j++) {
+          groups.set(j, { isHidden: true });
+        }
+      }
+    } else {
+      i++;
+    }
+  }
+  return groups;
+}
+
 export const VirtualizedTimeline = memo(function VirtualizedTimeline({
   blocks,
   sessionId,
@@ -36,14 +67,19 @@ export const VirtualizedTimeline = memo(function VirtualizedTimeline({
   shouldScrollToBottom,
   workingDirectory,
 }: VirtualizedTimelineProps) {
+  const groupInfo = useMemo(() => computeSubAgentGroups(blocks), [blocks]);
+
   const virtualizer = useVirtualizer({
     count: blocks.length,
     getScrollElement: () => containerRef.current,
-    estimateSize: (index) => estimateBlockHeight(blocks[index]),
-    overscan: 5, // Render 5 extra items above/below viewport for smooth scrolling
+    estimateSize: (index) => {
+      const info = groupInfo.get(index);
+      if (info && "isHidden" in info) return 0;
+      return estimateBlockHeight(blocks[index]);
+    },
+    overscan: 5,
   });
 
-  // Only scroll to bottom when NEW blocks are added (not on height changes from expand/collapse)
   const prevBlocksLengthRef = useRef(blocks.length);
   useEffect(() => {
     const grew = blocks.length > prevBlocksLengthRef.current;
@@ -53,21 +89,26 @@ export const VirtualizedTimeline = memo(function VirtualizedTimeline({
     }
   }, [blocks.length, shouldScrollToBottom, virtualizer]);
 
-  // For small timelines, skip virtualization overhead
   if (blocks.length < VIRTUALIZATION_THRESHOLD) {
     return (
       <div className="divide-y divide-[var(--border-color,rgba(255,255,255,0.06))]">
-        {blocks.map((block) => (
-          <div key={block.id} className="py-1">
-            <TimelineBlockErrorBoundary blockId={block.id}>
-              <UnifiedBlock
-                block={block}
-                sessionId={sessionId}
-                workingDirectory={workingDirectory}
-              />
-            </TimelineBlockErrorBoundary>
-          </div>
-        ))}
+        {blocks.map((block, idx) => {
+          const info = groupInfo.get(idx);
+          if (info && "isHidden" in info) return null;
+          const groupedAgents = info && "isLeader" in info ? info.agents : undefined;
+          return (
+            <div key={block.id} className="py-1">
+              <TimelineBlockErrorBoundary blockId={block.id}>
+                <UnifiedBlock
+                  block={block}
+                  sessionId={sessionId}
+                  workingDirectory={workingDirectory}
+                  groupedAgents={groupedAgents}
+                />
+              </TimelineBlockErrorBoundary>
+            </div>
+          );
+        })}
       </div>
     );
   }
@@ -84,6 +125,9 @@ export const VirtualizedTimeline = memo(function VirtualizedTimeline({
     >
       {virtualItems.map((virtualRow) => {
         const block = blocks[virtualRow.index];
+        const info = groupInfo.get(virtualRow.index);
+        if (info && "isHidden" in info) return null;
+        const groupedAgents = info && "isLeader" in info ? info.agents : undefined;
         return (
           <div
             key={block.id}
@@ -100,6 +144,7 @@ export const VirtualizedTimeline = memo(function VirtualizedTimeline({
                   block={block}
                   sessionId={sessionId}
                   workingDirectory={workingDirectory}
+                  groupedAgents={groupedAgents}
                 />
               </TimelineBlockErrorBoundary>
             </div>

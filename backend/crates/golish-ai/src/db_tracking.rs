@@ -7,20 +7,36 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use golish_db::DbReadyGate;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 /// Lightweight handle passed through the agent loop for background DB recording.
 /// All methods spawn fire-and-forget tasks so the agentic loop is never blocked.
+/// Queries are gated on `DbReadyGate` — if PG isn't ready yet, fire-and-forget
+/// writes silently wait (up to a short timeout) rather than timing out against
+/// the pool's acquire_timeout.
 #[derive(Clone)]
 pub struct DbTracker {
     pool: Arc<PgPool>,
     session_uuid: Uuid,
+    ready_gate: DbReadyGate,
+    project_path: Option<String>,
 }
 
 impl DbTracker {
-    pub fn new(pool: Arc<PgPool>, session_uuid: Uuid) -> Self {
-        Self { pool, session_uuid }
+    pub fn new(pool: Arc<PgPool>, session_uuid: Uuid, ready_gate: DbReadyGate) -> Self {
+        Self {
+            pool,
+            session_uuid,
+            ready_gate,
+            project_path: None,
+        }
+    }
+
+    pub fn with_project_path(mut self, path: Option<String>) -> Self {
+        self.project_path = path;
+        self
     }
 
     pub fn session_uuid(&self) -> Uuid {
@@ -29,6 +45,10 @@ impl DbTracker {
 
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    pub fn ready_gate(&self) -> &DbReadyGate {
+        &self.ready_gate
     }
 
     // -- Tool calls --------------------------------------------------------
@@ -46,9 +66,13 @@ impl DbTracker {
         let call_id_owned = call_id.to_string();
         let tool_name = tool_name.to_string();
         let args = args.clone();
+        let mut gate = self.ready_gate.clone();
 
         let call_id_for_guard = call_id_owned.clone();
         tokio::spawn(async move {
+            if !await_db_ready(&mut gate).await {
+                return;
+            }
             let res = sqlx::query(
                 r#"INSERT INTO tool_calls (call_id, session_id, agent, name, args, status, source)
                    VALUES ($1, $2, 'primary'::agent_type, $3, $4, 'running'::toolcall_status, 'ai')
@@ -82,8 +106,12 @@ impl DbTracker {
         let duration = guard.started_at.elapsed().as_millis() as i32;
         let status = if success { "finished" } else { "failed" };
         let result_text = truncate_for_db(result_text, 50_000);
+        let mut gate = self.ready_gate.clone();
 
         tokio::spawn(async move {
+            if !await_db_ready(&mut gate).await {
+                return;
+            }
             let res = sqlx::query(
                 r#"UPDATE tool_calls
                    SET status = $1::toolcall_status, result = $2,
@@ -119,8 +147,12 @@ impl DbTracker {
         let session_uuid = self.session_uuid;
         let model = model.to_string();
         let provider = provider.to_string();
+        let mut gate = self.ready_gate.clone();
 
         tokio::spawn(async move {
+            if !await_db_ready(&mut gate).await {
+                return;
+            }
             let res = sqlx::query(
                 r#"INSERT INTO message_chains
                    (session_id, agent, model, provider, tokens_in, tokens_out, duration_ms)
@@ -149,8 +181,12 @@ impl DbTracker {
         let session_uuid = self.session_uuid;
         let stream = stream.to_string();
         let content = truncate_for_db(content, 100_000);
+        let mut gate = self.ready_gate.clone();
 
         tokio::spawn(async move {
+            if !await_db_ready(&mut gate).await {
+                return;
+            }
             let res = sqlx::query(
                 r#"INSERT INTO terminal_logs (session_id, stream, content)
                    VALUES ($1, $2::stream_type, $3)"#,
@@ -176,8 +212,12 @@ impl DbTracker {
         let engine = engine.to_string();
         let query = query.to_string();
         let result = result.map(|r| truncate_for_db(r, 50_000));
+        let mut gate = self.ready_gate.clone();
 
         tokio::spawn(async move {
+            if !await_db_ready(&mut gate).await {
+                return;
+            }
             let res = sqlx::query(
                 r#"INSERT INTO search_logs (session_id, initiator, engine, query, result)
                    VALUES ($1, 'primary'::agent_type, $2, $3, $4)"#,
@@ -209,8 +249,12 @@ impl DbTracker {
         let category = category.to_string();
         let details = details.to_string();
         let source = source.to_string();
+        let mut gate = self.ready_gate.clone();
 
         tokio::spawn(async move {
+            if !await_db_ready(&mut gate).await {
+                return;
+            }
             let res = sqlx::query(
                 r#"INSERT INTO audit_log (action, category, details, source)
                    VALUES ($1, $2, $3, $4)"#,
@@ -236,15 +280,21 @@ impl DbTracker {
         let session_uuid = self.session_uuid;
         let content = content.to_string();
         let mem_type = mem_type.to_string();
+        let project_path = self.project_path.clone();
+        let mut gate = self.ready_gate.clone();
 
         tokio::spawn(async move {
+            if !await_db_ready(&mut gate).await {
+                return;
+            }
             let res = sqlx::query(
-                r#"INSERT INTO memories (session_id, content, mem_type, doc_type, metadata)
-                   VALUES ($1, $2, $3::memory_type, 'memory', $4)"#,
+                r#"INSERT INTO memories (session_id, content, mem_type, doc_type, project_path, metadata)
+                   VALUES ($1, $2, $3::memory_type, 'memory', $4, $5)"#,
             )
             .bind(session_uuid)
             .bind(&content)
             .bind(&mem_type)
+            .bind(&project_path)
             .bind(&metadata)
             .execute(pool.as_ref())
             .await;
@@ -255,7 +305,43 @@ impl DbTracker {
         });
     }
 
+    /// Store a global memory (project_path = NULL), visible across all projects.
+    /// Use for general techniques, tool usage patterns, and reusable knowledge.
+    pub fn store_memory_global(
+        &self,
+        content: &str,
+        mem_type: &str,
+        metadata: Option<serde_json::Value>,
+    ) {
+        let pool = self.pool.clone();
+        let session_uuid = self.session_uuid;
+        let content = content.to_string();
+        let mem_type = mem_type.to_string();
+        let mut gate = self.ready_gate.clone();
+
+        tokio::spawn(async move {
+            if !await_db_ready(&mut gate).await {
+                return;
+            }
+            let res = sqlx::query(
+                r#"INSERT INTO memories (session_id, content, mem_type, doc_type, project_path, metadata)
+                   VALUES ($1, $2, $3::memory_type, 'memory', NULL, $4)"#,
+            )
+            .bind(session_uuid)
+            .bind(&content)
+            .bind(&mem_type)
+            .bind(&metadata)
+            .execute(pool.as_ref())
+            .await;
+
+            if let Err(e) = res {
+                tracing::warn!("[db-track] Failed to store global memory: {e}");
+            }
+        });
+    }
+
     /// Store a memory with an embedding vector for semantic search.
+    /// Adapts to pgvector (native vector type) or BYTEA fallback automatically.
     pub fn store_memory_with_embedding(
         &self,
         content: &str,
@@ -269,25 +355,49 @@ impl DbTracker {
         let content = content.to_string();
         let mem_type = mem_type.to_string();
         let tool_name = tool_name.map(str::to_string);
-        let emb_dim = embedding.len() as i32;
-        let emb_bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let project_path = self.project_path.clone();
+        let mut gate = self.ready_gate.clone();
 
         tokio::spawn(async move {
-            let res = sqlx::query(
-                r#"INSERT INTO memories
-                   (session_id, content, mem_type, doc_type, tool_name,
-                    embedding, embedding_dim, metadata)
-                   VALUES ($1, $2, $3::memory_type, 'memory', $4, $5, $6, $7)"#,
-            )
-            .bind(session_uuid)
-            .bind(&content)
-            .bind(&mem_type)
-            .bind(&tool_name)
-            .bind(&emb_bytes)
-            .bind(emb_dim)
-            .bind(&metadata)
-            .execute(pool.as_ref())
-            .await;
+            if !await_db_ready(&mut gate).await {
+                return;
+            }
+
+            let res = if gate.has_pgvector() {
+                let emb_str = vec_to_pgvector(&embedding);
+                sqlx::query(
+                    r#"INSERT INTO memories
+                       (session_id, content, mem_type, doc_type, tool_name,
+                        embedding, project_path, metadata)
+                       VALUES ($1, $2, $3::memory_type, 'tool_result', $4, $5::vector, $6, $7)"#,
+                )
+                .bind(session_uuid)
+                .bind(&content)
+                .bind(&mem_type)
+                .bind(&tool_name)
+                .bind(&emb_str)
+                .bind(&project_path)
+                .bind(&metadata)
+                .execute(pool.as_ref())
+                .await
+            } else {
+                let emb_bytes = embedding_to_bytes(&embedding);
+                sqlx::query(
+                    r#"INSERT INTO memories
+                       (session_id, content, mem_type, doc_type, tool_name,
+                        embedding, project_path, metadata)
+                       VALUES ($1, $2, $3::memory_type, 'tool_result', $4, $5, $6, $7)"#,
+                )
+                .bind(session_uuid)
+                .bind(&content)
+                .bind(&mem_type)
+                .bind(&tool_name)
+                .bind(&emb_bytes)
+                .bind(&project_path)
+                .bind(&metadata)
+                .execute(pool.as_ref())
+                .await
+            };
 
             if let Err(e) = res {
                 tracing::warn!("[db-track] Failed to store memory with embedding: {e}");
@@ -295,35 +405,130 @@ impl DbTracker {
         });
     }
 
+    /// Run the gatekeeper pipeline: decide whether to store a tool result as
+    /// a long-term memory, build the structured content, and persist it.
+    /// This is a fire-and-forget background task.
+    pub fn maybe_store_tool_memory(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        result_value: &serde_json::Value,
+        success: bool,
+    ) {
+        use golish_db::gatekeeper::{self, StoreDecision};
+        use golish_db::models::ToolcallStatus;
+
+        let status = if success {
+            ToolcallStatus::Finished
+        } else {
+            ToolcallStatus::Failed
+        };
+
+        let decision = gatekeeper::should_store(tool_name, status);
+        let mem_type = match decision {
+            StoreDecision::Skip => return,
+            StoreDecision::Store(t) | StoreDecision::StoreSummary(t) => t,
+        };
+
+        let result_text = match result_value {
+            serde_json::Value::String(s) => s.clone(),
+            _ => serde_json::to_string(result_value).unwrap_or_default(),
+        };
+
+        let filtered = match gatekeeper::filter_content(&result_text) {
+            Some(c) => c,
+            None => return,
+        };
+
+        let memory_content = gatekeeper::build_memory_content(tool_name, args, &filtered);
+
+        let mem_type_str = format!("{:?}", mem_type).to_lowercase();
+        let metadata = serde_json::json!({
+            "tool_name": tool_name,
+            "success": success,
+        });
+
+        self.store_memory(&memory_content, &mem_type_str, Some(metadata));
+    }
+
     /// Semantic similarity search over memories.
-    /// Loads candidate embeddings from DB and computes cosine similarity in Rust.
+    /// Uses pgvector's native `<=>` operator when available, falls back to
+    /// Rust-side cosine similarity with BYTEA embeddings otherwise.
     pub async fn search_memories_semantic(
+        &mut self,
+        query_embedding: &[f32],
+        limit: usize,
+        threshold: f32,
+    ) -> Vec<ScoredMemoryHit> {
+        if !self.ready_gate.is_ready() {
+            self.ready_gate.wait().await;
+        }
+
+        if self.ready_gate.has_pgvector() {
+            self.search_pgvector(query_embedding, limit, threshold).await
+        } else {
+            self.search_bytea_fallback(query_embedding, limit, threshold)
+                .await
+        }
+    }
+
+    async fn search_pgvector(
         &self,
         query_embedding: &[f32],
         limit: usize,
         threshold: f32,
     ) -> Vec<ScoredMemoryHit> {
-        #[derive(Debug, sqlx::FromRow)]
-        struct CandRow {
-            id: Uuid,
-            content: String,
-            mem_type: String,
-            tool_name: Option<String>,
-            metadata: Option<serde_json::Value>,
-            created_at: chrono::DateTime<chrono::Utc>,
-            embedding: Option<Vec<u8>>,
-            embedding_dim: Option<i32>,
-        }
-
-        let rows: Vec<CandRow> = sqlx::query_as(
+        let emb_str = vec_to_pgvector(query_embedding);
+        let rows: Vec<PgvectorScoredRow> = sqlx::query_as(
             r#"SELECT id, content, mem_type::TEXT as mem_type, tool_name,
-                      metadata, created_at, embedding, embedding_dim
+                      metadata, created_at,
+                      1.0 - (embedding <=> $1::vector) AS score
                FROM memories
-               WHERE embedding IS NOT NULL AND session_id = $1
-               ORDER BY created_at DESC
-               LIMIT 500"#,
+               WHERE embedding IS NOT NULL
+                 AND ($2::text IS NULL OR project_path = $2 OR project_path IS NULL)
+               ORDER BY embedding <=> $1::vector ASC
+               LIMIT $3"#,
         )
-        .bind(self.session_uuid)
+        .bind(&emb_str)
+        .bind(&self.project_path)
+        .bind(limit as i64)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .unwrap_or_default();
+
+        rows.into_iter()
+            .filter(|r| r.score >= threshold)
+            .map(|r| ScoredMemoryHit {
+                hit: MemoryHit {
+                    id: r.id,
+                    content: r.content,
+                    mem_type: r.mem_type,
+                    metadata: r.metadata,
+                    created_at: r.created_at,
+                },
+                tool_name: r.tool_name,
+                score: r.score,
+            })
+            .collect()
+    }
+
+    async fn search_bytea_fallback(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+        threshold: f32,
+    ) -> Vec<ScoredMemoryHit> {
+        let rows: Vec<ByteaEmbeddingRow> = sqlx::query_as(
+            r#"SELECT id, content, mem_type::TEXT as mem_type, tool_name,
+                      metadata, created_at, embedding
+               FROM memories
+               WHERE embedding IS NOT NULL
+                 AND ($1::text IS NULL OR project_path = $1 OR project_path IS NULL)
+               ORDER BY created_at DESC
+               LIMIT $2"#,
+        )
+        .bind(&self.project_path)
+        .bind((limit * 5) as i64) // fetch more, filter by score in Rust
         .fetch_all(self.pool.as_ref())
         .await
         .unwrap_or_default();
@@ -331,22 +536,23 @@ impl DbTracker {
         let mut scored: Vec<ScoredMemoryHit> = rows
             .into_iter()
             .filter_map(|r| {
-                let emb = decode_emb(&r.embedding?, r.embedding_dim?)?;
-                let score = cosine_sim(query_embedding, &emb);
-                if score < threshold {
-                    return None;
+                let stored = bytes_to_embedding(&r.embedding?)?;
+                let score = cosine_similarity(query_embedding, &stored);
+                if score >= threshold {
+                    Some(ScoredMemoryHit {
+                        hit: MemoryHit {
+                            id: r.id,
+                            content: r.content,
+                            mem_type: r.mem_type,
+                            metadata: r.metadata,
+                            created_at: r.created_at,
+                        },
+                        tool_name: r.tool_name,
+                        score,
+                    })
+                } else {
+                    None
                 }
-                Some(ScoredMemoryHit {
-                    hit: MemoryHit {
-                        id: r.id,
-                        content: r.content,
-                        mem_type: r.mem_type,
-                        metadata: r.metadata,
-                        created_at: r.created_at,
-                    },
-                    tool_name: r.tool_name,
-                    score,
-                })
             })
             .collect();
 
@@ -355,21 +561,157 @@ impl DbTracker {
         scored
     }
 
-    /// Search memories by text content (ILIKE).
-    pub async fn search_memories_text(&self, query: &str, limit: i64) -> Vec<MemoryHit> {
+    /// Search memories by text content (ILIKE), scoped to current project + global.
+    pub async fn search_memories_text(&mut self, query: &str, limit: i64) -> Vec<MemoryHit> {
+        if !self.ready_gate.is_ready() {
+            self.ready_gate.wait().await;
+        }
         let pattern = format!("%{}%", query);
         sqlx::query_as::<_, MemoryHit>(
             r#"SELECT id, content, mem_type::TEXT as mem_type, metadata, created_at
                FROM memories
                WHERE content ILIKE $1
+                 AND ($2::text IS NULL OR project_path = $2 OR project_path IS NULL)
                ORDER BY created_at DESC
-               LIMIT $2"#,
+               LIMIT $3"#,
         )
         .bind(&pattern)
+        .bind(&self.project_path)
         .bind(limit)
         .fetch_all(self.pool.as_ref())
         .await
         .unwrap_or_default()
+    }
+
+    /// Record a sub-agent execution in the agent_logs table.
+    /// Fire-and-forget — errors are logged but don't propagate.
+    pub fn record_agent_call(
+        &self,
+        initiator: &str,
+        executor: &str,
+        task: &str,
+        result: Option<&str>,
+        duration_ms: u64,
+    ) {
+        let pool = self.pool.clone();
+        let session_uuid = self.session_uuid;
+        let initiator = initiator.to_string();
+        let executor = executor.to_string();
+        let task = task.to_string();
+        let result = result.map(|r| r.to_string());
+        let duration_ms = duration_ms as i32;
+        let mut gate = self.ready_gate.clone();
+
+        tokio::spawn(async move {
+            if !await_db_ready(&mut gate).await {
+                return;
+            }
+            let res = sqlx::query(
+                r#"INSERT INTO agent_logs (session_id, initiator, executor, task, result, duration_ms)
+                   VALUES ($1, $2::agent_type, $3::agent_type, $4, $5, $6)"#,
+            )
+            .bind(session_uuid)
+            .bind(&initiator)
+            .bind(&executor)
+            .bind(&task)
+            .bind(&result)
+            .bind(duration_ms)
+            .execute(pool.as_ref())
+            .await;
+
+            if let Err(e) = res {
+                tracing::warn!("[db-track] Failed to record agent call: {e}");
+            }
+        });
+    }
+
+    /// Search memories by text content with optional category filter.
+    /// Used by the `search_memories` AI tool. Scoped to current project + global.
+    pub async fn search_memories_by_text(
+        &self,
+        query: &str,
+        category: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<MemoryHit>, sqlx::Error> {
+        let mut gate = self.ready_gate.clone();
+        if !gate.is_ready() {
+            gate.wait().await;
+        }
+        let pattern = format!("%{}%", query);
+
+        if let Some(cat) = category {
+            let cat_pattern = format!("[{}]%", cat);
+            sqlx::query_as::<_, MemoryHit>(
+                r#"SELECT id, content, mem_type::TEXT as mem_type, metadata, created_at
+                   FROM memories
+                   WHERE content ILIKE $1 AND content ILIKE $2
+                     AND ($3::text IS NULL OR project_path = $3 OR project_path IS NULL)
+                   ORDER BY created_at DESC
+                   LIMIT $4"#,
+            )
+            .bind(&pattern)
+            .bind(&cat_pattern)
+            .bind(&self.project_path)
+            .bind(limit)
+            .fetch_all(self.pool.as_ref())
+            .await
+        } else {
+            sqlx::query_as::<_, MemoryHit>(
+                r#"SELECT id, content, mem_type::TEXT as mem_type, metadata, created_at
+                   FROM memories
+                   WHERE content ILIKE $1
+                     AND ($2::text IS NULL OR project_path = $2 OR project_path IS NULL)
+                   ORDER BY created_at DESC
+                   LIMIT $3"#,
+            )
+            .bind(&pattern)
+            .bind(&self.project_path)
+            .bind(limit)
+            .fetch_all(self.pool.as_ref())
+            .await
+        }
+    }
+
+    /// List recent memories, optionally filtered by category.
+    /// Used by the `list_memories` AI tool. Scoped to current project + global.
+    pub async fn list_recent_memories(
+        &self,
+        category: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<MemoryHit>, sqlx::Error> {
+        let mut gate = self.ready_gate.clone();
+        if !gate.is_ready() {
+            gate.wait().await;
+        }
+
+        if let Some(cat) = category {
+            let cat_pattern = format!("[{}]%", cat);
+            sqlx::query_as::<_, MemoryHit>(
+                r#"SELECT id, content, mem_type::TEXT as mem_type, metadata, created_at
+                   FROM memories
+                   WHERE content ILIKE $1
+                     AND ($2::text IS NULL OR project_path = $2 OR project_path IS NULL)
+                   ORDER BY created_at DESC
+                   LIMIT $3"#,
+            )
+            .bind(&cat_pattern)
+            .bind(&self.project_path)
+            .bind(limit)
+            .fetch_all(self.pool.as_ref())
+            .await
+        } else {
+            sqlx::query_as::<_, MemoryHit>(
+                r#"SELECT id, content, mem_type::TEXT as mem_type, metadata, created_at
+                   FROM memories
+                   WHERE ($1::text IS NULL OR project_path = $1 OR project_path IS NULL)
+                   ORDER BY created_at DESC
+                   LIMIT $2"#,
+            )
+            .bind(&self.project_path)
+            .bind(limit)
+            .fetch_all(self.pool.as_ref())
+            .await
+        }
     }
 }
 
@@ -397,30 +739,69 @@ pub struct ScoredMemoryHit {
     pub score: f32,
 }
 
-fn decode_emb(bytes: &[u8], dim: i32) -> Option<Vec<f32>> {
-    let dim = dim as usize;
-    if bytes.len() != dim * 4 {
-        return None;
-    }
-    let mut vec = Vec::with_capacity(dim);
-    for chunk in bytes.chunks_exact(4) {
-        vec.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-    }
-    Some(vec)
+#[derive(Debug, sqlx::FromRow)]
+struct PgvectorScoredRow {
+    id: Uuid,
+    content: String,
+    mem_type: String,
+    tool_name: Option<String>,
+    metadata: Option<serde_json::Value>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    score: f32,
 }
 
-fn cosine_sim(a: &[f32], b: &[f32]) -> f32 {
+#[derive(Debug, sqlx::FromRow)]
+struct ByteaEmbeddingRow {
+    id: Uuid,
+    content: String,
+    mem_type: String,
+    tool_name: Option<String>,
+    metadata: Option<serde_json::Value>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    embedding: Option<Vec<u8>>,
+}
+
+/// Convert a Vec<f32> into pgvector's text format: `[0.1,0.2,...]`
+fn vec_to_pgvector(v: &[f32]) -> String {
+    let parts: Vec<String> = v.iter().map(|f| f.to_string()).collect();
+    format!("[{}]", parts.join(","))
+}
+
+/// Serialize f32 embedding to bytes (little-endian) for BYTEA storage.
+fn embedding_to_bytes(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+/// Deserialize f32 embedding from BYTEA (little-endian).
+fn bytes_to_embedding(bytes: &[u8]) -> Option<Vec<f32>> {
+    if bytes.len() % 4 != 0 {
+        return None;
+    }
+    Some(
+        bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect(),
+    )
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }
-    let (mut dot, mut na, mut nb) = (0.0_f32, 0.0_f32, 0.0_f32);
+    let (mut dot, mut norm_a, mut norm_b) = (0.0f64, 0.0f64, 0.0f64);
     for (x, y) in a.iter().zip(b.iter()) {
+        let (x, y) = (*x as f64, *y as f64);
         dot += x * y;
-        na += x * x;
-        nb += y * y;
+        norm_a += x * x;
+        norm_b += y * y;
     }
-    let d = na.sqrt() * nb.sqrt();
-    if d == 0.0 { 0.0 } else { dot / d }
+    let denom = (norm_a * norm_b).sqrt();
+    if denom < 1e-12 {
+        0.0
+    } else {
+        (dot / denom) as f32
+    }
 }
 
 fn truncate_for_db(s: &str, max_bytes: usize) -> String {
@@ -429,5 +810,20 @@ fn truncate_for_db(s: &str, max_bytes: usize) -> String {
     } else {
         let truncated: String = s.chars().take(max_bytes).collect();
         format!("{}... [truncated]", truncated)
+    }
+}
+
+/// Wait for PG to become ready with a 60-second timeout.
+/// Returns `true` if PG is ready, `false` if timed out (caller should skip the write).
+async fn await_db_ready(gate: &mut DbReadyGate) -> bool {
+    if gate.is_ready() {
+        return true;
+    }
+    match tokio::time::timeout(std::time::Duration::from_secs(60), gate.wait()).await {
+        Ok(()) => true,
+        Err(_) => {
+            tracing::warn!("[db-track] Timed out waiting for PostgreSQL readiness, skipping write");
+            false
+        }
     }
 }

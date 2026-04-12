@@ -8,6 +8,7 @@ use super::{
     save_project as storage_save, ProjectConfig,
 };
 use super::storage::{load_workspace, save_workspace};
+use crate::state::AppState;
 
 /// Project form data from the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,9 +54,54 @@ pub async fn save_project(form: ProjectFormData) -> Result<(), String> {
         .map_err(|e| format!("Failed to save project: {}", e))
 }
 
-/// Delete a project configuration by name.
+/// Delete a project configuration by name, including associated DB records.
 #[tauri::command]
-pub async fn delete_project_config(name: String) -> Result<bool, String> {
+pub async fn delete_project_config(
+    state: tauri::State<'_, AppState>,
+    name: String,
+) -> Result<bool, String> {
+    let project_path = storage_load(&name)
+        .await
+        .ok()
+        .flatten()
+        .map(|c| c.root_path.to_string_lossy().to_string());
+
+    if let Some(ref path) = project_path {
+        let pool = &*state.db_pool;
+        let tables_with_project_path = [
+            "memories",
+            "tool_calls",
+            "audit_log",
+            "targets",
+            "findings",
+            "notes",
+            "vault_entries",
+            "topology_scans",
+            "methodology_projects",
+            "pipelines",
+        ];
+        for table in &tables_with_project_path {
+            if let Err(e) = sqlx::query(&format!(
+                "DELETE FROM {} WHERE project_path = $1",
+                table
+            ))
+            .bind(path)
+            .execute(pool)
+            .await
+            {
+                tracing::warn!(
+                    "[delete-project] Failed to clean {}: {}",
+                    table,
+                    e
+                );
+            }
+        }
+        tracing::info!(
+            "[delete-project] Cleaned DB records for project_path={}",
+            path
+        );
+    }
+
     storage_delete(&name)
         .await
         .map_err(|e| format!("Failed to delete project: {}", e))

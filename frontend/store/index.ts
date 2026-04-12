@@ -138,6 +138,8 @@ export interface AiConfig {
   };
 }
 
+export type DetailViewMode = "timeline" | "plan" | "tool-detail";
+
 export interface Session {
   id: string;
   /** Type of tab - determines icon and content rendering. Defaults to "terminal" */
@@ -157,10 +159,22 @@ export interface Session {
   aiConfig?: AiConfig;
   // Current task plan (if any)
   plan?: TaskPlan;
+  /** Left pane display mode: "timeline" (default) or "plan" (expanded plan detail) */
+  detailViewMode?: DetailViewMode;
+  /** When tool-detail view is active, only show these request IDs (null = show all) */
+  toolDetailRequestIds?: string[] | null;
 }
 
 // Unified timeline block types
 export type PipelineStepStatus = "pending" | "running" | "success" | "failed" | "skipped";
+
+export interface PipelineSubTarget {
+  target: string;
+  status: PipelineStepStatus;
+  output?: string;
+  exitCode?: number | null;
+  durationMs?: number;
+}
 
 export interface PipelineStepExecution {
   stepId: string;
@@ -172,6 +186,12 @@ export interface PipelineStepExecution {
   startedAt?: string;
   finishedAt?: string;
   durationMs?: number;
+  /** Targets discovered from previous step output (fan-out) */
+  discoveredTargets?: string[];
+  /** Per-target results when running fan-out */
+  subTargets?: PipelineSubTarget[];
+  /** Sub-agents spawned by this step (AI steps only) */
+  subAgents?: ActiveSubAgent[];
 }
 
 export interface PipelineExecution {
@@ -185,7 +205,12 @@ export interface PipelineExecution {
 }
 
 export type UnifiedBlock =
-  | { id: string; type: "command"; timestamp: string; data: CommandBlock & { source?: "manual" | "pipeline" } }
+  | {
+      id: string;
+      type: "command";
+      timestamp: string;
+      data: CommandBlock & { source?: "manual" | "pipeline" };
+    }
   | {
       id: string;
       type: "agent_message";
@@ -209,7 +234,38 @@ export type UnifiedBlock =
       type: "pipeline_progress";
       timestamp: string;
       data: PipelineExecution;
+    }
+  | {
+      id: string;
+      type: "sub_agent_activity";
+      timestamp: string;
+      data: ActiveSubAgent;
+      batchId?: string;
+    }
+  | {
+      id: string;
+      type: "ai_tool_execution";
+      timestamp: string;
+      data: AiToolExecution;
     };
+
+/** AI tool execution tracked in the left timeline as a card */
+export interface AiToolExecution {
+  requestId: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  status: "running" | "completed" | "error";
+  result?: unknown;
+  startedAt: string;
+  completedAt?: string;
+  durationMs?: number;
+  autoApproved?: boolean;
+  riskLevel?: string;
+  streamingOutput?: string;
+  source?: ToolCallSource;
+  /** Which plan step (0-indexed) this execution belongs to */
+  planStepIndex?: number;
+}
 
 export interface CommandBlock {
   id: string;
@@ -395,6 +451,15 @@ export interface SubAgentToolCall {
   completedAt?: string;
 }
 
+/** Interleaved sub-agent timeline entry (text or tool reference) */
+export interface SubAgentEntry {
+  kind: "text" | "tool_call";
+  /** For kind === "text": the accumulated text for this segment */
+  text?: string;
+  /** For kind === "tool_call": references a SubAgentToolCall.id */
+  toolCallId?: string;
+}
+
 /** Active sub-agent execution state */
 export interface ActiveSubAgent {
   agentId: string;
@@ -404,8 +469,12 @@ export interface ActiveSubAgent {
   depth: number;
   status: "running" | "completed" | "error";
   toolCalls: SubAgentToolCall[];
+  /** Interleaved text and tool_call entries in chronological order */
+  entries: SubAgentEntry[];
   response?: string;
   error?: string;
+  /** Streaming text output from the sub-agent (latest segment, for backward compat) */
+  streamingText?: string;
   startedAt: string;
   completedAt?: string;
   durationMs?: number;
@@ -425,7 +494,13 @@ export interface PendingCommand {
   workingDirectory: string;
 }
 
-interface GolishState extends AppearanceSlice, ContextSlice, ConversationSlice, GitSlice, NotificationSlice, PanelSlice {
+interface GolishState
+  extends AppearanceSlice,
+    ContextSlice,
+    ConversationSlice,
+    GitSlice,
+    NotificationSlice,
+    PanelSlice {
   // App focus/visibility state
   appIsFocused: boolean;
   appIsVisible: boolean;
@@ -484,7 +559,10 @@ interface GolishState extends AppearanceSlice, ContextSlice, ConversationSlice, 
   workflowHistory: Record<string, ActiveWorkflow[]>; // Completed workflows per session
 
   // Sub-agent state
-  activeSubAgents: Record<string, ActiveSubAgent[]>; // Active sub-agents per session
+  activeSubAgents: Record<string, ActiveSubAgent[]>;
+  subAgentBatchCounter: Record<string, number>;
+  /** Maps parentRequestId → pipeline block/step so sub-agent updates sync to the pipeline */
+  subAgentPipelineMap: Record<string, { blockId: string; stepId: string }>;
 
   // Terminal clear request (incremented to trigger clear)
   terminalClearRequest: Record<string, number>;
@@ -540,8 +618,17 @@ interface GolishState extends AppearanceSlice, ContextSlice, ConversationSlice, 
 
   // Pipeline execution actions
   startPipelineExecution: (sessionId: string, execution: PipelineExecution) => void;
-  updatePipelineStep: (sessionId: string, executionId: string, stepId: string, update: Partial<PipelineStepExecution>) => void;
-  completePipelineExecution: (sessionId: string, executionId: string, status: "completed" | "failed") => void;
+  updatePipelineStep: (
+    sessionId: string,
+    executionId: string,
+    stepId: string,
+    update: Partial<PipelineStepExecution>
+  ) => void;
+  completePipelineExecution: (
+    sessionId: string,
+    executionId: string,
+    status: "completed" | "failed"
+  ) => void;
   setPipelineCommandSource: (sessionId: string, isPipeline: boolean) => void;
 
   // Agent actions
@@ -679,7 +766,32 @@ interface GolishState extends AppearanceSlice, ContextSlice, ConversationSlice, 
     result: { response: string; durationMs: number }
   ) => void;
   failSubAgent: (sessionId: string, parentRequestId: string, error: string) => void;
+  updateSubAgentStreamingText: (sessionId: string, parentRequestId: string, text: string) => void;
   clearActiveSubAgents: (sessionId: string) => void;
+
+  // AI tool execution timeline actions
+  addToolExecutionBlock: (
+    sessionId: string,
+    execution: {
+      requestId: string;
+      toolName: string;
+      args: Record<string, unknown>;
+      autoApproved?: boolean;
+      riskLevel?: string;
+      source?: ToolCallSource;
+    }
+  ) => void;
+  completeToolExecutionBlock: (
+    sessionId: string,
+    requestId: string,
+    success: boolean,
+    result?: unknown
+  ) => void;
+  appendToolExecutionOutput: (
+    sessionId: string,
+    requestId: string,
+    chunk: string
+  ) => void;
 
   // AI config actions
   setAiConfig: (config: Partial<AiConfig>) => void;
@@ -689,6 +801,12 @@ interface GolishState extends AppearanceSlice, ContextSlice, ConversationSlice, 
 
   // Plan actions
   setPlan: (sessionId: string, plan: TaskPlan) => void;
+  /** Bridge plan_updated events into a pipeline_progress timeline block */
+  syncPlanToPipeline: (sessionId: string, plan: TaskPlan) => void;
+
+  // Detail view actions
+  setDetailViewMode: (sessionId: string, mode: DetailViewMode) => void;
+  setToolDetailRequestIds: (sessionId: string, requestIds: string[] | null) => void;
 
   // Pane actions for multi-pane support
   splitPane: (
@@ -760,6 +878,42 @@ interface GolishState extends AppearanceSlice, ContextSlice, ConversationSlice, 
   setCurrentProject: (name: string | null, path?: string | null) => void;
 }
 
+/**
+ * Sync a sub-agent's data to its timeline representation.
+ * If the sub-agent is attached to a pipeline step, update it there;
+ * otherwise update the standalone sub_agent_activity block.
+ */
+function syncSubAgentToTimeline(
+  state: { subAgentPipelineMap: Record<string, { blockId: string; stepId: string }> },
+  timeline: UnifiedBlock[],
+  parentRequestId: string,
+  agent: ActiveSubAgent,
+): void {
+  const mapping = state.subAgentPipelineMap[parentRequestId];
+  if (mapping) {
+    const pBlock = timeline.find((b) => b.id === mapping.blockId);
+    if (pBlock && pBlock.type === "pipeline_progress") {
+      const step = pBlock.data.steps.find((s) => s.stepId === mapping.stepId);
+      if (step?.subAgents) {
+        const idx = step.subAgents.findIndex((a) => a.parentRequestId === parentRequestId);
+        if (idx >= 0) {
+          step.subAgents[idx] = { ...agent };
+        } else {
+          step.subAgents.push({ ...agent });
+        }
+        return;
+      }
+    }
+  }
+  // Fallback: standalone block
+  const block = timeline.find(
+    (b) => b.type === "sub_agent_activity" && b.data.parentRequestId === parentRequestId,
+  );
+  if (block && block.type === "sub_agent_activity") {
+    block.data = { ...agent };
+  }
+}
+
 export const useStore = create<GolishState>()(
   devtools(
     immer((set, get, _store) => ({
@@ -777,10 +931,16 @@ export const useStore = create<GolishState>()(
 
       // Terminal restore loading
       terminalRestoreInProgress: false,
-      setTerminalRestoreInProgress: (inProgress: boolean) => set((state) => { state.terminalRestoreInProgress = inProgress; }),
+      setTerminalRestoreInProgress: (inProgress: boolean) =>
+        set((state) => {
+          state.terminalRestoreInProgress = inProgress;
+        }),
 
       workspaceDataReady: false,
-      setWorkspaceDataReady: (ready: boolean) => set((state) => { state.workspaceDataReady = ready; }),
+      setWorkspaceDataReady: (ready: boolean) =>
+        set((state) => {
+          state.workspaceDataReady = ready;
+        }),
 
       // Core state
       sessions: {},
@@ -815,6 +975,8 @@ export const useStore = create<GolishState>()(
       tabLayouts: {},
       workflowHistory: {},
       activeSubAgents: {},
+      subAgentBatchCounter: {},
+      subAgentPipelineMap: {},
       terminalClearRequest: {},
       tabHasNewActivity: {},
       tabOrder: [],
@@ -1098,7 +1260,9 @@ export const useStore = create<GolishState>()(
             if (!state.timelines[sessionId]) {
               state.timelines[sessionId] = [];
             }
-            const source = state.pipelineCommandSource[sessionId] ? "pipeline" as const : undefined;
+            const source = state.pipelineCommandSource[sessionId]
+              ? ("pipeline" as const)
+              : undefined;
             state.timelines[sessionId].push({
               id: blockId,
               type: "command",
@@ -1173,7 +1337,9 @@ export const useStore = create<GolishState>()(
               if (!state.timelines[sessionId]) {
                 state.timelines[sessionId] = [];
               }
-              const source = state.pipelineCommandSource[sessionId] ? "pipeline" as const : undefined;
+              const source = state.pipelineCommandSource[sessionId]
+                ? ("pipeline" as const)
+                : undefined;
               state.timelines[sessionId].push({
                 id: blockId,
                 type: "command",
@@ -1793,33 +1959,52 @@ export const useStore = create<GolishState>()(
           if (!state.activeSubAgents[sessionId]) {
             state.activeSubAgents[sessionId] = [];
           }
-          // Check if agent already exists
+          const now = new Date().toISOString();
           const agent = state.activeSubAgents[sessionId].find(
             (a) => a.parentRequestId === parentRequestId
           );
           if (agent) {
-            // Agent exists, just add prompt generation data
             agent.promptGeneration = {
               status: "generating",
               architectSystemPrompt: data.architectSystemPrompt,
               architectUserMessage: data.architectUserMessage,
             };
           } else {
-            // Create a temporary placeholder for the agent (will be updated by startSubAgent)
-            state.activeSubAgents[sessionId].push({
+            const newAgent: ActiveSubAgent = {
               agentId: agentId,
-              agentName: "", // Will be filled by startSubAgent
+              agentName: "",
               parentRequestId: parentRequestId,
-              task: "", // Will be filled by startSubAgent
-              depth: 0, // Will be filled by startSubAgent
+              task: "",
+              depth: 0,
               status: "running",
               toolCalls: [],
-              startedAt: new Date().toISOString(),
+              entries: [],
+              startedAt: now,
               promptGeneration: {
                 status: "generating",
                 architectSystemPrompt: data.architectSystemPrompt,
                 architectUserMessage: data.architectUserMessage,
               },
+            };
+            state.activeSubAgents[sessionId].push(newAgent);
+          }
+          // Create or sync timeline block
+          if (!state.timelines[sessionId]) state.timelines[sessionId] = [];
+          const timeline = state.timelines[sessionId];
+          const blockId = `sub-agent-${parentRequestId}`;
+          const agentData = state.activeSubAgents[sessionId].find(
+            (a) => a.parentRequestId === parentRequestId
+          );
+          if (!agentData) return;
+          const existingBlock = timeline.find((b) => b.id === blockId);
+          if (existingBlock && existingBlock.type === "sub_agent_activity") {
+            existingBlock.data = { ...agentData };
+          } else if (!existingBlock) {
+            timeline.push({
+              id: blockId,
+              type: "sub_agent_activity" as const,
+              timestamp: now,
+              data: { ...agentData },
             });
           }
         }),
@@ -1834,6 +2019,16 @@ export const useStore = create<GolishState>()(
             agent.promptGeneration.generatedPrompt = data.generatedPrompt;
             agent.promptGeneration.durationMs = data.durationMs;
           }
+          // Sync to timeline
+          const timeline = state.timelines[sessionId];
+          if (timeline && agent) {
+            const block = timeline.find(
+              (b) => b.type === "sub_agent_activity" && b.data.parentRequestId === parentRequestId
+            );
+            if (block && block.type === "sub_agent_activity") {
+              block.data = { ...agent };
+            }
+          }
         }),
 
       startSubAgent: (sessionId, agent) =>
@@ -1841,22 +2036,19 @@ export const useStore = create<GolishState>()(
           if (!state.activeSubAgents[sessionId]) {
             state.activeSubAgents[sessionId] = [];
           }
-          // Check if a placeholder was created by startPromptGeneration
-          // Only match if parentRequestId is defined (undefined would falsely match)
+          const now = new Date().toISOString();
           const existing = agent.parentRequestId
             ? state.activeSubAgents[sessionId].find(
                 (a) => a.parentRequestId === agent.parentRequestId
               )
             : undefined;
           if (existing) {
-            // Update the placeholder with actual agent data
             existing.agentId = agent.agentId;
             existing.agentName = agent.agentName;
             existing.task = agent.task;
             existing.depth = agent.depth;
           } else {
-            // No placeholder, create new entry
-            state.activeSubAgents[sessionId].push({
+            const newAgent: ActiveSubAgent = {
               agentId: agent.agentId,
               agentName: agent.agentName,
               parentRequestId: agent.parentRequestId,
@@ -1864,7 +2056,70 @@ export const useStore = create<GolishState>()(
               depth: agent.depth,
               status: "running",
               toolCalls: [],
-              startedAt: new Date().toISOString(),
+              entries: [],
+              startedAt: now,
+            };
+            state.activeSubAgents[sessionId].push(newAgent);
+          }
+
+          if (!state.timelines[sessionId]) state.timelines[sessionId] = [];
+          const timeline = state.timelines[sessionId];
+          const agentData = state.activeSubAgents[sessionId].find(
+            (a) => a.parentRequestId === agent.parentRequestId
+          );
+          if (!agentData) return;
+
+          // Check if there's an active pipeline with a running AI step
+          const AI_PREFIXES = ["AI:", "ai:"];
+          let attachedToPipeline = false;
+          for (const block of timeline) {
+            if (block.type !== "pipeline_progress" || block.data.status !== "running") continue;
+            const aiStep = block.data.steps.find(
+              (s) =>
+                s.status === "running" &&
+                (AI_PREFIXES.some((p) => s.command.startsWith(p)) || s.name.includes("(AI)"))
+            );
+            if (aiStep) {
+              if (!aiStep.subAgents) aiStep.subAgents = [];
+              const existingIdx = aiStep.subAgents.findIndex(
+                (a) => a.parentRequestId === agent.parentRequestId
+              );
+              if (existingIdx >= 0) {
+                aiStep.subAgents[existingIdx] = { ...agentData };
+              } else {
+                aiStep.subAgents.push({ ...agentData });
+              }
+              state.subAgentPipelineMap[agent.parentRequestId] = {
+                blockId: block.id,
+                stepId: aiStep.stepId,
+              };
+              attachedToPipeline = true;
+              break;
+            }
+          }
+
+          if (attachedToPipeline) return;
+
+          // Fallback: create standalone sub_agent_activity block
+          const blockId = `sub-agent-${agent.parentRequestId}`;
+          const existingBlock = timeline.find((b) => b.id === blockId);
+          if (existingBlock && existingBlock.type === "sub_agent_activity") {
+            existingBlock.data = { ...agentData };
+          } else if (!existingBlock) {
+            const currentAgents = state.activeSubAgents[sessionId];
+            const anyRunning = currentAgents.some(
+              (a) => a.status === "running" && a.parentRequestId !== agent.parentRequestId
+            );
+            if (!anyRunning) {
+              state.subAgentBatchCounter[sessionId] = (state.subAgentBatchCounter[sessionId] ?? 0) + 1;
+            }
+            const batchId = `batch-${state.subAgentBatchCounter[sessionId] ?? 1}`;
+            timeline.push({
+              id: blockId,
+              type: "sub_agent_activity" as const,
+              timestamp: now,
+              data: { ...agentData },
+              batchId,
             });
           }
         }),
@@ -1881,6 +2136,11 @@ export const useStore = create<GolishState>()(
               status: "running",
               startedAt: new Date().toISOString(),
             });
+            agent.entries.push({ kind: "tool_call", toolCallId: toolCall.id });
+          }
+          const timeline = state.timelines[sessionId];
+          if (timeline && agent) {
+            syncSubAgentToTimeline(state, timeline, parentRequestId, agent);
           }
         }),
 
@@ -1898,6 +2158,10 @@ export const useStore = create<GolishState>()(
               tool.completedAt = new Date().toISOString();
             }
           }
+          const timeline = state.timelines[sessionId];
+          if (timeline && agent) {
+            syncSubAgentToTimeline(state, timeline, parentRequestId, agent);
+          }
         }),
 
       completeSubAgent: (sessionId, parentRequestId, result) =>
@@ -1912,6 +2176,10 @@ export const useStore = create<GolishState>()(
             agent.durationMs = result.durationMs;
             agent.completedAt = new Date().toISOString();
           }
+          const timeline = state.timelines[sessionId];
+          if (timeline && agent) {
+            syncSubAgentToTimeline(state, timeline, parentRequestId, agent);
+          }
         }),
 
       failSubAgent: (sessionId, parentRequestId, error) =>
@@ -1925,11 +2193,94 @@ export const useStore = create<GolishState>()(
             agent.error = error;
             agent.completedAt = new Date().toISOString();
           }
+          const timeline = state.timelines[sessionId];
+          if (timeline && agent) {
+            syncSubAgentToTimeline(state, timeline, parentRequestId, agent);
+          }
+        }),
+
+      updateSubAgentStreamingText: (sessionId, parentRequestId, text) =>
+        set((state) => {
+          const agents = state.activeSubAgents[sessionId];
+          if (!agents) return;
+          const agent = agents.find((a) => a.parentRequestId === parentRequestId);
+          if (agent) {
+            agent.streamingText = text;
+            const lastEntry = agent.entries[agent.entries.length - 1];
+            if (lastEntry && lastEntry.kind === "text") {
+              lastEntry.text = text;
+            } else {
+              agent.entries.push({ kind: "text", text });
+            }
+          }
+          const timeline = state.timelines[sessionId];
+          if (timeline && agent) {
+            syncSubAgentToTimeline(state, timeline, parentRequestId, agent);
+          }
         }),
 
       clearActiveSubAgents: (sessionId) =>
         set((state) => {
           state.activeSubAgents[sessionId] = [];
+        }),
+
+      // AI tool execution timeline actions
+      addToolExecutionBlock: (sessionId, execution) =>
+        set((state) => {
+          if (!state.timelines[sessionId]) {
+            state.timelines[sessionId] = [];
+          }
+          // Tag with current in-progress plan step (if any)
+          let planStepIndex: number | undefined;
+          const plan = state.sessions[sessionId]?.plan;
+          if (plan) {
+            const idx = plan.steps.findIndex((s) => s.status === "in_progress");
+            if (idx >= 0) planStepIndex = idx;
+          }
+          state.timelines[sessionId].push({
+            id: `tool-exec-${execution.requestId}`,
+            type: "ai_tool_execution",
+            timestamp: new Date().toISOString(),
+            data: {
+              requestId: execution.requestId,
+              toolName: execution.toolName,
+              args: execution.args,
+              status: "running",
+              startedAt: new Date().toISOString(),
+              autoApproved: execution.autoApproved,
+              riskLevel: execution.riskLevel,
+              source: execution.source,
+              planStepIndex,
+            },
+          });
+        }),
+
+      completeToolExecutionBlock: (sessionId, requestId, success, result) =>
+        set((state) => {
+          const timeline = state.timelines[sessionId];
+          if (!timeline) return;
+          const block = timeline.find(
+            (b) => b.type === "ai_tool_execution" && b.data.requestId === requestId
+          );
+          if (block && block.type === "ai_tool_execution") {
+            block.data.status = success ? "completed" : "error";
+            block.data.result = result;
+            block.data.completedAt = new Date().toISOString();
+            const start = new Date(block.data.startedAt).getTime();
+            block.data.durationMs = Date.now() - start;
+          }
+        }),
+
+      appendToolExecutionOutput: (sessionId, requestId, chunk) =>
+        set((state) => {
+          const timeline = state.timelines[sessionId];
+          if (!timeline) return;
+          const block = timeline.find(
+            (b) => b.type === "ai_tool_execution" && b.data.requestId === requestId
+          );
+          if (block && block.type === "ai_tool_execution") {
+            block.data.streamingOutput = (block.data.streamingOutput || "") + chunk;
+          }
         }),
 
       // AI config actions
@@ -1961,6 +2312,78 @@ export const useStore = create<GolishState>()(
         set((state) => {
           if (state.sessions[sessionId]) {
             state.sessions[sessionId].plan = plan;
+          }
+        }),
+
+      syncPlanToPipeline: (sessionId, plan) =>
+        set((state) => {
+          if (!state.timelines[sessionId]) state.timelines[sessionId] = [];
+          const timeline = state.timelines[sessionId];
+
+          const STATUS_MAP: Record<StepStatus, PipelineStepStatus> = {
+            pending: "pending",
+            in_progress: "running",
+            completed: "success",
+          };
+
+          const blockId = `plan-pipeline-${sessionId}`;
+          const now = new Date().toISOString();
+
+          const steps: PipelineStepExecution[] = plan.steps.map((s, i) => ({
+            stepId: `plan-step-${i}`,
+            name: s.step,
+            command: "",
+            status: STATUS_MAP[s.status] ?? "pending",
+            startedAt: s.status !== "pending" ? now : undefined,
+          }));
+
+          const anyRunning = plan.summary.in_progress > 0;
+          const allDone = plan.summary.total > 0 && plan.summary.completed === plan.summary.total;
+          const pipelineStatus = allDone ? "completed" : anyRunning ? "running" : "pending";
+
+          const existing = timeline.find((b) => b.id === blockId);
+          if (existing && existing.type === "pipeline_progress") {
+            // Preserve per-step sub-agents from previous syncs
+            for (const newStep of steps) {
+              const prev = existing.data.steps.find((s) => s.stepId === newStep.stepId);
+              if (prev?.subAgents) newStep.subAgents = prev.subAgents;
+            }
+            existing.data.steps = steps;
+            existing.data.status = pipelineStatus;
+            if (allDone) existing.data.finishedAt = now;
+          } else if (!existing) {
+            const execution: PipelineExecution = {
+              pipelineId: `plan-v${plan.version}`,
+              pipelineName: plan.explanation ?? "Task Plan",
+              target: "",
+              steps,
+              status: pipelineStatus,
+              startedAt: now,
+            };
+            timeline.push({
+              id: blockId,
+              type: "pipeline_progress",
+              timestamp: now,
+              data: execution,
+            });
+          }
+        }),
+
+      // Detail view actions
+      setDetailViewMode: (sessionId, mode) =>
+        set((state) => {
+          if (state.sessions[sessionId]) {
+            state.sessions[sessionId].detailViewMode = mode;
+            if (mode !== "tool-detail") {
+              state.sessions[sessionId].toolDetailRequestIds = null;
+            }
+          }
+        }),
+
+      setToolDetailRequestIds: (sessionId, requestIds) =>
+        set((state) => {
+          if (state.sessions[sessionId]) {
+            state.sessions[sessionId].toolDetailRequestIds = requestIds;
           }
         }),
 
@@ -2423,9 +2846,7 @@ export const useStore = create<GolishState>()(
             delete state.tabHasNewActivity[tabId];
 
             // Remove from activation history
-            state.tabActivationHistory = state.tabActivationHistory.filter(
-              (id) => id !== tabId
-            );
+            state.tabActivationHistory = state.tabActivationHistory.filter((id) => id !== tabId);
             if (state.activeSessionId === tabId) {
               // Switch to the most recently active tab
               state.activeSessionId =
@@ -2473,9 +2894,7 @@ export const useStore = create<GolishState>()(
           }
 
           // Remove from activation history
-          state.tabActivationHistory = state.tabActivationHistory.filter(
-            (id) => id !== tabId
-          );
+          state.tabActivationHistory = state.tabActivationHistory.filter((id) => id !== tabId);
           // Update active session if needed
           if (state.activeSessionId === tabId) {
             // Switch to the most recently active tab
@@ -2752,11 +3171,9 @@ export const useContextMetrics = (sessionId: string) =>
   useStore((state) => selectContextMetrics(state, sessionId));
 
 // Conversation selectors
-export const useActiveConversation = () =>
-  useStore((state) => selectActiveConversation(state));
+export const useActiveConversation = () => useStore((state) => selectActiveConversation(state));
 
-export const useAllConversations = () =>
-  useStore((state) => selectAllConversations(state));
+export const useAllConversations = () => useStore((state) => selectAllConversations(state));
 
 export const useActiveConversationTerminals = () =>
   useStore((state) => selectActiveConversationTerminals(state));

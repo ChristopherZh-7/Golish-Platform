@@ -23,6 +23,28 @@ fn error_result(msg: impl Into<String>) -> ToolResult {
     (json!({"error": msg.into()}), false)
 }
 
+/// Try to extract a string parameter from args, checking multiple possible key names.
+/// Handles models that pass null, numbers, or alternative key names.
+fn extract_string_param(args: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(val) = args.get(*key) {
+            if let Some(s) = val.as_str() {
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            } else if !val.is_null() {
+                let s = val.to_string();
+                let s = s.trim().trim_matches('"');
+                if !s.is_empty() && s != "null" {
+                    return Some(s.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Execute a web fetch tool using readability-based content extraction.
 pub async fn execute_web_fetch_tool(tool_name: &str, args: &serde_json::Value) -> ToolResult {
     if tool_name != "web_fetch" {
@@ -191,6 +213,152 @@ pub async fn execute_ask_human_tool(
     }
 }
 
+/// Execute memory tool calls (search_memories, store_memory, list_memories).
+///
+/// Delegates to the `DbTracker` for database operations. Returns graceful errors
+/// if the database is not ready.
+pub async fn execute_memory_tool(
+    tool_name: &str,
+    args: &serde_json::Value,
+    db_tracker: Option<&crate::db_tracking::DbTracker>,
+) -> Option<ToolResult> {
+    let tracker = match db_tracker {
+        Some(t) => t,
+        None => {
+            return match tool_name {
+                "search_memories" | "store_memory" | "list_memories" => {
+                    Some(error_result("Memory tools are not available (database not configured)"))
+                }
+                _ => None,
+            };
+        }
+    };
+
+    match tool_name {
+        "search_memories" => {
+            let query = match extract_string_param(args, &["query", "search_query", "q"]) {
+                Some(q) if !q.is_empty() => q,
+                _ => return Some(error_result(
+                    "search_memories requires a non-empty 'query' string parameter. \
+                     Example: {\"query\": \"nmap scan results for 10.0.0.1\"}"
+                )),
+            };
+            let category = args.get("category").and_then(|v| v.as_str()).map(String::from);
+            let limit = args
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(10)
+                .min(50) as i64;
+
+            match tracker.search_memories_by_text(&query, category.as_deref(), limit).await {
+                Ok(memories) => {
+                    let results: Vec<serde_json::Value> = memories
+                        .iter()
+                        .map(|m| {
+                            json!({
+                                "content": m.content,
+                                "mem_type": m.mem_type,
+                                "metadata": m.metadata,
+                                "created_at": m.created_at.to_rfc3339(),
+                            })
+                        })
+                        .collect();
+                    Some((
+                        json!({
+                            "memories": results,
+                            "count": results.len(),
+                            "query": query,
+                        }),
+                        true,
+                    ))
+                }
+                Err(e) => Some(error_result(format!("Memory search failed: {}", e))),
+            }
+        }
+        "store_memory" => {
+            let content = match args.get("content").and_then(|v| v.as_str()) {
+                Some(c) => c.to_string(),
+                None => return Some(error_result("store_memory requires a 'content' parameter")),
+            };
+            let category = args
+                .get("category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("recon")
+                .to_string();
+            let tags = args
+                .get("tags")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let scope = args
+                .get("scope")
+                .and_then(|v| v.as_str())
+                .unwrap_or("project");
+
+            let memory_content = if tags.is_empty() {
+                format!("[{}] {}", category, content)
+            } else {
+                format!("[{}] [tags: {}] {}", category, tags, content)
+            };
+
+            let metadata = if tags.is_empty() {
+                Some(json!({ "category": category }))
+            } else {
+                Some(json!({ "category": category, "tags": tags }))
+            };
+
+            if scope == "global" {
+                tracker.store_memory_global(&memory_content, "observation", metadata);
+            } else {
+                tracker.store_memory(&memory_content, "observation", metadata);
+            }
+
+            Some((
+                json!({
+                    "success": true,
+                    "message": format!("Memory stored successfully (scope: {})", scope),
+                    "category": category,
+                    "scope": scope,
+                }),
+                true,
+            ))
+        }
+        "list_memories" => {
+            let category = args.get("category").and_then(|v| v.as_str()).map(String::from);
+            let limit = args
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(20)
+                .min(100) as i64;
+
+            match tracker.list_recent_memories(category.as_deref(), limit).await {
+                Ok(memories) => {
+                    let results: Vec<serde_json::Value> = memories
+                        .iter()
+                        .map(|m| {
+                            json!({
+                                "content": m.content,
+                                "mem_type": m.mem_type,
+                                "metadata": m.metadata,
+                                "created_at": m.created_at.to_rfc3339(),
+                            })
+                        })
+                        .collect();
+                    Some((
+                        json!({
+                            "memories": results,
+                            "count": results.len(),
+                        }),
+                        true,
+                    ))
+                }
+                Err(e) => Some(error_result(format!("Failed to list memories: {}", e))),
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Normalize tool arguments for run_pty_cmd.
 /// If the command is passed as an array, convert it to a space-joined string.
 /// This prevents shell_words::join() from quoting metacharacters like &&, ||, |, etc.
@@ -290,5 +458,50 @@ mod tests {
         let normalized = normalize_run_pty_cmd_args(args.clone());
 
         assert_eq!(normalized, args);
+    }
+
+    #[test]
+    fn test_extract_string_param_normal() {
+        let args = json!({"query": "nmap results"});
+        assert_eq!(
+            extract_string_param(&args, &["query"]),
+            Some("nmap results".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_string_param_null() {
+        let args = json!({"query": null});
+        assert_eq!(extract_string_param(&args, &["query"]), None);
+    }
+
+    #[test]
+    fn test_extract_string_param_empty() {
+        let args = json!({"query": ""});
+        assert_eq!(extract_string_param(&args, &["query"]), None);
+    }
+
+    #[test]
+    fn test_extract_string_param_alternate_key() {
+        let args = json!({"search_query": "test"});
+        assert_eq!(
+            extract_string_param(&args, &["query", "search_query"]),
+            Some("test".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_string_param_number() {
+        let args = json!({"query": 42});
+        assert_eq!(
+            extract_string_param(&args, &["query"]),
+            Some("42".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_string_param_missing() {
+        let args = json!({"other": "value"});
+        assert_eq!(extract_string_param(&args, &["query"]), None);
     }
 }

@@ -39,7 +39,26 @@ export interface PersistedPipelineBlock {
   data: import("@/store").PipelineExecution;
 }
 
-export type PersistedTimelineBlock = PersistedCommandBlock | PersistedPipelineBlock;
+export interface PersistedToolExecBlock {
+  id: string;
+  type: "ai_tool_execution";
+  timestamp: string;
+  data: import("@/store").AiToolExecution;
+}
+
+export interface PersistedSubAgentBlock {
+  id: string;
+  type: "sub_agent_activity";
+  timestamp: string;
+  data: import("@/store").ActiveSubAgent;
+  batchId?: string;
+}
+
+export type PersistedTimelineBlock =
+  | PersistedCommandBlock
+  | PersistedPipelineBlock
+  | PersistedToolExecBlock
+  | PersistedSubAgentBlock;
 
 export interface PersistedTerminalData {
   workingDirectory: string;
@@ -227,6 +246,18 @@ export function createWorkspaceAutoSaver(
               blocks.push({ id: block.id, type: "command", timestamp: block.timestamp, data: { ...block.data, output } });
             } else if (block.type === "pipeline_progress") {
               blocks.push({ id: block.id, type: "pipeline_progress", timestamp: block.timestamp, data: block.data });
+            } else if (block.type === "ai_tool_execution") {
+              const data = { ...block.data };
+              if (data.streamingOutput && data.streamingOutput.length > MAX_BLOCK_OUTPUT) {
+                data.streamingOutput = data.streamingOutput.slice(-MAX_BLOCK_OUTPUT);
+              }
+              blocks.push({ id: block.id, type: "ai_tool_execution", timestamp: block.timestamp, data });
+            } else if (block.type === "sub_agent_activity") {
+              const data = { ...block.data };
+              if (data.streamingText && data.streamingText.length > MAX_BLOCK_OUTPUT) {
+                data.streamingText = data.streamingText.slice(-MAX_BLOCK_OUTPUT);
+              }
+              blocks.push({ id: block.id, type: "sub_agent_activity", timestamp: block.timestamp, data, batchId: block.batchId });
             }
           }
         }

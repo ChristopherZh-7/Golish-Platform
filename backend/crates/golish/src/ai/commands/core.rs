@@ -639,13 +639,18 @@ pub async fn init_ai_session(
     configure_bridge(&mut bridge, &state, &session_id).await;
 
     // Initialize transcript writer for persisting AI events to JSONL
-    // Transcripts are stored in ~/.golish/transcripts/{session_id}/transcript.jsonl
+    // Transcripts are stored in {workspace}/.golish/transcripts/{session_id}/transcript.jsonl
+    // Falls back to ~/.golish/transcripts/ if workspace is "." or env override is set
     let transcripts_dir = std::env::var("VT_TRANSCRIPT_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap_or_default()
-                .join(".golish/transcripts")
+            if workspace_path.to_string_lossy() != "." {
+                workspace_path.join(".golish/transcripts")
+            } else {
+                dirs::home_dir()
+                    .unwrap_or_default()
+                    .join(".golish/transcripts")
+            }
         });
 
     match TranscriptWriter::new(&transcripts_dir, &session_id).await {

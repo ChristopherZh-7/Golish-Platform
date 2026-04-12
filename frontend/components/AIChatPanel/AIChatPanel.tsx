@@ -1,43 +1,32 @@
-import { memo, useState, useRef, useEffect, useCallback } from "react";
 import {
-  Image,
-  ChevronDown,
-  Cpu,
-  ArrowUp,
-  Plus,
-  Clock,
-  X,
-  Square,
   AlertCircle,
-  Wrench,
-  Loader2,
+  ArrowRight,
+  ArrowUp,
   Bot,
-  GitBranch,
   CheckCircle2,
-  XCircle,
-  Zap,
+  ChevronDown,
+  ChevronUp,
+  Clock,
+  Code2,
+  Cpu,
+  GitBranch,
+  Image,
   KeyRound,
   List,
+  Loader2,
   MessageSquare,
+  Plus,
+  Search,
   ShieldQuestion,
+  Square,
+  Wrench,
+  X,
+  XCircle,
+  Zap,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
-import { PROVIDER_GROUPS, formatModelName } from "@/lib/models";
-import {
-  initAiSession,
-  sendPromptSession,
-  sendPromptWithAttachments,
-  createTextPayload,
-  onAiEvent,
-  shutdownAiSession,
-  restoreAiConversation,
-  type AiEvent,
-  type ProviderConfig,
-} from "@/lib/ai";
-import { getSettings } from "@/lib/settings";
-import { scanTools } from "@/lib/pentest/api";
-import type { ToolConfig } from "@/lib/pentest/types";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import { Markdown } from "@/components/Markdown";
 import {
   DropdownMenu,
@@ -46,13 +35,30 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useStore, type ChatMessage } from "@/store";
-import { respondToToolApproval, setAgentMode, type AgentMode } from "@/lib/ai";
-import { useShallow } from "zustand/react/shallow";
-import { createNewConversation } from "@/store/slices/conversation";
 import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
+import {
+  type AgentMode,
+  type AiEvent,
+  createTextPayload,
+  initAiSession,
+  onAiEvent,
+  type ProviderConfig,
+  respondToToolApproval,
+  restoreAiConversation,
+  sendPromptSession,
+  sendPromptWithAttachments,
+  setAgentMode,
+  shutdownAiSession,
+} from "@/lib/ai";
+import { formatModelName, PROVIDER_GROUPS } from "@/lib/models";
+import { scanTools } from "@/lib/pentest/api";
+import type { ToolConfig } from "@/lib/pentest/types";
+import { getSettings } from "@/lib/settings";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
+import { cn } from "@/lib/utils";
 import type { PersistedTerminalData } from "@/lib/workspace-storage";
+import { type ChatMessage, useStore } from "@/store";
+import { createNewConversation } from "@/store/slices/conversation";
 
 const STORAGE_KEY = "golish-pentest-conversations";
 const TERMINAL_DATA_KEY = "golish-pentest-conv-terminals";
@@ -80,9 +86,7 @@ function ThinkingBlock({ content, isActive }: { content: string; isActive: boole
         ) : (
           <ChevronDown className={cn("w-3 h-3 transition-transform", !expanded && "-rotate-90")} />
         )}
-        <span className="italic">
-          {expanded ? "Thinking" : preview}
-        </span>
+        <span className="italic">{expanded ? "Thinking" : preview}</span>
       </button>
       {expanded && (
         <div className="mt-1.5 pl-4.5 text-[12px] text-muted-foreground/40 leading-[1.6] whitespace-pre-wrap border-l-2 border-muted-foreground/10 ml-1.5 pl-3">
@@ -112,21 +116,18 @@ function CollapsibleToolCall({
   const isPending = !!approval;
 
   return (
-    <div className={cn(
-      "rounded-md border bg-background/50",
-      isPending ? "border-[#e0af68]/50" : "border-border/30",
-    )}>
+    <div
+      className={cn(
+        "rounded-md border bg-background/50",
+        isPending ? "border-[#e0af68]/50" : "border-border/30"
+      )}
+    >
       <button
         type="button"
         onClick={() => setExpanded(!expanded)}
         className="flex items-center gap-1.5 w-full px-2 py-1.5 text-[11px] text-muted-foreground hover:text-muted-foreground/80 transition-colors"
       >
-        <ChevronDown
-          className={cn(
-            "w-3 h-3 transition-transform",
-            !expanded && "-rotate-90",
-          )}
-        />
+        <ChevronDown className={cn("w-3 h-3 transition-transform", !expanded && "-rotate-90")} />
         <Wrench className="w-3 h-3" />
         <span className="font-mono font-medium">{tc.name}</span>
         {tc.success !== undefined && (
@@ -140,14 +141,20 @@ function CollapsibleToolCall({
         <div className="px-2 pb-1.5 flex items-center gap-2">
           <button
             type="button"
-            onClick={(e) => { e.stopPropagation(); onApprove?.(approval.requestId); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onApprove?.(approval.requestId);
+            }}
             className="px-2.5 py-1 text-[11px] rounded bg-[#7aa2f7] text-[#1a1b26] hover:bg-[#7aa2f7]/80 transition-colors font-medium"
           >
             Run
           </button>
           <button
             type="button"
-            onClick={(e) => { e.stopPropagation(); onDeny?.(approval.requestId); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onDeny?.(approval.requestId);
+            }}
             className="px-2.5 py-1 text-[11px] rounded border border-[#3b4261] text-muted-foreground hover:bg-[#3b4261] transition-colors"
           >
             Deny
@@ -164,20 +171,30 @@ function CollapsibleToolCall({
               onClick={(e) => e.stopPropagation()}
               className="flex items-center gap-1 text-[11px] text-muted-foreground/60 hover:text-muted-foreground transition-colors"
             >
-              {approvalMode === "run-all" ? "Run Everything" : approvalMode === "allowlist" ? "Use Allowlist" : "Ask Every Time"}
+              {approvalMode === "run-all"
+                ? "Run Everything"
+                : approvalMode === "allowlist"
+                  ? "Use Allowlist"
+                  : "Ask Every Time"}
               <ChevronDown className="w-2.5 h-2.5" />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="bg-card border-[var(--border-medium)] min-w-[160px]">
-            {([
+          <DropdownMenuContent
+            align="start"
+            className="bg-card border-[var(--border-medium)] min-w-[160px]"
+          >
+            {[
               { id: "ask" as const, label: "Ask Every Time" },
               { id: "allowlist" as const, label: "Use Allowlist" },
               { id: "run-all" as const, label: "Run Everything" },
-            ]).map((opt) => (
+            ].map((opt) => (
               <DropdownMenuItem
                 key={opt.id}
                 onClick={() => onApprovalModeChange?.(opt.id)}
-                className={cn("text-xs cursor-pointer", approvalMode === opt.id && "bg-accent/10 text-accent")}
+                className={cn(
+                  "text-xs cursor-pointer",
+                  approvalMode === opt.id && "bg-accent/10 text-accent"
+                )}
               >
                 {opt.label}
                 {approvalMode === opt.id && <span className="ml-auto text-accent">✓</span>}
@@ -194,6 +211,144 @@ function CollapsibleToolCall({
           </pre>
         </div>
       )}
+    </div>
+  );
+}
+
+// === Compact tool call summary (always visible) ===
+
+const TOOL_LABEL: Record<string, string> = {
+  run_command: "Shell",
+  run_pty_cmd: "Shell",
+  read_file: "Read",
+  write_file: "Write",
+  edit_file: "Edit",
+  search_files: "Search",
+  web_search: "Web",
+  web_fetch: "Fetch",
+  manage_targets: "Targets",
+  record_finding: "Finding",
+};
+
+const TOOL_ICON_COLOR: Record<string, string> = {
+  run_command: "var(--ansi-green)",
+  run_pty_cmd: "var(--ansi-green)",
+  read_file: "var(--ansi-cyan)",
+  write_file: "var(--ansi-yellow)",
+  edit_file: "var(--ansi-yellow)",
+  search_files: "var(--ansi-blue)",
+  web_search: "var(--ansi-magenta)",
+  web_fetch: "var(--ansi-magenta)",
+};
+
+function parseToolPrimary(
+  name: string,
+  argsStr?: string
+): string | null {
+  if (!argsStr) return null;
+  try {
+    const args = JSON.parse(argsStr);
+    if ((name === "run_command" || name === "run_pty_cmd") && args.command) return args.command;
+    if (args.path) return args.path;
+    if (args.file_path) return args.file_path;
+    if (args.pattern) return args.pattern;
+    if (args.query) return args.query;
+    if (args.url) return args.url;
+  } catch { /* ignore */ }
+  return null;
+}
+
+function ToolCallCard({
+  tc,
+  onClick,
+}: {
+  tc: { name: string; args?: string; result?: string; success?: boolean };
+  onClick: () => void;
+}) {
+  const label = TOOL_LABEL[tc.name] || tc.name.replace(/_/g, " ");
+  const color = TOOL_ICON_COLOR[tc.name] || "var(--ansi-blue)";
+  const isRunning = tc.success === undefined;
+  const isError = tc.success === false;
+  const isShell = tc.name === "run_command" || tc.name === "run_pty_cmd";
+  const primary = parseToolPrimary(tc.name, tc.args);
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "w-full rounded-lg border bg-background/50 px-3 py-2 text-left transition-colors cursor-pointer group",
+        isRunning
+          ? "border-l-2 animate-[pulse-border_2s_ease-in-out_infinite]"
+          : isError
+            ? "border-red-500/30 hover:border-red-500/50"
+            : "border-border/30 hover:border-accent/40",
+      )}
+      style={isRunning ? { borderLeftColor: color } : undefined}
+    >
+      <div className="flex items-center gap-2">
+        <Wrench className="w-3.5 h-3.5 flex-shrink-0" style={{ color }} />
+        <span className="text-[11px] font-medium text-foreground/80">{label}</span>
+        <div className="ml-auto flex items-center gap-1.5">
+          {isRunning ? (
+            <Loader2 className="w-3 h-3 text-blue-400 animate-spin" />
+          ) : isError ? (
+            <XCircle className="w-3 h-3 text-red-400" />
+          ) : (
+            <CheckCircle2 className="w-3 h-3 text-[var(--ansi-green)]" />
+          )}
+          <span className="text-[10px] text-muted-foreground/40 group-hover:text-accent/60 transition-colors">
+            Details →
+          </span>
+        </div>
+      </div>
+      {primary && (
+        <div
+          className={cn(
+            "mt-1.5 text-[10px] font-mono truncate px-1.5 py-0.5 rounded",
+            isShell
+              ? "bg-[var(--ansi-black)]/30 text-[var(--ansi-green)]/80"
+              : "bg-muted/30 text-muted-foreground/70",
+          )}
+        >
+          {isShell && <span className="text-muted-foreground/40 mr-1">$</span>}
+          {primary}
+        </div>
+      )}
+    </button>
+  );
+}
+
+function ToolCallSummary({
+  toolCalls,
+  requestIds,
+}: {
+  toolCalls: Array<{ name: string; args?: string; result?: string; success?: boolean }>;
+  requestIds?: string[];
+}) {
+  if (toolCalls.length === 0) return null;
+
+  const handleShowDetail = () => {
+    const state = useStore.getState();
+    const activeConvId = state.activeConversationId;
+    if (!activeConvId) return;
+    const termIds = state.conversationTerminals[activeConvId];
+    const termId = termIds?.[0];
+    if (termId) {
+      state.setToolDetailRequestIds(termId, requestIds ?? null);
+      state.setDetailViewMode(termId, "tool-detail");
+    }
+  };
+
+  return (
+    <div className="mt-2 space-y-1.5">
+      {toolCalls.map((tc, i) => (
+        <ToolCallCard
+          key={`${tc.name}-${i}`}
+          tc={tc}
+          onClick={handleShowDetail}
+        />
+      ))}
     </div>
   );
 }
@@ -288,16 +443,19 @@ function AskHumanInline({
             <button
               key={opt}
               type="button"
-              onClick={() => setSelectedOptions((prev) => {
-                const next = new Set(prev);
-                if (next.has(opt)) next.delete(opt); else next.add(opt);
-                return next;
-              })}
+              onClick={() =>
+                setSelectedOptions((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(opt)) next.delete(opt);
+                  else next.add(opt);
+                  return next;
+                })
+              }
               className={cn(
                 "w-full text-left px-2.5 py-1.5 rounded-md border text-[12px] transition-colors",
                 selectedOptions.has(opt)
                   ? "bg-accent/10 border-accent/50 text-accent"
-                  : "bg-background border-border/50 hover:border-muted-foreground/30",
+                  : "bg-background border-border/50 hover:border-muted-foreground/30"
               )}
             >
               {opt}
@@ -351,9 +509,8 @@ interface WorkflowState {
 
 function WorkflowProgress({ workflow }: { workflow: WorkflowState }) {
   const [expanded, setExpanded] = useState(false);
-  const progress = workflow.totalSteps > 0
-    ? (workflow.completedSteps.length / workflow.totalSteps) * 100
-    : 0;
+  const progress =
+    workflow.totalSteps > 0 ? (workflow.completedSteps.length / workflow.totalSteps) * 100 : 0;
 
   return (
     <div className="mx-4 my-2 rounded-lg border border-border/30 bg-background/50 p-3">
@@ -367,32 +524,44 @@ function WorkflowProgress({ workflow }: { workflow: WorkflowState }) {
         {workflow.status === "running" && <Loader2 className="w-3 h-3 animate-spin text-accent" />}
         {workflow.status === "completed" && <CheckCircle2 className="w-3 h-3 text-green-500" />}
         {workflow.status === "error" && <XCircle className="w-3 h-3 text-destructive" />}
-        <ChevronDown className={cn("w-3 h-3 text-muted-foreground transition-transform", !expanded && "-rotate-90")} />
+        <ChevronDown
+          className={cn(
+            "w-3 h-3 text-muted-foreground transition-transform",
+            !expanded && "-rotate-90"
+          )}
+        />
       </button>
 
       <div className="mt-2 h-1 rounded-full bg-muted/50 overflow-hidden">
         <div
           className={cn(
             "h-full rounded-full transition-all duration-300",
-            workflow.status === "error" ? "bg-destructive" : "bg-accent",
+            workflow.status === "error" ? "bg-destructive" : "bg-accent"
           )}
           style={{ width: `${progress}%` }}
         />
       </div>
 
       <div className="mt-1 text-[10px] text-muted-foreground/60">
-        {workflow.status === "running" && `Step ${workflow.stepIndex + 1}/${workflow.totalSteps}: ${workflow.currentStep}`}
-        {workflow.status === "completed" && `Completed in ${(workflow.totalDurationMs ?? 0) / 1000}s`}
+        {workflow.status === "running" &&
+          `Step ${workflow.stepIndex + 1}/${workflow.totalSteps}: ${workflow.currentStep}`}
+        {workflow.status === "completed" &&
+          `Completed in ${(workflow.totalDurationMs ?? 0) / 1000}s`}
         {workflow.status === "error" && `Error: ${workflow.error}`}
       </div>
 
       {expanded && workflow.completedSteps.length > 0 && (
         <div className="mt-2 space-y-1">
           {workflow.completedSteps.map((step, i) => (
-            <div key={`${step.name}-${i}`} className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <div
+              key={`${step.name}-${i}`}
+              className="flex items-center gap-1.5 text-[11px] text-muted-foreground"
+            >
               <CheckCircle2 className="w-2.5 h-2.5 text-green-500 flex-shrink-0" />
               <span>{step.name}</span>
-              <span className="ml-auto text-[10px] text-muted-foreground/40">{(step.durationMs / 1000).toFixed(1)}s</span>
+              <span className="ml-auto text-[10px] text-muted-foreground/40">
+                {(step.durationMs / 1000).toFixed(1)}s
+              </span>
             </div>
           ))}
           {workflow.status === "running" && (
@@ -407,47 +576,6 @@ function WorkflowProgress({ workflow }: { workflow: WorkflowState }) {
   );
 }
 
-// === Sub-agent Card ===
-
-interface SubAgentState {
-  agentId: string;
-  agentName: string;
-  task: string;
-  status: "running" | "completed" | "error";
-  response?: string;
-  error?: string;
-  durationMs?: number;
-}
-
-function SubAgentCard({ agent }: { agent: SubAgentState }) {
-  const [expanded, setExpanded] = useState(false);
-
-  return (
-    <div className="rounded-md border border-border/30 bg-background/50 p-2">
-      <button
-        type="button"
-        onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-1.5 w-full text-left text-[11px]"
-      >
-        <Bot className="w-3 h-3 text-[#bb9af7] flex-shrink-0" />
-        <span className="font-medium text-muted-foreground">{agent.agentName}</span>
-        {agent.status === "running" && <Loader2 className="w-2.5 h-2.5 animate-spin text-accent ml-auto" />}
-        {agent.status === "completed" && <CheckCircle2 className="w-2.5 h-2.5 text-green-500 ml-auto" />}
-        {agent.status === "error" && <XCircle className="w-2.5 h-2.5 text-destructive ml-auto" />}
-      </button>
-      <div className="mt-1 text-[10px] text-muted-foreground/60 line-clamp-2">{agent.task}</div>
-      {expanded && agent.response && (
-        <div className="mt-1.5 text-[11px] text-muted-foreground/80 whitespace-pre-wrap max-h-[100px] overflow-auto border-t border-border/20 pt-1.5">
-          {agent.response.length > 500 ? `${agent.response.slice(0, 500)}...` : agent.response}
-        </div>
-      )}
-      {expanded && agent.error && (
-        <div className="mt-1.5 text-[11px] text-destructive">{agent.error}</div>
-      )}
-    </div>
-  );
-}
-
 // === Compaction Notice ===
 
 function CompactionNotice({ active, tokensBefore }: { active: boolean; tokensBefore?: number }) {
@@ -456,12 +584,18 @@ function CompactionNotice({ active, tokensBefore }: { active: boolean; tokensBef
       {active ? (
         <>
           <Loader2 className="w-3 h-3 animate-spin text-accent" />
-          <span>Compacting context{tokensBefore ? ` (${(tokensBefore / 1000).toFixed(0)}K tokens)` : ""}...</span>
+          <span>
+            Compacting context{tokensBefore ? ` (${(tokensBefore / 1000).toFixed(0)}K tokens)` : ""}
+            ...
+          </span>
         </>
       ) : (
         <>
           <Zap className="w-3 h-3 text-accent" />
-          <span>Context compacted{tokensBefore ? ` from ${(tokensBefore / 1000).toFixed(0)}K tokens` : ""}</span>
+          <span>
+            Context compacted
+            {tokensBefore ? ` from ${(tokensBefore / 1000).toFixed(0)}K tokens` : ""}
+          </span>
         </>
       )}
     </div>
@@ -477,46 +611,227 @@ interface TaskPlanState {
 }
 
 function TaskPlanCard({ plan }: { plan: TaskPlanState }) {
-  const [expanded, setExpanded] = useState(true);
-  const progress = plan.summary.total > 0
-    ? (plan.summary.completed / plan.summary.total) * 100
-    : 0;
+  const progress = plan.summary.total > 0 ? (plan.summary.completed / plan.summary.total) * 100 : 0;
+  const isAllDone = plan.summary.total > 0 && plan.summary.completed === plan.summary.total;
+
+  const handleShowDetail = () => {
+    const state = useStore.getState();
+    const activeConvId = state.activeConversationId;
+    if (!activeConvId) return;
+    const termIds = state.conversationTerminals[activeConvId];
+    const termId = termIds?.[0];
+    if (termId) {
+      const current = state.sessions[termId]?.detailViewMode;
+      state.setDetailViewMode(termId, current === "plan" ? "timeline" : "plan");
+    }
+  };
 
   return (
-    <div className="mx-4 my-2 rounded-lg border border-border/30 bg-background/50 p-3">
-      <button
-        type="button"
-        onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-2 w-full text-left"
-      >
+    <button
+      type="button"
+      onClick={handleShowDetail}
+      className="mx-4 my-2 rounded-lg border border-border/30 bg-background/50 p-3 w-[calc(100%-2rem)] text-left hover:border-accent/40 hover:bg-accent/5 transition-colors cursor-pointer group"
+    >
+      <div className="flex items-center gap-2">
         <List className="w-3.5 h-3.5 text-accent flex-shrink-0" />
         <span className="text-[12px] font-medium text-foreground">
           Task Plan ({plan.summary.completed}/{plan.summary.total})
         </span>
-        <ChevronDown className={cn("w-3 h-3 text-muted-foreground transition-transform ml-auto", !expanded && "-rotate-90")} />
-      </button>
-
-      <div className="mt-2 h-1 rounded-full bg-muted/50 overflow-hidden">
-        <div className="h-full rounded-full bg-accent transition-all duration-300" style={{ width: `${progress}%` }} />
+        {isAllDone && (
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 font-medium">
+            Done
+          </span>
+        )}
+        <span className="ml-auto text-[10px] text-muted-foreground/50 group-hover:text-accent/70 transition-colors">
+          View details →
+        </span>
       </div>
 
-      {expanded && (
-        <div className="mt-2 space-y-1">
-          {plan.steps.map((step, i) => (
-            <div key={`${step.step}-${i}`} className="flex items-center gap-1.5 text-[11px]">
-              {step.status === "completed" && <CheckCircle2 className="w-2.5 h-2.5 text-green-500 flex-shrink-0" />}
-              {step.status === "in_progress" && <Loader2 className="w-2.5 h-2.5 animate-spin text-accent flex-shrink-0" />}
-              {step.status === "pending" && <div className="w-2.5 h-2.5 rounded-full border border-muted-foreground/30 flex-shrink-0" />}
-              <span className={cn(
-                step.status === "completed" ? "text-muted-foreground/60 line-through" :
-                step.status === "in_progress" ? "text-accent" : "text-muted-foreground",
-              )}>
-                {step.step}
-              </span>
-            </div>
-          ))}
+      <div className="mt-2 h-1 rounded-full bg-muted/50 overflow-hidden">
+        <div
+          className={cn(
+            "h-full rounded-full transition-all duration-300",
+            isAllDone ? "bg-emerald-400" : "bg-accent",
+          )}
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+
+      <div className="mt-2 space-y-1">
+        {plan.steps.map((step, i) => (
+          <div key={`${step.step}-${i}`} className="flex items-center gap-1.5 text-[11px]">
+            {step.status === "completed" && (
+              <CheckCircle2 className="w-2.5 h-2.5 text-green-500 flex-shrink-0" />
+            )}
+            {step.status === "in_progress" && (
+              <Loader2 className="w-2.5 h-2.5 animate-spin text-accent flex-shrink-0" />
+            )}
+            {step.status === "pending" && (
+              <div className="w-2.5 h-2.5 rounded-full border border-muted-foreground/30 flex-shrink-0" />
+            )}
+            <span
+              className={cn(
+                step.status === "completed"
+                  ? "text-muted-foreground/60 line-through"
+                  : step.status === "in_progress"
+                    ? "text-accent"
+                    : "text-muted-foreground"
+              )}
+            >
+              {step.step}
+            </span>
+          </div>
+        ))}
+      </div>
+    </button>
+  );
+}
+
+/** Agent summary bar showing active/completed sub-agent counts */
+const EMPTY_SUB_AGENTS: never[] = [];
+
+const AGENT_ICON_MAP: Record<string, typeof Bot> = {
+  coder: Code2,
+  researcher: Search,
+  explorer: Search,
+};
+
+function getAgentIcon(name: string): typeof Bot {
+  const lower = name.toLowerCase();
+  for (const [key, icon] of Object.entries(AGENT_ICON_MAP)) {
+    if (lower.includes(key)) return icon;
+  }
+  return Bot;
+}
+
+function AgentSummaryBar() {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const wasRunningRef = useRef(false);
+  const activeSessionId = useStore((s) => s.activeSessionId);
+  const subAgents = useStore((s) =>
+    activeSessionId ? (s.activeSubAgents[activeSessionId] ?? EMPTY_SUB_AGENTS) : EMPTY_SUB_AGENTS
+  );
+
+  const running = subAgents.filter((a) => a.status === "running").length;
+  const allDone = running === 0 && subAgents.length > 0;
+
+  useEffect(() => {
+    if (running > 0) {
+      wasRunningRef.current = true;
+    } else if (wasRunningRef.current && allDone) {
+      const timer = setTimeout(() => setIsExpanded(false), 800);
+      return () => clearTimeout(timer);
+    }
+  }, [running, allDone]);
+
+  if (subAgents.length === 0) return null;
+
+  const completed = subAgents.filter((a) => a.status === "completed").length;
+  const errored = subAgents.filter((a) => a.status === "error").length;
+  const totalDurationMs = subAgents.reduce((sum, a) => sum + (a.durationMs ?? 0), 0);
+
+  const scrollToAgent = (parentRequestId: string) => {
+    const el = document.querySelector(`[data-agent-block="sub-agent-${parentRequestId}"]`) as HTMLElement | null;
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.style.transition = "box-shadow 0.3s ease, background-color 0.3s ease";
+    el.style.boxShadow = "0 0 0 2px var(--accent), 0 0 16px 2px rgba(var(--accent-rgb, 80 200 180), 0.3)";
+    el.style.backgroundColor = "rgba(var(--accent-rgb, 80 200 180), 0.08)";
+    setTimeout(() => {
+      el.style.boxShadow = "";
+      el.style.backgroundColor = "";
+      setTimeout(() => { el.style.transition = ""; }, 300);
+    }, 2000);
+  };
+
+  return (
+    <div className="mx-4 my-1.5 rounded-md bg-muted/20 text-[11px] text-muted-foreground overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setIsExpanded((v) => !v)}
+        className="w-full flex items-center gap-3 px-3 py-1.5 hover:bg-muted/30 transition-colors"
+      >
+        <div className="flex items-center gap-1">
+          <Bot className="w-3 h-3" />
+          <span className="font-medium">
+            {subAgents.length} agent{subAgents.length > 1 ? "s" : ""}
+          </span>
         </div>
-      )}
+        {running > 0 && (
+          <div className="flex items-center gap-1">
+            <Loader2 className="w-2.5 h-2.5 animate-spin text-accent" />
+            <span>{running} active</span>
+          </div>
+        )}
+        {completed > 0 && (
+          <div className="flex items-center gap-1">
+            <CheckCircle2 className="w-2.5 h-2.5 text-green-500" />
+            <span>{completed} done</span>
+          </div>
+        )}
+        {errored > 0 && (
+          <div className="flex items-center gap-1">
+            <XCircle className="w-2.5 h-2.5 text-destructive" />
+            <span>{errored} failed</span>
+          </div>
+        )}
+        <div className="ml-auto flex items-center gap-1.5">
+          {totalDurationMs > 0 && (
+            <span className="text-[10px] text-muted-foreground/60">
+              {(totalDurationMs / 1000).toFixed(1)}s total
+            </span>
+          )}
+          {isExpanded ? (
+            <ChevronUp className="w-3 h-3 text-muted-foreground/40" />
+          ) : (
+            <ChevronDown className="w-3 h-3 text-muted-foreground/40" />
+          )}
+        </div>
+      </button>
+
+      <div
+        className="grid transition-[grid-template-rows] duration-300 ease-in-out"
+        style={{ gridTemplateRows: isExpanded ? "1fr" : "0fr" }}
+      >
+        <div className="overflow-hidden border-t border-border/30 px-3 py-1">
+          {subAgents.map((agent) => {
+            const AgentIcon = getAgentIcon(agent.agentName);
+            return (
+              <div
+                key={agent.parentRequestId}
+                className="flex items-center gap-2 py-1 text-[10px]"
+              >
+                <AgentIcon className="w-3 h-3 flex-shrink-0 text-muted-foreground/60" />
+                <span className="flex-1 truncate">
+                  {agent.agentName || agent.agentId}
+                </span>
+                {agent.status === "running" && (
+                  <Loader2 className="w-2.5 h-2.5 animate-spin text-accent" />
+                )}
+                {agent.status === "completed" && (
+                  <CheckCircle2 className="w-2.5 h-2.5 text-green-500" />
+                )}
+                {agent.status === "error" && (
+                  <XCircle className="w-2.5 h-2.5 text-destructive" />
+                )}
+                {agent.durationMs !== undefined && (
+                  <span className="text-muted-foreground/40">
+                    {(agent.durationMs / 1000).toFixed(1)}s
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); scrollToAgent(agent.parentRequestId); }}
+                  className="p-0.5 hover:bg-accent/30 rounded transition-colors"
+                  title="Scroll to agent card"
+                >
+                  <ArrowRight className="w-2.5 h-2.5 text-muted-foreground/40 hover:text-accent" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
@@ -528,6 +843,8 @@ function MessageBlock({
   onDeny,
   approvalMode,
   onApprovalModeChange,
+  taskPlan,
+  planTextOffset,
 }: {
   message: ChatMessage;
   pendingApproval?: { requestId: string; toolName: string } | null;
@@ -535,6 +852,8 @@ function MessageBlock({
   onDeny?: (requestId: string) => void;
   approvalMode?: string;
   onApprovalModeChange?: (mode: "ask" | "allowlist" | "run-all") => void;
+  taskPlan?: TaskPlanState | null;
+  planTextOffset?: number | null;
 }) {
   const isUser = message.role === "user";
 
@@ -551,32 +870,108 @@ function MessageBlock({
         />
       )}
 
-      {message.error ? (
-        <div className="flex items-start gap-2 text-[13px] text-destructive">
-          <AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
-          <span>{message.error}</span>
-        </div>
-      ) : (
-        <div className="text-[12px] text-foreground leading-[1.55]">
-          <Markdown content={message.content || (message.isStreaming ? "..." : "")} />
-        </div>
-      )}
+      {(() => {
+        if (message.error) {
+          return (
+            <div className="flex items-start gap-2 text-[13px] text-destructive">
+              <AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+              <span>{message.error}</span>
+            </div>
+          );
+        }
 
-      {message.toolCalls && message.toolCalls.length > 0 && (
-        <div className="mt-2 space-y-1.5">
-          {message.toolCalls.map((tc, i) => (
-            <CollapsibleToolCall
-              key={`${tc.name}-${i}`}
-              tc={tc}
-              approval={pendingApproval?.toolName === tc.name ? pendingApproval : null}
-              onApprove={onApprove}
-              onDeny={onDeny}
-              approvalMode={approvalMode}
-              onApprovalModeChange={onApprovalModeChange}
-            />
-          ))}
-        </div>
-      )}
+        const hasToolCalls = !isUser && message.toolCalls && message.toolCalls.length > 0;
+        const tcOffset = message.toolCallsContentOffset;
+        const shouldSplitForTools = hasToolCalls && tcOffset != null && tcOffset >= 0;
+
+        const visibleCalls = hasToolCalls
+          ? message.toolCalls!.filter(
+              (tc) =>
+                tc.success !== undefined ||
+                (pendingApproval == null && tc.success === undefined)
+            )
+          : [];
+        const callIds = visibleCalls
+          .map((tc) => tc.requestId)
+          .filter((id): id is string => !!id);
+
+        const pendingCalls = hasToolCalls && pendingApproval
+          ? message.toolCalls!.filter(
+              (tc) => tc.name === pendingApproval.toolName && tc.success === undefined
+            )
+          : [];
+
+        const renderToolCards = () => (
+          <>
+            {pendingCalls.length > 0 && (
+              <div className="mt-2 space-y-1.5">
+                {pendingCalls.map((tc, i) => (
+                  <CollapsibleToolCall
+                    key={`${tc.name}-${i}`}
+                    tc={tc}
+                    approval={pendingApproval}
+                    onApprove={onApprove}
+                    onDeny={onDeny}
+                    approvalMode={approvalMode}
+                    onApprovalModeChange={onApprovalModeChange}
+                  />
+                ))}
+              </div>
+            )}
+            {visibleCalls.length > 0 && (
+              <ToolCallSummary toolCalls={visibleCalls} requestIds={callIds} />
+            )}
+          </>
+        );
+
+        if (shouldSplitForTools) {
+          const textBefore = message.content.slice(0, tcOffset);
+          const textAfter = message.content.slice(tcOffset);
+          return (
+            <>
+              {textBefore && (
+                <div className="text-[12px] text-foreground leading-[1.55]">
+                  <Markdown content={textBefore} />
+                </div>
+              )}
+              {!isUser && taskPlan && <TaskPlanCard plan={taskPlan} />}
+              {renderToolCards()}
+              {textAfter.trim() && (
+                <div className="text-[12px] text-foreground leading-[1.55] mt-2">
+                  <Markdown content={textAfter} />
+                </div>
+              )}
+            </>
+          );
+        }
+
+        if (!isUser && taskPlan && planTextOffset != null && planTextOffset > 0) {
+          return (
+            <>
+              <div className="text-[12px] text-foreground leading-[1.55]">
+                <Markdown content={message.content.slice(0, planTextOffset) || (message.isStreaming ? "..." : "")} />
+              </div>
+              <TaskPlanCard plan={taskPlan} />
+              {message.content.length > planTextOffset && (
+                <div className="text-[12px] text-foreground leading-[1.55]">
+                  <Markdown content={message.content.slice(planTextOffset)} />
+                </div>
+              )}
+              {renderToolCards()}
+            </>
+          );
+        }
+
+        return (
+          <>
+            <div className="text-[12px] text-foreground leading-[1.55]">
+              <Markdown content={message.content || (message.isStreaming ? "..." : "")} />
+            </div>
+            {!isUser && taskPlan && <TaskPlanCard plan={taskPlan} />}
+            {renderToolCards()}
+          </>
+        );
+      })()}
 
       {message.isStreaming && (
         <div className="flex items-center gap-1 mt-1">
@@ -592,11 +987,11 @@ export const AIChatPanel = memo(function AIChatPanel() {
 
   // Store state - use useShallow for array selectors to prevent infinite re-render loop
   const conversations = useStore(
-    useShallow((s) => s.conversationOrder.map((id) => s.conversations[id]).filter(Boolean)),
+    useShallow((s) => s.conversationOrder.map((id) => s.conversations[id]).filter(Boolean))
   );
   const activeConvId = useStore((s) => s.activeConversationId);
   const activeConv = useStore((s) =>
-    s.activeConversationId ? s.conversations[s.activeConversationId] ?? null : null,
+    s.activeConversationId ? (s.conversations[s.activeConversationId] ?? null) : null
   );
   const messages = activeConv?.messages ?? EMPTY_MESSAGES;
   const isStreaming = activeConv?.isStreaming ?? false;
@@ -613,7 +1008,9 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>(() => {
     try {
       return (localStorage.getItem("golish-approval-mode") as ApprovalMode) || "ask";
-    } catch { return "ask"; }
+    } catch {
+      return "ask";
+    }
   });
 
   const [contextUsage, setContextUsage] = useState<{
@@ -628,17 +1025,21 @@ export const AIChatPanel = memo(function AIChatPanel() {
   // Workflow state
   const [activeWorkflow, setActiveWorkflow] = useState<WorkflowState | null>(null);
 
-  // Sub-agent state
-  const [activeSubAgents, setActiveSubAgents] = useState<SubAgentState[]>([]);
-
   // Task plan state
   const [taskPlan, setTaskPlan] = useState<TaskPlanState | null>(null);
+  // Text offset at which the plan card was first created (for inline positioning)
+  const planTextOffsetRef = useRef<number | null>(null);
 
   // Context compaction state
-  const [compactionState, setCompactionState] = useState<{ active: boolean; tokensBefore?: number } | null>(null);
+  const [compactionState, setCompactionState] = useState<{
+    active: boolean;
+    tokensBefore?: number;
+  } | null>(null);
 
   // Image attachments for sending with prompt
-  const [imageAttachments, setImageAttachments] = useState<Array<{ data: string; mediaType: string; name: string }>>([]);
+  const [imageAttachments, setImageAttachments] = useState<
+    Array<{ data: string; mediaType: string; name: string }>
+  >([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Store actions
@@ -684,8 +1085,11 @@ export const AIChatPanel = memo(function AIChatPanel() {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
       const parsed = JSON.parse(raw) as Array<{
-        id: string; title: string; messages: ChatMessage[];
-        createdAt: number; aiSessionId: string;
+        id: string;
+        title: string;
+        messages: ChatMessage[];
+        createdAt: number;
+        aiSessionId: string;
       }>;
       const store = useStore.getState();
       const existing = store.conversations;
@@ -705,7 +1109,9 @@ export const AIChatPanel = memo(function AIChatPanel() {
           store.addConversation(conv);
         }
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
 
     // Restore one terminal per conversation (1:1 model)
     (async () => {
@@ -721,7 +1127,11 @@ export const AIChatPanel = memo(function AIChatPanel() {
         const activeId = store.activeConversationId;
 
         // Helper: restore a single terminal for a conversation (first saved terminal only)
-        const restoreTerminalForConv = async (convId: string, termInfo: PersistedTerminal, isActiveConv: boolean) => {
+        const restoreTerminalForConv = async (
+          convId: string,
+          termInfo: PersistedTerminal,
+          isActiveConv: boolean
+        ) => {
           const existing = useStore.getState().conversationTerminals[convId] ?? [];
           if (existing.length > 0) {
             const existingTermId = existing[0];
@@ -731,7 +1141,8 @@ export const AIChatPanel = memo(function AIChatPanel() {
             } else if (termInfo.scrollback) {
               TerminalInstanceManager.setPendingScrollback(existingTermId, termInfo.scrollback);
             }
-            if (termInfo.customName) useStore.getState().setCustomTabName(existingTermId, termInfo.customName);
+            if (termInfo.customName)
+              useStore.getState().setCustomTabName(existingTermId, termInfo.customName);
             if (termInfo.timelineBlocks?.length) {
               const blocksToRestore = termInfo.timelineBlocks;
               const tid = existingTermId;
@@ -739,7 +1150,10 @@ export const AIChatPanel = memo(function AIChatPanel() {
                 if (!state.timelines[tid]) state.timelines[tid] = [];
                 for (const block of blocksToRestore) {
                   if (block.type === "command") {
-                    state.timelines[tid].push({ ...block, data: { ...block.data, sessionId: tid } });
+                    state.timelines[tid].push({
+                      ...block,
+                      data: { ...block.data, sessionId: tid },
+                    });
                   } else {
                     state.timelines[tid].push(block as any);
                   }
@@ -748,11 +1162,16 @@ export const AIChatPanel = memo(function AIChatPanel() {
             }
             return;
           }
-          const termId = await createTerminalTab(termInfo.workingDirectory, true, termInfo.scrollback);
+          const termId = await createTerminalTab(
+            termInfo.workingDirectory,
+            true,
+            termInfo.scrollback
+          );
           if (!termId) return;
           useStore.getState().addTerminalToConversation(convId, termId);
           if (isActiveConv) useStore.getState().setActiveSession(termId);
-          if (termInfo.customName) useStore.getState().setCustomTabName(termId, termInfo.customName);
+          if (termInfo.customName)
+            useStore.getState().setCustomTabName(termId, termInfo.customName);
           if (termInfo.timelineBlocks?.length) {
             const blocksToRestore = termInfo.timelineBlocks;
             const tid = termId;
@@ -779,7 +1198,8 @@ export const AIChatPanel = memo(function AIChatPanel() {
 
         // Pre-create terminals for other conversations in the background
         const otherConvs = Object.entries(termData).filter(
-          ([convId, terminals]) => convId !== activeId && store.conversations[convId] && terminals.length > 0
+          ([convId, terminals]) =>
+            convId !== activeId && store.conversations[convId] && terminals.length > 0
         );
         for (const [convId, savedTerms] of otherConvs) {
           const existing = useStore.getState().conversationTerminals[convId] ?? [];
@@ -805,7 +1225,9 @@ export const AIChatPanel = memo(function AIChatPanel() {
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify([]));
         localStorage.setItem(TERMINAL_DATA_KEY, JSON.stringify({}));
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
       return;
     }
     try {
@@ -832,7 +1254,9 @@ export const AIChatPanel = memo(function AIChatPanel() {
           try {
             const raw = localStorage.getItem(TERMINAL_DATA_KEY);
             if (raw) existingTermData = JSON.parse(raw);
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
           const termData: Record<string, PersistedTerminal[]> = {};
           for (const c of toSave) {
             const termIds = store.conversationTerminals[c.id] ?? [];
@@ -846,8 +1270,10 @@ export const AIChatPanel = memo(function AIChatPanel() {
               const session = store.sessions[tid];
               if (!session?.workingDirectory) continue;
               let scrollback = TerminalInstanceManager.serialize(tid);
-              if (scrollback.length > MAX_SCROLLBACK_CHARS) scrollback = scrollback.slice(-MAX_SCROLLBACK_CHARS);
-              if (!scrollback && existingTermData[c.id]?.[i]?.scrollback) scrollback = existingTermData[c.id][i].scrollback;
+              if (scrollback.length > MAX_SCROLLBACK_CHARS)
+                scrollback = scrollback.slice(-MAX_SCROLLBACK_CHARS);
+              if (!scrollback && existingTermData[c.id]?.[i]?.scrollback)
+                scrollback = existingTermData[c.id][i].scrollback;
               const customName = session.customName || existingTermData[c.id]?.[i]?.customName;
               const blocks: Array<import("@/lib/workspace-storage").PersistedTimelineBlock> = [];
               const timeline = store.timelines[tid];
@@ -855,16 +1281,46 @@ export const AIChatPanel = memo(function AIChatPanel() {
                 for (const block of timeline) {
                   if (block.type === "command") {
                     let output = block.data.output;
-                    if (output.length > MAX_BLOCK_OUTPUT_CHARS) output = output.slice(-MAX_BLOCK_OUTPUT_CHARS);
-                    blocks.push({ id: block.id, type: "command", timestamp: block.timestamp, data: { ...block.data, output } });
+                    if (output.length > MAX_BLOCK_OUTPUT_CHARS)
+                      output = output.slice(-MAX_BLOCK_OUTPUT_CHARS);
+                    blocks.push({
+                      id: block.id,
+                      type: "command",
+                      timestamp: block.timestamp,
+                      data: { ...block.data, output },
+                    });
                   } else if (block.type === "pipeline_progress") {
-                    blocks.push({ id: block.id, type: "pipeline_progress", timestamp: block.timestamp, data: block.data });
+                    blocks.push({
+                      id: block.id,
+                      type: "pipeline_progress",
+                      timestamp: block.timestamp,
+                      data: block.data,
+                    });
+                  } else if (block.type === "ai_tool_execution") {
+                    const data = { ...block.data };
+                    if (data.streamingOutput && data.streamingOutput.length > MAX_BLOCK_OUTPUT_CHARS) {
+                      data.streamingOutput = data.streamingOutput.slice(-MAX_BLOCK_OUTPUT_CHARS);
+                    }
+                    blocks.push({ id: block.id, type: "ai_tool_execution", timestamp: block.timestamp, data });
+                  } else if (block.type === "sub_agent_activity") {
+                    const data = { ...block.data };
+                    if (data.streamingText && data.streamingText.length > MAX_BLOCK_OUTPUT_CHARS) {
+                      data.streamingText = data.streamingText.slice(-MAX_BLOCK_OUTPUT_CHARS);
+                    }
+                    blocks.push({ id: block.id, type: "sub_agent_activity", timestamp: block.timestamp, data, batchId: block.batchId });
                   }
                 }
               }
-              const entry: PersistedTerminal = { workingDirectory: session.workingDirectory, scrollback, customName };
+              const entry: PersistedTerminal = {
+                workingDirectory: session.workingDirectory,
+                scrollback,
+                customName,
+              };
               entry.timelineBlocks = blocks.slice(-MAX_SAVED_BLOCKS);
-              if (!entry.timelineBlocks.length && existingTermData[c.id]?.[i]?.timelineBlocks?.length) {
+              if (
+                !entry.timelineBlocks.length &&
+                existingTermData[c.id]?.[i]?.timelineBlocks?.length
+              ) {
                 entry.timelineBlocks = existingTermData[c.id][i].timelineBlocks;
               }
               terminals.push(entry);
@@ -876,19 +1332,25 @@ export const AIChatPanel = memo(function AIChatPanel() {
             }
           }
           localStorage.setItem(TERMINAL_DATA_KEY, JSON.stringify(termData));
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }, 500);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }, [conversations]);
 
-  const [selectedModel, setSelectedModel] = useState<{ model: string; provider: string } | null>(() => {
-    try {
-      const saved = localStorage.getItem("golish-pentest-ai-model");
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
+  const [selectedModel, setSelectedModel] = useState<{ model: string; provider: string } | null>(
+    () => {
+      try {
+        const saved = localStorage.getItem("golish-pentest-ai-model");
+        return saved ? JSON.parse(saved) : null;
+      } catch {
+        return null;
+      }
     }
-  });
+  );
   const modelDisplay = selectedModel?.model ? formatModelName(selectedModel.model) : "No Model";
 
   // Generate a short title for a conversation using the AI
@@ -898,24 +1360,73 @@ export const AIChatPanel = memo(function AIChatPanel() {
       const titleSessionId = `title-gen-${convId}`;
       try {
         const settings = await getSettings();
+        const titleWorkspace = useStore.getState().currentProjectPath || ".";
         const { model, provider } = selectedModel;
         let providerConfig: ProviderConfig;
         switch (provider) {
-          case "anthropic": providerConfig = { provider: "anthropic", workspace: ".", model, api_key: settings.ai.anthropic?.api_key || "" }; break;
-          case "openai": providerConfig = { provider: "openai", workspace: ".", model, api_key: settings.ai.openai?.api_key || "" }; break;
-          case "openrouter": providerConfig = { provider: "openrouter", workspace: ".", model, api_key: settings.ai.openrouter?.api_key || "" }; break;
-          case "gemini": providerConfig = { provider: "gemini", workspace: ".", model, api_key: settings.ai.gemini?.api_key || "" }; break;
-          case "groq": providerConfig = { provider: "groq", workspace: ".", model, api_key: settings.ai.groq?.api_key || "" }; break;
-          case "nvidia": providerConfig = { provider: "nvidia", workspace: ".", model, api_key: settings.ai.nvidia?.api_key || "" }; break;
-          case "ollama": providerConfig = { provider: "ollama", workspace: ".", model }; break;
-          default: return;
+          case "anthropic":
+            providerConfig = {
+              provider: "anthropic",
+              workspace: titleWorkspace,
+              model,
+              api_key: settings.ai.anthropic?.api_key || "",
+            };
+            break;
+          case "openai":
+            providerConfig = {
+              provider: "openai",
+              workspace: titleWorkspace,
+              model,
+              api_key: settings.ai.openai?.api_key || "",
+            };
+            break;
+          case "openrouter":
+            providerConfig = {
+              provider: "openrouter",
+              workspace: titleWorkspace,
+              model,
+              api_key: settings.ai.openrouter?.api_key || "",
+            };
+            break;
+          case "gemini":
+            providerConfig = {
+              provider: "gemini",
+              workspace: titleWorkspace,
+              model,
+              api_key: settings.ai.gemini?.api_key || "",
+            };
+            break;
+          case "groq":
+            providerConfig = {
+              provider: "groq",
+              workspace: titleWorkspace,
+              model,
+              api_key: settings.ai.groq?.api_key || "",
+            };
+            break;
+          case "nvidia":
+            providerConfig = {
+              provider: "nvidia",
+              workspace: titleWorkspace,
+              model,
+              api_key: settings.ai.nvidia?.api_key || "",
+            };
+            break;
+          case "ollama":
+            providerConfig = { provider: "ollama", workspace: titleWorkspace, model };
+            break;
+          default:
+            return;
         }
         await initAiSession(titleSessionId, providerConfig);
         const title = await sendPromptSession(
           titleSessionId,
           `Generate a concise 3-5 word title for this chat message. Output ONLY the title, nothing else. No quotes, no punctuation at the end.\n\nMessage: "${firstMessage.slice(0, 200)}"`
         );
-        const cleaned = title.trim().replace(/^["']|["']$/g, "").slice(0, 40);
+        const cleaned = title
+          .trim()
+          .replace(/^["']|["']$/g, "")
+          .slice(0, 40);
         if (cleaned) {
           useStore.getState().updateConversation(convId, { title: cleaned });
         }
@@ -925,53 +1436,45 @@ export const AIChatPanel = memo(function AIChatPanel() {
         shutdownAiSession(titleSessionId).catch(() => {});
       }
     },
-    [selectedModel],
+    [selectedModel]
   );
   generateTitleRef.current = generateTitle;
 
   // Load available pentest tools on mount
   useEffect(() => {
-    scanTools().then((result) => {
-      if (result.success) {
-        setPentestTools(result.tools.filter((t) => t.installed));
-      }
-    }).catch(() => {});
+    scanTools()
+      .then((result) => {
+        if (result.success) {
+          setPentestTools(result.tools.filter((t) => t.installed));
+        }
+      })
+      .catch(() => {});
   }, []);
 
-  // Listen for pipeline analysis requests from TargetPanel
-  const sendAutoPromptRef = useRef<((prompt: string) => void) | null>(null);
-  useEffect(() => {
-    const handlePipelineAnalysis = (e: Event) => {
-      const { convId, prompt } = (e as CustomEvent<{ convId: string; prompt: string }>).detail;
-      const store = useStore.getState();
-      if (store.activeConversationId !== convId) return;
-      if (sendAutoPromptRef.current) {
-        sendAutoPromptRef.current(prompt);
-      }
-    };
-    window.addEventListener("pipeline-analysis-request", handlePipelineAnalysis);
-    return () => window.removeEventListener("pipeline-analysis-request", handlePipelineAnalysis);
-  }, []);
 
   // Load configured providers from settings
   useEffect(() => {
     const loadProviders = () => {
-      getSettings().then((settings) => {
-        const configured = new Set<string>();
-        const ai = settings.ai;
-        if (ai.anthropic?.api_key) configured.add("anthropic");
-        if (ai.openai?.api_key) configured.add("openai");
-        if (ai.openrouter?.api_key) configured.add("openrouter");
-        if (ai.gemini?.api_key) configured.add("gemini");
-        if (ai.groq?.api_key) configured.add("groq");
-        if (ai.xai?.api_key) configured.add("xai");
-        if (ai.zai_sdk?.api_key) configured.add("zai_sdk");
-        if (ai.nvidia?.api_key) configured.add("nvidia");
-        if (ai.vertex_ai?.credentials_path || ai.vertex_ai?.project_id) configured.add("vertex_ai");
-        if (ai.vertex_gemini?.credentials_path || ai.vertex_gemini?.project_id) configured.add("vertex_gemini");
-        configured.add("ollama");
-        setConfiguredProviders(configured);
-      }).catch(() => {});
+      getSettings()
+        .then((settings) => {
+          const configured = new Set<string>();
+          const ai = settings.ai;
+          if (ai.anthropic?.api_key) configured.add("anthropic");
+          if (ai.openai?.api_key) configured.add("openai");
+          if (ai.openrouter?.api_key) configured.add("openrouter");
+          if (ai.gemini?.api_key) configured.add("gemini");
+          if (ai.groq?.api_key) configured.add("groq");
+          if (ai.xai?.api_key) configured.add("xai");
+          if (ai.zai_sdk?.api_key) configured.add("zai_sdk");
+          if (ai.nvidia?.api_key) configured.add("nvidia");
+          if (ai.vertex_ai?.credentials_path || ai.vertex_ai?.project_id)
+            configured.add("vertex_ai");
+          if (ai.vertex_gemini?.credentials_path || ai.vertex_gemini?.project_id)
+            configured.add("vertex_gemini");
+          configured.add("ollama");
+          setConfiguredProviders(configured);
+        })
+        .catch(() => {});
     };
 
     loadProviders();
@@ -988,7 +1491,12 @@ export const AIChatPanel = memo(function AIChatPanel() {
         const unlisten = await onAiEvent((event: AiEvent) => {
           if (!mounted) return;
 
-          console.debug("[AIChatPanel] AI event received:", event.type, "session:", event.session_id);
+          console.debug(
+            "[AIChatPanel] AI event received:",
+            event.type,
+            "session:",
+            event.session_id
+          );
 
           const store = useStore.getState();
           const conv = store.getConversationBySessionId(event.session_id);
@@ -1000,6 +1508,8 @@ export const AIChatPanel = memo(function AIChatPanel() {
 
           switch (event.type) {
             case "started": {
+              // Reset plan text offset for new turn
+              planTextOffsetRef.current = null;
               const assistantMsg: ChatMessage = {
                 id: `ai-${Date.now()}`,
                 role: "assistant",
@@ -1022,9 +1532,9 @@ export const AIChatPanel = memo(function AIChatPanel() {
             case "tool_auto_approved": {
               store.addMessageToolCall(convId, {
                 name: event.tool_name,
-                args: typeof event.args === "string"
-                  ? event.args
-                  : JSON.stringify(event.args, null, 2),
+                args:
+                  typeof event.args === "string" ? event.args : JSON.stringify(event.args, null, 2),
+                requestId: event.request_id,
               });
               break;
             }
@@ -1032,9 +1542,9 @@ export const AIChatPanel = memo(function AIChatPanel() {
             case "tool_approval_request": {
               store.addMessageToolCall(convId, {
                 name: event.tool_name,
-                args: typeof event.args === "string"
-                  ? event.args
-                  : JSON.stringify(event.args, null, 2),
+                args:
+                  typeof event.args === "string" ? event.args : JSON.stringify(event.args, null, 2),
+                requestId: event.request_id,
               });
 
               const currentMode = localStorage.getItem("golish-approval-mode") || "ask";
@@ -1118,40 +1628,6 @@ export const AIChatPanel = memo(function AIChatPanel() {
               break;
             }
 
-            // Sub-agent events
-            case "sub_agent_started": {
-              setActiveSubAgents((prev) => [
-                ...prev.filter((a) => a.agentId !== event.agent_id),
-                {
-                  agentId: event.agent_id,
-                  agentName: event.agent_name,
-                  task: event.task,
-                  status: "running",
-                },
-              ]);
-              break;
-            }
-            case "sub_agent_completed": {
-              setActiveSubAgents((prev) =>
-                prev.map((a) =>
-                  a.agentId === event.agent_id
-                    ? { ...a, status: "completed" as const, response: event.response, durationMs: event.duration_ms }
-                    : a,
-                ),
-              );
-              break;
-            }
-            case "sub_agent_error": {
-              setActiveSubAgents((prev) =>
-                prev.map((a) =>
-                  a.agentId === event.agent_id
-                    ? { ...a, status: "error" as const, error: event.error }
-                    : a,
-                ),
-              );
-              break;
-            }
-
             // Workflow events
             case "workflow_started": {
               setActiveWorkflow({
@@ -1168,8 +1644,13 @@ export const AIChatPanel = memo(function AIChatPanel() {
             case "workflow_step_started": {
               setActiveWorkflow((prev) =>
                 prev?.id === event.workflow_id
-                  ? { ...prev, currentStep: event.step_name, stepIndex: event.step_index, totalSteps: event.total_steps }
-                  : prev,
+                  ? {
+                      ...prev,
+                      currentStep: event.step_name,
+                      stepIndex: event.step_index,
+                      totalSteps: event.total_steps,
+                    }
+                  : prev
               );
               break;
             }
@@ -1180,18 +1661,26 @@ export const AIChatPanel = memo(function AIChatPanel() {
                       ...prev,
                       completedSteps: [
                         ...prev.completedSteps,
-                        { name: event.step_name, output: event.output ?? undefined, durationMs: event.duration_ms },
+                        {
+                          name: event.step_name,
+                          output: event.output ?? undefined,
+                          durationMs: event.duration_ms,
+                        },
                       ],
                     }
-                  : prev,
+                  : prev
               );
               break;
             }
             case "workflow_completed": {
               setActiveWorkflow((prev) =>
                 prev?.id === event.workflow_id
-                  ? { ...prev, status: "completed" as const, totalDurationMs: event.total_duration_ms }
-                  : prev,
+                  ? {
+                      ...prev,
+                      status: "completed" as const,
+                      totalDurationMs: event.total_duration_ms,
+                    }
+                  : prev
               );
               break;
             }
@@ -1199,13 +1688,21 @@ export const AIChatPanel = memo(function AIChatPanel() {
               setActiveWorkflow((prev) =>
                 prev?.id === event.workflow_id
                   ? { ...prev, status: "error" as const, error: event.error }
-                  : prev,
+                  : prev
               );
               break;
             }
 
             // Plan events
             case "plan_updated": {
+              // Record text offset on first plan creation for inline positioning
+              if (planTextOffsetRef.current === null) {
+                const currentConv = useStore.getState().conversations[convId];
+                const lastMsg = currentConv?.messages?.[currentConv.messages.length - 1];
+                if (lastMsg?.role === "assistant") {
+                  planTextOffsetRef.current = (lastMsg.content || "").length;
+                }
+              }
               setTaskPlan({
                 version: event.version,
                 steps: event.steps,
@@ -1278,14 +1775,17 @@ export const AIChatPanel = memo(function AIChatPanel() {
       (async () => {
         restoringTerminalsRef.current = true;
         try {
-          const createdIds = await Promise.all(pendingTerminals.map(p => createTerminalTab(p.workingDirectory, true, p.scrollback)));
+          const createdIds = await Promise.all(
+            pendingTerminals.map((p) => createTerminalTab(p.workingDirectory, true, p.scrollback))
+          );
           for (let i = 0; i < createdIds.length; i++) {
             const termId = createdIds[i];
             if (!termId) continue;
             const pending = pendingTerminals[i];
             useStore.getState().addTerminalToConversation(activeConvId, termId);
             if (i === 0) useStore.getState().setActiveSession(termId);
-            if (pending.customName) useStore.getState().setCustomTabName(termId, pending.customName);
+            if (pending.customName)
+              useStore.getState().setCustomTabName(termId, pending.customName);
             if (pending.timelineBlocks?.length) {
               const blocksToRestore = pending.timelineBlocks;
               const tid = termId;
@@ -1293,7 +1793,10 @@ export const AIChatPanel = memo(function AIChatPanel() {
                 if (!state.timelines[tid]) state.timelines[tid] = [];
                 for (const block of blocksToRestore) {
                   if (block.type === "command") {
-                    state.timelines[tid].push({ ...block, data: { ...block.data, sessionId: tid } });
+                    state.timelines[tid].push({
+                      ...block,
+                      data: { ...block.data, sessionId: tid },
+                    });
                   } else {
                     state.timelines[tid].push(block as any);
                   }
@@ -1469,17 +1972,16 @@ export const AIChatPanel = memo(function AIChatPanel() {
         });
       }
     },
-    [removeConv, addConversation, createTerminalTab],
+    [removeConv, addConversation, createTerminalTab]
   );
 
-  const handleModelSelect = useCallback(
-    (modelId: string, provider: string) => {
-      const sel = { model: modelId, provider };
-      setSelectedModel(sel);
-      try { localStorage.setItem("golish-pentest-ai-model", JSON.stringify(sel)); } catch {}
-    },
-    [],
-  );
+  const handleModelSelect = useCallback((modelId: string, provider: string) => {
+    const sel = { model: modelId, provider };
+    setSelectedModel(sel);
+    try {
+      localStorage.setItem("golish-pentest-ai-model", JSON.stringify(sel));
+    } catch {}
+  }, []);
 
   const buildPentestSystemPrompt = useCallback(() => {
     const store = useStore.getState();
@@ -1490,13 +1992,16 @@ export const AIChatPanel = memo(function AIChatPanel() {
     if (convId) {
       const terminalIds = store.conversationTerminals[convId] ?? [];
       if (terminalIds.length > 0) {
-        const terminalDescs = terminalIds.map((id, idx) => {
-          const session = store.sessions[id];
-          if (!session) return null;
-          const dir = session.workingDirectory || "(unknown)";
-          const name = session.customName || session.processName || `Terminal ${idx + 1}`;
-          return `  - [${id}] "${name}" (cwd: ${dir})`;
-        }).filter(Boolean).join("\n");
+        const terminalDescs = terminalIds
+          .map((id, idx) => {
+            const session = store.sessions[id];
+            if (!session) return null;
+            const dir = session.workingDirectory || "(unknown)";
+            const name = session.customName || session.processName || `Terminal ${idx + 1}`;
+            return `  - [${id}] "${name}" (cwd: ${dir})`;
+          })
+          .filter(Boolean)
+          .join("\n");
 
         terminalContext = `\n\nYour managed terminals:\n${terminalDescs}`;
       }
@@ -1505,13 +2010,24 @@ export const AIChatPanel = memo(function AIChatPanel() {
     // Build pentest tools context
     let toolContext = "";
     if (pentestTools.length > 0) {
-      const toolDescs = pentestTools.map((t) => {
-        const params = (t as unknown as { params?: Array<{ label: string; flag: string; type: string; description?: string }> }).params;
-        const paramStr = params
-          ? params.map((p) => `  - ${p.flag || "(positional)"} ${p.label} (${p.type})${p.description ? `: ${p.description}` : ""}`).join("\n")
-          : "";
-        return `### ${t.name} (${t.runtime})\n${t.description}\n${paramStr}`;
-      }).join("\n\n");
+      const toolDescs = pentestTools
+        .map((t) => {
+          const params = (
+            t as unknown as {
+              params?: Array<{ label: string; flag: string; type: string; description?: string }>;
+            }
+          ).params;
+          const paramStr = params
+            ? params
+                .map(
+                  (p) =>
+                    `  - ${p.flag || "(positional)"} ${p.label} (${p.type})${p.description ? `: ${p.description}` : ""}`
+                )
+                .join("\n")
+            : "";
+          return `### ${t.name} (${t.runtime})\n${t.description}\n${paramStr}`;
+        })
+        .join("\n\n");
 
       toolContext = `\n\nAvailable installed pentest tools:\n${toolDescs}`;
     }
@@ -1560,38 +2076,80 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
 
       try {
         const settings = await getSettings();
-        const workspace = ".";
+        const workspace = useStore.getState().currentProjectPath || ".";
         const { model, provider } = selectedModel;
         let providerConfig: ProviderConfig;
 
         switch (provider) {
           case "anthropic":
-            providerConfig = { provider: "anthropic", workspace, model, api_key: settings.ai.anthropic.api_key || "" };
+            providerConfig = {
+              provider: "anthropic",
+              workspace,
+              model,
+              api_key: settings.ai.anthropic.api_key || "",
+            };
             break;
           case "openai":
-            providerConfig = { provider: "openai", workspace, model, api_key: settings.ai.openai.api_key || "" };
+            providerConfig = {
+              provider: "openai",
+              workspace,
+              model,
+              api_key: settings.ai.openai.api_key || "",
+            };
             break;
           case "openrouter":
-            providerConfig = { provider: "openrouter", workspace, model, api_key: settings.ai.openrouter.api_key || "" };
+            providerConfig = {
+              provider: "openrouter",
+              workspace,
+              model,
+              api_key: settings.ai.openrouter.api_key || "",
+            };
             break;
           case "gemini":
-            providerConfig = { provider: "gemini", workspace, model, api_key: settings.ai.gemini.api_key || "" };
+            providerConfig = {
+              provider: "gemini",
+              workspace,
+              model,
+              api_key: settings.ai.gemini.api_key || "",
+            };
             break;
           case "groq":
-            providerConfig = { provider: "groq", workspace, model, api_key: settings.ai.groq.api_key || "" };
+            providerConfig = {
+              provider: "groq",
+              workspace,
+              model,
+              api_key: settings.ai.groq.api_key || "",
+            };
             break;
           case "xai":
-            providerConfig = { provider: "xai", workspace, model, api_key: settings.ai.xai.api_key || "" };
+            providerConfig = {
+              provider: "xai",
+              workspace,
+              model,
+              api_key: settings.ai.xai.api_key || "",
+            };
             break;
           case "zai_sdk":
-            providerConfig = { provider: "zai_sdk", workspace, model, api_key: settings.ai.zai_sdk.api_key || "" };
+            providerConfig = {
+              provider: "zai_sdk",
+              workspace,
+              model,
+              api_key: settings.ai.zai_sdk.api_key || "",
+            };
             break;
           case "nvidia":
-            providerConfig = { provider: "nvidia", workspace, model, api_key: settings.ai.nvidia.api_key || "" };
+            providerConfig = {
+              provider: "nvidia",
+              workspace,
+              model,
+              api_key: settings.ai.nvidia.api_key || "",
+            };
             break;
           case "vertex_ai":
             providerConfig = {
-              provider: "vertex_ai", workspace, model,
+              provider: "vertex_ai",
+              workspace,
+              model,
               credentials_path: settings.ai.vertex_ai.credentials_path ?? "",
               project_id: settings.ai.vertex_ai.project_id ?? "",
               location: settings.ai.vertex_ai.location ?? "us-east5",
@@ -1599,7 +2157,9 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
             break;
           case "vertex_gemini":
             providerConfig = {
-              provider: "vertex_gemini", workspace, model,
+              provider: "vertex_gemini",
+              workspace,
+              model,
               credentials_path: settings.ai.vertex_gemini.credentials_path ?? "",
               project_id: settings.ai.vertex_gemini.project_id ?? "",
               location: settings.ai.vertex_gemini.location ?? "us-east5",
@@ -1623,7 +2183,12 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
           if (pairs.length > 0) {
             try {
               await restoreAiConversation(conv.aiSessionId, pairs);
-              console.debug("[AIChatPanel] Restored", pairs.length, "messages for session", conv.aiSessionId);
+              console.debug(
+                "[AIChatPanel] Restored",
+                pairs.length,
+                "messages for session",
+                conv.aiSessionId
+              );
             } catch (restoreErr) {
               console.warn("[AIChatPanel] Failed to restore conversation history:", restoreErr);
             }
@@ -1642,7 +2207,7 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
         return false;
       }
     },
-    [selectedModel, updateConv],
+    [selectedModel, updateConv]
   );
 
   const handleSend = useCallback(async () => {
@@ -1710,7 +2275,9 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
       try {
         const { setActiveTerminalSession } = await import("@/lib/tauri");
         await setActiveTerminalSession(activeTermId);
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
 
     // Initialize session if needed
@@ -1718,7 +2285,7 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
     if (!initialized) {
       setMessageError(
         conv.id,
-        t("ai.noModelSelected", "Please select a model first (bottom-left dropdown)"),
+        t("ai.noModelSelected", "Please select a model first (bottom-left dropdown)")
       );
       return;
     }
@@ -1792,51 +2359,25 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
     t,
   ]);
 
-  // Auto-send prompt (for pipeline analysis)
-  const sendAutoPrompt = useCallback(async (text: string) => {
-    if (isStreaming) return;
-    if (!activeConvId) return;
-    const conv = useStore.getState().conversations[activeConvId];
-    if (!conv) return;
-
-    const userMsg: ChatMessage = {
-      id: `auto-${Date.now()}`,
-      role: "user",
-      content: text,
-      timestamp: Date.now(),
-    };
-    addConversationMessage(conv.id, userMsg);
-
-    const initialized = await initializeSession(conv);
-    if (!initialized) return;
-
-    try {
-      setConversationStreaming(conv.id, true);
-      await sendPromptSession(conv.aiSessionId, text);
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      setMessageError(conv.id, errMsg);
-    }
-  }, [isStreaming, activeConvId, initializeSession, addConversationMessage, setConversationStreaming, setMessageError]);
-
-  sendAutoPromptRef.current = sendAutoPrompt;
-
   // AskHuman handlers
-  const handleAskHumanSubmit = useCallback(async (response: string) => {
-    if (!askHumanRequest) return;
-    try {
-      await respondToToolApproval(askHumanRequest.sessionId, {
-        request_id: askHumanRequest.requestId,
-        approved: true,
-        reason: response,
-        remember: false,
-        always_allow: false,
-      });
-    } catch (err) {
-      console.error("[AIChatPanel] Failed to respond to ask_human:", err);
-    }
-    setAskHumanRequest(null);
-  }, [askHumanRequest]);
+  const handleAskHumanSubmit = useCallback(
+    async (response: string) => {
+      if (!askHumanRequest) return;
+      try {
+        await respondToToolApproval(askHumanRequest.sessionId, {
+          request_id: askHumanRequest.requestId,
+          approved: true,
+          reason: response,
+          remember: false,
+          always_allow: false,
+        });
+      } catch (err) {
+        console.error("[AIChatPanel] Failed to respond to ask_human:", err);
+      }
+      setAskHumanRequest(null);
+    },
+    [askHumanRequest]
+  );
 
   const handleAskHumanSkip = useCallback(async () => {
     if (!askHumanRequest) return;
@@ -1875,13 +2416,16 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
     e.target.value = "";
   }, []);
 
-  const handleApprovalModeChange = useCallback((mode: ApprovalMode) => {
-    setApprovalMode(mode);
-    localStorage.setItem("golish-approval-mode", mode);
-    if (!activeConv) return;
-    const backendMode: AgentMode = mode === "run-all" ? "auto-approve" : "default";
-    setAgentMode(activeConv.aiSessionId, backendMode).catch(console.error);
-  }, [activeConv]);
+  const handleApprovalModeChange = useCallback(
+    (mode: ApprovalMode) => {
+      setApprovalMode(mode);
+      localStorage.setItem("golish-approval-mode", mode);
+      if (!activeConv) return;
+      const backendMode: AgentMode = mode === "run-all" ? "auto-approve" : "default";
+      setAgentMode(activeConv.aiSessionId, backendMode).catch(console.error);
+    },
+    [activeConv]
+  );
 
   const handleStop = useCallback(() => {
     if (!activeConv) return;
@@ -1898,7 +2442,7 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
         handleSend();
       }
     },
-    [handleSend],
+    [handleSend]
   );
 
   const handleTextareaInput = useCallback(() => {
@@ -1933,7 +2477,7 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
                   "group flex items-center gap-1.5 h-[28px] px-3 text-[12px] whitespace-nowrap flex-shrink-0 transition-all rounded-lg",
                   conv.id === activeConvId
                     ? "text-foreground bg-[var(--bg-hover)]"
-                    : "text-muted-foreground hover:text-foreground/80",
+                    : "text-muted-foreground hover:text-foreground/80"
                 )}
                 onClick={() => {
                   setActiveConversation(conv.id);
@@ -1949,7 +2493,7 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
                     "w-4 h-4 flex items-center justify-center rounded-full transition-opacity",
                     conv.id === activeConvId
                       ? "opacity-60 hover:opacity-100"
-                      : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
+                      : "opacity-0 group-hover:opacity-60 hover:!opacity-100"
                   )}
                   onClick={(e) => handleCloseTab(conv.id, e)}
                   onKeyDown={() => {}}
@@ -1962,28 +2506,28 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
             ))}
           </div>
           <div className="flex items-center gap-0.5 flex-shrink-0">
-          <button
-            type="button"
-            title={t("ai.newChat")}
-            className="h-6 w-6 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors"
-            onClick={handleNewChat}
-          >
-            <Plus className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            title={t("ai.history")}
-            className={cn(
-              "h-6 w-6 flex items-center justify-center rounded-md transition-colors",
-              showHistory
-                ? "text-foreground bg-[var(--bg-hover)]"
-                : "text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]",
-            )}
-            onClick={() => setShowHistory((v) => !v)}
-          >
-            <Clock className="w-3.5 h-3.5" />
-          </button>
-        </div>
+            <button
+              type="button"
+              title={t("ai.newChat")}
+              className="h-6 w-6 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors"
+              onClick={handleNewChat}
+            >
+              <Plus className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              title={t("ai.history")}
+              className={cn(
+                "h-6 w-6 flex items-center justify-center rounded-md transition-colors",
+                showHistory
+                  ? "text-foreground bg-[var(--bg-hover)]"
+                  : "text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]"
+              )}
+              onClick={() => setShowHistory((v) => !v)}
+            >
+              <Clock className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
         {/* Custom scrollbar track */}
         {tabsHovered && scrollThumb.visible && (
@@ -2024,7 +2568,7 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
                     "w-full text-left px-3 py-2 text-[12px] hover:bg-[var(--bg-hover)] transition-colors",
                     conv.id === activeConvId
                       ? "text-foreground bg-[var(--bg-hover)]"
-                      : "text-muted-foreground",
+                      : "text-muted-foreground"
                   )}
                   onClick={() => {
                     setActiveConversation(conv.id);
@@ -2068,53 +2612,61 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
             </div>
           ) : (
             <div>
-              {messages.map((msg) => (
-                <MessageBlock
-                  key={msg.id}
-                  message={msg}
-                  pendingApproval={pendingApproval ? { requestId: pendingApproval.requestId, toolName: pendingApproval.toolName } : null}
-                  approvalMode={approvalMode}
-                  onApprovalModeChange={handleApprovalModeChange}
-                  onApprove={(requestId) => {
-                    if (!pendingApproval) return;
-                    respondToToolApproval(pendingApproval.sessionId, {
-                      request_id: requestId,
-                      approved: true,
-                      remember: false,
-                      always_allow: false,
-                    }).catch(console.error);
-                    setPendingApproval(null);
-                  }}
-                  onDeny={(requestId) => {
-                    if (!pendingApproval) return;
-                    respondToToolApproval(pendingApproval.sessionId, {
-                      request_id: requestId,
-                      approved: false,
-                      remember: false,
-                      always_allow: false,
-                    }).catch(console.error);
-                    setPendingApproval(null);
-                  }}
-                />
-              ))}
-
-              {/* Task Plan */}
-              {taskPlan && <TaskPlanCard plan={taskPlan} />}
+              {messages.map((msg, msgIdx) => {
+                // Show plan card inline on the last assistant message
+                const isLastAssistant =
+                  msg.role === "assistant" &&
+                  !messages.slice(msgIdx + 1).some((m) => m.role === "assistant");
+                return (
+                  <MessageBlock
+                    key={msg.id}
+                    message={msg}
+                    taskPlan={isLastAssistant ? taskPlan : null}
+                    planTextOffset={isLastAssistant ? planTextOffsetRef.current : null}
+                    pendingApproval={
+                      pendingApproval
+                        ? { requestId: pendingApproval.requestId, toolName: pendingApproval.toolName }
+                        : null
+                    }
+                    approvalMode={approvalMode}
+                    onApprovalModeChange={handleApprovalModeChange}
+                    onApprove={(requestId) => {
+                      if (!pendingApproval) return;
+                      respondToToolApproval(pendingApproval.sessionId, {
+                        request_id: requestId,
+                        approved: true,
+                        remember: false,
+                        always_allow: false,
+                      }).catch(console.error);
+                      setPendingApproval(null);
+                    }}
+                    onDeny={(requestId) => {
+                      if (!pendingApproval) return;
+                      respondToToolApproval(pendingApproval.sessionId, {
+                        request_id: requestId,
+                        approved: false,
+                        remember: false,
+                        always_allow: false,
+                      }).catch(console.error);
+                      setPendingApproval(null);
+                    }}
+                  />
+                );
+              })}
 
               {/* Active Workflow */}
               {activeWorkflow && <WorkflowProgress workflow={activeWorkflow} />}
 
-              {/* Active Sub-agents */}
-              {activeSubAgents.length > 0 && (
-                <div className="mx-4 my-2 space-y-1.5">
-                  {activeSubAgents.map((agent) => (
-                    <SubAgentCard key={agent.agentId} agent={agent} />
-                  ))}
-                </div>
-              )}
+              {/* Agent Summary */}
+              <AgentSummaryBar />
 
               {/* Context Compaction */}
-              {compactionState && <CompactionNotice active={compactionState.active} tokensBefore={compactionState.tokensBefore} />}
+              {compactionState && (
+                <CompactionNotice
+                  active={compactionState.active}
+                  tokensBefore={compactionState.tokensBefore}
+                />
+              )}
 
               {/* AskHuman Dialog */}
               {askHumanRequest && (
@@ -2167,7 +2719,7 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
             className={cn(
               "w-full bg-transparent border-none outline-none resize-none",
               "text-[13px] text-foreground placeholder:text-muted-foreground/40",
-              "leading-relaxed max-h-[160px] px-3 pt-2.5 pb-1.5",
+              "leading-relaxed max-h-[160px] px-3 pt-2.5 pb-1.5"
             )}
           />
           {/* Bottom toolbar */}
@@ -2200,12 +2752,21 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
                   className="bg-card border-[var(--border-medium)] min-w-[200px] max-h-[400px] overflow-y-auto"
                 >
                   {(() => {
-                    const filtered = PROVIDER_GROUPS.filter((group) => configuredProviders.has(group.provider));
+                    const filtered = PROVIDER_GROUPS.filter((group) =>
+                      configuredProviders.has(group.provider)
+                    );
                     if (filtered.length === 0) {
                       return (
                         <div className="px-3 py-4 text-center">
-                          <p className="text-xs text-muted-foreground">{t("ai.noProviders", "No providers configured")}</p>
-                          <p className="text-[10px] text-muted-foreground/60 mt-1">{t("ai.configureInSettings", "Configure API keys in Settings → Providers")}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {t("ai.noProviders", "No providers configured")}
+                          </p>
+                          <p className="text-[10px] text-muted-foreground/60 mt-1">
+                            {t(
+                              "ai.configureInSettings",
+                              "Configure API keys in Settings → Providers"
+                            )}
+                          </p>
                         </div>
                       );
                     }
@@ -2228,7 +2789,7 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
                                 "text-xs cursor-pointer",
                                 isSelected
                                   ? "text-accent bg-[var(--accent-dim)]"
-                                  : "text-foreground hover:text-accent",
+                                  : "text-foreground hover:text-accent"
                               )}
                             >
                               {model.name}
@@ -2243,24 +2804,41 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
             </div>
             <div className="flex items-center gap-1">
               {/* Context usage ring */}
-              <div className="relative group" title={
-                contextUsage
-                  ? `${(contextUsage.utilization * 100).toFixed(1)}% · ${(contextUsage.totalTokens / 1000).toFixed(1)}K / ${(contextUsage.maxTokens / 1000).toFixed(0)}K context used`
-                  : "No context data"
-              }>
+              <div
+                className="relative group"
+                title={
+                  contextUsage
+                    ? `${(contextUsage.utilization * 100).toFixed(1)}% · ${(contextUsage.totalTokens / 1000).toFixed(1)}K / ${(contextUsage.maxTokens / 1000).toFixed(0)}K context used`
+                    : "No context data"
+                }
+              >
                 <svg className="w-5 h-5 -rotate-90" viewBox="0 0 20 20">
-                  <circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" strokeWidth="2" className="text-muted-foreground/20" />
                   <circle
-                    cx="10" cy="10" r="8"
+                    cx="10"
+                    cy="10"
+                    r="8"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    className="text-muted-foreground/20"
+                  />
+                  <circle
+                    cx="10"
+                    cy="10"
+                    r="8"
                     fill="none"
                     strokeWidth="2"
                     strokeLinecap="round"
                     strokeDasharray={`${(contextUsage?.utilization ?? 0) * 50.27} 50.27`}
                     className={cn(
                       "transition-all duration-300",
-                      !contextUsage ? "text-muted-foreground/30" :
-                      contextUsage.utilization > 0.9 ? "text-red-400" :
-                      contextUsage.utilization > 0.7 ? "text-[#e0af68]" : "text-accent",
+                      !contextUsage
+                        ? "text-muted-foreground/30"
+                        : contextUsage.utilization > 0.9
+                          ? "text-red-400"
+                          : contextUsage.utilization > 0.7
+                            ? "text-[#e0af68]"
+                            : "text-accent"
                     )}
                     stroke="currentColor"
                   />
@@ -2307,7 +2885,7 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
                     "h-6 w-6 flex items-center justify-center rounded transition-colors",
                     input.trim()
                       ? "bg-accent text-accent-foreground hover:bg-accent/80 cursor-pointer"
-                      : "bg-muted text-muted-foreground cursor-default",
+                      : "bg-muted text-muted-foreground cursor-default"
                   )}
                 >
                   <ArrowUp className="w-3.5 h-3.5" />
@@ -2317,7 +2895,6 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
           </div>
         </div>
       </div>
-
     </div>
   );
 });

@@ -323,6 +323,7 @@ export const handleCompleted: EventHandler<{
       logger.debug("Failed to send completion notification:", err);
     });
   }
+
 };
 
 /**

@@ -15,34 +15,54 @@ fn is_binary_file(content: &[u8]) -> bool {
     content[..check_len].contains(&0)
 }
 
-/// Resolve a path relative to workspace and ensure it's within the workspace.
+/// Check if a path is within an allowed temporary directory.
+fn is_in_temp_dir(path: &Path) -> bool {
+    let tmp = std::env::temp_dir();
+    if let Ok(canonical_tmp) = tmp.canonicalize() {
+        if let Ok(canonical_path) = path.canonicalize() {
+            return canonical_path.starts_with(&canonical_tmp);
+        }
+        if let Some(parent) = path.parent() {
+            if let Ok(canonical_parent) = parent.canonicalize() {
+                return canonical_parent.starts_with(&canonical_tmp);
+            }
+        }
+    }
+    path.starts_with("/tmp") || path.starts_with("/var/folders")
+}
+
+/// Resolve a path relative to workspace and ensure it's within the workspace
+/// or an allowed temporary directory.
 fn resolve_path(path_str: &str, workspace: &Path) -> Result<std::path::PathBuf, String> {
     let path = Path::new(path_str);
 
-    // If path is absolute, check if it's within workspace
     let resolved = if path.is_absolute() {
         path.to_path_buf()
     } else {
         workspace.join(path)
     };
 
-    // Canonicalize workspace for comparison
+    if is_in_temp_dir(&resolved) {
+        if resolved.exists() {
+            return resolved
+                .canonicalize()
+                .map_err(|e| format!("Cannot resolve path: {}", e));
+        }
+        return Ok(resolved);
+    }
+
     let workspace_canonical = workspace
         .canonicalize()
         .map_err(|e| format!("Cannot resolve workspace path: {}", e))?;
 
-    // Try to canonicalize the resolved path
-    // For new files, canonicalize the parent directory
     let canonical = if resolved.exists() {
         resolved
             .canonicalize()
             .map_err(|e| format!("Cannot resolve path: {}", e))?
     } else {
-        // For non-existent paths, find the deepest existing ancestor
         let mut check_path = resolved.as_path();
         let mut non_existent_parts: Vec<&std::ffi::OsStr> = Vec::new();
 
-        // Walk up until we find an existing directory
         while !check_path.exists() {
             if let Some(name) = check_path.file_name() {
                 non_existent_parts.push(name);
@@ -52,20 +72,16 @@ fn resolve_path(path_str: &str, workspace: &Path) -> Result<std::path::PathBuf, 
                     check_path = parent;
                 }
                 _ => {
-                    // Reached root without finding existing ancestor
-                    // Fall back to workspace as base
                     check_path = workspace;
                     break;
                 }
             }
         }
 
-        // Canonicalize the existing ancestor
         let canonical_ancestor = check_path
             .canonicalize()
             .map_err(|e| format!("Cannot resolve path: {}", e))?;
 
-        // Check that the existing ancestor is within workspace
         if !canonical_ancestor.starts_with(&workspace_canonical) {
             return Err(format!(
                 "Path '{}' is outside workspace (workspace: {})",
@@ -74,7 +90,6 @@ fn resolve_path(path_str: &str, workspace: &Path) -> Result<std::path::PathBuf, 
             ));
         }
 
-        // Rebuild the full path with non-existent parts
         non_existent_parts.reverse();
         let mut result = canonical_ancestor;
         for part in non_existent_parts {
@@ -83,7 +98,6 @@ fn resolve_path(path_str: &str, workspace: &Path) -> Result<std::path::PathBuf, 
         result
     };
 
-    // Ensure path is within workspace
     if !canonical.starts_with(&workspace_canonical) {
         return Err(format!(
             "Path '{}' is outside workspace (workspace: {})",
@@ -372,19 +386,21 @@ impl Tool for CreateFileTool {
             }
         }
 
-        // Now validate the path is within workspace
-        let workspace_canonical = match workspace.canonicalize() {
-            Ok(p) => p,
-            Err(e) => return Ok(json!({"error": format!("Cannot resolve workspace: {}", e)})),
-        };
+        // Allow writes to temp directories without workspace check
+        if !is_in_temp_dir(&resolved) {
+            let workspace_canonical = match workspace.canonicalize() {
+                Ok(p) => p,
+                Err(e) => return Ok(json!({"error": format!("Cannot resolve workspace: {}", e)})),
+            };
 
-        let parent_canonical = match resolved.parent().and_then(|p| p.canonicalize().ok()) {
-            Some(p) => p,
-            None => return Ok(json!({"error": "Invalid path: no parent directory"})),
-        };
+            let parent_canonical = match resolved.parent().and_then(|p| p.canonicalize().ok()) {
+                Some(p) => p,
+                None => return Ok(json!({"error": "Invalid path: no parent directory"})),
+            };
 
-        if !parent_canonical.starts_with(&workspace_canonical) {
-            return Ok(json!({"error": format!("Path '{}' is outside workspace", path_str)}));
+            if !parent_canonical.starts_with(&workspace_canonical) {
+                return Ok(json!({"error": format!("Path '{}' is outside workspace", path_str)}));
+            }
         }
 
         // Write the file

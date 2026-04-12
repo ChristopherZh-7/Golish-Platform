@@ -4,6 +4,7 @@
 //! Note: Pruning has been replaced by compaction in the summarizer agent.
 
 use super::agent_bridge::AgentBridge;
+use crate::agentic_loop::{get_artifacts_dir_for, get_summaries_dir_for, get_transcript_dir_for};
 use golish_context::token_budget::{TokenAlertLevel, TokenUsageStats};
 use golish_context::{ContextSummary, ContextTrimConfig};
 use golish_core::events::AiEvent;
@@ -58,9 +59,7 @@ impl AgentBridge {
     /// This reads the transcript, generates a summary, and replaces the conversation history.
     /// Emits CompactionStarted/Completed/Failed events like the automatic compaction path.
     pub async fn retry_compaction(&self) -> Result<(), String> {
-        use crate::agentic_loop::{
-            apply_compaction, get_artifacts_dir, get_summaries_dir, get_transcript_dir,
-        };
+        use crate::agentic_loop::apply_compaction;
 
         let session_id = self
             .event_session_id
@@ -81,9 +80,11 @@ impl AgentBridge {
             messages_before,
         });
 
-        let transcript_dir = get_transcript_dir();
-        let artifacts_dir = get_artifacts_dir();
-        let summaries_dir = get_summaries_dir();
+        let workspace = self.workspace.read().await;
+        let transcript_dir = get_transcript_dir_for(&workspace);
+        let artifacts_dir = get_artifacts_dir_for(&workspace);
+        let summaries_dir = get_summaries_dir_for(&workspace);
+        drop(workspace);
 
         // Build summarizer input from transcript
         let summarizer_input =

@@ -91,7 +91,7 @@ pub async fn finalize_session_in_db(
 ) -> Result<()> {
     save_session_to_db(pool, snapshot, session_uuid).await?;
 
-    sqlx::query("UPDATE sessions SET status = 'completed'::session_status, updated_at = NOW() WHERE id = $1")
+    sqlx::query("UPDATE sessions SET status = 'finished'::session_status, updated_at = NOW() WHERE id = $1")
         .bind(session_uuid)
         .execute(pool)
         .await?;

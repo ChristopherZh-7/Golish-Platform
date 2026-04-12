@@ -24,7 +24,7 @@ mod commands;
 
 use crate::history::{HistoryConfig, HistoryManager};
 use ai::{
-    add_tool_always_allow, cancel_workflow, clear_ai_conversation, clear_ai_conversation_session,
+    add_tool_always_allow, clear_ai_conversation, clear_ai_conversation_session,
     disable_full_auto_mode, disable_loop_detection, enable_full_auto_mode, enable_loop_detection,
     execute_ai_tool, export_ai_session_transcript, finalize_ai_session, find_ai_session,
     generate_commit_message, get_agent_mode, get_ai_conversation_length,
@@ -37,18 +37,18 @@ use ai::{
     get_openrouter_api_key, get_plan, get_project_settings, get_remaining_tokens,
     get_session_ai_config, get_sub_agent_model, get_token_alert_level, get_token_usage_stats,
     get_tool_approval_pattern, get_tool_policy, get_tool_policy_config, get_vertex_ai_config,
-    get_vision_capabilities, get_workflow_state, init_ai_agent, init_ai_agent_openai,
+    get_vision_capabilities, init_ai_agent, init_ai_agent_openai,
     init_ai_agent_unified, init_ai_agent_vertex, init_ai_session, is_ai_initialized,
     is_ai_session_initialized, is_ai_session_persistence_enabled, is_context_management_enabled,
     is_full_auto_mode_enabled, is_loop_detection_enabled, list_ai_sessions, list_sub_agents,
-    list_workflow_sessions, list_workflows, load_ai_session, load_env_file,
+    load_ai_session, load_env_file,
     remove_tool_always_allow, reset_approval_patterns, reset_context_manager, reset_loop_detector,
     reset_tool_policies, respond_to_tool_approval, restore_ai_session, retry_compaction,
-    run_workflow_to_completion, save_project_agent_mode, save_project_model, send_ai_prompt,
+    save_project_agent_mode, save_project_model, send_ai_prompt,
     send_ai_prompt_session, send_ai_prompt_with_attachments, set_agent_mode,
     set_ai_session_persistence, set_hitl_config, set_loop_protection_config, set_sub_agent_model,
     set_tool_policy, set_tool_policy_config, shutdown_ai_agent, shutdown_ai_session,
-    check_recon_tools_cmd, run_recon_pipeline, signal_frontend_ready, start_workflow, step_workflow,
+    check_recon_tools_cmd, run_recon_pipeline, signal_frontend_ready,
     update_ai_workspace,
 };
 use commands::*;
@@ -221,12 +221,15 @@ pub fn run_gui() {
                 .expect("Failed to create lazy PG pool"),
         );
 
+        let db_ready = golish_db::DbReadyGate::new();
+
         // Create AppState using the same SettingsManager (no redundant disk read)
         let app_state = AppState::with_settings_manager(
             settings_manager,
             langfuse_active,
             telemetry_stats,
             db_pool,
+            db_ready,
         )
         .await;
 
@@ -244,20 +247,27 @@ pub fn run_gui() {
     // GolishDb::start() handles downloading binaries (if needed), starting the server,
     // creating the database, and running migrations. The lazy pool created above will
     // auto-connect when the first query is executed after PG is up.
-    tauri::async_runtime::spawn(async move {
-        tracing::info!("Starting embedded PostgreSQL database (background)...");
-        match golish_db::GolishDb::start(golish_db::DbConfig::default()).await {
-            Ok(_db) => {
-                tracing::info!("Embedded PostgreSQL is fully ready");
-                // Leak the GolishDb handle so the embedded server stays alive
-                // for the lifetime of the app. The lazy pool handles connections.
-                std::mem::forget(_db);
+    {
+        let db_ready = app_state.db_ready.clone();
+        tauri::async_runtime::spawn(async move {
+            tracing::info!("Starting embedded PostgreSQL database (background)...");
+            match golish_db::GolishDb::start(golish_db::DbConfig::default()).await {
+                Ok(_db) => {
+                    tracing::info!(
+                        has_pgvector = _db.has_pgvector,
+                        "Embedded PostgreSQL is fully ready"
+                    );
+                    db_ready.set_pgvector_available(_db.has_pgvector);
+                    db_ready.mark_ready();
+                    std::mem::forget(_db);
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to start embedded PostgreSQL");
+                    db_ready.mark_failed();
+                }
             }
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to start embedded PostgreSQL");
-            }
-        }
-    });
+        });
+    }
 
     // Initialize HistoryManager in the background (deferred to avoid blocking startup)
     let history_manager: Arc<RwLock<Option<HistoryManager>>> = Arc::new(RwLock::new(None));
@@ -941,14 +951,7 @@ pub fn run_gui() {
             load_history,
             search_history,
             clear_history,
-            // Workflow commands (generic)
-            list_workflows,
-            start_workflow,
-            step_workflow,
-            run_workflow_to_completion,
-            get_workflow_state,
-            list_workflow_sessions,
-            cancel_workflow,
+            // Recon tool commands
             run_recon_pipeline,
             check_recon_tools_cmd,
             // Settings commands
@@ -1141,8 +1144,6 @@ pub fn run_gui() {
             tools::targets::target_update,
             tools::targets::target_update_status,
             tools::targets::target_delete,
-            tools::targets::target_add_group,
-            tools::targets::target_delete_group,
             tools::targets::target_clear_all,
             tools::vault::vault_list,
             tools::vault::vault_add,
@@ -1209,6 +1210,18 @@ pub fn run_gui() {
             tools::vuln_intel::intel_search_remote,
             tools::vuln_intel::intel_search_remote_page,
             tools::vuln_intel::intel_match_targets,
+            // Conversation persistence (replaces workspace.json)
+            tools::conversation_store::conv_save,
+            tools::conversation_store::conv_delete,
+            tools::conversation_store::conv_list,
+            tools::conversation_store::conv_save_messages,
+            tools::conversation_store::conv_load_messages,
+            tools::conversation_store::conv_save_timeline,
+            tools::conversation_store::conv_load_timeline,
+            tools::conversation_store::conv_save_terminal_state,
+            tools::conversation_store::conv_load_terminal_states,
+            tools::conversation_store::conv_save_preferences,
+            tools::conversation_store::conv_load_preferences,
             // IME switching (macOS)
             ime_get_source,
             ime_set_source,

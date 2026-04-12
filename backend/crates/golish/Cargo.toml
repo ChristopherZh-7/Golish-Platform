@@ -29,7 +29,6 @@ golish-pty = { path = "../golish-pty" }
 golish-sidecar = { path = "../golish-sidecar" }
 golish-context = { path = "../golish-context" }
 golish-session = { path = "../golish-session" }
-golish-workflow = { path = "../golish-workflow" }
 golish-artifacts = { path = "../golish-artifacts" }
 golish-llm-providers = { path = "../golish-llm-providers" }
 golish-synthesis = { path = "../golish-synthesis" }

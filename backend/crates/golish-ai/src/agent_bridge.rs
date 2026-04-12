@@ -1681,12 +1681,40 @@ impl AgentBridge {
     // ========================================================================
 
     /// Set the database pool for session persistence dual-write and activity tracking.
-    pub fn set_db_pool(&mut self, pool: Arc<sqlx::PgPool>) {
-        self.db_tracker = Some(crate::db_tracking::DbTracker::new(
-            pool.clone(),
-            uuid::Uuid::new_v4(),
-        ));
-        self.db_pool = Some(pool);
+    pub fn set_db_pool(
+        &mut self,
+        pool: Arc<sqlx::PgPool>,
+        ready_gate: golish_db::DbReadyGate,
+    ) {
+        let session_uuid = uuid::Uuid::new_v4();
+        let ws = self.workspace.try_read().ok();
+        let project_path = ws
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .filter(|s| s != ".");
+        self.db_tracker = Some(
+            crate::db_tracking::DbTracker::new(pool.clone(), session_uuid, ready_gate.clone())
+                .with_project_path(project_path),
+        );
+        self.db_pool = Some(pool.clone());
+
+        let mut gate = ready_gate;
+        tokio::spawn(async move {
+            if !gate.is_ready() {
+                if tokio::time::timeout(std::time::Duration::from_secs(60), gate.wait())
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            let _ = sqlx::query(
+                "INSERT INTO sessions (id) VALUES ($1) ON CONFLICT DO NOTHING",
+            )
+            .bind(session_uuid)
+            .execute(pool.as_ref())
+            .await;
+        });
     }
 
     /// Set the PtyManager for executing commands in user's terminal

@@ -33,6 +33,9 @@ rig-core = { workspace = true }
 # Tool registry
 golish-tools = { workspace = true }
 
+# Background shell execution for sub-agent commands
+golish-shell-exec = { workspace = true }
+
 # LLM provider configuration (for model capability checks)
 golish-llm-providers = { workspace = true }
 

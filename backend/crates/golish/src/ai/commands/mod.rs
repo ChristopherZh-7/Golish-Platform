@@ -191,7 +191,7 @@ pub async fn configure_bridge(bridge: &mut AgentBridge, state: &AppState, _sessi
     }
     bridge.set_sidecar_state(sidecar_state);
     bridge.set_settings_manager(state.settings_manager.clone());
-    bridge.set_db_pool(state.db_pool.clone());
+    bridge.set_db_pool(state.db_pool.clone(), state.db_ready.clone());
     let settings = state.settings_manager.get().await;
 
     // Find matching codebase and get memory file

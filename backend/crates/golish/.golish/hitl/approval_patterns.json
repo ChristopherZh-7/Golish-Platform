@@ -1,40 +1,13 @@
 {
   "version": 1,
   "patterns": {
-    "run_command": {
-      "tool_name": "run_command",
+    "e8b929664b834e39938acc62": {
+      "tool_name": "e8b929664b834e39938acc62",
       "total_requests": 1,
       "approvals": 1,
       "denials": 0,
       "always_allow": false,
-      "last_updated": "2026-04-05T14:34:02.326443Z",
-      "justifications": []
-    },
-    "68SS0TmTU": {
-      "tool_name": "68SS0TmTU",
-      "total_requests": 1,
-      "approvals": 1,
-      "denials": 0,
-      "always_allow": false,
-      "last_updated": "2026-04-05T12:20:49.690764Z",
-      "justifications": []
-    },
-    "aE3oDeSwB": {
-      "tool_name": "aE3oDeSwB",
-      "total_requests": 1,
-      "approvals": 1,
-      "denials": 0,
-      "always_allow": false,
-      "last_updated": "2026-04-05T14:20:05.361933Z",
-      "justifications": []
-    },
-    "run_pty_cmd": {
-      "tool_name": "run_pty_cmd",
-      "total_requests": 5,
-      "approvals": 5,
-      "denials": 0,
-      "always_allow": false,
-      "last_updated": "2026-04-05T14:32:11.977813Z",
+      "last_updated": "2026-04-11T07:38:55.144044Z",
       "justifications": []
     },
     "V4sxlnzN2": {
@@ -46,22 +19,40 @@
       "last_updated": "2026-04-05T12:24:04.334632Z",
       "justifications": []
     },
-    "zPUV9RAtL": {
-      "tool_name": "zPUV9RAtL",
+    "790fd79ff4b14cccb3e86c19": {
+      "tool_name": "790fd79ff4b14cccb3e86c19",
       "total_requests": 1,
       "approvals": 1,
       "denials": 0,
       "always_allow": false,
-      "last_updated": "2026-04-05T14:34:02.325031Z",
+      "last_updated": "2026-04-11T07:36:41.994811Z",
       "justifications": []
     },
-    "tglQV5nLT": {
-      "tool_name": "tglQV5nLT",
+    "aE3oDeSwB": {
+      "tool_name": "aE3oDeSwB",
       "total_requests": 1,
       "approvals": 1,
       "denials": 0,
       "always_allow": false,
-      "last_updated": "2026-04-05T14:16:12.922921Z",
+      "last_updated": "2026-04-05T14:20:05.361933Z",
+      "justifications": []
+    },
+    "68SS0TmTU": {
+      "tool_name": "68SS0TmTU",
+      "total_requests": 1,
+      "approvals": 1,
+      "denials": 0,
+      "always_allow": false,
+      "last_updated": "2026-04-05T12:20:49.690764Z",
+      "justifications": []
+    },
+    "a96d5be134f0476f9e990f79": {
+      "tool_name": "a96d5be134f0476f9e990f79",
+      "total_requests": 1,
+      "approvals": 1,
+      "denials": 0,
+      "always_allow": false,
+      "last_updated": "2026-04-11T07:34:42.178224Z",
       "justifications": []
     },
     "NEFmTjORB": {
@@ -73,6 +64,15 @@
       "last_updated": "2026-04-05T12:32:43.749932Z",
       "justifications": []
     },
+    "zPUV9RAtL": {
+      "tool_name": "zPUV9RAtL",
+      "total_requests": 1,
+      "approvals": 1,
+      "denials": 0,
+      "always_allow": false,
+      "last_updated": "2026-04-05T14:34:02.325031Z",
+      "justifications": []
+    },
     "sub_agent_explorer": {
       "tool_name": "sub_agent_explorer",
       "total_requests": 1,
@@ -80,6 +80,15 @@
       "denials": 0,
       "always_allow": false,
       "last_updated": "2026-04-05T12:20:49.691384Z",
+      "justifications": []
+    },
+    "tglQV5nLT": {
+      "tool_name": "tglQV5nLT",
+      "total_requests": 1,
+      "approvals": 1,
+      "denials": 0,
+      "always_allow": false,
+      "last_updated": "2026-04-05T14:16:12.922921Z",
       "justifications": []
     },
     "ZIBgJdKbF": {
@@ -90,6 +99,35 @@
       "always_allow": false,
       "last_updated": "2026-04-05T14:32:11.976764Z",
       "justifications": []
+    },
+    "run_pty_cmd": {
+      "tool_name": "run_pty_cmd",
+      "total_requests": 5,
+      "approvals": 5,
+      "denials": 0,
+      "always_allow": false,
+      "last_updated": "2026-04-05T14:32:11.977813Z",
+      "justifications": []
+    },
+    "run_command": {
+      "tool_name": "run_command",
+      "total_requests": 4,
+      "approvals": 4,
+      "denials": 0,
+      "always_allow": false,
+      "last_updated": "2026-04-11T07:38:55.144857Z",
+      "justifications": []
+    },
+    "a54e7fdf-2444-41da-812e-84286cc5d802": {
+      "tool_name": "a54e7fdf-2444-41da-812e-84286cc5d802",
+      "total_requests": 1,
+      "approvals": 1,
+      "denials": 0,
+      "always_allow": false,
+      "last_updated": "2026-04-11T18:52:33.036542Z",
+      "justifications": [
+        "yes"
+      ]
     }
   },
   "config": {

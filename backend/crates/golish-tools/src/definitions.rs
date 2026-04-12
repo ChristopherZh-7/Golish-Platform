@@ -303,6 +303,78 @@ pub fn build_function_declarations() -> Vec<FunctionDeclaration> {
                 "required": ["pattern", "replacement", "path"]
             }),
         },
+        // ====================================================================
+        // Memory Operations
+        // ====================================================================
+        FunctionDeclaration {
+            name: "search_memories".to_string(),
+            description: "Search long-term memory for relevant past findings, knowledge, and context. Uses semantic similarity to find related memories across sessions. Returns the most relevant memories ranked by similarity.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language query describing what you're looking for (e.g. 'open ports on 10.0.0.1', 'SQL injection vulnerabilities')"
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": ["recon", "vulnerability", "credential", "configuration", "technique", "topology", "failed_approach"],
+                        "description": "Optional category filter to narrow results"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of memories to return (default: 10, max: 50)"
+                    }
+                },
+                "required": ["query"]
+            }),
+        },
+        FunctionDeclaration {
+            name: "store_memory".to_string(),
+            description: "Store important information in long-term memory for future retrieval. Use for significant findings, discoveries, and knowledge that should persist across sessions. Each memory should be atomic (one finding per entry).".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "The information to store. Should be a clear, self-contained description of the finding or knowledge."
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": ["recon", "vulnerability", "credential", "configuration", "technique", "topology", "failed_approach"],
+                        "description": "Category for organizing and filtering memories"
+                    },
+                    "tags": {
+                        "type": "string",
+                        "description": "Comma-separated tags for search (e.g. 'nmap,port-scan,10.0.0.1')"
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["project", "global"],
+                        "description": "Storage scope. 'project' (default): tied to current project. 'global': visible across all projects. Use 'global' for general techniques, tool patterns, and reusable knowledge."
+                    }
+                },
+                "required": ["content", "category"]
+            }),
+        },
+        FunctionDeclaration {
+            name: "list_memories".to_string(),
+            description: "List recent memories, optionally filtered by category. Shows the most recent entries first. Use to review what has been stored.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "enum": ["recon", "vulnerability", "credential", "configuration", "technique", "topology", "failed_approach"],
+                        "description": "Optional category filter"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of memories to return (default: 20, max: 100)"
+                    }
+                }
+            }),
+        },
     ]
 }
 
@@ -314,8 +386,8 @@ mod tests {
     fn test_build_function_declarations_returns_all_tools() {
         let declarations = build_function_declarations();
 
-        // Should have exactly 12 tools (10 original + ast_grep + ast_grep_replace)
-        assert_eq!(declarations.len(), 12);
+        // Should have exactly 15 tools (12 original + 3 memory tools)
+        assert_eq!(declarations.len(), 15);
 
         // Verify all expected tools are present
         let names: Vec<&str> = declarations.iter().map(|d| d.name.as_str()).collect();
@@ -341,6 +413,11 @@ mod tests {
 
         // Planning
         assert!(names.contains(&"update_plan"));
+
+        // Memory
+        assert!(names.contains(&"search_memories"));
+        assert!(names.contains(&"store_memory"));
+        assert!(names.contains(&"list_memories"));
     }
 
     #[test]
