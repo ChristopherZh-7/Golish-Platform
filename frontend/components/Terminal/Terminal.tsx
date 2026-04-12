@@ -61,10 +61,10 @@ export function Terminal({ sessionId }: TerminalProps) {
     }
   }, []);
 
-  // Handle terminal clear requests (for when xterm Terminal is used)
+  // Handle terminal clear requests: erase visible screen + scrollback
   useEffect(() => {
     if (clearRequest > 0 && terminalRef.current) {
-      terminalRef.current.clear();
+      terminalRef.current.write("\x1b[2J\x1b[3J\x1b[H");
     }
   }, [clearRequest]);
 

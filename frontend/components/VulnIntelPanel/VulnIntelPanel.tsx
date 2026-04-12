@@ -94,7 +94,7 @@ function loadVulnLinks(): Record<string, VulnLink> {
 }
 
 function saveVulnLinks(links: Record<string, VulnLink>) {
-  localStorage.setItem(VULN_LINKS_KEY, JSON.stringify(links));
+  try { localStorage.setItem(VULN_LINKS_KEY, JSON.stringify(links)); } catch { /* ignore */ }
 }
 
 function getOrCreateLink(links: Record<string, VulnLink>, cveId: string): VulnLink {
@@ -185,7 +185,7 @@ export function VulnIntelPanel() {
   const addToSearchHistory = useCallback((query: string) => {
     setSearchHistory((prev) => {
       const next = [query, ...prev.filter((q) => q !== query)].slice(0, MAX_SEARCH_HISTORY);
-      localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(next));
+      try { localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(next)); } catch { /* ignore */ }
       return next;
     });
   }, []);
@@ -193,7 +193,7 @@ export function VulnIntelPanel() {
   const removeFromSearchHistory = useCallback((query: string) => {
     setSearchHistory((prev) => {
       const next = prev.filter((q) => q !== query);
-      localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(next));
+      try { localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(next)); } catch { /* ignore */ }
       return next;
     });
   }, []);

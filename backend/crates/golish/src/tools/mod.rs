@@ -69,3 +69,9 @@ pub mod execution_plans;
 
 // Frontend conversation & timeline persistence (replaces workspace.json)
 pub mod conversation_store;
+
+// ZAP scan queue persistence
+pub mod scan_queue;
+
+// Custom passive scan rules persistence
+pub mod custom_rules;

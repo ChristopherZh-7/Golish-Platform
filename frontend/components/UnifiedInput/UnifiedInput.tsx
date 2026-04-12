@@ -42,7 +42,7 @@ import { ContextBar } from "./ContextBar";
 const clearTerminal = (sessionId: string) => {
   const store = useStore.getState();
   store.clearBlocks(sessionId);
-  store.clearTimeline(sessionId);
+  store.requestTerminalClear(sessionId);
 };
 
 interface UnifiedInputProps {
@@ -362,9 +362,11 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
       return;
     }
 
-    // Handle clear command - clear timeline and command blocks
+    // Handle clear command - send to shell AND clear timeline command blocks
     if (value === "clear") {
       clearTerminal(sessionId);
+      setLastSentCommand(sessionId, "clear");
+      ptyWrite(sessionId, "clear\n");
       return;
     }
 

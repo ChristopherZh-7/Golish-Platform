@@ -66,12 +66,6 @@ import {
   type WorkflowState,
 } from "./ChatSubComponents";
 
-const STORAGE_KEY = "golish-pentest-conversations";
-const TERMINAL_DATA_KEY = "golish-pentest-conv-terminals";
-const MAX_STORED_CONVS = 50;
-const MAX_SCROLLBACK_CHARS = 100_000;
-const MAX_BLOCK_OUTPUT_CHARS = 50_000;
-const MAX_SAVED_BLOCKS = 50;
 
 type PersistedTerminal = PersistedTerminalData;
 const EMPTY_MESSAGES: ChatMessage[] = [];
@@ -393,13 +387,13 @@ export const AIChatPanel = memo(function AIChatPanel() {
   } | null>(null);
 
   type ApprovalMode = "ask" | "allowlist" | "run-all";
-  const [approvalMode, setApprovalMode] = useState<ApprovalMode>(() => {
-    try {
-      return (localStorage.getItem("golish-approval-mode") as ApprovalMode) || "ask";
-    } catch {
-      return "ask";
-    }
-  });
+  const storeApprovalMode = useStore((s) => s.approvalMode);
+  const [approvalMode, setApprovalMode] = useState<ApprovalMode>(
+    (storeApprovalMode as ApprovalMode) || "ask"
+  );
+  useEffect(() => {
+    if (storeApprovalMode) setApprovalMode(storeApprovalMode as ApprovalMode);
+  }, [storeApprovalMode]);
 
   const [contextUsage, setContextUsage] = useState<{
     utilization: number;
@@ -460,58 +454,24 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const restoringTerminalsRef = useRef(false);
   const termRestoreRanRef = useRef(false);
   const pendingTermRestoreRef = useRef<Record<string, PersistedTerminal[]>>({});
-  const termSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const workspaceDataReady = useStore((s) => s.workspaceDataReady);
 
-  // Load saved conversations into store on mount — merge with any already loaded by workspace auto-saver
-  // Then restore per-conversation terminals (with scrollback) from localStorage
-  // Wait for workspaceDataReady so that App init has hydrated localStorage from workspace.json
+  // Restore per-conversation terminals from store (populated by App.tsx from DB/workspace.json)
   useEffect(() => {
     if (!workspaceDataReady) return;
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as Array<{
-        id: string;
-        title: string;
-        messages: ChatMessage[];
-        createdAt: number;
-        aiSessionId: string;
-      }>;
-      const store = useStore.getState();
-      const existing = store.conversations;
-      for (const c of parsed.filter((c) => c.messages.length > 0)) {
-        const ex = existing[c.id];
-        if (ex && ex.messages.length >= c.messages.length) continue;
-        const conv = {
-          ...c,
-          aiSessionId: c.aiSessionId || c.id,
-          aiInitialized: false,
-          isStreaming: false,
-          messages: c.messages.map((m) => ({ ...m, isStreaming: false })),
-        };
-        if (ex) {
-          store.updateConversation(c.id, { messages: conv.messages, title: conv.title });
-        } else {
-          store.addConversation(conv);
-        }
-      }
-    } catch {
-      /* ignore */
-    }
 
     // Restore one terminal per conversation (1:1 model)
     (async () => {
       try {
         if (termRestoreRanRef.current) return;
         termRestoreRanRef.current = true;
-        const termRaw = localStorage.getItem(TERMINAL_DATA_KEY);
-        if (!termRaw) return;
+        const store = useStore.getState();
+        const termData = store.pendingTerminalRestoreData;
+        if (!termData) return;
         restoringTerminalsRef.current = true;
         useStore.getState().setTerminalRestoreInProgress(true);
-        const termData = JSON.parse(termRaw) as Record<string, PersistedTerminal[]>;
-        const store = useStore.getState();
+        useStore.getState().setPendingTerminalRestoreData(null);
         const activeId = store.activeConversationId;
 
         // Helper: restore a single terminal for a conversation (first saved terminal only)
@@ -607,138 +567,16 @@ export const AIChatPanel = memo(function AIChatPanel() {
     })();
   }, [createTerminalTab, workspaceDataReady]);
 
-  // Persist conversations to localStorage immediately on every change
-  useEffect(() => {
-    if (conversations.length === 0) {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify([]));
-        localStorage.setItem(TERMINAL_DATA_KEY, JSON.stringify({}));
-      } catch {
-        /* ignore */
-      }
-      return;
-    }
-    try {
-      const toSave = conversations
-        .filter((c) => c.messages.length > 0)
-        .slice(-MAX_STORED_CONVS)
-        .map((c) => ({
-          ...c,
-          aiInitialized: false,
-          isStreaming: false,
-          messages: c.messages.map((m: ChatMessage) => ({ ...m, isStreaming: false })),
-        }));
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+  // DB auto-saver (createDbAutoSaver in App.tsx) handles all persistence to PostgreSQL.
+  // No localStorage mirroring needed.
 
-      // Skip terminal data save while restore is in progress (prevents overwriting scrollback)
-      if (restoringTerminalsRef.current) return;
-
-      // Debounce terminal data serialization (expensive: serializes all xterm buffers)
-      if (termSaveTimerRef.current) clearTimeout(termSaveTimerRef.current);
-      termSaveTimerRef.current = setTimeout(() => {
-        try {
-          const store = useStore.getState();
-          let existingTermData: Record<string, PersistedTerminal[]> = {};
-          try {
-            const raw = localStorage.getItem(TERMINAL_DATA_KEY);
-            if (raw) existingTermData = JSON.parse(raw);
-          } catch {
-            /* ignore */
-          }
-          const termData: Record<string, PersistedTerminal[]> = {};
-          for (const c of toSave) {
-            const termIds = store.conversationTerminals[c.id] ?? [];
-            if (termIds.length === 0) {
-              if (existingTermData[c.id]) termData[c.id] = existingTermData[c.id];
-              continue;
-            }
-            const terminals: PersistedTerminal[] = [];
-            for (let i = 0; i < termIds.length; i++) {
-              const tid = termIds[i];
-              const session = store.sessions[tid];
-              if (!session?.workingDirectory) continue;
-              let scrollback = TerminalInstanceManager.serialize(tid);
-              if (scrollback.length > MAX_SCROLLBACK_CHARS)
-                scrollback = scrollback.slice(-MAX_SCROLLBACK_CHARS);
-              if (!scrollback && existingTermData[c.id]?.[i]?.scrollback)
-                scrollback = existingTermData[c.id][i].scrollback;
-              const customName = session.customName || existingTermData[c.id]?.[i]?.customName;
-              const blocks: Array<import("@/lib/workspace-storage").PersistedTimelineBlock> = [];
-              const timeline = store.timelines[tid];
-              if (timeline) {
-                for (const block of timeline) {
-                  if (block.type === "command") {
-                    let output = block.data.output;
-                    if (output.length > MAX_BLOCK_OUTPUT_CHARS)
-                      output = output.slice(-MAX_BLOCK_OUTPUT_CHARS);
-                    blocks.push({
-                      id: block.id,
-                      type: "command",
-                      timestamp: block.timestamp,
-                      data: { ...block.data, output },
-                    });
-                  } else if (block.type === "pipeline_progress") {
-                    blocks.push({
-                      id: block.id,
-                      type: "pipeline_progress",
-                      timestamp: block.timestamp,
-                      data: block.data,
-                    });
-                  } else if (block.type === "ai_tool_execution") {
-                    const data = { ...block.data };
-                    if (data.streamingOutput && data.streamingOutput.length > MAX_BLOCK_OUTPUT_CHARS) {
-                      data.streamingOutput = data.streamingOutput.slice(-MAX_BLOCK_OUTPUT_CHARS);
-                    }
-                    blocks.push({ id: block.id, type: "ai_tool_execution", timestamp: block.timestamp, data });
-                  } else if (block.type === "sub_agent_activity") {
-                    const data = { ...block.data };
-                    if (data.streamingText && data.streamingText.length > MAX_BLOCK_OUTPUT_CHARS) {
-                      data.streamingText = data.streamingText.slice(-MAX_BLOCK_OUTPUT_CHARS);
-                    }
-                    blocks.push({ id: block.id, type: "sub_agent_activity", timestamp: block.timestamp, data, batchId: block.batchId });
-                  }
-                }
-              }
-              const entry: PersistedTerminal = {
-                workingDirectory: session.workingDirectory,
-                scrollback,
-                customName,
-              };
-              entry.timelineBlocks = blocks.slice(-MAX_SAVED_BLOCKS);
-              if (
-                !entry.timelineBlocks.length &&
-                existingTermData[c.id]?.[i]?.timelineBlocks?.length
-              ) {
-                entry.timelineBlocks = existingTermData[c.id][i].timelineBlocks;
-              }
-              terminals.push(entry);
-            }
-            if (terminals.length > 0) {
-              termData[c.id] = terminals;
-            } else if (existingTermData[c.id]) {
-              termData[c.id] = existingTermData[c.id];
-            }
-          }
-          localStorage.setItem(TERMINAL_DATA_KEY, JSON.stringify(termData));
-        } catch {
-          /* ignore */
-        }
-      }, 500);
-    } catch {
-      /* ignore */
-    }
-  }, [conversations]);
-
+  const storeAiModel = useStore((s) => s.selectedAiModel);
   const [selectedModel, setSelectedModel] = useState<{ model: string; provider: string } | null>(
-    () => {
-      try {
-        const saved = localStorage.getItem("golish-pentest-ai-model");
-        return saved ? JSON.parse(saved) : null;
-      } catch {
-        return null;
-      }
-    }
+    storeAiModel
   );
+  useEffect(() => {
+    if (storeAiModel) setSelectedModel(storeAiModel);
+  }, [storeAiModel]);
   const modelDisplay = selectedModel?.model ? formatModelName(selectedModel.model) : "No Model";
 
   // Generate a short title for a conversation using the AI
@@ -935,7 +773,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
                 requestId: event.request_id,
               });
 
-              const currentMode = localStorage.getItem("golish-approval-mode") || "ask";
+              const currentMode = useStore.getState().approvalMode || "ask";
               if (currentMode === "run-all") {
                 respondToToolApproval(event.session_id, {
                   request_id: event.request_id,
@@ -1366,9 +1204,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const handleModelSelect = useCallback((modelId: string, provider: string) => {
     const sel = { model: modelId, provider };
     setSelectedModel(sel);
-    try {
-      localStorage.setItem("golish-pentest-ai-model", JSON.stringify(sel));
-    } catch {}
+    useStore.getState().setSelectedAiModel(sel);
   }, []);
 
   const buildPentestSystemPrompt = useCallback(() => {
@@ -1584,7 +1420,7 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
         }
 
         // Sync the stored approval/agent mode to the backend
-        const savedMode = localStorage.getItem("golish-approval-mode") || "ask";
+        const savedMode = useStore.getState().approvalMode || "ask";
         const backendMode: AgentMode = savedMode === "run-all" ? "auto-approve" : "default";
         await setAgentMode(conv.aiSessionId, backendMode).catch(console.warn);
 
@@ -1807,7 +1643,7 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
   const handleApprovalModeChange = useCallback(
     (mode: ApprovalMode) => {
       setApprovalMode(mode);
-      localStorage.setItem("golish-approval-mode", mode);
+      useStore.getState().setApprovalMode(mode);
       if (!activeConv) return;
       const backendMode: AgentMode = mode === "run-all" ? "auto-approve" : "default";
       setAgentMode(activeConv.aiSessionId, backendMode).catch(console.error);

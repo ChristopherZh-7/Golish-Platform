@@ -159,11 +159,9 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
       }
     }
     return sortedTimeline.filter((block) => {
-      if (block.type === "ai_tool_execution") return false;
-      if (block.type === "pipeline_progress") return false;
-      if (block.type === "sub_agent_activity") return false;
-      if (block.type === "command" && block.data.source === "pipeline") return false;
-      if (block.type === "command" && aiCmdSet.has(block.data.command.trim())) return false;
+      if (block.type !== "command") return false;
+      if (block.data.source === "pipeline") return false;
+      if (aiCmdSet.has(block.data.command.trim())) return false;
       return true;
     });
   }, [sortedTimeline]);

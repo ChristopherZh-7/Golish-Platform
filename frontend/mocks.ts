@@ -2766,6 +2766,20 @@ export function setupMocks(): void {
         return "mock-pipeline-id";
       case "pipeline_delete":
         return undefined;
+      case "scan_queue_list":
+        return [];
+      case "scan_queue_upsert":
+        return "mock-scan-queue-id";
+      case "scan_queue_save_all":
+      case "scan_queue_remove":
+      case "scan_queue_clear_completed":
+        return undefined;
+      case "custom_rules_list":
+        return [];
+      case "custom_rules_upsert":
+      case "custom_rules_save_all":
+      case "custom_rules_delete":
+        return undefined;
       case "audit_list":
         return [];
       case "audit_clear":

@@ -712,8 +712,6 @@ export const HomeView = memo(function HomeView() {
                   await deleteProject(deleteConfirm.name);
                   if (wasCurrent) {
                     useStore.getState().setCurrentProject(null);
-                    localStorage.removeItem("golish-pentest-conversations");
-                    localStorage.removeItem("golish-pentest-conv-terminals");
                   }
                 }
                 setDeleteConfirm(null);
