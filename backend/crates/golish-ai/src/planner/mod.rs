@@ -49,8 +49,13 @@ pub enum PlanError {
 /// Manager for task plans.
 ///
 /// Provides thread-safe access to the current plan with validation.
+/// Optionally persists plans to PostgreSQL for cross-session continuation.
 pub struct PlanManager {
     plan: Arc<RwLock<TaskPlan>>,
+    db_pool: Option<Arc<sqlx::PgPool>>,
+    session_id: Option<uuid::Uuid>,
+    project_path: Option<String>,
+    db_plan_id: Arc<RwLock<Option<uuid::Uuid>>>,
 }
 
 impl Default for PlanManager {
@@ -64,6 +69,70 @@ impl PlanManager {
     pub fn new() -> Self {
         Self {
             plan: Arc::new(RwLock::new(TaskPlan::default())),
+            db_pool: None,
+            session_id: None,
+            project_path: None,
+            db_plan_id: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// Enable DB persistence for this PlanManager.
+    pub fn with_db(
+        mut self,
+        pool: Arc<sqlx::PgPool>,
+        session_id: Option<uuid::Uuid>,
+        project_path: Option<String>,
+    ) -> Self {
+        self.db_pool = Some(pool);
+        self.session_id = session_id;
+        self.project_path = project_path;
+        self
+    }
+
+    /// Load the most recent active plan from DB for the current project.
+    /// Returns true if a plan was loaded.
+    pub async fn load_from_db(&self) -> bool {
+        let Some(pool) = &self.db_pool else { return false };
+        let Some(project_path) = &self.project_path else { return false };
+
+        match golish_db::repo::execution_plans::list_active(pool, project_path).await {
+            Ok(plans) if !plans.is_empty() => {
+                let db_plan = &plans[0];
+                let steps: Vec<golish_db::models::PlanStep> =
+                    serde_json::from_value(db_plan.steps.clone()).unwrap_or_default();
+
+                let plan_steps: Vec<PlanStep> = steps
+                    .iter()
+                    .map(|s| PlanStep {
+                        step: s.title.clone(),
+                        status: match s.status.as_str() {
+                            "completed" => StepStatus::Completed,
+                            "in_progress" => StepStatus::InProgress,
+                            _ => StepStatus::Pending,
+                        },
+                    })
+                    .collect();
+
+                let summary = PlanSummary::from_steps(&plan_steps);
+
+                let mut plan = self.plan.write().await;
+                plan.explanation = Some(db_plan.description.clone());
+                plan.steps = plan_steps;
+                plan.summary = summary;
+                plan.version = 1;
+
+                let mut db_id = self.db_plan_id.write().await;
+                *db_id = Some(db_plan.id);
+
+                tracing::info!(
+                    plan_id = %db_plan.id,
+                    title = %db_plan.title,
+                    steps = db_plan.steps.as_array().map(|a| a.len()).unwrap_or(0),
+                    "Loaded active plan from DB"
+                );
+                true
+            }
+            _ => false,
         }
     }
 
@@ -77,9 +146,40 @@ impl PlanManager {
         self.plan.read().await.is_empty()
     }
 
+    /// Format the current plan as a status string for system prompt injection.
+    pub async fn format_for_prompt(&self) -> Option<String> {
+        let plan = self.plan.read().await;
+        if plan.is_empty() {
+            return None;
+        }
+
+        let mut lines = Vec::new();
+        lines.push("## Active Execution Plan".to_string());
+        if let Some(ref explanation) = plan.explanation {
+            lines.push(format!("**Goal**: {}", explanation));
+        }
+        lines.push(format!(
+            "**Progress**: {}/{} steps completed",
+            plan.summary.completed, plan.summary.total
+        ));
+        lines.push(String::new());
+
+        for (i, step) in plan.steps.iter().enumerate() {
+            let icon = match step.status {
+                StepStatus::Completed => "✓",
+                StepStatus::InProgress => "→",
+                StepStatus::Pending => "○",
+            };
+            lines.push(format!("{} {}. {}", icon, i + 1, step.step));
+        }
+
+        Some(lines.join("\n"))
+    }
+
     /// Update the plan with new steps.
     ///
     /// Validates the input and updates the plan atomically.
+    /// If DB persistence is enabled, also saves to PostgreSQL.
     pub async fn update_plan(&self, args: UpdatePlanArgs) -> Result<TaskPlan, PlanError> {
         // Validate step count
         let step_count = args.plan.len();
@@ -135,7 +235,75 @@ impl PlanManager {
             "Plan updated"
         );
 
-        Ok(plan.clone())
+        let result = plan.clone();
+        drop(plan);
+
+        // Persist to DB in the background (fire-and-forget)
+        if let Some(pool) = &self.db_pool {
+            let pool = pool.clone();
+            let db_plan_id = self.db_plan_id.clone();
+            let session_id = self.session_id;
+            let project_path = self.project_path.clone();
+            let explanation = result.explanation.clone().unwrap_or_default();
+            let db_steps: Vec<serde_json::Value> = result
+                .steps
+                .iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    serde_json::json!({
+                        "id": format!("step-{}", i + 1),
+                        "title": s.step,
+                        "description": "",
+                        "status": format!("{}", s.status),
+                    })
+                })
+                .collect();
+            let steps_json = serde_json::Value::Array(db_steps);
+            let current_step = result.steps.iter().position(|s| s.status == StepStatus::InProgress).unwrap_or(0) as i32;
+
+            let plan_status = if result.summary.completed == result.summary.total {
+                golish_db::models::PlanStatus::Completed
+            } else if result.summary.in_progress > 0 {
+                golish_db::models::PlanStatus::InProgress
+            } else {
+                golish_db::models::PlanStatus::Planning
+            };
+
+            tokio::spawn(async move {
+                let existing_id = db_plan_id.read().await.clone();
+                if let Some(id) = existing_id {
+                    if let Err(e) = golish_db::repo::execution_plans::update_steps(
+                        &pool, id, &steps_json, current_step, plan_status,
+                    ).await {
+                        tracing::warn!("Failed to update plan in DB: {}", e);
+                    }
+                } else {
+                    let title = explanation.chars().take(100).collect::<String>();
+                    let title = if title.is_empty() { "Untitled Plan".to_string() } else { title };
+                    match golish_db::repo::execution_plans::create(
+                        &pool,
+                        golish_db::models::NewExecutionPlan {
+                            session_id,
+                            project_path,
+                            title,
+                            description: explanation,
+                            steps: steps_json,
+                        },
+                    ).await {
+                        Ok(created) => {
+                            let mut db_id = db_plan_id.write().await;
+                            *db_id = Some(created.id);
+                            tracing::info!(plan_id = %created.id, "Created plan in DB");
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to create plan in DB: {}", e);
+                        }
+                    }
+                }
+            });
+        }
+
+        Ok(result)
     }
 
     /// Clear the plan.

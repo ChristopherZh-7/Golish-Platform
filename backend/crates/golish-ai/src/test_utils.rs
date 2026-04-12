@@ -2981,6 +2981,7 @@ mod tests {
             session_id: None,
             transcript_base_dir: None,
             api_request_stats: None,
+            briefing: None,
         };
 
         let agent_def = test_sub_agent_definition_for_executor("analyzer");
@@ -3080,6 +3081,7 @@ mod tests {
             session_id: None,
             transcript_base_dir: None,
             api_request_stats: None,
+            briefing: None,
         };
 
         let agent_def = test_sub_agent_definition_for_executor("executor");
@@ -3141,6 +3143,7 @@ mod tests {
             session_id: None,
             transcript_base_dir: None,
             api_request_stats: None,
+            briefing: None,
         };
 
         let agent_def = test_sub_agent_definition_for_executor("event_tester");
@@ -3240,6 +3243,7 @@ mod tests {
             session_id: None,
             transcript_base_dir: None,
             api_request_stats: None,
+            briefing: None,
         };
 
         // Create agent with very low max_iterations to trigger the error path
@@ -3318,6 +3322,7 @@ mod tests {
             session_id: None,
             transcript_base_dir: None,
             api_request_stats: None,
+            briefing: None,
         };
 
         // Create agent with restricted tools (only read_file allowed)
@@ -3405,6 +3410,7 @@ mod tests {
             session_id: None,
             transcript_base_dir: None,
             api_request_stats: None,
+            briefing: None,
         };
 
         // Create agent with very low max_iterations to simulate timeout

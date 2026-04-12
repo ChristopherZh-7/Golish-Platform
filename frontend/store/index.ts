@@ -2,7 +2,6 @@ import { enableMapSet } from "immer";
 import { create } from "zustand";
 import { devtools } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
-import type { ApprovalPattern, ReasoningEffort } from "@/lib/ai";
 import { logger } from "@/lib/logger";
 import {
   countLeafPanes,
@@ -21,7 +20,6 @@ import {
 } from "@/lib/pane-utils";
 import { sendNotification } from "@/lib/systemNotifications";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
-import type { RiskLevel } from "@/lib/tools";
 import {
   type AppearanceSlice,
   type ChatConversation,
@@ -45,12 +43,82 @@ import {
   selectAllConversations,
   selectContextMetrics,
 } from "./slices";
+import type {
+  ActiveSubAgent,
+  ActiveToolCall,
+  ActiveWorkflow,
+  AgentMessage,
+  AgentMode,
+  AiConfig,
+  AiStatus,
+  AskHumanRequest,
+  CommandBlock,
+  DetailViewMode,
+  InputMode,
+  PendingCommand,
+  PipelineExecution,
+  PipelineStepExecution,
+  PipelineStepStatus,
+  RenderMode,
+  Session,
+  SessionMode,
+  StepStatus,
+  StreamingBlock,
+  TaskPlan,
+  ToolCall,
+  ToolCallSource,
+  UnifiedBlock,
+} from "./store-types";
 
-export type { ApprovalPattern, ReasoningEffort, RiskLevel };
+// Re-export all domain types from store-types
+export type {
+  ActiveSubAgent,
+  ActiveToolCall,
+  ActiveWorkflow,
+  AgentMessage,
+  AiConfig,
+  AiToolExecution,
+  AskHumanRequest,
+  CommandBlock,
+  CompactionResult,
+  DetailViewMode,
+  FinalizedStreamingBlock,
+  PendingCommand,
+  PipelineExecution,
+  PipelineStepExecution,
+  PipelineStepStatus,
+  PipelineSubTarget,
+  Session,
+  StreamingBlock,
+  SubAgentEntry,
+  SubAgentToolCall,
+  TaskPlan,
+  ToolCall,
+  ToolCallSource,
+  UnifiedBlock,
+  WorkflowStep,
+} from "./store-types";
+export type {
+  AgentMode,
+  AiStatus,
+  ApprovalPattern,
+  InputMode,
+  PlanStep,
+  PlanSummary,
+  ReasoningEffort,
+  RenderMode,
+  RiskLevel,
+  SessionMode,
+  StepStatus,
+  TabType,
+  WorkflowStatus,
+} from "./store-types";
 // Re-export pane types from the single source of truth
 export type { PaneId, PaneNode, SplitDirection, TabLayout };
 // Re-export conversation types
 export type { ChatConversation, ChatMessage };
+// Re-export slice types
+export type { ContextMetrics, Notification, NotificationType };
 
 // Enable Immer support for Set and Map (needed for processedToolRequests)
 enableMapSet();
@@ -73,425 +141,6 @@ function markTabNewActivityInDraft(state: GolishState, sessionId: string): void 
       return;
     }
   }
-}
-
-// Plan types
-export type StepStatus = "pending" | "in_progress" | "completed";
-
-export interface PlanStep {
-  step: string;
-  status: StepStatus;
-}
-
-export interface PlanSummary {
-  total: number;
-  completed: number;
-  in_progress: number;
-  pending: number;
-}
-
-export interface TaskPlan {
-  explanation: string | null;
-  steps: PlanStep[];
-  summary: PlanSummary;
-  version: number;
-  updated_at: string;
-}
-
-// Types
-export type SessionMode = "terminal" | "agent";
-export type InputMode = "terminal" | "agent" | "auto";
-export type RenderMode = "timeline" | "fullterm";
-export type AiStatus = "disconnected" | "initializing" | "ready" | "error";
-/**
- * Tab type determines what kind of content is displayed in a tab.
- * - terminal: Standard terminal/agent session with PTY
- * - settings: Settings panel (no PTY, gear icon)
- * - home: Home tab (no PTY, home icon)
- */
-export type TabType = "terminal" | "settings" | "home" | "browser" | "security";
-
-/**
- * Agent mode determines how tool approvals are handled:
- * - default: Tool approval required based on policy (normal HITL)
- * - auto-approve: All tool calls are automatically approved
- * - planning: Only read-only tools allowed (no modifications)
- */
-export type AgentMode = "default" | "auto-approve" | "planning";
-
-// Re-export types from slices
-export type { ContextMetrics, Notification, NotificationType };
-
-export interface AiConfig {
-  provider: string;
-  model: string;
-  status: AiStatus;
-  errorMessage?: string;
-  // OpenAI specific: reasoning effort level for models like gpt-5.2
-  reasoningEffort?: ReasoningEffort;
-  // Vertex AI specific config (for model switching)
-  vertexConfig?: {
-    workspace: string;
-    credentialsPath: string;
-    projectId: string;
-    location: string;
-  };
-}
-
-export type DetailViewMode = "timeline" | "plan" | "tool-detail";
-
-export interface Session {
-  id: string;
-  /** Type of tab - determines icon and content rendering. Defaults to "terminal" */
-  tabType?: TabType;
-  name: string;
-  workingDirectory: string;
-  createdAt: string;
-  mode: SessionMode;
-  inputMode?: InputMode; // Toggle button state for unified input (defaults to "agent")
-  agentMode?: AgentMode; // Agent behavior mode (defaults to "default")
-  renderMode?: RenderMode; // How to render terminal content (defaults to "timeline")
-  customName?: string; // User-defined custom name (set via double-click)
-  processName?: string; // Detected running process name
-  virtualEnv?: string | null; // Active Python virtual environment name
-  gitBranch?: string | null; // Current git branch (null if not a git repo)
-  // Per-session AI configuration (provider + model)
-  aiConfig?: AiConfig;
-  // Current task plan (if any)
-  plan?: TaskPlan;
-  /** Left pane display mode: "timeline" (default) or "plan" (expanded plan detail) */
-  detailViewMode?: DetailViewMode;
-  /** When tool-detail view is active, only show these request IDs (null = show all) */
-  toolDetailRequestIds?: string[] | null;
-}
-
-// Unified timeline block types
-export type PipelineStepStatus = "pending" | "running" | "success" | "failed" | "skipped";
-
-export interface PipelineSubTarget {
-  target: string;
-  status: PipelineStepStatus;
-  output?: string;
-  exitCode?: number | null;
-  durationMs?: number;
-}
-
-export interface PipelineStepExecution {
-  stepId: string;
-  name: string;
-  command: string;
-  status: PipelineStepStatus;
-  output?: string;
-  exitCode?: number | null;
-  startedAt?: string;
-  finishedAt?: string;
-  durationMs?: number;
-  /** Targets discovered from previous step output (fan-out) */
-  discoveredTargets?: string[];
-  /** Per-target results when running fan-out */
-  subTargets?: PipelineSubTarget[];
-  /** Sub-agents spawned by this step (AI steps only) */
-  subAgents?: ActiveSubAgent[];
-}
-
-export interface PipelineExecution {
-  pipelineId: string;
-  pipelineName: string;
-  target: string;
-  steps: PipelineStepExecution[];
-  status: "pending" | "running" | "completed" | "failed";
-  startedAt: string;
-  finishedAt?: string;
-}
-
-export type UnifiedBlock =
-  | {
-      id: string;
-      type: "command";
-      timestamp: string;
-      data: CommandBlock & { source?: "manual" | "pipeline" };
-    }
-  | {
-      id: string;
-      type: "agent_message";
-      timestamp: string;
-      data: AgentMessage;
-    }
-  | {
-      id: string;
-      type: "system_hook";
-      timestamp: string;
-      data: { hooks: string[] };
-    }
-  | {
-      id: string;
-      type: "agent_streaming";
-      timestamp: string;
-      data: { content: string; toolCalls?: ToolCall[] };
-    }
-  | {
-      id: string;
-      type: "pipeline_progress";
-      timestamp: string;
-      data: PipelineExecution;
-    }
-  | {
-      id: string;
-      type: "sub_agent_activity";
-      timestamp: string;
-      data: ActiveSubAgent;
-      batchId?: string;
-    }
-  | {
-      id: string;
-      type: "ai_tool_execution";
-      timestamp: string;
-      data: AiToolExecution;
-    };
-
-/** AI tool execution tracked in the left timeline as a card */
-export interface AiToolExecution {
-  requestId: string;
-  toolName: string;
-  args: Record<string, unknown>;
-  status: "running" | "completed" | "error";
-  result?: unknown;
-  startedAt: string;
-  completedAt?: string;
-  durationMs?: number;
-  autoApproved?: boolean;
-  riskLevel?: string;
-  streamingOutput?: string;
-  source?: ToolCallSource;
-  /** Which plan step (0-indexed) this execution belongs to */
-  planStepIndex?: number;
-}
-
-export interface CommandBlock {
-  id: string;
-  sessionId: string;
-  command: string;
-  output: string;
-  exitCode: number | null;
-  startTime: string;
-  durationMs: number | null;
-  workingDirectory: string;
-  isCollapsed: boolean;
-}
-
-/** Finalized streaming block for persisted messages */
-export type FinalizedStreamingBlock =
-  | { type: "text"; content: string }
-  | { type: "tool"; toolCall: ToolCall }
-  | { type: "udiff_result"; response: string; durationMs: number }
-  | { type: "system_hooks"; hooks: string[] }
-  | { type: "thinking"; content: string };
-
-/** Result of context compaction operation */
-export type CompactionResult =
-  | {
-      status: "success";
-      tokensBefore: number;
-      messagesBefore: number;
-      messagesAfter: number;
-      summaryLength: number;
-      summary?: string;
-      summarizerInput?: string;
-    }
-  | {
-      status: "failed";
-      tokensBefore: number;
-      messagesBefore: number;
-      error: string;
-      summarizerInput?: string;
-    };
-
-export interface AgentMessage {
-  id: string;
-  sessionId: string;
-  role: "user" | "assistant" | "system";
-  content: string;
-  timestamp: string;
-  isStreaming?: boolean;
-  /** Image attachments for user messages */
-  attachments?: { type: "image"; data: string; media_type?: string; filename?: string }[];
-  toolCalls?: ToolCall[];
-  /** Interleaved text and tool call blocks from streaming (preserves order) */
-  streamingHistory?: FinalizedStreamingBlock[];
-  /** Extended thinking content from the model's reasoning process */
-  thinkingContent?: string;
-  /** Workflow that was executed during this message (if any) */
-  workflow?: ActiveWorkflow;
-  /** Sub-agents that were spawned during this message */
-  subAgents?: ActiveSubAgent[];
-  /** System hooks that were injected during this turn */
-  systemHooks?: string[];
-  /** Input tokens used for this message (if available) */
-  inputTokens?: number;
-  /** Output tokens used for this message (if available) */
-  outputTokens?: number;
-  /** Context compaction result (if this message represents a compaction event) */
-  compaction?: CompactionResult;
-  /** Working directory at the time the message was created (for stable file link resolution) */
-  workingDirectory?: string;
-}
-
-/** Source of a tool call - indicates which agent initiated it */
-export type ToolCallSource =
-  | { type: "main" }
-  | { type: "sub_agent"; agentId: string; agentName: string }
-  | {
-      type: "workflow";
-      workflowId: string;
-      workflowName: string;
-      /** Current workflow step name */
-      stepName?: string;
-      /** Current workflow step index (0-based) */
-      stepIndex?: number;
-    };
-
-export interface ToolCall {
-  id: string;
-  name: string;
-  args: Record<string, unknown>;
-  status: "pending" | "approved" | "denied" | "running" | "completed" | "error";
-  result?: unknown;
-  /** True if this tool was executed by the agent (vs user-initiated) */
-  executedByAgent?: boolean;
-  /** Risk level of this tool */
-  riskLevel?: RiskLevel;
-  /** Approval pattern/stats for this tool (if available) */
-  stats?: ApprovalPattern;
-  /** Suggestion for auto-approve threshold */
-  suggestion?: string;
-  /** Whether this tool can be auto-approved in the future */
-  canLearn?: boolean;
-  /** True if this tool was auto-approved */
-  autoApproved?: boolean;
-  /** Reason for auto-approval (if auto-approved) */
-  autoApprovalReason?: string;
-  /** Source of this tool call (main agent, sub-agent, or workflow) */
-  source?: ToolCallSource;
-}
-
-/** Tool call being actively executed by the agent */
-export interface ActiveToolCall {
-  id: string;
-  name: string;
-  args: Record<string, unknown>;
-  status: "running" | "completed" | "error";
-  result?: unknown;
-  startedAt: string;
-  completedAt?: string;
-  /** True if this tool was executed by the agent (vs user-initiated) */
-  executedByAgent?: boolean;
-  /** Source of this tool call (main agent, sub-agent, or workflow) */
-  source?: ToolCallSource;
-  /** Accumulated streaming output for real-time display (for run_command) */
-  streamingOutput?: string;
-}
-
-/** Pending ask_human request from the AI agent */
-export interface AskHumanRequest {
-  requestId: string;
-  question: string;
-  inputType: "credentials" | "choice" | "freetext" | "confirmation";
-  options: string[];
-  context: string;
-}
-
-/** Streaming block types for interleaved text and tool calls */
-export type StreamingBlock =
-  | { type: "text"; content: string }
-  | { type: "tool"; toolCall: ActiveToolCall }
-  | { type: "udiff_result"; response: string; durationMs: number }
-  | { type: "system_hooks"; hooks: string[] }
-  | { type: "thinking"; content: string };
-
-/** Status of a workflow execution */
-export type WorkflowStatus = "idle" | "running" | "completed" | "error";
-
-/** A step in a workflow */
-export interface WorkflowStep {
-  name: string;
-  index: number;
-  status: "pending" | "running" | "completed" | "error";
-  output?: string | null;
-  durationMs?: number;
-  startedAt?: string;
-  completedAt?: string;
-}
-
-/** Active workflow execution state */
-export interface ActiveWorkflow {
-  workflowId: string;
-  workflowName: string;
-  sessionId: string;
-  status: WorkflowStatus;
-  steps: WorkflowStep[];
-  currentStepIndex: number;
-  totalSteps: number;
-  startedAt: string;
-  completedAt?: string;
-  totalDurationMs?: number;
-  finalOutput?: string;
-  error?: string;
-  /** Tool calls executed during this workflow (persisted after completion) */
-  toolCalls?: ActiveToolCall[];
-}
-
-/** Sub-agent tool call */
-export interface SubAgentToolCall {
-  id: string;
-  name: string;
-  args: Record<string, unknown>;
-  status: "running" | "completed" | "error";
-  result?: unknown;
-  startedAt: string;
-  completedAt?: string;
-}
-
-/** Interleaved sub-agent timeline entry (text or tool reference) */
-export interface SubAgentEntry {
-  kind: "text" | "tool_call";
-  /** For kind === "text": the accumulated text for this segment */
-  text?: string;
-  /** For kind === "tool_call": references a SubAgentToolCall.id */
-  toolCallId?: string;
-}
-
-/** Active sub-agent execution state */
-export interface ActiveSubAgent {
-  agentId: string;
-  agentName: string;
-  parentRequestId: string;
-  task: string;
-  depth: number;
-  status: "running" | "completed" | "error";
-  toolCalls: SubAgentToolCall[];
-  /** Interleaved text and tool_call entries in chronological order */
-  entries: SubAgentEntry[];
-  response?: string;
-  error?: string;
-  /** Streaming text output from the sub-agent (latest segment, for backward compat) */
-  streamingText?: string;
-  startedAt: string;
-  completedAt?: string;
-  durationMs?: number;
-  promptGeneration?: {
-    status: "generating" | "completed" | "failed";
-    architectSystemPrompt: string;
-    architectUserMessage: string;
-    generatedPrompt?: string;
-    durationMs?: number;
-  };
-}
-
-export interface PendingCommand {
-  command: string | null;
-  output: string;
-  startTime: string;
-  workingDirectory: string;
 }
 
 interface GolishState

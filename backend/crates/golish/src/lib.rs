@@ -1222,6 +1222,15 @@ pub fn run_gui() {
             tools::conversation_store::conv_load_terminal_states,
             tools::conversation_store::conv_save_preferences,
             tools::conversation_store::conv_load_preferences,
+            // Execution plans
+            tools::execution_plans::plan_create,
+            tools::execution_plans::plan_get,
+            tools::execution_plans::plan_list,
+            tools::execution_plans::plan_list_active,
+            tools::execution_plans::plan_update_steps,
+            tools::execution_plans::plan_update_status,
+            tools::execution_plans::plan_update_context,
+            tools::execution_plans::plan_delete,
             // IME switching (macOS)
             ime_get_source,
             ime_set_source,

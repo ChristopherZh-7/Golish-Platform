@@ -1,5 +1,6 @@
 pub mod agent_logs;
 pub mod audit;
+pub mod execution_plans;
 pub mod findings;
 pub mod memories;
 pub mod message_chains;

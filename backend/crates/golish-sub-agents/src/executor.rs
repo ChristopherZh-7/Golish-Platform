@@ -72,6 +72,10 @@ pub struct SubAgentExecutorContext<'a> {
     pub transcript_base_dir: Option<&'a std::path::Path>,
     /// API request stats collector (per session, optional)
     pub api_request_stats: Option<&'a Arc<ApiRequestStats>>,
+    /// Orchestrator briefing injected before execution. Contains relevant memories,
+    /// execution plan context, and findings from other agents. Appended to the
+    /// effective system prompt as a `## Briefing from Orchestrator` section.
+    pub briefing: Option<String>,
 }
 
 /// Execute a sub-agent with the given task and context.
@@ -247,7 +251,7 @@ where
     let additional_context = args.get("context").and_then(|v| v.as_str()).unwrap_or("");
 
     // Generate optimized system prompt if prompt_template is configured
-    let effective_system_prompt = if let Some(ref template) = agent_def.prompt_template {
+    let mut effective_system_prompt = if let Some(ref template) = agent_def.prompt_template {
         // Build the user message for prompt generation (task + optional context)
         let generation_input = if additional_context.is_empty() {
             format!("Task: {}", task)
@@ -352,6 +356,17 @@ where
     } else {
         agent_def.system_prompt.clone()
     };
+
+    // Append orchestrator briefing if available
+    if let Some(ref briefing) = ctx.briefing {
+        effective_system_prompt.push_str("\n\n");
+        effective_system_prompt.push_str(briefing);
+        tracing::info!(
+            "[sub-agent:{}] Injected orchestrator briefing ({} chars)",
+            agent_id,
+            briefing.len()
+        );
+    }
 
     // Build the sub-agent context with incremented depth
     let sub_context = SubAgentContext {
