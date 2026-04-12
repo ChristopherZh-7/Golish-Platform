@@ -12,7 +12,11 @@ interface ErrorBoundaryProps {
 interface ErrorBoundaryState {
   hasError: boolean;
   error: Error | null;
+  crashCount: number;
 }
+
+const MAX_AUTO_RECOVERY = 3;
+const CRASH_WINDOW_MS = 5000;
 
 /**
  * Error boundary component that catches errors in its child component tree.
@@ -24,28 +28,34 @@ interface ErrorBoundaryState {
  * To show a fallback UI instead, pass the `fallback` prop.
  */
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  private firstCrashTime = 0;
+
   constructor(props: ErrorBoundaryProps) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false, error: null, crashCount: 0 };
   }
 
-  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+  static getDerivedStateFromError(error: Error): Partial<ErrorBoundaryState> {
     return { hasError: true, error };
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    // Log the error to our logging system
     logger.error("[ErrorBoundary] Caught error:", error.message, {
       componentStack: errorInfo.componentStack,
       stack: error.stack,
     });
 
-    // Call optional error callback
     this.props.onError?.(error, errorInfo);
 
-    // Reset state after a short delay to allow children to continue rendering
-    // This enables "recovery" behavior where transient errors don't break the UI
-    if (!this.props.fallback) {
+    const now = Date.now();
+    if (now - this.firstCrashTime > CRASH_WINDOW_MS) {
+      this.firstCrashTime = now;
+      this.setState({ crashCount: 1 });
+    } else {
+      this.setState((prev) => ({ crashCount: prev.crashCount + 1 }));
+    }
+
+    if (!this.props.fallback && this.state.crashCount < MAX_AUTO_RECOVERY) {
       setTimeout(() => {
         this.setState({ hasError: false, error: null });
       }, 100);
@@ -53,12 +63,17 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   }
 
   render() {
-    // If a fallback is provided and we have an error, show the fallback
-    if (this.state.hasError && this.props.fallback) {
-      return this.props.fallback;
+    if (this.state.hasError) {
+      if (this.props.fallback) return this.props.fallback;
+      if (this.state.crashCount >= MAX_AUTO_RECOVERY) {
+        return (
+          <div style={{ padding: 24, color: "#888", fontSize: 13 }}>
+            <p>A component crashed repeatedly. Reload the app to retry.</p>
+            <pre style={{ fontSize: 11, marginTop: 8, color: "#666" }}>{this.state.error?.message}</pre>
+          </div>
+        );
+      }
     }
-
-    // Otherwise, continue rendering children (error is logged but UI continues)
     return this.props.children;
   }
 }

@@ -46,6 +46,7 @@ import {
   setLastProjectName,
   toChatConversation,
 } from "@/lib/workspace-storage";
+import { loadFromDb } from "@/lib/conversation-db-sync";
 import { useStore } from "@/store";
 import { createNewConversation } from "@/store/slices/conversation";
 import { NewWorktreeModal } from "./NewWorktreeModal";
@@ -526,19 +527,27 @@ export const HomeView = memo(function HomeView() {
         useStore.getState().setCurrentProject(projectName, rootPath);
         setLastProjectName(projectName);
 
-        // Try to load saved workspace state for this project
-        const saved = await loadWorkspaceState(projectName);
+        // Try DB first, fall back to legacy workspace.json
+        const saved = await loadFromDb(rootPath);
         if (saved && saved.conversations.length > 0) {
-          const restoredConvs = saved.conversations.map(toChatConversation);
           useStore.getState().restoreConversations(
-            restoredConvs,
+            saved.conversations,
             saved.conversationOrder,
             saved.activeConversationId,
           );
         } else {
-          // No saved state for this project — create a fresh conversation
-          const conv = createNewConversation();
-          useStore.getState().restoreConversations([conv], [conv.id], conv.id);
+          const legacy = await loadWorkspaceState(projectName);
+          if (legacy && legacy.conversations.length > 0) {
+            const restoredConvs = legacy.conversations.map(toChatConversation);
+            useStore.getState().restoreConversations(
+              restoredConvs,
+              legacy.conversationOrder,
+              legacy.activeConversationId,
+            );
+          } else {
+            const conv = createNewConversation();
+            useStore.getState().restoreConversations([conv], [conv.id], conv.id);
+          }
         }
 
         // Create a terminal in the project root and return the session ID

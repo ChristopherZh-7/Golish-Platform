@@ -918,7 +918,7 @@ function ScannerPanel({ initialUrl, onUrlConsumed }: { initialUrl?: string | nul
 
   useEffect(() => {
     invoke<VaultEntrySafe[]>("vault_list", { projectPath: getProjectPath() })
-      .then(setVaultEntries)
+      .then((v) => setVaultEntries(Array.isArray(v) ? v : []))
       .catch(() => {});
   }, [projectPath]);
 

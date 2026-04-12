@@ -45,7 +45,7 @@ export function AuditLogPanel() {
         limit: 500,
         projectPath: getProjectPath(),
       });
-      setEntries(list);
+      setEntries(Array.isArray(list) ? list : []);
     } catch {
       setEntries([]);
     }
@@ -61,7 +61,8 @@ export function AuditLogPanel() {
     } catch { /* ignore */ }
   }, []);
 
-  const filtered = filterCategory === "all" ? entries : entries.filter((e) => e.category === filterCategory);
+  const safeEntries = entries ?? [];
+  const filtered = filterCategory === "all" ? safeEntries : safeEntries.filter((e) => e.category === filterCategory);
 
   const formatTime = (ts: number) => {
     const d = new Date(ts * 1000);

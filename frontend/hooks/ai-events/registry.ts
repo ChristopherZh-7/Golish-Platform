@@ -33,6 +33,7 @@ import {
   handleSubAgentCompleted,
   handleSubAgentError,
   handleSubAgentStarted,
+  handleSubAgentTextDelta,
   handleSubAgentToolRequest,
   handleSubAgentToolResult,
 } from "./sub-agent-handlers";
@@ -91,6 +92,7 @@ export const eventHandlerRegistry: EventHandlerRegistry = {
   sub_agent_started: handleSubAgentStarted,
   sub_agent_tool_request: handleSubAgentToolRequest,
   sub_agent_tool_result: handleSubAgentToolResult,
+  sub_agent_text_delta: handleSubAgentTextDelta,
   sub_agent_completed: handleSubAgentCompleted,
   sub_agent_error: handleSubAgentError,
 

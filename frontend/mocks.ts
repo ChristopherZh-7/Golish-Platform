@@ -234,6 +234,8 @@ const mockSubAgents = [
   { id: "explorer", name: "Code Explorer", description: "Explores and understands codebases" },
   { id: "debugger", name: "Debug Assistant", description: "Helps debug issues" },
   { id: "documenter", name: "Documentation Writer", description: "Generates documentation" },
+  { id: "js_harvester", name: "JS Harvester", description: "AI-driven comprehensive JavaScript collection from target URLs" },
+  { id: "js_analyzer", name: "JS Analyzer", description: "Read-only security analysis of collected JavaScript assets" },
 ];
 
 // Mock sessions
@@ -535,6 +537,8 @@ export type AiEventType =
   | { type: "started"; turn_id: string }
   | { type: "text_delta"; delta: string; accumulated: string }
   | { type: "tool_request"; tool_name: string; args: unknown; request_id: string }
+  | { type: "tool_auto_approved"; tool_name: string; args: unknown; request_id: string; reason: string }
+  | { type: "tool_approval_request"; tool_name: string; args: unknown; request_id: string; risk_level?: string }
   | {
       type: "tool_result";
       tool_name: string;
@@ -542,6 +546,7 @@ export type AiEventType =
       success: boolean;
       request_id: string;
     }
+  | { type: "tool_output_chunk"; tool_name: string; request_id: string; chunk: string; stream: string }
   | {
       type: "completed";
       response: string;
@@ -551,13 +556,15 @@ export type AiEventType =
       output_tokens?: number;
     }
   | { type: "error"; message: string; error_type: string }
-  | { type: "sub_agent_started"; agent_id: string; agent_name: string; task: string; depth: number }
+  | { type: "sub_agent_started"; agent_id: string; agent_name: string; task: string; depth: number; parent_request_id?: string }
+  | { type: "sub_agent_text_delta"; agent_id: string; delta: string; accumulated: string; parent_request_id?: string }
   | {
       type: "sub_agent_tool_request";
       agent_id: string;
       tool_name: string;
       args: unknown;
       request_id: string;
+      parent_request_id?: string;
     }
   | {
       type: "sub_agent_tool_result";
@@ -566,9 +573,10 @@ export type AiEventType =
       result: unknown;
       success: boolean;
       request_id: string;
+      parent_request_id?: string;
     }
-  | { type: "sub_agent_completed"; agent_id: string; response: string; duration_ms: number }
-  | { type: "sub_agent_error"; agent_id: string; error: string };
+  | { type: "sub_agent_completed"; agent_id: string; response: string; duration_ms: number; parent_request_id?: string }
+  | { type: "sub_agent_error"; agent_id: string; error: string; parent_request_id?: string };
 
 // =============================================================================
 // Event Emitter Helpers
@@ -853,6 +861,870 @@ export async function simulateAiResponseWithSubAgent(
   });
 }
 
+/**
+ * Simulate the JS Harvester + Analyzer sub-agent flow.
+ * Triggered automatically when user sends a message containing "js" or "analyze".
+ */
+export async function simulateJsHarvest(): Promise<void> {
+  const turnId = `mock-turn-${Date.now()}`;
+  const harvesterId = `mock-harvester-${Date.now()}`;
+  const analyzerId = `mock-analyzer-${Date.now()}`;
+  const harvesterReqId = `mock-sub-req-harvest-${Date.now()}`;
+  const analyzerReqId = `mock-sub-req-analyze-${Date.now()}`;
+  const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const emitSubAgentTools = async (agentId: string, tools: { name: string; args: Record<string, unknown>; result: string }[]) => {
+    for (const tool of tools) {
+      const reqId = `mock-req-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      await emitAiEvent({ type: "sub_agent_tool_request", agent_id: agentId, tool_name: tool.name, args: tool.args, request_id: reqId });
+      await delay(600);
+      await emitAiEvent({ type: "sub_agent_tool_result", agent_id: agentId, tool_name: tool.name, result: tool.result, success: true, request_id: reqId });
+      await delay(300);
+    }
+  };
+
+  await emitAiEvent({ type: "started", turn_id: turnId });
+  await delay(200);
+
+  await emitAiEvent({ type: "text_delta", delta: "I'll collect all JavaScript files from example.com and then analyze them for security issues.\n\n", accumulated: "I'll collect all JavaScript files from example.com and then analyze them for security issues.\n\n" });
+  await delay(300);
+
+  // === Phase 1: JS Harvester ===
+  await emitAiEvent({ type: "tool_request", tool_name: "sub_agent_js_harvester", args: { task: "Collect ALL JS files from https://example.com" }, request_id: harvesterReqId });
+  await delay(200);
+  await emitAiEvent({ type: "sub_agent_started", agent_id: harvesterId, agent_name: "JS Harvester", task: "Collect ALL JS files from https://example.com", depth: 1, parent_request_id: harvesterReqId });
+  await delay(300);
+  await emitAiEvent({ type: "sub_agent_text_delta", agent_id: harvesterId, delta: "Probing target for bundler type...", accumulated: "Probing target for bundler type...", parent_request_id: harvesterReqId });
+  await delay(200);
+
+  await emitSubAgentTools(harvesterId, [
+    { name: "run_pty_cmd", args: { command: "curl -sLk -D- https://example.com" }, result: "HTTP/2 200\nserver: nginx\ncontent-type: text/html\n\n<!DOCTYPE html>...<script type=\"module\" src=\"/assets/index-BjK2xfA.js\">" },
+    { name: "run_pty_cmd", args: { command: "curl -sLk -w '%{http_code}' -o /dev/null https://example.com/.vite/manifest.json" }, result: "404" },
+    { name: "run_pty_cmd", args: { command: "curl -sLk -w '%{http_code}' -o /dev/null https://example.com/asset-manifest.json" }, result: "404" },
+    { name: "run_pty_cmd", args: { command: "curl -sLk https://example.com/assets/index-BjK2xfA.js | head -5" }, result: "import{c as createApp}from\"./chunk-framework-De4f.js\";const routes=[...]" },
+    { name: "write_file", args: { path: "/tmp/js_harvest.sh", content: "#!/bin/bash\nBASE=https://example.com/assets ..." }, result: "File written: /tmp/js_harvest.sh" },
+    { name: "run_pty_cmd", args: { command: "bash /tmp/js_harvest.sh" }, result: "Downloading index-BjK2xfA.js... OK\nDownloading vendor-Ca3dR2p.js... OK\n... (50 files from main bundle)\nRecursive pass 1: found 5 new refs in system.js\nRecursive pass 2: found 3 new refs in project.js\nRecursive pass 3: 0 new files\nTOTAL: 58 files downloaded (2.8MB)" },
+    { name: "run_pty_cmd", args: { command: "for f in .golish/js-assets/example.com/*.js; do curl -sLk -w '%{http_code}' -o \"${f}.map\" \"https://example.com/assets/$(basename $f).map\"; done | grep 200 | wc -l" }, result: "6 source maps found" },
+    { name: "write_file", args: { path: ".golish/js-assets/example.com/index.json", content: "{...manifest...}" }, result: "Manifest updated: 58 files, 6 sourcemaps, 2 failed (auth_required)" },
+  ]);
+
+  const harvesterResponse = "Collection complete: 58 JS files (2.8MB) + 6 source maps. Strategy: recursive script (no manifest found). 2 files require authentication.";
+  await emitAiEvent({ type: "sub_agent_completed", agent_id: harvesterId, response: harvesterResponse, duration_ms: 8500, parent_request_id: harvesterReqId });
+  await delay(200);
+  await emitAiEvent({ type: "tool_result", tool_name: "sub_agent_js_harvester", result: harvesterResponse, success: true, request_id: harvesterReqId });
+  await delay(400);
+
+  // === Phase 2: JS Analyzer ===
+  await emitAiEvent({ type: "tool_request", tool_name: "sub_agent_js_analyzer", args: { task: "Analyze collected JS in .golish/js-assets/example.com/ for security issues" }, request_id: analyzerReqId });
+  await delay(200);
+  await emitAiEvent({ type: "sub_agent_started", agent_id: analyzerId, agent_name: "JS Analyzer", task: "Security analysis of 58 collected JS files", depth: 1, parent_request_id: analyzerReqId });
+  await delay(300);
+  await emitAiEvent({ type: "sub_agent_text_delta", agent_id: analyzerId, delta: "Scanning for API endpoints and secrets...", accumulated: "Scanning for API endpoints and secrets...", parent_request_id: analyzerReqId });
+  await delay(200);
+
+  await emitSubAgentTools(analyzerId, [
+    { name: "read_file", args: { path: ".golish/js-assets/example.com/index.json" }, result: '{"bundler":"vite","stats":{"total_files":58,"source_maps":6}}' },
+    { name: "grep_file", args: { pattern: "/api/v[0-9]", path: ".golish/js-assets/example.com/" }, result: "5 API endpoints found across 4 files" },
+    { name: "grep_file", args: { pattern: "(api_key|secret|token|password|pk_live)", path: ".golish/js-assets/example.com/" }, result: "3 secrets found in vendor-Ca3dR2p.js and index-BjK2xfA.js" },
+    { name: "read_file", args: { path: ".golish/js-assets/example.com/Debug-Qr9s.js" }, result: "window.__DEBUG__={env:process.env,dump:()=>...} // no auth check" },
+  ]);
+
+  const analyzerResponse = `**API Endpoints**: 5 found (POST /auth/login, GET /users/me, POST /payments/charge, DELETE /admin/users/:id, GET /config)
+**Secrets**: STRIPE_PK, API_BASE (internal URL), AWS_REGION
+**Hidden Routes**: /debug (NO AUTH — env dump), /admin (DELETE endpoint)
+**Vulnerable**: lodash@4.17.15, axios@0.21.0`;
+
+  await emitAiEvent({ type: "sub_agent_completed", agent_id: analyzerId, response: analyzerResponse, duration_ms: 6200, parent_request_id: analyzerReqId });
+  await delay(200);
+  await emitAiEvent({ type: "tool_result", tool_name: "sub_agent_js_analyzer", result: analyzerResponse, success: true, request_id: analyzerReqId });
+  await delay(400);
+
+  // === Final summary in main chat ===
+  const finalResponse = "JS 收集与分析完成。\n\n**收集**: 58 个文件 (2.8MB) + 6 个 source maps, Vite bundler\n**发现**:\n1. 5 个 API endpoints (含支付、管理员删除接口)\n2. 3 个硬编码密钥 (Stripe, 内网 API, AWS)\n3. /debug 路由无认证 — 可直接访问环境变量\n4. 2 个已知漏洞依赖\n\n优先处理: /debug 环境变量泄露 + Stripe 密钥硬编码。";
+  const words = finalResponse.split(" ");
+  let accumulated = "";
+  for (const word of words) {
+    const delta = accumulated ? ` ${word}` : word;
+    accumulated += delta;
+    await emitAiEvent({ type: "text_delta", delta, accumulated });
+    await delay(30);
+  }
+
+  await emitAiEvent({ type: "completed", response: accumulated, tokens_used: 2400, duration_ms: 18000, input_tokens: 4800, output_tokens: 520 });
+}
+
+// =============================================================================
+// Timeline Block Showcase — one mock per UnifiedBlock type
+// Call from console: __mockShowAllBlocks()
+// =============================================================================
+
+/**
+ * 1/4 — Command Block
+ * Injects a static CommandBlock into the timeline.
+ */
+export async function mockCommandBlock(): Promise<void> {
+  const { useStore } = await import("@/store/index");
+  const state = useStore.getState();
+  const sessionId = state.activeSessionId ?? Object.keys(state.sessions)[0];
+  if (!sessionId) { console.error("[mockCommandBlock] No active session"); return; }
+
+  useStore.setState((s) => {
+    if (!s.timelines[sessionId]) s.timelines[sessionId] = [];
+    s.timelines[sessionId].push({
+      id: `mock-cmd-${Date.now()}`,
+      type: "command",
+      timestamp: new Date().toISOString(),
+      data: {
+        id: `mock-cmd-${Date.now()}`,
+        sessionId,
+        command: "nmap -sV -sC --top-ports 1000 example.com",
+        output: [
+          "Starting Nmap 7.94 ( https://nmap.org ) at 2026-04-11 10:00 CST",
+          "Nmap scan report for example.com (93.184.216.34)",
+          "Host is up (0.12s latency).",
+          "Not shown: 997 filtered tcp ports (no-response)",
+          "PORT    STATE SERVICE  VERSION",
+          "80/tcp  open  http     nginx 1.21.6",
+          "443/tcp open  ssl/http nginx 1.21.6",
+          "8080/tcp open  http-proxy",
+          "",
+          "Service detection performed. Please provide correct ports.",
+          "Nmap done: 1 IP address (1 host up) scanned in 42.31 seconds",
+        ].join("\n"),
+        exitCode: 0,
+        startTime: new Date(Date.now() - 42310).toISOString(),
+        durationMs: 42310,
+        workingDirectory: "/home/user/projects",
+        isCollapsed: false,
+      },
+    });
+  });
+  console.log("[mockCommandBlock] Injected command block");
+}
+
+/**
+ * 2/4 — Pipeline Progress Block (with nested sub-agents in AI step)
+ * Injects a PipelineProgressBlock where the JS Harvest AI step
+ * has sub-agents (JS Harvester + JS Analyzer) embedded inside it.
+ */
+export async function mockPipelineProgressBlock(): Promise<void> {
+  const { useStore } = await import("@/store/index");
+  const state = useStore.getState();
+  const sessionId = state.activeSessionId ?? Object.keys(state.sessions)[0];
+  if (!sessionId) { console.error("[mockPipelineBlock] No active session"); return; }
+
+  const now = new Date().toISOString();
+
+  useStore.getState().startPipelineExecution(sessionId, {
+    pipelineId: "recon-basic-demo",
+    pipelineName: "Basic Reconnaissance",
+    target: "target.example.com",
+    steps: [
+      {
+        stepId: "dns", name: "DNS Lookup", command: "dig +short target.example.com",
+        status: "success", output: "93.184.216.34\n2606:2800:220:1:248:1893:25c8:1946",
+        exitCode: 0, startedAt: now, durationMs: 820,
+      },
+      {
+        stepId: "subfinder", name: "Subdomain Enum", command: "subfinder -d target.example.com -silent",
+        status: "success",
+        output: "api.target.example.com\nstaging.target.example.com\ndev.target.example.com\nadmin.target.example.com",
+        exitCode: 0, startedAt: now, durationMs: 5200,
+        discoveredTargets: ["api.target.example.com", "staging.target.example.com", "dev.target.example.com", "admin.target.example.com"],
+      },
+      {
+        stepId: "httpx", name: "HTTP Probe", command: "httpx -l subdomains.txt -sc -title -tech-detect -silent",
+        status: "success",
+        output: "https://api.target.example.com [200] [API Gateway] [Nginx,Express]\nhttps://staging.target.example.com [403] [Forbidden]\nhttps://admin.target.example.com [200] [Admin Panel] [React,Nginx]",
+        exitCode: 0, startedAt: now, durationMs: 3100,
+        subTargets: [
+          { target: "api.target.example.com", status: "success", output: "[200] API Gateway", durationMs: 800 },
+          { target: "staging.target.example.com", status: "success", output: "[403] Forbidden", durationMs: 600 },
+          { target: "dev.target.example.com", status: "failed", output: "Connection refused", exitCode: 1, durationMs: 3000 },
+          { target: "admin.target.example.com", status: "success", output: "[200] Admin Panel", durationMs: 700 },
+        ],
+      },
+      {
+        stepId: "nmap", name: "Port Scan", command: "nmap -sV --top-ports 1000 {target}",
+        status: "success", exitCode: 0, startedAt: now, durationMs: 12400,
+        output: "PORT    STATE SERVICE\n80/tcp  open  http\n443/tcp open  https\n8080/tcp open  http-proxy",
+      },
+      {
+        stepId: "whatweb", name: "Tech Fingerprint", command: "whatweb {target} --color=never",
+        status: "success", exitCode: 0, startedAt: now, durationMs: 2100,
+        output: "https://target.example.com [200 OK] Nginx[1.21.6], React",
+      },
+      {
+        stepId: "js_harvest", name: "JS Harvest (AI)", command: "AI: js_harvest {target}",
+        status: "running", startedAt: now,
+        subAgents: [
+          {
+            agentId: "js_harvester_001",
+            agentName: "JS Harvester",
+            parentRequestId: `mock-pipeline-harvester-${Date.now()}`,
+            task: "Collect ALL JS files from https://admin.target.example.com",
+            depth: 1,
+            status: "completed",
+            toolCalls: [
+              { id: "tc1", name: "run_pty_cmd", args: { command: "curl -sL https://admin.target.example.com/" }, status: "completed", result: "<html>...</html>", startedAt: now, completedAt: now },
+              { id: "tc2", name: "write_file", args: { path: ".golish/js-assets/manifest.json" }, status: "completed", result: "Written 12KB", startedAt: now, completedAt: now },
+              { id: "tc3", name: "run_pty_cmd", args: { command: "bash collect.sh https://admin.target.example.com/assets" }, status: "completed", result: "TOTAL: 42 files collected (1.8MB)", startedAt: now, completedAt: now },
+            ],
+            entries: [
+              { kind: "text", text: "Starting JS collection from target..." },
+              { kind: "tool_call", toolCallId: "tc1" },
+              { kind: "text", text: "Found Vite manifest, extracting asset list..." },
+              { kind: "tool_call", toolCallId: "tc2" },
+              { kind: "tool_call", toolCallId: "tc3" },
+            ],
+            response: "Collection complete: 42 JS files (1.8MB) + 3 source maps. Strategy: manifest-based (Vite detected).",
+            startedAt: new Date(Date.now() - 8500).toISOString(),
+            completedAt: now,
+            durationMs: 8500,
+          },
+          {
+            agentId: "js_analyzer_001",
+            agentName: "JS Analyzer",
+            parentRequestId: `mock-pipeline-analyzer-${Date.now()}`,
+            task: "Security analysis of 42 collected JS files from admin.target.example.com",
+            depth: 1,
+            status: "running",
+            toolCalls: [
+              { id: "tc4", name: "list_files", args: { pattern: ".golish/js-assets/**/*.js" }, status: "completed", result: "42 files found", startedAt: now, completedAt: now },
+              { id: "tc5", name: "grep_file", args: { pattern: "api[_-]?key|secret|token", path: ".golish/js-assets/" }, status: "running", startedAt: now },
+            ],
+            entries: [
+              { kind: "text", text: "Listing all collected JS files..." },
+              { kind: "tool_call", toolCallId: "tc4" },
+              { kind: "text", text: "Scanning for API endpoints and hardcoded secrets across 42 files..." },
+              { kind: "tool_call", toolCallId: "tc5" },
+            ],
+            streamingText: "Scanning for API endpoints and hardcoded secrets across 42 files...",
+            startedAt: new Date(Date.now() - 3200).toISOString(),
+          },
+        ],
+      },
+    ],
+    status: "running",
+    startedAt: now,
+  });
+  console.log("[mockPipelineBlock] Injected pipeline block with nested sub-agents in JS Harvest step");
+}
+
+/**
+ * 3/4 — Sub-Agent Activity Block (group of 2)
+ * Injects two SubAgent cards that appear as a grouped SubAgentGroup.
+ */
+export async function mockSubAgentBlocks(): Promise<void> {
+  const { useStore } = await import("@/store/index");
+  const state = useStore.getState();
+  const sessionId = state.activeSessionId ?? Object.keys(state.sessions)[0];
+  if (!sessionId) { console.error("[mockSubAgentBlocks] No active session"); return; }
+
+  const now = new Date().toISOString();
+  const batchId = `batch-mock-${Date.now()}`;
+
+  useStore.setState((s) => {
+    if (!s.timelines[sessionId]) s.timelines[sessionId] = [];
+
+    // Sub-agent 1: JS Harvester (completed)
+    s.timelines[sessionId].push({
+      id: `mock-sa-harvester-${Date.now()}`,
+      type: "sub_agent_activity",
+      timestamp: now,
+      batchId,
+      data: {
+        agentId: "js_harvester_001",
+        agentName: "JS Harvester",
+        parentRequestId: `mock-parent-req-${Date.now()}`,
+        task: "Collect ALL JS files from https://admin.target.example.com",
+        depth: 1,
+        status: "completed",
+        toolCalls: [
+          { id: "tc1", name: "run_pty_cmd", args: { command: "curl -sL https://admin.target.example.com/" }, status: "completed", result: "<html>...</html>", startedAt: now, completedAt: now },
+          { id: "tc2", name: "write_file", args: { path: ".golish/js-assets/manifest.json" }, status: "completed", result: "Written 12KB", startedAt: now, completedAt: now },
+          { id: "tc3", name: "run_pty_cmd", args: { command: "bash collect.sh https://admin.target.example.com/assets" }, status: "completed", result: "TOTAL: 42 files collected (1.8MB)", startedAt: now, completedAt: now },
+        ],
+        entries: [
+          { kind: "text", text: "Starting JS collection from target..." },
+          { kind: "tool_call", toolCallId: "tc1" },
+          { kind: "text", text: "Found Vite manifest, extracting asset list..." },
+          { kind: "tool_call", toolCallId: "tc2" },
+          { kind: "tool_call", toolCallId: "tc3" },
+        ],
+        response: "Collection complete: 42 JS files (1.8MB) + 3 source maps. Strategy: manifest-based (Vite detected).",
+        startedAt: new Date(Date.now() - 8500).toISOString(),
+        completedAt: now,
+        durationMs: 8500,
+      },
+    });
+
+    // Sub-agent 2: JS Analyzer (running)
+    s.timelines[sessionId].push({
+      id: `mock-sa-analyzer-${Date.now() + 1}`,
+      type: "sub_agent_activity",
+      timestamp: new Date(Date.now() + 10).toISOString(),
+      batchId,
+      data: {
+        agentId: "js_analyzer_001",
+        agentName: "JS Analyzer",
+        parentRequestId: `mock-parent-req-${Date.now() + 1}`,
+        task: "Security analysis of 42 collected JS files from admin.target.example.com",
+        depth: 1,
+        status: "running",
+        toolCalls: [
+          { id: "tc4", name: "list_files", args: { pattern: ".golish/js-assets/**/*.js" }, status: "completed", result: "42 files found", startedAt: now, completedAt: now },
+          { id: "tc5", name: "grep_file", args: { pattern: "api[_-]?key|secret|token", path: ".golish/js-assets/" }, status: "running", startedAt: now },
+        ],
+        entries: [
+          { kind: "text", text: "Listing all collected JS files..." },
+          { kind: "tool_call", toolCallId: "tc4" },
+          { kind: "text", text: "Scanning for API endpoints and hardcoded secrets across 42 files..." },
+          { kind: "tool_call", toolCallId: "tc5" },
+        ],
+        streamingText: "Scanning for API endpoints and hardcoded secrets across 42 files...",
+        startedAt: new Date(Date.now() - 3200).toISOString(),
+      },
+    });
+  });
+  console.log("[mockSubAgentBlocks] Injected 2 sub-agent blocks (grouped)");
+}
+
+/**
+ * 4/4 — AI Tool Execution Block
+ * Injects multiple ToolExecutionCards with different statuses.
+ */
+export async function mockToolExecutionBlocks(): Promise<void> {
+  const { useStore } = await import("@/store/index");
+  const state = useStore.getState();
+  const sessionId = state.activeSessionId ?? Object.keys(state.sessions)[0];
+  if (!sessionId) { console.error("[mockToolExecutionBlocks] No active session"); return; }
+
+  const now = new Date().toISOString();
+
+  useStore.setState((s) => {
+    if (!s.timelines[sessionId]) s.timelines[sessionId] = [];
+
+    // Tool 1: run_command (completed)
+    s.timelines[sessionId].push({
+      id: `mock-tool-cmd-${Date.now()}`,
+      type: "ai_tool_execution",
+      timestamp: now,
+      data: {
+        requestId: `mock-tool-cmd-${Date.now()}`,
+        toolName: "run_command",
+        args: { command: "subfinder -d target.example.com -silent | httpx -sc -title" },
+        status: "completed",
+        result: "https://api.target.example.com [200] [API Gateway]\nhttps://admin.target.example.com [200] [Admin Panel]\nhttps://staging.target.example.com [403] [Forbidden]",
+        startedAt: new Date(Date.now() - 6300).toISOString(),
+        completedAt: now,
+        durationMs: 6300,
+        autoApproved: true,
+        riskLevel: "low",
+      },
+    });
+
+    // Tool 2: read_file (completed)
+    s.timelines[sessionId].push({
+      id: `mock-tool-read-${Date.now()}`,
+      type: "ai_tool_execution",
+      timestamp: new Date(Date.now() + 10).toISOString(),
+      data: {
+        requestId: `mock-tool-read-${Date.now()}`,
+        toolName: "read_file",
+        args: { file_path: ".golish/js-assets/manifest.json" },
+        status: "completed",
+        result: '{"entries":{"main.js":"assets/main-a1b2c3.js","vendor.js":"assets/vendor-d4e5f6.js"}}',
+        startedAt: new Date(Date.now() - 120).toISOString(),
+        completedAt: now,
+        durationMs: 120,
+        autoApproved: true,
+        riskLevel: "safe",
+      },
+    });
+
+    // Tool 3: edit_file (running)
+    s.timelines[sessionId].push({
+      id: `mock-tool-edit-${Date.now()}`,
+      type: "ai_tool_execution",
+      timestamp: new Date(Date.now() + 20).toISOString(),
+      data: {
+        requestId: `mock-tool-edit-${Date.now()}`,
+        toolName: "edit_file",
+        args: { file_path: "src/config/targets.json", changes: "Add admin.target.example.com to scope" },
+        status: "running",
+        startedAt: now,
+        riskLevel: "medium",
+      },
+    });
+
+    // Tool 4: web_search (error)
+    s.timelines[sessionId].push({
+      id: `mock-tool-search-${Date.now()}`,
+      type: "ai_tool_execution",
+      timestamp: new Date(Date.now() + 30).toISOString(),
+      data: {
+        requestId: `mock-tool-search-${Date.now()}`,
+        toolName: "web_search",
+        args: { query: "target.example.com CVE vulnerabilities 2026" },
+        status: "error",
+        result: "TAVILY_API_KEY not configured",
+        startedAt: new Date(Date.now() - 500).toISOString(),
+        completedAt: now,
+        durationMs: 500,
+        riskLevel: "safe",
+      },
+    });
+  });
+  console.log("[mockToolExecutionBlocks] Injected 4 tool execution blocks (completed, read, running, error)");
+}
+
+/**
+ * 5/5 — Plan → Pipeline Bridge
+ * Simulates an AI plan_updated event that creates a pipeline progress block.
+ * Call from console: __mockPlanPipeline()
+ */
+export async function mockPlanPipeline(): Promise<void> {
+  const { useStore } = await import("@/store/index");
+  const state = useStore.getState();
+  const sessionId = state.activeSessionId ?? Object.keys(state.sessions)[0];
+  if (!sessionId) { console.error("[mockPlanPipeline] No active session"); return; }
+
+  useStore.getState().syncPlanToPipeline(sessionId, {
+    version: 1,
+    explanation: "Recon Pipeline — target.example.com",
+    summary: { total: 6, completed: 3, in_progress: 1, pending: 2 },
+    steps: [
+      { step: "DNS Lookup — dig +short target.example.com", status: "completed" },
+      { step: "Subdomain Enum — subfinder -d target.example.com", status: "completed" },
+      { step: "HTTP Probe — httpx -l subdomains.txt -sc -title", status: "completed" },
+      { step: "Port Scan — nmap -sV --top-ports 1000", status: "in_progress" },
+      { step: "Tech Fingerprint — whatweb", status: "pending" },
+      { step: "JS Harvest (AI) — js_harvest {target}", status: "pending" },
+    ],
+    updated_at: new Date().toISOString(),
+  });
+  console.log("[mockPlanPipeline] Injected plan→pipeline block into timeline");
+}
+
+/**
+ * Showcase all timeline block types at once.
+ * Call from console: __mockShowAllBlocks()
+ */
+export async function mockShowAllBlocks(): Promise<void> {
+  await mockCommandBlock();
+  await mockPlanPipeline();
+  await mockToolExecutionBlocks();
+  console.log("[mockShowAllBlocks] All block types injected");
+}
+
+// =============================================================================
+// Full AI Plan Execution Demo (call from browser console)
+// =============================================================================
+
+/**
+ * Simulate the complete AI-driven plan execution flow with proper session routing.
+ * This mocks: started → text → update_plan → tool executions → completed.
+ * Both the right chat and left PlanDetailView will update.
+ * Call from console: __mockFullPlan()
+ */
+export async function mockFullPlanExecution(): Promise<void> {
+  const { useStore } = await import("@/store/index");
+  const state = useStore.getState();
+  const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  // Resolve the AI session ID from the active conversation
+  const convId = state.activeConversationId;
+  const conv = convId ? state.conversations[convId] : null;
+  const aiSessionId = conv?.aiSessionId;
+  const terminalSessionId = state.activeSessionId ?? Object.keys(state.sessions)[0];
+
+  if (!aiSessionId) {
+    console.error("[mockFullPlan] No active conversation with AI session. Open a chat first.");
+    return;
+  }
+
+  console.log("[mockFullPlan] Starting with AI session:", aiSessionId, "terminal:", terminalSessionId);
+
+  // Helper to emit AI event with proper session_id
+  const emit = (event: AiEventType) =>
+    dispatchMockEvent("ai-event", { ...event, session_id: aiSessionId });
+
+  const turnId = `mock-plan-${Date.now()}`;
+  const reqId = (name: string) => `mock-${name}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+  // --- 1. AI turn starts ---
+  await emit({ type: "started", turn_id: turnId });
+  await delay(300);
+
+  // --- 2. AI sends planning text ---
+  const planText = "I'll create a task plan and execute each step.\n\n";
+  await emit({ type: "text_delta", delta: planText, accumulated: planText });
+  await delay(400);
+
+  // --- 3. AI calls update_plan to create the plan (step 1 in_progress) ---
+  const planReqId1 = reqId("update-plan-1");
+  await emit({ type: "tool_request", tool_name: "update_plan", args: { explanation: "System reconnaissance", steps: [{ step: "Check system information", status: "in_progress" }, { step: "List files in workspace", status: "pending" }, { step: "Show network configuration", status: "pending" }] }, request_id: planReqId1 });
+  await delay(200);
+
+  // plan_updated event (emitted by the backend when update_plan runs)
+  dispatchMockEvent("ai-event", { type: "plan_updated", session_id: aiSessionId, version: 1, explanation: "System reconnaissance", steps: [{ step: "Check system information", status: "in_progress" }, { step: "List files in workspace", status: "pending" }, { step: "Show network configuration", status: "pending" }], summary: { total: 3, completed: 0, in_progress: 1, pending: 2 } });
+  await delay(100);
+
+  await emit({ type: "tool_result", tool_name: "update_plan", result: "Plan created with 3 steps", success: true, request_id: planReqId1 });
+  await delay(300);
+
+  // --- 4. Step 1: run_command uname -a ---
+  const cmdReqId1 = reqId("run-cmd-1");
+  await emit({ type: "tool_request", tool_name: "run_command", args: { command: "uname -a && sw_vers" }, request_id: cmdReqId1 });
+  await delay(500);
+
+  // Streaming output
+  dispatchMockEvent("ai-event", { type: "tool_output_chunk", session_id: aiSessionId, request_id: cmdReqId1, tool_name: "run_command", chunk: "Darwin MacBook-Pro.local 24.4.0 Darwin Kernel Version 24.4.0\n", stream: "stdout" });
+  await delay(300);
+  dispatchMockEvent("ai-event", { type: "tool_output_chunk", session_id: aiSessionId, request_id: cmdReqId1, tool_name: "run_command", chunk: "ProductName:    macOS\nProductVersion: 15.4\nBuildVersion:   24E5238a\n", stream: "stdout" });
+  await delay(300);
+
+  await emit({ type: "tool_result", tool_name: "run_command", result: "Darwin MacBook-Pro.local 24.4.0 ...", success: true, request_id: cmdReqId1 });
+  await delay(200);
+
+  // --- 5. Mark step 1 complete, step 2 in_progress ---
+  const planReqId2 = reqId("update-plan-2");
+  await emit({ type: "tool_request", tool_name: "update_plan", args: {}, request_id: planReqId2 });
+  await delay(100);
+
+  dispatchMockEvent("ai-event", { type: "plan_updated", session_id: aiSessionId, version: 2, explanation: "System reconnaissance", steps: [{ step: "Check system information", status: "completed" }, { step: "List files in workspace", status: "in_progress" }, { step: "Show network configuration", status: "pending" }], summary: { total: 3, completed: 1, in_progress: 1, pending: 1 } });
+  await delay(100);
+
+  await emit({ type: "tool_result", tool_name: "update_plan", result: "Plan updated", success: true, request_id: planReqId2 });
+  await delay(300);
+
+  // --- 6. Step 2: list_files ---
+  const listReqId = reqId("list-files");
+  await emit({ type: "tool_request", tool_name: "list_files", args: { path: "." }, request_id: listReqId });
+  await delay(600);
+
+  await emit({ type: "tool_result", tool_name: "list_files", result: "backend/\nfrontend/\npackage.json\nCargo.toml\nREADME.md\njustfile\n... (196 entries)", success: true, request_id: listReqId });
+  await delay(200);
+
+  // --- 7. Mark step 2 complete, step 3 in_progress ---
+  const planReqId3 = reqId("update-plan-3");
+  await emit({ type: "tool_request", tool_name: "update_plan", args: {}, request_id: planReqId3 });
+  await delay(100);
+
+  dispatchMockEvent("ai-event", { type: "plan_updated", session_id: aiSessionId, version: 3, explanation: "System reconnaissance", steps: [{ step: "Check system information", status: "completed" }, { step: "List files in workspace", status: "completed" }, { step: "Show network configuration", status: "in_progress" }], summary: { total: 3, completed: 2, in_progress: 1, pending: 0 } });
+  await delay(100);
+
+  await emit({ type: "tool_result", tool_name: "update_plan", result: "Plan updated", success: true, request_id: planReqId3 });
+  await delay(300);
+
+  // --- 8. Step 3: run_command ifconfig ---
+  const cmdReqId2 = reqId("run-cmd-2");
+  await emit({ type: "tool_request", tool_name: "run_command", args: { command: "ifconfig en0" }, request_id: cmdReqId2 });
+  await delay(500);
+
+  dispatchMockEvent("ai-event", { type: "tool_output_chunk", session_id: aiSessionId, request_id: cmdReqId2, tool_name: "run_command", chunk: "en0: flags=8863<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n\tinet 192.168.0.69 netmask 0xffffff00 broadcast 192.168.0.255\n", stream: "stdout" });
+  await delay(300);
+
+  await emit({ type: "tool_result", tool_name: "run_command", result: "en0: flags=8863 ... inet 192.168.0.69", success: true, request_id: cmdReqId2 });
+  await delay(200);
+
+  // --- 9. Mark all steps complete ---
+  const planReqId4 = reqId("update-plan-4");
+  await emit({ type: "tool_request", tool_name: "update_plan", args: {}, request_id: planReqId4 });
+  await delay(100);
+
+  dispatchMockEvent("ai-event", { type: "plan_updated", session_id: aiSessionId, version: 4, explanation: "System reconnaissance", steps: [{ step: "Check system information", status: "completed" }, { step: "List files in workspace", status: "completed" }, { step: "Show network configuration", status: "completed" }], summary: { total: 3, completed: 3, in_progress: 0, pending: 0 } });
+  await delay(100);
+
+  await emit({ type: "tool_result", tool_name: "update_plan", result: "All steps completed", success: true, request_id: planReqId4 });
+  await delay(300);
+
+  // --- 10. AI sends summary text ---
+  const summary = "All 3 steps completed:\n\n1. **System Info**: macOS 15.4 (Darwin 24.4.0)\n2. **Files**: 196 entries in workspace (Rust + React project)\n3. **Network**: en0 active at 192.168.0.69";
+  const words = summary.split(" ");
+  let accumulated = planText;
+  for (const word of words) {
+    const delta = accumulated.length > planText.length ? ` ${word}` : word;
+    accumulated += delta;
+    await emit({ type: "text_delta", delta, accumulated });
+    await delay(30);
+  }
+  await delay(200);
+
+  // --- 11. Turn complete ---
+  await emit({ type: "completed", response: accumulated, tokens_used: 3200, duration_ms: 12000, input_tokens: 6400, output_tokens: 800 });
+
+  console.log("[mockFullPlan] Complete! Check right chat for plan card, click it to see left pane detail.");
+}
+
+// =============================================================================
+// AI run_command Approval Demo (call from browser console)
+// Call from console: __mockRunCommand()
+// =============================================================================
+
+/**
+ * Simulate AI executing multiple tool calls (auto-approved) that appear as
+ * compact badges in the right chat and as ToolExecutionCards in the center
+ * ToolDetailView. Click the badges to navigate.
+ * Call from console: __mockRunCommand()
+ */
+export async function mockRunCommandApproval(): Promise<void> {
+  const { useStore } = await import("@/store/index");
+  const state = useStore.getState();
+  const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  const convId = state.activeConversationId;
+  const conv = convId ? state.conversations[convId] : null;
+  const aiSessionId = conv?.aiSessionId;
+
+  if (!aiSessionId) {
+    console.error("[mockRunCommand] No active conversation with AI session. Open a chat first.");
+    return;
+  }
+
+  console.log("[mockRunCommand] Starting with AI session:", aiSessionId);
+
+  const emit = (event: AiEventType) =>
+    dispatchMockEvent("ai-event", { ...event, session_id: aiSessionId });
+
+  const turnId = `mock-runcmd-${Date.now()}`;
+  const reqId = (name: string) => `mock-${name}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+  // 1. AI turn starts
+  await emit({ type: "started", turn_id: turnId });
+  await delay(200);
+
+  // 2. AI types some text
+  const text = "Let me check your system configuration.\n\n";
+  let accumulated = "";
+  for (const word of text.split(" ")) {
+    const delta = accumulated ? ` ${word}` : word;
+    accumulated += delta;
+    await emit({ type: "text_delta", delta, accumulated });
+    await delay(20);
+  }
+  await delay(200);
+
+  // 3. Tool call 1: run_command (auto-approved)
+  const cmd1Id = reqId("cmd1");
+  await emit({
+    type: "tool_auto_approved",
+    request_id: cmd1Id,
+    tool_name: "run_command",
+    args: { command: "uname -a" },
+    reason: "read-only command",
+  });
+  await delay(300);
+
+  dispatchMockEvent("ai-event", {
+    type: "tool_output_chunk",
+    session_id: aiSessionId,
+    request_id: cmd1Id,
+    tool_name: "run_command",
+    chunk: "Darwin MacBook-Pro.local 24.4.0 Darwin Kernel Version 24.4.0: root:xnu-11417.401.54~1/RELEASE_ARM64_T6031 arm64\n",
+    stream: "stdout",
+  });
+  await delay(300);
+
+  await emit({
+    type: "tool_result",
+    request_id: cmd1Id,
+    tool_name: "run_command",
+    result: "Darwin MacBook-Pro.local 24.4.0 Darwin Kernel Version 24.4.0",
+    success: true,
+  });
+  await delay(200);
+
+  // 4. Tool call 2: read_file (auto-approved)
+  const readId = reqId("read");
+  await emit({
+    type: "tool_auto_approved",
+    request_id: readId,
+    tool_name: "read_file",
+    args: { path: "/etc/hostname" },
+    reason: "read-only tool",
+  });
+  await delay(300);
+  await emit({
+    type: "tool_result",
+    request_id: readId,
+    tool_name: "read_file",
+    result: "MacBook-Pro.local",
+    success: true,
+  });
+  await delay(200);
+
+  // 5. Tool call 3: run_command (auto-approved)
+  const cmd2Id = reqId("cmd2");
+  await emit({
+    type: "tool_auto_approved",
+    request_id: cmd2Id,
+    tool_name: "run_command",
+    args: { command: "df -h | head -5" },
+    reason: "read-only command",
+  });
+  await delay(300);
+
+  dispatchMockEvent("ai-event", {
+    type: "tool_output_chunk",
+    session_id: aiSessionId,
+    request_id: cmd2Id,
+    tool_name: "run_command",
+    chunk: "Filesystem       Size   Used  Avail Capacity  Mounted on\n/dev/disk3s1s1  460Gi  320Gi  140Gi    70%    /\n",
+    stream: "stdout",
+  });
+  await delay(200);
+
+  await emit({
+    type: "tool_result",
+    request_id: cmd2Id,
+    tool_name: "run_command",
+    result: "Filesystem       Size   Used  Avail Capacity  Mounted on\n/dev/disk3s1s1  460Gi  320Gi  140Gi    70%    /",
+    success: true,
+  });
+  await delay(200);
+
+  // 6. AI summary text
+  const summary = "\n\nYour system is running macOS on Apple Silicon (arm64). Disk usage is at 70%.";
+  for (const word of summary.split(" ")) {
+    const delta = accumulated.length > 0 ? ` ${word}` : word;
+    accumulated += delta;
+    await emit({ type: "text_delta", delta, accumulated });
+    await delay(20);
+  }
+
+  await emit({
+    type: "completed",
+    response: accumulated,
+    tokens_used: 800,
+    duration_ms: 4000,
+    input_tokens: 1200,
+    output_tokens: 200,
+  });
+
+  console.log("[mockRunCommand] Done! You should see tool badges (Shell, Read, Shell) in the right chat. Click them to open ToolDetailView in the center.");
+}
+
+// =============================================================================
+// Pipeline Fan-Out Demo (call from browser console)
+// =============================================================================
+
+/**
+ * Simulate a pipeline execution with data-flow and fan-out.
+ * Call from console: __mockPipelineFanOut()
+ */
+export async function simulatePipelineFanOut(): Promise<void> {
+  const { useStore } = await import("@/store/index");
+  const state = useStore.getState();
+  const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  const sessionId = state.activeSessionId ?? Object.keys(state.sessions)[0];
+  if (!sessionId) { console.error("[mockPipelineFanOut] No active session found. Sessions:", Object.keys(state.sessions)); return; }
+  console.log("[mockPipelineFanOut] Using session:", sessionId);
+
+  const now = () => new Date().toISOString();
+
+  const mkStep = (id: string, name: string, cmd: string) => ({
+    stepId: id, name, command: cmd, status: "pending" as const,
+  });
+
+  const execution = {
+    pipelineId: "recon-basic",
+    pipelineName: "Basic Reconnaissance",
+    target: "example.com",
+    steps: [
+      mkStep("s1", "DNS Lookup", "dig +short example.com"),
+      mkStep("s2", "Subdomain Enumeration", "subfinder -d example.com -silent"),
+      mkStep("s3", "HTTP Probe", "httpx -l subdomains.txt -silent"),
+      mkStep("s4", "Port Scan", "nmap -sV -T4 {target}"),
+      mkStep("s5", "Tech Detection", "whatweb {target}"),
+      mkStep("s6", "JS Harvest (AI)", "AI: js_harvest {target}"),
+    ],
+    status: "running" as const,
+    startedAt: now(),
+  };
+
+  state.startPipelineExecution(sessionId, execution);
+  const tl = useStore.getState().timelines[sessionId] ?? [];
+  const blockId = tl[tl.length - 1]?.id ?? "";
+  console.log("[mockPipelineFanOut] Block ID:", blockId, "Timeline length:", tl.length, "Last block type:", tl[tl.length - 1]?.type);
+
+  const up = (stepId: string, u: Record<string, unknown>) =>
+    useStore.getState().updatePipelineStep(sessionId, blockId, stepId, u);
+
+  // Step 1: DNS
+  up("s1", { status: "running", startedAt: now() });
+  await delay(600);
+  up("s1", { status: "success", finishedAt: now(), durationMs: 580, output: "93.184.216.34\n2606:2800:220:1:248:1893:25c8:1946" });
+
+  // Step 2: Subdomain Enum — discovers 4 subs
+  up("s2", { status: "running", startedAt: now() });
+  await delay(1200);
+  const subs = ["www.example.com", "api.example.com", "cdn.example.com", "admin.example.com"];
+  up("s2", {
+    status: "success", finishedAt: now(), durationMs: 3200,
+    output: subs.join("\n"),
+    discoveredTargets: subs,
+  });
+
+  // Step 3: HTTP Probe — fans out on subs, discovers live hosts
+  up("s3", { status: "running", startedAt: now(), discoveredTargets: subs });
+  await delay(800);
+  const liveHosts = ["https://www.example.com", "https://api.example.com", "https://admin.example.com"];
+  up("s3", {
+    status: "success", finishedAt: now(), durationMs: 2100,
+    output: liveHosts.join("\n"),
+    discoveredTargets: liveHosts,
+    subTargets: [
+      { target: "www.example.com", status: "success" as const, durationMs: 450 },
+      { target: "api.example.com", status: "success" as const, durationMs: 380 },
+      { target: "cdn.example.com", status: "failed" as const, durationMs: 1200 },
+      { target: "admin.example.com", status: "success" as const, durationMs: 520 },
+    ],
+  });
+
+  // Step 4: Port Scan — fans out on live hosts
+  up("s4", { status: "running", startedAt: now(), discoveredTargets: liveHosts });
+  await delay(1500);
+  up("s4", {
+    status: "success", finishedAt: now(), durationMs: 12400,
+    output: "www: 80,443\napi: 80,443,8080\nadmin: 443",
+    subTargets: [
+      { target: "https://www.example.com", status: "success" as const, durationMs: 4200 },
+      { target: "https://api.example.com", status: "success" as const, durationMs: 3800 },
+      { target: "https://admin.example.com", status: "success" as const, durationMs: 4400 },
+    ],
+  });
+
+  // Step 5: Tech Detection
+  up("s5", { status: "running", startedAt: now() });
+  await delay(900);
+  up("s5", {
+    status: "success", finishedAt: now(), durationMs: 5600,
+    output: "www: Nginx, React, Vite\napi: Nginx, Express, Node.js\nadmin: Nginx, Vue.js",
+    subTargets: [
+      { target: "https://www.example.com", status: "success" as const, durationMs: 1800 },
+      { target: "https://api.example.com", status: "success" as const, durationMs: 1600 },
+      { target: "https://admin.example.com", status: "success" as const, durationMs: 2200 },
+    ],
+  });
+
+  // Step 6: JS Harvest (AI)
+  up("s6", { status: "running", startedAt: now() });
+  await delay(2000);
+  up("s6", {
+    status: "success", finishedAt: now(), durationMs: 18500,
+    output: "[AI] Collected 58 JS files (2.8MB) + 6 source maps across 3 targets",
+    subTargets: [
+      { target: "https://www.example.com", status: "success" as const, durationMs: 8500 },
+      { target: "https://api.example.com", status: "success" as const, durationMs: 4200 },
+      { target: "https://admin.example.com", status: "success" as const, durationMs: 5800 },
+    ],
+  });
+
+  useStore.getState().completePipelineExecution(sessionId, blockId, "completed");
+}
+
 // =============================================================================
 // Mock Settings Accessors (for e2e testing)
 // =============================================================================
@@ -986,6 +1858,33 @@ export function setupMocks(): void {
         __MOCK_SIMULATE_AI_RESPONSE__?: typeof simulateAiResponse;
       }
     ).__MOCK_SIMULATE_AI_RESPONSE__ = simulateAiResponse;
+    (
+      window as unknown as {
+        __mockJsHarvest?: typeof simulateJsHarvest;
+      }
+    ).__mockJsHarvest = simulateJsHarvest;
+    (
+      window as unknown as {
+        __mockPipelineFanOut?: typeof simulatePipelineFanOut;
+      }
+    ).__mockPipelineFanOut = simulatePipelineFanOut;
+
+    // Expose per-block-type mock functions for visual QA
+    (window as unknown as {
+      __mockShowAllBlocks?: typeof mockShowAllBlocks;
+      __mockCommandBlock?: typeof mockCommandBlock;
+      __mockPipelineBlock?: typeof mockPipelineProgressBlock;
+      __mockSubAgentBlocks?: typeof mockSubAgentBlocks;
+      __mockToolExecutionBlocks?: typeof mockToolExecutionBlocks;
+      __mockPlanPipeline?: typeof mockPlanPipeline;
+    }).__mockShowAllBlocks = mockShowAllBlocks;
+    (window as unknown as { __mockCommandBlock?: typeof mockCommandBlock }).__mockCommandBlock = mockCommandBlock;
+    (window as unknown as { __mockPipelineBlock?: typeof mockPipelineProgressBlock }).__mockPipelineBlock = mockPipelineProgressBlock;
+    (window as unknown as { __mockPlanPipeline?: typeof mockPlanPipeline }).__mockPlanPipeline = mockPlanPipeline;
+    (window as unknown as { __mockSubAgentBlocks?: typeof mockSubAgentBlocks }).__mockSubAgentBlocks = mockSubAgentBlocks;
+    (window as unknown as { __mockToolExecutionBlocks?: typeof mockToolExecutionBlocks }).__mockToolExecutionBlocks = mockToolExecutionBlocks;
+    (window as unknown as { __mockFullPlan?: typeof mockFullPlanExecution }).__mockFullPlan = mockFullPlanExecution;
+    (window as unknown as { __mockRunCommand?: typeof mockRunCommandApproval }).__mockRunCommand = mockRunCommandApproval;
 
     // Expose command simulation functions for e2e testing
     (
@@ -1350,7 +2249,18 @@ export function setupMocks(): void {
         const payload = args as { sessionId: string; prompt: string };
         const state = mockSessionAiState.get(payload.sessionId);
         if (state) {
-          state.conversationLength += 2; // User message + AI response
+          state.conversationLength += 2;
+        }
+        const promptLower = (payload.prompt || "").toLowerCase();
+        if (promptLower.includes("js") || promptLower.includes("javascript") || promptLower.includes("analyze")) {
+          setTimeout(() => simulateJsHarvest(), 300);
+        } else {
+          setTimeout(() => {
+            simulateAiResponse(
+              "I can help with that. What would you like me to do? Try asking me to 'analyze JS files' to see the JS Analyzer sub-agent in action.",
+              30
+            );
+          }, 300);
         }
         return `mock-turn-id-${Date.now()}`;
       }
@@ -1800,16 +2710,275 @@ export function setupMocks(): void {
         return undefined;
 
       // =========================================================================
-      // Default: Unhandled command
+      // Pentest panels (return valid empty structures)
+      // =========================================================================
+      case "target_list":
+        return { targets: [], groups: ["default"] };
+      case "target_clear_all":
+      case "target_add":
+      case "target_remove":
+        return undefined;
+      case "findings_list":
+        return { findings: [] };
+      case "findings_add":
+      case "findings_delete":
+      case "findings_update":
+      case "findings_add_evidence":
+      case "findings_remove_evidence":
+      case "findings_deduplicate":
+      case "findings_import_parsed":
+        return undefined;
+      case "findings_for_host":
+        return [];
+      case "method_list_templates":
+      case "method_list_projects":
+        return [];
+      case "method_start_project":
+      case "method_load_project":
+      case "method_delete_project":
+      case "method_update_item":
+        return undefined;
+      case "topo_list":
+        return [];
+      case "topo_save":
+      case "topo_delete":
+      case "topo_diff":
+        return undefined;
+      case "wiki_list":
+        return [];
+      case "pipeline_list":
+        return [
+          {
+            id: "recon-basic",
+            name: "Basic Reconnaissance",
+            description: "DNS, subdomains, HTTP probe, ports, tech detection, JS harvest",
+            steps: [
+              { id: "dns_lookup", command_template: "dig +short {target}", tool_name: "dig", args: [] },
+              { id: "subdomain_enum", command_template: "subfinder -d {target} -silent", tool_name: "subfinder", args: [] },
+              { id: "http_probe", command_template: "echo {target} | httpx -silent", tool_name: "httpx", args: [] },
+              { id: "port_scan", command_template: "nmap -sV -T4 {target}", tool_name: "nmap", args: [] },
+              { id: "tech_detect", command_template: "whatweb {target}", tool_name: "whatweb", args: [] },
+              { id: "js_harvest", command_template: "", tool_name: "js_harvest", args: [] },
+            ],
+          },
+        ];
+      case "pipeline_save":
+        return "mock-pipeline-id";
+      case "pipeline_delete":
+        return undefined;
+      case "audit_list":
+        return [];
+      case "audit_clear":
+      case "audit_log":
+        return undefined;
+      case "notes_list":
+        return [];
+      case "notes_add":
+      case "notes_update":
+      case "notes_delete":
+        return undefined;
+      case "vault_list":
+        return [];
+      case "vault_get_value":
+        return "";
+      case "pentest_scan_tools":
+        return { success: true, tools: [] };
+      case "pentest_get_categories":
+        return [];
+      case "pentest_get_config":
+        return {};
+      case "pentest_check_env_setup":
+        return { ready: false, missing: [] };
+      case "pentest_check_runtime":
+        return { ready: false, version: null };
+      case "pentest_resolve_python_path":
+      case "pentest_resolve_java_path":
+        return "";
+      case "pentest_read_tool_config":
+        return "{}";
+      case "pentest_list_dep_files":
+        return [];
+      case "pentest_check_tool_updates":
+        return [];
+      case "pentest_browser_close":
+      case "pentest_install_runtime":
+      case "pentest_open_directory":
+      case "pentest_save_tool_config":
+      case "pentest_uninstall_tool_files":
+      case "pentest_git_clone_tool":
+      case "pentest_rename_tool_dir":
+        return undefined;
+      case "zap_api_call":
+        return {};
+      case "zap_status":
+        return { status: "stopped", port: 8090 };
+      case "zap_detect_path":
+        return null;
+      case "check_recon_tools_cmd":
+        return { tools: [] };
+      case "wordlist_list":
+      case "wordlist_preview":
+        return [];
+      case "wordlist_import":
+      case "wordlist_delete":
+      case "wordlist_merge":
+        return undefined;
+      case "wordlist_deduplicate":
+        return null;
+      case "wordlist_path":
+        return "";
+      case "intel_get_cached":
+      case "intel_fetch":
+      case "intel_fetch_page":
+      case "intel_search":
+      case "intel_search_remote":
+        return [];
+      case "intel_list_feeds":
+        return [];
+      case "intel_toggle_feed":
+      case "intel_delete_feed":
+      case "intel_add_feed":
+        return undefined;
+      case "write_frontend_log":
+        return undefined;
+      case "unwatch_all_files":
+        return undefined;
+
+      // =========================================================================
+      // Default: Unhandled command — return safe fallback
       // =========================================================================
       default:
-        // Don't warn for plugin commands we might not have implemented yet
         if (!cmd.startsWith("plugin:")) {
           console.warn(`[Mock IPC] Unhandled command: ${cmd}`, args);
         }
+        if (cmd.endsWith("_list") || cmd.endsWith("_list_feeds")) return [];
         return undefined;
     }
   });
 
-  console.log("[Mocks] Tauri IPC mocks initialized successfully");
+  console.log("[Mocks] Tauri IPC mocks initialized successfully (v2-patched)");
+
+  // Dev-only: expose sub-agent demo on window for testing multi-agent UI
+  let demoRunCount = 0;
+  (window as unknown as Record<string, unknown>).demoSubAgents = () => {
+    import("@/store/index").then(({ useStore }) => {
+      const store = useStore.getState();
+      const sessionId = store.activeSessionId;
+      if (!sessionId) {
+        console.warn("[Demo] No active session");
+        return;
+      }
+      demoRunCount++;
+      const runId = demoRunCount;
+
+      const convId = store.activeConversationId;
+      const getConv = () => convId ? useStore.getState().conversations[convId] : null;
+
+      const addUserMsg = (text: string) => {
+        const conv = getConv();
+        if (!conv || !convId) return;
+        const msg = {
+          id: `demo-user-${Date.now()}`,
+          sessionId,
+          role: "user" as const,
+          content: text,
+          timestamp: Date.now(),
+        };
+        useStore.setState((s) => {
+          const c = s.conversations[convId];
+          if (c) c.messages.push(msg);
+        });
+      };
+
+      // addAssistantMsg removed — sub-agent demo uses direct store manipulation
+
+      const taskSets = [
+        [
+          { id: "researcher", name: "Researcher", task: "Searching codebase for authentication patterns and JWT usage" },
+          { id: "coder", name: "Coder", task: "Implementing JWT token validation middleware with refresh logic" },
+          { id: "reviewer", name: "Reviewer", task: "Reviewing code changes for security vulnerabilities" },
+        ],
+        [
+          { id: "analyst", name: "Analyst", task: "Analyzing API endpoint performance bottlenecks" },
+          { id: "coder", name: "Coder", task: "Optimizing database queries and adding connection pooling" },
+        ],
+        [
+          { id: "researcher", name: "Researcher", task: "Investigating memory leak in worker threads" },
+          { id: "coder", name: "Coder", task: "Fixing resource cleanup in async handlers" },
+          { id: "explorer", name: "Explorer", task: "Scanning for similar patterns in related modules" },
+          { id: "reviewer", name: "Reviewer", task: "Verifying fix doesn't introduce regressions" },
+        ],
+      ];
+      const agents = taskSets[(runId - 1) % taskSets.length];
+
+      const tasks = ["Help me add JWT authentication to the API endpoints", "Optimize the database layer for better performance", "Fix the memory leak in the worker pool"];
+      console.log(`[Demo] Run #${runId} - Starting ${agents.length} sub-agents for session:`, sessionId);
+
+      addUserMsg(tasks[(runId - 1) % tasks.length]);
+
+      setTimeout(() => {
+        useStore.getState().updateAgentStreaming(sessionId, "I'll help you implement JWT authentication. Let me coordinate multiple agents to handle this efficiently.\n\n");
+        useStore.getState().setAgentResponding(sessionId, true);
+      }, 500);
+
+      agents.forEach((a, i) => {
+        setTimeout(() => {
+          useStore.getState().startSubAgent(sessionId, {
+            agentId: a.id,
+            agentName: a.name,
+            parentRequestId: `demo-req-${runId}-${a.id}`,
+            task: a.task,
+            depth: 1,
+          });
+          console.log(`[Demo] Started: ${a.name}`);
+        }, 1000 + i * 1200);
+
+        setTimeout(() => {
+          useStore.getState().addSubAgentToolCall(sessionId, `demo-req-${runId}-${a.id}`, {
+            id: `tool-${runId}-${a.id}-1`,
+            name: a.id === "researcher" ? "semantic_search" : a.id === "coder" ? "write_file" : "read_file",
+            args: a.id === "researcher"
+              ? { query: "JWT authentication middleware patterns" }
+              : a.id === "coder"
+                ? { path: "src/middleware/auth.ts", content: "..." }
+                : { path: "src/middleware/auth.ts" },
+          });
+        }, 1000 + i * 1200 + 1500);
+
+        setTimeout(() => {
+          useStore.getState().addSubAgentToolCall(sessionId, `demo-req-${runId}-${a.id}`, {
+            id: `tool-${runId}-${a.id}-2`,
+            name: a.id === "researcher" ? "read_file" : a.id === "coder" ? "run_command" : "semantic_search",
+            args: a.id === "researcher"
+              ? { path: "src/config/auth.ts" }
+              : a.id === "coder"
+                ? { command: "npm test -- auth" }
+                : { query: "common JWT security pitfalls" },
+          });
+        }, 1000 + i * 1200 + 2500);
+
+        setTimeout(() => {
+          useStore.getState().completeSubAgentToolCall(sessionId, `demo-req-${runId}-${a.id}`, `tool-${runId}-${a.id}-1`, true, "Success");
+          useStore.getState().completeSubAgentToolCall(sessionId, `demo-req-${runId}-${a.id}`, `tool-${runId}-${a.id}-2`, true, "Success");
+        }, 1000 + i * 1200 + 3500);
+
+        setTimeout(() => {
+          useStore.getState().completeSubAgent(sessionId, `demo-req-${runId}-${a.id}`, {
+            response: a.id === "researcher"
+              ? "Found 5 files with authentication patterns. Current implementation uses session-based auth in src/middleware/session.ts."
+              : a.id === "coder"
+                ? "Created JWT middleware in src/middleware/auth.ts with access/refresh token support. All 12 tests passing."
+                : "Code review passed. No security vulnerabilities found. Recommended adding rate limiting to token refresh endpoint.",
+            durationMs: 4000 + i * 800,
+          });
+          console.log(`[Demo] Completed: ${a.name}`);
+        }, 1000 + i * 1200 + 5000);
+      });
+
+      setTimeout(() => {
+        useStore.getState().updateAgentStreaming(sessionId, "\n\nAll agents have completed their tasks. Here's a summary:\n\n- **Researcher**: Analyzed existing auth patterns across 5 files\n- **Coder**: Implemented JWT middleware with access/refresh tokens (12 tests passing)\n- **Reviewer**: Security review passed, suggested rate limiting for token refresh\n\nThe JWT authentication is now integrated into your API endpoints.");
+        useStore.getState().setAgentResponding(sessionId, false);
+      }, 9000);
+    });
+  };
 }

@@ -58,13 +58,20 @@ export const handleSubAgentStarted: EventHandler<{
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
-  ctx.getState().startSubAgent(ctx.sessionId, {
+  const state = ctx.getState();
+  state.startSubAgent(ctx.sessionId, {
     agentId: event.agent_id,
     agentName: event.agent_name,
     parentRequestId: event.parent_request_id,
     task: event.task,
     depth: event.depth,
   });
+
+  // Auto-switch to tool-detail view so sub-agent activity is visible
+  const session = state.sessions[ctx.sessionId];
+  if (session && session.detailViewMode !== "plan") {
+    state.setDetailViewMode(ctx.sessionId, "tool-detail");
+  }
 };
 
 /**
@@ -110,6 +117,25 @@ export const handleSubAgentToolResult: EventHandler<{
       event.success,
       event.result
     );
+};
+
+/**
+ * Handle sub-agent streaming text delta.
+ */
+export const handleSubAgentTextDelta: EventHandler<{
+  type: "sub_agent_text_delta";
+  agent_id: string;
+  delta: string;
+  accumulated: string;
+  parent_request_id: string;
+  session_id: string;
+  seq?: number;
+}> = (event, ctx) => {
+  ctx.getState().updateSubAgentStreamingText(
+    ctx.sessionId,
+    event.parent_request_id,
+    event.accumulated,
+  );
 };
 
 /**

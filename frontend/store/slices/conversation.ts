@@ -12,6 +12,7 @@ export interface ChatToolCall {
   args: string;
   result?: string;
   success?: boolean;
+  requestId?: string;
 }
 
 export interface ChatMessage {
@@ -23,6 +24,8 @@ export interface ChatMessage {
   error?: string;
   toolCalls?: ChatToolCall[];
   thinking?: string;
+  /** Content offset when the first tool call was added (for interleaved rendering) */
+  toolCallsContentOffset?: number;
 }
 
 export interface ChatConversation {
@@ -214,7 +217,10 @@ export const createConversationSlice: SliceCreator<ConversationSlice> = (set, ge
       if (!conv) return;
       const last = conv.messages[conv.messages.length - 1];
       if (last?.role === "assistant") {
-        if (!last.toolCalls) last.toolCalls = [];
+        if (!last.toolCalls) {
+          last.toolCalls = [];
+          last.toolCallsContentOffset = last.content.length;
+        }
         last.toolCalls.push(toolCall);
       }
     }),

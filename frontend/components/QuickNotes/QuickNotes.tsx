@@ -45,7 +45,7 @@ export function QuickNotes({
         entityId,
         projectPath: getProjectPath(),
       });
-      setNotes(list);
+      setNotes(Array.isArray(list) ? list : []);
     } catch {
       setNotes([]);
     }

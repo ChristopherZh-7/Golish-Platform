@@ -1,22 +1,29 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import {
+  ArrowDownRight,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Circle,
   Loader2,
-  AlertTriangle,
   SkipForward,
-  Play,
+  AlertTriangle,
   Target,
-  Clock,
-  ChevronRight,
-  ChevronDown,
 } from "lucide-react";
 import { stripAllAnsi } from "@/lib/ansi";
 import { cn } from "@/lib/utils";
 import type { PipelineExecution, PipelineStepExecution, PipelineStepStatus } from "@/store";
+import { SubAgentCard } from "@/components/SubAgentCard";
+import { TaskGroupShell } from "@/components/TaskGroupShell";
 
 interface PipelineProgressBlockProps {
   execution: PipelineExecution;
+}
+
+const AI_STEP_PREFIXES = ["AI:", "ai:"];
+
+function isAiStep(step: PipelineStepExecution): boolean {
+  return AI_STEP_PREFIXES.some((p) => step.command.startsWith(p)) || step.name.includes("(AI)");
 }
 
 function StatusIcon({ status }: { status: PipelineStepStatus }) {
@@ -34,7 +41,7 @@ function StatusIcon({ status }: { status: PipelineStepStatus }) {
   }
 }
 
-function formatDuration(ms: number): string {
+function formatStepDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
   return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`;
@@ -46,11 +53,17 @@ function StepRow({ step, isExpanded, onToggle }: {
   onToggle: () => void;
 }) {
   const hasOutput = !!step.output?.trim();
-  const canExpand = hasOutput && (step.status === "success" || step.status === "failed");
+  const hasFanOut = (step.subTargets?.length ?? 0) > 1;
+  const hasSubAgents = (step.subAgents?.length ?? 0) > 0;
+  const canExpand =
+    hasSubAgents ||
+    ((hasOutput || hasFanOut) && (step.status === "success" || step.status === "failed"));
   const cleanOutput = useMemo(
     () => (step.output ? stripAllAnsi(step.output) : ""),
     [step.output],
   );
+  const ai = isAiStep(step);
+  const fanOutCount = step.discoveredTargets?.length ?? 0;
 
   return (
     <div>
@@ -75,13 +88,21 @@ function StepRow({ step, isExpanded, onToggle }: {
           step.status === "skipped" && "text-muted-foreground/40",
         )}>
           {step.name}
+          {fanOutCount > 1 && (
+            <span className="text-[9px] text-muted-foreground/50 ml-1">(x{fanOutCount})</span>
+          )}
         </span>
+        {ai && (
+          <span className="text-[9px] font-mono px-1 rounded bg-amber-500/15 text-amber-400 flex-shrink-0">
+            AI
+          </span>
+        )}
         <span className="text-[10px] text-muted-foreground/40 font-mono truncate flex-1">
-          {step.command}
+          {ai ? step.command.replace(/^AI:\s*/, "") : step.command}
         </span>
         {step.durationMs != null && (
           <span className="text-[9px] text-muted-foreground/40 tabular-nums flex-shrink-0">
-            {formatDuration(step.durationMs)}
+            {formatStepDuration(step.durationMs)}
           </span>
         )}
         {step.exitCode != null && step.exitCode !== 0 && (
@@ -96,11 +117,38 @@ function StepRow({ step, isExpanded, onToggle }: {
         )}
       </button>
 
-      {isExpanded && hasOutput && (
+      {isExpanded && hasFanOut && (
+        <div className="mx-3 mb-1 space-y-0.5">
+          {step.subTargets?.map((sub) => (
+            <div key={sub.target} className="flex items-center gap-2 px-2 py-0.5 text-[10px] rounded bg-muted/20">
+              <StatusIcon status={sub.status} />
+              <span className="font-mono text-muted-foreground/70 truncate">{sub.target}</span>
+              {sub.durationMs != null && (
+                <span className="ml-auto text-muted-foreground/40 tabular-nums">{formatStepDuration(sub.durationMs)}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {isExpanded && hasOutput && !hasFanOut && (
         <div className="mx-3 mb-2 rounded border border-border/10 bg-background/50 overflow-hidden">
           <pre className="max-h-[200px] overflow-auto p-2 text-[11px] font-mono text-foreground/70 whitespace-pre-wrap break-words leading-relaxed">
             {cleanOutput}
           </pre>
+        </div>
+      )}
+
+      {/* Nested sub-agents for AI steps (compact inline style) */}
+      {isExpanded && hasSubAgents && (
+        <div className="mx-3 mb-1.5 space-y-0.5">
+          {step.subAgents!.map((agent) => (
+            <SubAgentCard
+              key={agent.parentRequestId}
+              subAgent={agent}
+              compact
+            />
+          ))}
         </div>
       )}
     </div>
@@ -112,14 +160,31 @@ export const PipelineProgressBlock = memo(function PipelineProgressBlock({
 }: PipelineProgressBlockProps) {
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
 
-  const completedSteps = execution.steps.filter(
-    (s) => s.status === "success" || s.status === "failed" || s.status === "skipped"
-  ).length;
-  const totalSteps = execution.steps.length;
-  const progressPercent = totalSteps > 0 ? (completedSteps / totalSteps) * 100 : 0;
-  const isRunning = execution.status === "running";
-  const isCompleted = execution.status === "completed";
-  const isFailed = execution.status === "failed";
+  // Auto-expand AI steps when sub-agents are attached at runtime
+  useEffect(() => {
+    for (const step of execution.steps) {
+      if (step.subAgents && step.subAgents.length > 0) {
+        setExpandedSteps((prev) => {
+          if (prev.has(step.stepId)) return prev;
+          const next = new Set(prev);
+          next.add(step.stepId);
+          return next;
+        });
+      }
+    }
+  }, [execution.steps]);
+
+  const running = execution.steps.filter((s) => s.status === "running").length;
+  const completed = execution.steps.filter((s) => s.status === "success").length;
+  const failed = execution.steps.filter((s) => s.status === "failed").length;
+  const skipped = execution.steps.filter((s) => s.status === "skipped").length;
+
+  const totalDurationMs = useMemo(() => {
+    if (execution.finishedAt && execution.startedAt) {
+      return new Date(execution.finishedAt).getTime() - new Date(execution.startedAt).getTime();
+    }
+    return execution.steps.reduce((sum, s) => sum + (s.durationMs ?? 0), 0);
+  }, [execution.finishedAt, execution.startedAt, execution.steps]);
 
   const toggleStep = (stepId: string) => {
     setExpandedSteps((prev) => {
@@ -131,70 +196,44 @@ export const PipelineProgressBlock = memo(function PipelineProgressBlock({
   };
 
   return (
-    <div className="rounded-lg border border-border/30 bg-card/50 overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center gap-2 px-3 py-2 bg-muted/30">
-        <div className={cn(
-          "w-5 h-5 rounded flex items-center justify-center",
-          isRunning && "bg-blue-500/20",
-          isCompleted && "bg-emerald-500/20",
-          isFailed && "bg-red-500/20",
-          !isRunning && !isCompleted && !isFailed && "bg-muted-foreground/10",
-        )}>
-          {isRunning ? (
-            <Play className="w-3 h-3 text-blue-400" />
-          ) : isCompleted ? (
-            <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-          ) : isFailed ? (
-            <AlertTriangle className="w-3 h-3 text-red-400" />
-          ) : (
-            <Clock className="w-3 h-3 text-muted-foreground" />
-          )}
-        </div>
-        <span className="text-[11px] font-medium text-foreground/80">
-          {execution.pipelineName}
+    <TaskGroupShell
+      title={execution.pipelineName}
+      titleExtra={
+        <span className="flex items-center gap-1 text-muted-foreground/40">
+          <Target className="w-3 h-3" />
+          <span className="font-mono text-[10px]">{execution.target}</span>
         </span>
-        <div className="flex items-center gap-1 ml-auto">
-          <Target className="w-3 h-3 text-muted-foreground/60" />
-          <span className="text-[10px] text-muted-foreground font-mono">{execution.target}</span>
-        </div>
-      </div>
-
-      {/* Progress bar */}
-      <div className="h-[2px] bg-muted/30">
-        <div
-          className={cn(
-            "h-full transition-all duration-500",
-            isCompleted && "bg-emerald-400",
-            isFailed && "bg-red-400",
-            isRunning && "bg-blue-400",
-            !isRunning && !isCompleted && !isFailed && "bg-muted-foreground/30",
-          )}
-          style={{ width: `${progressPercent}%` }}
-        />
-      </div>
-
-      {/* Steps */}
+      }
+      running={running}
+      completed={completed}
+      failed={failed}
+      total={execution.steps.length}
+      totalDurationMs={totalDurationMs}
+      hasFailure={failed > 0}
+    >
       <div className="divide-y divide-border/10">
-        {execution.steps.map((step) => (
-          <StepRow
-            key={step.stepId}
-            step={step}
-            isExpanded={expandedSteps.has(step.stepId)}
-            onToggle={() => toggleStep(step.stepId)}
-          />
+        {execution.steps.map((step, idx) => (
+          <div key={step.stepId}>
+            <StepRow
+              step={step}
+              isExpanded={expandedSteps.has(step.stepId)}
+              onToggle={() => toggleStep(step.stepId)}
+            />
+            {(step.discoveredTargets?.length ?? 0) > 0 && idx < execution.steps.length - 1 && (
+              <div className="flex items-center gap-1.5 px-3 py-0.5 text-[9px] text-cyan-400/60">
+                <ArrowDownRight className="w-2.5 h-2.5" />
+                <span className="font-mono">
+                  {step.discoveredTargets!.length} target{step.discoveredTargets!.length > 1 ? "s" : ""} &rarr;
+                </span>
+                <span className="truncate text-muted-foreground/40">
+                  {step.discoveredTargets!.slice(0, 3).join(", ")}
+                  {step.discoveredTargets!.length > 3 && ` +${step.discoveredTargets!.length - 3}`}
+                </span>
+              </div>
+            )}
+          </div>
         ))}
       </div>
-
-      {/* Footer */}
-      <div className="flex items-center gap-2 px-3 py-1.5 bg-muted/20 text-[10px] text-muted-foreground/50">
-        <span>{completedSteps}/{totalSteps} steps</span>
-        {execution.finishedAt && execution.startedAt && (
-          <span className="ml-auto">
-            {formatDuration(new Date(execution.finishedAt).getTime() - new Date(execution.startedAt).getTime())}
-          </span>
-        )}
-      </div>
-    </div>
+    </TaskGroupShell>
   );
 });

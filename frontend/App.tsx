@@ -139,11 +139,14 @@ import { shellIntegrationInstall, shellIntegrationStatus } from "./lib/tauri";
 import { clearConversation, restoreSession, useStore } from "./store";
 import { createNewConversation } from "./store/slices/conversation";
 import {
-  createWorkspaceAutoSaver,
   getLastProjectName,
   loadWorkspaceState,
   toChatConversation,
 } from "./lib/workspace-storage";
+import {
+  createDbAutoSaver,
+  loadFromDb,
+} from "./lib/conversation-db-sync";
 import { useFileEditorSidebarStore } from "./store/file-editor-sidebar";
 import { useAppState } from "./store/selectors";
 
@@ -352,56 +355,109 @@ function App() {
           if (config) {
             useStore.getState().setCurrentProject(lastProject, config.rootPath);
 
-            // Restore conversations
-            const saved = await loadWorkspaceState(lastProject);
-
-            // Hydrate localStorage from workspace.json (v2 data)
-            if (saved?.conversationTerminalData) {
-              localStorage.setItem("golish-pentest-conv-terminals", JSON.stringify(saved.conversationTerminalData));
-            }
-            if (saved?.aiModel !== undefined) {
-              localStorage.setItem("golish-pentest-ai-model", JSON.stringify(saved.aiModel));
-            }
-            if (saved?.approvalMode) {
-              localStorage.setItem("golish-approval-mode", saved.approvalMode);
-            }
+            // Restore conversations: try DB first, fall back to workspace.json/localStorage
+            const saved = await loadFromDb(config.rootPath);
 
             if (saved && saved.conversations.length > 0) {
-              const restoredConvs = saved.conversations.map(toChatConversation);
+              // DB has data — use it
+              if (saved.aiModel) {
+                localStorage.setItem("golish-pentest-ai-model", JSON.stringify(saved.aiModel));
+              }
+              if (saved.approvalMode) {
+                localStorage.setItem("golish-approval-mode", saved.approvalMode);
+              }
+
               useStore.getState().restoreConversations(
-                restoredConvs,
+                saved.conversations,
                 saved.conversationOrder,
                 saved.activeConversationId,
               );
-            } else {
-              const initialConv = createNewConversation();
-              useStore.getState().addConversation(initialConv);
-            }
 
-            // Signal that workspace data is hydrated and ready for terminal restoration
-            useStore.getState().setWorkspaceDataReady(true);
-
-            // Terminal tabs are restored per-conversation in AIChatPanel after localStorage merge.
-            // Only skip default terminal creation if saved data matches actual conversations.
-            const hasConvTerminals = (() => {
-              try {
-                const raw = localStorage.getItem("golish-pentest-conv-terminals");
-                if (!raw) return false;
-                const data = JSON.parse(raw) as Record<string, unknown>;
-                const convIds = Object.keys(useStore.getState().conversations);
-                return convIds.some((id) => id in data);
-              } catch { return false; }
-            })();
-
-            if (!hasConvTerminals) {
-              const wd = saved?.terminalTabs?.[0]?.workingDirectory ?? config.rootPath;
-              const termId = await createTerminalTab(wd, true);
-              if (termId) {
-                const activeConv = useStore.getState().activeConversationId;
-                if (activeConv) {
-                  useStore.getState().addTerminalToConversation(activeConv, termId);
+              if (Object.keys(saved.terminalData).length > 0) {
+                const termDataForLocalStorage: Record<string, Array<{
+                  workingDirectory: string;
+                  scrollback: string;
+                  customName?: string;
+                  timelineBlocks?: Array<{ id: string; type: string; timestamp: string; data: unknown; batchId?: string }>;
+                }>> = {};
+                for (const [convId, terminals] of Object.entries(saved.terminalData)) {
+                  termDataForLocalStorage[convId] = terminals.map((t) => ({
+                    workingDirectory: t.workingDirectory,
+                    scrollback: t.scrollback,
+                    customName: t.customName ?? undefined,
+                    timelineBlocks: t.timelineBlocks.map((b) => ({
+                      id: b.id,
+                      type: b.type,
+                      timestamp: b.timestamp ?? new Date().toISOString(),
+                      data: b.data,
+                      batchId: (b as { batchId?: string }).batchId,
+                    })),
+                  }));
                 }
-                useStore.getState().setActiveSession(termId);
+                localStorage.setItem("golish-pentest-conv-terminals", JSON.stringify(termDataForLocalStorage));
+              }
+
+              useStore.getState().setWorkspaceDataReady(true);
+
+              const hasConvTerminals = Object.keys(saved.terminalData).length > 0;
+              if (!hasConvTerminals) {
+                const termId = await createTerminalTab(config.rootPath, true);
+                if (termId) {
+                  const activeConv = useStore.getState().activeConversationId;
+                  if (activeConv) {
+                    useStore.getState().addTerminalToConversation(activeConv, termId);
+                  }
+                  useStore.getState().setActiveSession(termId);
+                }
+              }
+            } else {
+              // DB empty — fall back to legacy workspace.json/localStorage
+              const legacy = await loadWorkspaceState(lastProject);
+
+              if (legacy?.conversationTerminalData) {
+                localStorage.setItem("golish-pentest-conv-terminals", JSON.stringify(legacy.conversationTerminalData));
+              }
+              if (legacy?.aiModel !== undefined) {
+                localStorage.setItem("golish-pentest-ai-model", JSON.stringify(legacy.aiModel));
+              }
+              if (legacy?.approvalMode) {
+                localStorage.setItem("golish-approval-mode", legacy.approvalMode);
+              }
+
+              if (legacy && legacy.conversations.length > 0) {
+                const restoredConvs = legacy.conversations.map(toChatConversation);
+                useStore.getState().restoreConversations(
+                  restoredConvs,
+                  legacy.conversationOrder,
+                  legacy.activeConversationId,
+                );
+              } else {
+                const initialConv = createNewConversation();
+                useStore.getState().addConversation(initialConv);
+              }
+
+              useStore.getState().setWorkspaceDataReady(true);
+
+              const hasConvTerminals = (() => {
+                try {
+                  const raw = localStorage.getItem("golish-pentest-conv-terminals");
+                  if (!raw) return false;
+                  const data = JSON.parse(raw) as Record<string, unknown>;
+                  const convIds = Object.keys(useStore.getState().conversations);
+                  return convIds.some((id) => id in data);
+                } catch { return false; }
+              })();
+
+              if (!hasConvTerminals) {
+                const wd = legacy?.terminalTabs?.[0]?.workingDirectory ?? config.rootPath;
+                const termId = await createTerminalTab(wd, true);
+                if (termId) {
+                  const activeConv = useStore.getState().activeConversationId;
+                  if (activeConv) {
+                    useStore.getState().addTerminalToConversation(activeConv, termId);
+                  }
+                  useStore.getState().setActiveSession(termId);
+                }
               }
             }
           }
@@ -428,27 +484,17 @@ function App() {
     init();
   }, [openHomeTab, createTerminalTab]);
 
-  // Auto-save workspace state (conversations, chat history, terminal tabs) on changes + window close
+  // Auto-save conversation state to PostgreSQL on changes + window close
   useEffect(() => {
-    return createWorkspaceAutoSaver(
-      () => useStore.getState().currentProjectName,
+    return createDbAutoSaver(
+      () => useStore.getState().currentProjectPath ?? null,
       (listener) => useStore.subscribe(listener),
       () => {
         const s = useStore.getState();
-        const seen = new Set<string>();
-        const terminalTabs = Object.values(s.sessions)
-          .filter((sess) => (sess.tabType ?? "terminal") === "terminal")
-          .filter((sess) => {
-            if (seen.has(sess.workingDirectory)) return false;
-            seen.add(sess.workingDirectory);
-            return true;
-          })
-          .map((sess) => ({ workingDirectory: sess.workingDirectory }));
         return {
           conversations: s.conversations,
           conversationOrder: s.conversationOrder,
           activeConversationId: s.activeConversationId,
-          terminalTabs,
           conversationTerminals: s.conversationTerminals,
           sessions: s.sessions,
           timelines: s.timelines,

@@ -37,19 +37,37 @@ export const handleToolRequest: EventHandler<{
   // Flush pending text deltas to ensure correct ordering
   ctx.flushSessionDeltas(ctx.sessionId);
 
+  const source = ctx.convertToolSource(event.source);
   const toolCall = {
     id: event.request_id,
     name: event.tool_name,
     args: event.args as Record<string, unknown>,
-    // All tool calls from AI events are executed by the agent
     executedByAgent: true,
-    source: ctx.convertToolSource(event.source),
+    source,
   };
 
   // Track the tool call as running (for UI display)
   state.addActiveToolCall(ctx.sessionId, toolCall);
   // Also add to streaming blocks for interleaved display
   state.addStreamingToolBlock(ctx.sessionId, toolCall);
+
+  // Add to left timeline as a card (main agent tool calls only).
+  // Skip sub-agent invocations — they get their own SubAgentCard via sub_agent_started.
+  const isSubAgentCall = event.tool_name.startsWith("sub_agent_");
+  if ((!source || source.type === "main") && !isSubAgentCall) {
+    state.addToolExecutionBlock(ctx.sessionId, {
+      requestId: event.request_id,
+      toolName: event.tool_name,
+      args: event.args as Record<string, unknown>,
+      source,
+    });
+
+    // Auto-switch to tool-detail view on first tool call (if no plan is active)
+    const session = state.sessions[ctx.sessionId];
+    if (session && session.detailViewMode !== "plan") {
+      state.setDetailViewMode(ctx.sessionId, "tool-detail");
+    }
+  }
 };
 
 /**
@@ -84,6 +102,7 @@ export const handleToolApprovalRequest: EventHandler<{
   // Flush pending text deltas to ensure correct ordering
   ctx.flushSessionDeltas(ctx.sessionId);
 
+  const source = ctx.convertToolSource(event.source);
   const toolCall = {
     id: event.request_id,
     name: event.tool_name,
@@ -93,12 +112,28 @@ export const handleToolApprovalRequest: EventHandler<{
     stats: event.stats ?? undefined,
     suggestion: event.suggestion ?? undefined,
     canLearn: event.can_learn,
-    source: ctx.convertToolSource(event.source),
+    source,
   };
 
   // Track the tool call
   state.addActiveToolCall(ctx.sessionId, toolCall);
   state.addStreamingToolBlock(ctx.sessionId, toolCall);
+
+  const isSubAgentCall = event.tool_name.startsWith("sub_agent_");
+  if ((!source || source.type === "main") && !isSubAgentCall) {
+    state.addToolExecutionBlock(ctx.sessionId, {
+      requestId: event.request_id,
+      toolName: event.tool_name,
+      args: event.args as Record<string, unknown>,
+      riskLevel: event.risk_level,
+      source,
+    });
+
+    const sess = state.sessions[ctx.sessionId];
+    if (sess && sess.detailViewMode !== "plan") {
+      state.setDetailViewMode(ctx.sessionId, "tool-detail");
+    }
+  }
 
   // Check if auto-approve mode is enabled for this session
   // This acts as a frontend safeguard in case the backend sent an approval request
@@ -157,6 +192,7 @@ export const handleToolAutoApproved: EventHandler<{
   // Flush pending text deltas to ensure correct ordering
   ctx.flushSessionDeltas(ctx.sessionId);
 
+  const source = ctx.convertToolSource(event.source);
   const autoApprovedTool = {
     id: event.request_id,
     name: event.tool_name,
@@ -164,11 +200,27 @@ export const handleToolAutoApproved: EventHandler<{
     executedByAgent: true,
     autoApproved: true,
     autoApprovalReason: event.reason,
-    source: ctx.convertToolSource(event.source),
+    source,
   };
 
   state.addActiveToolCall(ctx.sessionId, autoApprovedTool);
   state.addStreamingToolBlock(ctx.sessionId, autoApprovedTool);
+
+  const isSubAgentCall = event.tool_name.startsWith("sub_agent_");
+  if ((!source || source.type === "main") && !isSubAgentCall) {
+    state.addToolExecutionBlock(ctx.sessionId, {
+      requestId: event.request_id,
+      toolName: event.tool_name,
+      args: event.args as Record<string, unknown>,
+      autoApproved: true,
+      source,
+    });
+
+    const session = state.sessions[ctx.sessionId];
+    if (session && session.detailViewMode !== "plan") {
+      state.setDetailViewMode(ctx.sessionId, "tool-detail");
+    }
+  }
 };
 
 /**
@@ -190,6 +242,8 @@ export const handleToolResult: EventHandler<{
   state.completeActiveToolCall(ctx.sessionId, event.request_id, event.success, event.result);
   // Also update streaming block
   state.updateStreamingToolBlock(ctx.sessionId, event.request_id, event.success, event.result);
+  // Update timeline card
+  state.completeToolExecutionBlock(ctx.sessionId, event.request_id, event.success, event.result);
 };
 
 /**
@@ -225,6 +279,8 @@ export const handleToolOutputChunk: EventHandler<{
 
   // Append the chunk to the tool's streaming output
   state.appendToolStreamingOutput(ctx.sessionId, event.request_id, event.chunk);
+  // Also append to timeline card
+  state.appendToolExecutionOutput(ctx.sessionId, event.request_id, event.chunk);
 };
 
 /**
@@ -266,7 +322,7 @@ export const handleAskHumanResponse: EventHandler<{
   skipped: boolean;
   session_id: string;
   seq?: number;
-}> = (event, ctx) => {
+}> = (_event, ctx) => {
   const state = ctx.getState();
   state.clearPendingAskHuman(ctx.sessionId);
 };

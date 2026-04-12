@@ -64,11 +64,12 @@ fn recon_basic_template() -> Pipeline {
     // Real shell commands with {target} placeholder.
     // Users can freely edit these in the UI.
     let steps: Vec<(&str, &str, &str, &str, Vec<&str>)> = vec![
-        ("dns_lookup",        "dig",       "dns_lookup",        "dig",       vec!["+short", "{target}"]),
-        ("subdomain_enum",    "subfinder", "subdomain_enum",    "subfinder", vec!["-d", "{target}", "-silent"]),
-        ("http_probe",        "httpx",     "http_probe",        "httpx",     vec!["-u", "{target}", "-sc", "-title", "-tech-detect", "-silent"]),
-        ("port_scan",         "nmap",      "port_scan",         "nmap",      vec!["-sV", "--top-ports", "1000", "{target}"]),
-        ("tech_fingerprint",  "whatweb",   "tech_fingerprint",  "whatweb",   vec!["{target}", "--color=never"]),
+        ("dns_lookup",        "dig",          "dns_lookup",        "dig",       vec!["+short", "{target}"]),
+        ("subdomain_enum",    "subfinder",    "subdomain_enum",    "subfinder", vec!["-d", "{target}", "-silent"]),
+        ("http_probe",        "httpx",        "http_probe",        "httpx",     vec!["-u", "{target}", "-sc", "-title", "-tech-detect", "-silent"]),
+        ("port_scan",         "nmap",         "port_scan",         "nmap",      vec!["-sV", "--top-ports", "1000", "{target}"]),
+        ("tech_fingerprint",  "whatweb",      "tech_fingerprint",  "whatweb",   vec!["{target}", "--color=never"]),
+        ("js_harvest",        "js_harvest",   "js_harvest",        "",          vec!["{target}"]),
     ];
 
     let pipeline_steps: Vec<PipelineStep> = steps
@@ -100,7 +101,7 @@ fn recon_basic_template() -> Pipeline {
     Pipeline {
         id: "recon_basic".to_string(),
         name: "Basic Reconnaissance".to_string(),
-        description: "DNS, subdomains, HTTP probe, port scan, tech fingerprint. Use {target} as placeholder.".to_string(),
+        description: "DNS, subdomains, HTTP probe, port scan, tech fingerprint, JS collection. Use {target} as placeholder.".to_string(),
         is_template: false,
         workflow_id: Some("recon_basic".to_string()),
         steps: pipeline_steps,

@@ -28,8 +28,10 @@
 pub mod config;
 pub mod embedded;
 pub mod embeddings;
+pub mod gatekeeper;
 pub mod models;
 pub mod pool;
+pub mod ready_gate;
 pub mod repo;
 
 use anyhow::Result;
@@ -37,19 +39,25 @@ use sqlx::PgPool;
 
 pub use config::DbConfig;
 pub use models::*;
+pub use ready_gate::DbReadyGate;
 
 /// Top-level database handle. Owns the embedded PG server and connection pool.
 pub struct GolishDb {
     embedded: embedded::EmbeddedPg,
     pool: PgPool,
+    pub has_pgvector: bool,
 }
 
 impl GolishDb {
     /// Start the embedded PostgreSQL server, run migrations, and return a ready handle.
     pub async fn start(config: DbConfig) -> Result<Self> {
         let embedded = embedded::EmbeddedPg::start(config).await?;
-        let pool = pool::create_pool(&embedded.connection_string()).await?;
-        Ok(Self { embedded, pool })
+        let info = pool::create_pool(&embedded.connection_string()).await?;
+        Ok(Self {
+            embedded,
+            pool: info.pool,
+            has_pgvector: info.has_pgvector,
+        })
     }
 
     /// Get a reference to the connection pool for query operations.

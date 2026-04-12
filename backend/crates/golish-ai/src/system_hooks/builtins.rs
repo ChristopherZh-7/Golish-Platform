@@ -4,22 +4,21 @@
 
 use golish_core::ToolName;
 
-use super::hooks::{MessageHook, ToolHook};
+use super::hooks::{MessageHook, PreToolResult, ToolHook};
 use super::matcher::ToolMatcher;
 
 /// Get all built-in message hooks.
 pub fn message_hooks() -> Vec<MessageHook> {
-    vec![
-        // Currently no built-in message hooks.
-        // Future hooks could include:
-        // - Keyword detection for security-sensitive terms
-        // - Pattern matching for common issues
-    ]
+    vec![]
 }
 
 /// Get all built-in tool hooks.
 pub fn tool_hooks() -> Vec<ToolHook> {
-    vec![plan_completion_hook()]
+    vec![
+        plan_completion_hook(),
+        security_tool_redirect_hook(),
+        sub_agent_auto_store_hook(),
+    ]
 }
 
 /// Hook that fires when all plan tasks are completed.
@@ -64,6 +63,87 @@ STOP CONDITIONS:
 - If no docs need updating, disregard this message entirely"
                     .to_string(),
             )
+        },
+    )
+}
+
+/// Pre-tool hook that intercepts direct security tool usage by the main agent.
+///
+/// When the main agent tries to run nmap, sqlmap, gobuster, nikto, etc.
+/// directly via run_pty_cmd, this hook injects a reminder to delegate to
+/// the pentester sub-agent instead.
+fn security_tool_redirect_hook() -> ToolHook {
+    ToolHook::pre(
+        "security_tool_redirect",
+        ToolMatcher::tool(ToolName::RunPtyCmd),
+        |ctx| {
+            let command = ctx
+                .args
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            let security_tools = [
+                "nmap", "masscan", "gobuster", "ffuf", "nikto", "sqlmap",
+                "hydra", "wfuzz", "dirb", "dirsearch", "nuclei",
+                "burpsuite", "zap", "metasploit", "msfconsole",
+                "hashcat", "john", "aircrack", "responder",
+            ];
+
+            let is_security_tool = security_tools
+                .iter()
+                .any(|tool| command.split_whitespace().next() == Some(tool));
+
+            if is_security_tool {
+                PreToolResult::AllowWithMessage(
+                    "[Agent Orchestration] You are running a security tool directly. \
+                     For better results, consider delegating to the `pentester` sub-agent \
+                     which has specialized knowledge for interpreting results and planning \
+                     next steps. Use: sub_agent_pentester with the task description. \
+                     If you've already delegated and this is the pentester executing, proceed."
+                        .to_string(),
+                )
+            } else {
+                PreToolResult::Allow
+            }
+        },
+    )
+}
+
+/// Post-tool hook that reminds the agent to store significant findings
+/// after a sub-agent completes its work.
+fn sub_agent_auto_store_hook() -> ToolHook {
+    ToolHook::post(
+        "sub_agent_auto_store",
+        ToolMatcher::custom_post(|ctx| {
+            ctx.tool_name_raw.starts_with("sub_agent_pentester")
+                || ctx.tool_name_raw.starts_with("sub_agent_researcher")
+                || ctx.tool_name_raw.starts_with("sub_agent_js_harvester")
+                || ctx.tool_name_raw.starts_with("sub_agent_js_analyzer")
+        }),
+        |ctx| {
+            if !ctx.success {
+                return None;
+            }
+
+            let response_len = ctx
+                .result
+                .get("response")
+                .and_then(|v| v.as_str())
+                .map(|s| s.len())
+                .unwrap_or(0);
+
+            if response_len < 50 {
+                return None;
+            }
+
+            Some(format!(
+                "[Memory Checkpoint] The {} sub-agent has completed with results. \
+                 You SHOULD now call `store_memory` to persist significant findings \
+                 (discovered hosts, vulnerabilities, credentials, etc.) for future sessions. \
+                 Use category tags: recon, vulnerability, credential, configuration, technique.",
+                ctx.tool_name_raw.strip_prefix("sub_agent_").unwrap_or(ctx.tool_name_raw)
+            ))
         },
     )
 }
@@ -190,9 +270,10 @@ mod tests {
         let message = message_hooks();
         let tool = tool_hooks();
 
-        // Currently no message hooks, but tool hooks should have plan completion
         assert_eq!(message.len(), 0);
-        assert_eq!(tool.len(), 1);
+        assert_eq!(tool.len(), 3);
         assert_eq!(tool[0].name, "plan_completion");
+        assert_eq!(tool[1].name, "security_tool_redirect");
+        assert_eq!(tool[2].name, "sub_agent_auto_store");
     }
 }

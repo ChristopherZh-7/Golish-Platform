@@ -26,7 +26,7 @@ use tracing::Instrument;
 
 use golish_tools::ToolRegistry;
 
-use super::system_hooks::{format_system_hooks, HookRegistry, PostToolContext};
+use super::system_hooks::{format_system_hooks, HookRegistry, MessageHookContext, PostToolContext};
 use super::tool_definitions::{
     get_all_tool_definitions_with_config, get_ask_human_tool_definition,
     get_run_command_tool_definition, get_sub_agent_tool_definitions, sanitize_schema, ToolConfig,
@@ -1048,6 +1048,15 @@ where
         return Ok(ToolExecutionResult { value, success });
     }
 
+    // Check if this is a memory tool call
+    if matches!(tool_name, "search_memories" | "store_memory" | "list_memories") {
+        if let Some((value, success)) =
+            crate::tool_executors::execute_memory_tool(tool_name, tool_args, ctx.db_tracker).await
+        {
+            return Ok(ToolExecutionResult { value, success });
+        }
+    }
+
     // Check if this is an ask_human barrier tool call
     if tool_name == "ask_human" {
         let (value, success) = execute_ask_human_tool(
@@ -1199,6 +1208,18 @@ where
 
         match result {
             Ok(result) => {
+                // Record the agent call in the DB for analytics/audit
+                if let Some(tracker) = ctx.db_tracker {
+                    let result_preview = truncate_str(&result.response, 500);
+                    tracker.record_agent_call(
+                        "primary",
+                        agent_id,
+                        &context.original_request,
+                        Some(result_preview),
+                        result.duration_ms,
+                    );
+                }
+
                 return Ok(ToolExecutionResult {
                     value: json!({
                         "agent_id": result.agent_id,
@@ -1736,6 +1757,11 @@ pub struct AgenticLoopConfig {
     pub require_hitl: bool,
     /// Whether this is a sub-agent execution (affects tool restrictions).
     pub is_sub_agent: bool,
+    /// Whether to invoke the reflector agent when the model produces text
+    /// without any tool calls. Default: false (only enabled for main agent).
+    pub enable_reflector: bool,
+    /// Tool names hint passed to the reflector so it can suggest specific tools.
+    pub tool_names_for_reflector: Option<Vec<String>>,
 }
 
 impl AgenticLoopConfig {
@@ -1748,6 +1774,8 @@ impl AgenticLoopConfig {
             capabilities: ModelCapabilities::anthropic_defaults(),
             require_hitl: true,
             is_sub_agent: false,
+            enable_reflector: true,
+            tool_names_for_reflector: None,
         }
     }
 
@@ -1760,6 +1788,8 @@ impl AgenticLoopConfig {
             capabilities: ModelCapabilities::conservative_defaults(),
             require_hitl: true,
             is_sub_agent: false,
+            enable_reflector: true,
+            tool_names_for_reflector: None,
         }
     }
 
@@ -1772,6 +1802,8 @@ impl AgenticLoopConfig {
             capabilities,
             require_hitl: false,
             is_sub_agent: true,
+            enable_reflector: false,
+            tool_names_for_reflector: None,
         }
     }
 
@@ -1784,6 +1816,8 @@ impl AgenticLoopConfig {
             capabilities: ModelCapabilities::detect(provider_name, model_name),
             require_hitl: !is_sub_agent,
             is_sub_agent,
+            enable_reflector: !is_sub_agent,
+            tool_names_for_reflector: None,
         }
     }
 }
@@ -1887,7 +1921,7 @@ where
         })
         .unwrap_or_default();
     let trace_input_truncated = if trace_input.len() > 2000 {
-        format!("{}... [truncated]", &trace_input[..2000])
+        format!("{}... [truncated]", truncate_str(&trace_input, 2000))
     } else {
         trace_input
     };
@@ -2005,6 +2039,10 @@ where
     let mut accumulated_thinking = String::new();
     let mut total_usage = TokenUsage::default();
     let mut iteration = 0;
+    let mut consecutive_no_tool_turns: u32 = 0;
+    // Tracks whether the memory gatekeeper decided this message warrants tool usage.
+    // When false (simple chat), the reflector won't nudge the agent to use tools.
+    let mut gatekeeper_wants_tools = false;
 
     loop {
         iteration += 1;
@@ -2162,6 +2200,66 @@ where
             }
         }
 
+        // Fire message hooks and memory gatekeeper on first iteration (before first LLM call).
+        if iteration == 1 && !config.is_sub_agent {
+            let last_user_text = chat_history.iter().rev().find_map(|msg| {
+                if let Message::User { content } = msg {
+                    content.iter().find_map(|c| {
+                        if let UserContent::Text(t) = c {
+                            Some(t.text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                }
+            });
+
+            if let Some(user_text) = last_user_text {
+                // Run synchronous message hooks
+                let msg_ctx = MessageHookContext::user_input(
+                    user_text,
+                    ctx.session_id.unwrap_or(""),
+                );
+                let mut hook_messages = hook_registry.run_message_hooks(&msg_ctx);
+
+                // Run async memory gatekeeper: small model classifies whether
+                // memory search is warranted for this message.
+                {
+                    let client = ctx.client.read().await;
+                    let wants_memory = crate::memory_gatekeeper::should_search_memory(&client, user_text).await;
+                    gatekeeper_wants_tools = wants_memory;
+                    if wants_memory {
+                        hook_messages.push(
+                            "[Memory-First] The gatekeeper determined this message may benefit \
+                             from prior context. Call `search_memories` with relevant keywords \
+                             before responding."
+                                .to_string(),
+                        );
+                    }
+                }
+
+                if !hook_messages.is_empty() {
+                    let formatted = format_system_hooks(&hook_messages);
+                    tracing::info!(
+                        count = hook_messages.len(),
+                        "Injecting message hooks before first LLM call"
+                    );
+
+                    let _ = ctx.event_tx.send(AiEvent::SystemHooksInjected {
+                        hooks: hook_messages,
+                    });
+
+                    chat_history.push(Message::User {
+                        content: OneOrMany::one(UserContent::Text(Text {
+                            text: formatted,
+                        })),
+                    });
+                }
+            }
+        }
+
         // Create span for Langfuse observability (child of agent_span)
         // Token usage fields are Empty and will be recorded when available
         // Note: Langfuse expects prompt_tokens/completion_tokens per GenAI semantic conventions
@@ -2223,7 +2321,7 @@ where
         // Only record input if there's actual user text (not just tool results)
         if !last_user_text.is_empty() {
             let prompt_for_span = if last_user_text.len() > 2000 {
-                format!("{}... [truncated]", &last_user_text[..2000])
+                format!("{}... [truncated]", truncate_str(&last_user_text, 2000))
             } else {
                 last_user_text
             };
@@ -2509,6 +2607,7 @@ where
         // Reasoning ID for OpenAI Responses API (rs_... IDs that function calls reference)
         let mut thinking_id: Option<String> = None;
         let mut chunk_count = 0;
+        let mut last_repetition_check_len: usize = 0;
 
         // Track tool call state for streaming
         let mut current_tool_id: Option<String> = None;
@@ -2585,7 +2684,7 @@ where
                                         let url = parts[1];
                                         let json_rest = parts[2].trim_end_matches(']');
                                         let content_preview = if json_rest.len() > 200 {
-                                            format!("{}...", &json_rest[..200])
+                                            format!("{}...", truncate_str(json_rest, 200))
                                         } else {
                                             json_rest.to_string()
                                         };
@@ -2611,6 +2710,18 @@ where
                                         delta: text_msg.text,
                                         accumulated: accumulated_response.clone(),
                                     });
+
+                                    // Detect degenerate repetitive generation
+                                    if text_content.len() > last_repetition_check_len + 200 {
+                                        last_repetition_check_len = text_content.len();
+                                        if detect_repetitive_text(&text_content) {
+                                            tracing::warn!(
+                                                text_len = text_content.len(),
+                                                "Repetitive text detected, stopping generation"
+                                            );
+                                            break;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -3084,9 +3195,55 @@ where
             });
         }
 
-        // If no tool calls, we're done
+        // If no tool calls, either invoke reflector or finish
         if !has_tool_calls {
+            consecutive_no_tool_turns += 1;
+
+            // Reflector: if the agent produced text but no tool calls, and we haven't
+            // exhausted reflector attempts, invoke the reflector to diagnose and correct.
+            // Skip reflector when the gatekeeper classified the message as simple chat
+            // (no memory/tool usage warranted) — the text-only response is expected.
+            let should_reflect = consecutive_no_tool_turns <= 3
+                && !text_content.trim().is_empty()
+                && config.enable_reflector
+                && gatekeeper_wants_tools;
+
+            if should_reflect {
+                let registry = ctx.sub_agent_registry.read().await;
+                if registry.get("reflector").is_some() {
+                    drop(registry);
+
+                    tracing::info!(
+                        attempt = consecutive_no_tool_turns,
+                        text_len = text_content.len(),
+                        "[reflector] Agent produced text without tool calls, generating correction"
+                    );
+
+                    // Build a correction prompt and inject it as a user message.
+                    // This is cheaper than a full sub-agent call — we just nudge the agent
+                    // using a heuristic message. A full reflector LLM call can be added in Phase 2.
+                    let correction = format!(
+                        "[System: You responded with text but did not use any tools. \
+                         If you have completed the task, that's fine. \
+                         Otherwise, please execute the next step using the appropriate tool. \
+                         Available tools include: run_pty_cmd, read_file, write_file, \
+                         web_search, web_fetch, search_memories, store_memory. \
+                         Attempt {}/3]",
+                        consecutive_no_tool_turns
+                    );
+
+                    chat_history.push(Message::User {
+                        content: OneOrMany::one(UserContent::Text(rig::message::Text {
+                            text: correction,
+                        })),
+                    });
+                    continue;
+                }
+            }
+
             break;
+        } else {
+            consecutive_no_tool_turns = 0;
         }
 
         // Execute tool calls and collect results (with concurrent dispatch for sub-agents)
@@ -3156,32 +3313,21 @@ where
             system_hooks.extend(hooks);
         }
 
-        // Add tool results as user message
-        chat_history.push(Message::User {
-            content: OneOrMany::many(tool_results).unwrap_or_else(|_| {
-                OneOrMany::one(UserContent::Text(Text {
-                    text: "Tool executed".to_string(),
-                }))
-            }),
-        });
-
-        // Push queued system hooks as separate user message
+        // Merge system hooks into the tool results message to avoid
+        // "user after tool" ordering violations with OpenAI-compatible APIs.
         if !system_hooks.is_empty() {
             let formatted_hooks = format_system_hooks(&system_hooks);
 
-            // Log injection at info level
             tracing::info!(
                 count = system_hooks.len(),
                 content_len = formatted_hooks.len(),
-                "Injecting system hooks as user message"
+                "Injecting system hooks into tool results message"
             );
 
-            // Emit to frontend so the timeline can display the injected hooks.
             let _ = ctx
                 .event_tx
                 .send(AiEvent::SystemHooksInjected { hooks: system_hooks.clone() });
 
-            // Create OTel event for Langfuse visibility
             let _system_hook_event = tracing::info_span!(
                 parent: &llm_span,
                 "system_hooks_injected",
@@ -3192,12 +3338,19 @@ where
                 "langfuse.observation.input" = %formatted_hooks,
             );
 
-            chat_history.push(Message::User {
-                content: OneOrMany::one(UserContent::Text(Text {
-                    text: formatted_hooks,
-                })),
-            });
+            tool_results.push(UserContent::Text(Text {
+                text: formatted_hooks,
+            }));
         }
+
+        // Add tool results (+ any system hooks) as a single user message
+        chat_history.push(Message::User {
+            content: OneOrMany::many(tool_results).unwrap_or_else(|_| {
+                OneOrMany::one(UserContent::Text(Text {
+                    text: "Tool executed".to_string(),
+                }))
+            }),
+        });
     }
 
     // Log thinking stats at debug level
@@ -3231,7 +3384,7 @@ where
 
     // Record the final output on both trace and agent spans
     let output_for_span = if accumulated_response.len() > 2000 {
-        format!("{}... [truncated]", &accumulated_response[..2000])
+        format!("{}... [truncated]", truncate_str(&accumulated_response, 2000))
     } else {
         accumulated_response.clone()
     };
@@ -3289,9 +3442,25 @@ pub struct CompactionResult {
     pub summarizer_input: Option<String>,
 }
 
+/// Resolve the base `.golish` directory for project-local storage.
+///
+/// If `workspace` is a real path (not `"."`), returns `{workspace}/.golish/`.
+/// Otherwise falls back to `~/.golish/`.
+fn resolve_golish_base(workspace: &std::path::Path) -> PathBuf {
+    let ws_str = workspace.to_string_lossy();
+    if ws_str != "." && !ws_str.is_empty() {
+        workspace.join(".golish")
+    } else {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".golish")
+    }
+}
+
 /// Get the transcript directory path.
 ///
-/// Returns the path to `~/.golish/transcripts/` by default.
+/// Returns `{workspace}/.golish/transcripts/` when a project is active,
+/// or `~/.golish/transcripts/` as fallback.
 pub fn get_transcript_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -3299,9 +3468,15 @@ pub fn get_transcript_dir() -> PathBuf {
         .join("transcripts")
 }
 
+/// Get the transcript directory for a specific workspace.
+pub fn get_transcript_dir_for(workspace: &std::path::Path) -> PathBuf {
+    resolve_golish_base(workspace).join("transcripts")
+}
+
 /// Get the artifacts directory path for compaction-related files.
 ///
-/// Returns the path to `~/.golish/artifacts/compaction/` by default.
+/// Returns `{workspace}/.golish/artifacts/compaction/` when a project is active,
+/// or `~/.golish/artifacts/compaction/` as fallback.
 pub fn get_artifacts_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -3310,15 +3485,26 @@ pub fn get_artifacts_dir() -> PathBuf {
         .join("compaction")
 }
 
+/// Get the artifacts directory for a specific workspace.
+pub fn get_artifacts_dir_for(workspace: &std::path::Path) -> PathBuf {
+    resolve_golish_base(workspace).join("artifacts").join("compaction")
+}
+
 /// Get the summaries directory path.
 ///
-/// Returns the path to `~/.golish/artifacts/summaries/` by default.
+/// Returns `{workspace}/.golish/artifacts/summaries/` when a project is active,
+/// or `~/.golish/artifacts/summaries/` as fallback.
 pub fn get_summaries_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".golish")
         .join("artifacts")
         .join("summaries")
+}
+
+/// Get the summaries directory for a specific workspace.
+pub fn get_summaries_dir_for(workspace: &std::path::Path) -> PathBuf {
+    resolve_golish_base(workspace).join("artifacts").join("summaries")
 }
 
 /// Check if compaction should be triggered and perform it if needed.
@@ -3425,9 +3611,11 @@ async fn perform_compaction(
     tokens_before: u64,
 ) -> CompactionResult {
     let messages_before = chat_history.len();
-    let transcript_dir = get_transcript_dir();
-    let artifacts_dir = get_artifacts_dir();
-    let summaries_dir = get_summaries_dir();
+    let workspace = ctx.workspace.read().await;
+    let transcript_dir = get_transcript_dir_for(&workspace);
+    let artifacts_dir = get_artifacts_dir_for(&workspace);
+    let summaries_dir = get_summaries_dir_for(&workspace);
+    drop(workspace);
 
     // Step 1: Build summarizer input from transcript
     let summarizer_input =
@@ -3695,7 +3883,7 @@ where
             let query = tool_args.get("query").and_then(|v| v.as_str()).unwrap_or("");
             let result_preview = serde_json::to_string(&result.value)
                 .ok()
-                .map(|s| if s.len() > 10000 { s[..10000].to_string() } else { s });
+                .map(|s| truncate_str(&s, 10000).to_string());
             tracker.record_search(
                 if tool_name.starts_with("tavily_") { "tavily" } else { "web" },
                 query,
@@ -3718,6 +3906,9 @@ where
                 }
             }
         }
+
+        // Memory gatekeeper: decide if this tool result is worth persisting
+        tracker.maybe_store_tool_memory(tool_name, &tool_args, &result.value, result.success);
     }
 
     // Record tool result in span
@@ -3804,6 +3995,60 @@ fn partition_tool_calls(
     }
 
     (sub_agent_calls, other_calls)
+}
+
+/// Detect repetitive text patterns that indicate degenerate model generation.
+///
+/// Splits text into sentences by common terminators and checks for repeated
+/// sentence prefixes. Returns true if 3+ sentences share the same opening.
+fn detect_repetitive_text(text: &str) -> bool {
+    let char_count = text.chars().count();
+    if char_count < 100 {
+        return false;
+    }
+
+    let mut sentences = Vec::new();
+    let mut current = String::new();
+    for c in text.chars() {
+        current.push(c);
+        if matches!(c, '。' | '！' | '？' | '\n') {
+            let trimmed = current.trim().to_string();
+            let trimmed_chars = trimmed.chars().count();
+            if trimmed_chars >= 8 {
+                sentences.push(trimmed);
+            }
+            current = String::new();
+        }
+    }
+
+    if sentences.len() < 3 {
+        return false;
+    }
+
+    // Count sentence fingerprints (first 12 chars) — catches "我已经完成了你的请求。..." repeated
+    let mut fingerprints: HashMap<String, usize> = HashMap::new();
+    for sentence in &sentences {
+        let fp: String = sentence.chars().take(12).collect();
+        *fingerprints.entry(fp).or_default() += 1;
+    }
+    if fingerprints.values().any(|&count| count >= 3) {
+        return true;
+    }
+
+    // Also check for the tail of text repeating a long segment from earlier
+    if char_count >= 200 {
+        let chars: Vec<char> = text.chars().collect();
+        let window_size = 40.min(chars.len() / 4);
+        if window_size >= 20 {
+            let tail: String = chars[chars.len() - window_size..].iter().collect();
+            let head: String = chars[..chars.len() - window_size].iter().collect();
+            if head.matches(&tail).count() >= 2 {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]
@@ -4092,6 +4337,54 @@ mod unified_loop_tests {
             !config.capabilities.supports_temperature,
             "Codex models via Responses API should not support temperature"
         );
+    }
+}
+
+#[cfg(test)]
+mod repetitive_text_tests {
+    use super::*;
+
+    #[test]
+    fn test_short_text_not_repetitive() {
+        assert!(!detect_repetitive_text("你好"));
+        assert!(!detect_repetitive_text(""));
+        assert!(!detect_repetitive_text("这是一个正常的回答。"));
+    }
+
+    #[test]
+    fn test_normal_text_not_repetitive() {
+        let text = "example.com 是一个官方保留的测试域名。\
+                    它解析到 104.20.23.154 和 172.66.147.243。\
+                    这些地址由 Cloudflare 托管。";
+        assert!(!detect_repetitive_text(text));
+    }
+
+    #[test]
+    fn test_repeated_sentences_detected() {
+        // Simulate real degenerate output: repeated "I've completed your request" sentences
+        let text = "该网站运行的是一个基于Vue3构建的前端应用，名为管理系统，以下是关键发现。\
+                    我已经完成了对该网站的JavaScript代码分析。如果你有其他需要测试或分析的域名或目标，请告诉我。\
+                    我已经完成了对该网站的JavaScript代码分析。如果你有其他需要，请直接告诉我。\
+                    我已经完成了对该网站的JavaScript代码分析。请告诉我你接下来需要什么帮助。";
+        assert!(detect_repetitive_text(text));
+    }
+
+    #[test]
+    fn test_repeated_english_detected() {
+        let text = "The scan has completed successfully and found the following services running on the target.\n\
+                    I have completed your request. Let me know if you need anything else or any other targets to scan.\n\
+                    I have completed your request. If you have other targets or need further analysis, let me know.\n\
+                    I have completed your request. Please tell me what you need next or if there are other targets.\n";
+        assert!(detect_repetitive_text(text));
+    }
+
+    #[test]
+    fn test_two_similar_not_detected() {
+        // Only 2 repeats — threshold is 3
+        let text = "该网站运行的是一个基于Vue3构建的前端应用，名为管理系统，以下是关键发现。\
+                    我已经完成了对该网站的JavaScript代码分析。如果你有其他需要测试或分析的域名或目标，请告诉我。\
+                    我已经完成了对该网站的JavaScript代码分析。请告诉我你接下来需要什么帮助。";
+        assert!(!detect_repetitive_text(text));
     }
 }
 
@@ -4626,9 +4919,7 @@ mod openai_tracing_tests {
     fn openai_reasoning_sub_context() -> SubAgentContext {
         SubAgentContext {
             original_request: "Test OpenAI tracing".to_string(),
-            conversation_summary: None,
-            variables: std::collections::HashMap::new(),
-            depth: 0,
+            ..Default::default()
         }
     }
 

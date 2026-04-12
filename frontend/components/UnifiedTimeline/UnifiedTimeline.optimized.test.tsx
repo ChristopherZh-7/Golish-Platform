@@ -156,10 +156,8 @@ describe("UnifiedTimeline Optimization Tests", () => {
       const result1 = selectSessionState(state, "session-1");
       const result2 = selectSessionState(state, "session-1");
 
-      // Empty arrays should be the same reference
-      expect(result1.streamingBlocks).toBe(result2.streamingBlocks);
-      expect(result1.activeSubAgents).toBe(result2.activeSubAgents);
-      expect(result1.activeToolCalls).toBe(result2.activeToolCalls);
+      // Cached selector should return the same reference
+      expect(result1.timeline).toBe(result2.timeline);
     });
   });
 

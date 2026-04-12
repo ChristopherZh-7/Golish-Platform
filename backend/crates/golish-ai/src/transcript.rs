@@ -75,6 +75,7 @@ pub fn should_transcript(event: &AiEvent) -> bool {
             | AiEvent::ToolOutputChunk { .. }
             | AiEvent::SubAgentToolRequest { .. }
             | AiEvent::SubAgentToolResult { .. }
+            | AiEvent::SubAgentTextDelta { .. }
     )
 }
 
@@ -482,6 +483,7 @@ pub fn format_for_summarizer(events: &[TranscriptEvent]) -> String {
             AiEvent::ToolOutputChunk { .. } => {} // Streaming output, not needed for summarization
             AiEvent::PromptGenerationStarted { .. } => {} // Internal sub-agent detail
             AiEvent::PromptGenerationCompleted { .. } => {} // Internal sub-agent detail
+            AiEvent::SubAgentTextDelta { .. } => {} // Streaming delta, not needed for summarization
             AiEvent::AskHumanRequest { question, input_type, .. } => {
                 output.push_str(&format!("\n**[Ask Human - {}]** {}\n", input_type, question));
             }
@@ -1913,6 +1915,15 @@ mod should_transcript_tests {
                 },
                 true,
             ),
+            (
+                AiEvent::SubAgentTextDelta {
+                    agent_id: "a".into(),
+                    delta: "d".into(),
+                    accumulated: "d".into(),
+                    parent_request_id: "p".into(),
+                },
+                false,
+            ),
         ];
 
         // Compile-time exhaustiveness check: if a new variant is added to AiEvent,
@@ -1935,6 +1946,7 @@ mod should_transcript_tests {
                 | AiEvent::SubAgentStarted { .. }
                 | AiEvent::SubAgentToolRequest { .. }
                 | AiEvent::SubAgentToolResult { .. }
+                | AiEvent::SubAgentTextDelta { .. }
                 | AiEvent::SubAgentCompleted { .. }
                 | AiEvent::SubAgentError { .. }
                 | AiEvent::ContextWarning { .. }

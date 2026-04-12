@@ -447,10 +447,11 @@ export function ToolManager() {
         scanTools().catch(() => ({ success: false, tools: [] as ToolConfig[] })),
         getCategories().catch(() => [] as ToolCategory[]),
       ]);
-      setCategories(cats);
+      const safeCats = Array.isArray(cats) ? cats : [];
+      setCategories(safeCats);
       const catMap = new Map<string, string>();
       const subMap = new Map<string, string>();
-      for (const c of cats) {
+      for (const c of safeCats) {
         catMap.set(c.id, c.name);
         for (const s of c.items) subMap.set(`${c.id}/${s.id}`, s.name);
       }
@@ -1187,7 +1188,7 @@ export function ToolManager() {
       }
     });
 
-  const categoryDisplayName = (catId: string) => categories.find((c) => c.id === catId)?.name || catId;
+  const categoryDisplayName = (catId: string) => (categories ?? []).find((c) => c.id === catId)?.name || catId;
 
   const runtimeBadge = (runtime: string) => {
     const m: Record<string, string> = {
@@ -1708,12 +1709,12 @@ export function ToolManager() {
                 <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
                   <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/40">{t("toolManager.category")}</span></div>
                   <FieldRow label={t("toolManager.category")} field="category" type="select" options={
-                    categories.length > 0
-                      ? categories.map((c) => ({ value: c.id, label: c.name }))
+                    (categories ?? []).length > 0
+                      ? (categories ?? []).map((c) => ({ value: c.id, label: c.name }))
                       : [{ value: "misc", label: "misc" }]
                   } />
                   <FieldRow label={t("toolManager.subcategory")} field="subcategory" type="select" options={(() => {
-                    const cat = categories.find((c) => c.id === (formData.category as string));
+                    const cat = (categories ?? []).find((c) => c.id === (formData.category as string));
                     if (cat && cat.items.length > 0) return cat.items.map((s) => ({ value: s.id, label: s.name }));
                     return [{ value: "other", label: "other" }];
                   })()} />

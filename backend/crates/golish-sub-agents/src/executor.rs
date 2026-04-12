@@ -28,7 +28,7 @@ use crate::definition::{SubAgentContext, SubAgentDefinition, SubAgentResult};
 use crate::transcript::SubAgentTranscriptWriter;
 use golish_core::events::AiEvent;
 use golish_core::utils::truncate_str;
-use golish_core::ApiRequestStats;
+use golish_core::{ApiRequestStats, Tool as GolishTool};
 use golish_llm_providers::ModelCapabilities;
 
 /// Trait for providing tool definitions to the sub-agent executor.
@@ -177,6 +177,10 @@ where
                     conversation_summary: parent_context.conversation_summary.clone(),
                     variables: parent_context.variables.clone(),
                     depth: parent_context.depth + 1,
+                    parent_agent: parent_context.parent_agent.clone(),
+                    task_id: parent_context.task_id.clone(),
+                    subtask_id: parent_context.subtask_id.clone(),
+                    execution_history: parent_context.execution_history.clone(),
                 },
                 success: false,
                 duration_ms,
@@ -355,6 +359,10 @@ where
         conversation_summary: parent_context.conversation_summary.clone(),
         variables: parent_context.variables.clone(),
         depth: parent_context.depth + 1,
+        parent_agent: parent_context.parent_agent.clone(),
+        task_id: parent_context.task_id.clone(),
+        subtask_id: parent_context.subtask_id.clone(),
+        execution_history: parent_context.execution_history.clone(),
     };
 
     // Build the prompt for the sub-agent
@@ -447,6 +455,12 @@ where
                     while let Some(chunk_result) = final_stream.next().await {
                         if let Ok(StreamedAssistantContent::Text(text_msg)) = chunk_result {
                             accumulated_response.push_str(&text_msg.text);
+                            let _ = ctx.event_tx.send(AiEvent::SubAgentTextDelta {
+                                agent_id: agent_id.to_string(),
+                                delta: text_msg.text,
+                                accumulated: accumulated_response.clone(),
+                                parent_request_id: parent_request_id.to_string(),
+                            });
                         }
                     }
                 }
@@ -600,6 +614,12 @@ where
                 Ok(chunk) => match chunk {
                     StreamedAssistantContent::Text(text_msg) => {
                         text_content.push_str(&text_msg.text);
+                        let _ = ctx.event_tx.send(AiEvent::SubAgentTextDelta {
+                            agent_id: agent_id.to_string(),
+                            delta: text_msg.text,
+                            accumulated: text_content.clone(),
+                            parent_request_id: parent_request_id.to_string(),
+                        });
                     }
                     StreamedAssistantContent::Reasoning(reasoning) => {
                         for item in &reasoning.content {
@@ -895,8 +915,8 @@ where
             // Create tool call span (Langfuse observability)
             let args_for_span =
                 serde_json::to_string(&tool_args).unwrap_or_else(|_| "{}".to_string());
-            let args_truncated = if args_for_span.len() > 500 {
-                format!("{}...[truncated]", &args_for_span[..500])
+            let args_truncated = if args_for_span.chars().count() > 500 {
+                format!("{}...[truncated]", truncate_str(&args_for_span, 500))
             } else {
                 args_for_span
             };
@@ -916,15 +936,29 @@ where
             );
             let _tool_guard = tool_span.enter();
 
-            // Execute the tool with a timeout guard
+            // Execute the tool with a timeout guard.
+            // Sub-agents use background shell execution for run_pty_cmd/run_command
+            // instead of the visible terminal, so output is captured inline.
             let tool_timeout = idle_timeout.unwrap_or(timeout_duration);
             let tool_result = tokio::time::timeout(tool_timeout, async {
                 if tool_name == "web_fetch" {
                     tool_provider
                         .execute_web_fetch_tool(tool_name, &tool_args)
                         .await
+                } else if tool_name == "run_pty_cmd" || tool_name == "run_command" {
+                    let bg_tool = golish_shell_exec::RunPtyCmdTool::new();
+                    let workspace = ctx.workspace.read().await;
+                    match bg_tool.execute(tool_args.clone(), &workspace).await {
+                        Ok(v) => {
+                            let ok = v
+                                .get("exit_code")
+                                .and_then(|c| c.as_i64())
+                                .map_or(true, |c| c == 0);
+                            (v, ok)
+                        }
+                        Err(e) => (serde_json::json!({ "error": e.to_string() }), false),
+                    }
                 } else {
-                    // All other tools (including web_* tools) use the registry
                     let registry = ctx.tool_registry.read().await;
                     let result = registry.execute_tool(tool_name, tool_args.clone()).await;
 
@@ -956,8 +990,8 @@ where
 
             // Record tool result on span
             let result_str = serde_json::to_string(&result_value).unwrap_or_default();
-            let result_truncated = if result_str.len() > 500 {
-                format!("{}...[truncated]", &result_str[..500])
+            let result_truncated = if result_str.chars().count() > 500 {
+                format!("{}...[truncated]", truncate_str(&result_str, 500))
             } else {
                 result_str
             };

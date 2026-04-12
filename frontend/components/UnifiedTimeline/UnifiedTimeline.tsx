@@ -147,14 +147,26 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
   const hasRunningCommand = pendingCommand?.command || pendingCommand?.output;
   const isEmpty = timeline.length === 0 && !hasRunningCommand;
 
-  // Pipeline-sourced commands are shown inside PipelineProgressBlock (expandable rows),
-  // so filter them out of the main timeline to avoid duplication.
-  const filteredTimeline = useMemo(
-    () => sortedTimeline.filter(
-      (block) => !(block.type === "command" && block.data.source === "pipeline"),
-    ),
-    [sortedTimeline],
-  );
+  // Terminal view shows only manually typed commands.
+  // AI-driven content (tool executions, pipeline progress, sub-agents) is shown
+  // in the PlanDetailView or the right AI chat panel instead.
+  const filteredTimeline = useMemo(() => {
+    const aiCmdSet = new Set<string>();
+    for (const block of sortedTimeline) {
+      if (block.type === "ai_tool_execution") {
+        const cmd = block.data.args?.command;
+        if (typeof cmd === "string") aiCmdSet.add(cmd.trim());
+      }
+    }
+    return sortedTimeline.filter((block) => {
+      if (block.type === "ai_tool_execution") return false;
+      if (block.type === "pipeline_progress") return false;
+      if (block.type === "sub_agent_activity") return false;
+      if (block.type === "command" && block.data.source === "pipeline") return false;
+      if (block.type === "command" && aiCmdSet.has(block.data.command.trim())) return false;
+      return true;
+    });
+  }, [sortedTimeline]);
 
   return (
     <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden">

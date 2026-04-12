@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, Folder, GitBranch, Package } from "lucide-react";
+import { Folder, Package } from "lucide-react";
 import { useStore } from "@/store";
 import { useUnifiedInputState } from "@/store/selectors/unified-input";
 import { selectDisplaySettings } from "@/store/slices";
@@ -9,8 +9,7 @@ interface ContextBarProps {
 
 export function ContextBar({ sessionId }: ContextBarProps) {
   const workingDirectory = useStore((state) => state.sessions[sessionId]?.workingDirectory);
-  const openGitPanel = useStore((state) => state.openGitPanel);
-  const { virtualEnv, gitBranch, gitStatus } = useUnifiedInputState(sessionId);
+  const { virtualEnv } = useUnifiedInputState(sessionId);
   const display = useStore(selectDisplaySettings);
 
   const displayPath = (() => {

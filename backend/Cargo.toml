@@ -13,7 +13,6 @@ members = [
     "crates/golish-synthesis",
     "crates/golish-session",
     "crates/golish-context",
-    "crates/golish-workflow",
     "crates/golish-llm-providers",
     "crates/golish-ai",
     "crates/golish-sub-agents",
@@ -45,7 +44,6 @@ default-members = [
     "crates/golish-synthesis",
     "crates/golish-session",
     "crates/golish-context",
-    "crates/golish-workflow",
     "crates/golish-llm-providers",
     "crates/golish-ai",
     "crates/golish-sub-agents",
@@ -84,7 +82,6 @@ golish-sidecar = { path = "crates/golish-sidecar" }
 golish-artifacts = { path = "crates/golish-artifacts" }
 golish-session = { path = "crates/golish-session" }
 golish-context = { path = "crates/golish-context" }
-golish-workflow = { path = "crates/golish-workflow" }
 golish-ai = { path = "crates/golish-ai" }
 golish-sub-agents = { path = "crates/golish-sub-agents" }
 golish-llm-providers = { path = "crates/golish-llm-providers" }

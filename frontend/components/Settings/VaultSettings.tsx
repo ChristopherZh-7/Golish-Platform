@@ -107,7 +107,7 @@ export function VaultSettings() {
   const loadEntries = useCallback(async () => {
     try {
       const data = await invoke<VaultEntrySafe[]>("vault_list", { projectPath: getProjectPath() });
-      setEntries(data);
+      setEntries(Array.isArray(data) ? data : []);
     } catch (e) {
       console.error("Failed to load vault:", e);
     }

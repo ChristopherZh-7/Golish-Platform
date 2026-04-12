@@ -35,8 +35,18 @@ fn resolve_path(path_str: &str, workspace: &Path) -> std::path::PathBuf {
     }
 }
 
-/// Check if a resolved path is within the workspace.
+/// Check if a resolved path is within the workspace or an allowed temp directory.
 fn is_within_workspace(resolved: &Path, workspace: &Path) -> bool {
+    if resolved.starts_with("/tmp") || resolved.starts_with("/var/folders") {
+        return true;
+    }
+    if let Ok(tmp) = std::env::temp_dir().canonicalize() {
+        if let Ok(r) = resolved.canonicalize() {
+            if r.starts_with(&tmp) {
+                return true;
+            }
+        }
+    }
     match (resolved.canonicalize(), workspace.canonicalize()) {
         (Ok(r), Ok(w)) => r.starts_with(w),
         _ => false,

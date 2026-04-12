@@ -16,8 +16,6 @@ pub struct Target {
     #[serde(default)]
     pub notes: String,
     pub scope: Scope,
-    #[serde(default)]
-    pub group: String,
     pub status: TargetStatus,
     #[serde(default)]
     pub source: String,
@@ -117,20 +115,9 @@ impl TargetStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TargetStore {
     pub targets: Vec<Target>,
-    #[serde(default)]
-    pub groups: Vec<String>,
-}
-
-impl Default for TargetStore {
-    fn default() -> Self {
-        Self {
-            targets: Vec::new(),
-            groups: vec!["default".to_string()],
-        }
-    }
 }
 
 fn detect_type(value: &str) -> TargetType {
@@ -163,7 +150,6 @@ struct TargetRow {
     tags: serde_json::Value,
     notes: String,
     scope: String,
-    grp: String,
     status: String,
     source: String,
     parent_id: Option<Uuid>,
@@ -183,7 +169,6 @@ impl From<TargetRow> for Target {
             tags: serde_json::from_value(r.tags).unwrap_or_default(),
             notes: r.notes,
             scope: Scope::from_str(&r.scope),
-            group: r.grp,
             status: TargetStatus::from_str(&r.status),
             source: r.source,
             parent_id: r.parent_id.map(|u| u.to_string()),
@@ -207,7 +192,7 @@ pub async fn target_list(
     let pool = pool_from_state(&state).await;
 
     let rows = sqlx::query_as::<_, TargetRow>(
-        r#"SELECT id, name, target_type::text, value, tags, notes, scope::text, grp,
+        r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
                   status::text, source, parent_id, ports, technologies, created_at, updated_at
            FROM targets WHERE project_path IS NOT DISTINCT FROM $1
            ORDER BY created_at"#,
@@ -219,22 +204,7 @@ pub async fn target_list(
 
     let targets: Vec<Target> = rows.into_iter().map(Target::from).collect();
 
-    let groups: Vec<String> = sqlx::query_scalar::<_, String>(
-        "SELECT name FROM target_groups WHERE project_path IS NOT DISTINCT FROM $1 ORDER BY name",
-    )
-    .bind(project_path.as_deref())
-    .fetch_all(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    Ok(TargetStore {
-        targets,
-        groups: if groups.is_empty() {
-            vec!["default".to_string()]
-        } else {
-            groups
-        },
-    })
+    Ok(TargetStore { targets })
 }
 
 #[tauri::command]
@@ -244,7 +214,6 @@ pub async fn target_add(
     value: String,
     target_type: Option<TargetType>,
     scope: Option<Scope>,
-    group: Option<String>,
     tags: Option<Vec<String>>,
     notes: Option<String>,
     project_path: Option<String>,
@@ -254,7 +223,6 @@ pub async fn target_add(
     let pool = pool_from_state(&state).await;
     let tt = target_type.unwrap_or_else(|| detect_type(&value));
     let sc = scope.unwrap_or(Scope::InScope);
-    let grp = group.unwrap_or_else(|| "default".to_string());
     let tags_json = serde_json::to_value(tags.unwrap_or_default()).unwrap_or_default();
     let n = if name.is_empty() { value.clone() } else { name };
     let nt = notes.unwrap_or_default();
@@ -263,8 +231,8 @@ pub async fn target_add(
 
     let row = sqlx::query_as::<_, TargetRow>(
         r#"INSERT INTO targets (name, target_type, value, tags, notes, scope, grp, project_path, source, parent_id)
-           VALUES ($1, $2::target_type, $3, $4, $5, $6::scope_type, $7, $8, $9, $10)
-           RETURNING id, name, target_type::text, value, tags, notes, scope::text, grp,
+           VALUES ($1, $2::target_type, $3, $4, $5, $6::scope_type, 'default', $7, $8, $9)
+           RETURNING id, name, target_type::text, value, tags, notes, scope::text,
                      status::text, source, parent_id, ports, technologies, created_at, updated_at"#,
     )
     .bind(&n)
@@ -273,7 +241,6 @@ pub async fn target_add(
     .bind(&tags_json)
     .bind(&nt)
     .bind(sc.as_str())
-    .bind(&grp)
     .bind(project_path.as_deref())
     .bind(&src)
     .bind(pid)
@@ -288,11 +255,9 @@ pub async fn target_add(
 pub async fn target_batch_add(
     state: tauri::State<'_, AppState>,
     values: String,
-    group: Option<String>,
     project_path: Option<String>,
 ) -> Result<Vec<Target>, String> {
     let pool = pool_from_state(&state).await;
-    let grp = group.unwrap_or_else(|| "default".to_string());
 
     let existing: Vec<String> = sqlx::query_scalar(
         "SELECT value FROM targets WHERE project_path IS NOT DISTINCT FROM $1",
@@ -314,14 +279,13 @@ pub async fn target_batch_add(
         let tt = detect_type(v);
         let row = sqlx::query_as::<_, TargetRow>(
             r#"INSERT INTO targets (name, target_type, value, tags, scope, grp, project_path)
-               VALUES ($1, $2::target_type, $3, '[]', 'in'::scope_type, $4, $5)
-               RETURNING id, name, target_type::text, value, tags, notes, scope::text, grp,
+               VALUES ($1, $2::target_type, $3, '[]', 'in'::scope_type, 'default', $4)
+               RETURNING id, name, target_type::text, value, tags, notes, scope::text,
                          status::text, source, parent_id, ports, technologies, created_at, updated_at"#,
         )
         .bind(v)
         .bind(tt.as_str())
         .bind(v)
-        .bind(&grp)
         .bind(project_path.as_deref())
         .fetch_one(pool)
         .await
@@ -337,7 +301,6 @@ pub async fn target_update(
     id: String,
     name: Option<String>,
     scope: Option<Scope>,
-    group: Option<String>,
     tags: Option<Vec<String>>,
     notes: Option<String>,
     status: Option<TargetStatus>,
@@ -360,14 +323,6 @@ pub async fn target_update(
     if let Some(s) = &scope {
         sqlx::query("UPDATE targets SET scope=$1::scope_type, updated_at=NOW() WHERE id=$2")
             .bind(s.as_str())
-            .bind(uid)
-            .execute(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-    if let Some(g) = &group {
-        sqlx::query("UPDATE targets SET grp=$1, updated_at=NOW() WHERE id=$2")
-            .bind(g)
             .bind(uid)
             .execute(pool)
             .await
@@ -418,7 +373,7 @@ pub async fn target_update(
     }
 
     let row = sqlx::query_as::<_, TargetRow>(
-        r#"SELECT id, name, target_type::text, value, tags, notes, scope::text, grp,
+        r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
                   status::text, source, parent_id, ports, technologies, created_at, updated_at
            FROM targets WHERE id=$1"#,
     )
@@ -448,55 +403,6 @@ pub async fn target_delete(
 }
 
 #[tauri::command]
-pub async fn target_add_group(
-    state: tauri::State<'_, AppState>,
-    name: String,
-    project_path: Option<String>,
-) -> Result<Vec<String>, String> {
-    let pool = pool_from_state(&state).await;
-    sqlx::query(
-        "INSERT INTO target_groups (name, project_path) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-    )
-    .bind(&name)
-    .bind(project_path.as_deref())
-    .execute(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    let groups: Vec<String> = sqlx::query_scalar(
-        "SELECT name FROM target_groups WHERE project_path IS NOT DISTINCT FROM $1 ORDER BY name",
-    )
-    .bind(project_path.as_deref())
-    .fetch_all(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    Ok(groups)
-}
-
-#[tauri::command]
-pub async fn target_delete_group(
-    state: tauri::State<'_, AppState>,
-    name: String,
-    project_path: Option<String>,
-) -> Result<(), String> {
-    let pool = pool_from_state(&state).await;
-    sqlx::query("DELETE FROM target_groups WHERE name=$1 AND project_path IS NOT DISTINCT FROM $2")
-        .bind(&name)
-        .bind(project_path.as_deref())
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-    sqlx::query("DELETE FROM targets WHERE grp=$1 AND project_path IS NOT DISTINCT FROM $2")
-        .bind(&name)
-        .bind(project_path.as_deref())
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
 pub async fn target_clear_all(
     state: tauri::State<'_, AppState>,
     project_path: Option<String>,
@@ -507,18 +413,6 @@ pub async fn target_clear_all(
         .execute(pool)
         .await
         .map_err(|e| e.to_string())?;
-    sqlx::query("DELETE FROM target_groups WHERE project_path IS NOT DISTINCT FROM $1")
-        .bind(project_path.as_deref())
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-    sqlx::query(
-        "INSERT INTO target_groups (name, project_path) VALUES ('default', $1) ON CONFLICT DO NOTHING",
-    )
-    .bind(project_path.as_deref())
-    .execute(pool)
-    .await
-    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -541,7 +435,7 @@ pub async fn target_update_status(
         .map_err(|e| e.to_string())?;
 
     let row = sqlx::query_as::<_, TargetRow>(
-        r#"SELECT id, name, target_type::text, value, tags, notes, scope::text, grp,
+        r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
                   status::text, source, parent_id, ports, technologies, created_at, updated_at
            FROM targets WHERE id=$1"#,
     )
@@ -573,7 +467,7 @@ pub async fn db_target_add(
         r#"INSERT INTO targets (name, target_type, value, tags, notes, scope, grp, project_path, source, parent_id)
            VALUES ($1, $2::target_type, $3, '[]', '', 'in'::scope_type, 'default', $4, $5, $6)
            ON CONFLICT DO NOTHING
-           RETURNING id, name, target_type::text, value, tags, notes, scope::text, grp,
+           RETURNING id, name, target_type::text, value, tags, notes, scope::text,
                      status::text, source, parent_id, ports, technologies, created_at, updated_at"#,
     )
     .bind(n)
@@ -590,7 +484,7 @@ pub async fn db_target_add(
         Some(r) => Ok(Target::from(r)),
         None => {
             let existing = sqlx::query_as::<_, TargetRow>(
-                r#"SELECT id, name, target_type::text, value, tags, notes, scope::text, grp,
+                r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
                           status::text, source, parent_id, ports, technologies, created_at, updated_at
                    FROM targets WHERE value=$1 AND project_path IS NOT DISTINCT FROM $2 LIMIT 1"#,
             )
@@ -609,7 +503,7 @@ pub async fn db_target_list(
     project_path: Option<&str>,
 ) -> Result<Vec<Target>, String> {
     let rows = sqlx::query_as::<_, TargetRow>(
-        r#"SELECT id, name, target_type::text, value, tags, notes, scope::text, grp,
+        r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
                   status::text, source, parent_id, ports, technologies, created_at, updated_at
            FROM targets WHERE project_path IS NOT DISTINCT FROM $1
            ORDER BY created_at"#,

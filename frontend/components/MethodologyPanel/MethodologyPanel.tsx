@@ -69,8 +69,8 @@ export function MethodologyPanel() {
         invoke<MethodologyTemplate[]>("method_list_templates"),
         invoke<ProjectMethodology[]>("method_list_projects", { projectPath: getProjectPath() }),
       ]);
-      setTemplates(t);
-      setProjects(p);
+      setTemplates(Array.isArray(t) ? t : []);
+      setProjects(Array.isArray(p) ? p : []);
     } catch {
       /* ignore */
     }

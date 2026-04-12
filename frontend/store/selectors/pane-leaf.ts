@@ -9,7 +9,7 @@
  */
 
 import { useShallow } from "zustand/react/shallow";
-import type { RenderMode, TabType } from "../index";
+import type { DetailViewMode, RenderMode, TabType, TaskPlan } from "../index";
 import { useStore } from "../index";
 
 /**
@@ -23,6 +23,8 @@ export interface PaneLeafState {
   tabType: TabType;
   sessionExists: boolean;
   sessionName: string | undefined;
+  detailViewMode: DetailViewMode;
+  plan: TaskPlan | undefined;
 }
 
 /**
@@ -36,6 +38,8 @@ interface CacheEntry {
   tabType: TabType | undefined;
   sessionExists: boolean;
   sessionName: string | undefined;
+  detailViewMode: DetailViewMode | undefined;
+  plan: TaskPlan | undefined;
   // Computed result
   result: PaneLeafState;
 }
@@ -68,6 +72,8 @@ function getRawPaneLeafInputs(
     tabType: session?.tabType,
     sessionExists: !!session,
     sessionName: session?.name,
+    detailViewMode: session?.detailViewMode,
+    plan: session?.plan,
   };
 }
 
@@ -84,7 +90,9 @@ function isCacheValid(
     cached.workingDirectory === inputs.workingDirectory &&
     cached.tabType === inputs.tabType &&
     cached.sessionExists === inputs.sessionExists &&
-    cached.sessionName === inputs.sessionName
+    cached.sessionName === inputs.sessionName &&
+    cached.detailViewMode === inputs.detailViewMode &&
+    cached.plan === inputs.plan
   );
 }
 
@@ -99,6 +107,8 @@ function createPaneLeafState(inputs: ReturnType<typeof getRawPaneLeafInputs>): P
     tabType: inputs.tabType ?? "terminal",
     sessionExists: inputs.sessionExists,
     sessionName: inputs.sessionName,
+    detailViewMode: inputs.detailViewMode ?? "timeline",
+    plan: inputs.plan,
   };
 }
 

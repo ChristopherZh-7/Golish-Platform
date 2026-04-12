@@ -136,17 +136,32 @@ export function useAiEvents() {
         sessionId = fallbackId;
       }
 
-      // Verify the session exists in the store
+      // Verify the session exists in the store.
+      // For conversation-mode AI sessions (e.g. pentest chat), the session_id is the
+      // AI session ID which differs from the PTY session ID. Resolve via conversations.
       if (!state.sessions[sessionId]) {
-        // Upgrade to warn - this should not happen in normal operation and indicates
-        // a session lifecycle mismatch between frontend and backend
-        logger.warn("AI event dropped for unknown session:", {
-          sessionId,
-          eventType: event.type,
-          activeSessionId: state.activeSessionId,
-          knownSessions: Object.keys(state.sessions),
-        });
-        return;
+        const conv = state.getConversationBySessionId(sessionId);
+        if (conv) {
+          const termIds = state.conversationTerminals[conv.id];
+          const termId = termIds?.[0];
+          if (termId && state.sessions[termId]) {
+            sessionId = termId;
+          } else {
+            logger.debug("AI event for conversation without linked terminal:", {
+              sessionId,
+              convId: conv.id,
+              eventType: event.type,
+            });
+            return;
+          }
+        } else {
+          logger.warn("AI event dropped for unknown session:", {
+            sessionId,
+            eventType: event.type,
+            activeSessionId: state.activeSessionId,
+          });
+          return;
+        }
       }
 
       // Deduplication: check sequence number if present

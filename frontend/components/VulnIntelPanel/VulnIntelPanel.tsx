@@ -143,14 +143,14 @@ export function VulnIntelPanel() {
   const loadCached = useCallback(async () => {
     try {
       const cached = await invoke<VulnEntry[]>("intel_get_cached");
-      setEntries(cached);
+      setEntries(Array.isArray(cached) ? cached : []);
     } catch { /* ignore */ }
   }, []);
 
   const loadFeeds = useCallback(async () => {
     try {
       const f = await invoke<VulnFeed[]>("intel_list_feeds");
-      setFeeds(f);
+      setFeeds(Array.isArray(f) ? f : []);
     } catch { /* ignore */ }
   }, []);
 
@@ -163,7 +163,7 @@ export function VulnIntelPanel() {
     setLoading(true);
     try {
       const result = await invoke<VulnEntry[]>("intel_fetch");
-      setEntries(result);
+      setEntries(Array.isArray(result) ? result : []);
       loadFeeds();
     } catch (e) {
       console.error("Fetch failed:", e);
@@ -230,7 +230,7 @@ export function VulnIntelPanel() {
         setSearchOffset(nextOffset);
       } else {
         const result = await invoke<VulnEntry[]>("intel_fetch_page", { page: loadMorePage });
-        setEntries(result);
+        setEntries(Array.isArray(result) ? result : []);
         setLoadMorePage((p) => p + 1);
       }
     } catch (e) {
@@ -252,11 +252,12 @@ export function VulnIntelPanel() {
     setSearchOffset(0);
     try {
       const localResults = await invoke<VulnEntry[]>("intel_search", { query: q });
-      if (localResults.length > 0) {
-        setEntries(localResults);
+      const safeLocalResults = Array.isArray(localResults) ? localResults : [];
+      if (safeLocalResults.length > 0) {
+        setEntries(safeLocalResults);
       } else {
         const remoteResults = await invoke<VulnEntry[]>("intel_search_remote", { query: q });
-        setEntries(remoteResults);
+        setEntries(Array.isArray(remoteResults) ? remoteResults : []);
       }
     } catch { /* ignore */ }
     setLoading(false);
@@ -300,7 +301,7 @@ export function VulnIntelPanel() {
     loadFeeds();
   }, [loadFeeds]);
 
-  const baseEntries = viewMode === "matched" ? matchedEntries : entries;
+  const baseEntries = viewMode === "matched" ? (matchedEntries ?? []) : (entries ?? []);
 
   const displayEntries = useMemo(() => {
     let filtered = baseEntries;
@@ -522,7 +523,7 @@ export function VulnIntelPanel() {
       {/* Feeds config view */}
       {viewMode === "feeds-config" ? (
         <div className="flex-1 overflow-y-auto px-3 py-2 space-y-1">
-          {feeds.map((feed) => (
+          {(feeds ?? []).map((feed) => (
             <div key={feed.id} className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-muted/5 group">
               <input
                 type="checkbox"
@@ -865,7 +866,7 @@ function WikiTab({ link, cveId, onUpdateLink, onOpenFile }: { link: VulnLink; cv
         }
       };
       const tree = await invoke<{ path: string; name: string; is_dir: boolean; children?: { path: string; name: string; is_dir: boolean }[] }[]>("wiki_list");
-      flatten(tree);
+      if (Array.isArray(tree)) flatten(tree);
       setWikiTree(flatFiles);
     } catch { /* ignore */ }
     setLoadingTree(false);

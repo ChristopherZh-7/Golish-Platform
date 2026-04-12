@@ -150,26 +150,25 @@ export function groupConsecutiveToolsByAny(blocks: InputBlock[]): GroupedStreami
 
   for (const block of blocks) {
     if (block.type === "text") {
-      // Check if text is whitespace-only (newlines, spaces, etc.)
       const isWhitespaceOnly = block.content.trim() === "";
 
-      if (isWhitespaceOnly) {
-        // Don't break the current group for whitespace-only text
-        // But remember it in case we need to add it later (before non-tool content)
-        if (currentGroup.length === 0) {
-          // No active tool group - accumulate whitespace with pending
-          pendingWhitespaceText = (pendingWhitespaceText || "") + block.content;
-        } else {
-          // Active tool group - just skip whitespace between tools
-          pendingWhitespaceText = (pendingWhitespaceText || "") + block.content;
-        }
+      if (isWhitespaceOnly && currentGroup.length === 0) {
+        // No active tool group - accumulate whitespace
+        pendingWhitespaceText = (pendingWhitespaceText || "") + block.content;
       } else {
-        // Non-whitespace text - flush tool group and add text
+        // Any text (including whitespace) breaks an active tool group.
+        // This ensures tool calls from different agentic loop iterations
+        // are displayed separately rather than merged into one group.
         flushGroup();
-        // Include any pending whitespace before this text
         if (pendingWhitespaceText) {
-          result.push({ type: "text", content: pendingWhitespaceText + block.content });
-          pendingWhitespaceText = null;
+          if (isWhitespaceOnly) {
+            pendingWhitespaceText += block.content;
+          } else {
+            result.push({ type: "text", content: pendingWhitespaceText + block.content });
+            pendingWhitespaceText = null;
+          }
+        } else if (isWhitespaceOnly) {
+          pendingWhitespaceText = block.content;
         } else {
           result.push(block);
         }

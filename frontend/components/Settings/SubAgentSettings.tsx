@@ -13,6 +13,10 @@ const KNOWN_SUB_AGENTS = [
   { id: "coder", name: "Coder", description: "Specialized for code generation tasks" },
   { id: "researcher", name: "Researcher", description: "Specialized for research tasks" },
   { id: "analyzer", name: "Analyzer", description: "Specialized for code analysis" },
+  { id: "js_harvester", name: "JS Harvester", description: "AI-driven JavaScript collection from target URLs" },
+  { id: "js_analyzer", name: "JS Analyzer", description: "Security analysis of collected JavaScript assets" },
+  { id: "executor", name: "Executor", description: "Shell command execution and system operations" },
+  { id: "explorer", name: "Explorer", description: "Fast file search and codebase navigation" },
 ];
 
 const PROVIDER_OPTIONS: { value: AiProvider; label: string }[] = [

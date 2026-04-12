@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  ArrowRight, GitBranch, Loader2, Play, Plus, Save, Trash2, X,
+  ArrowRight, Code2, Download, GitBranch, Loader2, Play, Plus, Save, Trash2, X,
   Shield, Globe, Server, Cpu, Wrench,
   AlertTriangle, CheckCircle2,
 } from "lucide-react";
@@ -27,6 +27,8 @@ const STEP_TYPE_META: Record<string, { icon: typeof Shield; color: string; label
   http_probe: { icon: Globe, color: "text-green-400", label: "HTTP Probe" },
   port_scan: { icon: Server, color: "text-red-400", label: "Port Scan" },
   tech_fingerprint: { icon: Cpu, color: "text-purple-400", label: "Tech Fingerprint" },
+  js_collect: { icon: Code2, color: "text-amber-400", label: "JS Collect" },
+  js_harvest: { icon: Download, color: "text-amber-500", label: "JS Harvest (AI)" },
   shell_command: { icon: Wrench, color: "text-muted-foreground", label: "Shell" },
 };
 
@@ -87,8 +89,8 @@ export function PipelinePanel() {
         invoke<Pipeline[]>("pipeline_list", { projectPath: getProjectPath() }),
         scanTools(),
       ]);
-      setPipelines(pipelineList);
-      setTools((toolList.tools || []).filter((t) =>
+      setPipelines(Array.isArray(pipelineList) ? pipelineList : []);
+      setTools((toolList?.tools || []).filter((t) =>
         t.ui === "cli" && t.installed
       ));
     } catch { /* ignore */ }
@@ -294,12 +296,15 @@ export function PipelinePanel() {
                   )}
                   <span className="flex-1 truncate">{p.name}</span>
                   <span className="text-[9px] text-muted-foreground/30">{p.steps.length}</span>
-                  <button
+                  <span
+                    role="button"
+                    tabIndex={0}
                     onClick={(e) => { e.stopPropagation(); handleDelete(p.id); }}
-                    className="p-0.5 opacity-0 group-hover:opacity-100 text-muted-foreground/30 hover:text-red-400 transition-all"
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); handleDelete(p.id); } }}
+                    className="p-0.5 opacity-0 group-hover:opacity-100 text-muted-foreground/30 hover:text-red-400 transition-all cursor-pointer"
                   >
                     <Trash2 className="w-3 h-3" />
-                  </button>
+                  </span>
                 </button>
               ))}
             </div>
