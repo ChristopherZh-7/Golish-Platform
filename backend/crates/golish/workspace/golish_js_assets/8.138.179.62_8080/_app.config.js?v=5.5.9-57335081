@@ -1,1 +1,0 @@
-window._VBEN_ADMIN_PRO_APP_CONF_={"VITE_GLOB_API_URL":"/admin-api","VITE_GLOB_AUTH_DINGDING_CLIENT_ID":"dingt49strlwu53ezfbj","VITE_GLOB_AUTH_DINGDING_CORP_ID":"3171748104"};Object.freeze(window._VBEN_ADMIN_PRO_APP_CONF_);Object.defineProperty(window,"_VBEN_ADMIN_PRO_APP_CONF_",{configurable:false,writable:false,});

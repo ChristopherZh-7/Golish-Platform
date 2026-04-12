@@ -81,6 +81,16 @@ tmp/
 .vtcode/
 /external/
 
+# AI agent temp artifacts (JS harvester scripts, downloaded assets, recon data)
+**/workspace/
+**/js-assets/
+**/js_assets/
+**/golish_js_assets/
+**/recon/target_page.html
+/target_page.html
+/vite_manifest.json
+/assets_manifest.json
+
 mistral-testbed/target/
 
 # Test workspace for evals
