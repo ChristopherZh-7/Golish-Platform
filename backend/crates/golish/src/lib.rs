@@ -1151,6 +1151,8 @@ pub fn run_gui() {
             tools::vault::vault_update,
             tools::vault::vault_delete,
             tools::vault::vault_resolve,
+            tools::vault::vault_validate,
+            tools::vault::vault_update_status,
             tools::project_io::project_export,
             tools::project_io::project_import,
             tools::topology::topo_parse,
