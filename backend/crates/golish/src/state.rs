@@ -106,6 +106,25 @@ impl AppState {
         }
     }
 
+    /// Wait for the embedded database to be ready and return the pool.
+    /// Returns `Err` if the database failed to start or the timeout expires.
+    pub async fn db_pool_ready(&self) -> Result<&PgPool, String> {
+        if self.db_ready.is_ready() {
+            return Ok(&self.db_pool);
+        }
+        if self.db_ready.is_failed() {
+            return Err("Database failed to start".to_string());
+        }
+        if !self
+            .db_ready
+            .wait_timeout(std::time::Duration::from_secs(15))
+            .await
+        {
+            return Err("Database is still starting up, please retry".to_string());
+        }
+        Ok(&self.db_pool)
+    }
+
     /// Create a new AppState with a pre-initialized SettingsManager.
     ///
     /// This avoids redundant disk reads when the SettingsManager has already been created.

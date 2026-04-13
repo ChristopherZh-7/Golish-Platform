@@ -1023,6 +1023,10 @@ Be concise and focused. Complete the task as efficiently as possible."#,
             "list_files".to_string(),
             "grep_file".to_string(),
             "search_memories".to_string(),
+            "run_pipeline".to_string(),
+            "manage_targets".to_string(),
+            "record_finding".to_string(),
+            "vault".to_string(),
         ])
         .with_max_iterations(50)
         .with_timeout(900)
@@ -1269,6 +1273,9 @@ mod tests {
         assert!(pentester.allowed_tools.contains(&"run_pty_cmd".to_string()));
         assert!(pentester.allowed_tools.contains(&"web_search".to_string()));
         assert!(pentester.allowed_tools.contains(&"search_memories".to_string()));
+        assert!(pentester.allowed_tools.contains(&"run_pipeline".to_string()));
+        assert!(pentester.allowed_tools.contains(&"manage_targets".to_string()));
+        assert!(pentester.allowed_tools.contains(&"record_finding".to_string()));
         assert_eq!(pentester.max_iterations, 50);
         assert_eq!(pentester.timeout_secs, Some(900));
     }

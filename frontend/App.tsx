@@ -127,6 +127,7 @@ const KeyboardShortcutsHelp = lazy(() =>
 );
 
 import { useAiEvents } from "./hooks/useAiEvents";
+import { usePipelineEvents } from "./hooks/usePipelineEvents";
 import { useCreateTerminalTab } from "./hooks/useCreateTerminalTab";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import { TerminalPortalProvider } from "./hooks/useTerminalPortal";
@@ -211,7 +212,8 @@ function App() {
   }, [uiScale]);
 
   const isOnHomeTab = useStore((s) => s.homeTabId !== null && s.activeSessionId === s.homeTabId);
-  
+  const chatPanelVisible = useStore((s) => s.chatPanelVisible);
+
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -297,6 +299,9 @@ function App() {
   // Subscribe to AI events for agent mode
   useAiEvents();
 
+  // Subscribe to pipeline progress events (bridges Rust pipeline-event → timeline)
+  usePipelineEvents();
+
   // Handle toggle mode from command palette (cycles: terminal → agent → auto → terminal)
   const handleToggleMode = useCallback(() => {
     if (activeSessionId) {
@@ -376,6 +381,7 @@ function App() {
                     workingDirectory: t.workingDirectory,
                     scrollback: t.scrollback,
                     customName: t.customName ?? undefined,
+                    planJson: t.planJson ?? undefined,
                     timelineBlocks: t.timelineBlocks.map((b) => ({
                       id: b.id,
                       type: b.type as any,
@@ -1468,17 +1474,40 @@ function App() {
               </div>
             )}
 
-            {/* Right sidebar - AI Chat Panel (animated hide on home tab) */}
-            <div
-              data-right-panel
-              className={cn(
-                "flex-shrink-0 h-full rounded-xl bg-card overflow-hidden panel-float",
-                isOnHomeTab && "w-0"
-              )}
-              style={isOnHomeTab ? undefined : { width: rightPanelWidth }}
-            >
-              <AIChatPanel />
-            </div>
+            {/* Right sidebar - AI Chat Panel (hide on home tab or when collapsed) */}
+            {!isOnHomeTab && chatPanelVisible && (
+              <div
+                data-right-panel
+                className="flex-shrink-0 h-full rounded-xl bg-card overflow-hidden panel-float"
+                style={{ width: rightPanelWidth }}
+              >
+                <AIChatPanel />
+              </div>
+            )}
+
+            {/* Floating toggle to reopen collapsed chat panel */}
+            {!isOnHomeTab && !chatPanelVisible && (
+              <button
+                type="button"
+                onClick={async () => {
+                  useStore.getState().setChatPanelVisible(true);
+                  if (!useStore.getState().activeConversationId) {
+                    const fresh = createNewConversation();
+                    useStore.getState().addConversation(fresh);
+                    const termId = await createTerminalTab(undefined, true);
+                    if (termId) {
+                      useStore.getState().addTerminalToConversation(fresh.id, termId);
+                      useStore.getState().setActiveSession(termId);
+                    }
+                  }
+                }}
+                className="fixed bottom-16 right-4 z-50 flex items-center gap-2 px-3 py-2 rounded-lg bg-primary text-primary-foreground shadow-lg hover:bg-primary/90 transition-colors text-sm font-medium"
+                title="Open AI Chat"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>
+                Chat
+              </button>
+            )}
           </div>
         </div>
 

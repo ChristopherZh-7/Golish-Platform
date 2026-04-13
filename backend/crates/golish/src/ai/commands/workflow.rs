@@ -24,6 +24,7 @@ pub async fn run_recon_pipeline(
 }
 
 /// Check if common recon tools are installed.
+/// Checks both system PATH (via `which`) and the app's managed tools directory.
 #[tauri::command]
 pub async fn check_recon_tools_cmd() -> Result<serde_json::Value, String> {
     let tools = [
@@ -32,15 +33,42 @@ pub async fn check_recon_tools_cmd() -> Result<serde_json::Value, String> {
         "feroxbuster", "dig",
     ];
 
+    // Build the app's tools directory path
+    let app_tools_dir = dirs::home_dir().map(|h| {
+        #[cfg(target_os = "macos")]
+        { h.join("Library").join("Application Support").join("golish-platform").join("tools") }
+        #[cfg(target_os = "windows")]
+        { h.join("AppData").join("Local").join("golish-platform").join("tools") }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        { h.join(".golish-platform").join("tools") }
+    });
+
     let mut results = Vec::new();
     let mut missing = Vec::new();
 
     for tool in &tools {
-        let installed = std::process::Command::new("which")
+        // Check system PATH
+        let in_path = std::process::Command::new("which")
             .arg(tool)
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
+
+        // Check app's tools directory (case-insensitive directory name match)
+        let in_app = app_tools_dir.as_ref().map_or(false, |dir| {
+            if !dir.exists() { return false; }
+            std::fs::read_dir(dir)
+                .ok()
+                .map(|entries| {
+                    entries.filter_map(|e| e.ok()).any(|e| {
+                        let name = e.file_name().to_string_lossy().to_lowercase();
+                        name == *tool && e.path().is_dir()
+                    })
+                })
+                .unwrap_or(false)
+        });
+
+        let installed = in_path || in_app;
         if !installed {
             missing.push(tool.to_string());
         }

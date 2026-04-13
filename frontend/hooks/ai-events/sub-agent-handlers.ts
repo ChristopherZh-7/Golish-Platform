@@ -67,9 +67,7 @@ export const handleSubAgentStarted: EventHandler<{
     depth: event.depth,
   });
 
-  // Auto-switch to tool-detail view so sub-agent activity is visible
-  const session = state.sessions[ctx.sessionId];
-  if (session && session.detailViewMode !== "plan") {
+  if (state.sessions[ctx.sessionId]) {
     state.setDetailViewMode(ctx.sessionId, "tool-detail");
   }
 };

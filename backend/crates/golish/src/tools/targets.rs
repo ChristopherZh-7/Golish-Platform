@@ -25,6 +25,20 @@ pub struct Target {
     pub ports: Vec<serde_json::Value>,
     #[serde(default)]
     pub technologies: Vec<String>,
+    #[serde(default)]
+    pub real_ip: String,
+    #[serde(default)]
+    pub cdn_waf: String,
+    #[serde(default)]
+    pub http_title: String,
+    #[serde(default)]
+    pub http_status: Option<i32>,
+    #[serde(default)]
+    pub webserver: String,
+    #[serde(default)]
+    pub os_info: String,
+    #[serde(default)]
+    pub content_type: String,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -155,6 +169,13 @@ struct TargetRow {
     parent_id: Option<Uuid>,
     ports: serde_json::Value,
     technologies: serde_json::Value,
+    real_ip: String,
+    cdn_waf: String,
+    http_title: String,
+    http_status: Option<i32>,
+    webserver: String,
+    os_info: String,
+    content_type: String,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -174,14 +195,17 @@ impl From<TargetRow> for Target {
             parent_id: r.parent_id.map(|u| u.to_string()),
             ports: serde_json::from_value(r.ports).unwrap_or_default(),
             technologies: serde_json::from_value(r.technologies).unwrap_or_default(),
+            real_ip: r.real_ip,
+            cdn_waf: r.cdn_waf,
+            http_title: r.http_title,
+            http_status: r.http_status,
+            webserver: r.webserver,
+            os_info: r.os_info,
+            content_type: r.content_type,
             created_at: ts_from_chrono(r.created_at),
             updated_at: ts_from_chrono(r.updated_at),
         }
     }
-}
-
-async fn pool_from_state(state: &AppState) -> &PgPool {
-    &state.db_pool
 }
 
 #[tauri::command]
@@ -189,11 +213,13 @@ pub async fn target_list(
     state: tauri::State<'_, AppState>,
     project_path: Option<String>,
 ) -> Result<TargetStore, String> {
-    let pool = pool_from_state(&state).await;
+    let pool = state.db_pool_ready().await?;
 
     let rows = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
-                  status::text, source, parent_id, ports, technologies, created_at, updated_at
+                  status::text, source, parent_id, ports, technologies,
+                     real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
+                     created_at, updated_at
            FROM targets WHERE project_path IS NOT DISTINCT FROM $1
            ORDER BY created_at"#,
     )
@@ -220,7 +246,7 @@ pub async fn target_add(
     source: Option<String>,
     parent_id: Option<String>,
 ) -> Result<Target, String> {
-    let pool = pool_from_state(&state).await;
+    let pool = state.db_pool_ready().await?;
     let tt = target_type.unwrap_or_else(|| detect_type(&value));
     let sc = scope.unwrap_or(Scope::InScope);
     let tags_json = serde_json::to_value(tags.unwrap_or_default()).unwrap_or_default();
@@ -233,7 +259,9 @@ pub async fn target_add(
         r#"INSERT INTO targets (name, target_type, value, tags, notes, scope, grp, project_path, source, parent_id)
            VALUES ($1, $2::target_type, $3, $4, $5, $6::scope_type, 'default', $7, $8, $9)
            RETURNING id, name, target_type::text, value, tags, notes, scope::text,
-                     status::text, source, parent_id, ports, technologies, created_at, updated_at"#,
+                     status::text, source, parent_id, ports, technologies,
+                     real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
+                     created_at, updated_at"#,
     )
     .bind(&n)
     .bind(tt.as_str())
@@ -257,7 +285,7 @@ pub async fn target_batch_add(
     values: String,
     project_path: Option<String>,
 ) -> Result<Vec<Target>, String> {
-    let pool = pool_from_state(&state).await;
+    let pool = state.db_pool_ready().await?;
 
     let existing: Vec<String> = sqlx::query_scalar(
         "SELECT value FROM targets WHERE project_path IS NOT DISTINCT FROM $1",
@@ -281,7 +309,9 @@ pub async fn target_batch_add(
             r#"INSERT INTO targets (name, target_type, value, tags, scope, grp, project_path)
                VALUES ($1, $2::target_type, $3, '[]', 'in'::scope_type, 'default', $4)
                RETURNING id, name, target_type::text, value, tags, notes, scope::text,
-                         status::text, source, parent_id, ports, technologies, created_at, updated_at"#,
+                         status::text, source, parent_id, ports, technologies,
+                     real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
+                     created_at, updated_at"#,
         )
         .bind(v)
         .bind(tt.as_str())
@@ -308,7 +338,7 @@ pub async fn target_update(
     technologies: Option<Vec<String>>,
     project_path: Option<String>,
 ) -> Result<Target, String> {
-    let pool = pool_from_state(&state).await;
+    let pool = state.db_pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
@@ -374,7 +404,9 @@ pub async fn target_update(
 
     let row = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
-                  status::text, source, parent_id, ports, technologies, created_at, updated_at
+                  status::text, source, parent_id, ports, technologies,
+                     real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
+                     created_at, updated_at
            FROM targets WHERE id=$1"#,
     )
     .bind(uid)
@@ -391,7 +423,7 @@ pub async fn target_delete(
     id: String,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = pool_from_state(&state).await;
+    let pool = state.db_pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
     sqlx::query("DELETE FROM targets WHERE id=$1")
@@ -407,7 +439,7 @@ pub async fn target_clear_all(
     state: tauri::State<'_, AppState>,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = pool_from_state(&state).await;
+    let pool = state.db_pool_ready().await?;
     sqlx::query("DELETE FROM targets WHERE project_path IS NOT DISTINCT FROM $1")
         .bind(project_path.as_deref())
         .execute(pool)
@@ -423,7 +455,7 @@ pub async fn target_update_status(
     status: TargetStatus,
     project_path: Option<String>,
 ) -> Result<Target, String> {
-    let pool = pool_from_state(&state).await;
+    let pool = state.db_pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
@@ -436,7 +468,9 @@ pub async fn target_update_status(
 
     let row = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
-                  status::text, source, parent_id, ports, technologies, created_at, updated_at
+                  status::text, source, parent_id, ports, technologies,
+                     real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
+                     created_at, updated_at
            FROM targets WHERE id=$1"#,
     )
     .bind(uid)
@@ -463,12 +497,30 @@ pub async fn db_target_add(
     let tt = target_type.map(TargetType::from_str).unwrap_or_else(|| detect_type(value));
     let n = if name.is_empty() { value } else { name };
 
+    let existing = sqlx::query_as::<_, TargetRow>(
+        r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
+                  status::text, source, parent_id, ports, technologies,
+                  real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
+                  created_at, updated_at
+           FROM targets WHERE value=$1 AND project_path IS NOT DISTINCT FROM $2 LIMIT 1"#,
+    )
+    .bind(value)
+    .bind(project_path)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if let Some(r) = existing {
+        return Ok(Target::from(r));
+    }
+
     let row = sqlx::query_as::<_, TargetRow>(
         r#"INSERT INTO targets (name, target_type, value, tags, notes, scope, grp, project_path, source, parent_id)
            VALUES ($1, $2::target_type, $3, '[]', '', 'in'::scope_type, 'default', $4, $5, $6)
-           ON CONFLICT DO NOTHING
            RETURNING id, name, target_type::text, value, tags, notes, scope::text,
-                     status::text, source, parent_id, ports, technologies, created_at, updated_at"#,
+                     status::text, source, parent_id, ports, technologies,
+                     real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
+                     created_at, updated_at"#,
     )
     .bind(n)
     .bind(tt.as_str())
@@ -476,26 +528,11 @@ pub async fn db_target_add(
     .bind(project_path)
     .bind(source)
     .bind(parent_id)
-    .fetch_optional(pool)
+    .fetch_one(pool)
     .await
     .map_err(|e| e.to_string())?;
 
-    match row {
-        Some(r) => Ok(Target::from(r)),
-        None => {
-            let existing = sqlx::query_as::<_, TargetRow>(
-                r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
-                          status::text, source, parent_id, ports, technologies, created_at, updated_at
-                   FROM targets WHERE value=$1 AND project_path IS NOT DISTINCT FROM $2 LIMIT 1"#,
-            )
-            .bind(value)
-            .bind(project_path)
-            .fetch_one(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-            Ok(Target::from(existing))
-        }
-    }
+    Ok(Target::from(row))
 }
 
 pub async fn db_target_list(
@@ -504,7 +541,9 @@ pub async fn db_target_list(
 ) -> Result<Vec<Target>, String> {
     let rows = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
-                  status::text, source, parent_id, ports, technologies, created_at, updated_at
+                  status::text, source, parent_id, ports, technologies,
+                     real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
+                     created_at, updated_at
            FROM targets WHERE project_path IS NOT DISTINCT FROM $1
            ORDER BY created_at"#,
     )
@@ -546,4 +585,217 @@ pub async fn db_target_update_recon(
     .await
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Extended recon update accepting all httpx/nmap-derived fields.
+/// Only non-empty values overwrite existing data.
+pub async fn db_target_update_recon_extended(
+    pool: &PgPool,
+    id: Uuid,
+    updates: &ReconUpdate,
+) -> Result<(), String> {
+    sqlx::query(
+        r#"UPDATE targets SET
+            real_ip       = CASE WHEN $1 != '' THEN $1 ELSE real_ip END,
+            cdn_waf       = CASE WHEN $2 != '' THEN $2 ELSE cdn_waf END,
+            http_title    = CASE WHEN $3 != '' THEN $3 ELSE http_title END,
+            http_status   = COALESCE($4, http_status),
+            webserver     = CASE WHEN $5 != '' THEN $5 ELSE webserver END,
+            os_info       = CASE WHEN $6 != '' THEN $6 ELSE os_info END,
+            content_type  = CASE WHEN $7 != '' THEN $7 ELSE content_type END,
+            ports         = CASE WHEN $8::jsonb = '[]'::jsonb THEN ports
+                            ELSE ports || (
+                                SELECT COALESCE(jsonb_agg(np), '[]'::jsonb)
+                                FROM jsonb_array_elements($8::jsonb) np
+                                WHERE NOT EXISTS (
+                                    SELECT 1 FROM jsonb_array_elements(ports) ep
+                                    WHERE (ep->>'port') = (np->>'port')
+                                      AND COALESCE(ep->>'proto','tcp') = COALESCE(np->>'proto','tcp')
+                                )
+                            ) END,
+            technologies  = CASE WHEN $9::jsonb = '[]'::jsonb THEN technologies
+                            ELSE (
+                                SELECT COALESCE(jsonb_agg(DISTINCT val), '[]'::jsonb) FROM (
+                                    SELECT val FROM jsonb_array_elements_text(technologies) val
+                                    UNION
+                                    SELECT val FROM jsonb_array_elements_text($9::jsonb) val
+                                ) t
+                            ) END,
+            updated_at    = NOW()
+           WHERE id = $10"#,
+    )
+    .bind(&updates.real_ip)
+    .bind(&updates.cdn_waf)
+    .bind(&updates.http_title)
+    .bind(updates.http_status)
+    .bind(&updates.webserver)
+    .bind(&updates.os_info)
+    .bind(&updates.content_type)
+    .bind(&updates.ports)
+    .bind(&updates.technologies)
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Fields for an extended recon update.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReconUpdate {
+    #[serde(default)]
+    pub real_ip: String,
+    #[serde(default)]
+    pub cdn_waf: String,
+    #[serde(default)]
+    pub http_title: String,
+    #[serde(default)]
+    pub http_status: Option<i32>,
+    #[serde(default)]
+    pub webserver: String,
+    #[serde(default)]
+    pub os_info: String,
+    #[serde(default)]
+    pub content_type: String,
+    #[serde(default)]
+    pub ports: serde_json::Value,
+    #[serde(default)]
+    pub technologies: serde_json::Value,
+}
+
+impl ReconUpdate {
+    pub fn new() -> Self {
+        Self {
+            ports: serde_json::json!([]),
+            technologies: serde_json::json!([]),
+            ..Default::default()
+        }
+    }
+}
+
+// ============================================================================
+// Directory entry storage (for ffuf / feroxbuster output)
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirectoryEntry {
+    pub id: String,
+    pub target_id: Option<String>,
+    pub url: String,
+    pub status_code: Option<i32>,
+    pub content_length: Option<i32>,
+    pub lines: Option<i32>,
+    pub words: Option<i32>,
+    pub content_type: String,
+    pub tool: String,
+    pub created_at: u64,
+}
+
+#[derive(sqlx::FromRow)]
+struct DirEntryRow {
+    id: Uuid,
+    target_id: Option<Uuid>,
+    url: String,
+    status_code: Option<i32>,
+    content_length: Option<i32>,
+    lines: Option<i32>,
+    words: Option<i32>,
+    content_type: String,
+    tool: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<DirEntryRow> for DirectoryEntry {
+    fn from(r: DirEntryRow) -> Self {
+        DirectoryEntry {
+            id: r.id.to_string(),
+            target_id: r.target_id.map(|u| u.to_string()),
+            url: r.url,
+            status_code: r.status_code,
+            content_length: r.content_length,
+            lines: r.lines,
+            words: r.words,
+            content_type: r.content_type,
+            tool: r.tool,
+            created_at: ts_from_chrono(r.created_at),
+        }
+    }
+}
+
+pub async fn db_directory_entry_add(
+    pool: &PgPool,
+    target_id: Option<Uuid>,
+    url: &str,
+    status_code: Option<i32>,
+    content_length: Option<i32>,
+    lines: Option<i32>,
+    words: Option<i32>,
+    tool: &str,
+    project_path: Option<&str>,
+) -> Result<DirectoryEntry, String> {
+    let row = sqlx::query_as::<_, DirEntryRow>(
+        r#"INSERT INTO directory_entries (target_id, url, status_code, content_length, lines, words, tool, project_path)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           ON CONFLICT (url, tool) WHERE target_id IS NOT NULL
+           DO UPDATE SET status_code = EXCLUDED.status_code,
+                         content_length = EXCLUDED.content_length,
+                         lines = EXCLUDED.lines,
+                         words = EXCLUDED.words
+           RETURNING id, target_id, url, status_code, content_length, lines, words, content_type, tool, created_at"#,
+    )
+    .bind(target_id)
+    .bind(url)
+    .bind(status_code)
+    .bind(content_length)
+    .bind(lines)
+    .bind(words)
+    .bind(tool)
+    .bind(project_path)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(DirectoryEntry::from(row))
+}
+
+pub async fn db_directory_entries_list(
+    pool: &PgPool,
+    target_id: Option<Uuid>,
+    project_path: Option<&str>,
+) -> Result<Vec<DirectoryEntry>, String> {
+    let rows = if let Some(tid) = target_id {
+        sqlx::query_as::<_, DirEntryRow>(
+            r#"SELECT id, target_id, url, status_code, content_length, lines, words, content_type, tool, created_at
+               FROM directory_entries WHERE target_id = $1 ORDER BY created_at"#,
+        )
+        .bind(tid)
+        .fetch_all(pool)
+        .await
+    } else {
+        sqlx::query_as::<_, DirEntryRow>(
+            r#"SELECT id, target_id, url, status_code, content_length, lines, words, content_type, tool, created_at
+               FROM directory_entries WHERE project_path IS NOT DISTINCT FROM $1 ORDER BY created_at"#,
+        )
+        .bind(project_path)
+        .fetch_all(pool)
+        .await
+    }
+    .map_err(|e| e.to_string())?;
+
+    Ok(rows.into_iter().map(DirectoryEntry::from).collect())
+}
+
+// ============================================================================
+// Tauri commands for directory entries
+// ============================================================================
+
+#[tauri::command]
+pub async fn directory_entry_list(
+    state: tauri::State<'_, AppState>,
+    target_id: Option<String>,
+    project_path: Option<String>,
+) -> Result<Vec<DirectoryEntry>, String> {
+    let pool = state.db_pool_ready().await?;
+    let tid: Option<Uuid> = target_id.and_then(|s| s.parse().ok());
+    db_directory_entries_list(pool, tid, project_path.as_deref()).await
 }

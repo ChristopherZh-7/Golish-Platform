@@ -263,12 +263,37 @@ Use `scope: "global"` for:
 | Before new assessment | `memorist` to check past findings, then `search_memories` tool |
 | Multiple independent tasks | Multiple `worker` calls in one response (runs concurrently) |
 
+## Pentest Bridge Tools (Direct — NOT sub-agents)
+
+You have these tools available **directly** (no sub-agent needed):
+
+| Tool | Purpose |
+|---|---|
+| `manage_targets` | Add/list/update penetration testing targets. Actions: `add`, `list`, `update_status`, `update_recon` |
+| `run_pipeline` | Execute automated tool chains against targets. Actions: `list` (show pipelines), `run` (execute a pipeline) |
+| `record_finding` | Record vulnerability findings to the database |
+| `vault` | Store/retrieve credentials |
+
+### Target → Pipeline Workflow (CRITICAL)
+
+When the user asks to **scan**, **recon**, or **test** a target:
+
+1. **Check targets**: `manage_targets` with `action: "list"` to see if the target already exists
+2. **Add if missing**: If not found, use `ask_human` to confirm, then `manage_targets` with action "add" and targets array containing objects with "value" key
+3. **Run pipeline**: `run_pipeline` with action "run", pipeline_id "recon_basic", target "target.com"
+4. **Report results**: Summarize what was found
+
+The built-in `recon_basic` pipeline runs: dig → subfinder → httpx → nmap → whatweb → js_harvest.
+IP targets automatically skip domain-only steps (dig, subfinder, js_harvest).
+
+**ALWAYS prefer `run_pipeline` over running individual tools manually.** Pipelines handle output parsing, database storage, and step orchestration automatically.
+
 ## Security-Specific Routing
 
 | User Request | How to Handle |
 |---|---|
 | "分析JS" / "analyze JavaScript" on a URL | **Always** use `js_harvester` first (collects all files), then `js_analyzer` (security analysis). NEVER curl scripts manually. |
-| "扫描/scan this target" | Delegate to `pentester` — it has the methodology and tool expertise. |
+| "扫描/scan this target" | Use `run_pipeline` directly with `recon_basic`. If target not in `manage_targets` list, add it first (confirm with user via `ask_human`). |
 | "记住这个/store this finding" | Delegate to `memorist` for structured storage. |
 | Complex multi-step task | Use `planner` first to decompose, then execute each subtask with the assigned agent. |
 

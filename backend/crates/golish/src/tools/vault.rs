@@ -175,7 +175,7 @@ pub async fn vault_list(
     state: tauri::State<'_, AppState>,
     project_path: Option<String>,
 ) -> Result<Vec<VaultEntrySafe>, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let _ = project_path;
     let rows: Vec<VaultRow> = sqlx::query_as(
         "SELECT id, name, entry_type::TEXT, username, notes, project, tags, status, source_url, last_validated_at, created_at, updated_at \
@@ -201,7 +201,7 @@ pub async fn vault_add(
     source_url: Option<String>,
     project_path: Option<String>,
 ) -> Result<VaultEntrySafe, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let _ = project_path;
     let ts = now_ts();
     let id = Uuid::new_v4();
@@ -253,7 +253,7 @@ pub async fn vault_get_value(
     id: String,
     project_path: Option<String>,
 ) -> Result<String, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let enc: String = sqlx::query_scalar("SELECT value FROM vault_entries WHERE id=$1")
@@ -276,7 +276,7 @@ pub async fn vault_update(
     tags: Option<Vec<String>>,
     project_path: Option<String>,
 ) -> Result<VaultEntrySafe, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
@@ -325,7 +325,7 @@ pub async fn vault_update_status(
     status: String,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
     sqlx::query("UPDATE vault_entries SET status=$1, last_validated_at=NOW() WHERE id=$2")
@@ -343,7 +343,7 @@ pub async fn vault_validate(
     id: String,
     project_path: Option<String>,
 ) -> Result<String, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
@@ -418,7 +418,7 @@ pub async fn vault_delete(
     id: String,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
     sqlx::query("DELETE FROM vault_entries WHERE id=$1")
@@ -435,7 +435,7 @@ pub async fn vault_resolve(
     reference: String,
     project_path: Option<String>,
 ) -> Result<String, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let _ = project_path;
     let name = reference.trim_start_matches("{{vault:").trim_end_matches("}}");
     let enc: String = sqlx::query_scalar(

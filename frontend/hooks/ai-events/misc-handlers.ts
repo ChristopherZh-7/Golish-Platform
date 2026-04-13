@@ -29,10 +29,6 @@ export const handlePlanUpdated: EventHandler<{
   };
   const state = ctx.getState();
   state.setPlan(ctx.sessionId, plan);
-  state.syncPlanToPipeline(ctx.sessionId, plan);
-
-  // Auto-switch left pane to plan detail view when a plan is created/updated
-  state.setDetailViewMode(ctx.sessionId, "plan");
 };
 
 /**

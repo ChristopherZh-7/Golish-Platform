@@ -166,7 +166,7 @@ pub async fn topo_save(
     data: TopologyData,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let json = serde_json::to_value(&data).map_err(|e| e.to_string())?;
     sqlx::query(
         r#"INSERT INTO topology_scans (name, data, project_path)
@@ -187,7 +187,7 @@ pub async fn topo_list(
     state: tauri::State<'_, AppState>,
     project_path: Option<String>,
 ) -> Result<Vec<String>, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let names: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM topology_scans WHERE project_path IS NOT DISTINCT FROM $1 ORDER BY created_at DESC",
     )
@@ -204,7 +204,7 @@ pub async fn topo_load(
     name: String,
     project_path: Option<String>,
 ) -> Result<TopologyData, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let data: serde_json::Value = sqlx::query_scalar(
         "SELECT data FROM topology_scans WHERE name=$1 AND project_path IS NOT DISTINCT FROM $2",
     )
@@ -222,7 +222,7 @@ pub async fn topo_delete(
     name: String,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     sqlx::query("DELETE FROM topology_scans WHERE name=$1 AND project_path IS NOT DISTINCT FROM $2")
         .bind(&name)
         .bind(project_path.as_deref())
@@ -248,7 +248,7 @@ pub async fn topo_diff(
     name_b: String,
     project_path: Option<String>,
 ) -> Result<TopoDiff, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let data_a: serde_json::Value = sqlx::query_scalar(
         "SELECT data FROM topology_scans WHERE name=$1 AND project_path IS NOT DISTINCT FROM $2",
     )

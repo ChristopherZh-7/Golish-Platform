@@ -7,6 +7,7 @@ import {
   FolderGit2,
   FolderOpen,
   GitBranch,
+  Loader2,
   Minus,
   Plus,
   Trash2,
@@ -427,6 +428,8 @@ export const HomeView = memo(function HomeView() {
     projectName: string;
   } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ name: string; path: string } | null>(null);
+  const [openingProject, setOpeningProject] = useState<string | null>(null);
+  const openingRef = useRef(false);
   const currentProjectName = useStore((s) => s.currentProjectName);
 
   // Fetch data — saved projects are critical, indexer data is nice-to-have
@@ -522,12 +525,13 @@ export const HomeView = memo(function HomeView() {
   /** Open a project: load its workspace state, set as current, create terminal */
   const handleOpenProject = useCallback(
     async (projectName: string, rootPath: string): Promise<string | null> => {
+      if (openingRef.current) return null;
+      openingRef.current = true;
+      setOpeningProject(projectName);
       try {
-        // Set as current project
         useStore.getState().setCurrentProject(projectName, rootPath);
         setLastProjectName(projectName);
 
-        // Try DB first, fall back to legacy workspace.json
         const saved = await loadFromDb(rootPath);
         if (saved && saved.conversations.length > 0) {
           useStore.getState().restoreConversations(
@@ -550,12 +554,14 @@ export const HomeView = memo(function HomeView() {
           }
         }
 
-        // Create a terminal in the project root and return the session ID
         const sessionId = await createTerminalTab(rootPath);
         return sessionId;
       } catch (error) {
         logger.error("Failed to open project:", error);
         return null;
+      } finally {
+        openingRef.current = false;
+        setOpeningProject(null);
       }
     },
     [createTerminalTab],
@@ -797,22 +803,34 @@ export const HomeView = memo(function HomeView() {
                   </h2>
                 </div>
                 <div className="space-y-0.5">
-                  {savedProjects.map((proj) => (
+                  {savedProjects.map((proj) => {
+                    const isOpening = openingProject === proj.name;
+                    return (
                     <div
                       key={proj.name}
                       role="button"
                       tabIndex={0}
-                      onClick={() => handleOpenProject(proj.name, proj.rootPath)}
-                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleOpenProject(proj.name, proj.rootPath); } }}
-                      className={`w-full flex items-center justify-between px-3 py-2.5 rounded-md hover:bg-[#161b22] transition-colors text-left group cursor-pointer ${
-                        proj.name === currentProjectName ? "bg-[#161b22]" : ""
+                      onClick={() => { if (!openingProject) handleOpenProject(proj.name, proj.rootPath); }}
+                      onKeyDown={(e) => { if (!openingProject && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); handleOpenProject(proj.name, proj.rootPath); } }}
+                      className={`w-full flex items-center justify-between px-3 py-2.5 rounded-md transition-colors text-left group ${
+                        openingProject ? "cursor-wait" : "cursor-pointer hover:bg-[#161b22]"
+                      } ${proj.name === currentProjectName ? "bg-[#161b22]" : ""} ${
+                        isOpening ? "bg-[#161b22] ring-1 ring-accent/30" : ""
                       }`}
                     >
                       <div className="flex items-center gap-2.5 min-w-0">
+                        {isOpening ? (
+                          <Loader2 size={14} className="text-accent animate-spin flex-shrink-0" />
+                        ) : null}
                         <span className="text-sm text-gray-200">{proj.name}</span>
-                        {proj.name === currentProjectName && (
+                        {proj.name === currentProjectName && !isOpening && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#238636]/20 text-[#238636]">
                             Active
+                          </span>
+                        )}
+                        {isOpening && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/20 text-accent">
+                            Loading...
                           </span>
                         )}
                       </div>
@@ -820,6 +838,7 @@ export const HomeView = memo(function HomeView() {
                         <span className="text-xs text-gray-600 font-mono truncate max-w-[200px]">
                           {proj.rootPath.replace(/^\/Users\/[^/]+/, "~")}
                         </span>
+                        {!isOpening && (
                         <button
                           type="button"
                           onClick={(e) => {
@@ -831,9 +850,11 @@ export const HomeView = memo(function HomeView() {
                         >
                           <X size={12} className="text-gray-500" />
                         </button>
+                        )}
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}

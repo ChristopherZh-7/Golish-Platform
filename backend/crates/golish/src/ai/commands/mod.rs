@@ -171,7 +171,7 @@ impl AiState {
 ///
 /// IMPORTANT: Each session gets its own SidecarState instance to enable
 /// per-session isolation and avoid blocking between tabs when agents run concurrently.
-pub async fn configure_bridge(bridge: &mut AgentBridge, state: &AppState, _session_id: &str) {
+pub async fn configure_bridge(bridge: &mut AgentBridge, state: &AppState, _session_id: &str, app_handle: Option<tauri::AppHandle>) {
     bridge.set_pty_manager(state.pty_manager.clone());
     bridge.set_indexer_state(state.indexer_state.clone());
     // NOTE: Workflow state is no longer part of golish-ai's AgentBridge
@@ -240,6 +240,8 @@ pub async fn configure_bridge(bridge: &mut AgentBridge, state: &AppState, _sessi
     {
         let bridge_tools = crate::tools::pentest_bridge::create_pentest_bridge_tools(
             state.db_pool.clone(),
+            state.pentest_config_manager.clone(),
+            app_handle.clone(),
         );
         let mut registry = bridge.tool_registry().write().await;
         for tool in bridge_tools {

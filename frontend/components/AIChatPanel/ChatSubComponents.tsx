@@ -1,6 +1,7 @@
 import {
   CheckCircle2,
   ChevronDown,
+  ChevronUp,
   GitBranch,
   KeyRound,
   List,
@@ -216,7 +217,19 @@ function ToolCallCard({
   tc: { name: string; args?: string; result?: string; success?: boolean };
   onClick: () => void;
 }) {
-  const label = TOOL_LABEL[tc.name] || tc.name.replace(/_/g, " ");
+  let label = TOOL_LABEL[tc.name] || tc.name.replace(/_/g, " ");
+  if (tc.name === "run_pipeline" && tc.args) {
+    try {
+      const parsed = JSON.parse(tc.args);
+      if (parsed.action === "list") label = "List Pipelines";
+      else if (parsed.action === "run") {
+        const name = (parsed.pipeline_id || "pipeline")
+          .replace(/_/g, " ")
+          .replace(/\b\w/g, (c: string) => c.toUpperCase());
+        label = name;
+      }
+    } catch { /* keep default */ }
+  }
   const color = TOOL_ICON_COLOR[tc.name] || "var(--ansi-blue)";
   const isRunning = tc.success === undefined;
   const isError = tc.success === false;
@@ -562,28 +575,27 @@ export interface TaskPlanState {
 }
 
 export function TaskPlanCard({ plan }: { plan: TaskPlanState }) {
+  const [expanded, setExpanded] = useState(true);
   const progress = plan.summary.total > 0 ? (plan.summary.completed / plan.summary.total) * 100 : 0;
   const isAllDone = plan.summary.total > 0 && plan.summary.completed === plan.summary.total;
 
   const handleShowDetail = () => {
     const state = useStore.getState();
-    const activeConvId = state.activeConversationId;
-    if (!activeConvId) return;
-    const termIds = state.conversationTerminals[activeConvId];
-    const termId = termIds?.[0];
-    if (termId) {
-      const current = state.sessions[termId]?.detailViewMode;
-      state.setDetailViewMode(termId, current === "plan" ? "timeline" : "plan");
+    const sessionId = state.activeSessionId;
+    if (sessionId) {
+      state.setDetailViewMode(sessionId, "tool-detail");
     }
   };
 
   return (
-    <button
-      type="button"
-      onClick={handleShowDetail}
-      className="mx-4 my-2 rounded-lg border border-border/30 bg-background/50 p-3 w-[calc(100%-2rem)] text-left hover:border-accent/40 hover:bg-accent/5 transition-colors cursor-pointer group"
+    <div
+      className="mx-4 my-2 rounded-lg border border-border/30 bg-background/50 p-3 w-[calc(100%-2rem)] text-left hover:border-accent/40 hover:bg-accent/5 transition-colors group"
     >
-      <div className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center gap-2 cursor-pointer"
+      >
         <List className="w-3.5 h-3.5 text-accent flex-shrink-0" />
         <span className="text-[12px] font-medium text-foreground">
           Task Plan ({plan.summary.completed}/{plan.summary.total})
@@ -593,10 +605,26 @@ export function TaskPlanCard({ plan }: { plan: TaskPlanState }) {
             Done
           </span>
         )}
-        <span className="ml-auto text-[10px] text-muted-foreground/50 group-hover:text-accent/70 transition-colors">
-          View details →
+        <span
+          role="link"
+          tabIndex={0}
+          className="ml-auto text-[10px] text-muted-foreground/50 hover:text-accent/70 transition-colors cursor-pointer"
+          onClick={(e) => {
+            e.stopPropagation();
+            handleShowDetail();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") { e.stopPropagation(); handleShowDetail(); }
+          }}
+        >
+          View details &rarr;
         </span>
-      </div>
+        {expanded ? (
+          <ChevronUp className="w-3 h-3 text-muted-foreground/50 group-hover:text-accent/70 transition-colors flex-shrink-0" />
+        ) : (
+          <ChevronDown className="w-3 h-3 text-muted-foreground/50 group-hover:text-accent/70 transition-colors flex-shrink-0" />
+        )}
+      </button>
 
       <div className="mt-2 h-1 rounded-full bg-muted/50 overflow-hidden">
         <div
@@ -608,33 +636,35 @@ export function TaskPlanCard({ plan }: { plan: TaskPlanState }) {
         />
       </div>
 
-      <div className="mt-2 space-y-1">
-        {plan.steps.map((step, i) => (
-          <div key={`${step.step}-${i}`} className="flex items-center gap-1.5 text-[11px]">
-            {step.status === "completed" && (
-              <CheckCircle2 className="w-2.5 h-2.5 text-green-500 flex-shrink-0" />
-            )}
-            {step.status === "in_progress" && (
-              <Loader2 className="w-2.5 h-2.5 animate-spin text-accent flex-shrink-0" />
-            )}
-            {step.status === "pending" && (
-              <div className="w-2.5 h-2.5 rounded-full border border-muted-foreground/30 flex-shrink-0" />
-            )}
-            <span
-              className={cn(
-                step.status === "completed"
-                  ? "text-muted-foreground/60 line-through"
-                  : step.status === "in_progress"
-                    ? "text-accent"
-                    : "text-muted-foreground"
+      {expanded && (
+        <div className="mt-2 space-y-1">
+          {plan.steps.map((step, i) => (
+            <div key={`${step.step}-${i}`} className="flex items-center gap-1.5 text-[11px]">
+              {step.status === "completed" && (
+                <CheckCircle2 className="w-2.5 h-2.5 text-green-500 flex-shrink-0" />
               )}
-            >
-              {step.step}
-            </span>
-          </div>
-        ))}
-      </div>
-    </button>
+              {step.status === "in_progress" && (
+                <Loader2 className="w-2.5 h-2.5 animate-spin text-accent flex-shrink-0" />
+              )}
+              {step.status === "pending" && (
+                <div className="w-2.5 h-2.5 rounded-full border border-muted-foreground/30 flex-shrink-0" />
+              )}
+              <span
+                className={cn(
+                  step.status === "completed"
+                    ? "text-muted-foreground/60 line-through"
+                    : step.status === "in_progress"
+                      ? "text-accent"
+                      : "text-muted-foreground"
+                )}
+              >
+                {step.step}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

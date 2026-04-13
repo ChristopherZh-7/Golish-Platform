@@ -54,7 +54,7 @@ pub async fn audit_log(
     project_path: Option<String>,
     source: Option<String>,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let src = source.unwrap_or_else(|| "manual".to_string());
     sqlx::query(
         r#"INSERT INTO audit_log (action, category, details, entity_type, entity_id, project_path, source)
@@ -80,7 +80,7 @@ pub async fn audit_list(
     category: Option<String>,
     project_path: Option<String>,
 ) -> Result<Vec<AuditEntry>, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let lim = limit.unwrap_or(500);
     let rows = sqlx::query_as::<_, AuditRow>(
         r#"SELECT created_at, action, category, details, entity_type, entity_id, source
@@ -103,7 +103,7 @@ pub async fn audit_clear(
     state: tauri::State<'_, AppState>,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     sqlx::query("DELETE FROM audit_log WHERE project_path IS NOT DISTINCT FROM $1")
         .bind(project_path.as_deref())
         .execute(pool)

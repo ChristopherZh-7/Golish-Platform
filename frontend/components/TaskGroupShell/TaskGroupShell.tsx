@@ -59,19 +59,19 @@ export const TaskGroupShell = memo(function TaskGroupShell({
   }, [running, allDone]);
 
   return (
-    <div className="my-1">
+    <div className="mt-1 mb-1.5">
       {/* Group header */}
       <button
         type="button"
         onClick={toggleCollapse}
         className={cn(
-          "w-full flex items-center gap-2 px-3 py-1.5 rounded-t-lg text-xs transition-all duration-300",
-          "bg-muted/30 hover:bg-muted/50 border border-b-0 border-border/40",
+          "w-full flex items-center gap-2 px-3 py-2 rounded-t-lg text-xs transition-all duration-300",
+          "bg-card hover:bg-muted/50 border border-b-0 border-border",
           isCollapsed && "rounded-b-lg border-b",
         )}
       >
         <Bot className="w-3.5 h-3.5 text-muted-foreground/60" />
-        <span className="font-medium text-foreground/80">{title}</span>
+        <span className="font-medium text-sm text-foreground/80">{title}</span>
         <span className="text-muted-foreground/50 mx-1">·</span>
 
         {running > 0 && (
@@ -114,7 +114,7 @@ export const TaskGroupShell = memo(function TaskGroupShell({
         <div className="overflow-hidden">
           {/* Progress bar */}
           {!allDone && (
-            <div className="h-0.5 bg-muted/20 border-x border-border/40">
+            <div className="h-0.5 bg-muted/20 border-x border-border">
               <div
                 className={cn(
                   "h-full transition-all duration-500 ease-out",
@@ -126,7 +126,7 @@ export const TaskGroupShell = memo(function TaskGroupShell({
           )}
 
           {/* Content */}
-          <div className="border border-t-0 border-border/40 rounded-b-lg bg-card/30">
+          <div className="border border-t-0 border-border rounded-b-lg bg-card/50">
             {children}
           </div>
         </div>

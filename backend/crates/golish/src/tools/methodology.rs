@@ -190,7 +190,7 @@ pub async fn method_start_project(
     project_name: String,
     project_path: Option<String>,
 ) -> Result<ProjectMethodology, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let templates = built_in_templates();
     let template = templates.iter().find(|t| t.id == template_id).ok_or("Template not found")?;
     let now = chrono::Utc::now().to_rfc3339();
@@ -222,7 +222,7 @@ pub async fn method_list_projects(
     state: tauri::State<'_, AppState>,
     project_path: Option<String>,
 ) -> Result<Vec<ProjectMethodology>, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let rows: Vec<serde_json::Value> = sqlx::query_scalar(
         "SELECT data FROM methodology_projects WHERE project_path IS NOT DISTINCT FROM $1 ORDER BY updated_at DESC",
     )
@@ -244,7 +244,7 @@ pub async fn method_load_project(
     id: String,
     project_path: Option<String>,
 ) -> Result<ProjectMethodology, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let data: serde_json::Value = sqlx::query_scalar(
@@ -267,7 +267,7 @@ pub async fn method_update_item(
     notes: Option<String>,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = project_id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
@@ -309,7 +309,7 @@ pub async fn method_delete_project(
     id: String,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
     sqlx::query("DELETE FROM methodology_projects WHERE id=$1")

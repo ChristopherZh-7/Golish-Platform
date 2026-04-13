@@ -53,6 +53,16 @@ pub(super) fn classify_stream_start_error(error_str: &str) -> StreamStartErrorCl
         };
     }
 
+    if lower.contains("degraded") {
+        return StreamStartErrorClassification {
+            error_type: "model_unavailable",
+            user_message:
+                "The AI model is currently degraded or unavailable. Please try a different model or try again later."
+                    .to_string(),
+            retriable: false,
+        };
+    }
+
     if lower.contains("timeout") || lower.contains("timed out") {
         return StreamStartErrorClassification {
             error_type: "timeout",

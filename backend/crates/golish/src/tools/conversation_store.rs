@@ -55,6 +55,7 @@ pub struct TerminalStateRow {
     pub working_directory: String,
     pub scrollback: String,
     pub custom_name: Option<String>,
+    pub plan_json: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,7 +74,7 @@ pub async fn conv_save(
     state: tauri::State<'_, AppState>,
     conversation: ConversationRow,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     sqlx::query(
         r#"INSERT INTO conversations (id, title, ai_session_id, project_path, sort_order, created_at)
            VALUES ($1, $2, $3, $4, $5, to_timestamp($6::double precision / 1000))
@@ -100,7 +101,7 @@ pub async fn conv_delete(
     state: tauri::State<'_, AppState>,
     conversation_id: String,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     sqlx::query("DELETE FROM conversations WHERE id = $1")
         .bind(&conversation_id)
         .execute(pool)
@@ -114,7 +115,7 @@ pub async fn conv_list(
     state: tauri::State<'_, AppState>,
     project_path: Option<String>,
 ) -> Result<Vec<ConversationRow>, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let rows = sqlx::query_as::<_, (String, String, String, Option<String>, i32, chrono::DateTime<chrono::Utc>)>(
         r#"SELECT id, title, ai_session_id, project_path, sort_order, created_at
            FROM conversations
@@ -149,7 +150,7 @@ pub async fn conv_save_messages(
     conversation_id: String,
     messages: Vec<ChatMessageRow>,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
 
     // Delete existing messages for this conversation and re-insert
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
@@ -190,7 +191,7 @@ pub async fn conv_load_messages(
     state: tauri::State<'_, AppState>,
     conversation_id: String,
 ) -> Result<Vec<ChatMessageRow>, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let rows = sqlx::query_as::<_, (String, String, String, String, Option<String>, Option<String>, Option<serde_json::Value>, Option<i32>, i32, chrono::DateTime<chrono::Utc>)>(
         r#"SELECT id, conversation_id, role, content, thinking, error, tool_calls, tool_calls_content_offset, sort_order, created_at
            FROM chat_messages
@@ -230,7 +231,7 @@ pub async fn conv_save_timeline(
     conversation_id: Option<String>,
     blocks: Vec<TimelineBlockRow>,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
 
     sqlx::query("DELETE FROM timeline_blocks WHERE session_id = $1")
@@ -267,7 +268,7 @@ pub async fn conv_load_timeline(
     state: tauri::State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<TimelineBlockRow>, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let rows = sqlx::query_as::<_, (String, String, Option<String>, String, serde_json::Value, Option<String>, i32, chrono::DateTime<chrono::Utc>)>(
         r#"SELECT id, session_id, conversation_id, block_type, data, batch_id, sort_order, created_at
            FROM timeline_blocks
@@ -303,14 +304,15 @@ pub async fn conv_save_terminal_state(
     state: tauri::State<'_, AppState>,
     terminal: TerminalStateRow,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     sqlx::query(
-        r#"INSERT INTO terminal_state (session_id, conversation_id, working_directory, scrollback, custom_name)
-           VALUES ($1, $2, $3, $4, $5)
+        r#"INSERT INTO terminal_state (session_id, conversation_id, working_directory, scrollback, custom_name, plan_json)
+           VALUES ($1, $2, $3, $4, $5, $6)
            ON CONFLICT (session_id) DO UPDATE SET
              working_directory = EXCLUDED.working_directory,
              scrollback = EXCLUDED.scrollback,
              custom_name = EXCLUDED.custom_name,
+             plan_json = EXCLUDED.plan_json,
              updated_at = NOW()"#,
     )
     .bind(&terminal.session_id)
@@ -318,6 +320,7 @@ pub async fn conv_save_terminal_state(
     .bind(&terminal.working_directory)
     .bind(&terminal.scrollback)
     .bind(&terminal.custom_name)
+    .bind(&terminal.plan_json)
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -329,9 +332,9 @@ pub async fn conv_load_terminal_states(
     state: tauri::State<'_, AppState>,
     conversation_id: String,
 ) -> Result<Vec<TerminalStateRow>, String> {
-    let pool = &*state.db_pool;
-    let rows = sqlx::query_as::<_, (String, Option<String>, String, String, Option<String>)>(
-        r#"SELECT session_id, conversation_id, working_directory, scrollback, custom_name
+    let pool = state.db_pool_ready().await?;
+    let rows = sqlx::query_as::<_, (String, Option<String>, String, String, Option<String>, Option<serde_json::Value>)>(
+        r#"SELECT session_id, conversation_id, working_directory, scrollback, custom_name, plan_json
            FROM terminal_state
            WHERE conversation_id = $1"#,
     )
@@ -342,13 +345,14 @@ pub async fn conv_load_terminal_states(
 
     Ok(rows
         .into_iter()
-        .map(|(session_id, conversation_id, working_directory, scrollback, custom_name)| {
+        .map(|(session_id, conversation_id, working_directory, scrollback, custom_name, plan_json)| {
             TerminalStateRow {
                 session_id,
                 conversation_id,
                 working_directory,
                 scrollback,
                 custom_name,
+                plan_json,
             }
         })
         .collect())
@@ -362,7 +366,7 @@ pub async fn conv_save_preferences(
     project_path: String,
     prefs: WorkspacePreferences,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     sqlx::query(
         r#"INSERT INTO workspace_preferences
            (project_path, active_conversation_id, ai_model, approval_mode, approval_patterns)
@@ -390,7 +394,7 @@ pub async fn conv_load_preferences(
     state: tauri::State<'_, AppState>,
     project_path: String,
 ) -> Result<Option<WorkspacePreferences>, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let row = sqlx::query_as::<_, (Option<String>, Option<serde_json::Value>, Option<String>, Option<serde_json::Value>)>(
         r#"SELECT active_conversation_id, ai_model, approval_mode, approval_patterns
            FROM workspace_preferences

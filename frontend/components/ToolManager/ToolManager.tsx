@@ -361,6 +361,7 @@ export function ToolManager() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [selectedTier, setSelectedTier] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const cancelRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
@@ -1175,6 +1176,7 @@ export function ToolManager() {
   const filteredTools = tools
     .filter((t) => {
       if (selectedCategory && t.category !== selectedCategory) return false;
+      if (selectedTier && (t.tier || "optional") !== selectedTier) return false;
       if (!search.trim()) return true;
       const q = search.trim().toLowerCase();
       return t.name.toLowerCase().includes(q) || t.description.toLowerCase().includes(q) || t.id.toLowerCase().includes(q);
@@ -1383,6 +1385,12 @@ export function ToolManager() {
       {tool.install?.method && tool.install.method !== "manual" && (
         <span className={cn("text-[9px] px-1.5 py-0.5 rounded-full", installMethodBadge(tool.install.method))}>
           {installMethodLabel(tool)}
+        </span>
+      )}
+      {(tool.tier === "essential" || tool.tier === "recommended") && (
+        <span className={cn("text-[9px] px-1.5 py-0.5 rounded-full font-medium",
+          tool.tier === "essential" ? "bg-red-500/10 text-red-400" : "bg-amber-500/10 text-amber-400")}>
+          {tool.tier === "essential" ? t("toolManager.tierEssential") : t("toolManager.tierRecommended")}
         </span>
       )}
       <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-muted/30 text-muted-foreground/50">
@@ -1755,6 +1763,32 @@ export function ToolManager() {
                   {categoryDisplayName(catId)}
                 </button>
               ))}
+            </div>
+
+            <div className="h-4 w-px bg-border/20 mx-1" />
+
+            <div className="flex items-center gap-1">
+              {(["essential", "recommended", "optional"] as const).map((tier) => {
+                const count = tools.filter((t) => (t.tier || "optional") === tier).length;
+                if (count === 0) return null;
+                const colors: Record<string, string> = {
+                  essential: "text-red-400 bg-red-500/15",
+                  recommended: "text-amber-400 bg-amber-500/15",
+                  optional: "text-muted-foreground/60 bg-muted/30",
+                };
+                const labels: Record<string, string> = {
+                  essential: t("toolManager.tierEssential"),
+                  recommended: t("toolManager.tierRecommended"),
+                  optional: t("toolManager.tierOptional"),
+                };
+                return (
+                  <button key={tier} type="button" onClick={() => setSelectedTier(selectedTier === tier ? null : tier)}
+                    className={cn("text-[11px] px-2 py-1 rounded-md transition-colors",
+                      selectedTier === tier ? colors[tier] : "text-muted-foreground/40 hover:text-foreground hover:bg-[var(--bg-hover)]")}>
+                    {labels[tier] || tier} <span className="text-[9px] opacity-60">{count}</span>
+                  </button>
+                );
+              })}
             </div>
 
             <div className="ml-auto flex items-center gap-1">
