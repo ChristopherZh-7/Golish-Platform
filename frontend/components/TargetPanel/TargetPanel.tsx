@@ -34,6 +34,13 @@ interface Target {
   parent_id: string | null;
   ports: PortInfo[];
   technologies: string[];
+  real_ip: string;
+  cdn_waf: string;
+  http_title: string;
+  http_status: number | null;
+  webserver: string;
+  os_info: string;
+  content_type: string;
   created_at: number;
   updated_at: number;
 }
@@ -140,25 +147,46 @@ export function TargetPanel() {
   const [addForm, setAddForm] = useState({ name: "", value: "", notes: "", tags: "" });
   const [editingId, setEditingId] = useState<string | null>(null);
 
+  const workspaceReady = useStore((s) => s.workspaceDataReady);
+
   const loadTargets = useCallback(async () => {
     try {
       const data = await invoke<TargetStore>("target_list", { projectPath: getProjectPath() });
       setStore(data && data.targets ? data : { targets: [] });
     } catch (e) {
       console.error("Failed to load targets:", e);
+      setTimeout(() => {
+        invoke<TargetStore>("target_list", { projectPath: getProjectPath() })
+          .then((data) => setStore(data && data.targets ? data : { targets: [] }))
+          .catch(() => {});
+      }, 3000);
     }
   }, []);
 
-  useEffect(() => { loadTargets(); }, [loadTargets, currentProjectPath]);
+  useEffect(() => {
+    if (workspaceReady) loadTargets();
+  }, [loadTargets, currentProjectPath, workspaceReady]);
 
   useEffect(() => {
-    const REFRESH_TOOLS = new Set(["manage_targets", "record_finding"]);
-    const unlisten = listen<{ type: string; tool_name?: string }>("ai-event", (event) => {
+    const REFRESH_TOOLS = new Set(["manage_targets", "record_finding", "run_pipeline"]);
+    const unlistenAi = listen<{ type: string; tool_name?: string }>("ai-event", (event) => {
       if (event.payload.type === "tool_result" && event.payload.tool_name && REFRESH_TOOLS.has(event.payload.tool_name)) {
         loadTargets();
       }
     });
-    return () => { unlisten.then((fn) => fn()); };
+    const unlistenPipeline = listen<{ status: string }>("pipeline-event", (event) => {
+      if (event.payload.status === "completed" || event.payload.status === "error") {
+        loadTargets();
+      }
+    });
+    const unlistenDb = listen("db-ready", () => {
+      loadTargets();
+    });
+    return () => {
+      unlistenAi.then((fn) => fn());
+      unlistenPipeline.then((fn) => fn());
+      unlistenDb.then((fn) => fn());
+    };
   }, [loadTargets]);
 
   const [addError, setAddError] = useState<string | null>(null);
@@ -267,6 +295,24 @@ export function TargetPanel() {
     }
     return list;
   }, [safeTargets, search, scopeFilter]);
+
+  const childrenMap = useMemo(() => {
+    const map = new Map<string, Target[]>();
+    for (const t of filtered) {
+      if (t.parent_id) {
+        const arr = map.get(t.parent_id) || [];
+        arr.push(t);
+        map.set(t.parent_id, arr);
+      }
+    }
+    return map;
+  }, [filtered]);
+
+  const rootTargets = useMemo(() =>
+    filtered.filter((t) => !t.parent_id),
+  [filtered]);
+
+  const [expandedParents, setExpandedParents] = useState<Set<string>>(new Set());
 
   const stats = useMemo(() => ({
     total: safeTargets.length,
@@ -459,9 +505,13 @@ export function TargetPanel() {
           </div>
         ) : (
           <div className="divide-y divide-border/20">
-            {filtered.map((target) => (
+            {rootTargets.map((target) => {
+              const children = childrenMap.get(target.id) || [];
+              const hasChildren = children.length > 0;
+              const isParentExpanded = expandedParents.has(target.id);
+              return (
+              <div key={target.id}>
               <div
-                key={target.id}
                 className={cn(
                   "px-4 py-2.5 hover:bg-muted/30 transition-colors group cursor-pointer",
                   target.scope === "out" && "opacity-50",
@@ -540,6 +590,48 @@ export function TargetPanel() {
                       </div>
                     )}
 
+                    {/* Recon info grid */}
+                    {(target.http_title || target.http_status || target.real_ip || target.webserver || target.cdn_waf || target.os_info || target.content_type) && (
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+                        {target.http_title && (
+                          <div className="col-span-2 text-muted-foreground">
+                            <span className="font-medium text-blue-400">Title:</span> {target.http_title}
+                          </div>
+                        )}
+                        {target.http_status != null && (
+                          <div className="text-muted-foreground">
+                            <span className="font-medium text-cyan-400">Status:</span>{" "}
+                            <span className={cn("font-mono", target.http_status < 400 ? "text-green-400" : "text-red-400")}>{target.http_status}</span>
+                          </div>
+                        )}
+                        {target.real_ip && (
+                          <div className="text-muted-foreground">
+                            <span className="font-medium text-emerald-400">IP:</span> <span className="font-mono">{target.real_ip}</span>
+                          </div>
+                        )}
+                        {target.webserver && (
+                          <div className="text-muted-foreground">
+                            <span className="font-medium text-orange-400">Server:</span> {target.webserver}
+                          </div>
+                        )}
+                        {target.cdn_waf && (
+                          <div className="text-muted-foreground">
+                            <span className="font-medium text-yellow-400">CDN/WAF:</span> {target.cdn_waf}
+                          </div>
+                        )}
+                        {target.os_info && (
+                          <div className="text-muted-foreground">
+                            <span className="font-medium text-pink-400">OS:</span> {target.os_info}
+                          </div>
+                        )}
+                        {target.content_type && (
+                          <div className="text-muted-foreground">
+                            <span className="font-medium text-violet-400">Content:</span> {target.content_type}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     {target.technologies && target.technologies.length > 0 && (
                       <div className="flex flex-wrap items-center gap-1">
                         <Zap className="w-3 h-3 text-purple-400 shrink-0" />
@@ -587,7 +679,73 @@ export function TargetPanel() {
                   </div>
                 )}
               </div>
-            ))}
+
+              {/* Children toggle + count */}
+              {hasChildren && (
+                <button
+                  type="button"
+                  className="flex items-center gap-1 px-4 py-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors w-full"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setExpandedParents((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(target.id)) next.delete(target.id); else next.add(target.id);
+                      return next;
+                    });
+                  }}
+                >
+                  <ChevronDown className={cn("w-3 h-3 transition-transform", !isParentExpanded && "-rotate-90")} />
+                  <Network className="w-3 h-3 text-accent/60" />
+                  <span>{children.length} subdomain{children.length > 1 ? "s" : ""}</span>
+                </button>
+              )}
+
+              {/* Child targets */}
+              {hasChildren && isParentExpanded && (
+                <div className="border-l-2 border-accent/20 ml-6">
+                  {children.map((child) => (
+                    <div
+                      key={child.id}
+                      className={cn(
+                        "pl-3 pr-4 py-1.5 hover:bg-muted/20 transition-colors cursor-pointer",
+                        child.scope === "out" && "opacity-50",
+                        editingId === child.id && "bg-muted/15",
+                      )}
+                      onClick={() => setEditingId(editingId === child.id ? null : child.id)}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        {TYPE_ICONS[child.type] || <Globe className="w-3 h-3" />}
+                        <span className="text-[11px] font-mono text-foreground/80 flex-1 truncate">{child.value}</span>
+                        {child.http_status != null && (
+                          <span className={cn("text-[10px] font-mono", child.http_status < 400 ? "text-green-400/70" : "text-red-400/70")}>{child.http_status}</span>
+                        )}
+                        {child.ports && child.ports.length > 0 && (
+                          <span className="flex items-center gap-0.5 text-[10px] text-emerald-400/60">
+                            <Wifi className="w-2.5 h-2.5" />{child.ports.length}
+                          </span>
+                        )}
+                      </div>
+                      {editingId === child.id && (
+                        <div className="mt-1 ml-4 space-y-1 text-[10px]">
+                          {child.http_title && <div className="text-muted-foreground"><span className="text-blue-400">Title:</span> {child.http_title}</div>}
+                          {child.technologies && child.technologies.length > 0 && (
+                            <div className="flex flex-wrap gap-0.5">
+                              {child.technologies.map((tech) => (
+                                <span key={tech} className="px-1 py-0.5 rounded bg-purple-500/10 text-purple-400/80">{tech}</span>
+                              ))}
+                            </div>
+                          )}
+                          {child.real_ip && <div className="text-muted-foreground font-mono"><span className="text-emerald-400">IP:</span> {child.real_ip}</div>}
+                          {child.webserver && <div className="text-muted-foreground"><span className="text-orange-400">Server:</span> {child.webserver}</div>}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              </div>
+              );
+            })}
           </div>
         )}
       </div>

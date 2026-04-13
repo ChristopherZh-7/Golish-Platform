@@ -46,6 +46,7 @@ export interface TerminalStateRow {
   workingDirectory: string;
   scrollback: string;
   customName: string | null;
+  planJson: unknown | null;
 }
 
 export interface WorkspacePreferences {

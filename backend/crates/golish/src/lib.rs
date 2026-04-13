@@ -754,6 +754,21 @@ pub fn run_gui() {
                 });
             }
 
+            // Emit db-ready event when embedded PG finishes startup
+            {
+                let mut db_gate = state.db_ready.clone();
+                let db_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let ready = db_gate.wait().await;
+                    let _ = db_handle.emit("db-ready", ready);
+                    if ready {
+                        tracing::debug!("Emitted db-ready event to frontend");
+                    } else {
+                        tracing::error!("Emitted db-ready(false) — database startup failed");
+                    }
+                });
+            }
+
             // Restore window state as early as possible (Rust-side, reliable on Cmd+Q/dev).
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -1024,6 +1039,7 @@ pub fn run_gui() {
             tools::pentest::pentest_kill_all_tools,
             tools::pentest::pentest_search_tools,
             tools::pentest::pentest_get_command,
+            tools::pentest::pentest_build_command,
             tools::pentest::pentest_check_runtime,
             tools::pentest::pentest_open_directory,
             tools::pentest::pentest_update_config,
@@ -1126,6 +1142,8 @@ pub fn run_gui() {
             tools::pentest::zap_send_request,
             tools::pentest::zap_get_hosts,
             tools::pentest::zap_new_session,
+            tools::pentest::zap_save_session,
+            tools::pentest::zap_sync_to_db,
             tools::pentest::zap_download_root_cert,
             tools::pentest::zap_install_root_cert,
             tools::pentest::zap_api_call,
@@ -1173,6 +1191,8 @@ pub fn run_gui() {
             tools::recordings::recording_delete,
             tools::output_parser::output_parse,
             tools::output_parser::output_detect_tool,
+            tools::output_parser::output_parse_and_store,
+            tools::targets::directory_entry_list,
             tools::findings::findings_list,
             tools::findings::findings_add,
             tools::findings::findings_update,
@@ -1187,6 +1207,7 @@ pub fn run_gui() {
             tools::pipeline::pipeline_save,
             tools::pipeline::pipeline_delete,
             tools::pipeline::pipeline_load,
+            tools::pipeline::pipeline_execute,
             tools::scan_queue::scan_queue_list,
             tools::scan_queue::scan_queue_upsert,
             tools::scan_queue::scan_queue_save_all,

@@ -80,7 +80,7 @@ function StepRow({ step, isExpanded, onToggle }: {
       >
         <StatusIcon status={step.status} />
         <span className={cn(
-          "text-[11px] font-medium flex-shrink-0",
+          "text-[11px] font-medium flex-shrink-0 min-w-[80px]",
           step.status === "pending" && "text-muted-foreground/50",
           step.status === "running" && "text-blue-300",
           step.status === "success" && "text-foreground/70",
@@ -97,9 +97,12 @@ function StepRow({ step, isExpanded, onToggle }: {
             AI
           </span>
         )}
-        <span className="text-[10px] text-muted-foreground/40 font-mono truncate flex-1">
-          {ai ? step.command.replace(/^AI:\s*/, "") : step.command}
-        </span>
+        {step.command && step.command !== step.name && (
+          <span className="text-[10px] text-muted-foreground/40 font-mono truncate flex-1">
+            {ai ? step.command.replace(/^AI:\s*/, "") : step.command}
+          </span>
+        )}
+        {(!step.command || step.command === step.name) && <span className="flex-1" />}
         {step.durationMs != null && (
           <span className="text-[9px] text-muted-foreground/40 tabular-nums flex-shrink-0">
             {formatStepDuration(step.durationMs)}

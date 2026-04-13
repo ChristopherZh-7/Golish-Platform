@@ -461,7 +461,9 @@ impl DbTracker {
         threshold: f32,
     ) -> Vec<ScoredMemoryHit> {
         if !self.ready_gate.is_ready() {
-            self.ready_gate.wait().await;
+            if !self.ready_gate.wait().await {
+                return Vec::new();
+            }
         }
 
         if self.ready_gate.has_pgvector() {
@@ -564,7 +566,9 @@ impl DbTracker {
     /// Search memories by text content (ILIKE), scoped to current project + global.
     pub async fn search_memories_text(&mut self, query: &str, limit: i64) -> Vec<MemoryHit> {
         if !self.ready_gate.is_ready() {
-            self.ready_gate.wait().await;
+            if !self.ready_gate.wait().await {
+                return Vec::new();
+            }
         }
         let pattern = format!("%{}%", query);
         sqlx::query_as::<_, MemoryHit>(
@@ -634,8 +638,8 @@ impl DbTracker {
         limit: i64,
     ) -> Result<Vec<MemoryHit>, sqlx::Error> {
         let mut gate = self.ready_gate.clone();
-        if !gate.is_ready() {
-            gate.wait().await;
+        if !gate.is_ready() && !gate.wait().await {
+            return Ok(Vec::new());
         }
         let pattern = format!("%{}%", query);
 
@@ -680,8 +684,8 @@ impl DbTracker {
         limit: i64,
     ) -> Vec<MemoryHit> {
         let mut gate = self.ready_gate.clone();
-        if !gate.is_ready() {
-            gate.wait().await;
+        if !gate.is_ready() && !gate.wait().await {
+            return Vec::new();
         }
 
         let mut results: Vec<MemoryHit> = Vec::new();
@@ -726,8 +730,8 @@ impl DbTracker {
     /// Fetch active execution plans for the current project.
     pub async fn fetch_active_plans(&self) -> Vec<BriefingPlan> {
         let mut gate = self.ready_gate.clone();
-        if !gate.is_ready() {
-            gate.wait().await;
+        if !gate.is_ready() && !gate.wait().await {
+            return Vec::new();
         }
 
         let project_path = match &self.project_path {
@@ -762,8 +766,8 @@ impl DbTracker {
         limit: i64,
     ) -> Result<Vec<MemoryHit>, sqlx::Error> {
         let mut gate = self.ready_gate.clone();
-        if !gate.is_ready() {
-            gate.wait().await;
+        if !gate.is_ready() && !gate.wait().await {
+            return Ok(Vec::new());
         }
 
         if let Some(cat) = category {
@@ -905,13 +909,16 @@ fn truncate_for_db(s: &str, max_bytes: usize) -> String {
 }
 
 /// Wait for PG to become ready with a 60-second timeout.
-/// Returns `true` if PG is ready, `false` if timed out (caller should skip the write).
+/// Returns `true` if PG is ready, `false` if timed out or failed (caller should skip the write).
 async fn await_db_ready(gate: &mut DbReadyGate) -> bool {
     if gate.is_ready() {
         return true;
     }
+    if gate.is_failed() {
+        return false;
+    }
     match tokio::time::timeout(std::time::Duration::from_secs(60), gate.wait()).await {
-        Ok(()) => true,
+        Ok(ready) => ready,
         Err(_) => {
             tracing::warn!("[db-track] Timed out waiting for PostgreSQL readiness, skipping write");
             false

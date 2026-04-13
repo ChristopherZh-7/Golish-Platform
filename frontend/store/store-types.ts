@@ -55,7 +55,7 @@ export interface AiConfig {
   };
 }
 
-export type DetailViewMode = "timeline" | "plan" | "tool-detail";
+export type DetailViewMode = "timeline" | "tool-detail";
 
 export interface Session {
   id: string;

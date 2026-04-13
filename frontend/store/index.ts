@@ -170,6 +170,10 @@ interface GolishState
   approvalMode: string;
   setApprovalMode: (mode: string) => void;
 
+  chatPanelVisible: boolean;
+  setChatPanelVisible: (visible: boolean) => void;
+  toggleChatPanel: () => void;
+
   // Sessions
   sessions: Record<string, Session>;
   activeSessionId: string | null;
@@ -274,7 +278,7 @@ interface GolishState
   requestTerminalClear: (sessionId: string) => void;
 
   // Pipeline execution actions
-  startPipelineExecution: (sessionId: string, execution: PipelineExecution) => void;
+  startPipelineExecution: (sessionId: string, execution: PipelineExecution, blockId?: string) => void;
   updatePipelineStep: (
     sessionId: string,
     executionId: string,
@@ -615,6 +619,16 @@ export const useStore = create<GolishState>()(
       setApprovalMode: (mode) =>
         set((state) => {
           state.approvalMode = mode;
+        }),
+
+      chatPanelVisible: true,
+      setChatPanelVisible: (visible) =>
+        set((state) => {
+          state.chatPanelVisible = visible;
+        }),
+      toggleChatPanel: () =>
+        set((state) => {
+          state.chatPanelVisible = !state.chatPanelVisible;
         }),
 
       // Core state
@@ -1115,11 +1129,11 @@ export const useStore = create<GolishState>()(
         }),
 
       // Pipeline execution actions
-      startPipelineExecution: (sessionId, execution) =>
+      startPipelineExecution: (sessionId, execution, blockId) =>
         set((state) => {
           if (!state.timelines[sessionId]) state.timelines[sessionId] = [];
           state.timelines[sessionId].push({
-            id: `pipeline-${execution.pipelineId}-${Date.now()}`,
+            id: blockId ?? `pipeline-${execution.pipelineId}-${Date.now()}`,
             type: "pipeline_progress",
             timestamp: new Date().toISOString(),
             data: execution,

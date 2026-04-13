@@ -18,7 +18,7 @@ import {
   X,
   XCircle,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { Markdown } from "@/components/Markdown";
@@ -51,6 +51,7 @@ import { getSettings } from "@/lib/settings";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import { cn } from "@/lib/utils";
 import type { PersistedTerminalData } from "@/lib/workspace-storage";
+import { getAllLeafPanes } from "@/lib/pane-utils";
 import { type ChatMessage, useStore } from "@/store";
 import { createNewConversation } from "@/store/slices/conversation";
 import {
@@ -218,7 +219,7 @@ function AgentSummaryBar() {
   );
 }
 
-function MessageBlock({
+const MessageBlock = memo(function MessageBlock({
   message,
   pendingApproval,
   onApprove,
@@ -269,8 +270,9 @@ function MessageBlock({
         const visibleCalls = hasToolCalls
           ? message.toolCalls!.filter(
               (tc) =>
-                tc.success !== undefined ||
-                (pendingApproval == null && tc.success === undefined)
+                tc.name !== "update_plan" &&
+                (tc.success !== undefined ||
+                  (pendingApproval == null && tc.success === undefined))
             )
           : [];
         const callIds = visibleCalls
@@ -362,7 +364,7 @@ function MessageBlock({
       )}
     </div>
   );
-}
+});
 
 export const AIChatPanel = memo(function AIChatPanel() {
   const { t } = useTranslation();
@@ -385,6 +387,8 @@ export const AIChatPanel = memo(function AIChatPanel() {
     args: Record<string, unknown>;
     riskLevel: string;
   } | null>(null);
+  const pendingApprovalRef = useRef(pendingApproval);
+  pendingApprovalRef.current = pendingApproval;
 
   type ApprovalMode = "ask" | "allowlist" | "run-all";
   const storeApprovalMode = useStore((s) => s.approvalMode);
@@ -407,8 +411,18 @@ export const AIChatPanel = memo(function AIChatPanel() {
   // Workflow state
   const [activeWorkflow, setActiveWorkflow] = useState<WorkflowState | null>(null);
 
-  // Task plan state
-  const [taskPlan, setTaskPlan] = useState<TaskPlanState | null>(null);
+  // Task plan: read from store session so it survives tab switches
+  const storePlan = useStore((s) => {
+    if (!s.activeConversationId) return null;
+    const termIds = s.conversationTerminals[s.activeConversationId];
+    const termId = termIds?.[0];
+    const p = termId ? (s.sessions[termId]?.plan ?? null) : null;
+    return p;
+  });
+  const taskPlan = useMemo<TaskPlanState | null>(
+    () => storePlan ? { version: storePlan.version, steps: storePlan.steps, summary: storePlan.summary } : null,
+    [storePlan]
+  );
   // Text offset at which the plan card was first created (for inline positioning)
   const planTextOffsetRef = useRef<number | null>(null);
 
@@ -427,7 +441,6 @@ export const AIChatPanel = memo(function AIChatPanel() {
   // Store actions
   const {
     addConversation,
-    removeConversation: removeConv,
     setActiveConversation,
     updateConversation: updateConv,
     addConversationMessage,
@@ -491,6 +504,9 @@ export const AIChatPanel = memo(function AIChatPanel() {
             }
             if (termInfo.customName)
               useStore.getState().setCustomTabName(existingTermId, termInfo.customName);
+            if (termInfo.planJson) {
+              useStore.getState().setPlan(existingTermId, termInfo.planJson as any);
+            }
             if (termInfo.timelineBlocks?.length) {
               const blocksToRestore = termInfo.timelineBlocks;
               const tid = existingTermId;
@@ -520,6 +536,9 @@ export const AIChatPanel = memo(function AIChatPanel() {
           if (isActiveConv) useStore.getState().setActiveSession(termId);
           if (termInfo.customName)
             useStore.getState().setCustomTabName(termId, termInfo.customName);
+          if (termInfo.planJson) {
+            useStore.getState().setPlan(termId, termInfo.planJson as any);
+          }
           if (termInfo.timelineBlocks?.length) {
             const blocksToRestore = termInfo.timelineBlocks;
             const tid = termId;
@@ -921,7 +940,6 @@ export const AIChatPanel = memo(function AIChatPanel() {
 
             // Plan events
             case "plan_updated": {
-              // Record text offset on first plan creation for inline positioning
               if (planTextOffsetRef.current === null) {
                 const currentConv = useStore.getState().conversations[convId];
                 const lastMsg = currentConv?.messages?.[currentConv.messages.length - 1];
@@ -929,11 +947,17 @@ export const AIChatPanel = memo(function AIChatPanel() {
                   planTextOffsetRef.current = (lastMsg.content || "").length;
                 }
               }
-              setTaskPlan({
-                version: event.version,
-                steps: event.steps,
-                summary: event.summary,
-              });
+              const termIds = useStore.getState().conversationTerminals[convId];
+              const termId = termIds?.[0];
+              if (termId) {
+                useStore.getState().setPlan(termId, {
+                  version: event.version,
+                  steps: event.steps,
+                  summary: event.summary,
+                  explanation: event.explanation ?? null,
+                  updated_at: new Date().toISOString(),
+                });
+              }
               break;
             }
 
@@ -976,6 +1000,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
 
   // Auto-scroll tabs to show the active tab
   useEffect(() => {
+    planTextOffsetRef.current = null;
     if (tabsRef.current) {
       const activeTab = tabsRef.current.querySelector(`[data-conv-id="${activeConvId}"]`);
       activeTab?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
@@ -1012,6 +1037,9 @@ export const AIChatPanel = memo(function AIChatPanel() {
             if (i === 0) useStore.getState().setActiveSession(termId);
             if (pending.customName)
               useStore.getState().setCustomTabName(termId, pending.customName);
+            if (pending.planJson) {
+              useStore.getState().setPlan(termId, pending.planJson as any);
+            }
             if (pending.timelineBlocks?.length) {
               const blocksToRestore = pending.timelineBlocks;
               const tid = termId;
@@ -1177,28 +1205,98 @@ export const AIChatPanel = memo(function AIChatPanel() {
         shutdownAiSession(conv.aiSessionId).catch(() => {});
       }
 
-      // Close all terminals belonging to this conversation
+      // Collect ALL session IDs to clean (including split-pane sessions).
       const terminalIds = storeBefore.conversationTerminals[convId] ?? [];
+      const allSessionIds: string[] = [];
       for (const termId of terminalIds) {
-        storeBefore.closeTab(termId);
+        const layout = storeBefore.tabLayouts[termId];
+        if (layout) {
+          for (const pane of getAllLeafPanes(layout.root)) {
+            allSessionIds.push(pane.sessionId);
+          }
+        } else {
+          allSessionIds.push(termId);
+        }
       }
 
-      removeConv(convId);
+      // Side effects outside Immer: dispose xterm instances + AI event tracking.
+      for (const sid of allSessionIds) {
+        TerminalInstanceManager.dispose(sid);
+      }
+      import("@/hooks/useAiEvents").then(({ resetSessionSequence }) => {
+        for (const sid of allSessionIds) resetSessionSequence(sid);
+      });
 
-      // Re-read store AFTER removal to get updated state
-      const storeAfter = useStore.getState();
-      if (storeAfter.conversationOrder.length === 0) {
-        const fresh = createNewConversation();
-        addConversation(fresh);
-        void createTerminalTab(undefined, true).then((termId) => {
-          if (termId) {
-            useStore.getState().addTerminalToConversation(fresh.id, termId);
-            useStore.getState().setActiveSession(termId);
-          }
-        });
+      // Determine the next conversation + terminal to focus BEFORE mutations.
+      const remainingOrder = storeBefore.conversationOrder.filter((id) => id !== convId);
+      let nextActiveSessionId: string | null = null;
+      if (remainingOrder.length > 0) {
+        const nextConvId = remainingOrder[remainingOrder.length - 1];
+        const nextTerms = storeBefore.conversationTerminals[nextConvId];
+        if (nextTerms && nextTerms.length > 0) {
+          nextActiveSessionId = nextTerms[0];
+        }
+      }
+
+      // Batch: remove conversation + terminals + set next active in one update.
+      useStore.setState((state) => {
+        // Remove terminal tab layouts and all pane session state
+        for (const termId of terminalIds) {
+          delete state.tabLayouts[termId];
+          delete state.tabHasNewActivity[termId];
+          const tIdx = state.tabOrder.indexOf(termId);
+          if (tIdx !== -1) state.tabOrder.splice(tIdx, 1);
+          state.tabActivationHistory = state.tabActivationHistory.filter((id) => id !== termId);
+        }
+        for (const sid of allSessionIds) {
+          delete state.sessions[sid];
+          delete state.timelines[sid];
+          delete state.pendingCommand[sid];
+          delete state.lastSentCommand[sid];
+          delete state.agentStreamingBuffer[sid];
+          delete state.agentStreaming[sid];
+          delete state.streamingBlocks[sid];
+          delete state.streamingTextOffset[sid];
+          delete state.agentInitialized[sid];
+          delete state.isAgentThinking[sid];
+          delete state.isAgentResponding[sid];
+          delete state.pendingToolApproval[sid];
+          delete state.pendingAskHuman[sid];
+          delete state.processedToolRequests[sid];
+          delete state.activeToolCalls[sid];
+          delete state.thinkingContent[sid];
+          delete state.isThinkingExpanded[sid];
+          delete state.contextMetrics[sid];
+          delete state.tabHasNewActivity[sid];
+          state.tabActivationHistory = state.tabActivationHistory.filter((id) => id !== sid);
+        }
+
+        // Remove conversation
+        delete state.conversations[convId];
+        delete state.conversationTerminals[convId];
+        const orderIdx = state.conversationOrder.indexOf(convId);
+        if (orderIdx !== -1) state.conversationOrder.splice(orderIdx, 1);
+
+        if (state.activeConversationId === convId) {
+          state.activeConversationId =
+            state.conversationOrder.length > 0
+              ? state.conversationOrder[state.conversationOrder.length - 1]
+              : null;
+        }
+
+        // Set next active session atomically — no intermediate home-tab render.
+        if (nextActiveSessionId) {
+          state.activeSessionId = nextActiveSessionId;
+        }
+      });
+
+      // If no conversations remain, collapse the chat panel instead of creating
+      // a new empty conversation. The user can reopen via the floating button.
+      if (useStore.getState().conversationOrder.length === 0) {
+        useStore.getState().setChatPanelVisible(false);
       }
     },
-    [removeConv, addConversation, createTerminalTab]
+    []
   );
 
   const handleModelSelect = useCallback((modelId: string, provider: string) => {
@@ -1272,7 +1370,31 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
 ### Penetration Testing Tools
 - pentest_list_tools: List all available pentest tools, their skills, and skill documents
 - pentest_run: Execute a specific pentest tool by name with arguments
-- pentest_read_skill: Read a skill document (Markdown) for detailed tool usage instructions${toolContext}
+- pentest_read_skill: Read a skill document (Markdown) for detailed tool usage instructions
+- run_pipeline: Execute a tool pipeline (chain of tools run sequentially with auto-parsing and DB storage)
+  - action "list": List all available pipelines (including built-in recon_basic)
+  - action "run": Execute a pipeline by ID against one or more targets. Each step's output is automatically parsed and stored to the database. Steps are skipped when they don't apply (e.g. subfinder skips for IP targets).
+    - pipeline_id (required): The pipeline to run (e.g. "recon_basic")
+    - target: Single target (domain/IP/URL)
+    - targets: Array of targets for batch scanning (e.g. ["a.com", "b.com"])${toolContext}
+
+### Data Management (PostgreSQL Database)
+- manage_targets: Manage penetration testing targets in the database
+  - action "add": Register a new host, subdomain, IP, or URL as a target
+  - action "list": List all current targets and their status
+  - action "update_status": Change a target's phase (new → recon → recon_done → scanning → tested)
+  - action "update_recon": Attach port/service/technology data to a target
+- record_finding: Record a vulnerability or security finding in the database
+- credential_vault: Manage discovered credentials
+  - action "store": Save a new credential (host, username, password, source)
+  - action "get": Retrieve credentials for a specific host
+  - action "get_all": List all stored credentials
+  - action "delete": Remove a credential entry
+
+### Memory System
+- search_memories: Search past observations, techniques, and findings stored across sessions
+- store_memory: Save important observations or findings for future reference
+- list_memories: List all stored memories
 
 ### File Operations
 - read_file: Read file contents
@@ -1282,12 +1404,41 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
 - list_files / list_directory: Browse directory contents
 - grep_file: Search for patterns in files
 
+## Critical Rules
+
+### Target Verification (MANDATORY)
+Before performing ANY security testing on a target (scanning, exploitation, fuzzing, etc.):
+1. Call manage_targets(action: "list") to check if the target exists in the database
+2. If the target is NOT in the database, you MUST use ask_human to ask the user: "Target [X] is not registered. Do you want to add it before proceeding?"
+3. If the user confirms, call manage_targets(action: "add", ...) to register it
+4. Only THEN proceed with the security testing
+Never skip this verification — all targets must be tracked in the database.
+
+### Tool Selection Rules
+- When asked about targets/目标 → use manage_targets (NOT file browsing)
+- When asked about vulnerabilities/漏洞/findings → use record_finding
+- When asked about credentials/密码/凭证 → use credential_vault
+- When asked about past findings/history → use search_memories first
+- When asked to scan/recon/enumerate a target → use run_pipeline first (after target verification). Only fall back to pentest_run for individual tool runs when a pipeline is not suitable.
+- NEVER browse the filesystem (.golish/ directory, session files, etc.) to look up target/finding/credential data. Always use the database tools above.
+
+### Scanning Workflow (Follow This Order)
+When the user asks to scan, recon, or enumerate a target:
+1. **Check targets**: Call manage_targets(action: "list") to see if target is registered
+2. **Add if missing**: If not found, use ask_human to ask "Target [X] is not registered. Add it?" → on confirm, call manage_targets(action: "add")
+3. **Run pipeline**: Call run_pipeline(action: "run", pipeline_id: "recon_basic", target: "the-target") to execute the full recon chain
+4. **Report results**: Summarize what was discovered (subdomains, ports, technologies, directories, etc.)
+Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeline automatically parses output and stores data to the database.
+
 ## Guidelines
 - When the user asks to run a command, use run_pty_cmd with the appropriate working directory from your managed terminals.
-- When running pentest tools specifically, prefer pentest_run as it handles runtime resolution (Python envs, Java paths, etc.) automatically.
+- For reconnaissance/scanning tasks, prefer run_pipeline over running individual tools — it handles the full chain with automatic parsing and database storage.
+- When running a single pentest tool, prefer pentest_run as it handles runtime resolution (Python envs, Java paths, etc.) automatically.
 - Use pentest_read_skill to learn detailed usage patterns before running unfamiliar tools.
 - For long-running commands, set an appropriate timeout.
-- Always report command output and exit codes to the user.`;
+- Always report command output and exit codes to the user.
+- After completing a scan or finding something notable, use store_memory to save it for future sessions.
+- Complete the full task without asking intermediate questions. Only ask the user when target verification requires confirmation or when critical decisions are needed.`;
   }, [pentestTools]);
 
   const initializeSession = useCallback(
@@ -1644,11 +1795,14 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
     (mode: ApprovalMode) => {
       setApprovalMode(mode);
       useStore.getState().setApprovalMode(mode);
-      if (!activeConv) return;
+      const conv = useStore.getState().activeConversationId
+        ? useStore.getState().conversations[useStore.getState().activeConversationId!]
+        : null;
+      if (!conv) return;
       const backendMode: AgentMode = mode === "run-all" ? "auto-approve" : "default";
-      setAgentMode(activeConv.aiSessionId, backendMode).catch(console.error);
+      setAgentMode(conv.aiSessionId, backendMode).catch(console.error);
     },
-    [activeConv]
+    []
   );
 
   const handleStop = useCallback(() => {
@@ -1678,6 +1832,61 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
 
   const currentModel = selectedModel?.model ?? "";
   const currentProvider = selectedModel?.provider ?? "";
+
+  const lastAssistantIdx = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "assistant") return i;
+    }
+    return -1;
+  }, [messages]);
+
+  const planTargetIdx = useMemo(() => {
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      if (msg.role === "assistant" && msg.toolCalls?.some((tc) => tc.name === "update_plan")) {
+        return i;
+      }
+    }
+    return lastAssistantIdx;
+  }, [messages, lastAssistantIdx]);
+
+  const stablePendingApproval = useMemo(
+    () =>
+      pendingApproval
+        ? { requestId: pendingApproval.requestId, toolName: pendingApproval.toolName }
+        : null,
+    [pendingApproval?.requestId, pendingApproval?.toolName]
+  );
+
+  const handleToolApprove = useCallback(
+    (requestId: string) => {
+      const pa = pendingApprovalRef.current;
+      if (!pa) return;
+      respondToToolApproval(pa.sessionId, {
+        request_id: requestId,
+        approved: true,
+        remember: false,
+        always_allow: false,
+      }).catch(console.error);
+      setPendingApproval(null);
+    },
+    []
+  );
+
+  const handleToolDeny = useCallback(
+    (requestId: string) => {
+      const pa = pendingApprovalRef.current;
+      if (!pa) return;
+      respondToToolApproval(pa.sessionId, {
+        request_id: requestId,
+        approved: false,
+        remember: false,
+        always_allow: false,
+      }).catch(console.error);
+      setPendingApproval(null);
+    },
+    []
+  );
 
   return (
     <div className="flex flex-col h-full">
@@ -1837,43 +2046,18 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
           ) : (
             <div>
               {messages.map((msg, msgIdx) => {
-                // Show plan card inline on the last assistant message
-                const isLastAssistant =
-                  msg.role === "assistant" &&
-                  !messages.slice(msgIdx + 1).some((m) => m.role === "assistant");
+                const isPlanTarget = msgIdx === planTargetIdx;
                 return (
                   <MessageBlock
                     key={msg.id}
                     message={msg}
-                    taskPlan={isLastAssistant ? taskPlan : null}
-                    planTextOffset={isLastAssistant ? planTextOffsetRef.current : null}
-                    pendingApproval={
-                      pendingApproval
-                        ? { requestId: pendingApproval.requestId, toolName: pendingApproval.toolName }
-                        : null
-                    }
+                    taskPlan={isPlanTarget ? taskPlan : null}
+                    planTextOffset={isPlanTarget ? planTextOffsetRef.current : null}
+                    pendingApproval={stablePendingApproval}
                     approvalMode={approvalMode}
                     onApprovalModeChange={handleApprovalModeChange}
-                    onApprove={(requestId) => {
-                      if (!pendingApproval) return;
-                      respondToToolApproval(pendingApproval.sessionId, {
-                        request_id: requestId,
-                        approved: true,
-                        remember: false,
-                        always_allow: false,
-                      }).catch(console.error);
-                      setPendingApproval(null);
-                    }}
-                    onDeny={(requestId) => {
-                      if (!pendingApproval) return;
-                      respondToToolApproval(pendingApproval.sessionId, {
-                        request_id: requestId,
-                        approved: false,
-                        remember: false,
-                        always_allow: false,
-                      }).catch(console.error);
-                      setPendingApproval(null);
-                    }}
+                    onApprove={handleToolApprove}
+                    onDeny={handleToolDeny}
                   />
                 );
               })}

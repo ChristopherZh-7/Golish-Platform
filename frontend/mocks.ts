@@ -1324,7 +1324,7 @@ export async function mockShowAllBlocks(): Promise<void> {
 /**
  * Simulate the complete AI-driven plan execution flow with proper session routing.
  * This mocks: started → text → update_plan → tool executions → completed.
- * Both the right chat and left PlanDetailView will update.
+ * The right chat TaskPlanCard will update.
  * Call from console: __mockFullPlan()
  */
 export async function mockFullPlanExecution(): Promise<void> {

@@ -201,7 +201,7 @@ pub async fn findings_list(
     state: tauri::State<'_, AppState>,
     project_path: Option<String>,
 ) -> Result<FindingsStore, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let sql = format!(
         "SELECT {} FROM findings WHERE project_path IS NOT DISTINCT FROM $1 ORDER BY created_at DESC",
         SELECT_COLS
@@ -262,7 +262,7 @@ pub async fn findings_add(
     finding: Finding,
     project_path: Option<String>,
 ) -> Result<String, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let ts = now_ts();
     let id = if finding.id.is_empty() { Uuid::new_v4().to_string() } else { finding.id.clone() };
     let entry = Finding { id: id.clone(), created_at: ts, updated_at: ts, ..finding };
@@ -276,7 +276,7 @@ pub async fn findings_update(
     finding: Finding,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let uid: Uuid = finding.id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let created: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
         "SELECT created_at FROM findings WHERE id=$1",
@@ -299,7 +299,7 @@ pub async fn findings_delete(
     id: String,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
     sqlx::query("DELETE FROM findings WHERE id=$1")
@@ -317,7 +317,7 @@ pub async fn findings_import_parsed(
     tool_name: Option<String>,
     project_path: Option<String>,
 ) -> Result<u32, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let ts = now_ts();
     let tool = tool_name.unwrap_or_default();
     let mut added = 0u32;
@@ -381,7 +381,7 @@ pub async fn findings_add_evidence(
     data_base64: String,
     project_path: Option<String>,
 ) -> Result<String, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let evidence_id = Uuid::new_v4().to_string();
     let ext = filename.rsplit('.').next().unwrap_or("bin").to_string();
     let stored_name = format!("{}.{}", evidence_id, ext);
@@ -431,7 +431,7 @@ pub async fn findings_remove_evidence(
     evidence_id: String,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let uid: Uuid = finding_id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
     let evidence_val: serde_json::Value = sqlx::query_scalar(
@@ -468,7 +468,7 @@ pub async fn findings_evidence_path(
     evidence_id: String,
     project_path: Option<String>,
 ) -> Result<String, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let uid: Uuid = finding_id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
     let evidence_val: serde_json::Value = sqlx::query_scalar(
@@ -491,7 +491,7 @@ pub async fn findings_for_host(
     host: String,
     project_path: Option<String>,
 ) -> Result<Vec<Finding>, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let _ = project_path;
     let pattern = format!("%{}%", host.to_lowercase());
     let sql = format!(
@@ -512,7 +512,7 @@ pub async fn findings_deduplicate(
     state: tauri::State<'_, AppState>,
     project_path: Option<String>,
 ) -> Result<u32, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let _ = project_path;
     let sql = format!("SELECT {} FROM findings ORDER BY created_at ASC", SELECT_COLS);
     let rows: Vec<FindingRow> = sqlx::query_as(&sql)

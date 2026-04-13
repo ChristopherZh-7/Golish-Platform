@@ -1643,6 +1643,7 @@ where
     let mut total_usage = TokenUsage::default();
     let mut iteration = 0;
     let mut consecutive_no_tool_turns: u32 = 0;
+    let mut total_reflector_nudges: u32 = 0;
     // Tracks whether the memory gatekeeper decided this message warrants tool usage.
     // When false (simple chat), the reflector won't nudge the agent to use tools.
     let mut gatekeeper_wants_tools = false;
@@ -2210,6 +2211,7 @@ where
         // Reasoning ID for OpenAI Responses API (rs_... IDs that function calls reference)
         let mut thinking_id: Option<String> = None;
         let mut chunk_count = 0;
+        let mut last_stream_chunk_error: Option<String> = None;
         let mut last_repetition_check_len: usize = 0;
 
         // Track tool call state for streaming
@@ -2642,8 +2644,29 @@ where
                     }
                 }
                 Err(e) => {
+                    last_stream_chunk_error = Some(e.to_string());
                     tracing::warn!("Stream chunk error at #{}: {}", chunk_count, e);
                 }
+            }
+        }
+
+        // If the stream produced no usable content but had errors, surface the error
+        if text_content.is_empty()
+            && thinking_content.is_empty()
+            && tool_calls_to_execute.is_empty()
+            && current_tool_name.is_none()
+        {
+            if let Some(ref err_msg) = last_stream_chunk_error {
+                let classification = classify_stream_start_error(err_msg);
+                let _ = ctx.event_tx.send(AiEvent::Error {
+                    message: classification.user_message.clone(),
+                    error_type: classification.error_type.to_string(),
+                });
+                tracing::error!(
+                    "Stream produced no content; last chunk error: {}",
+                    err_msg
+                );
+                break;
             }
         }
 
@@ -2807,6 +2830,7 @@ where
             // Skip reflector when the gatekeeper classified the message as simple chat
             // (no memory/tool usage warranted) — the text-only response is expected.
             let should_reflect = consecutive_no_tool_turns <= 3
+                && total_reflector_nudges < 3
                 && !text_content.trim().is_empty()
                 && config.enable_reflector
                 && gatekeeper_wants_tools;
@@ -2816,15 +2840,14 @@ where
                 if registry.get("reflector").is_some() {
                     drop(registry);
 
+                    total_reflector_nudges += 1;
                     tracing::info!(
                         attempt = consecutive_no_tool_turns,
+                        total_nudges = total_reflector_nudges,
                         text_len = text_content.len(),
                         "[reflector] Agent produced text without tool calls, generating correction"
                     );
 
-                    // Build a correction prompt and inject it as a user message.
-                    // This is cheaper than a full sub-agent call — we just nudge the agent
-                    // using a heuristic message. A full reflector LLM call can be added in Phase 2.
                     let correction = format!(
                         "[System: You responded with text but did not use any tools. \
                          If you have completed the task, that's fine. \
@@ -2832,7 +2855,7 @@ where
                          Available tools include: run_pty_cmd, read_file, write_file, \
                          web_search, web_fetch, search_memories, store_memory. \
                          Attempt {}/3]",
-                        consecutive_no_tool_turns
+                        total_reflector_nudges
                     );
 
                     chat_history.push(Message::User {

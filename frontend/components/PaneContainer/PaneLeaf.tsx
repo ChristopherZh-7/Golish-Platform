@@ -15,7 +15,6 @@
  */
 
 import React, { lazy, Suspense, useCallback } from "react";
-import { PlanDetailView } from "@/components/PlanDetailView";
 import { ToolDetailView } from "@/components/ToolDetailView";
 import { UnifiedInput } from "@/components/UnifiedInput";
 import { UnifiedTimeline } from "@/components/UnifiedTimeline";
@@ -66,7 +65,7 @@ interface PaneLeafProps {
 export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId }: PaneLeafProps) {
   // Use combined selector for efficient state access - only re-renders when
   // specific properties change, not when entire Session/TabLayout objects change
-  const { focusedPaneId, renderMode, tabType, sessionExists, sessionName, workingDirectory, detailViewMode, plan } = usePaneLeafState(
+  const { focusedPaneId, renderMode, tabType, sessionExists, sessionName, workingDirectory, detailViewMode } = usePaneLeafState(
     tabId,
     sessionId
   );
@@ -147,8 +146,6 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
                         <span className="text-sm">Restoring session...</span>
                       </div>
                     </div>
-                  ) : detailViewMode === "plan" && plan ? (
-                    <PlanDetailView sessionId={sessionId} plan={plan} />
                   ) : detailViewMode === "tool-detail" ? (
                     <ToolDetailView sessionId={sessionId} />
                   ) : (

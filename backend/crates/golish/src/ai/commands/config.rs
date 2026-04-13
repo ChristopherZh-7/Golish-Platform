@@ -112,6 +112,7 @@ pub async fn init_ai_agent_openai(
     }
 
     // Create runtime for event emission
+    let app_for_tools = app.clone();
     let runtime: Arc<dyn QbitRuntime> = Arc::new(TauriRuntime::new(app));
     *state.ai_state.runtime.write().await = Some(runtime.clone());
 
@@ -129,7 +130,7 @@ pub async fn init_ai_agent_openai(
     .await
     .map_err(|e| e.to_string())?;
 
-    configure_bridge(&mut bridge, &state, "legacy").await;
+    configure_bridge(&mut bridge, &state, "legacy", Some(app_for_tools)).await;
 
     // Replace the bridge
     *state.ai_state.bridge.write().await = Some(bridge);
@@ -186,6 +187,7 @@ pub async fn init_ai_agent_vertex(
 
     // Phase 5: Use runtime-based constructor
     // TauriRuntime handles event emission via Tauri's event system
+    let app_for_tools = app.clone();
     let runtime: Arc<dyn QbitRuntime> = Arc::new(TauriRuntime::new(app));
 
     // Store runtime in AiState (for potential future use by other components)
@@ -205,7 +207,7 @@ pub async fn init_ai_agent_vertex(
     .await
     .map_err(|e| e.to_string())?;
 
-    configure_bridge(&mut bridge, &state, "legacy").await;
+    configure_bridge(&mut bridge, &state, "legacy", Some(app_for_tools)).await;
 
     // Replace the bridge (old bridge's Drop impl will finalize its session)
     *state.ai_state.bridge.write().await = Some(bridge);

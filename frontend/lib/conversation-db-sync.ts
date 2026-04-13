@@ -46,6 +46,7 @@ export interface LoadedTerminalData {
   scrollback: string;
   customName: string | null;
   timelineBlocks: UnifiedBlock[];
+  planJson: unknown | null;
 }
 
 function dbMsgToChatMessage(row: ChatMessageRow): ChatMessage {
@@ -153,6 +154,7 @@ export async function loadFromDb(
             scrollback: ts.scrollback,
             customName: ts.customName ?? null,
             timelineBlocks: blocks,
+            planJson: ts.planJson ?? null,
           });
         }
         terminalData[convRow.id] = loaded;
@@ -232,6 +234,7 @@ async function saveConversationsToDb(
         workingDirectory: sess.workingDirectory,
         scrollback,
         customName: sess.customName ?? null,
+        planJson: sess.plan ?? null,
       });
 
       const timeline = timelines[tid];

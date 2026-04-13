@@ -50,7 +50,7 @@ pub async fn notes_list(
     entity_id: Option<String>,
     project_path: Option<String>,
 ) -> Result<Vec<Note>, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let rows = sqlx::query_as::<_, NoteRow>(
         r#"SELECT id, entity_type, entity_id, content, color, created_at, updated_at
            FROM notes
@@ -77,7 +77,7 @@ pub async fn notes_add(
     color: Option<String>,
     project_path: Option<String>,
 ) -> Result<String, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let c = color.unwrap_or_else(|| "yellow".to_string());
     let id: Uuid = sqlx::query_scalar(
         r#"INSERT INTO notes (entity_type, entity_id, content, color, project_path)
@@ -102,7 +102,7 @@ pub async fn notes_update(
     color: Option<String>,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let c = color.unwrap_or_else(|| "yellow".to_string());
@@ -122,7 +122,7 @@ pub async fn notes_delete(
     id: String,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
     sqlx::query("DELETE FROM notes WHERE id=$1")

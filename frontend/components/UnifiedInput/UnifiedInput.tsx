@@ -507,62 +507,19 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
         return;
       }
 
-      // Build command context
-      const { getConfig } = await import("@/lib/pentest/api");
-      let toolsDir = "";
+      // Use unified command builder (single source of truth for tool launch)
       try {
-        const cfg = await getConfig();
-        toolsDir = cfg.tools_dir;
-      } catch { /* use empty */ }
-
-      let prefix = "";
-      console.log("[ToolMode] runtime:", tool.runtime, "runtimeVersion:", tool.runtimeVersion);
-      if (tool.runtime === "python") {
+        const { buildCommand } = await import("@/lib/pentest/api");
+        const result = await buildCommand(tool, "");
+        toolContextRef.current = { cdPrefix: "", baseCmd: result.command };
+      } catch (e) {
+        console.warn("[ToolMode] buildCommand failed, trying legacy getToolCommand:", e);
         try {
-          const { invoke } = await import("@tauri-apps/api/core");
-          console.log("[ToolMode] Resolving python path for version:", tool.runtimeVersion);
-          const pythonPath = await invoke<string>("pentest_resolve_python_path", {
-            version: tool.runtimeVersion || "",
-          });
-          console.log("[ToolMode] Resolved python path:", pythonPath);
-          prefix = `"${pythonPath}"`;
-        } catch (e) {
-          console.warn("[ToolMode] Failed to resolve python path:", e);
-          prefix = "python3";
-        }
-      } else if (tool.runtime === "java") {
-        try {
-          const { invoke } = await import("@tauri-apps/api/core");
-          const javaPath = await invoke<string>("pentest_resolve_java_path", {
-            version: tool.runtimeVersion || "",
-          });
-          console.log("[ToolMode] Resolved java path:", javaPath);
-          prefix = `"${javaPath}" -jar`;
-        } catch (e) {
-          console.warn("[ToolMode] Failed to resolve java path, using default:", e);
-          prefix = "java -jar";
-        }
-      } else if (tool.runtime === "node") {
-        prefix = "node";
-      }
-      const isHomebrew = tool.install?.method === "homebrew" || tool.runtime === "native" || tool.runtime === "system";
-      const exeFile = tool.executable.split("/").pop() || tool.executable;
-
-      if (isHomebrew) {
-        const cmdName = tool.install?.source || exeFile.replace(/\.[^.]+$/, "");
-        toolContextRef.current = { cdPrefix: "", baseCmd: cmdName };
-      } else {
-        const runCmd = prefix ? `${prefix} ${exeFile}` : `./${exeFile}`;
-        if (toolsDir) {
-          const toolSubDir = tool.executable.includes("/")
-            ? tool.executable.split("/").slice(0, -1).join("/")
-            : tool.name.toLowerCase();
-          toolContextRef.current = {
-            cdPrefix: `cd "${toolsDir}/${toolSubDir}" && `,
-            baseCmd: runCmd,
-          };
-        } else {
-          toolContextRef.current = { cdPrefix: "", baseCmd: runCmd };
+          const { getToolCommand } = await import("@/lib/pentest/api");
+          const cmd = await getToolCommand(tool);
+          toolContextRef.current = { cdPrefix: "", baseCmd: cmd };
+        } catch {
+          toolContextRef.current = { cdPrefix: "", baseCmd: tool.name };
         }
       }
 

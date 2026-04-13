@@ -52,6 +52,7 @@ export interface PersistedTerminalData {
   workingDirectory: string;
   scrollback: string;
   customName?: string;
+  planJson?: unknown;
   timelineBlocks?: PersistedTimelineBlock[];
 }
 

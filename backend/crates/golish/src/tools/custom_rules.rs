@@ -30,7 +30,7 @@ pub async fn custom_rules_list(
     state: tauri::State<'_, AppState>,
     project_path: Option<String>,
 ) -> Result<Vec<CustomPassiveRule>, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let rows: Vec<(String, String, String, String, String, bool)> = sqlx::query_as(
         "SELECT id, name, pattern, scope, severity, enabled \
          FROM custom_passive_rules WHERE project_path IS NOT DISTINCT FROM $1 \
@@ -60,7 +60,7 @@ pub async fn custom_rules_upsert(
     rule: CustomPassiveRule,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     sqlx::query(
         r#"INSERT INTO custom_passive_rules (id, name, pattern, scope, severity, enabled, project_path)
            VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -91,7 +91,7 @@ pub async fn custom_rules_save_all(
     rules: Vec<CustomPassiveRule>,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
 
     sqlx::query("DELETE FROM custom_passive_rules WHERE project_path IS NOT DISTINCT FROM $1")
         .bind(project_path.as_deref())
@@ -124,7 +124,7 @@ pub async fn custom_rules_delete(
     state: tauri::State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     sqlx::query("DELETE FROM custom_passive_rules WHERE id = $1")
         .bind(&id)
         .execute(pool)

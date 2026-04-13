@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
-  ArrowRight, Code2, Download, GitBranch, Loader2, Play, Plus, Save, Trash2, X,
+  ArrowRight, Code2, Database, Download, GitBranch, Loader2, Plus, Save, Trash2, X,
   Shield, Globe, Server, Cpu, Wrench,
   AlertTriangle, CheckCircle2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useStore } from "@/store";
 import { getProjectPath } from "@/lib/projects";
-import { scanTools, type ToolConfig } from "@/lib/pentest/api";
-import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
+import { scanTools } from "@/lib/pentest/api";
+import type { ToolConfig } from "@/lib/pentest/types";
 import { checkReconTools, type ReconToolCheck } from "@/lib/ai";
+import { useStore } from "@/store";
 
 type ExecMode = "pipe" | "sequential" | "parallel" | "on_success" | "on_failure";
 const EXEC_LABELS: Record<ExecMode, { label: string; op: string; color: string }> = {
@@ -42,6 +43,7 @@ interface PipelineStep {
   params: Record<string, unknown>;
   input_from: string | null;
   exec_mode: ExecMode;
+  requires?: string | null;
   x: number;
   y: number;
 }
@@ -77,9 +79,11 @@ export function PipelinePanel() {
   const [loading, setLoading] = useState(true);
   const [dirty, setDirty] = useState(false);
   const [showToolPicker, setShowToolPicker] = useState(false);
-  const [running, setRunning] = useState(false);
   const [toolCheck, setToolCheck] = useState<ReconToolCheck | null>(null);
-  const [checkingTools, setCheckingTools] = useState(false);
+  // AI-driven pipeline execution progress (received via pipeline-event)
+  const [aiRunning, setAiRunning] = useState(false);
+  const [aiProgress, setAiProgress] = useState<{ step: number; total: number; tool: string } | null>(null);
+  const [aiResult, setAiResult] = useState<{ total_stored: number; steps: { tool_name: string; stored: number; exit_code: number | null }[] } | null>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
@@ -101,11 +105,9 @@ export function PipelinePanel() {
 
   useEffect(() => {
     if (active?.workflow_id === "recon_basic") {
-      setCheckingTools(true);
       checkReconTools()
         .then(setToolCheck)
-        .catch(() => setToolCheck(null))
-        .finally(() => setCheckingTools(false));
+        .catch(() => setToolCheck(null));
     } else {
       setToolCheck(null);
     }
@@ -155,6 +157,7 @@ export function PipelinePanel() {
       params: {},
       input_from: null,
       exec_mode: "pipe",
+      requires: null,
       x: 40 + stepCount * 220,
       y: 80,
     };
@@ -200,46 +203,45 @@ export function PipelinePanel() {
     setDirty(true);
   }, [active]);
 
-  const { createTerminalTab } = useCreateTerminalTab();
+  // Listen for AI-driven pipeline execution events
+  useEffect(() => {
+    const unlistenPromise = listen<{
+      pipeline_id: string;
+      step_index: number;
+      total_steps: number;
+      tool_name: string;
+      status: string;
+      store_stats?: { stored_count: number };
+    }>("pipeline-event", (event) => {
+      const p = event.payload;
 
-  const handleRun = useCallback(async () => {
-    if (!active || active.steps.length === 0 || running) return;
-    if (toolCheck && !toolCheck.all_ready) return;
+      if (p.status === "running") {
+        setAiRunning(true);
+        setAiProgress({ step: p.step_index + 1, total: p.total_steps, tool: p.tool_name });
+      } else if (p.status === "skipped") {
+        // Step skipped due to target type mismatch — don't count as error
+      } else if (p.status === "completed" || p.status === "error") {
+        setAiResult((prev) => {
+          const steps = prev?.steps ?? [];
+          return {
+            total_stored: (prev?.total_stored ?? 0) + (p.store_stats?.stored_count ?? 0),
+            steps: [...steps, {
+              tool_name: p.tool_name,
+              stored: p.store_stats?.stored_count ?? 0,
+              exit_code: p.status === "completed" ? 0 : -1,
+            }],
+          };
+        });
 
-    const store = useStore.getState();
-    const targets = store.targets?.map((t: { value: string }) => t.value) || [];
-    const targetStr = targets[0] || "";
-
-    setRunning(true);
-    try {
-      let chainedCommand = "";
-      active.steps.forEach((step, idx) => {
-        const args = step.args.length > 0 ? ` ${step.args.join(" ")}` : "";
-        let cmd = `${step.command_template}${args}`;
-        cmd = cmd.replaceAll("{target}", targetStr);
-
-        if (idx === 0 || !chainedCommand) {
-          chainedCommand = cmd;
-        } else {
-          const mode = step.exec_mode || "sequential";
-          chainedCommand += EXEC_LABELS[mode as ExecMode]?.op ?? " && ";
-          chainedCommand += cmd;
+        if (p.step_index + 1 >= p.total_steps) {
+          setAiRunning(false);
+          setAiProgress(null);
         }
-      });
-
-      if (!chainedCommand) return;
-
-      const sessionId = await createTerminalTab();
-      if (sessionId) {
-        store.setActiveSession(sessionId);
-        setTimeout(async () => {
-          await invoke("terminal_write", { sessionId, data: chainedCommand + "\n" }).catch(() => {});
-        }, 300);
       }
-    } finally {
-      setRunning(false);
-    }
-  }, [active, createTerminalTab, running, toolCheck]);
+    });
+
+    return () => { unlistenPromise.then((f) => f()); };
+  }, []);
 
   if (loading) {
     return (
@@ -250,8 +252,6 @@ export function PipelinePanel() {
   }
 
   const isReconBasic = active?.workflow_id === "recon_basic";
-  const hasMissingTools = isReconBasic && toolCheck !== null && !toolCheck.all_ready;
-  const runDisabled = !active || active.steps.length === 0 || running || hasMissingTools || checkingTools;
 
   return (
     <div className="flex flex-col h-full bg-background">
@@ -335,28 +335,12 @@ export function PipelinePanel() {
                   <Plus className="w-3 h-3" />
                   Add Step
                 </button>
-                <button
-                  onClick={handleRun}
-                  disabled={runDisabled}
-                  title={hasMissingTools ? `Missing tools: ${toolCheck!.missing.join(", ")}` : undefined}
-                  className={cn(
-                    "flex items-center gap-1 px-2 py-1 text-[10px] rounded-md transition-colors",
-                    !runDisabled
-                      ? "bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25"
-                      : "bg-muted/10 text-muted-foreground/30 cursor-not-allowed"
-                  )}
-                >
-                  {running ? (
+                {aiRunning && (
+                  <span className="flex items-center gap-1.5 px-2 py-1 text-[10px] rounded-md bg-emerald-500/10 text-emerald-400">
                     <Loader2 className="w-3 h-3 animate-spin" />
-                  ) : checkingTools ? (
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                  ) : hasMissingTools ? (
-                    <AlertTriangle className="w-3 h-3 text-amber-400" />
-                  ) : (
-                    <Play className="w-3 h-3" />
-                  )}
-                  {checkingTools ? "Checking..." : hasMissingTools ? "Tools Missing" : "Run"}
-                </button>
+                    {aiProgress ? `AI: ${aiProgress.step}/${aiProgress.total} ${aiProgress.tool}` : "AI running..."}
+                  </span>
+                )}
                 <button
                   onClick={handleSave}
                   disabled={!dirty}
@@ -494,6 +478,11 @@ export function PipelinePanel() {
                                 }}
                                 className="text-[11px] font-medium flex-1 truncate bg-transparent outline-none text-foreground"
                               />
+                              {step.requires && (
+                                <span className="px-1 py-0.5 text-[8px] rounded bg-blue-500/10 text-blue-400 border border-blue-500/15">
+                                  {step.requires}
+                                </span>
+                              )}
                               <button
                                 onClick={() => removeStep(step.id)}
                                 className="p-0.5 text-muted-foreground/30 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
@@ -532,6 +521,52 @@ export function PipelinePanel() {
                                 placeholder="e.g. -d {target} -silent"
                                 className="w-full px-1.5 py-1 text-[10px] font-mono rounded bg-muted/10 border border-border/10 text-foreground placeholder:text-muted-foreground/20 outline-none"
                               />
+                              <div className="flex gap-2">
+                                <div className="flex-1">
+                                  <div className="text-[9px] text-muted-foreground/40">Requires</div>
+                                  <select
+                                    value={step.requires || ""}
+                                    onChange={(e) => {
+                                      setActive({
+                                        ...active,
+                                        steps: active.steps.map((s) =>
+                                          s.id === step.id ? { ...s, requires: e.target.value || null } : s
+                                        ),
+                                      });
+                                      setDirty(true);
+                                    }}
+                                    className="w-full px-1 py-0.5 text-[10px] rounded bg-muted/10 border border-border/10 text-foreground outline-none"
+                                  >
+                                    <option value="">any</option>
+                                    <option value="domain">domain</option>
+                                    <option value="ip">ip</option>
+                                    <option value="url">url</option>
+                                  </select>
+                                </div>
+                                <div className="flex-1">
+                                  <div className="text-[9px] text-muted-foreground/40">Input from</div>
+                                  <select
+                                    value={step.input_from || ""}
+                                    onChange={(e) => {
+                                      setActive({
+                                        ...active,
+                                        steps: active.steps.map((s) =>
+                                          s.id === step.id ? { ...s, input_from: e.target.value || null } : s
+                                        ),
+                                      });
+                                      setDirty(true);
+                                    }}
+                                    className="w-full px-1 py-0.5 text-[10px] rounded bg-muted/10 border border-border/10 text-foreground outline-none"
+                                  >
+                                    <option value="">prev step</option>
+                                    {active.steps
+                                      .filter((s) => s.id !== step.id)
+                                      .map((s) => (
+                                        <option key={s.id} value={s.id}>{s.tool_name}</option>
+                                      ))}
+                                  </select>
+                                </div>
+                              </div>
                             </div>
                           </div>
                         </div>
@@ -540,6 +575,47 @@ export function PipelinePanel() {
                   </div>
                 )}
               </div>
+
+              {/* AI execution results (shown when AI runs this pipeline) */}
+              {aiResult && (
+                <div className="flex-shrink-0 px-4 py-3 border-t border-border/20 bg-muted/5">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Database className="w-3.5 h-3.5 text-blue-400" />
+                    <span className="text-[11px] font-medium text-foreground">
+                      AI stored {aiResult.total_stored} records to database
+                    </span>
+                    <button
+                      onClick={() => setAiResult(null)}
+                      className="ml-auto p-0.5 text-muted-foreground/30 hover:text-foreground transition-colors"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {aiResult.steps.map((s, i) => (
+                      <span
+                        key={i}
+                        className={cn(
+                          "inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded-md border",
+                          s.exit_code === 0
+                            ? "border-emerald-500/15 bg-emerald-500/5 text-emerald-400"
+                            : "border-red-500/15 bg-red-500/5 text-red-400"
+                        )}
+                      >
+                        {s.exit_code === 0 ? (
+                          <CheckCircle2 className="w-2.5 h-2.5" />
+                        ) : (
+                          <AlertTriangle className="w-2.5 h-2.5" />
+                        )}
+                        {s.tool_name}
+                        {s.stored > 0 && (
+                          <span className="text-blue-400 ml-0.5">+{s.stored}</span>
+                        )}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </>
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center gap-3 text-muted-foreground/30">

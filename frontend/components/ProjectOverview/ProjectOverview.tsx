@@ -46,6 +46,13 @@ interface TargetEntry {
   source: string;
   ports: unknown[];
   technologies: string[];
+  real_ip: string;
+  cdn_waf: string;
+  http_title: string;
+  http_status: number | null;
+  webserver: string;
+  os_info: string;
+  content_type: string;
   created_at: number;
   updated_at: number;
 }

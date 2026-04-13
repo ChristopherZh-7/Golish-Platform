@@ -185,7 +185,7 @@ async fn upsert_entries(pool: &sqlx::PgPool, entries: &[VulnEntry]) -> Result<()
 pub async fn intel_list_feeds(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<VulnFeed>, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     ensure_default_feeds(pool).await?;
     let rows: Vec<FeedRow> = sqlx::query_as("SELECT id, name, feed_type, url, enabled, last_fetched FROM vuln_feeds")
         .fetch_all(pool)
@@ -201,7 +201,7 @@ pub async fn intel_add_feed(
     feed_type: String,
     url: String,
 ) -> Result<String, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO vuln_feeds (id, name, feed_type, url, enabled) VALUES ($1, $2, $3, $4, true)",
@@ -222,7 +222,7 @@ pub async fn intel_toggle_feed(
     id: String,
     enabled: bool,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     sqlx::query("UPDATE vuln_feeds SET enabled=$1 WHERE id=$2")
         .bind(enabled)
         .bind(&id)
@@ -237,7 +237,7 @@ pub async fn intel_delete_feed(
     state: tauri::State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     sqlx::query("DELETE FROM vuln_feeds WHERE id=$1")
         .bind(&id)
         .execute(pool)
@@ -250,7 +250,7 @@ pub async fn intel_delete_feed(
 pub async fn intel_fetch(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<VulnEntry>, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     ensure_default_feeds(pool).await?;
 
     let feeds: Vec<FeedRow> = sqlx::query_as(
@@ -302,7 +302,7 @@ pub async fn intel_fetch(
 pub async fn intel_get_cached(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<VulnEntry>, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let rows: Vec<EntryRow> = sqlx::query_as(
         "SELECT cve_id, title, description, sev, cvss_score, published, source, refs, affected_products \
          FROM vuln_entries ORDER BY published DESC",
@@ -318,7 +318,7 @@ pub async fn intel_fetch_page(
     state: tauri::State<'_, AppState>,
     page: u32,
 ) -> Result<Vec<VulnEntry>, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -353,7 +353,7 @@ pub async fn intel_search_remote(
     state: tauri::State<'_, AppState>,
     query: String,
 ) -> Result<Vec<VulnEntry>, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -388,7 +388,7 @@ pub async fn intel_search_remote_page(
     query: String,
     start_index: u32,
 ) -> Result<Vec<VulnEntry>, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -413,7 +413,7 @@ pub async fn intel_search(
     state: tauri::State<'_, AppState>,
     query: String,
 ) -> Result<Vec<VulnEntry>, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let pattern = format!("%{}%", query.to_lowercase());
     let rows: Vec<EntryRow> = sqlx::query_as(
         "SELECT cve_id, title, description, sev, cvss_score, published, source, refs, affected_products \
@@ -433,7 +433,7 @@ pub async fn intel_match_targets(
     state: tauri::State<'_, AppState>,
     project_path: Option<String>,
 ) -> Result<Vec<VulnEntry>, String> {
-    let pool = &*state.db_pool;
+    let pool = state.db_pool_ready().await?;
     let _ = project_path;
 
     let target_rows: Vec<(String, serde_json::Value)> = sqlx::query_as(
