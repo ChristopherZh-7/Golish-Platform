@@ -695,12 +695,22 @@ pub async fn init_ai_session(
 /// Shutdown AI agent for a specific session.
 ///
 /// Removes the AI agent bridge for the specified session, freeing resources.
-/// This should be called when a tab is closed.
+/// This should be called when a tab is closed or when the user clicks stop.
 #[tauri::command]
 pub async fn shutdown_ai_session(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<(), String> {
+    // Signal cancellation before removing the bridge so the running
+    // agentic loop (which holds an Arc clone) sees the flag.
+    {
+        let bridges = state.ai_state.get_bridges().await;
+        if let Some(bridge) = bridges.get(&session_id) {
+            bridge.cancel();
+            tracing::info!("Cancellation signalled for session {}", session_id);
+        }
+    }
+
     if state
         .ai_state
         .remove_session_bridge(&session_id)
@@ -710,7 +720,6 @@ pub async fn shutdown_ai_session(
         tracing::info!("AI agent shut down for session {}", session_id);
         Ok(())
     } else {
-        // Not an error - session may not have had AI initialized
         tracing::debug!("No AI agent found for session {} to shut down", session_id);
         Ok(())
     }

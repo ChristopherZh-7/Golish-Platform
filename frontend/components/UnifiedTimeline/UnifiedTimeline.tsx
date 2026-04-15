@@ -144,7 +144,7 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
   }, []);
 
   // Empty state - only show if no timeline and no command running
-  const hasRunningCommand = pendingCommand?.command || pendingCommand?.output;
+  const hasRunningCommand = !!pendingCommand;
   const isEmpty = timeline.length === 0 && !hasRunningCommand;
 
   // Terminal view shows only manually typed commands.
@@ -181,7 +181,7 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
               workingDirectory={workingDirectory}
             />
 
-            {showLiveBlock && (pendingCommand?.command || pendingCommand?.output) && (
+            {showLiveBlock && pendingCommand && (
               <div
                 className="transition-opacity duration-200"
                 style={{ opacity: liveBlockFading ? 0 : 1 }}

@@ -131,6 +131,9 @@ pub struct AgentBridge {
     pub(crate) approval_recorder: Arc<ApprovalRecorder>,
     pub(crate) pending_approvals: Arc<RwLock<HashMap<String, oneshot::Sender<ApprovalDecision>>>>,
 
+    // Cancellation flag - set by shutdown to stop the agentic loop
+    pub(crate) cancelled: Arc<AtomicBool>,
+
     // Tool policy
     pub(crate) tool_policy_manager: Arc<ToolPolicyManager>,
 
@@ -224,6 +227,14 @@ pub struct AgentBridge {
 }
 
 impl AgentBridge {
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
     pub async fn get_api_request_stats_snapshot(&self) -> ApiRequestStatsSnapshot {
         self.api_request_stats.snapshot().await
     }
@@ -809,6 +820,7 @@ impl AgentBridge {
             custom_tool_executor: self.mcp_tool_executor.read().await.clone(),
             coordinator: self.coordinator.as_ref(),
             db_tracker: self.db_tracker.as_ref(),
+            cancelled: Some(&self.cancelled),
         }
     }
 

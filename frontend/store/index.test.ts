@@ -5,7 +5,7 @@ import {
   selectCommandBlocksFromTimeline,
 } from "@/lib/timeline/selectors";
 import type { AgentMessage } from "./index";
-import { useStore } from "./index";
+import { _drainOutputBuffer, useStore } from "./index";
 
 describe("Store", () => {
   beforeEach(() => {
@@ -307,26 +307,23 @@ describe("Store", () => {
       expect(state.pendingCommand["session-1"]?.output).toBe("");
     });
 
-    it("should append output to pendingCommand", () => {
+    it("should append output to external buffer", () => {
       const store = useStore.getState();
       store.handleCommandStart("session-1", "ls -la");
       store.appendOutput("session-1", "file1.txt\n");
       store.appendOutput("session-1", "file2.txt\n");
 
-      const state = useStore.getState();
-      expect(state.pendingCommand["session-1"]?.output).toBe("file1.txt\nfile2.txt\n");
+      expect(_drainOutputBuffer("session-1")).toBe("file1.txt\nfile2.txt\n");
     });
 
     it("should auto-create pendingCommand when appendOutput is called without command_start (fallback for missing shell integration)", () => {
       const store = useStore.getState();
-      // Don't call handleCommandStart first - simulates missing shell integration
       store.appendOutput("session-1", "some output");
 
       const state = useStore.getState();
-      // Should auto-create pendingCommand with null command (fallback behavior)
       expect(state.pendingCommand["session-1"]).toBeDefined();
       expect(state.pendingCommand["session-1"]?.command).toBeNull();
-      expect(state.pendingCommand["session-1"]?.output).toBe("some output");
+      expect(_drainOutputBuffer("session-1")).toBe("some output");
     });
 
     it("should create command block on command_end with command", () => {
@@ -379,21 +376,15 @@ describe("Store", () => {
       });
     });
 
-    it("should accumulate streaming output during command execution", () => {
+    it("should accumulate streaming output in external buffer", () => {
       const store = useStore.getState();
       store.handleCommandStart("session-1", "ping -c 3 localhost");
 
-      // Simulate streaming output
       store.appendOutput("session-1", "PING localhost: ");
-      expect(useStore.getState().pendingCommand["session-1"]?.output).toBe("PING localhost: ");
-
       store.appendOutput("session-1", "64 bytes from 127.0.0.1\n");
-      expect(useStore.getState().pendingCommand["session-1"]?.output).toBe(
-        "PING localhost: 64 bytes from 127.0.0.1\n"
-      );
-
       store.appendOutput("session-1", "64 bytes from 127.0.0.1\n");
-      expect(useStore.getState().pendingCommand["session-1"]?.output).toBe(
+
+      expect(_drainOutputBuffer("session-1")).toBe(
         "PING localhost: 64 bytes from 127.0.0.1\n64 bytes from 127.0.0.1\n"
       );
     });
@@ -413,13 +404,11 @@ describe("Store", () => {
       const store = useStore.getState();
       store.handleCommandStart("session-1", "yes | head -100");
 
-      // Simulate many rapid outputs
       for (let i = 0; i < 100; i++) {
         store.appendOutput("session-1", "y\n");
       }
 
-      const state = useStore.getState();
-      expect(state.pendingCommand["session-1"]?.output).toBe("y\n".repeat(100));
+      expect(_drainOutputBuffer("session-1")).toBe("y\n".repeat(100));
     });
   });
 

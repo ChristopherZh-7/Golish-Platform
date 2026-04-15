@@ -712,6 +712,7 @@ impl AgentBridge {
             openrouter_provider_preferences,
             skill_cache: Arc::new(RwLock::new(Vec::new())),
             coordinator: Some(coordinator),
+            cancelled: Arc::new(AtomicBool::new(false)),
             mcp_tool_definitions: Arc::new(RwLock::new(Vec::new())),
             mcp_tool_executor: Arc::new(RwLock::new(None)),
         }

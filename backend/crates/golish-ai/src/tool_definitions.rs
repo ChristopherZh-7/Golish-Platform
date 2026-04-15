@@ -117,6 +117,13 @@ impl ToolConfig {
                 "write_knowledge".to_string(),
                 "read_knowledge".to_string(),
                 "ingest_cve".to_string(),
+                // Security analysis
+                "log_operation".to_string(),
+                "discover_apis".to_string(),
+                "save_js_analysis".to_string(),
+                "fingerprint_target".to_string(),
+                "log_scan_result".to_string(),
+                "query_target_data".to_string(),
             ],
             // Hide run_pty_cmd - we expose it as run_command instead
             disabled: vec!["run_pty_cmd".to_string()],

@@ -25,6 +25,7 @@ export interface ChatMessageRow {
   error: string | null;
   toolCalls: unknown[] | null;
   toolCallsContentOffset: number | null;
+  toolCallOffsets: number[] | null;
   sortOrder: number;
   createdAt: number;
 }

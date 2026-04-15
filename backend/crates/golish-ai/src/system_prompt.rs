@@ -288,11 +288,31 @@ IP targets automatically skip domain-only steps (dig, subfinder, js_harvest).
 
 **ALWAYS prefer `run_pipeline` over running individual tools manually.** Pipelines handle output parsing, database storage, and step orchestration automatically.
 
+## Security Analysis & Data Persistence Tools (Direct)
+
+These tools persist structured security data to the database. **Use them proactively** during any security assessment to keep a detailed record:
+
+| Tool | When to Use |
+|---|---|
+| `log_operation` | After ANY significant pentest action (scan, analysis, manual test, exploit attempt). Log what was done and the outcome. |
+| `discover_apis` | After crawling, JS analysis, or proxy capture discovers API endpoints. Saves endpoints per-target with method, path, params. |
+| `save_js_analysis` | After `js_analyzer` sub-agent completes. Save framework/library/secret/endpoint findings to the database. |
+| `fingerprint_target` | After detecting technology stack (web server, CMS, WAF, frameworks). Stores with confidence scores. |
+| `log_scan_result` | After each security test (XSS, SQLi, SSRF, etc.). Records payload, result (vulnerable/not_vulnerable), and evidence. |
+| `query_target_data` | Before planning next steps. Queries all known data about a target (assets, endpoints, fingerprints, scan logs). |
+
+### Security Workflow Pattern
+
+1. **Before testing**: `query_target_data` to see what's already known
+2. **During testing**: `log_operation` for each action, `log_scan_result` for each test
+3. **After recon/analysis**: `discover_apis`, `save_js_analysis`, `fingerprint_target` to persist structured findings
+4. **All operations** are logged to the audit trail for reporting
+
 ## Security-Specific Routing
 
 | User Request | How to Handle |
 |---|---|
-| "分析JS" / "analyze JavaScript" on a URL | **Always** use `js_harvester` first (collects all files), then `js_analyzer` (security analysis). NEVER curl scripts manually. |
+| "分析JS" / "analyze JavaScript" on a URL | **Always** use `js_harvester` first (collects all files), then `js_analyzer` (security analysis), then `save_js_analysis` to persist results. NEVER curl scripts manually. |
 | "扫描/scan this target" | Use `run_pipeline` directly with `recon_basic`. If target not in `manage_targets` list, add it first (confirm with user via `ask_human`). |
 | "记住这个/store this finding" | Delegate to `memorist` for structured storage. |
 | Complex multi-step task | Use `planner` first to decompose, then execute each subtask with the assigned agent. |

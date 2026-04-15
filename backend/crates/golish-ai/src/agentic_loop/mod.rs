@@ -363,6 +363,8 @@ pub struct AgenticLoopContext<'a> {
     pub coordinator: Option<&'a CoordinatorHandle>,
     /// Database tracker for background recording of tool calls, token usage, etc.
     pub db_tracker: Option<&'a crate::db_tracking::DbTracker>,
+    /// Cancellation flag: checked between loop iterations to support user-initiated stop.
+    pub cancelled: Option<&'a Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// Result of a single tool execution.
@@ -656,11 +658,31 @@ where
     // Check if this is a knowledge base tool call
     if matches!(
         tool_name,
-        "search_knowledge_base" | "write_knowledge" | "read_knowledge" | "ingest_cve"
+        "search_knowledge_base" | "write_knowledge" | "read_knowledge" | "ingest_cve" | "save_poc"
     ) {
         if let Some((value, success)) =
             crate::tool_executors::execute_knowledge_base_tool(tool_name, tool_args, ctx.db_tracker)
                 .await
+        {
+            return Ok(ToolExecutionResult { value, success });
+        }
+    }
+
+    // Check if this is a security analysis tool call
+    if matches!(
+        tool_name,
+        "log_operation" | "discover_apis" | "save_js_analysis"
+        | "fingerprint_target" | "log_scan_result" | "query_target_data"
+    ) {
+        let ws_path = ctx.workspace.read().await;
+        let project_path_str = ws_path.to_string_lossy().to_string();
+        drop(ws_path);
+        if let Some((value, success)) =
+            crate::tool_executors::execute_security_analysis_tool(
+                tool_name, tool_args, ctx.db_tracker,
+                Some(project_path_str.as_str()),
+                ctx.session_id,
+            ).await
         {
             return Ok(ToolExecutionResult { value, success });
         }
@@ -1713,6 +1735,17 @@ where
                         tracing::error!("[compaction] Pre-turn compaction error: {}", e);
                     }
                 }
+            }
+        }
+
+        if let Some(flag) = &ctx.cancelled {
+            if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                tracing::info!("Agent loop cancelled by user (iteration {})", iteration);
+                let _ = ctx.event_tx.send(AiEvent::Error {
+                    message: "Agent stopped by user".to_string(),
+                    error_type: "cancelled".to_string(),
+                });
+                break;
             }
         }
 

@@ -48,7 +48,7 @@ import {
   toChatConversation,
   type PersistedTerminalData,
 } from "@/lib/workspace-storage";
-import { clearSaveFingerprints, loadFromDb } from "@/lib/conversation-db-sync";
+import { clearSaveFingerprints, loadFromDb, markDbLoadSucceeded } from "@/lib/conversation-db-sync";
 import { disposeAllRuntimeTerminals } from "@/lib/terminal-restore";
 import { useStore } from "@/store";
 import { createNewConversation } from "@/store/slices/conversation";
@@ -592,6 +592,7 @@ export const HomeView = memo(function HomeView() {
         }
 
         useStore.getState().setWorkspaceDataReady(true);
+        markDbLoadSucceeded();
 
         // Always create at least one terminal so the UI transitions away from Home.
         // If we have saved terminal data, the AIChatPanel effect will restore
