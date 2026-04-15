@@ -48,6 +48,15 @@ pub async fn insert(
     Ok(row)
 }
 
+pub async fn update_file_path(pool: &PgPool, id: Uuid, file_path: &str) -> Result<()> {
+    sqlx::query("UPDATE js_analysis_results SET file_path = $2 WHERE id = $1")
+        .bind(id)
+        .bind(file_path)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn list_by_target(pool: &PgPool, target_id: Uuid) -> Result<Vec<JsAnalysisResult>> {
     let rows = sqlx::query_as::<_, JsAnalysisResult>(
         "SELECT * FROM js_analysis_results WHERE target_id = $1 ORDER BY analyzed_at DESC",

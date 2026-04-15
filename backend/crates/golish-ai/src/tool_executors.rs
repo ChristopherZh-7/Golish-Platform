@@ -370,7 +370,14 @@ pub async fn execute_knowledge_base_tool(
 ) -> Option<ToolResult> {
     let is_kb_tool = matches!(
         tool_name,
-        "search_knowledge_base" | "write_knowledge" | "read_knowledge" | "ingest_cve" | "save_poc"
+        "search_knowledge_base"
+            | "write_knowledge"
+            | "read_knowledge"
+            | "ingest_cve"
+            | "save_poc"
+            | "list_cves_with_pocs"
+            | "list_unresearched_cves"
+            | "poc_stats"
     );
     if !is_kb_tool {
         return None;
@@ -442,6 +449,7 @@ pub async fn execute_knowledge_base_tool(
 
             let base = wiki_base_dir();
             let full = base.join(&path);
+            let is_new = !full.exists();
             if let Some(parent) = full.parent() {
                 if let Err(e) = tokio::fs::create_dir_all(parent).await {
                     return Some(error_result(format!("mkdir failed: {}", e)));
@@ -452,20 +460,24 @@ pub async fn execute_knowledge_base_tool(
             }
 
             let cve_id_opt = extract_string_param(args, &["cve_id"]);
+            let (title, fm_category, tags, status) = extract_wiki_frontmatter(&content);
+            let category = if fm_category == "uncategorized" {
+                infer_wiki_category(&path)
+            } else {
+                fm_category
+            };
+
+            // --- Cross-reference extraction ---
+            let cross_refs = extract_wiki_links(&content, &path);
+            let refs_saved = cross_refs.len();
 
             if let Some(tracker) = db_tracker {
-                let (title, fm_category, tags, status) = extract_wiki_frontmatter(&content);
-                let category = if fm_category == "uncategorized" {
-                    infer_wiki_category(&path)
-                } else {
-                    fm_category
-                };
                 let page = golish_db::models::NewWikiPage {
                     path: path.clone(),
                     title: title.clone(),
                     category: category.clone(),
                     tags: tags.clone(),
-                    status,
+                    status: status.clone(),
                     content: content.clone(),
                 };
                 if let Err(e) = golish_db::repo::wiki_kb::upsert_page(tracker.pool(), &page).await
@@ -478,11 +490,71 @@ pub async fn execute_knowledge_base_tool(
                         tracing::warn!("[kb] CVE link failed for {} -> {}: {}", cve, path, e);
                     }
                 }
+
+                // Persist cross-references (replace all from this page)
+                let _ = golish_db::repo::wiki_kb::delete_refs_from(tracker.pool(), &path).await;
+                for (target, ctx) in &cross_refs {
+                    let _ = golish_db::repo::wiki_kb::upsert_page_ref(
+                        tracker.pool(), &path, target, ctx,
+                    ).await;
+                }
+
+                // Append changelog entry
+                let action = if is_new { "create" } else { "update" };
+                let summary = if is_new {
+                    format!("Created page: {}", title)
+                } else {
+                    format!("Updated page: {}", title)
+                };
+                let log_entry = golish_db::models::NewWikiChangelog {
+                    page_path: path.clone(),
+                    action: action.to_string(),
+                    title: title.clone(),
+                    category: category.clone(),
+                    actor: "agent".to_string(),
+                    summary,
+                };
+                if let Err(e) = golish_db::repo::wiki_kb::add_changelog(tracker.pool(), &log_entry).await {
+                    tracing::warn!("[kb] changelog write failed: {}", e);
+                }
             }
+
+            // --- Append to log.md ---
+            let log_path = base.join("log.md");
+            let action_label = if is_new { "create" } else { "update" };
+            let now = chrono::Utc::now().format("%Y-%m-%d %H:%M");
+            let log_line = format!(
+                "\n## [{now}] {action_label} | {title}\n\n- Path: `{path}`\n- Category: {category}\n- Tags: {tags}\n- Status: {status}\n{cve_line}\n",
+                title = title,
+                path = path,
+                category = category,
+                tags = if tags.is_empty() { "none".to_string() } else { tags.join(", ") },
+                status = status,
+                cve_line = cve_id_opt.as_ref().map(|c| format!("- CVE: {c}\n")).unwrap_or_default(),
+            );
+            if let Err(e) = tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .await
+            {
+                tracing::warn!("[kb] Failed to open log.md for append: {}", e);
+            } else {
+                use tokio::io::AsyncWriteExt;
+                if let Ok(mut f) = tokio::fs::OpenOptions::new().append(true).open(&log_path).await {
+                    let _ = f.write_all(log_line.as_bytes()).await;
+                }
+            }
+
+            // --- Update index.md ---
+            update_wiki_index(&base).await;
 
             let mut msg = format!("Knowledge page written to {}", path);
             if let Some(ref cve) = cve_id_opt {
                 msg.push_str(&format!(" (linked to {})", cve));
+            }
+            if refs_saved > 0 {
+                msg.push_str(&format!(", {} cross-references indexed", refs_saved));
             }
 
             Some((
@@ -490,6 +562,7 @@ pub async fn execute_knowledge_base_tool(
                     "success": true,
                     "path": path,
                     "linked_cve": cve_id_opt,
+                    "cross_references": refs_saved,
                     "message": msg,
                 }),
                 true,
@@ -647,26 +720,126 @@ pub async fn execute_knowledge_base_tool(
                 None => return Some(error_result("save_poc requires a 'content' parameter")),
             };
 
+            let source = extract_string_param(args, &["source"]).unwrap_or_else(|| "manual".to_string());
+            let source_url = extract_string_param(args, &["source_url"]).unwrap_or_default();
+            let severity = extract_string_param(args, &["severity"]).unwrap_or_else(|| "unknown".to_string());
+            let description = extract_string_param(args, &["description"]).unwrap_or_default();
+            let tags: Vec<String> = args
+                .get("tags")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+
             if let Some(tracker) = db_tracker {
-                match golish_db::repo::wiki_kb::upsert_poc(
+                match golish_db::repo::wiki_kb::upsert_poc_full(
                     tracker.pool(),
                     &cve_id,
                     &name,
                     &poc_type,
                     &language,
                     &content,
+                    &source,
+                    &source_url,
+                    &severity,
+                    &description,
+                    &tags,
                 ).await {
                     Ok(poc) => {
                         Some((
                             json!({
                                 "success": true,
                                 "poc_id": poc.id.to_string(),
-                                "message": format!("PoC '{}' saved for {}. It will appear in the PoC tab.", name, cve_id),
+                                "source": source,
+                                "severity": severity,
+                                "message": format!("PoC '{}' saved for {} (source: {}, severity: {})", name, cve_id, source, severity),
                             }),
                             true,
                         ))
                     }
                     Err(e) => Some(error_result(format!("Failed to save PoC: {}", e))),
+                }
+            } else {
+                Some(error_result("Database not available"))
+            }
+        }
+
+        "list_cves_with_pocs" => {
+            if let Some(tracker) = db_tracker {
+                match golish_db::repo::wiki_kb::list_cves_with_pocs(tracker.pool()).await {
+                    Ok(rows) => {
+                        let items: Vec<serde_json::Value> = rows
+                            .iter()
+                            .map(|r| {
+                                json!({
+                                    "cve_id": r.cve_id,
+                                    "poc_count": r.poc_count,
+                                    "max_severity": r.max_severity,
+                                    "any_verified": r.any_verified,
+                                    "has_research": r.has_research,
+                                    "has_wiki": r.has_wiki,
+                                })
+                            })
+                            .collect();
+                        Some((
+                            json!({
+                                "total": items.len(),
+                                "cves": items,
+                            }),
+                            true,
+                        ))
+                    }
+                    Err(e) => Some(error_result(format!("Failed to list CVEs: {}", e))),
+                }
+            } else {
+                Some(error_result("Database not available"))
+            }
+        }
+
+        "list_unresearched_cves" => {
+            let limit = args
+                .get("limit")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(20);
+
+            if let Some(tracker) = db_tracker {
+                match golish_db::repo::wiki_kb::list_unresearched_cves(tracker.pool(), limit).await {
+                    Ok(rows) => {
+                        let items: Vec<serde_json::Value> = rows
+                            .iter()
+                            .map(|r| {
+                                json!({
+                                    "cve_id": r.cve_id,
+                                    "poc_count": r.poc_count,
+                                    "max_severity": r.max_severity,
+                                    "any_verified": r.any_verified,
+                                })
+                            })
+                            .collect();
+                        Some((
+                            json!({
+                                "total": items.len(),
+                                "message": format!("{} CVEs have PoCs but no research yet — prioritize by severity", items.len()),
+                                "cves": items,
+                            }),
+                            true,
+                        ))
+                    }
+                    Err(e) => Some(error_result(format!("Failed to list unresearched CVEs: {}", e))),
+                }
+            } else {
+                Some(error_result("Database not available"))
+            }
+        }
+
+        "poc_stats" => {
+            if let Some(tracker) = db_tracker {
+                match golish_db::repo::wiki_kb::poc_stats(tracker.pool()).await {
+                    Ok(stats) => Some((stats, true)),
+                    Err(e) => Some(error_result(format!("Failed to get PoC stats: {}", e))),
                 }
             } else {
                 Some(error_result("Database not available"))
@@ -1107,6 +1280,116 @@ async fn kb_search_filesystem_fallback(query: &str, limit: usize) -> ToolResult 
 
     let count = results.len();
     (json!({ "results": results, "count": count, "query": query, "source": "filesystem" }), true)
+}
+
+/// Extract markdown links from wiki content and resolve them to wiki paths.
+/// Returns Vec<(target_path, context_snippet)>.
+fn extract_wiki_links(content: &str, source_path: &str) -> Vec<(String, String)> {
+    let re = regex::Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").unwrap();
+    let source_dir = source_path
+        .rsplit_once('/')
+        .map(|(d, _)| d)
+        .unwrap_or("");
+
+    let mut refs = Vec::new();
+    for cap in re.captures_iter(content) {
+        let link_text = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+        let href = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+
+        if href.starts_with("http://") || href.starts_with("https://") || href.starts_with('#') {
+            continue;
+        }
+
+        let resolved = if href.starts_with('/') {
+            href.trim_start_matches('/').to_string()
+        } else if source_dir.is_empty() {
+            href.to_string()
+        } else {
+            format!("{}/{}", source_dir, href)
+        };
+
+        // Normalize ../ and ./ segments
+        let parts: Vec<&str> = resolved.split('/').collect();
+        let mut normalized: Vec<&str> = Vec::new();
+        for p in parts {
+            match p {
+                "." | "" => {}
+                ".." => { normalized.pop(); }
+                _ => normalized.push(p),
+            }
+        }
+        let target = normalized.join("/");
+        if !target.is_empty() && target != source_path {
+            refs.push((target, link_text.to_string()));
+        }
+    }
+    refs.dedup_by(|a, b| a.0 == b.0);
+    refs
+}
+
+/// Rebuild index.md from all wiki pages on disk.
+async fn update_wiki_index(base: &std::path::Path) {
+    let index_path = base.join("index.md");
+
+    let mut entries: Vec<(String, String, String, String)> = Vec::new();
+    let mut stack = vec![base.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let Ok(mut rd) = tokio::fs::read_dir(&dir).await else { continue };
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') { continue; }
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            if !name.ends_with(".md") { continue; }
+            let rel = p.strip_prefix(base).unwrap_or(&p).to_string_lossy().to_string();
+            if rel == "index.md" || rel == "log.md" || rel == "SCHEMA.md" { continue; }
+
+            if let Ok(content) = tokio::fs::read_to_string(&p).await {
+                let (title, category, _tags, status) = extract_wiki_frontmatter(&content);
+                let display_title = if title.is_empty() {
+                    name.trim_end_matches(".md").to_string()
+                } else {
+                    title
+                };
+                entries.push((category, rel, display_title, status));
+            }
+        }
+    }
+
+    entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.2.cmp(&b.2)));
+
+    let mut index = String::from("# Vulnerability Knowledge Base\n\n> Auto-generated index. Updated on every write.\n\n");
+
+    let mut current_cat = String::new();
+    for (cat, path, title, status) in &entries {
+        if *cat != current_cat {
+            current_cat = cat.clone();
+            let icon = match cat.as_str() {
+                "products" => "📦",
+                "techniques" => "⚔️",
+                "pocs" => "🔧",
+                "experience" => "📝",
+                "analysis" => "🔬",
+                _ => "📄",
+            };
+            index.push_str(&format!("\n## {icon} {}\n\n", cat));
+        }
+        index.push_str(&format!("- [{title}]({path}) `{status}`\n"));
+    }
+
+    index.push_str(&format!(
+        "\n---\n*{} pages total. Last updated: {}*\n",
+        entries.len(),
+        chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")
+    ));
+
+    if let Err(e) = tokio::fs::write(&index_path, &index).await {
+        tracing::warn!("[kb] Failed to update index.md: {}", e);
+    }
 }
 
 /// Normalize tool arguments for run_pty_cmd.

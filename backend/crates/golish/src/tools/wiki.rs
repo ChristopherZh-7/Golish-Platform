@@ -258,6 +258,63 @@ pub async fn wiki_init() -> Result<(), String> {
     Ok(())
 }
 
+/// Re-index all wiki pages: scan filesystem, re-extract frontmatter,
+/// infer category from path, and upsert into PostgreSQL.
+/// Fixes "uncategorized" pages from before the category system.
+#[tauri::command]
+pub async fn wiki_reindex(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let pool = state.db_pool_ready().await?;
+    let base = wiki_base_dir();
+    if !base.exists() {
+        return Ok(serde_json::json!({ "reindexed": 0 }));
+    }
+
+    let mut count = 0u32;
+    let mut stack = vec![base.clone()];
+
+    while let Some(dir) = stack.pop() {
+        let Ok(mut rd) = fs::read_dir(&dir).await else { continue };
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') { continue; }
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !is_wiki_file(&name) { continue; }
+            let rel = path.strip_prefix(&base).unwrap_or(&path).to_string_lossy().to_string();
+            if rel == "index.md" || rel == "log.md" || rel == "SCHEMA.md" { continue; }
+
+            if let Ok(content) = fs::read_to_string(&path).await {
+                let (title, fm_category, tags, status) = extract_frontmatter(&content);
+                let category = if fm_category == "uncategorized" {
+                    infer_category_from_path(&rel)
+                } else {
+                    fm_category
+                };
+                let page = NewWikiPage {
+                    path: rel.clone(),
+                    title,
+                    category,
+                    tags,
+                    status,
+                    content,
+                };
+                if let Err(e) = golish_db::repo::wiki_kb::upsert_page(pool, &page).await {
+                    tracing::warn!("[wiki] reindex failed for {}: {}", rel, e);
+                } else {
+                    count += 1;
+                }
+            }
+        }
+    }
+
+    Ok(serde_json::json!({ "reindexed": count }))
+}
+
 #[tauri::command]
 pub async fn wiki_list() -> Result<Vec<WikiEntry>, String> {
     let base = wiki_base_dir();
@@ -702,6 +759,12 @@ pub struct VulnPocEntry {
     pub poc_type: String,
     pub language: String,
     pub content: String,
+    pub source: String,
+    pub source_url: String,
+    pub severity: String,
+    pub verified: bool,
+    pub description: String,
+    pub tags: Vec<String>,
     pub created: i64,
 }
 
@@ -754,14 +817,7 @@ pub async fn vuln_link_get_all(
                 scan_history: vec![],
             })
             .poc_templates
-            .push(VulnPocEntry {
-                id: p.id.to_string(),
-                name: p.name,
-                poc_type: p.poc_type,
-                language: p.language,
-                content: p.content,
-                created: p.created_at.timestamp_millis(),
-            });
+            .push(poc_to_entry(p));
     }
 
     // Load all scans
@@ -806,17 +862,7 @@ pub async fn vuln_link_get(
     let pocs = golish_db::repo::wiki_kb::get_pocs_for_cve(pool, &cve_id)
         .await
         .map_err(|e| e.to_string())?;
-    let poc_templates: Vec<VulnPocEntry> = pocs
-        .into_iter()
-        .map(|p| VulnPocEntry {
-            id: p.id.to_string(),
-            name: p.name,
-            poc_type: p.poc_type,
-            language: p.language,
-            content: p.content,
-            created: p.created_at.timestamp_millis(),
-        })
-        .collect();
+    let poc_templates: Vec<VulnPocEntry> = pocs.into_iter().map(poc_to_entry).collect();
 
     let scans = golish_db::repo::vuln_scan::get_scans_for_cve(pool, &cve_id)
         .await
@@ -881,14 +927,7 @@ pub async fn vuln_link_add_poc(
     let poc = golish_db::repo::wiki_kb::upsert_poc(pool, &cve_id, &name, &poc_type, &language, &content)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(VulnPocEntry {
-        id: poc.id.to_string(),
-        name: poc.name,
-        poc_type: poc.poc_type,
-        language: poc.language,
-        content: poc.content,
-        created: poc.created_at.timestamp_millis(),
-    })
+    Ok(poc_to_entry(poc))
 }
 
 #[tauri::command]
@@ -957,4 +996,274 @@ pub async fn vuln_link_remove_scan(
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ============================================================================
+// PoC-first workflow commands
+// ============================================================================
+
+fn poc_to_entry(p: golish_db::models::VulnKbPoc) -> VulnPocEntry {
+    VulnPocEntry {
+        id: p.id.to_string(),
+        name: p.name,
+        poc_type: p.poc_type,
+        language: p.language,
+        content: p.content,
+        source: p.source,
+        source_url: p.source_url,
+        severity: p.severity,
+        verified: p.verified,
+        description: p.description,
+        tags: p.tags,
+        created: p.created_at.timestamp_millis(),
+    }
+}
+
+#[tauri::command]
+pub async fn vuln_link_add_poc_full(
+    state: tauri::State<'_, AppState>,
+    cve_id: String,
+    name: String,
+    poc_type: String,
+    language: String,
+    content: String,
+    source: String,
+    source_url: String,
+    severity: String,
+    description: String,
+    tags: Vec<String>,
+) -> Result<VulnPocEntry, String> {
+    let pool = state.db_pool_ready().await?;
+    let poc = golish_db::repo::wiki_kb::upsert_poc_full(
+        pool, &cve_id, &name, &poc_type, &language, &content,
+        &source, &source_url, &severity, &description, &tags,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(poc_to_entry(poc))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CvePocSummaryResponse {
+    pub cve_id: String,
+    pub poc_count: i64,
+    pub max_severity: String,
+    pub any_verified: bool,
+    pub has_research: bool,
+    pub has_wiki: bool,
+}
+
+#[tauri::command]
+pub async fn vuln_poc_list_cves(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<CvePocSummaryResponse>, String> {
+    let pool = state.db_pool_ready().await?;
+    let rows = golish_db::repo::wiki_kb::list_cves_with_pocs(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|r| CvePocSummaryResponse {
+            cve_id: r.cve_id,
+            poc_count: r.poc_count,
+            max_severity: r.max_severity.unwrap_or_else(|| "unknown".to_string()),
+            any_verified: r.any_verified.unwrap_or(false),
+            has_research: r.has_research.unwrap_or(false),
+            has_wiki: r.has_wiki.unwrap_or(false),
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn vuln_poc_list_unresearched(
+    state: tauri::State<'_, AppState>,
+    limit: Option<i64>,
+) -> Result<Vec<CvePocSummaryResponse>, String> {
+    let pool = state.db_pool_ready().await?;
+    let rows = golish_db::repo::wiki_kb::list_unresearched_cves(pool, limit.unwrap_or(20))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|r| CvePocSummaryResponse {
+            cve_id: r.cve_id,
+            poc_count: r.poc_count,
+            max_severity: r.max_severity.unwrap_or_else(|| "unknown".to_string()),
+            any_verified: r.any_verified.unwrap_or(false),
+            has_research: false,
+            has_wiki: r.has_wiki.unwrap_or(false),
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn vuln_poc_stats(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let pool = state.db_pool_ready().await?;
+    golish_db::repo::wiki_kb::poc_stats(pool)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn vuln_poc_set_verified(
+    state: tauri::State<'_, AppState>,
+    poc_id: String,
+    verified: bool,
+) -> Result<(), String> {
+    let pool = state.db_pool_ready().await?;
+    let id: uuid::Uuid = poc_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    sqlx::query("UPDATE vuln_kb_pocs SET verified = $2, updated_at = NOW() WHERE id = $1")
+        .bind(id)
+        .bind(verified)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ============================================================================
+// Karpathy-style wiki dashboard commands
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WikiPageInfo {
+    pub path: String,
+    pub title: String,
+    pub category: String,
+    pub tags: Vec<String>,
+    pub status: String,
+    pub word_count: i32,
+    pub updated_at: String,
+}
+
+fn summary_to_info(s: golish_db::models::WikiPageSummary) -> WikiPageInfo {
+    WikiPageInfo {
+        path: s.path,
+        title: s.title,
+        category: s.category,
+        tags: s.tags,
+        status: s.status,
+        word_count: s.word_count,
+        updated_at: s.updated_at.to_rfc3339(),
+    }
+}
+
+#[tauri::command]
+pub async fn wiki_pages_grouped(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<WikiPageInfo>, String> {
+    let pool = state.db_pool_ready().await?;
+    let pages = golish_db::repo::wiki_kb::list_pages_grouped_by_category(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(pages.into_iter().map(summary_to_info).collect())
+}
+
+#[tauri::command]
+pub async fn wiki_pages_for_paths(
+    state: tauri::State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<Vec<WikiPageInfo>, String> {
+    let pool = state.db_pool_ready().await?;
+    let pages = golish_db::repo::wiki_kb::list_pages_for_paths(pool, &paths)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(pages.into_iter().map(summary_to_info).collect())
+}
+
+#[tauri::command]
+pub async fn wiki_suggest_for_cve(
+    state: tauri::State<'_, AppState>,
+    cve_id: String,
+    limit: Option<i64>,
+) -> Result<Vec<WikiPageInfo>, String> {
+    let pool = state.db_pool_ready().await?;
+    let pages = golish_db::repo::wiki_kb::suggest_pages_for_cve(pool, &cve_id, limit.unwrap_or(10))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(pages.into_iter().map(summary_to_info).collect())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WikiChangelogEntry {
+    pub id: i64,
+    pub page_path: String,
+    pub action: String,
+    pub title: String,
+    pub category: String,
+    pub actor: String,
+    pub summary: String,
+    pub created_at: String,
+}
+
+#[tauri::command]
+pub async fn wiki_changelog_list(
+    state: tauri::State<'_, AppState>,
+    limit: Option<i64>,
+) -> Result<Vec<WikiChangelogEntry>, String> {
+    let pool = state.db_pool_ready().await?;
+    let entries = golish_db::repo::wiki_kb::list_changelog(pool, limit.unwrap_or(50))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(entries
+        .into_iter()
+        .map(|e| WikiChangelogEntry {
+            id: e.id,
+            page_path: e.page_path,
+            action: e.action,
+            title: e.title,
+            category: e.category,
+            actor: e.actor,
+            summary: e.summary,
+            created_at: e.created_at.to_rfc3339(),
+        })
+        .collect())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WikiBacklink {
+    pub source_path: String,
+    pub context: String,
+}
+
+#[tauri::command]
+pub async fn wiki_backlinks(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<Vec<WikiBacklink>, String> {
+    let pool = state.db_pool_ready().await?;
+    let refs = golish_db::repo::wiki_kb::get_backlinks(pool, &path)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(refs
+        .into_iter()
+        .map(|r| WikiBacklink {
+            source_path: r.source_path,
+            context: r.context,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn wiki_stats_full(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let pool = state.db_pool_ready().await?;
+    golish_db::repo::wiki_kb::wiki_stats_full(pool)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn wiki_orphan_pages(
+    state: tauri::State<'_, AppState>,
+    limit: Option<i64>,
+) -> Result<Vec<WikiPageInfo>, String> {
+    let pool = state.db_pool_ready().await?;
+    let pages = golish_db::repo::wiki_kb::list_orphan_pages(pool, limit.unwrap_or(20))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(pages.into_iter().map(summary_to_info).collect())
 }

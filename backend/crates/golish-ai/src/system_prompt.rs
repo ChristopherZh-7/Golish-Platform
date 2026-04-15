@@ -308,6 +308,29 @@ These tools persist structured security data to the database. **Use them proacti
 3. **After recon/analysis**: `discover_apis`, `save_js_analysis`, `fingerprint_target` to persist structured findings
 4. **All operations** are logged to the audit trail for reporting
 
+## File Storage Rules (Hybrid DB + Filesystem)
+
+The project uses a hybrid storage model: **structured metadata in PostgreSQL, raw files on disk**.
+
+### Project directory layout (project_root/.golish/):
+- captures/HOST/PORT/js/ — captured JS files
+- captures/HOST/PORT/html/ — HTML snapshots
+- captures/HOST/PORT/http/ — HTTP request/response dumps
+- captures/HOST/_info/ — host-level info (DNS, WHOIS, certs)
+- tool-output/TOOL/ — tool execution output (nmap XML, nuclei JSON, etc.)
+- scripts/recon/ or scripts/exploit/ or scripts/utils/ — your generated scripts go HERE
+- evidence/FINDING_ID/ — finding evidence files
+- analysis/HOST/ — analysis reports
+- temp/ — temporary scratch files
+
+### MANDATORY file writing rules:
+1. **Scripts** → ALWAYS write to `.golish/scripts/recon/`, `.golish/scripts/exploit/`, or `.golish/scripts/utils/`, NEVER to the project root
+2. **Temporary files** → `.golish/temp/`
+3. **Analysis reports** → `.golish/analysis/HOST/`
+4. **Tool output** is auto-saved by the executor; use export flags when tools support them (e.g., `nmap -oX .golish/tool-output/nmap/scan.xml`)
+5. **Host directory naming**: use hostname when known (virtual hosting), IP only as fallback. Same rule as Burp's site tree.
+6. **Ports**: always separate directories, never merged
+
 ## Security-Specific Routing
 
 | User Request | How to Handle |

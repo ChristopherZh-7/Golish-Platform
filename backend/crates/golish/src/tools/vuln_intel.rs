@@ -1,5 +1,6 @@
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
+use tauri::Emitter;
 use uuid::Uuid;
 
 use crate::state::AppState;
@@ -1176,4 +1177,286 @@ pub async fn intel_batch_search_nuclei_templates(
     }
 
     Ok(results)
+}
+
+// ─── Discover ALL Nuclei CVE templates ──────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NucleiDiscoverProgress {
+    pub phase: String,
+    pub current: usize,
+    pub total: usize,
+    pub cve_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NucleiDiscoverResult {
+    pub total_files: usize,
+    pub total_cves: usize,
+    pub imported: usize,
+    pub skipped: usize,
+    pub errors: usize,
+}
+
+#[derive(Deserialize)]
+struct GhTreeResponse {
+    tree: Vec<GhTreeEntry>,
+    truncated: bool,
+}
+
+#[derive(Deserialize)]
+struct GhTreeEntry {
+    path: String,
+    #[serde(rename = "type")]
+    entry_type: String,
+}
+
+fn extract_cve_from_path(path: &str) -> Option<String> {
+    let re = regex::Regex::new(r"(CVE-\d{4}-\d{4,})").ok()?;
+    re.captures(path).map(|c| c[1].to_uppercase())
+}
+
+fn extract_nuclei_tags(content: &str) -> Vec<String> {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("tags:") {
+            let raw = trimmed.trim_start_matches("tags:").trim();
+            return raw
+                .split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+fn extract_nuclei_description(content: &str) -> String {
+    let mut in_info = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "info:" {
+            in_info = true;
+            continue;
+        }
+        if in_info {
+            if let Some(stripped) = trimmed.strip_prefix("description:") {
+                let desc = stripped.trim().trim_matches('"').trim_matches('\'');
+                if !desc.is_empty() {
+                    return desc.to_string();
+                }
+            }
+            if let Some(stripped) = trimmed.strip_prefix("name:") {
+                let name = stripped.trim().trim_matches('"').trim_matches('\'');
+                if !name.is_empty() {
+                    return name.to_string();
+                }
+            }
+            if trimmed.is_empty() || (!trimmed.contains(':') && !trimmed.starts_with('-') && !trimmed.starts_with(' ')) {
+                in_info = false;
+            }
+        }
+    }
+    String::new()
+}
+
+/// Discover ALL CVE-related Nuclei templates from the nuclei-templates repo.
+/// Uses the Git Trees API to list all files under cves/ directories, then downloads and saves each.
+#[tauri::command]
+pub async fn intel_discover_all_nuclei(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    app_state: tauri::State<'_, crate::state::AppState>,
+) -> Result<NucleiDiscoverResult, String> {
+    let (client, token) = build_github_client_from_state(&state).await?;
+    let headers = github_headers(&token);
+
+    app.emit(
+        "nuclei-discover-progress",
+        NucleiDiscoverProgress {
+            phase: "listing".to_string(),
+            current: 0,
+            total: 0,
+            cve_id: None,
+        },
+    )
+    .ok();
+
+    let tree_url = "https://api.github.com/repos/projectdiscovery/nuclei-templates/git/trees/main?recursive=1";
+    let resp = client
+        .get(tree_url)
+        .headers(headers.clone())
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch tree: {}", e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("GitHub API error {}: {}", status, &body[..body.len().min(300)]));
+    }
+
+    let tree_data: GhTreeResponse = resp.json().await.map_err(|e| format!("Parse tree: {}", e))?;
+
+    if tree_data.truncated {
+        tracing::warn!("[nuclei-discover] Tree was truncated — some files may be missing");
+    }
+
+    let yaml_files: Vec<&GhTreeEntry> = tree_data
+        .tree
+        .iter()
+        .filter(|e| {
+            e.entry_type == "blob"
+                && e.path.ends_with(".yaml")
+                && (e.path.starts_with("http/cves/")
+                    || e.path.starts_with("network/cves/")
+                    || e.path.starts_with("dns/cves/")
+                    || e.path.starts_with("ssl/cves/")
+                    || e.path.starts_with("headless/cves/")
+                    || e.path.starts_with("code/cves/")
+                    || e.path.starts_with("javascript/cves/"))
+        })
+        .collect();
+
+    let total_files = yaml_files.len();
+    tracing::info!(total = total_files, "[nuclei-discover] Found CVE YAML files");
+
+    app.emit(
+        "nuclei-discover-progress",
+        NucleiDiscoverProgress {
+            phase: "downloading".to_string(),
+            current: 0,
+            total: total_files,
+            cve_id: None,
+        },
+    )
+    .ok();
+
+    let pool = app_state
+        .db_pool_ready()
+        .await
+        .map_err(|e| format!("DB not ready: {}", e))?;
+
+    let mut imported = 0usize;
+    let mut skipped = 0usize;
+    let mut errors = 0usize;
+    let mut seen_cves = std::collections::HashSet::new();
+
+    for (i, entry) in yaml_files.iter().enumerate() {
+        let cve_id = match extract_cve_from_path(&entry.path) {
+            Some(c) => c,
+            None => {
+                skipped += 1;
+                continue;
+            }
+        };
+        seen_cves.insert(cve_id.clone());
+
+        if i % 20 == 0 {
+            app.emit(
+                "nuclei-discover-progress",
+                NucleiDiscoverProgress {
+                    phase: "downloading".to_string(),
+                    current: i,
+                    total: total_files,
+                    cve_id: Some(cve_id.clone()),
+                },
+            )
+            .ok();
+        }
+
+        if i > 0 && i % 50 == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+
+        let raw_url = format!(
+            "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/main/{}",
+            entry.path
+        );
+
+        let content = match client.get(&raw_url).headers(headers.clone()).send().await {
+            Ok(r) if r.status().is_success() => match r.text().await {
+                Ok(t) => t,
+                Err(_) => {
+                    errors += 1;
+                    continue;
+                }
+            },
+            _ => {
+                errors += 1;
+                continue;
+            }
+        };
+
+        let severity = extract_nuclei_severity(&content).unwrap_or_else(|| "unknown".to_string());
+        let tags = extract_nuclei_tags(&content);
+        let description = extract_nuclei_description(&content);
+        let file_name = entry
+            .path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&entry.path)
+            .trim_end_matches(".yaml");
+        let template_name = format!("[Nuclei] {}", file_name);
+        let source_url = format!(
+            "https://github.com/projectdiscovery/nuclei-templates/blob/main/{}",
+            entry.path
+        );
+
+        match golish_db::repo::wiki_kb::upsert_poc_full(
+            pool,
+            &cve_id,
+            &template_name,
+            "nuclei",
+            "yaml",
+            &content,
+            "nuclei_template",
+            &source_url,
+            &severity,
+            &description,
+            &tags,
+        )
+        .await
+        {
+            Ok(_) => imported += 1,
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("duplicate") || msg.contains("unique") {
+                    skipped += 1;
+                } else {
+                    tracing::warn!(cve = %cve_id, error = %msg, "[nuclei-discover] DB insert failed");
+                    errors += 1;
+                }
+            }
+        }
+    }
+
+    let result = NucleiDiscoverResult {
+        total_files,
+        total_cves: seen_cves.len(),
+        imported,
+        skipped,
+        errors,
+    };
+
+    app.emit(
+        "nuclei-discover-progress",
+        NucleiDiscoverProgress {
+            phase: "done".to_string(),
+            current: total_files,
+            total: total_files,
+            cve_id: None,
+        },
+    )
+    .ok();
+
+    tracing::info!(
+        imported = imported,
+        skipped = skipped,
+        errors = errors,
+        total_cves = seen_cves.len(),
+        "[nuclei-discover] Complete"
+    );
+
+    Ok(result)
 }

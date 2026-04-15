@@ -91,6 +91,9 @@ pub enum ToolName {
     /// Ingest a CVE into the knowledge base
     IngestCve,
     SavePoc,
+    ListCvesWithPocs,
+    ListUnresearchedCves,
+    PocStats,
 
     // === Security Analysis ===
     /// Log a pentest operation
@@ -161,6 +164,9 @@ impl ToolName {
             Self::ReadKnowledge => "read_knowledge",
             Self::IngestCve => "ingest_cve",
             Self::SavePoc => "save_poc",
+            Self::ListCvesWithPocs => "list_cves_with_pocs",
+            Self::ListUnresearchedCves => "list_unresearched_cves",
+            Self::PocStats => "poc_stats",
 
             // Security Analysis
             Self::LogOperation => "log_operation",
@@ -228,6 +234,9 @@ impl ToolName {
             "read_knowledge" => Some(Self::ReadKnowledge),
             "ingest_cve" => Some(Self::IngestCve),
             "save_poc" => Some(Self::SavePoc),
+            "list_cves_with_pocs" => Some(Self::ListCvesWithPocs),
+            "list_unresearched_cves" => Some(Self::ListUnresearchedCves),
+            "poc_stats" => Some(Self::PocStats),
 
             // Security Analysis
             "log_operation" => Some(Self::LogOperation),
@@ -288,7 +297,10 @@ impl ToolName {
             | Self::WriteKnowledge
             | Self::ReadKnowledge
             | Self::IngestCve
-            | Self::SavePoc => ToolCategory::KnowledgeBase,
+            | Self::SavePoc
+            | Self::ListCvesWithPocs
+            | Self::ListUnresearchedCves
+            | Self::PocStats => ToolCategory::KnowledgeBase,
 
             // Security Analysis
             Self::LogOperation
@@ -428,6 +440,9 @@ impl ToolCategory {
                 ToolName::ReadKnowledge,
                 ToolName::IngestCve,
                 ToolName::SavePoc,
+                ToolName::ListCvesWithPocs,
+                ToolName::ListUnresearchedCves,
+                ToolName::PocStats,
             ],
             Self::SecurityAnalysis => &[
                 ToolName::LogOperation,

@@ -10,7 +10,6 @@ import {
   Wrench,
   Settings,
   Terminal,
-  Shield,
   ScrollText,
   BookText,
   AlertTriangle,
@@ -29,9 +28,9 @@ import {
 } from "@/components/ui/tooltip";
 import { useTranslation } from "react-i18next";
 
-export type ActivityView = "dashboard" | "wiki" | "targets" | "methodology" | "findings" | "pipelines" | "auditLog" | "wordlists" | "vulnIntel" | "toolManage" | "settings" | "security" | null;
+export type ActivityView = "dashboard" | "wiki" | "targets" | "methodology" | "findings" | "pipelines" | "auditLog" | "wordlists" | "vulnIntel" | "toolManage" | "settings" | null;
 
-type BarItemId = "dashboard" | "targets" | "findings" | "pipelines" | "auditLog" | "wordlists" | "vulnIntel" | "security" | "terminal" | "wiki" | "methodology" | "toolManage";
+type BarItemId = "dashboard" | "targets" | "findings" | "pipelines" | "auditLog" | "wordlists" | "vulnIntel" | "terminal" | "wiki" | "methodology" | "toolManage";
 
 interface BarItem {
   id: BarItemId;
@@ -50,7 +49,6 @@ const UPPER_DEFAULTS: BarItem[] = [
   { id: "dashboard", icon: Layers, label: "activity.dashboard" },
   { id: "targets", icon: Crosshair, label: "activity.targets" },
   { id: "findings", icon: Bug, label: "activity.findings" },
-  { id: "security", icon: Shield, label: "activity.security" },
   { id: "terminal", icon: Terminal, label: "activity.terminal" },
 ];
 
@@ -112,7 +110,7 @@ interface ActivityBarProps {
   onOpenSettings?: () => void;
 }
 
-const VIEW_ITEMS: BarItemId[] = ["dashboard", "targets", "findings", "pipelines", "auditLog", "wordlists", "vulnIntel", "wiki", "methodology", "toolManage", "security"];
+const VIEW_ITEMS: BarItemId[] = ["dashboard", "targets", "findings", "pipelines", "auditLog", "wordlists", "vulnIntel", "wiki", "methodology", "toolManage"];
 
 export const ActivityBar = memo(function ActivityBar({
   activeView,

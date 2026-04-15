@@ -176,13 +176,22 @@ pub async fn vault_list(
     project_path: Option<String>,
 ) -> Result<Vec<VaultEntrySafe>, String> {
     let pool = state.db_pool_ready().await?;
-    let _ = project_path;
-    let rows: Vec<VaultRow> = sqlx::query_as(
-        "SELECT id, name, entry_type::TEXT, username, notes, project, tags, status, source_url, last_validated_at, created_at, updated_at \
-         FROM vault_entries ORDER BY created_at DESC",
-    )
-    .fetch_all(pool)
-    .await
+    let rows: Vec<VaultRow> = if let Some(ref pp) = project_path {
+        sqlx::query_as(
+            "SELECT id, name, entry_type::TEXT, username, notes, project, tags, status, source_url, last_validated_at, created_at, updated_at \
+             FROM vault_entries WHERE project_path = $1 ORDER BY created_at DESC",
+        )
+        .bind(pp)
+        .fetch_all(pool)
+        .await
+    } else {
+        sqlx::query_as(
+            "SELECT id, name, entry_type::TEXT, username, notes, project, tags, status, source_url, last_validated_at, created_at, updated_at \
+             FROM vault_entries WHERE project_path IS NULL ORDER BY created_at DESC",
+        )
+        .fetch_all(pool)
+        .await
+    }
     .map_err(|e| e.to_string())?;
 
     Ok(rows.into_iter().map(VaultEntrySafe::from).collect())
@@ -202,7 +211,6 @@ pub async fn vault_add(
     project_path: Option<String>,
 ) -> Result<VaultEntrySafe, String> {
     let pool = state.db_pool_ready().await?;
-    let _ = project_path;
     let ts = now_ts();
     let id = Uuid::new_v4();
     let short_id = id.to_string()[..8].to_string();
@@ -215,8 +223,8 @@ pub async fn vault_add(
     let enc_value = obfuscate(&value);
 
     sqlx::query(
-        r#"INSERT INTO vault_entries (id, name, entry_type, value, username, notes, project, tags, source_url)
-           VALUES ($1, $2, $3::vault_entry_type, $4, $5, $6, $7, $8, $9)"#,
+        r#"INSERT INTO vault_entries (id, name, entry_type, value, username, notes, project, tags, source_url, project_path)
+           VALUES ($1, $2, $3::vault_entry_type, $4, $5, $6, $7, $8, $9, $10)"#,
     )
     .bind(id)
     .bind(&name)
@@ -227,6 +235,7 @@ pub async fn vault_add(
     .bind(&pj)
     .bind(&tags_json)
     .bind(&su)
+    .bind(&project_path)
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -256,7 +265,7 @@ pub async fn vault_get_value(
     let pool = state.db_pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    let enc: String = sqlx::query_scalar("SELECT value FROM vault_entries WHERE id=$1")
+    let enc: String = sqlx::query_scalar("SELECT value FROM vault_entries WHERE id = $1")
         .bind(uid)
         .fetch_one(pool)
         .await
@@ -277,7 +286,7 @@ pub async fn vault_update(
     project_path: Option<String>,
 ) -> Result<VaultEntrySafe, String> {
     let pool = state.db_pool_ready().await?;
-    let _ = project_path;
+    let _ = &project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
     if let Some(n) = &name {
@@ -326,7 +335,7 @@ pub async fn vault_update_status(
     project_path: Option<String>,
 ) -> Result<(), String> {
     let pool = state.db_pool_ready().await?;
-    let _ = project_path;
+    let _ = &project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
     sqlx::query("UPDATE vault_entries SET status=$1, last_validated_at=NOW() WHERE id=$2")
         .bind(&status)
@@ -344,7 +353,7 @@ pub async fn vault_validate(
     project_path: Option<String>,
 ) -> Result<String, String> {
     let pool = state.db_pool_ready().await?;
-    let _ = project_path;
+    let _ = &project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
     let (enc_value, source_url, entry_type): (String, String, String) = sqlx::query_as(
@@ -421,7 +430,7 @@ pub async fn vault_delete(
     let pool = state.db_pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    sqlx::query("DELETE FROM vault_entries WHERE id=$1")
+    sqlx::query("DELETE FROM vault_entries WHERE id = $1")
         .bind(uid)
         .execute(pool)
         .await
@@ -436,14 +445,23 @@ pub async fn vault_resolve(
     project_path: Option<String>,
 ) -> Result<String, String> {
     let pool = state.db_pool_ready().await?;
-    let _ = project_path;
     let name = reference.trim_start_matches("{{vault:").trim_end_matches("}}");
-    let enc: String = sqlx::query_scalar(
-        "SELECT value FROM vault_entries WHERE name=$1 OR id::TEXT=$1",
-    )
-    .bind(name)
-    .fetch_one(pool)
-    .await
+    let enc: String = if let Some(ref pp) = project_path {
+        sqlx::query_scalar(
+            "SELECT value FROM vault_entries WHERE (name=$1 OR id::TEXT=$1) AND project_path = $2",
+        )
+        .bind(name)
+        .bind(pp)
+        .fetch_one(pool)
+        .await
+    } else {
+        sqlx::query_scalar(
+            "SELECT value FROM vault_entries WHERE (name=$1 OR id::TEXT=$1) AND project_path IS NULL",
+        )
+        .bind(name)
+        .fetch_one(pool)
+        .await
+    }
     .map_err(|_| format!("Vault entry '{}' not found", name))?;
     deobfuscate(&enc)
 }

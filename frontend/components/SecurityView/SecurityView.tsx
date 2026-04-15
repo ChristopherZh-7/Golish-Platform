@@ -39,7 +39,7 @@ import { lazy, Suspense } from "react";
 const VaultSettings = lazy(() =>
   import("@/components/Settings/VaultSettings").then((m) => ({ default: m.VaultSettings }))
 );
-export type SecurityTab = "history" | "sitemap" | "scanner" | "repeater" | "audit" | "passive" | "vault" | "oplog" | "recon" | "jsanalysis";
+export type SecurityTab = "history" | "sitemap" | "scanner" | "repeater" | "audit" | "passive" | "vault";
 
 export function SecurityView({ standaloneTab }: { standaloneTab?: SecurityTab } = {}) {
   const { t } = useTranslation();
@@ -122,9 +122,6 @@ export function SecurityView({ standaloneTab }: { standaloneTab?: SecurityTab } 
     { id: "repeater", label: t("security.repeater"), icon: Send },
     { id: "audit", label: t("security.auditLog", "Audit Log"), icon: ClipboardList },
     { id: "passive", label: t("security.passiveScan", "Passive Scan"), icon: Eye },
-    { id: "oplog", label: "Op Logs", icon: Database },
-    { id: "recon", label: "Recon Data", icon: Globe },
-    { id: "jsanalysis", label: "JS Analysis", icon: FileCode2 },
     { id: "vault", label: t("vault.title", "Credential Vault"), icon: KeyRound },
   ];
 
@@ -175,9 +172,6 @@ export function SecurityView({ standaloneTab }: { standaloneTab?: SecurityTab } 
         </Suspense>
       );
     }
-    if (tab === "oplog") return <OpLogPanel />;
-    if (tab === "recon") return <ReconDataPanel />;
-    if (tab === "jsanalysis") return <JsAnalysisPanel />;
     if (checkingInstall) {
       return (
         <div className="h-full flex items-center justify-center">
@@ -3578,9 +3572,9 @@ function CustomRulesView({
   );
 }
 
-// ── Op Log Panel (DB-backed, ZAP-independent) ──
+// (Op Logs, Recon Data, JS Analysis panels removed — now live in TargetPanel)
 
-function OpLogPanel() {
+function _dead_OpLogPanel() {
   const [entries, setEntries] = useState<AuditRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");

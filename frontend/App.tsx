@@ -105,11 +105,6 @@ const SidecarPanel = lazy(() =>
     default: m.SidecarPanel,
   }))
 );
-const SecurityPanelView = lazy(() =>
-  import("./components/SecurityView/SecurityView").then((m) => ({
-    default: m.SecurityView,
-  }))
-);
 const ComponentTestbed = lazy(() =>
   import("./pages/ComponentTestbed").then((m) => ({
     default: m.ComponentTestbed,
@@ -879,8 +874,8 @@ function App() {
     handleSplitPane,
     handleClosePane,
     handleNavigatePane,
-    openBrowserTab: () => setActivityView((v) => v === "security" ? null : "security"),
-    openSecurityTab: () => setActivityView((v) => v === "security" ? null : "security"),
+    openBrowserTab: () => setActivityView((v) => v === "targets" ? null : "targets"),
+    openSecurityTab: () => setActivityView((v) => v === "targets" ? null : "targets"),
     toggleToolManager: () => setActivityView((v) => v === "toolManage" ? null : "toolManage"),
     toggleWiki: () => setActivityView((v) => v === "wiki" ? null : "wiki"),
     toggleBottomTerminal: () => {
@@ -1305,24 +1300,10 @@ function App() {
             </div>
           </div>
 
-          {/* Security view */}
-          <div className={cn(
-            "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
-            activityView === "security"
-              ? "opacity-100 pointer-events-auto z-10"
-              : "opacity-0 pointer-events-none z-0",
-          )}>
-            <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
-              <Suspense fallback={null}>
-                <SecurityPanelView />
-              </Suspense>
-            </div>
-          </div>
-
           {/* Normal view - center + right panels */}
           <div className={cn(
             "flex-1 flex gap-1 min-w-0 transition-opacity duration-150 ease-out",
-            (activityView === "settings" || activityView === "toolManage" || activityView === "wiki" || activityView === "targets" || activityView === "methodology" || activityView === "dashboard" || activityView === "findings" || activityView === "pipelines" || activityView === "auditLog" || activityView === "wordlists" || activityView === "vulnIntel" || activityView === "security")
+            (activityView === "settings" || activityView === "toolManage" || activityView === "wiki" || activityView === "targets" || activityView === "methodology" || activityView === "dashboard" || activityView === "findings" || activityView === "pipelines" || activityView === "auditLog" || activityView === "wordlists" || activityView === "vulnIntel")
               ? "opacity-0 pointer-events-none"
               : "opacity-100 pointer-events-auto",
           )}>
@@ -1544,8 +1525,8 @@ function App() {
           onSplitPaneDown={() => handleSplitPane("horizontal")}
           onClosePane={handleClosePane}
           onOpenQuickOpen={() => setQuickOpenDialogOpen(true)}
-          onOpenBrowser={() => setActivityView((v) => v === "security" ? null : "security")}
-          onOpenSecurity={() => setActivityView((v) => v === "security" ? null : "security")}
+          onOpenBrowser={() => setActivityView((v) => v === "targets" ? null : "targets")}
+          onOpenSecurity={() => setActivityView((v) => v === "targets" ? null : "targets")}
           onToggleToolManager={() => setActivityView((v) => v === "toolManage" ? null : "toolManage")}
           onToggleWiki={() => setActivityView((v) => v === "wiki" ? null : "wiki")}
           onToggleBottomTerminal={() => {

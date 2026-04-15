@@ -506,8 +506,24 @@ pub struct VulnKbPoc {
     pub poc_type: String,
     pub language: String,
     pub content: String,
+    pub source: String,
+    pub source_url: String,
+    pub severity: String,
+    pub verified: bool,
+    pub description: String,
+    pub tags: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct CvePocSummary {
+    pub cve_id: String,
+    pub poc_count: i64,
+    pub max_severity: Option<String>,
+    pub any_verified: Option<bool>,
+    pub has_research: Option<bool>,
+    pub has_wiki: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -539,6 +555,53 @@ pub struct VulnScanHistory {
     pub result: String,
     pub details: Option<String>,
     pub scanned_at: DateTime<Utc>,
+}
+
+// ============================================================================
+// Wiki Cross-References & Changelog
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct WikiPageRef {
+    pub id: Uuid,
+    pub source_path: String,
+    pub target_path: String,
+    pub context: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct WikiChangelog {
+    pub id: i64,
+    pub page_path: String,
+    pub action: String,
+    pub title: String,
+    pub category: String,
+    pub actor: String,
+    pub summary: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug)]
+pub struct NewWikiChangelog {
+    pub page_path: String,
+    pub action: String,
+    pub title: String,
+    pub category: String,
+    pub actor: String,
+    pub summary: String,
+}
+
+/// Lightweight page info returned by category-grouped queries.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct WikiPageSummary {
+    pub path: String,
+    pub title: String,
+    pub category: String,
+    pub tags: Vec<String>,
+    pub status: String,
+    pub word_count: i32,
+    pub updated_at: DateTime<Utc>,
 }
 
 // ============================================================================
@@ -579,6 +642,7 @@ pub struct ApiEndpoint {
     pub source: String,
     pub risk_level: String,
     pub tested: bool,
+    pub capture_path: Option<String>,
     pub discovered_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -600,6 +664,7 @@ pub struct JsAnalysisResult {
     pub source_maps: bool,
     pub risk_summary: String,
     pub raw_analysis: serde_json::Value,
+    pub file_path: Option<String>,
     pub analyzed_at: DateTime<Utc>,
 }
 
