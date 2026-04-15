@@ -147,6 +147,7 @@ import {
 import {
   createDbAutoSaver,
   loadFromDb,
+  markDbLoadSucceeded,
 } from "./lib/conversation-db-sync";
 import { useFileEditorSidebarStore } from "./store/file-editor-sidebar";
 import { useAppState } from "./store/selectors";
@@ -395,6 +396,7 @@ function App() {
               }
 
               useStore.getState().setWorkspaceDataReady(true);
+              markDbLoadSucceeded();
 
               const hasConvTerminals = Object.keys(saved.terminalData).length > 0;
               if (!hasConvTerminals) {
@@ -432,6 +434,7 @@ function App() {
               }
 
               useStore.getState().setWorkspaceDataReady(true);
+              markDbLoadSucceeded();
 
               const hasConvTerminals = legacy?.conversationTerminalData
                 && Object.keys(legacy.conversationTerminalData).some(

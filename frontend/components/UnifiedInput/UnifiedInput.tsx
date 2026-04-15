@@ -347,8 +347,7 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
   }, [input, adjustTextareaHeight]);
 
   // Stable handleSubmit callback - reads current values from stateRef
-  // Stable callback - reads current values from stateRef to avoid stale closures
-  const handleSubmit = useCallback(async () => {
+  const handleSubmit = useCallback(() => {
     const { input } = stateRef.current;
 
     if (!input.trim()) return;
@@ -390,7 +389,9 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
 
     addToHistory(historyEntry);
     setLastSentCommand(sessionId, historyEntry);
-    await ptyWrite(sessionId, `${fullCmd}\n`);
+    ptyWrite(sessionId, `${fullCmd}\n`).catch((err) =>
+      console.error("[UnifiedInput] ptyWrite failed:", err)
+    );
   }, [sessionId, addToHistory, resetHistory, setLastSentCommand]);
 
   // Handle slash command selection (prompts and skills)
@@ -884,7 +885,7 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
       // Handle Enter - execute/send (Shift+Enter for newline)
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        await handleSubmit();
+        handleSubmit();
         return;
       }
 

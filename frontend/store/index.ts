@@ -125,6 +125,19 @@ export type { ContextMetrics, Notification, NotificationType };
 enableMapSet();
 
 /**
+ * External output buffer — accumulates terminal output outside Zustand to avoid
+ * synchronous subscriber notifications on every PTY chunk. Only consumed when a
+ * command finalizes (handleCommandEnd / handlePromptStart).
+ */
+const _outputBuffer = new Map<string, string>();
+
+export function _drainOutputBuffer(sessionId: string): string {
+  const buf = _outputBuffer.get(sessionId) ?? "";
+  _outputBuffer.delete(sessionId);
+  return buf;
+}
+
+/**
  * Helper function to mark a tab as having new activity from within a draft state.
  * This avoids nested set() calls by operating directly on the draft state.
  */
@@ -752,10 +765,9 @@ export const useStore = create<GolishState>()(
         }),
 
       removeSession: (sessionId) => {
-        // Dispose terminal instance (outside state update to avoid side effects in Immer)
         TerminalInstanceManager.dispose(sessionId);
+        _outputBuffer.delete(sessionId);
 
-        // Clean up AI event sequence tracking to prevent memory leak
         import("@/hooks/useAiEvents").then(({ resetSessionSequence }) => {
           resetSessionSequence(sessionId);
         });
@@ -917,29 +929,23 @@ export const useStore = create<GolishState>()(
           }
         }),
 
-      handlePromptStart: (sessionId) =>
+      handlePromptStart: (sessionId) => {
+        const drainedOutput = _drainOutputBuffer(sessionId);
         set((state) => {
-          // Finalize any pending command without exit code
           const pending = state.pendingCommand[sessionId];
           if (pending?.command) {
             const session = state.sessions[sessionId];
-            // Skip block creation for fullterm-mode commands (vim, claude, aider, etc.).
-            // Fullterm output must never appear in the timeline regardless of how the
-            // command lifecycle ended (missing command_end, null exit_code, etc.).
             if (session?.renderMode === "fullterm") {
               state.pendingCommand[sessionId] = null;
               return;
             }
-            // Use the session's CURRENT working directory (at command end), not the one
-            // captured at command start. This ensures that for commands like "cd foo && ls",
-            // file paths in the output are resolved relative to the new directory.
             const currentWorkingDir = session?.workingDirectory || pending.workingDirectory;
             const blockId = crypto.randomUUID();
             const block: CommandBlock = {
               id: blockId,
               sessionId,
               command: pending.command,
-              output: pending.output,
+              output: drainedOutput,
               exitCode: null,
               startTime: pending.startTime,
               durationMs: null,
@@ -966,13 +972,15 @@ export const useStore = create<GolishState>()(
             markTabNewActivityInDraft(state, sessionId);
           }
           state.pendingCommand[sessionId] = null;
-        }),
+        });
+      },
 
       handlePromptEnd: (_sessionId) => {
         // Ready for input - nothing to do for now
       },
 
-      handleCommandStart: (sessionId, command) =>
+      handleCommandStart: (sessionId, command) => {
+        _outputBuffer.delete(sessionId);
         set((state) => {
           const session = state.sessions[sessionId];
           const effectiveCommand = command || state.lastSentCommand[sessionId] || null;
@@ -983,40 +991,32 @@ export const useStore = create<GolishState>()(
             workingDirectory: session?.workingDirectory || "",
           };
           state.lastSentCommand[sessionId] = null;
-        }),
+        });
+      },
 
       handleCommandEnd: (sessionId, exitCode) => {
-        // Capture pending command info before state update for notification
         const currentState = get();
         const pending = currentState.pendingCommand[sessionId];
         const command = pending?.command;
         const session = currentState.sessions[sessionId];
         const isFullterm = session?.renderMode === "fullterm";
         const shouldNotify = pending && command && !isFullterm;
+        const drainedOutput = _drainOutputBuffer(sessionId);
 
         set((state) => {
           const pending = state.pendingCommand[sessionId];
           if (pending) {
-            // Skip creating command block for fullterm mode commands
-            // Fullterm mode is for interactive apps (vim, ssh, etc.) that use
-            // the full terminal - their output shouldn't appear in the timeline
             const session = state.sessions[sessionId];
             const isFullterm = session?.renderMode === "fullterm";
 
-            // Only create a command block if:
-            // 1. There was an actual command (not empty)
-            // 2. NOT in fullterm mode (those sessions are handled by xterm directly)
             if (pending.command && !isFullterm) {
               const blockId = crypto.randomUUID();
-              // Use the session's CURRENT working directory (at command end), not the one
-              // captured at command start. This ensures that for commands like "cd foo && ls",
-              // file paths in the output are resolved relative to the new directory.
               const currentWorkingDir = session?.workingDirectory || pending.workingDirectory;
               const block: CommandBlock = {
                 id: blockId,
                 sessionId,
                 command: pending.command,
-                output: pending.output,
+                output: drainedOutput,
                 exitCode,
                 startTime: pending.startTime,
                 durationMs: Date.now() - new Date(pending.startTime).getTime(),
@@ -1072,31 +1072,27 @@ export const useStore = create<GolishState>()(
         }
       },
 
-      appendOutput: (sessionId, data) =>
-        set((state) => {
-          let pending = state.pendingCommand[sessionId];
-          // Auto-create pendingCommand if it doesn't exist (fallback for missing command_start)
-          // This allows showing output even when OSC 133 shell integration isn't working
-          if (!pending) {
+      appendOutput: (sessionId, data) => {
+        _outputBuffer.set(sessionId, (_outputBuffer.get(sessionId) ?? "") + data);
+        // Auto-create pendingCommand once (fallback for missing command_start).
+        // Only calls set() on the first output chunk per command, not on every chunk.
+        if (!get().pendingCommand[sessionId]) {
+          set((state) => {
+            if (state.pendingCommand[sessionId]) return;
             const session = state.sessions[sessionId];
-            pending = {
-              command: null, // Will show as "Running..." in the UI
+            state.pendingCommand[sessionId] = {
+              command: null,
               output: "",
               startTime: new Date().toISOString(),
               workingDirectory: session?.workingDirectory || "",
             };
-            state.pendingCommand[sessionId] = pending;
-          }
-          pending.output += data;
-        }),
+          });
+        }
+      },
 
-      setPendingOutput: (sessionId, output) =>
-        set((state) => {
-          const pending = state.pendingCommand[sessionId];
-          if (pending) {
-            pending.output = output;
-          }
-        }),
+      setPendingOutput: (sessionId, output) => {
+        _outputBuffer.set(sessionId, output);
+      },
 
       toggleBlockCollapse: (blockId) =>
         set((state) => {
@@ -1115,15 +1111,16 @@ export const useStore = create<GolishState>()(
           state.lastSentCommand[sessionId] = command;
         }),
 
-      clearBlocks: (sessionId) =>
+      clearBlocks: (sessionId) => {
+        _outputBuffer.delete(sessionId);
         set((state) => {
-          // Clear command blocks from timeline
           const timeline = state.timelines[sessionId];
           if (timeline) {
             state.timelines[sessionId] = timeline.filter((block) => block.type !== "command");
           }
           state.pendingCommand[sessionId] = null;
-        }),
+        });
+      },
 
       requestTerminalClear: (sessionId) =>
         set((state) => {
@@ -1516,14 +1513,16 @@ export const useStore = create<GolishState>()(
           });
         }),
 
-      clearTimeline: (sessionId) =>
+      clearTimeline: (sessionId) => {
+        _outputBuffer.delete(sessionId);
         set((state) => {
           state.timelines[sessionId] = [];
           state.pendingCommand[sessionId] = null;
           state.agentStreamingBuffer[sessionId] = [];
           state.agentStreaming[sessionId] = "";
           state.streamingBlocks[sessionId] = [];
-        }),
+        });
+      },
 
       // Workflow actions
       startWorkflow: (sessionId, workflow) =>
@@ -1921,7 +1920,11 @@ export const useStore = create<GolishState>()(
           if (!state.timelines[sessionId]) {
             state.timelines[sessionId] = [];
           }
-          // Tag with current in-progress plan step (if any)
+          const exists = state.timelines[sessionId].some(
+            (b) => b.type === "ai_tool_execution" && b.data.requestId === execution.requestId
+          );
+          if (exists) return;
+
           let planStepIndex: number | undefined;
           const plan = state.sessions[sessionId]?.plan;
           if (plan) {

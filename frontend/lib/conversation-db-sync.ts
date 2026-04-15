@@ -32,11 +32,15 @@ function normalizePath(p: string): string {
   return normalized;
 }
 
-const SAVE_DEBOUNCE_MS = 200;
+const SAVE_DEBOUNCE_MS = 2000;
 const MAX_SCROLLBACK = 100_000;
 const MAX_BLOCK_OUTPUT = 50_000;
 const SAVE_MAX_RETRIES = 2;
 const SAVE_RETRY_BASE_MS = 300;
+
+let _dbLoadOk = false;
+export function markDbLoadSucceeded() { _dbLoadOk = true; }
+export function isDbLoadOk() { return _dbLoadOk; }
 
 async function withRetry<T>(
   fn: () => Promise<T>,
@@ -157,6 +161,7 @@ function dbMsgToChatMessage(row: ChatMessageRow): ChatMessage {
       ? (row.toolCalls as ChatToolCall[])
       : undefined,
     toolCallsContentOffset: row.toolCallsContentOffset ?? undefined,
+    toolCallOffsets: row.toolCallOffsets ?? undefined,
   };
 }
 
@@ -174,6 +179,7 @@ function chatMessageToDbRow(
     error: msg.error ?? null,
     toolCalls: msg.toolCalls ? (msg.toolCalls as unknown as unknown[]) : null,
     toolCallsContentOffset: msg.toolCallsContentOffset ?? null,
+    toolCallOffsets: msg.toolCallOffsets ?? null,
     sortOrder,
     createdAt: msg.timestamp,
   };
@@ -407,6 +413,7 @@ const _convSaveFingerprints = new Map<string, string>();
 /** Clear fingerprint cache (call on project switch to avoid stale comparisons). */
 export function clearSaveFingerprints(): void {
   _convSaveFingerprints.clear();
+  _dbLoadOk = false;
 }
 
 async function saveConversationsToDb(
@@ -545,10 +552,11 @@ export function createDbAutoSaver(
   let saving = false;
   let lastSnapshot: string | null = null;
 
-  const save = async () => {
+    const save = async () => {
     const projectPath = getProjectPath();
     if (!projectPath) return;
     if (saving) return;
+    if (!_dbLoadOk) return;
 
     const state = getState();
     // Skip save while terminals are being restored (or pending) to avoid

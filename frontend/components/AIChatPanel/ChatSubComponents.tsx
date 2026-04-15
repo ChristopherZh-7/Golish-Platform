@@ -313,6 +313,8 @@ export function ToolCallSummary({
 
     for (const tc of toolCalls) {
       if (!tc.requestId || existingIds.has(tc.requestId)) continue;
+      if (tc.name.startsWith("sub_agent_")) continue;
+      if (tc.name === "run_pipeline") continue;
 
       let parsedArgs: Record<string, unknown> = {};
       try {

@@ -274,6 +274,7 @@ where
         custom_tool_executor: None,
         coordinator: None, // Evals use legacy path
         db_tracker: None,
+        cancelled: None,
     };
 
     // Detect capabilities from provider/model
@@ -500,6 +501,7 @@ where
         custom_tool_executor: custom_executor,
         coordinator: None, // Evals use legacy path
         db_tracker: None,
+        cancelled: None,
     };
 
     // Detect capabilities from provider/model
@@ -841,6 +843,7 @@ where
             custom_tool_executor: None,
             coordinator: None, // Evals use legacy path
             db_tracker: None,
+            cancelled: None,
         };
 
         let loop_config = AgenticLoopConfig {

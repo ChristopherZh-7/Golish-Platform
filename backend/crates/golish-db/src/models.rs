@@ -397,6 +397,11 @@ pub struct AuditEntry {
     pub source: String,
     pub project_path: Option<String>,
     pub created_at: DateTime<Utc>,
+    pub target_id: Option<Uuid>,
+    pub session_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub status: String,
+    pub detail: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -534,6 +539,102 @@ pub struct VulnScanHistory {
     pub result: String,
     pub details: Option<String>,
     pub scanned_at: DateTime<Utc>,
+}
+
+// ============================================================================
+// Security Analysis Models
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct TargetAsset {
+    pub id: Uuid,
+    pub target_id: Uuid,
+    pub project_path: Option<String>,
+    pub asset_type: String,
+    pub value: String,
+    pub port: Option<i32>,
+    pub protocol: Option<String>,
+    pub service: Option<String>,
+    pub version: Option<String>,
+    pub metadata: serde_json::Value,
+    pub status: String,
+    pub discovered_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ApiEndpoint {
+    pub id: Uuid,
+    pub target_id: Uuid,
+    pub project_path: Option<String>,
+    pub url: String,
+    pub method: String,
+    pub path: String,
+    pub params: serde_json::Value,
+    pub headers: serde_json::Value,
+    pub auth_type: Option<String>,
+    pub response_type: Option<String>,
+    pub status_code: Option<i32>,
+    pub notes: String,
+    pub source: String,
+    pub risk_level: String,
+    pub tested: bool,
+    pub discovered_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct JsAnalysisResult {
+    pub id: Uuid,
+    pub target_id: Uuid,
+    pub project_path: Option<String>,
+    pub url: String,
+    pub filename: String,
+    pub size_bytes: Option<i64>,
+    pub hash_sha256: Option<String>,
+    pub frameworks: serde_json::Value,
+    pub libraries: serde_json::Value,
+    pub endpoints_found: serde_json::Value,
+    pub secrets_found: serde_json::Value,
+    pub comments: serde_json::Value,
+    pub source_maps: bool,
+    pub risk_summary: String,
+    pub raw_analysis: serde_json::Value,
+    pub analyzed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct Fingerprint {
+    pub id: Uuid,
+    pub target_id: Uuid,
+    pub project_path: Option<String>,
+    pub category: String,
+    pub name: String,
+    pub version: Option<String>,
+    pub confidence: f32,
+    pub evidence: serde_json::Value,
+    pub cpe: Option<String>,
+    pub source: String,
+    pub detected_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct PassiveScanLog {
+    pub id: Uuid,
+    pub target_id: Uuid,
+    pub project_path: Option<String>,
+    pub test_type: String,
+    pub payload: String,
+    pub url: String,
+    pub parameter: String,
+    pub result: String,
+    pub evidence: String,
+    pub severity: String,
+    pub tool_used: String,
+    pub tester: String,
+    pub notes: String,
+    pub detail: serde_json::Value,
+    pub tested_at: DateTime<Utc>,
 }
 
 // ============================================================================

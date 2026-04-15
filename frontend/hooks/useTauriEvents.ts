@@ -235,8 +235,6 @@ export function useTauriEvents() {
 
         switch (event_type) {
           case "prompt_start": {
-            // Capture pending output BEFORE handlePromptStart clears it
-            const pendingOutput = state.pendingCommand[session_id]?.output;
             const pendingCommand = state.pendingCommand[session_id]?.command;
 
             virtualTerminalManager.dispose(session_id);
@@ -249,8 +247,8 @@ export function useTauriEvents() {
             // Switch back to timeline mode when shell is ready for next command
             const session = state.sessions[session_id];
             if (session?.renderMode === "fullterm") {
-              if (pendingOutput) {
-                logger.debug("[fullterm] Captured output from fullterm command:", pendingCommand);
+              if (pendingCommand) {
+                logger.debug("[fullterm] Exiting fullterm for command:", pendingCommand);
               }
               state.setRenderMode(session_id, "timeline");
             }
@@ -267,10 +265,7 @@ export function useTauriEvents() {
             // Reset alternate screen tracking for new command
             usedAlternateScreen.set(session_id, false);
 
-            // Create a VirtualTerminal for processing ANSI sequences in this command's output
             virtualTerminalManager.create(session_id);
-            // Create live terminal for embedded xterm.js display
-            liveTerminalManager.getOrCreate(session_id);
 
             // Known fullterm-only apps (TUI agents, AI coding tools) that don't use
             // alternate screen buffer — switch to fullterm mode and skip output serialization.
@@ -386,16 +381,16 @@ export function useTauriEvents() {
     );
 
     // Terminal output - capture for command blocks
+    // Output is accumulated in a plain Map (no Zustand store updates) to avoid
+    // blocking the main thread with synchronous subscriber notifications on every
+    // PTY chunk. The store is only touched once (to auto-create pendingCommand).
     unlisteners.push(
       listen<TerminalOutputEvent>("terminal_output", (event) => {
         if (isStale()) return;
         const { session_id, data } = event.payload;
-        const state = store.getState();
-        state.appendOutput(session_id, data);
-        // Also write to VirtualTerminal for proper ANSI sequence processing
         virtualTerminalManager.write(session_id, data);
-        // Write to live terminal for embedded xterm.js display
         liveTerminalManager.write(session_id, data);
+        store.getState().appendOutput(session_id, data);
       })
     );
 

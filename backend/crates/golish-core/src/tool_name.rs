@@ -91,6 +91,20 @@ pub enum ToolName {
     /// Ingest a CVE into the knowledge base
     IngestCve,
     SavePoc,
+
+    // === Security Analysis ===
+    /// Log a pentest operation
+    LogOperation,
+    /// Discover API endpoints from target
+    DiscoverApis,
+    /// Save JavaScript file analysis results
+    SaveJsAnalysis,
+    /// Fingerprint target technology stack
+    FingerprintTarget,
+    /// Log a passive scan / manual test result
+    LogScanResult,
+    /// Query aggregated target data (assets, endpoints, fingerprints)
+    QueryTargetData,
 }
 
 impl ToolName {
@@ -147,6 +161,14 @@ impl ToolName {
             Self::ReadKnowledge => "read_knowledge",
             Self::IngestCve => "ingest_cve",
             Self::SavePoc => "save_poc",
+
+            // Security Analysis
+            Self::LogOperation => "log_operation",
+            Self::DiscoverApis => "discover_apis",
+            Self::SaveJsAnalysis => "save_js_analysis",
+            Self::FingerprintTarget => "fingerprint_target",
+            Self::LogScanResult => "log_scan_result",
+            Self::QueryTargetData => "query_target_data",
         }
     }
 
@@ -207,6 +229,14 @@ impl ToolName {
             "ingest_cve" => Some(Self::IngestCve),
             "save_poc" => Some(Self::SavePoc),
 
+            // Security Analysis
+            "log_operation" => Some(Self::LogOperation),
+            "discover_apis" => Some(Self::DiscoverApis),
+            "save_js_analysis" => Some(Self::SaveJsAnalysis),
+            "fingerprint_target" => Some(Self::FingerprintTarget),
+            "log_scan_result" => Some(Self::LogScanResult),
+            "query_target_data" => Some(Self::QueryTargetData),
+
             // Unknown (includes dynamic sub-agent tools like "sub_agent_*")
             _ => None,
         }
@@ -259,6 +289,14 @@ impl ToolName {
             | Self::ReadKnowledge
             | Self::IngestCve
             | Self::SavePoc => ToolCategory::KnowledgeBase,
+
+            // Security Analysis
+            Self::LogOperation
+            | Self::DiscoverApis
+            | Self::SaveJsAnalysis
+            | Self::FingerprintTarget
+            | Self::LogScanResult
+            | Self::QueryTargetData => ToolCategory::SecurityAnalysis,
         }
     }
 
@@ -285,6 +323,7 @@ impl ToolName {
                 | Self::AstGrep
                 | Self::SearchKnowledgeBase
                 | Self::ReadKnowledge
+                | Self::QueryTargetData
         )
     }
 
@@ -342,6 +381,8 @@ pub enum ToolCategory {
     SubAgent,
     /// Vulnerability knowledge base operations
     KnowledgeBase,
+    /// Security analysis and pentest operations
+    SecurityAnalysis,
 }
 
 impl ToolCategory {
@@ -388,6 +429,14 @@ impl ToolCategory {
                 ToolName::IngestCve,
                 ToolName::SavePoc,
             ],
+            Self::SecurityAnalysis => &[
+                ToolName::LogOperation,
+                ToolName::DiscoverApis,
+                ToolName::SaveJsAnalysis,
+                ToolName::FingerprintTarget,
+                ToolName::LogScanResult,
+                ToolName::QueryTargetData,
+            ],
         }
     }
 
@@ -410,6 +459,7 @@ impl std::fmt::Display for ToolCategory {
             Self::Workflow => write!(f, "workflow"),
             Self::SubAgent => write!(f, "sub_agent"),
             Self::KnowledgeBase => write!(f, "knowledge_base"),
+            Self::SecurityAnalysis => write!(f, "security_analysis"),
         }
     }
 }

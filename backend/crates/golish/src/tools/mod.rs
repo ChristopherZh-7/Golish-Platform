@@ -75,3 +75,6 @@ pub mod scan_queue;
 
 // Custom passive scan rules persistence
 pub mod custom_rules;
+
+// Security analysis (operation logs, assets, endpoints, fingerprints, scans)
+pub mod security_analysis;
