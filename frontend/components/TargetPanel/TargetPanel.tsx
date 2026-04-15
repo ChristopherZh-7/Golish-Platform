@@ -149,6 +149,7 @@ import { lazy, Suspense } from "react";
 const SecurityViewLazy = lazy(() =>
   import("@/components/SecurityView/SecurityView").then((m) => ({ default: m.SecurityView }))
 );
+import { ScanPanel } from "@/components/ScanPanel/ScanPanel";
 
 type TargetTab = "targets" | "topology" | "security";
 
@@ -880,6 +881,11 @@ function TargetDetailView({
             ))}
           </div>
         </div>
+      )}
+
+      {/* ── Scan Workflow Panel ── */}
+      {(target.type === "url" || target.type === "domain") && (
+        <ScanPanel targetId={target.id} targetUrl={target.value} />
       )}
 
       {/* ── Ports (expandable, hierarchical) ── */}

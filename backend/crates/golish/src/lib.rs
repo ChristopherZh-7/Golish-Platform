@@ -1335,6 +1335,12 @@ pub fn run_gui() {
             tools::security_analysis::passive_scans_vulnerable,
             tools::security_analysis::passive_scans_stats,
             tools::security_analysis::target_security_overview,
+            // Scan runner (WhatWeb, Nuclei targeted, feroxbuster)
+            tools::scan_runner::scan_whatweb,
+            tools::scan_runner::match_pocs_for_target,
+            tools::scan_runner::scan_nuclei_targeted,
+            tools::scan_runner::scan_feroxbuster,
+            tools::scan_runner::get_zap_discovered_paths,
             // IME switching (macOS)
             ime_get_source,
             ime_set_source,
