@@ -68,8 +68,10 @@ use models::commands::{
     get_available_models, get_model_by_id, get_model_capabilities_command, get_providers,
 };
 use projects::commands::{
-    delete_project_config, get_project_config, list_project_configs, load_project_workspace,
-    save_project, save_project_workspace,
+    clean_project_temp, delete_project_config, get_pentest_config, get_project_config,
+    init_project_structure, list_capture_files, list_captures, list_project_configs,
+    load_project_workspace, read_project_file, save_pentest_config, save_project,
+    save_project_workspace,
 };
 use settings::{
     get_setting, get_settings, get_settings_path, get_telemetry_stats, get_window_state,
@@ -947,6 +949,14 @@ pub fn run_gui() {
             get_project_config,
             save_project_workspace,
             load_project_workspace,
+            // Pentest project & file storage commands
+            get_pentest_config,
+            save_pentest_config,
+            list_captures,
+            list_capture_files,
+            read_project_file,
+            init_project_structure,
+            clean_project_temp,
             // Prompt commands
             list_prompts,
             read_prompt,
@@ -1162,6 +1172,7 @@ pub fn run_gui() {
             tools::pentest::zap_api_call,
             // Wiki commands
             tools::wiki::wiki_init,
+            tools::wiki::wiki_reindex,
             tools::wiki::wiki_list,
             tools::wiki::wiki_read,
             tools::wiki::wiki_write,
@@ -1185,6 +1196,18 @@ pub fn run_gui() {
             tools::wiki::vuln_link_remove_poc,
             tools::wiki::vuln_link_add_scan,
             tools::wiki::vuln_link_remove_scan,
+            tools::wiki::vuln_link_add_poc_full,
+            tools::wiki::vuln_poc_list_cves,
+            tools::wiki::vuln_poc_list_unresearched,
+            tools::wiki::vuln_poc_stats,
+            tools::wiki::vuln_poc_set_verified,
+            tools::wiki::wiki_pages_grouped,
+            tools::wiki::wiki_pages_for_paths,
+            tools::wiki::wiki_suggest_for_cve,
+            tools::wiki::wiki_changelog_list,
+            tools::wiki::wiki_backlinks,
+            tools::wiki::wiki_stats_full,
+            tools::wiki::wiki_orphan_pages,
             tools::targets::target_list,
             tools::targets::target_add,
             tools::targets::target_batch_add,
@@ -1274,6 +1297,7 @@ pub fn run_gui() {
             tools::vuln_intel::intel_search_github_poc,
             tools::vuln_intel::intel_search_nuclei_templates,
             tools::vuln_intel::intel_batch_search_nuclei_templates,
+            tools::vuln_intel::intel_discover_all_nuclei,
             // Conversation persistence (replaces workspace.json)
             tools::conversation_store::conv_save,
             tools::conversation_store::conv_delete,

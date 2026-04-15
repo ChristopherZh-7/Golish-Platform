@@ -145,7 +145,12 @@ function MiniDropdown({
   );
 }
 
-type TargetTab = "targets" | "topology";
+import { lazy, Suspense } from "react";
+const SecurityViewLazy = lazy(() =>
+  import("@/components/SecurityView/SecurityView").then((m) => ({ default: m.SecurityView }))
+);
+
+type TargetTab = "targets" | "topology" | "security";
 
 export function TargetPanel() {
   const { t } = useTranslation();
@@ -365,6 +370,19 @@ export function TargetPanel() {
             <MapIcon className="w-3.5 h-3.5" />
             {t("activity.topology")}
           </button>
+          <button
+            type="button"
+            className={cn(
+              "flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md transition-colors",
+              activeTab === "security"
+                ? "bg-accent/15 text-accent font-medium"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted/40",
+            )}
+            onClick={() => setActiveTab("security")}
+          >
+            <Shield className="w-3.5 h-3.5" />
+            {t("security.title", "Security")}
+          </button>
         </div>
         {activeTab === "targets" && (
         <div className="flex items-center gap-1">
@@ -397,6 +415,12 @@ export function TargetPanel() {
 
       {activeTab === "topology" ? (
         <div className="flex-1 min-h-0"><TopologyView /></div>
+      ) : activeTab === "security" ? (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <Suspense fallback={<div className="h-full flex items-center justify-center"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground/20" /></div>}>
+            <SecurityViewLazy />
+          </Suspense>
+        </div>
       ) : (
       <>
       {/* Filter bar */}

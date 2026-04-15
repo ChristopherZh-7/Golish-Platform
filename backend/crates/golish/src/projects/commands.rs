@@ -7,6 +7,7 @@ use super::{
     delete_project as storage_delete, list_projects as storage_list, load_project as storage_load,
     save_project as storage_save, ProjectConfig,
 };
+use super::file_storage::{self, PentestProjectConfig};
 use super::storage::{load_workspace, save_workspace};
 use crate::state::AppState;
 
@@ -141,4 +142,153 @@ pub async fn load_project_workspace(project_name: String) -> Result<Option<Strin
     load_workspace(&project_name)
         .await
         .map_err(|e| format!("Failed to load workspace: {}", e))
+}
+
+// ============================================================================
+// Pentest project config & file storage commands
+// ============================================================================
+
+/// Capture file overview returned to the frontend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureOverview {
+    pub hosts: Vec<HostCaptures>,
+    pub tool_outputs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostCaptures {
+    pub host: String,
+    pub ports: Vec<u16>,
+}
+
+/// Load the pentest project config (project.json) for a project.
+#[tauri::command]
+pub async fn get_pentest_config(project_name: String) -> Result<Option<PentestProjectConfig>, String> {
+    let project = storage_load(&project_name)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Project '{}' not found", project_name))?;
+
+    file_storage::load_project_json(&project.root_path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Save the pentest project config (project.json) for a project.
+#[tauri::command]
+pub async fn save_pentest_config(
+    project_name: String,
+    config: PentestProjectConfig,
+) -> Result<(), String> {
+    let project = storage_load(&project_name)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Project '{}' not found", project_name))?;
+
+    file_storage::save_project_json(&project.root_path, &config)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// List all captured hosts and their ports.
+#[tauri::command]
+pub async fn list_captures(project_name: String) -> Result<CaptureOverview, String> {
+    let project = storage_load(&project_name)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Project '{}' not found", project_name))?;
+
+    let hosts = file_storage::list_capture_hosts(&project.root_path)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut host_captures = Vec::new();
+    for host in hosts {
+        let ports = file_storage::list_capture_ports(&project.root_path, &host)
+            .await
+            .map_err(|e| e.to_string())?;
+        host_captures.push(HostCaptures {
+            host,
+            ports,
+        });
+    }
+
+    let tool_outputs = file_storage::list_tool_outputs(&project.root_path)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(CaptureOverview {
+        hosts: host_captures,
+        tool_outputs,
+    })
+}
+
+/// List files in a specific capture type for a host:port.
+#[tauri::command]
+pub async fn list_capture_files(
+    project_name: String,
+    host: String,
+    port: u16,
+    file_type: String,
+) -> Result<Vec<String>, String> {
+    let project = storage_load(&project_name)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Project '{}' not found", project_name))?;
+
+    file_storage::list_capture_files(&project.root_path, &host, port, &file_type)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Read a file by relative path from the project root.
+#[tauri::command]
+pub async fn read_project_file(
+    project_name: String,
+    rel_path: String,
+) -> Result<String, String> {
+    let project = storage_load(&project_name)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Project '{}' not found", project_name))?;
+
+    let content = file_storage::read_file(&project.root_path, &rel_path)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    String::from_utf8(content).map_err(|e| format!("File is not valid UTF-8: {}", e))
+}
+
+/// Initialize project directory structure (idempotent).
+#[tauri::command]
+pub async fn init_project_structure(project_name: String) -> Result<(), String> {
+    let project = storage_load(&project_name)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Project '{}' not found", project_name))?;
+
+    file_storage::init_project_dirs(&project.root_path)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    file_storage::init_project_json(&project.root_path, &project.name)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Clean temporary files.
+#[tauri::command]
+pub async fn clean_project_temp(project_name: String) -> Result<u64, String> {
+    let project = storage_load(&project_name)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Project '{}' not found", project_name))?;
+
+    file_storage::clean_temp(&project.root_path)
+        .await
+        .map_err(|e| e.to_string())
 }

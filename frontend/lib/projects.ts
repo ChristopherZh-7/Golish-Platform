@@ -57,3 +57,98 @@ export async function saveProjectWorkspace(projectName: string, stateJson: strin
 export async function loadProjectWorkspace(projectName: string): Promise<string | null> {
   return invoke<string | null>("load_project_workspace", { projectName });
 }
+
+// ============================================================================
+// Pentest project config & file storage
+// ============================================================================
+
+export interface ScopeConfig {
+  inScope: string[];
+  outOfScope: string[];
+}
+
+export interface ProxyConfig {
+  zapApiUrl?: string;
+  zapApiKey?: string;
+}
+
+export interface CaptureConfig {
+  autoSaveJs: boolean;
+  autoSaveHtml: boolean;
+  autoSaveToolOutput: boolean;
+  maxFileSizeMb: number;
+}
+
+export interface PentestProjectConfig {
+  name: string;
+  createdAt: string;
+  scope: ScopeConfig;
+  proxy: ProxyConfig;
+  capture: CaptureConfig;
+  hostMap: Record<string, string[]>;
+  notes: string;
+}
+
+export interface HostCaptures {
+  host: string;
+  ports: number[];
+}
+
+export interface CaptureOverview {
+  hosts: HostCaptures[];
+  toolOutputs: string[];
+}
+
+export async function getPentestConfig(
+  projectName: string,
+): Promise<PentestProjectConfig | null> {
+  return invoke<PentestProjectConfig | null>("get_pentest_config", {
+    projectName,
+  });
+}
+
+export async function savePentestConfig(
+  projectName: string,
+  config: PentestProjectConfig,
+): Promise<void> {
+  await invoke("save_pentest_config", { projectName, config });
+}
+
+export async function listCaptures(
+  projectName: string,
+): Promise<CaptureOverview> {
+  return invoke<CaptureOverview>("list_captures", { projectName });
+}
+
+export async function listCaptureFiles(
+  projectName: string,
+  host: string,
+  port: number,
+  fileType: string,
+): Promise<string[]> {
+  return invoke<string[]>("list_capture_files", {
+    projectName,
+    host,
+    port,
+    fileType,
+  });
+}
+
+export async function readProjectFile(
+  projectName: string,
+  relPath: string,
+): Promise<string> {
+  return invoke<string>("read_project_file", { projectName, relPath });
+}
+
+export async function initProjectStructure(
+  projectName: string,
+): Promise<void> {
+  await invoke("init_project_structure", { projectName });
+}
+
+export async function cleanProjectTemp(
+  projectName: string,
+): Promise<number> {
+  return invoke<number>("clean_project_temp", { projectName });
+}

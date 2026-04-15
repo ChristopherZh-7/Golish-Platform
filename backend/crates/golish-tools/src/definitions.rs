@@ -465,7 +465,7 @@ pub fn build_function_declarations() -> Vec<FunctionDeclaration> {
         },
         FunctionDeclaration {
             name: "save_poc".to_string(),
-            description: "Save a PoC (Proof of Concept) template to the vulnerability knowledge base, linked to a specific CVE. The PoC will appear in the PoC tab for that CVE. Use this when you find or create exploit code, detection templates, or testing scripts during research.".to_string(),
+            description: "Save a PoC (Proof of Concept) to the knowledge base, linked to a specific CVE. Supports rich metadata: source (nuclei_template, github, exploitdb, manual), severity, description, and tags. Use this for all PoC types — Nuclei templates discovered during fingerprinting, GitHub exploit scripts, ExploitDB entries, or manually crafted scripts.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -489,9 +489,64 @@ pub fn build_function_declarations() -> Vec<FunctionDeclaration> {
                     "content": {
                         "type": "string",
                         "description": "The full PoC content (code, template, or testing instructions)"
+                    },
+                    "source": {
+                        "type": "string",
+                        "enum": ["nuclei_template", "github", "exploitdb", "manual"],
+                        "description": "Where this PoC was sourced from"
+                    },
+                    "source_url": {
+                        "type": "string",
+                        "description": "URL to the original PoC source (GitHub repo, ExploitDB page, Nuclei template path)"
+                    },
+                    "severity": {
+                        "type": "string",
+                        "enum": ["critical", "high", "medium", "low", "info", "unknown"],
+                        "description": "Severity of the vulnerability this PoC targets"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Brief description of what this PoC does and its prerequisites"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Tags for categorization (e.g. ['rce', 'authenticated', 'apache', 'java'])"
                     }
                 },
                 "required": ["cve_id", "name", "poc_type", "language", "content"]
+            }),
+        },
+        FunctionDeclaration {
+            name: "list_cves_with_pocs".to_string(),
+            description: "List all CVE identifiers that have at least one PoC in the knowledge base, sorted by severity. Returns a summary per CVE: number of PoCs, max severity, verification status, and whether research/wiki pages exist. Use this to see what PoCs have been collected and which CVEs still need research.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+        },
+        FunctionDeclaration {
+            name: "list_unresearched_cves".to_string(),
+            description: "List CVEs that have PoCs but have NOT been researched yet. This is the priority queue for the 'PoC first, research later' workflow — these are actionable CVEs with known exploit paths that need investigation. Results are sorted by severity (critical first). Use after collecting PoCs via Nuclei/fingerprinting to decide what to research next.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of CVEs to return (default 20)"
+                    }
+                },
+                "required": []
+            }),
+        },
+        FunctionDeclaration {
+            name: "poc_stats".to_string(),
+            description: "Get statistics about the PoC knowledge base: counts by source (nuclei_template, github, etc.), counts by severity, total unique CVEs covered, and number of verified PoCs. Use to gauge coverage and identify gaps.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {},
+                "required": []
             }),
         },
         // ====================================================================
@@ -775,6 +830,9 @@ mod tests {
         assert!(names.contains(&"read_knowledge"));
         assert!(names.contains(&"ingest_cve"));
         assert!(names.contains(&"save_poc"));
+        assert!(names.contains(&"list_cves_with_pocs"));
+        assert!(names.contains(&"list_unresearched_cves"));
+        assert!(names.contains(&"poc_stats"));
 
         // Security Analysis
         assert!(names.contains(&"log_operation"));

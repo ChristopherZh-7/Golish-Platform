@@ -61,6 +61,12 @@ interface PocTemplate {
   type: "nuclei" | "script" | "manual";
   language: string;
   content: string;
+  source: string;
+  source_url: string;
+  severity: string;
+  verified: boolean;
+  description: string;
+  tags: string[];
   created: number;
 }
 
@@ -95,7 +101,11 @@ const SEV_DOT: Record<string, string> = {
 
 interface DbVulnLinkFull {
   wiki_paths: string[];
-  poc_templates: Array<{ id: string; name: string; type: string; language: string; content: string; created: number }>;
+  poc_templates: Array<{
+    id: string; name: string; type: string; language: string; content: string;
+    source: string; source_url: string; severity: string; verified: boolean;
+    description: string; tags: string[]; created: number;
+  }>;
   scan_history: Array<{ id: string; target: string; date: number; result: string; details?: string }>;
 }
 
@@ -108,6 +118,12 @@ function dbToVulnLink(db: DbVulnLinkFull): VulnLink {
       type: p.type as PocTemplate["type"],
       language: p.language,
       content: p.content,
+      source: p.source ?? "manual",
+      source_url: p.source_url ?? "",
+      severity: p.severity ?? "unknown",
+      verified: p.verified ?? false,
+      description: p.description ?? "",
+      tags: p.tags ?? [],
       created: p.created,
     })),
     scanHistory: db.scan_history.map((s) => ({
@@ -1396,6 +1412,21 @@ function IntelTab({ entry }: { entry: VulnEntry }) {
   );
 }
 
+interface WikiPageInfo {
+  path: string;
+  title: string;
+  category: string;
+  tags: string[];
+  status: string;
+  word_count: number;
+  updated_at: string;
+}
+
+interface WikiBacklinkInfo {
+  source_path: string;
+  context: string;
+}
+
 interface WikiTreeNode {
   path: string;
   name: string;
@@ -1411,6 +1442,10 @@ function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: string;
   const [editingPath, setEditingPath] = useState<string | null>(null);
   const [editContent, setEditContent] = useState("");
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
+
+  const [linkedPageInfos, setLinkedPageInfos] = useState<WikiPageInfo[]>([]);
+  const [suggestedPages, setSuggestedPages] = useState<WikiPageInfo[]>([]);
+  const [backlinks, setBacklinks] = useState<WikiBacklinkInfo[]>([]);
   const [adding, setAdding] = useState(false);
   const [newPath, setNewPath] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -1446,6 +1481,80 @@ function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: string;
       .then((content) => setArticleContents((prev) => ({ ...prev, [selectedPath]: content })))
       .catch(() => setArticleContents((prev) => ({ ...prev, [selectedPath]: "" })));
   }, [selectedPath]);
+
+  // Ensure DB index is up-to-date before fetching metadata
+  const reindexDone = useRef(false);
+  const [indexReady, setIndexReady] = useState(false);
+  useEffect(() => {
+    if (reindexDone.current) return;
+    reindexDone.current = true;
+    invoke("wiki_reindex")
+      .catch(() => {})
+      .finally(() => setIndexReady(true));
+  }, []);
+
+  // Fetch metadata for linked pages (category, status, etc.)
+  useEffect(() => {
+    if (!indexReady) return;
+    if (link.wikiPaths.length === 0) { setLinkedPageInfos([]); return; }
+    invoke<WikiPageInfo[]>("wiki_pages_for_paths", { paths: link.wikiPaths })
+      .then(setLinkedPageInfos)
+      .catch(() => setLinkedPageInfos([]));
+  }, [link.wikiPaths, indexReady]);
+
+  // Fetch suggested pages for this CVE
+  useEffect(() => {
+    invoke<WikiPageInfo[]>("wiki_suggest_for_cve", { cveId, limit: 8 })
+      .then(setSuggestedPages)
+      .catch(() => setSuggestedPages([]));
+  }, [cveId, link.wikiPaths]);
+
+  // Fetch backlinks when selected page changes
+  useEffect(() => {
+    if (!selectedPath) { setBacklinks([]); return; }
+    invoke<WikiBacklinkInfo[]>("wiki_backlinks", { path: selectedPath })
+      .then(setBacklinks)
+      .catch(() => setBacklinks([]));
+  }, [selectedPath]);
+
+  // Group linked pages by category
+  const linkedByCategory = useMemo(() => {
+    const groups: Record<string, WikiPageInfo[]> = {};
+    for (const info of linkedPageInfos) {
+      const cat = info.category || "uncategorized";
+      if (!groups[cat]) groups[cat] = [];
+      groups[cat].push(info);
+    }
+    // Include paths that aren't in DB yet as uncategorized
+    const infoPathSet = new Set(linkedPageInfos.map((p) => p.path));
+    for (const wp of link.wikiPaths) {
+      if (!infoPathSet.has(wp)) {
+        if (!groups["uncategorized"]) groups["uncategorized"] = [];
+        groups["uncategorized"].push({
+          path: wp,
+          title: wp.split("/").pop()?.replace(/\.md$/, "") || wp,
+          category: "uncategorized",
+          tags: [],
+          status: "draft",
+          word_count: 0,
+          updated_at: "",
+        });
+      }
+    }
+    return groups;
+  }, [linkedPageInfos, link.wikiPaths]);
+
+  const categoryOrder = ["products", "techniques", "pocs", "experience", "analysis", "uncategorized"];
+  const categoryIcons: Record<string, string> = {
+    products: "📦", techniques: "⚔️", pocs: "🔧", experience: "📝", analysis: "🔬", uncategorized: "📄",
+  };
+  const statusColors: Record<string, string> = {
+    draft: "text-yellow-400 bg-yellow-500/10",
+    partial: "text-orange-400 bg-orange-500/10",
+    complete: "text-green-400 bg-green-500/10",
+    "needs-poc": "text-blue-400 bg-blue-500/10",
+    verified: "text-emerald-400 bg-emerald-500/10",
+  };
 
   const toggleDir = useCallback((dir: string) => {
     setExpandedDirs((prev) => {
@@ -1620,22 +1729,6 @@ function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: string;
     }
   }, [selectedPath, navigateToWikiPage]);
 
-  const statusColors: Record<string, string> = {
-    draft: "text-yellow-400 bg-yellow-500/10",
-    partial: "text-orange-400 bg-orange-500/10",
-    complete: "text-green-400 bg-green-500/10",
-    "needs-poc": "text-blue-400 bg-blue-500/10",
-    verified: "text-emerald-400 bg-emerald-500/10",
-  };
-
-  const categoryIcons: Record<string, string> = {
-    products: "📦",
-    techniques: "⚔️",
-    pocs: "🔧",
-    experience: "📝",
-    analysis: "🔬",
-  };
-
   const proseClasses = "text-[11px] leading-relaxed text-foreground/80 prose prose-invert prose-sm max-w-none prose-headings:text-foreground/90 prose-headings:text-[12px] prose-headings:font-semibold prose-p:text-[11px] prose-p:leading-relaxed prose-code:text-[10px] prose-code:bg-muted/20 prose-code:px-1 prose-code:rounded prose-pre:bg-muted/10 prose-pre:border prose-pre:border-border/10 prose-pre:text-[10px] prose-li:text-[11px] prose-a:text-accent";
 
   // Filter tree nodes by search
@@ -1653,21 +1746,19 @@ function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: string;
     }, []);
   }, []);
 
-  const displayTree = searchQuery && !searchResults.length ? filterTree(fullTree, searchQuery) : fullTree;
+  const [browseAll, setBrowseAll] = useState(false);
+
+  const displayTree = searchQuery && !searchResults.length ? filterTree(fullTree, searchQuery) : browseAll ? fullTree : [];
 
   const renderTreeNode = (node: WikiTreeNode, depth = 0) => {
     if (node.is_dir) {
       const isExpanded = expandedDirs.has(node.path) || !!searchQuery;
       const icon = categoryIcons[node.name] || "";
-      const hasLinkedChildren = link.wikiPaths.some((p) => p.startsWith(node.path + "/"));
       return (
         <div key={node.path}>
           <button
             onClick={() => toggleDir(node.path)}
-            className={cn(
-              "flex items-center gap-1 w-full px-1.5 py-1 rounded text-left hover:bg-muted/10 transition-colors",
-              hasLinkedChildren && "text-foreground/80"
-            )}
+            className="flex items-center gap-1 w-full px-1.5 py-1 rounded text-left hover:bg-muted/10 transition-colors text-muted-foreground/50"
             style={{ paddingLeft: `${depth * 12 + 6}px` }}
           >
             {isExpanded ? (
@@ -1680,12 +1771,7 @@ function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: string;
             ) : (
               <BookOpen className="w-3 h-3 text-muted-foreground/30 flex-shrink-0" />
             )}
-            <span className={cn("text-[10px] truncate", hasLinkedChildren ? "text-foreground/70 font-medium" : "text-muted-foreground/50")}>
-              {node.name}
-            </span>
-            {hasLinkedChildren && (
-              <span className="text-[7px] text-accent/50 ml-auto flex-shrink-0">linked</span>
-            )}
+            <span className="text-[10px] truncate">{node.name}</span>
           </button>
           {isExpanded && node.children?.map((child) => renderTreeNode(child, depth + 1))}
         </div>
@@ -1702,15 +1788,12 @@ function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: string;
             "flex items-center gap-1.5 flex-1 px-1.5 py-1 rounded text-left transition-colors",
             isSelected
               ? "bg-accent/15 text-accent"
-              : isLinked
-                ? "text-foreground/70 hover:bg-muted/10"
-                : "text-muted-foreground/40 hover:bg-muted/10 hover:text-muted-foreground/60"
+              : "text-muted-foreground/40 hover:bg-muted/10 hover:text-muted-foreground/60"
           )}
           style={{ paddingLeft: `${depth * 12 + 6}px` }}
         >
-          <FileText className={cn("w-3 h-3 flex-shrink-0", isSelected ? "text-accent" : isLinked ? "text-blue-400/60" : "text-muted-foreground/25")} />
+          <FileText className={cn("w-3 h-3 flex-shrink-0", isSelected ? "text-accent" : "text-muted-foreground/25")} />
           <span className="text-[10px] truncate flex-1">{node.name.replace(/\.md$/, "")}</span>
-          {isLinked && <span className="w-1.5 h-1.5 rounded-full bg-accent/60 flex-shrink-0" />}
         </button>
         {!isLinked && (
           <button
@@ -1735,11 +1818,13 @@ function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: string;
 
   return (
     <div className="flex h-full" style={{ minHeight: "300px" }}>
-      {/* Left: directory tree */}
-      <div className="w-[200px] flex-shrink-0 border-r border-border/10 flex flex-col">
-        {/* Tree header with actions */}
+      {/* Left: categorized page list */}
+      <div className="w-[220px] flex-shrink-0 border-r border-border/10 flex flex-col">
+        {/* Header with actions */}
         <div className="flex items-center justify-between px-2 py-1.5 border-b border-border/5">
-          <span className="text-[8px] text-muted-foreground/30 uppercase tracking-wider">Wiki</span>
+          <span className="text-[8px] text-muted-foreground/30 uppercase tracking-wider">
+            Wiki ({link.wikiPaths.length})
+          </span>
           <div className="flex items-center gap-0.5">
             <button
               onClick={() => { setCreating(!creating); setAdding(false); }}
@@ -1758,7 +1843,7 @@ function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: string;
           </div>
         </div>
 
-        {/* Search bar */}
+        {/* Search */}
         <div className="px-2 py-1.5 border-b border-border/5">
           <div className="relative">
             <Search className="absolute left-1.5 top-1/2 -translate-y-1/2 w-2.5 h-2.5 text-muted-foreground/25" />
@@ -1772,7 +1857,7 @@ function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: string;
           </div>
         </div>
 
-        {/* Create new page form */}
+        {/* Create form */}
         {creating && (
           <div className="px-2 py-1.5 border-b border-border/5 space-y-1">
             <input
@@ -1822,7 +1907,7 @@ function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: string;
         {searchQuery && searchResults.length > 0 && (
           <div className="border-b border-border/5 max-h-32 overflow-y-auto">
             <div className="px-2 py-0.5">
-              <span className="text-[7px] text-muted-foreground/25 uppercase">DB Results</span>
+              <span className="text-[7px] text-muted-foreground/25 uppercase">Search Results</span>
             </div>
             {searchResults.map((r) => (
               <button
@@ -1837,29 +1922,110 @@ function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: string;
           </div>
         )}
 
-        {/* Tree content */}
+        {/* Main page list */}
         <div className="flex-1 overflow-y-auto py-1">
           {loadingTree ? (
             <div className="flex items-center justify-center py-6">
               <Loader2 className="w-4 h-4 animate-spin text-muted-foreground/20" />
             </div>
-          ) : displayTree.length === 0 ? (
-            <div className="text-[9px] text-muted-foreground/20 text-center py-6">
-              {searchQuery ? "No matches" : "No wiki pages yet"}
+          ) : link.wikiPaths.length === 0 && !browseAll && !searchQuery ? (
+            <div className="text-[9px] text-muted-foreground/20 text-center py-6 px-3">
+              <BookOpen className="w-6 h-6 mx-auto mb-2 text-muted-foreground/10" />
+              No linked wiki pages
+              <div className="mt-1 text-[8px]">Run AI Research to auto-generate</div>
             </div>
           ) : (
-            displayTree.map((node) => renderTreeNode(node))
+            <>
+              {/* Linked pages grouped by category */}
+              {categoryOrder.filter((cat) => linkedByCategory[cat]?.length).map((cat) => (
+                <div key={cat}>
+                  <div className="flex items-center gap-1 px-2 py-1 mt-1">
+                    <span className="text-[10px]">{categoryIcons[cat] || "📄"}</span>
+                    <span className="text-[8px] text-muted-foreground/40 uppercase tracking-wider flex-1">{cat}</span>
+                    <span className="text-[7px] text-muted-foreground/20">{linkedByCategory[cat].length}</span>
+                  </div>
+                  {linkedByCategory[cat].map((info) => {
+                    const isSelected = selectedPath === info.path;
+                    return (
+                      <div key={info.path} className="group/file flex items-center">
+                        <button
+                          onClick={() => setSelectedPath(info.path)}
+                          className={cn(
+                            "flex items-center gap-1.5 flex-1 px-2 py-1 rounded text-left transition-colors min-w-0",
+                            isSelected ? "bg-accent/15 text-accent" : "text-foreground/70 hover:bg-muted/10"
+                          )}
+                        >
+                          <FileText className={cn("w-3 h-3 flex-shrink-0", isSelected ? "text-accent" : "text-blue-400/60")} />
+                          <span className="text-[10px] truncate flex-1">{info.title || info.path.split("/").pop()?.replace(/\.md$/, "")}</span>
+                          {info.status && (
+                            <span className={cn("text-[6px] px-1 py-0.5 rounded flex-shrink-0", statusColors[info.status] || "text-muted-foreground/30 bg-muted/10")}>
+                              {info.status}
+                            </span>
+                          )}
+                        </button>
+                        <button
+                          onClick={() => handleUnlinkWiki(info.path)}
+                          className="p-0.5 text-destructive/0 group-hover/file:text-destructive/40 hover:!text-destructive transition-colors flex-shrink-0"
+                          title="Unlink"
+                        >
+                          <X className="w-2.5 h-2.5" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+
+              {/* Suggested pages */}
+              {suggestedPages.length > 0 && (
+                <>
+                  <div className="px-2 py-1 mt-2 border-t border-border/5">
+                    <span className="text-[7px] text-muted-foreground/25 uppercase tracking-wider">Suggested</span>
+                  </div>
+                  {suggestedPages.map((info) => (
+                    <div key={info.path} className="group/sugg flex items-center">
+                      <button
+                        onClick={() => setSelectedPath(info.path)}
+                        className="flex items-center gap-1.5 flex-1 px-2 py-1 rounded text-left text-muted-foreground/35 hover:text-foreground/60 hover:bg-muted/10 transition-colors min-w-0"
+                      >
+                        <FileText className="w-3 h-3 flex-shrink-0 text-muted-foreground/20" />
+                        <span className="text-[9px] truncate flex-1">{info.title}</span>
+                        <span className="text-[6px] text-muted-foreground/15">{info.category}</span>
+                      </button>
+                      <button
+                        onClick={() => handleLinkWiki(info.path)}
+                        className="p-0.5 text-accent/0 group-hover/sugg:text-accent/50 hover:!text-accent transition-colors flex-shrink-0"
+                        title="Link to this CVE"
+                      >
+                        <Link2 className="w-2.5 h-2.5" />
+                      </button>
+                    </div>
+                  ))}
+                </>
+              )}
+
+              {/* Browse all tree (fallback) */}
+              {browseAll && displayTree.length > 0 && (
+                <>
+                  <div className="px-2 py-0.5 mt-2 border-t border-border/5">
+                    <span className="text-[7px] text-muted-foreground/25 uppercase tracking-wider">All Pages</span>
+                  </div>
+                  {displayTree.map((node) => renderTreeNode(node))}
+                </>
+              )}
+            </>
           )}
         </div>
 
-        {/* Linked count */}
-        {link.wikiPaths.length > 0 && (
-          <div className="px-2 py-1 border-t border-border/5">
-            <span className="text-[8px] text-accent/40">
-              {link.wikiPaths.length} linked
-            </span>
-          </div>
-        )}
+        {/* Bottom toggle */}
+        <div className="px-2 py-1.5 border-t border-border/5 flex items-center gap-1">
+          <button
+            onClick={() => setBrowseAll(!browseAll)}
+            className="text-[8px] text-muted-foreground/30 hover:text-muted-foreground/60 transition-colors"
+          >
+            {browseAll ? "Hide tree" : "Browse all..."}
+          </button>
+        </div>
       </div>
 
       {/* Right: article content */}
@@ -1949,6 +2115,28 @@ function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: string;
               ) : (
                 <div className="text-[10px] text-muted-foreground/20 py-8 text-center">Empty article</div>
               )}
+
+              {/* Backlinks section */}
+              {backlinks.length > 0 && !isEditing && (
+                <div className="mt-4 pt-3 border-t border-border/10">
+                  <div className="text-[8px] text-muted-foreground/30 uppercase tracking-wider mb-1.5">
+                    Referenced by ({backlinks.length})
+                  </div>
+                  <div className="space-y-0.5">
+                    {backlinks.map((bl) => (
+                      <button
+                        key={bl.source_path}
+                        onClick={() => navigateToWikiPage(bl.source_path)}
+                        className="flex items-center gap-1.5 w-full px-1.5 py-1 rounded text-left hover:bg-muted/10 transition-colors"
+                      >
+                        <Link2 className="w-2.5 h-2.5 text-accent/40 flex-shrink-0" />
+                        <span className="text-[9px] text-accent/60 truncate">{bl.source_path.replace(/\.md$/, "")}</span>
+                        {bl.context && <span className="text-[8px] text-muted-foreground/20 truncate ml-auto">{bl.context}</span>}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </>
         ) : (
@@ -2036,19 +2224,20 @@ function PocTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: string; 
     if (!template.content) return;
     setNucleiImporting(template.name);
     try {
-      const dbPoc = await invoke<{ id: string; name: string; type: string; language: string; content: string; created: number }>(
-        "vuln_link_add_poc",
-        { cveId, name: `[Nuclei] ${template.name}`, pocType: "nuclei", language: "yaml", content: template.content }
+      const dbPoc = await invoke<PocTemplate>(
+        "vuln_link_add_poc_full",
+        {
+          cveId, name: `[Nuclei] ${template.name}`, pocType: "nuclei", language: "yaml",
+          content: template.content, source: "nuclei_template",
+          sourceUrl: template.html_url, severity: template.severity ?? "unknown",
+          description: "", tags: [],
+        }
       );
       onUpdateLink((l) => ({
         ...l,
         pocTemplates: [...l.pocTemplates, {
-          id: dbPoc.id,
-          name: dbPoc.name,
+          ...dbPoc,
           type: dbPoc.type as PocTemplate["type"],
-          language: dbPoc.language,
-          content: dbPoc.content,
-          created: dbPoc.created,
         }],
       }));
     } catch (e) {
@@ -2234,7 +2423,7 @@ int main(int argc, char *argv[]) {
     setFormType("nuclei");
     setFormLang(language);
     setFormContent(content);
-    setEditing({ id: "", name: "", type: "nuclei", language, content: "", created: 0 });
+    setEditing({ id: "", name: "", type: "nuclei", language, content: "", source: "manual", source_url: "", severity: "unknown", verified: false, description: "", tags: [], created: 0 });
   }, [cveId, generateTemplate]);
 
   const handleTypeChange = useCallback((newType: PocTemplate["type"]) => {
@@ -2266,19 +2455,15 @@ int main(int argc, char *argv[]) {
     if (!formName.trim() || !formContent.trim()) return;
     const isNew = !editing;
     if (isNew) {
-      invoke<{ id: string; name: string; type: string; language: string; content: string; created: number }>(
+      invoke<PocTemplate>(
         "vuln_link_add_poc",
         { cveId, name: formName.trim(), pocType: formType, language: formLang, content: formContent }
       ).then((dbPoc) => {
         onUpdateLink((l) => ({
           ...l,
           pocTemplates: [...l.pocTemplates, {
-            id: dbPoc.id,
-            name: dbPoc.name,
+            ...dbPoc,
             type: dbPoc.type as PocTemplate["type"],
-            language: dbPoc.language,
-            content: dbPoc.content,
-            created: dbPoc.created,
           }],
         }));
       }).catch(console.error);
@@ -2611,10 +2796,12 @@ function VulnKbTopBar({ activeTab, onTabChange }: { activeTab: TopTab; onTabChan
   );
 }
 
-interface BatchNucleiResult {
-  cve_id: string;
-  templates: NucleiTemplateResult[];
-  error: string | null;
+interface NucleiDiscoverResult {
+  total_files: number;
+  total_cves: number;
+  imported: number;
+  skipped: number;
+  errors: number;
 }
 
 function PocLibraryView({ vulnLinks, onLinksChange, onJumpToCve }: { vulnLinks: Record<string, VulnLink>; onLinksChange: (links: Record<string, VulnLink>) => void; onJumpToCve?: (cveId: string) => void }) {
@@ -2628,50 +2815,51 @@ function PocLibraryView({ vulnLinks, onLinksChange, onJumpToCve }: { vulnLinks: 
   const [batchProgress, setBatchProgress] = useState("");
   const [batchFound, setBatchFound] = useState(0);
 
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    import("@tauri-apps/api/event").then(({ listen }) => {
+      listen<{ phase: string; current: number; total: number; cve_id: string | null }>(
+        "nuclei-discover-progress",
+        (e) => {
+          const { phase, current, total, cve_id } = e.payload;
+          if (phase === "listing") {
+            setBatchProgress("Fetching nuclei-templates file tree...");
+          } else if (phase === "downloading") {
+            const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+            setBatchProgress(`Downloading templates: ${current}/${total} (${pct}%)${cve_id ? ` — ${cve_id}` : ""}`);
+          } else if (phase === "done") {
+            setBatchProgress(`Finished processing ${total} template files.`);
+          }
+        }
+      ).then((fn) => { unlisten = fn; });
+    });
+    return () => { unlisten?.(); };
+  }, []);
+
   const batchSearchNuclei = useCallback(async () => {
-    const cveIds = Object.keys(vulnLinks).filter((id) => id.startsWith("CVE-"));
-    if (cveIds.length === 0) {
-      setBatchProgress("No CVEs found in links. Add CVE entries first.");
-      return;
-    }
     setBatchSearching(true);
     setBatchFound(0);
-    setBatchProgress(`Searching ${cveIds.length} CVEs...`);
+    setBatchProgress("Starting full Nuclei template discovery...");
     try {
-      const results = await invoke<BatchNucleiResult[]>("intel_batch_search_nuclei_templates", { cveIds });
-      let imported = 0;
-      const next = { ...vulnLinks };
-      for (const r of results) {
-        for (const tmpl of r.templates) {
-          if (!tmpl.content) continue;
-          const link = next[r.cve_id];
-          if (!link) continue;
-          const name = `[Nuclei] ${tmpl.name}`;
-          if (link.pocTemplates.some((p) => p.name === name)) continue;
-          try {
-            const dbPoc = await invoke<{ id: string; name: string; type: string; language: string; content: string; created: number }>(
-              "vuln_link_add_poc",
-              { cveId: r.cve_id, name, pocType: "nuclei", language: "yaml", content: tmpl.content }
-            );
-            next[r.cve_id] = {
-              ...next[r.cve_id],
-              pocTemplates: [...next[r.cve_id].pocTemplates, {
-                id: dbPoc.id, name: dbPoc.name, type: dbPoc.type as PocTemplate["type"],
-                language: dbPoc.language, content: dbPoc.content, created: dbPoc.created,
-              }],
-            };
-            imported++;
-          } catch { /* skip failed imports */ }
+      const result = await invoke<NucleiDiscoverResult>("intel_discover_all_nuclei");
+      setBatchFound(result.imported);
+      setBatchProgress(
+        `Done: ${result.imported} imported, ${result.skipped} skipped, ${result.errors} errors — ${result.total_cves} unique CVEs from ${result.total_files} files`
+      );
+      // Refresh vuln links from DB to pick up all newly created CVE entries
+      try {
+        const allLinks = await invoke<Record<string, DbVulnLinkFull>>("vuln_link_get_all");
+        const converted: Record<string, VulnLink> = {};
+        for (const [cveId, db] of Object.entries(allLinks)) {
+          converted[cveId] = dbToVulnLink(db);
         }
-      }
-      onLinksChange(next);
-      setBatchFound(imported);
-      setBatchProgress(`Done: ${imported} templates imported from ${results.filter((r) => r.templates.length > 0).length}/${cveIds.length} CVEs`);
+        onLinksChange(converted);
+      } catch { /* refresh failed, user can reload */ }
     } catch (e) {
       setBatchProgress(`Error: ${String(e)}`);
     }
     setBatchSearching(false);
-  }, [vulnLinks, onLinksChange]);
+  }, [onLinksChange]);
 
   const allPocs = useMemo(() => {
     const result: { cveId: string; poc: PocTemplate }[] = [];
@@ -2763,10 +2951,10 @@ function PocLibraryView({ vulnLinks, onLinksChange, onJumpToCve }: { vulnLinks: 
           onClick={batchSearchNuclei}
           disabled={batchSearching}
           className="flex items-center gap-1.5 h-7 px-2.5 text-[10px] font-medium rounded-lg bg-orange-500/10 text-orange-400/70 hover:bg-orange-500/20 hover:text-orange-400 transition-colors disabled:opacity-30"
-          title="Batch search Nuclei templates for all CVEs"
+          title="Discover ALL CVE-related Nuclei templates and auto-import to database"
         >
           {batchSearching ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
-          Nuclei Batch
+          Discover All Nuclei
         </button>
         <span className="text-[10px] text-muted-foreground/30">
           {filtered.length} / {allPocs.length} templates

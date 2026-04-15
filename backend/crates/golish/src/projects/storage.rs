@@ -143,6 +143,7 @@ async fn load_project_from_path(path: &PathBuf) -> Result<ProjectConfig> {
 }
 
 /// Save a project configuration to disk (directory-based).
+/// Also initializes the `.golish/` directory structure and `project.json`.
 pub async fn save_project(project: &ProjectConfig) -> Result<()> {
     // Create the project's actual directory (rootPath) if it doesn't exist
     if !project.root_path.exists() {
@@ -151,6 +152,10 @@ pub async fn save_project(project: &ProjectConfig) -> Result<()> {
             .context("Failed to create project root directory")?;
         tracing::info!("Created project directory at {:?}", project.root_path);
     }
+
+    // Initialize the .golish/ directory structure (captures, tool-output, etc.)
+    super::file_storage::init_project_dirs(&project.root_path).await?;
+    super::file_storage::init_project_json(&project.root_path, &project.name).await?;
 
     // Save config to the central registry (~/.golish/projects/<slug>/)
     let dir = project_dir(&project.name);

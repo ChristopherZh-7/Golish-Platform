@@ -84,6 +84,15 @@ pub async fn count_by_target(pool: &PgPool, target_id: Uuid) -> Result<(i64, i64
     Ok((total, tested))
 }
 
+pub async fn update_capture_path(pool: &PgPool, id: Uuid, capture_path: &str) -> Result<()> {
+    sqlx::query("UPDATE api_endpoints SET capture_path = $2, updated_at = NOW() WHERE id = $1")
+        .bind(id)
+        .bind(capture_path)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn delete(pool: &PgPool, id: Uuid) -> Result<()> {
     sqlx::query("DELETE FROM api_endpoints WHERE id = $1")
         .bind(id)
