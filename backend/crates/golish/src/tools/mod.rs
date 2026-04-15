@@ -78,3 +78,6 @@ pub mod custom_rules;
 
 // Security analysis (operation logs, assets, endpoints, fingerprints, scans)
 pub mod security_analysis;
+
+// Scan runner (WhatWeb, Nuclei targeted, feroxbuster)
+pub mod scan_runner;
