@@ -24,6 +24,7 @@ import {
   type AppearanceSlice,
   type ChatConversation,
   type ChatMessage,
+  type ChatToolCall,
   type ContextMetrics,
   type ContextSlice,
   type ConversationSlice,
@@ -116,7 +117,7 @@ export type {
 // Re-export pane types from the single source of truth
 export type { PaneId, PaneNode, SplitDirection, TabLayout };
 // Re-export conversation types
-export type { ChatConversation, ChatMessage };
+export type { ChatConversation, ChatMessage, ChatToolCall };
 // Re-export slice types
 export type { ContextMetrics, Notification, NotificationType };
 
@@ -678,8 +679,9 @@ export const useStore = create<GolishState>()(
 
           state.sessions[session.id] = {
             ...session,
+            logicalTerminalId: session.logicalTerminalId || crypto.randomUUID(),
             tabType: session.tabType ?? "terminal",
-            inputMode: session.inputMode ?? "terminal", // Default to terminal mode
+            inputMode: session.inputMode ?? "terminal",
           };
 
           // Only set as active and create tab layout for new tabs, not pane sessions

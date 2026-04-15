@@ -468,6 +468,75 @@ pub struct VulnEntry {
 }
 
 // ============================================================================
+// Wiki Knowledge Base Models
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct WikiPage {
+    pub id: Uuid,
+    pub path: String,
+    pub title: String,
+    pub category: String,
+    pub tags: Vec<String>,
+    pub status: String,
+    pub content: String,
+    pub word_count: i32,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct VulnKbLink {
+    pub id: Uuid,
+    pub cve_id: String,
+    pub wiki_path: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct VulnKbPoc {
+    pub id: Uuid,
+    pub cve_id: String,
+    pub name: String,
+    pub poc_type: String,
+    pub language: String,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug)]
+pub struct NewWikiPage {
+    pub path: String,
+    pub title: String,
+    pub category: String,
+    pub tags: Vec<String>,
+    pub status: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct KbResearchLog {
+    pub id: Uuid,
+    pub cve_id: String,
+    pub session_id: String,
+    pub turns: serde_json::Value,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct VulnScanHistory {
+    pub id: Uuid,
+    pub cve_id: String,
+    pub target: String,
+    pub result: String,
+    pub details: Option<String>,
+    pub scanned_at: DateTime<Utc>,
+}
+
+// ============================================================================
 // Insert structs (for creating new records without auto-generated fields)
 // ============================================================================
 

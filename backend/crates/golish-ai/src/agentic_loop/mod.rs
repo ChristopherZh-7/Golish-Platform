@@ -653,6 +653,19 @@ where
         }
     }
 
+    // Check if this is a knowledge base tool call
+    if matches!(
+        tool_name,
+        "search_knowledge_base" | "write_knowledge" | "read_knowledge" | "ingest_cve"
+    ) {
+        if let Some((value, success)) =
+            crate::tool_executors::execute_knowledge_base_tool(tool_name, tool_args, ctx.db_tracker)
+                .await
+        {
+            return Ok(ToolExecutionResult { value, success });
+        }
+    }
+
     // Check if this is an ask_human barrier tool call
     if tool_name == "ask_human" {
         let (value, success) = execute_ask_human_tool(

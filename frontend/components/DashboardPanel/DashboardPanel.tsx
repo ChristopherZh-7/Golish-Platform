@@ -19,8 +19,7 @@ import { useStore } from "@/store";
 import { getProjectPath } from "@/lib/projects";
 
 interface TargetStore {
-  targets: { id: string; scope: string; group: string }[];
-  groups: string[];
+  targets: { id: string; scope: string }[];
 }
 
 interface MethodPhase {
@@ -60,7 +59,6 @@ interface DashboardStats {
   targetsTotal: number;
   targetsInScope: number;
   targetsOutScope: number;
-  targetGroups: number;
   methodProjects: ProjectMethodology[];
   topoMaps: string[];
   vaultEntries: number;
@@ -288,7 +286,6 @@ export function DashboardPanel() {
     targetsTotal: 0,
     targetsInScope: 0,
     targetsOutScope: 0,
-    targetGroups: 0,
     methodProjects: [],
     topoMaps: [],
     vaultEntries: 0,
@@ -319,8 +316,8 @@ export function DashboardPanel() {
 
     const targetRaw = results[0].status === "fulfilled" ? results[0].value : null;
     const targetData = targetRaw && targetRaw.targets
-      ? { targets: targetRaw.targets, groups: targetRaw.groups ?? [] }
-      : { targets: [], groups: [] };
+      ? { targets: targetRaw.targets }
+      : { targets: [] };
     const methodRaw = results[1].status === "fulfilled" ? results[1].value : [];
     const methodData = Array.isArray(methodRaw) ? methodRaw : [];
     const topoRaw = results[2].status === "fulfilled" ? results[2].value : [];
@@ -356,7 +353,6 @@ export function DashboardPanel() {
       targetsTotal: targetData.targets.length,
       targetsInScope: targetData.targets.filter((t) => t.scope === "in").length,
       targetsOutScope: targetData.targets.filter((t) => t.scope === "out").length,
-      targetGroups: targetData.groups.length,
       methodProjects: methodData,
       topoMaps: topoData,
       vaultEntries: vaultData.length,
@@ -423,19 +419,13 @@ export function DashboardPanel() {
 
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
         {/* Stats grid */}
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <StatCard
             icon={Target}
             label={t("dashboard.targets", "Targets")}
             value={stats.targetsTotal}
             sub={`${stats.targetsInScope} in / ${stats.targetsOutScope} out`}
             color="bg-blue-500/10 text-blue-400/80"
-          />
-          <StatCard
-            icon={Crosshair}
-            label={t("dashboard.groups", "Groups")}
-            value={stats.targetGroups}
-            color="bg-purple-500/10 text-purple-400/80"
           />
           <StatCard
             icon={Network}

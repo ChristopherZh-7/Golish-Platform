@@ -121,6 +121,34 @@ export async function convLoadTerminalStates(
   });
 }
 
+// ─── Batch Save ─────────────────────────────────────────────────────────────
+
+export interface BatchTimelineEntry {
+  sessionId: string;
+  conversationId: string | null;
+  blocks: TimelineBlockRow[];
+}
+
+export interface ConvBatchItem {
+  conversation: ConversationRow;
+  messages: ChatMessageRow[];
+  terminalStates: TerminalStateRow[];
+  timelines: BatchTimelineEntry[];
+}
+
+export interface ConvBatchSavePayload {
+  projectPath: string;
+  survivingIds: string[];
+  items: ConvBatchItem[];
+  preferences: WorkspacePreferences;
+}
+
+export async function convSaveBatch(
+  payload: ConvBatchSavePayload
+): Promise<void> {
+  await invoke("conv_save_batch", { payload });
+}
+
 // ─── Workspace Preferences ──────────────────────────────────────────────────
 
 export async function convSavePreferences(

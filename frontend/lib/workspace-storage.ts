@@ -49,6 +49,8 @@ export type PersistedTimelineBlock =
   | PersistedSubAgentBlock;
 
 export interface PersistedTerminalData {
+  /** Stable ID that survives PTY restarts. Used as DB key for terminal_state / timeline_blocks. */
+  logicalTerminalId?: string;
   workingDirectory: string;
   scrollback: string;
   customName?: string;

@@ -359,6 +359,457 @@ pub async fn execute_memory_tool(
     }
 }
 
+/// Execute a vulnerability knowledge base tool.
+///
+/// Handles: search_knowledge_base, write_knowledge, read_knowledge, ingest_cve.
+/// Uses the wiki filesystem (markdown) as primary storage and PostgreSQL for full-text search.
+pub async fn execute_knowledge_base_tool(
+    tool_name: &str,
+    args: &serde_json::Value,
+    db_tracker: Option<&crate::db_tracking::DbTracker>,
+) -> Option<ToolResult> {
+    let is_kb_tool = matches!(
+        tool_name,
+        "search_knowledge_base" | "write_knowledge" | "read_knowledge" | "ingest_cve" | "save_poc"
+    );
+    if !is_kb_tool {
+        return None;
+    }
+
+    match tool_name {
+        "search_knowledge_base" => {
+            let query = match extract_string_param(args, &["query", "q", "search"]) {
+                Some(q) if !q.is_empty() => q,
+                _ => return Some(error_result(
+                    "search_knowledge_base requires a non-empty 'query' parameter"
+                )),
+            };
+            let category = args.get("category").and_then(|v| v.as_str()).map(String::from);
+            let tag = args.get("tag").and_then(|v| v.as_str()).map(String::from);
+            let limit = args
+                .get("limit")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(10)
+                .min(50);
+
+            let tracker = match db_tracker {
+                Some(t) => t,
+                None => {
+                    return Some(kb_search_filesystem_fallback(&query, limit as usize).await);
+                }
+            };
+
+            let pages = if let Some(cat) = category {
+                golish_db::repo::wiki_kb::search_by_category(tracker.pool(), &cat, limit).await
+            } else if let Some(t) = tag {
+                golish_db::repo::wiki_kb::search_by_tag(tracker.pool(), &t, limit).await
+            } else {
+                golish_db::repo::wiki_kb::search_fts(tracker.pool(), &query, limit).await
+            };
+
+            match pages {
+                Ok(results) => {
+                    let items: Vec<serde_json::Value> = results
+                        .iter()
+                        .map(|p| {
+                            json!({
+                                "path": p.path,
+                                "title": p.title,
+                                "category": p.category,
+                                "tags": p.tags,
+                                "status": p.status,
+                                "snippet": p.content.chars().take(500).collect::<String>(),
+                                "word_count": p.word_count,
+                            })
+                        })
+                        .collect();
+                    let count = items.len();
+                    Some((json!({ "results": items, "count": count, "query": query }), true))
+                }
+                Err(e) => Some(error_result(format!("KB search failed: {}", e))),
+            }
+        }
+
+        "write_knowledge" => {
+            let path = match extract_string_param(args, &["path"]) {
+                Some(p) if !p.is_empty() => p,
+                _ => return Some(error_result("write_knowledge requires a 'path' parameter")),
+            };
+            let content = match args.get("content").and_then(|v| v.as_str()) {
+                Some(c) => c.to_string(),
+                None => return Some(error_result("write_knowledge requires a 'content' parameter")),
+            };
+
+            let base = wiki_base_dir();
+            let full = base.join(&path);
+            if let Some(parent) = full.parent() {
+                if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                    return Some(error_result(format!("mkdir failed: {}", e)));
+                }
+            }
+            if let Err(e) = tokio::fs::write(&full, &content).await {
+                return Some(error_result(format!("write failed: {}", e)));
+            }
+
+            let cve_id_opt = extract_string_param(args, &["cve_id"]);
+
+            if let Some(tracker) = db_tracker {
+                let (title, fm_category, tags, status) = extract_wiki_frontmatter(&content);
+                let category = if fm_category == "uncategorized" {
+                    infer_wiki_category(&path)
+                } else {
+                    fm_category
+                };
+                let page = golish_db::models::NewWikiPage {
+                    path: path.clone(),
+                    title: title.clone(),
+                    category: category.clone(),
+                    tags: tags.clone(),
+                    status,
+                    content: content.clone(),
+                };
+                if let Err(e) = golish_db::repo::wiki_kb::upsert_page(tracker.pool(), &page).await
+                {
+                    tracing::warn!("[kb] DB sync failed for {}: {}", path, e);
+                }
+
+                if let Some(ref cve) = cve_id_opt {
+                    if let Err(e) = golish_db::repo::wiki_kb::link_cve_to_wiki(tracker.pool(), cve, &path).await {
+                        tracing::warn!("[kb] CVE link failed for {} -> {}: {}", cve, path, e);
+                    }
+                }
+            }
+
+            let mut msg = format!("Knowledge page written to {}", path);
+            if let Some(ref cve) = cve_id_opt {
+                msg.push_str(&format!(" (linked to {})", cve));
+            }
+
+            Some((
+                json!({
+                    "success": true,
+                    "path": path,
+                    "linked_cve": cve_id_opt,
+                    "message": msg,
+                }),
+                true,
+            ))
+        }
+
+        "read_knowledge" => {
+            let path = match extract_string_param(args, &["path"]) {
+                Some(p) if !p.is_empty() => p,
+                _ => return Some(error_result("read_knowledge requires a 'path' parameter")),
+            };
+
+            let full = wiki_base_dir().join(&path);
+            match tokio::fs::read_to_string(&full).await {
+                Ok(content) => Some((
+                    json!({
+                        "path": path,
+                        "content": content,
+                    }),
+                    true,
+                )),
+                Err(e) => Some(error_result(format!("File not found or unreadable: {} ({})", path, e))),
+            }
+        }
+
+        "ingest_cve" => {
+            let cve_id = match extract_string_param(args, &["cve_id", "cve"]) {
+                Some(c) if !c.is_empty() => c,
+                _ => return Some(error_result("ingest_cve requires a 'cve_id' parameter")),
+            };
+            let product = match extract_string_param(args, &["product", "component"]) {
+                Some(p) if !p.is_empty() => p,
+                _ => return Some(error_result("ingest_cve requires a 'product' parameter")),
+            };
+            let additional = extract_string_param(args, &["additional_context", "notes"]);
+
+            let mut cve_info = String::new();
+            if let Some(tracker) = db_tracker {
+                match golish_db::repo::vuln_intel::search_entries(
+                    tracker.pool(),
+                    &cve_id,
+                    1,
+                )
+                .await
+                {
+                    Ok(entries) if !entries.is_empty() => {
+                        let e = &entries[0];
+                        cve_info = format!(
+                            "Title: {}\nSeverity: {}\nCVSS: {}\nPublished: {}\nDescription: {}\nAffected: {}\nReferences: {}",
+                            e.title,
+                            e.sev,
+                            e.cvss_score.map_or("N/A".to_string(), |s| s.to_string()),
+                            e.published,
+                            e.description,
+                            e.affected_products,
+                            e.refs,
+                        );
+                    }
+                    _ => {}
+                }
+            }
+
+            let slug = product.to_lowercase().replace(' ', "-");
+            let path = format!("products/{}/{}.md", slug, cve_id);
+            let base = wiki_base_dir();
+            let full = base.join(&path);
+
+            if full.exists() {
+                let existing = tokio::fs::read_to_string(&full).await.unwrap_or_default();
+                if let Some(tracker) = db_tracker {
+                    let _ = golish_db::repo::wiki_kb::link_cve_to_wiki(
+                        tracker.pool(), &cve_id, &path,
+                    ).await;
+                }
+                return Some((
+                    json!({
+                        "exists": true,
+                        "path": path,
+                        "content": existing,
+                        "message": format!("Wiki page already exists at {}. Read and update it with write_knowledge if needed.", path),
+                    }),
+                    true,
+                ));
+            }
+
+            let mut page_content = format!(
+                "---\ntitle: \"{} — {}\"\ncategory: products\ntags: [{}]\ncves: [{}]\nstatus: draft\n---\n\n# {} — {}\n\n",
+                cve_id, product, slug, cve_id, cve_id, product
+            );
+
+            if !cve_info.is_empty() {
+                page_content.push_str("## Vulnerability Details\n\n");
+                page_content.push_str(&cve_info);
+                page_content.push_str("\n\n");
+            } else {
+                page_content.push_str("## Vulnerability Details\n\n> No data in vuln intel DB. Research needed.\n\n");
+            }
+
+            page_content.push_str("## Exploitation\n\n<!-- Add exploit method, PoC, and attack chain details here -->\n\n");
+            page_content.push_str("## Detection & Mitigation\n\n<!-- How to detect and fix -->\n\n");
+            page_content.push_str("## Notes\n\n");
+
+            if let Some(ctx) = additional {
+                page_content.push_str(&ctx);
+                page_content.push('\n');
+            }
+
+            if let Some(parent) = full.parent() {
+                if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                    return Some(error_result(format!("mkdir failed: {}", e)));
+                }
+            }
+            if let Err(e) = tokio::fs::write(&full, &page_content).await {
+                return Some(error_result(format!("write failed: {}", e)));
+            }
+
+            if let Some(tracker) = db_tracker {
+                let page = golish_db::models::NewWikiPage {
+                    path: path.clone(),
+                    title: format!("{} — {}", cve_id, product),
+                    category: "products".to_string(),
+                    tags: vec![slug.clone(), cve_id.clone()],
+                    status: "draft".to_string(),
+                    content: page_content.clone(),
+                };
+                let _ = golish_db::repo::wiki_kb::upsert_page(tracker.pool(), &page).await;
+                let _ =
+                    golish_db::repo::wiki_kb::link_cve_to_wiki(tracker.pool(), &cve_id, &path)
+                        .await;
+            }
+
+            Some((
+                json!({
+                    "success": true,
+                    "path": path,
+                    "message": format!("Created wiki page for {} at {}. Edit with write_knowledge to add exploit details.", cve_id, path),
+                }),
+                true,
+            ))
+        }
+
+        "save_poc" => {
+            let cve_id = match extract_string_param(args, &["cve_id"]) {
+                Some(c) if !c.is_empty() => c,
+                _ => return Some(error_result("save_poc requires a 'cve_id' parameter")),
+            };
+            let name = match extract_string_param(args, &["name"]) {
+                Some(n) if !n.is_empty() => n,
+                _ => return Some(error_result("save_poc requires a 'name' parameter")),
+            };
+            let poc_type = extract_string_param(args, &["poc_type"]).unwrap_or_else(|| "script".to_string());
+            let language = extract_string_param(args, &["language"]).unwrap_or_else(|| "python".to_string());
+            let content = match args.get("content").and_then(|v| v.as_str()) {
+                Some(c) => c.to_string(),
+                None => return Some(error_result("save_poc requires a 'content' parameter")),
+            };
+
+            if let Some(tracker) = db_tracker {
+                match golish_db::repo::wiki_kb::upsert_poc(
+                    tracker.pool(),
+                    &cve_id,
+                    &name,
+                    &poc_type,
+                    &language,
+                    &content,
+                ).await {
+                    Ok(poc) => {
+                        Some((
+                            json!({
+                                "success": true,
+                                "poc_id": poc.id.to_string(),
+                                "message": format!("PoC '{}' saved for {}. It will appear in the PoC tab.", name, cve_id),
+                            }),
+                            true,
+                        ))
+                    }
+                    Err(e) => Some(error_result(format!("Failed to save PoC: {}", e))),
+                }
+            } else {
+                Some(error_result("Database not available"))
+            }
+        }
+
+        _ => None,
+    }
+}
+
+fn wiki_base_dir() -> std::path::PathBuf {
+    let home = dirs::home_dir().expect("cannot resolve home directory");
+    #[cfg(target_os = "macos")]
+    let base = home
+        .join("Library")
+        .join("Application Support")
+        .join("golish-platform");
+    #[cfg(target_os = "windows")]
+    let base = home.join("AppData").join("Local").join("golish-platform");
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let base = home.join(".golish-platform");
+    base.join("wiki")
+}
+
+/// Returns (title, category, tags, status)
+fn extract_wiki_frontmatter(content: &str) -> (String, String, Vec<String>, String) {
+    if !content.starts_with("---") {
+        let title = content
+            .lines()
+            .find(|l| l.starts_with('#'))
+            .map(|l| l.trim_start_matches('#').trim().to_string())
+            .unwrap_or_default();
+        return (title, "uncategorized".to_string(), vec![], "draft".to_string());
+    }
+    let rest = &content[3..];
+    let end = rest.find("\n---");
+    let fm = match end {
+        Some(i) => &rest[..i],
+        None => return (String::new(), "uncategorized".to_string(), vec![], "draft".to_string()),
+    };
+
+    let mut title = String::new();
+    let mut category = "uncategorized".to_string();
+    let mut tags = vec![];
+    let mut status = "draft".to_string();
+
+    for line in fm.lines() {
+        let line = line.trim();
+        if let Some(v) = line.strip_prefix("title:") {
+            title = v.trim().trim_matches('"').to_string();
+        } else if let Some(v) = line.strip_prefix("category:") {
+            category = v.trim().to_string();
+        } else if let Some(v) = line.strip_prefix("status:") {
+            status = v.trim().to_string();
+        } else if let Some(v) = line.strip_prefix("tags:") {
+            let raw = v.trim().trim_start_matches('[').trim_end_matches(']');
+            tags = raw
+                .split(',')
+                .map(|t| t.trim().trim_matches('"').trim_matches('\'').to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+        }
+    }
+
+    if title.is_empty() {
+        title = content
+            .lines()
+            .skip_while(|l| l.starts_with("---") || l.trim().is_empty() || l.contains(':'))
+            .find(|l| l.starts_with('#'))
+            .map(|l| l.trim_start_matches('#').trim().to_string())
+            .unwrap_or_default();
+    }
+
+    (title, category, tags, status)
+}
+
+const WIKI_CATEGORIES: &[&str] = &["products", "techniques", "pocs", "experience", "analysis"];
+
+fn infer_wiki_category(path: &str) -> String {
+    let first_segment = path.split('/').next().unwrap_or("");
+    if WIKI_CATEGORIES.contains(&first_segment) {
+        first_segment.to_string()
+    } else {
+        "uncategorized".to_string()
+    }
+}
+
+async fn kb_search_filesystem_fallback(query: &str, limit: usize) -> ToolResult {
+    let base = wiki_base_dir();
+    if !base.exists() {
+        return (json!({ "results": [], "count": 0, "query": query, "note": "KB not initialized" }), true);
+    }
+
+    let query_lower = query.to_lowercase();
+    let mut results = Vec::new();
+    let mut stack = vec![base.clone()];
+
+    while let Some(dir) = stack.pop() {
+        let Ok(mut rd) = tokio::fs::read_dir(&dir).await else {
+            continue;
+        };
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !name.ends_with(".md") {
+                continue;
+            }
+            let rel = path
+                .strip_prefix(&base)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+
+            if let Ok(content) = tokio::fs::read_to_string(&path).await {
+                if content.to_lowercase().contains(&query_lower) {
+                    let snippet: String = content.chars().take(500).collect();
+                    results.push(json!({
+                        "path": rel,
+                        "title": name,
+                        "snippet": snippet,
+                    }));
+                    if results.len() >= limit {
+                        break;
+                    }
+                }
+            }
+        }
+        if results.len() >= limit {
+            break;
+        }
+    }
+
+    let count = results.len();
+    (json!({ "results": results, "count": count, "query": query, "source": "filesystem" }), true)
+}
+
 /// Normalize tool arguments for run_pty_cmd.
 /// If the command is passed as an array, convert it to a space-joined string.
 /// This prevents shell_words::join() from quoting metacharacters like &&, ||, |, etc.

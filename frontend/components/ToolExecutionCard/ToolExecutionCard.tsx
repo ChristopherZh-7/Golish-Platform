@@ -2,6 +2,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  ChevronsUpDown,
   FileSearch,
   Globe,
   Loader2,
@@ -12,9 +13,10 @@ import {
   Wrench,
   XCircle,
 } from "lucide-react";
-import { memo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { stripAllAnsi } from "@/lib/ansi";
 import { cn } from "@/lib/utils";
 import type { AiToolExecution } from "@/store";
 
@@ -89,6 +91,86 @@ function formatDuration(ms?: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+function cleanTerminalOutput(raw: string): string {
+  return stripAllAnsi(unescapeNewlines(raw)).trim();
+}
+
+function unescapeNewlines(s: string): string {
+  return s
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "")
+    .replace(/\\t/g, "\t");
+}
+
+function formatGenericResult(result: unknown): string | null {
+  let obj: Record<string, unknown> | null = null;
+  if (result != null && typeof result === "object") {
+    obj = result as Record<string, unknown>;
+  } else if (typeof result === "string") {
+    try {
+      const parsed = JSON.parse(result);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) obj = parsed;
+    } catch {
+      return unescapeNewlines(result);
+    }
+  }
+  if (!obj) return null;
+
+  const textKey = ["response", "output", "message", "content", "text"].find(
+    (k) => typeof obj![k] === "string" && (obj![k] as string).length > 0
+  );
+  if (textKey) {
+    const mainText = unescapeNewlines(obj[textKey] as string);
+    const otherKeys = Object.keys(obj).filter((k) => k !== textKey);
+    if (otherKeys.length === 0) return mainText;
+
+    const meta = otherKeys
+      .filter((k) => obj![k] != null && typeof obj![k] !== "object")
+      .map((k) => `${k}: ${String(obj![k])}`)
+      .join("  |  ");
+
+    return meta ? `${meta}\n\n${mainText}` : mainText;
+  }
+
+  return JSON.stringify(obj, null, 2);
+}
+
+interface ShellResult {
+  stdout?: string;
+  stderr?: string;
+  exitCode?: number;
+}
+
+function parseShellResult(result: unknown): ShellResult | null {
+  let obj: Record<string, unknown> | null = null;
+
+  if (result != null && typeof result === "object") {
+    obj = result as Record<string, unknown>;
+  } else if (typeof result === "string") {
+    try {
+      const parsed = JSON.parse(result);
+      if (parsed && typeof parsed === "object") obj = parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  if (!obj) return null;
+
+  if (obj.stdout !== undefined || obj.stderr !== undefined || obj.exit_code !== undefined) {
+    return {
+      stdout: typeof obj.stdout === "string" ? obj.stdout : undefined,
+      stderr: typeof obj.stderr === "string" ? obj.stderr : undefined,
+      exitCode: typeof obj.exit_code === "number" ? obj.exit_code : undefined,
+    };
+  }
+  if (typeof obj.output === "string") {
+    return { stdout: obj.output };
+  }
+  return null;
+}
+
 function StatusIcon({ status }: { status: "running" | "completed" | "error" }) {
   switch (status) {
     case "completed":
@@ -98,6 +180,41 @@ function StatusIcon({ status }: { status: "running" | "completed" | "error" }) {
     case "error":
       return <XCircle className="w-4 h-4 text-[var(--ansi-red)]" />;
   }
+}
+
+const PREVIEW_LIMIT = 2000;
+
+function OutputBlock({ text, isShellCommand }: { text: string; isShellCommand: boolean }) {
+  const isLong = text.length > PREVIEW_LIMIT;
+  const [expanded, setExpanded] = useState(false);
+
+  const display = expanded || !isLong ? text : `${text.slice(0, PREVIEW_LIMIT)}`;
+
+  return (
+    <div className="mt-1">
+      <pre
+        className={cn(
+          "overflow-auto whitespace-pre-wrap rounded px-2 py-1.5 text-[10px] font-mono leading-relaxed",
+          expanded ? "max-h-[80vh]" : "max-h-48",
+          isShellCommand
+            ? "bg-[var(--ansi-black)]/20 text-foreground/80"
+            : "bg-muted px-2 py-1",
+        )}
+      >
+        {display}
+      </pre>
+      {isLong && (
+        <button
+          type="button"
+          onClick={() => setExpanded(!expanded)}
+          className="mt-0.5 flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-foreground/80 transition-colors"
+        >
+          <ChevronsUpDown className="w-3 h-3" />
+          {expanded ? "收起" : `展开全部 (${(text.length / 1000).toFixed(1)}k 字符)`}
+        </button>
+      )}
+    </div>
+  );
 }
 
 export const ToolExecutionCard = memo(function ToolExecutionCard({
@@ -113,12 +230,24 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
   const isShellCommand =
     execution.toolName === "run_command" || execution.toolName === "run_pty_cmd";
 
-  const resultText =
-    typeof execution.result === "string"
-      ? execution.result
-      : execution.result != null
-        ? JSON.stringify(execution.result, null, 2)
-        : null;
+  const shellResult = useMemo(
+    () => (isShellCommand ? parseShellResult(execution.result) : null),
+    [isShellCommand, execution.result]
+  );
+
+  const resultText = useMemo(() => {
+    if (execution.result == null) return null;
+    if (shellResult) {
+      const parts: string[] = [];
+      if (shellResult.stdout) parts.push(cleanTerminalOutput(shellResult.stdout));
+      if (shellResult.stderr) {
+        const cleaned = cleanTerminalOutput(shellResult.stderr);
+        if (cleaned) parts.push(`stderr: ${cleaned}`);
+      }
+      return parts.join("\n") || null;
+    }
+    return formatGenericResult(execution.result);
+  }, [execution.result, shellResult]);
 
   const outputPreview = execution.streamingOutput || resultText;
 
@@ -222,22 +351,19 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
             </details>
           )}
 
+          {/* Exit code for shell commands */}
+          {isShellCommand && shellResult?.exitCode != null && shellResult.exitCode !== 0 && (
+            <div className="mt-1 flex items-center gap-1.5 text-[10px]">
+              <span className="text-red-400 font-medium">exit {shellResult.exitCode}</span>
+            </div>
+          )}
+
           {/* Streaming output / result */}
           {outputPreview && (
-            <div className="mt-1">
-              <pre
-                className={cn(
-                  "max-h-48 overflow-auto whitespace-pre-wrap rounded px-2 py-1.5 text-[10px] font-mono",
-                  isShellCommand
-                    ? "bg-[var(--ansi-black)]/20 text-foreground/80"
-                    : "bg-muted px-2 py-1",
-                )}
-              >
-                {outputPreview.length > 2000
-                  ? `${outputPreview.slice(0, 2000)}\n... (truncated)`
-                  : outputPreview}
-              </pre>
-            </div>
+            <OutputBlock
+              text={outputPreview}
+              isShellCommand={isShellCommand}
+            />
           )}
 
           {/* Error display */}

@@ -472,7 +472,6 @@ pub fn run_gui() {
         .manage(Arc::new(FileWatcherState::new()))
         .manage(tools::pentest::PentestState::new())
         .on_window_event(|window, event| {
-            // Persist window bounds continuously (debounced) so dev restarts and Cmd+Q are reliable.
             static SAVE_SEQ: AtomicU64 = AtomicU64::new(0);
 
             match event {
@@ -485,6 +484,20 @@ pub fn run_gui() {
                             return;
                         }
                         persist_window_state_from_window(&window).await;
+                    });
+                }
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    static CLOSING: AtomicBool = AtomicBool::new(false);
+                    if CLOSING.swap(true, Ordering::SeqCst) {
+                        return;
+                    }
+                    api.prevent_close();
+                    let w = window.clone();
+                    let _ = window.emit("flush-state", ());
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                        persist_window_state_from_window(&w).await;
+                        w.destroy().ok();
                     });
                 }
                 _ => {}
@@ -1148,6 +1161,7 @@ pub fn run_gui() {
             tools::pentest::zap_install_root_cert,
             tools::pentest::zap_api_call,
             // Wiki commands
+            tools::wiki::wiki_init,
             tools::wiki::wiki_list,
             tools::wiki::wiki_read,
             tools::wiki::wiki_write,
@@ -1155,7 +1169,22 @@ pub fn run_gui() {
             tools::wiki::wiki_rename,
             tools::wiki::wiki_create_dir,
             tools::wiki::wiki_search,
+            tools::wiki::wiki_search_db,
+            tools::wiki::wiki_stats,
             tools::wiki::wiki_create_cve,
+            tools::wiki::kb_research_load,
+            tools::wiki::kb_research_save_turn,
+            tools::wiki::kb_research_set_status,
+            tools::wiki::kb_research_clear,
+            tools::wiki::vuln_link_get_all,
+            tools::wiki::vuln_link_get,
+            tools::wiki::vuln_link_add_wiki,
+            tools::wiki::vuln_link_remove_wiki,
+            tools::wiki::vuln_link_add_poc,
+            tools::wiki::vuln_link_update_poc,
+            tools::wiki::vuln_link_remove_poc,
+            tools::wiki::vuln_link_add_scan,
+            tools::wiki::vuln_link_remove_scan,
             tools::targets::target_list,
             tools::targets::target_add,
             tools::targets::target_batch_add,
@@ -1242,6 +1271,9 @@ pub fn run_gui() {
             tools::vuln_intel::intel_search_remote,
             tools::vuln_intel::intel_search_remote_page,
             tools::vuln_intel::intel_match_targets,
+            tools::vuln_intel::intel_search_github_poc,
+            tools::vuln_intel::intel_search_nuclei_templates,
+            tools::vuln_intel::intel_batch_search_nuclei_templates,
             // Conversation persistence (replaces workspace.json)
             tools::conversation_store::conv_save,
             tools::conversation_store::conv_delete,
@@ -1254,6 +1286,7 @@ pub fn run_gui() {
             tools::conversation_store::conv_load_terminal_states,
             tools::conversation_store::conv_save_preferences,
             tools::conversation_store::conv_load_preferences,
+            tools::conversation_store::conv_save_batch,
             // Execution plans
             tools::execution_plans::plan_create,
             tools::execution_plans::plan_get,

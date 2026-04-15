@@ -287,20 +287,47 @@ export function ToolCallSummary({
   toolCalls,
   requestIds,
 }: {
-  toolCalls: Array<{ name: string; args?: string; result?: string; success?: boolean }>;
+  toolCalls: Array<{ name: string; args?: string; result?: string; success?: boolean; requestId?: string }>;
   requestIds?: string[];
 }) {
   if (toolCalls.length === 0) return null;
 
   const handleShowDetail = () => {
     const state = useStore.getState();
-    const activeConvId = state.activeConversationId;
-    if (!activeConvId) return;
-    const termIds = state.conversationTerminals[activeConvId];
-    const termId = termIds?.[0];
-    if (termId) {
-      state.setToolDetailRequestIds(termId, requestIds ?? null);
-      state.setDetailViewMode(termId, "tool-detail");
+    const sessionId = state.activeSessionId;
+    if (!sessionId) return;
+
+    state.setToolDetailRequestIds(sessionId, requestIds ?? null);
+    state.setDetailViewMode(sessionId, "tool-detail");
+
+    // Backfill: if timeline doesn't have tool execution blocks for these calls,
+    // create them from chat message data so ToolDetailView has something to show.
+    const timeline = state.timelines[sessionId] ?? [];
+    const existingIds = new Set(
+      timeline
+        .filter((b): b is { type: "ai_tool_execution"; data: { requestId: string } } & typeof b =>
+          b.type === "ai_tool_execution"
+        )
+        .map((b) => b.data.requestId)
+    );
+
+    for (const tc of toolCalls) {
+      if (!tc.requestId || existingIds.has(tc.requestId)) continue;
+
+      let parsedArgs: Record<string, unknown> = {};
+      try {
+        if (tc.args) parsedArgs = JSON.parse(tc.args);
+      } catch { /* keep empty */ }
+
+      state.addToolExecutionBlock(sessionId, {
+        requestId: tc.requestId,
+        toolName: tc.name,
+        args: parsedArgs,
+      });
+
+      if (tc.success !== undefined) {
+        state.completeToolExecutionBlock(sessionId, tc.requestId, tc.success, tc.result);
+      }
     }
   };
 

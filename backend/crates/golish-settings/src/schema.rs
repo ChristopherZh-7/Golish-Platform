@@ -274,6 +274,14 @@ pub struct AiSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summarizer_model: Option<String>,
 
+    /// Provider for KB research agent. Falls back to default_provider if not set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub research_provider: Option<AiProvider>,
+
+    /// Model for KB research agent. Falls back to default_model if not set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub research_model: Option<String>,
+
     /// Vertex AI (Anthropic) specific settings
     pub vertex_ai: VertexAiSettings,
 
@@ -1153,6 +1161,8 @@ impl Default for AiSettings {
             default_reasoning_effort: None,
             sub_agent_models: HashMap::new(),
             summarizer_model: None,
+            research_provider: None,
+            research_model: None,
             vertex_ai: VertexAiSettings::default(),
             vertex_gemini: VertexGeminiSettings::default(),
             openrouter: OpenRouterSettings::default(),

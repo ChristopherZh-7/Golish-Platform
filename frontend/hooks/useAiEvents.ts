@@ -140,21 +140,46 @@ export function useAiEvents() {
       // For conversation-mode AI sessions (e.g. pentest chat), the session_id is the
       // AI session ID which differs from the PTY session ID. Resolve via conversations.
       if (!state.sessions[sessionId]) {
+        let resolved = false;
         const conv = state.getConversationBySessionId(sessionId);
         if (conv) {
           const termIds = state.conversationTerminals[conv.id];
           const termId = termIds?.[0];
           if (termId && state.sessions[termId]) {
             sessionId = termId;
-          } else {
-            logger.debug("AI event for conversation without linked terminal:", {
-              sessionId,
-              convId: conv.id,
-              eventType: event.type,
-            });
-            return;
+            resolved = true;
           }
-        } else {
+        }
+
+        // Fallback: if the active conversation's aiSessionId matches this event,
+        // route to the active session's terminal. This handles cases where the
+        // conversation lookup fails (e.g. after DB restore or state reset).
+        if (!resolved) {
+          const activeConvId = state.activeConversationId;
+          const activeConv = activeConvId ? state.conversations[activeConvId] : null;
+          if (activeConv?.aiSessionId === sessionId) {
+            const termIds = state.conversationTerminals[activeConvId!];
+            const termId = termIds?.[0];
+            if (termId && state.sessions[termId]) {
+              sessionId = termId;
+              resolved = true;
+            }
+          }
+        }
+
+        // Last resort: if the active PTY session exists, use it directly.
+        // This keeps events flowing even when conversation state is inconsistent.
+        if (!resolved && state.activeSessionId && state.sessions[state.activeSessionId]) {
+          logger.debug("AI event routed to active session as fallback:", {
+            originalSessionId: sessionId,
+            activeSessionId: state.activeSessionId,
+            eventType: event.type,
+          });
+          sessionId = state.activeSessionId;
+          resolved = true;
+        }
+
+        if (!resolved) {
           logger.warn("AI event dropped for unknown session:", {
             sessionId,
             eventType: event.type,

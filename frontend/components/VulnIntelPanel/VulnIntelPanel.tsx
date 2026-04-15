@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Bell,
   BookOpen,
+  Bot,
   Code,
   Copy,
   ExternalLink,
@@ -23,10 +24,15 @@ import {
   ChevronRight,
   Loader2,
   Play,
+  MessageSquare,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getProjectPath } from "@/lib/projects";
 import { useTranslation } from "react-i18next";
+import { useStore } from "@/store";
+import { sendPromptSession, initAiSession, buildProviderConfig, respondToToolApproval, setAgentMode, type AiProvider } from "@/lib/ai";
+import { getSettings } from "@/lib/settings";
+import { Markdown } from "@/components/Markdown";
 
 interface VulnFeed {
   id: string;
@@ -87,22 +93,40 @@ const SEV_DOT: Record<string, string> = {
   info: "bg-slate-500",
 };
 
-const VULN_LINKS_KEY = "golish-vuln-links";
-
-function loadVulnLinks(): Record<string, VulnLink> {
-  try { return JSON.parse(localStorage.getItem(VULN_LINKS_KEY) || "{}"); } catch { return {}; }
+interface DbVulnLinkFull {
+  wiki_paths: string[];
+  poc_templates: Array<{ id: string; name: string; type: string; language: string; content: string; created: number }>;
+  scan_history: Array<{ id: string; target: string; date: number; result: string; details?: string }>;
 }
 
-function saveVulnLinks(links: Record<string, VulnLink>) {
-  try { localStorage.setItem(VULN_LINKS_KEY, JSON.stringify(links)); } catch { /* ignore */ }
+function dbToVulnLink(db: DbVulnLinkFull): VulnLink {
+  return {
+    wikiPaths: db.wiki_paths,
+    pocTemplates: db.poc_templates.map((p) => ({
+      id: p.id,
+      name: p.name,
+      type: p.type as PocTemplate["type"],
+      language: p.language,
+      content: p.content,
+      created: p.created,
+    })),
+    scanHistory: db.scan_history.map((s) => ({
+      target: s.target,
+      date: s.date,
+      result: s.result as ScanHistoryEntry["result"],
+      details: s.details,
+    })),
+  };
 }
+
+const EMPTY_LINK: VulnLink = { wikiPaths: [], pocTemplates: [], scanHistory: [] };
 
 function getOrCreateLink(links: Record<string, VulnLink>, cveId: string): VulnLink {
-  return links[cveId] || { wikiPaths: [], pocTemplates: [], scanHistory: [] };
+  return links[cveId] || EMPTY_LINK;
 }
 
 type ViewMode = "feed" | "matched" | "feeds-config";
-type DetailTab = "intel" | "wiki" | "poc" | "history";
+type DetailTab = "intel" | "wiki" | "poc" | "history" | "research";
 type FilterMode = "all" | "has-poc" | "has-wiki" | "no-poc";
 type SeverityFilter = "all" | "critical" | "high" | "medium" | "low" | "info";
 type TopTab = "intel" | "wiki" | "poc-library";
@@ -115,8 +139,8 @@ const WikiPanelEmbed = lazy(() =>
 export function VulnIntelPanel() {
   const { t } = useTranslation();
   const [topTab, setTopTab] = useState<TopTab>("intel");
-  const [wikiOpenPath, setWikiOpenPath] = useState<string | null>(null);
-  const [vulnLinksForPocLib, setVulnLinksForPocLib] = useState<Record<string, VulnLink>>(loadVulnLinks);
+  const [wikiOpenPath] = useState<string | null>(null);
+  const [vulnLinksForPocLib, setVulnLinksForPocLib] = useState<Record<string, VulnLink>>({});
   const [entries, setEntries] = useState<VulnEntry[]>([]);
   const [matchedEntries, setMatchedEntries] = useState<VulnEntry[]>([]);
   const [feeds, setFeeds] = useState<VulnFeed[]>([]);
@@ -127,16 +151,29 @@ export function VulnIntelPanel() {
   const [detailTab, setDetailTab] = useState<DetailTab>("intel");
   const [showAddFeed, setShowAddFeed] = useState(false);
   const [newFeed, setNewFeed] = useState({ name: "", feed_type: "rss", url: "" });
-  const [vulnLinks, setVulnLinks] = useState<Record<string, VulnLink>>(loadVulnLinks);
+  const [vulnLinks, setVulnLinks] = useState<Record<string, VulnLink>>({});
   const [filterMode, setFilterMode] = useState<FilterMode>("all");
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>("all");
+
+  // Load all vuln links from PostgreSQL on mount
+  useEffect(() => {
+    invoke<Record<string, DbVulnLinkFull>>("vuln_link_get_all")
+      .then((dbLinks) => {
+        const mapped: Record<string, VulnLink> = {};
+        for (const [cveId, dbLink] of Object.entries(dbLinks)) {
+          mapped[cveId] = dbToVulnLink(dbLink);
+        }
+        setVulnLinks(mapped);
+        setVulnLinksForPocLib(mapped);
+      })
+      .catch((e) => console.error("Failed to load vuln links from DB:", e));
+  }, []);
 
   const updateLinks = useCallback((cveId: string, updater: (link: VulnLink) => VulnLink) => {
     setVulnLinks((prev) => {
       const link = getOrCreateLink(prev, cveId);
-      const next = { ...prev, [cveId]: updater(link) };
-      saveVulnLinks(next);
-      return next;
+      const updated = updater(link);
+      return { ...prev, [cveId]: updated };
     });
   }, []);
 
@@ -329,11 +366,6 @@ export function VulnIntelPanel() {
     setTopTab("intel");
     setExpandedCve(cveId);
     setDetailTab("intel");
-  }, []);
-
-  const handleOpenWikiFile = useCallback((path: string) => {
-    setWikiOpenPath(path);
-    setTopTab("wiki");
   }, []);
 
   const sevStats = useMemo(() => {
@@ -681,7 +713,6 @@ export function VulnIntelPanel() {
                 detailTab={detailTab}
                 onTabChange={setDetailTab}
                 onUpdateLink={(updater) => updateLinks(selectedEntry.cve_id, updater)}
-                onOpenWikiFile={handleOpenWikiFile}
               />
             </div>
           )}
@@ -697,15 +728,195 @@ function VulnDetailView({
   detailTab,
   onTabChange,
   onUpdateLink,
-  onOpenWikiFile,
 }: {
   entry: VulnEntry;
   link: VulnLink;
   detailTab: DetailTab;
   onTabChange: (tab: DetailTab) => void;
   onUpdateLink: (updater: (link: VulnLink) => VulnLink) => void;
-  onOpenWikiFile?: (path: string) => void;
 }) {
+  const [ingesting, setIngesting] = useState(false);
+  const [researchSessionId, setResearchSessionId] = useState<string | null>(null);
+  const [researchError, setResearchError] = useState<string | null>(null);
+  const [hasResearchHistory, setHasResearchHistory] = useState(false);
+
+  // Check if DB has previous research for this CVE
+  useEffect(() => {
+    invoke<{ turns: unknown[]; status: string } | null>("kb_research_load", { cveId: entry.cve_id })
+      .then((log) => {
+        if (log?.turns && Array.isArray(log.turns) && log.turns.length > 0) {
+          setHasResearchHistory(true);
+        }
+      })
+      .catch(() => {});
+  }, [entry.cve_id]);
+
+  // Load fresh link data from DB when viewing this CVE
+  useEffect(() => {
+    invoke<DbVulnLinkFull>("vuln_link_get", { cveId: entry.cve_id })
+      .then((dbLink) => {
+        const link = dbToVulnLink(dbLink);
+        if (link.wikiPaths.length > 0 || link.pocTemplates.length > 0 || link.scanHistory.length > 0) {
+          onUpdateLink(() => link);
+        }
+      })
+      .catch(() => {});
+  }, [entry.cve_id, onUpdateLink]);
+
+  const handleAiResearch = useCallback(async () => {
+    setIngesting(true);
+    setResearchError(null);
+    try {
+      const sessionId = `kb-research-${entry.cve_id}-${Date.now()}`;
+      const state = useStore.getState();
+      const parentSession = state.sessions[state.activeSessionId ?? ""];
+      const workspace = parentSession?.workingDirectory || ".";
+
+      state.addSession(
+        {
+          id: sessionId,
+          logicalTerminalId: crypto.randomUUID(),
+          name: `KB: ${entry.cve_id}`,
+          workingDirectory: workspace,
+          createdAt: new Date().toISOString(),
+          mode: "agent",
+          inputMode: "agent",
+        },
+        { isPaneSession: true }
+      );
+
+      const settings = await getSettings();
+      const researchProvider = (settings.ai.research_provider ?? settings.ai.default_provider) as AiProvider;
+      const researchModel = settings.ai.research_model ?? settings.ai.default_model;
+
+      const config = await buildProviderConfig(settings, workspace, {
+        provider: researchProvider,
+        model: researchModel,
+      });
+      await initAiSession(sessionId, config);
+      useStore.getState().setSessionAiConfig(sessionId, {
+        provider: researchProvider,
+        model: researchModel,
+        status: "ready",
+      });
+
+      setResearchSessionId(sessionId);
+      onTabChange("research");
+
+      const product = entry.affected_products?.length > 0
+        ? entry.affected_products.join(", ")
+        : "unknown product";
+
+      const slug = product.split(",")[0].trim().toLowerCase().replace(/\s+/g, "-");
+      const prompt = `# Vulnerability Knowledge Base — Ingest Guide
+
+## Source CVE
+- **CVE**: ${entry.cve_id}
+- **Title**: ${entry.title}
+- **Severity**: ${entry.severity}${entry.cvss_score != null ? ` (CVSS ${entry.cvss_score})` : ""}
+- **Affected**: ${product}
+- **Description**: ${entry.description.slice(0, 500)}
+
+## Wiki Architecture
+
+The vulnerability wiki follows a Karpathy-style compounding knowledge model. You maintain TWO types of pages:
+
+### Products (\`products/{product-slug}/\`)
+One page per CVE, specific to the affected product. Contains vulnerability details, exploitation, PoC, detection.
+- Path: \`products/${slug}/${entry.cve_id}.md\`
+
+### Techniques (\`techniques/\`)
+One page per attack technique. Shared across multiple CVEs. Contains methodology, variants, examples.
+- Example: \`techniques/jndi-injection.md\`, \`techniques/deserialization.md\`, \`techniques/ssrf.md\`
+
+## Writing Standards
+
+Every wiki page MUST have:
+- YAML frontmatter: \`title\`, \`category\`, \`tags\`, \`cves\`, \`status\`
+- Rich content with clear sections (## headings)
+- Cross-references to related pages (markdown links to other wiki paths)
+- Citations to sources (NVD, advisories, blog posts)
+- Status: \`draft\`, \`partial\`, \`complete\`, \`needs-poc\`, \`verified\`
+
+## Ingest Workflow
+
+### Step 1: Check existing knowledge
+Use \`search_knowledge_base\` with query "${entry.cve_id}" to find existing pages.
+- If the CVE product page exists and status is \`complete\`/\`verified\`, check if technique pages also exist. If everything is covered, report completion.
+- If pages exist but are \`draft\`/\`partial\`/\`needs-poc\`, continue to enrich them.
+
+### Step 2: Create the product page
+Use \`ingest_cve\` with cve_id="${entry.cve_id}" and product="${slug}" to create the base product page (if it doesn't exist).
+
+### Step 3: Research
+Search the web for:
+- Exploit details and attack chains
+- PoC code or exploit scripts
+- Technical advisories and patch details
+- Related CVEs and attack techniques
+
+### Step 4: Update the product page
+Use \`write_knowledge\` with \`cve_id: "${entry.cve_id}"\` to update \`products/${slug}/${entry.cve_id}.md\` with:
+- Detailed vulnerability analysis
+- Exploitation method and attack chain
+- PoC code (if publicly available)
+- Detection signatures and mitigation
+- References and citations
+- Cross-references to technique pages
+
+### Step 5: Create/update technique pages
+Identify the core attack technique(s) used (e.g., JNDI injection, deserialization, SSRF).
+For EACH technique:
+1. \`search_knowledge_base\` to check if a technique page exists
+2. If not, use \`write_knowledge\` with \`cve_id: "${entry.cve_id}"\` to create \`techniques/{technique-slug}.md\` with:
+   - Technique overview and methodology
+   - Common variants
+   - List of CVEs that use this technique (including this one)
+   - Detection and prevention strategies
+3. If it exists, use \`read_knowledge\` then \`write_knowledge\` with \`cve_id: "${entry.cve_id}"\` to ADD this CVE to the existing technique page's CVE list and update any new information.
+**CRITICAL**: Always pass the \`cve_id\` parameter when calling \`write_knowledge\` so the page is automatically linked to this CVE and appears in the Wiki tab.
+
+### Step 6: Cross-reference check
+Use \`search_knowledge_base\` to find related pages. Add "See Also" cross-references where appropriate.
+
+### Step 7: Save PoC templates
+If you found exploit code, detection templates, or testing scripts during research, save them using \`save_poc\`:
+- Use \`cve_id: "${entry.cve_id}"\`
+- For Nuclei YAML templates: \`poc_type: "nuclei"\`, \`language: "yaml"\`
+- For exploit scripts: \`poc_type: "script"\`, \`language: "python"\` (or bash, go, etc.)
+- For manual testing procedures: \`poc_type: "manual"\`, \`language: "markdown"\`
+Save each distinct PoC or template as a separate entry.
+
+### Step 8: Set status
+Update the product page frontmatter \`status\`:
+- \`complete\` if you found exploit details + PoC
+- \`partial\` if missing key sections
+- \`needs-poc\` if analysis is thorough but no public PoC exists
+
+## IMPORTANT
+- A single CVE ingest should typically create/update 2-5 wiki pages.
+- Technique pages are SHARED — multiple CVEs reference the same technique page.
+- Always check for existing content before creating new pages.
+- Never overwrite existing content — merge and enrich.
+- Always save found PoC/exploit code using \`save_poc\` so it appears in the PoC tab.`;
+
+      await sendPromptSession(sessionId, prompt);
+
+      const expectedPath = `products/${slug}/${entry.cve_id}.md`;
+      onUpdateLink((l) => ({
+        ...l,
+        wikiPaths: l.wikiPaths.includes(expectedPath) ? l.wikiPaths : [...l.wikiPaths, expectedPath],
+      }));
+      invoke("vuln_link_add_wiki", { cveId: entry.cve_id, wikiPath: expectedPath }).catch(console.error);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("Failed to trigger AI research:", e);
+      setResearchError(msg);
+    } finally {
+      setIngesting(false);
+    }
+  }, [entry, onTabChange]);
+
   return (
     <>
       {/* Detail header */}
@@ -717,7 +928,28 @@ function VulnDetailView({
           {entry.cvss_score != null && ` ${entry.cvss_score}`}
         </span>
         <span className="text-[9px] text-muted-foreground/25">{entry.source}</span>
+        <div className="ml-auto">
+          <button
+            onClick={handleAiResearch}
+            disabled={ingesting}
+            className="flex items-center gap-1 px-2.5 py-1 rounded text-[10px] font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors disabled:opacity-50"
+            title="AI researches this CVE: searches web, writes wiki page with exploit details, PoCs, and analysis"
+          >
+            {ingesting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Bot className="w-3.5 h-3.5" />}
+            AI Research
+          </button>
+        </div>
       </div>
+
+      {researchError && (
+        <div className="flex items-center gap-2 px-4 py-2 bg-red-500/10 border-b border-red-500/20">
+          <AlertTriangle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
+          <span className="text-[10px] text-red-400 flex-1">{researchError}</span>
+          <button onClick={() => setResearchError(null)} className="text-red-400/50 hover:text-red-400">
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      )}
 
       {/* Detail tabs */}
       <div className="flex items-center gap-0.5 px-3 py-1.5 border-b border-border/10 bg-muted/3 flex-shrink-0">
@@ -726,6 +958,7 @@ function VulnDetailView({
           { id: "wiki" as const, icon: BookOpen, label: `Wiki${link.wikiPaths.length > 0 ? ` (${link.wikiPaths.length})` : ""}` },
           { id: "poc" as const, icon: Code, label: `PoC${link.pocTemplates.length > 0 ? ` (${link.pocTemplates.length})` : ""}` },
           { id: "history" as const, icon: History, label: `History${link.scanHistory.length > 0 ? ` (${link.scanHistory.length})` : ""}` },
+          ...(researchSessionId || hasResearchHistory ? [{ id: "research" as const, icon: MessageSquare, label: "Research" }] : []),
         ]).map((tab) => (
           <button
             key={tab.id}
@@ -744,11 +977,326 @@ function VulnDetailView({
       {/* Detail content */}
       <div className="flex-1 overflow-y-auto px-4 py-3">
         {detailTab === "intel" && <IntelTab entry={entry} />}
-        {detailTab === "wiki" && <WikiTab link={link} cveId={entry.cve_id} onUpdateLink={onUpdateLink} onOpenFile={onOpenWikiFile} />}
+        {detailTab === "wiki" && <WikiTab link={link} cveId={entry.cve_id} onUpdateLink={onUpdateLink} />}
         {detailTab === "poc" && <PocTab link={link} cveId={entry.cve_id} onUpdateLink={onUpdateLink} />}
         {detailTab === "history" && <HistoryTab link={link} />}
+        {detailTab === "research" && <ResearchTab sessionId={researchSessionId} cveId={entry.cve_id} />}
       </div>
     </>
+  );
+}
+
+type TurnBlock =
+  | { type: "text"; content: string }
+  | { type: "tool"; id: string; name: string; status: string };
+
+interface CompletedTurn {
+  id: string;
+  blocks: TurnBlock[];
+  /** @deprecated kept for backward compat with old DB records */
+  text?: string;
+  /** @deprecated kept for backward compat with old DB records */
+  toolCalls?: Array<{ id: string; name: string; status: string }>;
+}
+
+const EMPTY_STREAMING: never[] = [];
+
+function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cveId: string }) {
+  const sid = sessionId ?? "";
+  const isResponding = useStore((s) => sid ? (s.isAgentResponding[sid] ?? false) : false);
+  const streamingBlocks = useStore((s) => {
+    if (!sid) return EMPTY_STREAMING;
+    return s.streamingBlocks[sid] ?? EMPTY_STREAMING;
+  });
+  const isThinking = useStore((s) => sid ? (s.isAgentThinking[sid] ?? false) : false);
+  const storeApproval = useStore((s) => sid ? (s.pendingToolApproval[sid] ?? null) : null);
+  const storeAskHuman = useStore((s) => sid ? (s.pendingAskHuman[sid] ?? null) : null);
+  const [dismissedApprovalId, setDismissedApprovalId] = useState<string | null>(null);
+  const [dismissedAskHumanId, setDismissedAskHumanId] = useState<string | null>(null);
+  const agentMode = useStore((s) => sid ? (s.sessions[sid]?.agentMode ?? "default") : "default");
+  const isAutoApprove = agentMode === "auto-approve";
+  const pendingApproval = isResponding && !isAutoApprove && storeApproval && storeApproval.id !== dismissedApprovalId ? storeApproval : null;
+  const pendingAskHuman = isResponding && storeAskHuman && storeAskHuman.requestId !== dismissedAskHumanId ? storeAskHuman : null;
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [askHumanInput, setAskHumanInput] = useState("");
+
+  const [completedTurns, setCompletedTurns] = useState<CompletedTurn[]>([]);
+  const [loadedFromDb, setLoadedFromDb] = useState(false);
+  const prevBlocksRef = useRef<typeof streamingBlocks>([]);
+
+  // Load previous research conversation from DB on mount
+  useEffect(() => {
+    invoke<{ turns: Array<Record<string, unknown>>; status: string } | null>("kb_research_load", { cveId })
+      .then((log) => {
+        if (log?.turns && Array.isArray(log.turns) && log.turns.length > 0) {
+          const migrated: CompletedTurn[] = log.turns.map((raw) => {
+            if (Array.isArray(raw.blocks)) return raw as unknown as CompletedTurn;
+            // Migrate old format: { text, toolCalls } -> { blocks }
+            const blocks: TurnBlock[] = [];
+            const oldTools = Array.isArray(raw.toolCalls) ? raw.toolCalls as Array<{ id: string; name: string; status: string }> : [];
+            for (const tc of oldTools) blocks.push({ type: "tool", ...tc });
+            if (typeof raw.text === "string" && raw.text) blocks.push({ type: "text", content: raw.text });
+            return { id: (raw.id as string) || crypto.randomUUID(), blocks };
+          });
+          setCompletedTurns(migrated);
+        }
+      })
+      .catch((e) => console.error("Failed to load research log:", e))
+      .finally(() => setLoadedFromDb(true));
+  }, [cveId]);
+
+  // Capture completed turns preserving block order and persist to DB
+  useEffect(() => {
+    const hadBlocks = prevBlocksRef.current.length > 0;
+    const nowEmpty = streamingBlocks.length === 0;
+
+    if (hadBlocks && nowEmpty) {
+      const blocks: TurnBlock[] = [];
+      let textAcc = "";
+      for (const b of prevBlocksRef.current) {
+        if (b.type === "text") {
+          textAcc += b.content;
+        } else if (b.type === "tool") {
+          if (textAcc) { blocks.push({ type: "text", content: textAcc }); textAcc = ""; }
+          blocks.push({ type: "tool", id: b.toolCall.id, name: b.toolCall.name, status: b.toolCall.status });
+        }
+      }
+      if (textAcc) blocks.push({ type: "text", content: textAcc });
+
+      if (blocks.length > 0) {
+        const turn: CompletedTurn = { id: crypto.randomUUID(), blocks };
+        setCompletedTurns((prev) => [...prev, turn]);
+        invoke("kb_research_save_turn", { cveId, sessionId: sid, turn }).catch((e) =>
+          console.error("Failed to save research turn:", e)
+        );
+      }
+    }
+    prevBlocksRef.current = streamingBlocks;
+  }, [streamingBlocks, cveId, sid]);
+
+  // Mark research as completed when agent finishes and we have content
+  const prevRespondingRef = useRef(false);
+  useEffect(() => {
+    if (prevRespondingRef.current && !isResponding && completedTurns.length > 0) {
+      invoke("kb_research_set_status", { cveId, status: "completed" }).catch((e) =>
+        console.error("Failed to set research status:", e)
+      );
+    }
+    prevRespondingRef.current = isResponding;
+  }, [isResponding, completedTurns.length, cveId]);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [completedTurns, streamingBlocks, isResponding, pendingApproval, pendingAskHuman]);
+
+  const isEmpty = loadedFromDb && completedTurns.length === 0 && streamingBlocks.length === 0 && !isResponding;
+  const [clearing, setClearing] = useState(false);
+
+  const handleClearHistory = useCallback(async () => {
+    if (!confirm("Delete all research history for this CVE? This cannot be undone.")) return;
+    setClearing(true);
+    try {
+      await invoke("kb_research_clear", { cveId });
+      setCompletedTurns([]);
+    } catch (e) {
+      console.error("Failed to clear research history:", e);
+    }
+    setClearing(false);
+  }, [cveId]);
+
+  const proseClasses = "text-[11px] leading-relaxed text-foreground/80 prose prose-invert prose-sm max-w-none prose-headings:text-foreground/90 prose-headings:text-[12px] prose-headings:font-semibold prose-p:text-[11px] prose-p:leading-relaxed prose-code:text-[10px] prose-code:bg-muted/20 prose-code:px-1 prose-code:rounded prose-pre:bg-muted/10 prose-pre:border prose-pre:border-border/10 prose-pre:text-[10px] prose-li:text-[11px] prose-a:text-accent";
+
+  return (
+    <div ref={scrollRef} className="space-y-3 -mx-4 -my-3 px-4 py-3 overflow-y-auto max-h-full">
+      {/* Header with clear button */}
+      {completedTurns.length > 0 && !isResponding && (
+        <div className="flex items-center justify-end">
+          <button
+            onClick={handleClearHistory}
+            disabled={clearing}
+            className="flex items-center gap-1 text-[9px] text-destructive/50 hover:text-destructive transition-colors disabled:opacity-30"
+          >
+            {clearing ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Trash2 className="w-2.5 h-2.5" />}
+            Clear History
+          </button>
+        </div>
+      )}
+
+      {!loadedFromDb && (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="w-5 h-5 animate-spin text-muted-foreground/30" />
+        </div>
+      )}
+      {isEmpty && (
+        <div className="flex flex-col items-center justify-center py-12 text-muted-foreground/30">
+          <Bot className="w-8 h-8 mb-2" />
+          <span className="text-[11px]">No research started yet</span>
+        </div>
+      )}
+
+      {/* Completed turns history — blocks rendered in order */}
+      {completedTurns.map((turn) => (
+        <div key={turn.id} className="space-y-2">
+          {turn.blocks.map((block, i) =>
+            block.type === "tool" ? (
+              <div key={block.id || i} className="flex items-center gap-2 px-3 py-1.5 rounded bg-muted/8 border border-border/5">
+                <Zap className="w-3 h-3 text-accent/60 flex-shrink-0" />
+                <span className="text-[10px] font-mono text-foreground/60 truncate">{block.name}</span>
+                <span className={cn(
+                  "text-[9px] ml-auto px-1.5 py-0.5 rounded",
+                  block.status === "completed" ? "text-green-400 bg-green-500/10" :
+                  block.status === "error" ? "text-red-400 bg-red-500/10" :
+                  "text-muted-foreground/40 bg-muted/10"
+                )}>
+                  {block.status === "completed" ? "done" : block.status === "error" ? "error" : "done"}
+                </span>
+              </div>
+            ) : block.content ? (
+              <div key={i} className={proseClasses}>
+                <Markdown content={block.content} />
+              </div>
+            ) : null
+          )}
+        </div>
+      ))}
+
+      {/* Live streaming: rendered in order (interleaved) */}
+      {isThinking && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-muted/10 border border-border/5">
+          <Loader2 className="w-3 h-3 animate-spin text-muted-foreground/50" />
+          <span className="text-[10px] text-muted-foreground/50">Thinking...</span>
+        </div>
+      )}
+      {streamingBlocks.map((block, i) =>
+        block.type === "tool" ? (
+          <div key={block.toolCall.id} className="flex items-center gap-2 px-3 py-1.5 rounded bg-muted/8 border border-border/5">
+            <Zap className="w-3 h-3 text-accent/60 flex-shrink-0" />
+            <span className="text-[10px] font-mono text-foreground/60 truncate">{block.toolCall.name}</span>
+            <span className={cn(
+              "text-[9px] ml-auto px-1.5 py-0.5 rounded",
+              block.toolCall.status === "completed" ? "text-green-400 bg-green-500/10" :
+              block.toolCall.status === "error" ? "text-red-400 bg-red-500/10" :
+              "text-muted-foreground/40 bg-muted/10"
+            )}>
+              {block.toolCall.status === "completed" ? "done" : block.toolCall.status === "error" ? "error" : "running..."}
+            </span>
+          </div>
+        ) : block.type === "text" && block.content ? (
+          <div key={`text-${i}`} className={proseClasses}>
+            <Markdown content={block.content} streaming={isResponding} />
+          </div>
+        ) : null
+      )}
+
+      {/* Approval / Ask Human cards */}
+      {pendingApproval && (
+        <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+            <span className="text-[11px] font-medium text-amber-400">Tool approval needed</span>
+          </div>
+          <div className="text-[10px] font-mono text-foreground/60">{pendingApproval.name}</div>
+          {pendingApproval.args && (
+            <pre className="text-[9px] text-muted-foreground/40 bg-muted/10 rounded p-2 overflow-x-auto max-h-24">
+              {JSON.stringify(pendingApproval.args, null, 2)}
+            </pre>
+          )}
+          <div className="flex gap-2">
+            <button
+              onClick={() => { setDismissedApprovalId(pendingApproval.id); respondToToolApproval(sid, { request_id: pendingApproval.id, approved: true, remember: false, always_allow: false }).catch(console.error); }}
+              className="px-3 py-1 rounded text-[10px] font-medium bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 transition-colors"
+            >
+              Approve
+            </button>
+            <button
+              onClick={() => {
+                setDismissedApprovalId(pendingApproval.id);
+                respondToToolApproval(sid, { request_id: pendingApproval.id, approved: true, remember: false, always_allow: false }).catch(console.error);
+                const ws = useStore.getState().sessions[sid]?.workingDirectory || ".";
+                setAgentMode(sid, "auto-approve", ws).catch(console.error);
+              }}
+              className="px-3 py-1 rounded text-[10px] font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors"
+            >
+              Run Everything
+            </button>
+            <button
+              onClick={() => { setDismissedApprovalId(pendingApproval.id); respondToToolApproval(sid, { request_id: pendingApproval.id, approved: false, remember: false, always_allow: false }).catch(console.error); }}
+              className="px-3 py-1 rounded text-[10px] font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
+            >
+              Deny
+            </button>
+          </div>
+        </div>
+      )}
+
+      {pendingAskHuman && (
+        <div className="rounded-lg border border-accent/20 bg-accent/5 p-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <MessageSquare className="w-3.5 h-3.5 text-accent" />
+            <span className="text-[11px] font-medium text-accent">AI needs your input</span>
+          </div>
+          <div className="text-[11px] text-foreground/70">{pendingAskHuman.question}</div>
+          {pendingAskHuman.options.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {pendingAskHuman.options.map((opt) => (
+                <button
+                  key={opt}
+                  onClick={() => { setDismissedAskHumanId(pendingAskHuman.requestId); respondToToolApproval(sid, { request_id: pendingAskHuman.requestId, approved: true, reason: opt, remember: false, always_allow: false }).catch(console.error); }}
+                  className="px-2.5 py-1 rounded text-[10px] font-medium bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
+                >
+                  {opt}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={askHumanInput}
+                onChange={(e) => setAskHumanInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && askHumanInput.trim()) {
+                    setDismissedAskHumanId(pendingAskHuman.requestId);
+                    respondToToolApproval(sid, { request_id: pendingAskHuman.requestId, approved: true, reason: askHumanInput.trim(), remember: false, always_allow: false }).catch(console.error);
+                    setAskHumanInput("");
+                  }
+                }}
+                placeholder="Type your response..."
+                className="flex-1 px-2.5 py-1 rounded text-[10px] bg-muted/10 border border-border/10 text-foreground placeholder:text-muted-foreground/30 focus:outline-none focus:ring-1 focus:ring-accent/30"
+              />
+              <button
+                onClick={() => {
+                  if (askHumanInput.trim()) {
+                    setDismissedAskHumanId(pendingAskHuman.requestId);
+                    respondToToolApproval(sid, { request_id: pendingAskHuman.requestId, approved: true, reason: askHumanInput.trim(), remember: false, always_allow: false }).catch(console.error);
+                    setAskHumanInput("");
+                  }
+                }}
+                className="px-2.5 py-1 rounded text-[10px] font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors"
+              >
+                Send
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {isResponding && !isThinking && streamingBlocks.length === 0 && (
+        <div className="flex items-center gap-2 py-2">
+          <Loader2 className="w-3 h-3 animate-spin text-accent/60" />
+          <span className="text-[10px] text-muted-foreground/40">Researching...</span>
+        </div>
+      )}
+
+      {!isResponding && completedTurns.length > 0 && (
+        <div className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-green-500/5 border border-green-500/10">
+          <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
+          <span className="text-[10px] text-green-400">Research complete</span>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -848,130 +1396,593 @@ function IntelTab({ entry }: { entry: VulnEntry }) {
   );
 }
 
-function WikiTab({ link, cveId, onUpdateLink, onOpenFile }: { link: VulnLink; cveId: string; onUpdateLink: (updater: (l: VulnLink) => VulnLink) => void; onOpenFile?: (path: string) => void }) {
-  const { t } = useTranslation();
+interface WikiTreeNode {
+  path: string;
+  name: string;
+  is_dir: boolean;
+  children?: WikiTreeNode[];
+}
+
+function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: string; onUpdateLink: (updater: (l: VulnLink) => VulnLink) => void }) {
+  const [fullTree, setFullTree] = useState<WikiTreeNode[]>([]);
+  const [loadingTree, setLoadingTree] = useState(true);
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [articleContents, setArticleContents] = useState<Record<string, string>>({});
+  const [editingPath, setEditingPath] = useState<string | null>(null);
+  const [editContent, setEditContent] = useState("");
+  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
   const [newPath, setNewPath] = useState("");
-  const [wikiTree, setWikiTree] = useState<{ path: string; name: string; is_dir: boolean }[]>([]);
-  const [loadingTree, setLoadingTree] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<{ path: string; title: string; snippet: string }[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [createPath, setCreatePath] = useState("");
 
-  const loadWikiFiles = useCallback(async () => {
+  const linkedSet = useMemo(() => new Set(link.wikiPaths), [link.wikiPaths]);
+
+  const reloadTree = useCallback(() => {
     setLoadingTree(true);
-    try {
-      const flatFiles: { path: string; name: string; is_dir: boolean }[] = [];
-      const flatten = (entries: { path: string; name: string; is_dir: boolean; children?: { path: string; name: string; is_dir: boolean }[] }[]) => {
-        for (const e of entries) {
-          if (e.is_dir && e.children) flatten(e.children);
-          else if (!e.is_dir) flatFiles.push(e);
+    invoke<WikiTreeNode[]>("wiki_list")
+      .then((tree) => {
+        setFullTree(Array.isArray(tree) ? tree : []);
+        const dirs = new Set<string>();
+        for (const p of link.wikiPaths) {
+          const parts = p.split("/");
+          for (let i = 1; i < parts.length; i++) dirs.add(parts.slice(0, i).join("/"));
         }
-      };
-      const tree = await invoke<{ path: string; name: string; is_dir: boolean; children?: { path: string; name: string; is_dir: boolean }[] }[]>("wiki_list");
-      if (Array.isArray(tree)) flatten(tree);
-      setWikiTree(flatFiles);
-    } catch { /* ignore */ }
-    setLoadingTree(false);
+        setExpandedDirs(dirs);
+        if (link.wikiPaths.length > 0 && !selectedPath) setSelectedPath(link.wikiPaths[0]);
+      })
+      .catch(console.error)
+      .finally(() => setLoadingTree(false));
+  }, [link.wikiPaths, selectedPath]);
+
+  useEffect(() => { reloadTree(); }, []);
+
+  useEffect(() => {
+    if (!selectedPath || articleContents[selectedPath] !== undefined) return;
+    invoke<string>("wiki_read", { path: selectedPath })
+      .then((content) => setArticleContents((prev) => ({ ...prev, [selectedPath]: content })))
+      .catch(() => setArticleContents((prev) => ({ ...prev, [selectedPath]: "" })));
+  }, [selectedPath]);
+
+  const toggleDir = useCallback((dir: string) => {
+    setExpandedDirs((prev) => {
+      const next = new Set(prev);
+      if (next.has(dir)) next.delete(dir);
+      else next.add(dir);
+      return next;
+    });
   }, []);
 
-  useEffect(() => { if (adding) loadWikiFiles(); }, [adding, loadWikiFiles]);
-
-  const handleAddWiki = useCallback((path: string) => {
+  const handleLinkWiki = useCallback((path: string) => {
     onUpdateLink((l) => ({
       ...l,
       wikiPaths: l.wikiPaths.includes(path) ? l.wikiPaths : [...l.wikiPaths, path],
     }));
-    setAdding(false);
-    setNewPath("");
-  }, [onUpdateLink]);
+    invoke("vuln_link_add_wiki", { cveId, wikiPath: path }).catch(console.error);
+  }, [onUpdateLink, cveId]);
 
-  const handleRemoveWiki = useCallback((path: string) => {
+  const handleUnlinkWiki = useCallback((path: string) => {
     onUpdateLink((l) => ({ ...l, wikiPaths: l.wikiPaths.filter((p) => p !== path) }));
-  }, [onUpdateLink]);
+    invoke("vuln_link_remove_wiki", { cveId, wikiPath: path }).catch(console.error);
+    if (selectedPath === path) setSelectedPath(null);
+  }, [onUpdateLink, cveId, selectedPath]);
 
-  const handleCreateWikiArticle = useCallback(async () => {
-    const path = `${cveId}/README.md`;
+  const handleStartEdit = useCallback((path: string) => {
+    setEditingPath(path);
+    setEditContent(articleContents[path] || "");
+  }, [articleContents]);
+
+  const handleSaveEdit = useCallback(async () => {
+    if (!editingPath) return;
     try {
-      await invoke("wiki_create_cve", { cveId, title: cveId, pocLang: null });
-      handleAddWiki(path);
+      await invoke("wiki_write", { path: editingPath, content: editContent });
+      setArticleContents((prev) => ({ ...prev, [editingPath]: editContent }));
+      setEditingPath(null);
     } catch (err) {
-      console.error("Failed to create wiki article:", err);
+      console.error("Failed to save wiki article:", err);
     }
-  }, [cveId, handleAddWiki]);
+  }, [editingPath, editContent]);
+
+  const handleDeletePage = useCallback(async (path: string) => {
+    if (!confirm(`Delete wiki page "${path}"? This cannot be undone.`)) return;
+    try {
+      await invoke("wiki_delete", { path });
+      setArticleContents((prev) => {
+        const next = { ...prev };
+        delete next[path];
+        return next;
+      });
+      if (selectedPath === path) setSelectedPath(null);
+      if (linkedSet.has(path)) handleUnlinkWiki(path);
+      reloadTree();
+    } catch (err) {
+      console.error("Failed to delete wiki page:", err);
+    }
+  }, [selectedPath, linkedSet, handleUnlinkWiki, reloadTree]);
+
+  const handleCreatePage = useCallback(async () => {
+    const p = createPath.trim();
+    if (!p) return;
+    const path = p.endsWith(".md") ? p : `${p}.md`;
+    const template = `---\ntitle: ${path.split("/").pop()?.replace(/\.md$/, "") || "New Page"}\ncategory: ${path.split("/")[0] || "uncategorized"}\ntags: []\ncves: [${cveId}]\nstatus: draft\n---\n\n# ${path.split("/").pop()?.replace(/\.md$/, "") || "New Page"}\n\nContent here.\n`;
+    try {
+      await invoke("wiki_write", { path, content: template });
+      handleLinkWiki(path);
+      setCreating(false);
+      setCreatePath("");
+      setArticleContents((prev) => ({ ...prev, [path]: template }));
+      reloadTree();
+      setSelectedPath(path);
+    } catch (err) {
+      console.error("Failed to create wiki page:", err);
+    }
+  }, [createPath, cveId, handleLinkWiki, reloadTree]);
+
+  // Full-text search via DB
+  const handleSearch = useCallback(async (query: string) => {
+    if (!query.trim()) { setSearchResults([]); return; }
+    setSearching(true);
+    try {
+      const results = await invoke<{ path: string; title: string; category: string; tags: string[]; status: string | null }[]>(
+        "wiki_search_db", { query: query.trim(), limit: 20 }
+      );
+      setSearchResults(results.map((r) => ({
+        path: r.path,
+        title: r.title || r.path,
+        snippet: `[${r.category}] ${r.tags.join(", ")}${r.status ? ` • ${r.status}` : ""}`,
+      })));
+    } catch {
+      setSearchResults([]);
+    }
+    setSearching(false);
+  }, []);
+
+  useEffect(() => {
+    const t = setTimeout(() => handleSearch(searchQuery), 300);
+    return () => clearTimeout(t);
+  }, [searchQuery, handleSearch]);
+
+  // Navigate to a wiki page (used by cross-reference links)
+  const navigateToWikiPage = useCallback((path: string) => {
+    const expandPath = (p: string) => {
+      const parts = p.split("/");
+      const dirs = new Set<string>();
+      for (let i = 1; i < parts.length; i++) dirs.add(parts.slice(0, i).join("/"));
+      return dirs;
+    };
+    setExpandedDirs((prev) => {
+      const next = new Set(prev);
+      for (const d of expandPath(path)) next.add(d);
+      return next;
+    });
+    setArticleContents((prev) => {
+      if (prev[path] !== undefined) return prev;
+      return { ...prev };
+    });
+    setSelectedPath(path);
+    setSearchQuery("");
+    setSearchResults([]);
+  }, []);
+
+  const stripFrontmatter = (content: string) => {
+    const match = content.match(/^---\n[\s\S]*?\n---\n?/);
+    return match ? content.slice(match[0].length) : content;
+  };
+
+  const extractFrontmatterField = (content: string, field: string): string | null => {
+    const fm = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fm) return null;
+    const m = fm[1].match(new RegExp(`^${field}:\\s*(.+)$`, "m"));
+    return m?.[1]?.trim() || null;
+  };
+
+  const extractTitle = (content: string) => {
+    const t = extractFrontmatterField(content, "title");
+    if (t) return t.replace(/^["']|["']$/g, "");
+    const h1 = content.match(/^#\s+(.+)$/m);
+    return h1?.[1] || null;
+  };
+
+  const extractStatus = (content: string) => extractFrontmatterField(content, "status");
+
+  const extractTags = (content: string): string[] => {
+    const fm = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fm) return [];
+    const m = fm[1].match(/tags:\s*\[([^\]]*)\]/);
+    if (m) return m[1].split(",").map((t) => t.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
+    return [];
+  };
+
+  const extractCves = (content: string): string[] => {
+    const fm = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fm) return [];
+    const m = fm[1].match(/cves:\s*\[([^\]]*)\]/);
+    if (m) return m[1].split(",").map((c) => c.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
+    return [];
+  };
+
+  // Intercept wiki-link clicks in rendered markdown
+  const handleContentClick = useCallback((e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    const anchor = target.closest("a");
+    if (!anchor) return;
+    const href = anchor.getAttribute("href") || "";
+    if (href.match(/^(https?:|mailto:|#)/)) return;
+    if (href.endsWith(".md") || !href.includes("://")) {
+      e.preventDefault();
+      const resolved = selectedPath
+        ? new URL(href, `file:///${selectedPath}`).pathname.replace(/^\//, "")
+        : href;
+      navigateToWikiPage(resolved);
+    }
+  }, [selectedPath, navigateToWikiPage]);
+
+  const statusColors: Record<string, string> = {
+    draft: "text-yellow-400 bg-yellow-500/10",
+    partial: "text-orange-400 bg-orange-500/10",
+    complete: "text-green-400 bg-green-500/10",
+    "needs-poc": "text-blue-400 bg-blue-500/10",
+    verified: "text-emerald-400 bg-emerald-500/10",
+  };
+
+  const categoryIcons: Record<string, string> = {
+    products: "📦",
+    techniques: "⚔️",
+    pocs: "🔧",
+    experience: "📝",
+    analysis: "🔬",
+  };
+
+  const proseClasses = "text-[11px] leading-relaxed text-foreground/80 prose prose-invert prose-sm max-w-none prose-headings:text-foreground/90 prose-headings:text-[12px] prose-headings:font-semibold prose-p:text-[11px] prose-p:leading-relaxed prose-code:text-[10px] prose-code:bg-muted/20 prose-code:px-1 prose-code:rounded prose-pre:bg-muted/10 prose-pre:border prose-pre:border-border/10 prose-pre:text-[10px] prose-li:text-[11px] prose-a:text-accent";
+
+  // Filter tree nodes by search
+  const filterTree = useCallback((nodes: WikiTreeNode[], q: string): WikiTreeNode[] => {
+    if (!q) return nodes;
+    const lower = q.toLowerCase();
+    return nodes.reduce<WikiTreeNode[]>((acc, node) => {
+      if (node.is_dir) {
+        const filtered = filterTree(node.children || [], q);
+        if (filtered.length > 0) acc.push({ ...node, children: filtered });
+      } else if (node.name.toLowerCase().includes(lower) || node.path.toLowerCase().includes(lower)) {
+        acc.push(node);
+      }
+      return acc;
+    }, []);
+  }, []);
+
+  const displayTree = searchQuery && !searchResults.length ? filterTree(fullTree, searchQuery) : fullTree;
+
+  const renderTreeNode = (node: WikiTreeNode, depth = 0) => {
+    if (node.is_dir) {
+      const isExpanded = expandedDirs.has(node.path) || !!searchQuery;
+      const icon = categoryIcons[node.name] || "";
+      const hasLinkedChildren = link.wikiPaths.some((p) => p.startsWith(node.path + "/"));
+      return (
+        <div key={node.path}>
+          <button
+            onClick={() => toggleDir(node.path)}
+            className={cn(
+              "flex items-center gap-1 w-full px-1.5 py-1 rounded text-left hover:bg-muted/10 transition-colors",
+              hasLinkedChildren && "text-foreground/80"
+            )}
+            style={{ paddingLeft: `${depth * 12 + 6}px` }}
+          >
+            {isExpanded ? (
+              <ChevronDown className="w-2.5 h-2.5 text-muted-foreground/40 flex-shrink-0" />
+            ) : (
+              <ChevronRight className="w-2.5 h-2.5 text-muted-foreground/40 flex-shrink-0" />
+            )}
+            {icon ? (
+              <span className="text-[10px] flex-shrink-0">{icon}</span>
+            ) : (
+              <BookOpen className="w-3 h-3 text-muted-foreground/30 flex-shrink-0" />
+            )}
+            <span className={cn("text-[10px] truncate", hasLinkedChildren ? "text-foreground/70 font-medium" : "text-muted-foreground/50")}>
+              {node.name}
+            </span>
+            {hasLinkedChildren && (
+              <span className="text-[7px] text-accent/50 ml-auto flex-shrink-0">linked</span>
+            )}
+          </button>
+          {isExpanded && node.children?.map((child) => renderTreeNode(child, depth + 1))}
+        </div>
+      );
+    }
+
+    const isLinked = linkedSet.has(node.path);
+    const isSelected = selectedPath === node.path;
+    return (
+      <div key={node.path} className="group/file flex items-center">
+        <button
+          onClick={() => setSelectedPath(node.path)}
+          className={cn(
+            "flex items-center gap-1.5 flex-1 px-1.5 py-1 rounded text-left transition-colors",
+            isSelected
+              ? "bg-accent/15 text-accent"
+              : isLinked
+                ? "text-foreground/70 hover:bg-muted/10"
+                : "text-muted-foreground/40 hover:bg-muted/10 hover:text-muted-foreground/60"
+          )}
+          style={{ paddingLeft: `${depth * 12 + 6}px` }}
+        >
+          <FileText className={cn("w-3 h-3 flex-shrink-0", isSelected ? "text-accent" : isLinked ? "text-blue-400/60" : "text-muted-foreground/25")} />
+          <span className="text-[10px] truncate flex-1">{node.name.replace(/\.md$/, "")}</span>
+          {isLinked && <span className="w-1.5 h-1.5 rounded-full bg-accent/60 flex-shrink-0" />}
+        </button>
+        {!isLinked && (
+          <button
+            onClick={() => handleLinkWiki(node.path)}
+            className="p-0.5 text-accent/0 group-hover/file:text-accent/50 hover:!text-accent transition-colors flex-shrink-0"
+            title="Link to this CVE"
+          >
+            <Link2 className="w-2.5 h-2.5" />
+          </button>
+        )}
+      </div>
+    );
+  };
+
+  const selectedContent = selectedPath ? articleContents[selectedPath] || "" : "";
+  const selectedTitle = selectedContent ? extractTitle(selectedContent) || selectedPath?.split("/").pop()?.replace(/\.md$/, "") : null;
+  const selectedStatus = selectedContent ? extractStatus(selectedContent) : null;
+  const selectedBody = selectedContent ? stripFrontmatter(selectedContent) : "";
+  const selectedTags = selectedContent ? extractTags(selectedContent) : [];
+  const selectedCves = selectedContent ? extractCves(selectedContent) : [];
+  const isEditing = editingPath === selectedPath;
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <span className="text-[8px] text-muted-foreground/30 uppercase tracking-wider">
-          {t("vulnIntel.linkedWiki", "Linked Wiki Articles")}
-        </span>
-        <div className="flex items-center gap-1">
-          <button onClick={() => setAdding(!adding)}
-            className="flex items-center gap-1 text-[9px] text-accent/60 hover:text-accent transition-colors">
-            <Link2 className="w-2.5 h-2.5" /> {t("vulnIntel.linkArticle", "Link")}
-          </button>
-          <button onClick={handleCreateWikiArticle}
-            className="flex items-center gap-1 text-[9px] text-emerald-400/60 hover:text-emerald-400 transition-colors">
-            <Plus className="w-2.5 h-2.5" /> {t("vulnIntel.createArticle", "Create")}
-          </button>
+    <div className="flex h-full" style={{ minHeight: "300px" }}>
+      {/* Left: directory tree */}
+      <div className="w-[200px] flex-shrink-0 border-r border-border/10 flex flex-col">
+        {/* Tree header with actions */}
+        <div className="flex items-center justify-between px-2 py-1.5 border-b border-border/5">
+          <span className="text-[8px] text-muted-foreground/30 uppercase tracking-wider">Wiki</span>
+          <div className="flex items-center gap-0.5">
+            <button
+              onClick={() => { setCreating(!creating); setAdding(false); }}
+              className="p-0.5 text-muted-foreground/30 hover:text-emerald-400 transition-colors"
+              title="Create new wiki page"
+            >
+              <Plus className="w-3 h-3" />
+            </button>
+            <button
+              onClick={() => { setAdding(!adding); setCreating(false); }}
+              className="p-0.5 text-muted-foreground/30 hover:text-accent transition-colors"
+              title="Link existing wiki article"
+            >
+              <Link2 className="w-3 h-3" />
+            </button>
+          </div>
         </div>
-      </div>
 
-      {adding && (
-        <div className="space-y-1.5 p-2 border border-border/15 rounded bg-[var(--bg-hover)]/20">
-          <div className="flex items-center gap-1.5">
+        {/* Search bar */}
+        <div className="px-2 py-1.5 border-b border-border/5">
+          <div className="relative">
+            <Search className="absolute left-1.5 top-1/2 -translate-y-1/2 w-2.5 h-2.5 text-muted-foreground/25" />
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search wiki..."
+              className="w-full h-5 pl-5 pr-1.5 text-[9px] bg-[var(--bg-hover)]/30 rounded border border-border/10 text-foreground placeholder:text-muted-foreground/25 outline-none focus:border-accent/30"
+            />
+            {searching && <Loader2 className="absolute right-1.5 top-1/2 -translate-y-1/2 w-2.5 h-2.5 animate-spin text-muted-foreground/30" />}
+          </div>
+        </div>
+
+        {/* Create new page form */}
+        {creating && (
+          <div className="px-2 py-1.5 border-b border-border/5 space-y-1">
+            <input
+              value={createPath}
+              onChange={(e) => setCreatePath(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleCreatePage(); }}
+              placeholder="products/myapp/CVE-XXXX.md"
+              className="w-full h-5 px-1.5 text-[9px] font-mono bg-[var(--bg-hover)]/30 rounded border border-border/15 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40"
+              autoFocus
+            />
+            <div className="flex gap-1">
+              <button onClick={handleCreatePage} disabled={!createPath.trim()}
+                className="text-[8px] text-emerald-400 disabled:opacity-30">Create</button>
+              <button onClick={() => { setCreating(false); setCreatePath(""); }}
+                className="text-[8px] text-muted-foreground/30">Cancel</button>
+            </div>
+          </div>
+        )}
+
+        {/* Manual link input */}
+        {adding && (
+          <div className="px-2 py-1.5 border-b border-border/5 space-y-1">
             <input
               value={newPath}
               onChange={(e) => setNewPath(e.target.value)}
-              placeholder={t("vulnIntel.wikiPathPlaceholder", "Wiki file path...")}
-              className="flex-1 h-6 px-2 text-[10px] font-mono bg-[var(--bg-hover)]/30 rounded border border-border/15 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && newPath.trim()) {
+                  handleLinkWiki(newPath.trim());
+                  setAdding(false);
+                  setNewPath("");
+                }
+              }}
+              placeholder="Path to link..."
+              className="w-full h-5 px-1.5 text-[9px] font-mono bg-[var(--bg-hover)]/30 rounded border border-border/15 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40"
+              autoFocus
             />
-            <button onClick={() => handleAddWiki(newPath.trim())} disabled={!newPath.trim()}
-              className="text-[9px] text-accent hover:text-accent/80 font-medium disabled:opacity-30">
-              {t("vulnIntel.link", "Link")}
-            </button>
-            <button onClick={() => { setAdding(false); setNewPath(""); }}
-              className="text-[9px] text-muted-foreground/30">{t("common.cancel")}</button>
+            <div className="flex gap-1">
+              <button onClick={() => { handleLinkWiki(newPath.trim()); setAdding(false); setNewPath(""); }}
+                disabled={!newPath.trim()} className="text-[8px] text-accent disabled:opacity-30">Link</button>
+              <button onClick={() => { setAdding(false); setNewPath(""); }}
+                className="text-[8px] text-muted-foreground/30">Cancel</button>
+            </div>
           </div>
+        )}
+
+        {/* DB search results */}
+        {searchQuery && searchResults.length > 0 && (
+          <div className="border-b border-border/5 max-h-32 overflow-y-auto">
+            <div className="px-2 py-0.5">
+              <span className="text-[7px] text-muted-foreground/25 uppercase">DB Results</span>
+            </div>
+            {searchResults.map((r) => (
+              <button
+                key={r.path}
+                onClick={() => navigateToWikiPage(r.path)}
+                className="flex flex-col w-full px-2 py-1 hover:bg-muted/10 transition-colors text-left"
+              >
+                <span className="text-[9px] text-foreground/70 truncate">{r.title}</span>
+                <span className="text-[7px] text-muted-foreground/30 truncate">{r.snippet}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Tree content */}
+        <div className="flex-1 overflow-y-auto py-1">
           {loadingTree ? (
-            <div className="text-[9px] text-muted-foreground/30 py-1"><Loader2 className="w-3 h-3 animate-spin inline mr-1" />Loading...</div>
-          ) : wikiTree.length > 0 ? (
-            <div className="max-h-32 overflow-y-auto space-y-0.5">
-              {wikiTree.filter((f) => !link.wikiPaths.includes(f.path)).map((f) => (
-                <div key={f.path} onClick={() => handleAddWiki(f.path)}
-                  className="flex items-center gap-1.5 px-1.5 py-1 rounded cursor-pointer hover:bg-muted/10 transition-colors">
-                  <FileText className="w-3 h-3 text-blue-400/50 flex-shrink-0" />
-                  <span className="text-[9px] text-foreground/60 truncate">{f.path}</span>
-                </div>
-              ))}
+            <div className="flex items-center justify-center py-6">
+              <Loader2 className="w-4 h-4 animate-spin text-muted-foreground/20" />
+            </div>
+          ) : displayTree.length === 0 ? (
+            <div className="text-[9px] text-muted-foreground/20 text-center py-6">
+              {searchQuery ? "No matches" : "No wiki pages yet"}
             </div>
           ) : (
-            <div className="text-[9px] text-muted-foreground/30 py-1">{t("vulnIntel.noWikiFiles", "No wiki files found")}</div>
+            displayTree.map((node) => renderTreeNode(node))
           )}
         </div>
-      )}
 
-      {link.wikiPaths.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-6 gap-2 text-muted-foreground/20">
-          <BookOpen className="w-8 h-8" />
-          <p className="text-[10px]">{t("vulnIntel.noLinkedWiki", "No wiki articles linked")}</p>
-          <p className="text-[9px] text-muted-foreground/15">{t("vulnIntel.linkWikiHint", "Link existing wiki articles or create a new one for this vulnerability")}</p>
-        </div>
-      ) : (
-        <div className="space-y-1">
-          {link.wikiPaths.map((path) => (
-            <div key={path} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-muted/5 transition-colors group cursor-pointer"
-              onClick={() => onOpenFile?.(path)}>
+        {/* Linked count */}
+        {link.wikiPaths.length > 0 && (
+          <div className="px-2 py-1 border-t border-border/5">
+            <span className="text-[8px] text-accent/40">
+              {link.wikiPaths.length} linked
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Right: article content */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {selectedPath ? (
+          <>
+            {/* Article header */}
+            <div className="flex items-center gap-2 px-3 py-2 border-b border-border/5">
               <FileText className="w-3.5 h-3.5 text-blue-400/60 flex-shrink-0" />
-              <span className="text-[10px] text-accent/70 hover:text-accent truncate flex-1 font-mono">{path}</span>
-              <button onClick={(e) => { e.stopPropagation(); handleRemoveWiki(path); }}
-                className="p-0.5 rounded text-muted-foreground/0 group-hover:text-muted-foreground/30 hover:!text-destructive transition-all">
-                <X className="w-3 h-3" />
-              </button>
+              <span className="text-[11px] text-foreground/80 font-medium truncate flex-1">
+                {selectedTitle || selectedPath}
+              </span>
+              {selectedStatus && (
+                <span className={cn("text-[8px] px-1.5 py-0.5 rounded", statusColors[selectedStatus] || "text-muted-foreground/40 bg-muted/10")}>
+                  {selectedStatus}
+                </span>
+              )}
+              {linkedSet.has(selectedPath) ? (
+                <button onClick={() => handleUnlinkWiki(selectedPath)}
+                  className="text-[8px] px-1.5 py-0.5 rounded text-destructive/50 hover:text-destructive hover:bg-destructive/10 transition-colors">
+                  Unlink
+                </button>
+              ) : (
+                <button onClick={() => handleLinkWiki(selectedPath)}
+                  className="text-[8px] px-1.5 py-0.5 rounded text-accent/50 hover:text-accent hover:bg-accent/10 transition-colors">
+                  Link
+                </button>
+              )}
+              {isEditing ? (
+                <>
+                  <button onClick={handleSaveEdit}
+                    className="text-[9px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 transition-colors">
+                    Save
+                  </button>
+                  <button onClick={() => setEditingPath(null)}
+                    className="text-[9px] px-2 py-0.5 rounded text-muted-foreground/40 hover:text-muted-foreground/60 transition-colors">
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button onClick={() => handleStartEdit(selectedPath)}
+                    className="text-[9px] px-2 py-0.5 rounded text-muted-foreground/30 hover:text-accent transition-colors">
+                    Edit
+                  </button>
+                  <button onClick={() => handleDeletePage(selectedPath)}
+                    className="text-[9px] px-2 py-0.5 rounded text-destructive/30 hover:text-destructive transition-colors">
+                    Delete
+                  </button>
+                </>
+              )}
             </div>
-          ))}
-        </div>
-      )}
+
+            {/* Metadata row: path + tags + related CVEs */}
+            <div className="px-3 py-1.5 border-b border-border/3 space-y-1">
+              <span className="text-[8px] font-mono text-muted-foreground/25">{selectedPath}</span>
+              {(selectedTags.length > 0 || selectedCves.length > 0) && (
+                <div className="flex items-center gap-1 flex-wrap">
+                  {selectedTags.map((tag) => (
+                    <span key={tag} className="text-[7px] px-1 py-0.5 rounded bg-accent/10 text-accent/60">{tag}</span>
+                  ))}
+                  {selectedCves.filter((c) => c !== cveId).map((c) => (
+                    <span key={c} className="text-[7px] px-1 py-0.5 rounded bg-blue-500/10 text-blue-400/60">{c}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Article body */}
+            {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
+            <div className="flex-1 overflow-y-auto px-3 py-3" onClick={handleContentClick}>
+              {articleContents[selectedPath] === undefined ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="w-4 h-4 animate-spin text-muted-foreground/20" />
+                </div>
+              ) : isEditing ? (
+                <textarea
+                  value={editContent}
+                  onChange={(e) => setEditContent(e.target.value)}
+                  className="w-full h-full min-h-[200px] p-2 rounded bg-[var(--bg-hover)]/30 border border-border/15 text-[10px] font-mono text-foreground/80 resize-y outline-none focus:border-accent/40"
+                  spellCheck={false}
+                />
+              ) : selectedBody ? (
+                <div className={proseClasses}>
+                  <Markdown content={selectedBody} />
+                </div>
+              ) : (
+                <div className="text-[10px] text-muted-foreground/20 py-8 text-center">Empty article</div>
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="flex-1 flex flex-col items-center justify-center gap-2 text-muted-foreground/15">
+            <BookOpen className="w-10 h-10" />
+            <p className="text-[10px]">Select a wiki article from the tree</p>
+            {link.wikiPaths.length === 0 && (
+              <p className="text-[9px] text-muted-foreground/10">
+                Run AI Research to generate wiki articles for this vulnerability
+              </p>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
+}
+
+interface GithubPocResult {
+  full_name: string;
+  html_url: string;
+  description: string | null;
+  language: string | null;
+  stars: number;
+  updated_at: string;
+  topics: string[];
+}
+
+interface NucleiTemplateResult {
+  name: string;
+  path: string;
+  html_url: string;
+  content: string | null;
+  severity: string | null;
 }
 
 function PocTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: string; onUpdateLink: (updater: (l: VulnLink) => VulnLink) => void }) {
@@ -982,6 +1993,76 @@ function PocTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: string; 
   const [formLang, setFormLang] = useState("yaml");
   const [formContent, setFormContent] = useState("");
   const [expandedPoc, setExpandedPoc] = useState<string | null>(null);
+  const [ghResults, setGhResults] = useState<GithubPocResult[]>([]);
+  const [ghSearching, setGhSearching] = useState(false);
+  const [ghSearched, setGhSearched] = useState(false);
+  const [ghError, setGhError] = useState<string | null>(null);
+
+  const [nucleiResults, setNucleiResults] = useState<NucleiTemplateResult[]>([]);
+  const [nucleiSearching, setNucleiSearching] = useState(false);
+  const [nucleiSearched, setNucleiSearched] = useState(false);
+  const [nucleiError, setNucleiError] = useState<string | null>(null);
+  const [nucleiImporting, setNucleiImporting] = useState<string | null>(null);
+
+  const searchGithubPoc = useCallback(async () => {
+    setGhSearching(true);
+    setGhError(null);
+    try {
+      const results = await invoke<GithubPocResult[]>("intel_search_github_poc", { cveId });
+      setGhResults(results);
+    } catch (e) {
+      setGhError(String(e));
+      setGhResults([]);
+    }
+    setGhSearching(false);
+    setGhSearched(true);
+  }, [cveId]);
+
+  const searchNucleiTemplates = useCallback(async () => {
+    setNucleiSearching(true);
+    setNucleiError(null);
+    try {
+      const results = await invoke<NucleiTemplateResult[]>("intel_search_nuclei_templates", { cveId });
+      setNucleiResults(results);
+    } catch (e) {
+      setNucleiError(String(e));
+      setNucleiResults([]);
+    }
+    setNucleiSearching(false);
+    setNucleiSearched(true);
+  }, [cveId]);
+
+  const importNucleiTemplate = useCallback(async (template: NucleiTemplateResult) => {
+    if (!template.content) return;
+    setNucleiImporting(template.name);
+    try {
+      const dbPoc = await invoke<{ id: string; name: string; type: string; language: string; content: string; created: number }>(
+        "vuln_link_add_poc",
+        { cveId, name: `[Nuclei] ${template.name}`, pocType: "nuclei", language: "yaml", content: template.content }
+      );
+      onUpdateLink((l) => ({
+        ...l,
+        pocTemplates: [...l.pocTemplates, {
+          id: dbPoc.id,
+          name: dbPoc.name,
+          type: dbPoc.type as PocTemplate["type"],
+          language: dbPoc.language,
+          content: dbPoc.content,
+          created: dbPoc.created,
+        }],
+      }));
+    } catch (e) {
+      console.error("Failed to import nuclei template:", e);
+    }
+    setNucleiImporting(null);
+  }, [cveId, onUpdateLink]);
+
+  const importAllNucleiTemplates = useCallback(async () => {
+    const importable = nucleiResults.filter((t) => t.content);
+    for (const template of importable) {
+      await importNucleiTemplate(template);
+    }
+  }, [nucleiResults, importNucleiTemplate]);
 
   const generateTemplate = useCallback((type: PocTemplate["type"], lang = "python"): { content: string; language: string } => {
     const slug = cveId.toLowerCase().replace(/[^a-z0-9-]/g, "-");
@@ -1183,26 +2264,41 @@ int main(int argc, char *argv[]) {
 
   const handleSavePoc = useCallback(() => {
     if (!formName.trim() || !formContent.trim()) return;
-    const poc: PocTemplate = {
-      id: editing?.id || `poc-${Date.now()}`,
-      name: formName.trim(),
-      type: formType,
-      language: formLang,
-      content: formContent,
-      created: editing?.created || Date.now(),
-    };
-    onUpdateLink((l) => {
-      const existing = l.pocTemplates.findIndex((p) => p.id === poc.id);
-      const templates = existing >= 0 ? l.pocTemplates.map((p) => p.id === poc.id ? poc : p) : [...l.pocTemplates, poc];
-      return { ...l, pocTemplates: templates };
-    });
+    const isNew = !editing;
+    if (isNew) {
+      invoke<{ id: string; name: string; type: string; language: string; content: string; created: number }>(
+        "vuln_link_add_poc",
+        { cveId, name: formName.trim(), pocType: formType, language: formLang, content: formContent }
+      ).then((dbPoc) => {
+        onUpdateLink((l) => ({
+          ...l,
+          pocTemplates: [...l.pocTemplates, {
+            id: dbPoc.id,
+            name: dbPoc.name,
+            type: dbPoc.type as PocTemplate["type"],
+            language: dbPoc.language,
+            content: dbPoc.content,
+            created: dbPoc.created,
+          }],
+        }));
+      }).catch(console.error);
+    } else {
+      invoke("vuln_link_update_poc", { pocId: editing.id, name: formName.trim(), content: formContent }).catch(console.error);
+      onUpdateLink((l) => ({
+        ...l,
+        pocTemplates: l.pocTemplates.map((p) =>
+          p.id === editing.id ? { ...p, name: formName.trim(), content: formContent } : p
+        ),
+      }));
+    }
     setEditing(null);
     setFormName("");
     setFormContent("");
-  }, [editing, formName, formType, formLang, formContent, onUpdateLink]);
+  }, [editing, formName, formType, formLang, formContent, onUpdateLink, cveId]);
 
   const handleDeletePoc = useCallback((id: string) => {
     onUpdateLink((l) => ({ ...l, pocTemplates: l.pocTemplates.filter((p) => p.id !== id) }));
+    invoke("vuln_link_remove_poc", { pocId: id }).catch(console.error);
   }, [onUpdateLink]);
 
   const handleCopyContent = useCallback((content: string) => {
@@ -1273,8 +2369,136 @@ int main(int argc, char *argv[]) {
         </div>
       )}
 
+      {/* GitHub PoC Search */}
+      <div className="border border-border/10 rounded-lg overflow-hidden">
+        <div className="flex items-center justify-between px-3 py-2">
+          <span className="text-[8px] text-muted-foreground/30 uppercase tracking-wider">GitHub PoC</span>
+          <button
+            onClick={searchGithubPoc}
+            disabled={ghSearching}
+            className="flex items-center gap-1 text-[9px] text-accent/60 hover:text-accent transition-colors disabled:opacity-30"
+          >
+            {ghSearching ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Search className="w-2.5 h-2.5" />}
+            {ghSearched ? "Refresh" : "Search GitHub"}
+          </button>
+        </div>
+        {ghError && (
+          <div className="px-3 py-1.5 text-[9px] text-red-400/70 border-t border-border/5">{ghError}</div>
+        )}
+        {ghSearched && ghResults.length === 0 && !ghError && (
+          <div className="px-3 py-2 text-[9px] text-muted-foreground/25 border-t border-border/5">
+            No GitHub repositories found for {cveId}
+          </div>
+        )}
+        {ghResults.length > 0 && (
+          <div className="border-t border-border/5 max-h-48 overflow-y-auto">
+            {ghResults.map((repo) => (
+              <div key={repo.full_name} className="flex items-start gap-2 px-3 py-2 hover:bg-muted/5 transition-colors border-b border-border/3 last:border-b-0">
+                <div className="flex-1 min-w-0">
+                  <a href={repo.html_url} target="_blank" rel="noopener noreferrer"
+                    className="text-[10px] text-accent/80 hover:text-accent transition-colors font-medium truncate block">
+                    {repo.full_name}
+                  </a>
+                  {repo.description && (
+                    <p className="text-[9px] text-muted-foreground/40 truncate mt-0.5">{repo.description}</p>
+                  )}
+                  <div className="flex items-center gap-2 mt-0.5">
+                    {repo.language && <span className="text-[8px] text-muted-foreground/30">{repo.language}</span>}
+                    <span className="text-[8px] text-yellow-400/50">★ {repo.stars}</span>
+                    <span className="text-[8px] text-muted-foreground/20">{new Date(repo.updated_at).toLocaleDateString()}</span>
+                  </div>
+                </div>
+                <a href={repo.html_url} target="_blank" rel="noopener noreferrer"
+                  className="p-1 text-muted-foreground/25 hover:text-accent transition-colors flex-shrink-0">
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Nuclei Template Search */}
+      <div className="border border-border/10 rounded-lg overflow-hidden">
+        <div className="flex items-center justify-between px-3 py-2">
+          <span className="text-[8px] text-muted-foreground/30 uppercase tracking-wider">Nuclei Templates</span>
+          <div className="flex items-center gap-2">
+            {nucleiSearched && nucleiResults.filter((t) => t.content).length > 0 && (
+              <button
+                onClick={importAllNucleiTemplates}
+                className="flex items-center gap-1 text-[9px] text-emerald-400/60 hover:text-emerald-400 transition-colors"
+              >
+                <Plus className="w-2.5 h-2.5" /> Import All
+              </button>
+            )}
+            <button
+              onClick={searchNucleiTemplates}
+              disabled={nucleiSearching}
+              className="flex items-center gap-1 text-[9px] text-accent/60 hover:text-accent transition-colors disabled:opacity-30"
+            >
+              {nucleiSearching ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Search className="w-2.5 h-2.5" />}
+              {nucleiSearched ? "Refresh" : "Search"}
+            </button>
+          </div>
+        </div>
+        {nucleiError && (
+          <div className="px-3 py-1.5 text-[9px] text-red-400/70 border-t border-border/5">{nucleiError}</div>
+        )}
+        {nucleiSearched && nucleiResults.length === 0 && !nucleiError && (
+          <div className="px-3 py-2 text-[9px] text-muted-foreground/25 border-t border-border/5">
+            No Nuclei templates found for {cveId}
+          </div>
+        )}
+        {nucleiResults.length > 0 && (
+          <div className="border-t border-border/5 max-h-56 overflow-y-auto">
+            {nucleiResults.map((tmpl) => {
+              const alreadyImported = link.pocTemplates.some((p) => p.name === `[Nuclei] ${tmpl.name}`);
+              const severityColor = tmpl.severity === "critical" ? "text-red-400"
+                : tmpl.severity === "high" ? "text-orange-400"
+                : tmpl.severity === "medium" ? "text-yellow-400"
+                : tmpl.severity === "low" ? "text-blue-400"
+                : "text-muted-foreground/40";
+              return (
+                <div key={tmpl.path} className="flex items-start gap-2 px-3 py-2 hover:bg-muted/5 transition-colors border-b border-border/3 last:border-b-0">
+                  <Zap className="w-3 h-3 text-orange-400/60 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] text-foreground/70 font-medium truncate">{tmpl.name}</span>
+                      {tmpl.severity && (
+                        <span className={cn("text-[8px] px-1 py-0.5 rounded bg-muted/10 font-medium", severityColor)}>
+                          {tmpl.severity}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[9px] text-muted-foreground/35 truncate mt-0.5">{tmpl.path}</p>
+                  </div>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    {tmpl.content && !alreadyImported && (
+                      <button
+                        onClick={() => importNucleiTemplate(tmpl)}
+                        disabled={nucleiImporting === tmpl.name}
+                        className="px-1.5 py-0.5 rounded text-[8px] font-medium text-accent/70 bg-accent/10 hover:bg-accent/20 transition-colors disabled:opacity-30"
+                      >
+                        {nucleiImporting === tmpl.name ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : "Import"}
+                      </button>
+                    )}
+                    {alreadyImported && (
+                      <span className="text-[8px] text-emerald-400/50 px-1.5">Imported</span>
+                    )}
+                    <a href={tmpl.html_url} target="_blank" rel="noopener noreferrer"
+                      className="p-1 text-muted-foreground/25 hover:text-accent transition-colors">
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {link.pocTemplates.length === 0 && !editing ? (
-        <div className="flex flex-col items-center justify-center py-6 gap-2 text-muted-foreground/20">
+        <div className="flex flex-col items-center justify-center py-4 gap-2 text-muted-foreground/20">
           <Code className="w-8 h-8" />
           <p className="text-[10px]">{t("vulnIntel.noPoc", "No PoC templates")}</p>
           <p className="text-[9px] text-muted-foreground/15 max-w-xs text-center">{t("vulnIntel.pocHint", "Add Nuclei YAML templates, scripts, or manual testing notes for this vulnerability")}</p>
@@ -1387,6 +2611,12 @@ function VulnKbTopBar({ activeTab, onTabChange }: { activeTab: TopTab; onTabChan
   );
 }
 
+interface BatchNucleiResult {
+  cve_id: string;
+  templates: NucleiTemplateResult[];
+  error: string | null;
+}
+
 function PocLibraryView({ vulnLinks, onLinksChange, onJumpToCve }: { vulnLinks: Record<string, VulnLink>; onLinksChange: (links: Record<string, VulnLink>) => void; onJumpToCve?: (cveId: string) => void }) {
   const { t } = useTranslation();
   const [search, setSearch] = useState("");
@@ -1394,6 +2624,54 @@ function PocLibraryView({ vulnLinks, onLinksChange, onJumpToCve }: { vulnLinks: 
   const [filterType, setFilterType] = useState<"all" | "nuclei" | "script" | "manual">("all");
   const [runTarget, setRunTarget] = useState<{ cveId: string; poc: PocTemplate } | null>(null);
   const [targetUrl, setTargetUrl] = useState("");
+  const [batchSearching, setBatchSearching] = useState(false);
+  const [batchProgress, setBatchProgress] = useState("");
+  const [batchFound, setBatchFound] = useState(0);
+
+  const batchSearchNuclei = useCallback(async () => {
+    const cveIds = Object.keys(vulnLinks).filter((id) => id.startsWith("CVE-"));
+    if (cveIds.length === 0) {
+      setBatchProgress("No CVEs found in links. Add CVE entries first.");
+      return;
+    }
+    setBatchSearching(true);
+    setBatchFound(0);
+    setBatchProgress(`Searching ${cveIds.length} CVEs...`);
+    try {
+      const results = await invoke<BatchNucleiResult[]>("intel_batch_search_nuclei_templates", { cveIds });
+      let imported = 0;
+      const next = { ...vulnLinks };
+      for (const r of results) {
+        for (const tmpl of r.templates) {
+          if (!tmpl.content) continue;
+          const link = next[r.cve_id];
+          if (!link) continue;
+          const name = `[Nuclei] ${tmpl.name}`;
+          if (link.pocTemplates.some((p) => p.name === name)) continue;
+          try {
+            const dbPoc = await invoke<{ id: string; name: string; type: string; language: string; content: string; created: number }>(
+              "vuln_link_add_poc",
+              { cveId: r.cve_id, name, pocType: "nuclei", language: "yaml", content: tmpl.content }
+            );
+            next[r.cve_id] = {
+              ...next[r.cve_id],
+              pocTemplates: [...next[r.cve_id].pocTemplates, {
+                id: dbPoc.id, name: dbPoc.name, type: dbPoc.type as PocTemplate["type"],
+                language: dbPoc.language, content: dbPoc.content, created: dbPoc.created,
+              }],
+            };
+            imported++;
+          } catch { /* skip failed imports */ }
+        }
+      }
+      onLinksChange(next);
+      setBatchFound(imported);
+      setBatchProgress(`Done: ${imported} templates imported from ${results.filter((r) => r.templates.length > 0).length}/${cveIds.length} CVEs`);
+    } catch (e) {
+      setBatchProgress(`Error: ${String(e)}`);
+    }
+    setBatchSearching(false);
+  }, [vulnLinks, onLinksChange]);
 
   const allPocs = useMemo(() => {
     const result: { cveId: string; poc: PocTemplate }[] = [];
@@ -1420,8 +2698,8 @@ function PocLibraryView({ vulnLinks, onLinksChange, onJumpToCve }: { vulnLinks: 
     const link = next[cveId];
     if (link) {
       next[cveId] = { ...link, pocTemplates: link.pocTemplates.filter((p) => p.id !== pocId) };
-      saveVulnLinks(next);
       onLinksChange(next);
+      invoke("vuln_link_remove_poc", { pocId }).catch(console.error);
     }
   }, [vulnLinks, onLinksChange]);
 
@@ -1441,8 +2719,12 @@ function PocLibraryView({ vulnLinks, onLinksChange, onJumpToCve }: { vulnLinks: 
       ...link.scanHistory,
     ];
     next[runTarget.cveId] = link;
-    saveVulnLinks(next);
     onLinksChange(next);
+    invoke("vuln_link_add_scan", {
+      cveId: runTarget.cveId,
+      target: targetUrl.trim(),
+      result: "pending",
+    }).catch(console.error);
 
     setRunTarget(null);
     setTargetUrl("");
@@ -1477,10 +2759,33 @@ function PocLibraryView({ vulnLinks, onLinksChange, onJumpToCve }: { vulnLinks: 
           <option value="script">Script</option>
           <option value="manual">Manual</option>
         </select>
+        <button
+          onClick={batchSearchNuclei}
+          disabled={batchSearching}
+          className="flex items-center gap-1.5 h-7 px-2.5 text-[10px] font-medium rounded-lg bg-orange-500/10 text-orange-400/70 hover:bg-orange-500/20 hover:text-orange-400 transition-colors disabled:opacity-30"
+          title="Batch search Nuclei templates for all CVEs"
+        >
+          {batchSearching ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+          Nuclei Batch
+        </button>
         <span className="text-[10px] text-muted-foreground/30">
           {filtered.length} / {allPocs.length} templates
         </span>
       </div>
+
+      {/* Batch progress */}
+      {batchProgress && (
+        <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border/10 bg-muted/5">
+          {batchSearching && <Loader2 className="w-3 h-3 animate-spin text-orange-400/60" />}
+          <span className="text-[10px] text-muted-foreground/50">{batchProgress}</span>
+          {!batchSearching && batchFound > 0 && <Zap className="w-3 h-3 text-orange-400/50" />}
+          {!batchSearching && (
+            <button onClick={() => setBatchProgress("")} className="ml-auto p-0.5 text-muted-foreground/30 hover:text-foreground transition-colors">
+              <X className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+      )}
 
       {/* PoC list */}
       <div className="flex-1 overflow-y-auto">

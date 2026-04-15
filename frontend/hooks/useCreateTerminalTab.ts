@@ -16,6 +16,7 @@ export function useCreateTerminalTab() {
       workingDirectory?: string,
       skipConversationLink?: boolean,
       scrollback?: string,
+      logicalTerminalId?: string,
     ): Promise<string | null> => {
       const {
         addSession,
@@ -36,6 +37,7 @@ export function useCreateTerminalTab() {
 
         addSession({
           id: session.id,
+          logicalTerminalId: logicalTerminalId ?? crypto.randomUUID(),
           name: "Terminal",
           workingDirectory: session.working_directory,
           createdAt: new Date().toISOString(),

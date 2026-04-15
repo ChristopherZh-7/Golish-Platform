@@ -18,7 +18,7 @@ import {
   X,
   XCircle,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { Markdown } from "@/components/Markdown";
@@ -44,15 +44,18 @@ import {
   setAgentMode,
   shutdownAiSession,
 } from "@/lib/ai";
+import { logger } from "@/lib/logger";
 import { formatModelName, PROVIDER_GROUPS } from "@/lib/models";
 import { scanTools } from "@/lib/pentest/api";
 import type { ToolConfig } from "@/lib/pentest/types";
 import { getSettings } from "@/lib/settings";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import { cn } from "@/lib/utils";
-import type { PersistedTerminalData } from "@/lib/workspace-storage";
+import { convDelete } from "@/lib/conversation-db";
+import { restoreBatchTerminals } from "@/lib/terminal-restore";
 import { getAllLeafPanes } from "@/lib/pane-utils";
 import { type ChatMessage, useStore } from "@/store";
+import type { ChatToolCall } from "@/store/slices/conversation";
 import { createNewConversation } from "@/store/slices/conversation";
 import {
   AskHumanInline,
@@ -68,7 +71,6 @@ import {
 } from "./ChatSubComponents";
 
 
-type PersistedTerminal = PersistedTerminalData;
 const EMPTY_MESSAGES: ChatMessage[] = [];
 
 const EMPTY_SUB_AGENTS: never[] = [];
@@ -264,20 +266,11 @@ const MessageBlock = memo(function MessageBlock({
         }
 
         const hasToolCalls = !isUser && message.toolCalls && message.toolCalls.length > 0;
-        const tcOffset = message.toolCallsContentOffset;
-        const shouldSplitForTools = hasToolCalls && tcOffset != null && tcOffset >= 0;
 
-        const visibleCalls = hasToolCalls
-          ? message.toolCalls!.filter(
-              (tc) =>
-                tc.name !== "update_plan" &&
-                (tc.success !== undefined ||
-                  (pendingApproval == null && tc.success === undefined))
-            )
-          : [];
-        const callIds = visibleCalls
-          .map((tc) => tc.requestId)
-          .filter((id): id is string => !!id);
+        const isVisibleCall = (tc: ChatToolCall) =>
+          tc.name !== "update_plan" &&
+          (tc.success !== undefined ||
+            (pendingApproval == null && tc.success === undefined));
 
         const pendingCalls = hasToolCalls && pendingApproval
           ? message.toolCalls!.filter(
@@ -285,75 +278,148 @@ const MessageBlock = memo(function MessageBlock({
             )
           : [];
 
-        const renderToolCards = () => (
-          <>
-            {pendingCalls.length > 0 && (
-              <div className="mt-2 space-y-1.5">
-                {pendingCalls.map((tc, i) => (
-                  <CollapsibleToolCall
-                    key={`${tc.name}-${i}`}
-                    tc={tc}
-                    approval={pendingApproval}
-                    onApprove={onApprove}
-                    onDeny={onDeny}
-                    approvalMode={approvalMode}
-                    onApprovalModeChange={onApprovalModeChange}
-                  />
-                ))}
-              </div>
-            )}
-            {visibleCalls.length > 0 && (
-              <ToolCallSummary toolCalls={visibleCalls} requestIds={callIds} />
-            )}
-          </>
-        );
+        const renderPendingApprovalCards = () =>
+          pendingCalls.length > 0 ? (
+            <div className="mt-2 space-y-1.5">
+              {pendingCalls.map((tc, i) => (
+                <CollapsibleToolCall
+                  key={`${tc.name}-${i}`}
+                  tc={tc}
+                  approval={pendingApproval}
+                  onApprove={onApprove}
+                  onDeny={onDeny}
+                  approvalMode={approvalMode}
+                  onApprovalModeChange={onApprovalModeChange}
+                />
+              ))}
+            </div>
+          ) : null;
 
-        if (shouldSplitForTools) {
-          const textBefore = message.content.slice(0, tcOffset);
-          const textAfter = message.content.slice(tcOffset);
-          return (
-            <>
-              {textBefore && (
-                <div className="text-[12px] text-foreground leading-[1.55]">
-                  <Markdown content={textBefore} />
-                </div>
-              )}
-              {!isUser && taskPlan && <TaskPlanCard plan={taskPlan} />}
-              {renderToolCards()}
-              {textAfter.trim() && (
-                <div className="text-[12px] text-foreground leading-[1.55] mt-2">
-                  <Markdown content={textAfter} />
-                </div>
-              )}
-            </>
-          );
+        // Build interleaved segments: text chunks and tool-call groups in order.
+        type Segment =
+          | { kind: "text"; content: string }
+          | { kind: "tools"; calls: ChatToolCall[]; requestIds: string[] };
+
+        const segments: Segment[] = [];
+
+        if (hasToolCalls && message.toolCallOffsets && message.toolCallOffsets.length > 0) {
+          const offsets = message.toolCallOffsets;
+          const allCalls = message.toolCalls!;
+          let textCursor = 0;
+
+          let toolBatch: ChatToolCall[] = [];
+          let toolBatchIds: string[] = [];
+
+          for (let i = 0; i < allCalls.length; i++) {
+            const offset = offsets[i] ?? message.content.length;
+
+            if (offset > textCursor) {
+              if (toolBatch.length > 0) {
+                segments.push({ kind: "tools", calls: toolBatch, requestIds: toolBatchIds });
+                toolBatch = [];
+                toolBatchIds = [];
+              }
+              segments.push({ kind: "text", content: message.content.slice(textCursor, offset) });
+              textCursor = offset;
+            }
+
+            if (isVisibleCall(allCalls[i])) {
+              toolBatch.push(allCalls[i]);
+              if (allCalls[i].requestId) toolBatchIds.push(allCalls[i].requestId!);
+            }
+          }
+
+          if (toolBatch.length > 0) {
+            segments.push({ kind: "tools", calls: toolBatch, requestIds: toolBatchIds });
+          }
+          if (textCursor < message.content.length) {
+            segments.push({ kind: "text", content: message.content.slice(textCursor) });
+          }
+        } else if (hasToolCalls) {
+          // Legacy path: no per-call offsets, use single toolCallsContentOffset
+          const tcOffset = message.toolCallsContentOffset ?? 0;
+          if (tcOffset > 0) {
+            segments.push({ kind: "text", content: message.content.slice(0, tcOffset) });
+          }
+          const visibleCalls = message.toolCalls!.filter(isVisibleCall);
+          const ids = visibleCalls.map((tc) => tc.requestId).filter((id): id is string => !!id);
+          if (visibleCalls.length > 0) {
+            segments.push({ kind: "tools", calls: visibleCalls, requestIds: ids });
+          }
+          if (tcOffset < message.content.length) {
+            segments.push({ kind: "text", content: message.content.slice(tcOffset) });
+          }
+        } else {
+          segments.push({ kind: "text", content: message.content || (message.isStreaming ? "..." : "") });
         }
 
-        if (!isUser && taskPlan && planTextOffset != null && planTextOffset > 0) {
-          return (
-            <>
-              <div className="text-[12px] text-foreground leading-[1.55]">
-                <Markdown content={message.content.slice(0, planTextOffset) || (message.isStreaming ? "..." : "")} />
-              </div>
-              <TaskPlanCard plan={taskPlan} />
-              {message.content.length > planTextOffset && (
-                <div className="text-[12px] text-foreground leading-[1.55]">
-                  <Markdown content={message.content.slice(planTextOffset)} />
-                </div>
-              )}
-              {renderToolCards()}
-            </>
-          );
-        }
+        // Determine where to insert the task plan card
+        let planInserted = false;
+        const shouldShowPlan = !isUser && taskPlan;
 
         return (
-          <>
-            <div className="text-[12px] text-foreground leading-[1.55]">
-              <Markdown content={message.content || (message.isStreaming ? "..." : "")} />
-            </div>
-            {!isUser && taskPlan && <TaskPlanCard plan={taskPlan} />}
-            {renderToolCards()}
-          </>
+          <div className="flex flex-col gap-2">
+            {segments.map((seg, idx) => {
+              if (seg.kind === "text") {
+                const text = seg.content.trim();
+                if (!text && segments.length > 1) return null;
+
+                const showPlanBefore =
+                  shouldShowPlan &&
+                  !planInserted &&
+                  planTextOffset != null &&
+                  planTextOffset > 0 &&
+                  idx === 0;
+
+                if (showPlanBefore) {
+                  const before = seg.content.slice(0, planTextOffset);
+                  const after = seg.content.slice(planTextOffset);
+                  planInserted = true;
+                  return (
+                    <React.Fragment key={`seg-${idx}`}>
+                      {before && (
+                        <div className="text-[12px] text-foreground leading-[1.55]">
+                          <Markdown content={before} />
+                        </div>
+                      )}
+                      <TaskPlanCard plan={taskPlan!} />
+                      {after.trim() && (
+                        <div className="text-[12px] text-foreground leading-[1.55]">
+                          <Markdown content={after} />
+                        </div>
+                      )}
+                    </React.Fragment>
+                  );
+                }
+
+                return (
+                  <div key={`seg-${idx}`} className="text-[12px] text-foreground leading-[1.55]">
+                    <Markdown content={seg.content || (message.isStreaming ? "..." : "")} />
+                  </div>
+                );
+              }
+
+              // Tool segment
+              if (!planInserted && shouldShowPlan) {
+                planInserted = true;
+                return (
+                  <React.Fragment key={`seg-${idx}`}>
+                    <TaskPlanCard plan={taskPlan!} />
+                    {renderPendingApprovalCards()}
+                    <ToolCallSummary toolCalls={seg.calls} requestIds={seg.requestIds} />
+                  </React.Fragment>
+                );
+              }
+
+              return (
+                <React.Fragment key={`seg-${idx}`}>
+                  {renderPendingApprovalCards()}
+                  <ToolCallSummary toolCalls={seg.calls} requestIds={seg.requestIds} />
+                </React.Fragment>
+              );
+            })}
+            {shouldShowPlan && !planInserted && <TaskPlanCard plan={taskPlan!} />}
+          </div>
         );
       })()}
 
@@ -464,127 +530,18 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const unlistenRef = useRef<(() => void) | null>(null);
   const streamingMsgRef = useRef<string | null>(null);
   const generateTitleRef = useRef<((convId: string, firstMsg: string) => void) | null>(null);
-  const restoringTerminalsRef = useRef(false);
-  const termRestoreRanRef = useRef(false);
-  const pendingTermRestoreRef = useRef<Record<string, PersistedTerminal[]>>({});
-
   const workspaceDataReady = useStore((s) => s.workspaceDataReady);
+  const pendingTermData = useStore((s) => s.pendingTerminalRestoreData);
 
-  // Restore per-conversation terminals from store (populated by App.tsx from DB/workspace.json)
+  // Unified terminal restore: fires on both initial boot (App.tsx sets data)
+  // and project switch (HomeView sets data).  Clearing the store value
+  // synchronously prevents double-processing under React Strict Mode.
   useEffect(() => {
-    if (!workspaceDataReady) return;
-
-    // Restore one terminal per conversation (1:1 model)
-    (async () => {
-      try {
-        if (termRestoreRanRef.current) return;
-        termRestoreRanRef.current = true;
-        const store = useStore.getState();
-        const termData = store.pendingTerminalRestoreData;
-        if (!termData) return;
-        restoringTerminalsRef.current = true;
-        useStore.getState().setTerminalRestoreInProgress(true);
-        useStore.getState().setPendingTerminalRestoreData(null);
-        const activeId = store.activeConversationId;
-
-        // Helper: restore a single terminal for a conversation (first saved terminal only)
-        const restoreTerminalForConv = async (
-          convId: string,
-          termInfo: PersistedTerminal,
-          isActiveConv: boolean
-        ) => {
-          const existing = useStore.getState().conversationTerminals[convId] ?? [];
-          if (existing.length > 0) {
-            const existingTermId = existing[0];
-            if (termInfo.scrollback && TerminalInstanceManager.has(existingTermId)) {
-              const inst = TerminalInstanceManager.get(existingTermId);
-              if (inst) inst.terminal.write(termInfo.scrollback);
-            } else if (termInfo.scrollback) {
-              TerminalInstanceManager.setPendingScrollback(existingTermId, termInfo.scrollback);
-            }
-            if (termInfo.customName)
-              useStore.getState().setCustomTabName(existingTermId, termInfo.customName);
-            if (termInfo.planJson) {
-              useStore.getState().setPlan(existingTermId, termInfo.planJson as any);
-            }
-            if (termInfo.timelineBlocks?.length) {
-              const blocksToRestore = termInfo.timelineBlocks;
-              const tid = existingTermId;
-              useStore.setState((state) => {
-                if (!state.timelines[tid]) state.timelines[tid] = [];
-                for (const block of blocksToRestore) {
-                  if (block.type === "command") {
-                    state.timelines[tid].push({
-                      ...block,
-                      data: { ...block.data, sessionId: tid },
-                    });
-                  } else {
-                    state.timelines[tid].push(block as any);
-                  }
-                }
-              });
-            }
-            return;
-          }
-          const termId = await createTerminalTab(
-            termInfo.workingDirectory,
-            true,
-            termInfo.scrollback
-          );
-          if (!termId) return;
-          useStore.getState().addTerminalToConversation(convId, termId);
-          if (isActiveConv) useStore.getState().setActiveSession(termId);
-          if (termInfo.customName)
-            useStore.getState().setCustomTabName(termId, termInfo.customName);
-          if (termInfo.planJson) {
-            useStore.getState().setPlan(termId, termInfo.planJson as any);
-          }
-          if (termInfo.timelineBlocks?.length) {
-            const blocksToRestore = termInfo.timelineBlocks;
-            const tid = termId;
-            useStore.setState((state) => {
-              if (!state.timelines[tid]) state.timelines[tid] = [];
-              for (const block of blocksToRestore) {
-                if (block.type === "command") {
-                  state.timelines[tid].push({ ...block, data: { ...block.data, sessionId: tid } });
-                } else {
-                  state.timelines[tid].push(block as any);
-                }
-              }
-            });
-          }
-        };
-
-        // Eagerly restore terminal for the active conversation
-        if (activeId && termData[activeId]?.[0] && store.conversations[activeId]) {
-          await restoreTerminalForConv(activeId, termData[activeId][0], true);
-        }
-
-        useStore.getState().setTerminalRestoreInProgress(false);
-        const savedActiveSessionId = useStore.getState().activeSessionId;
-
-        // Pre-create terminals for other conversations in the background
-        const otherConvs = Object.entries(termData).filter(
-          ([convId, terminals]) =>
-            convId !== activeId && store.conversations[convId] && terminals.length > 0
-        );
-        for (const [convId, savedTerms] of otherConvs) {
-          const existing = useStore.getState().conversationTerminals[convId] ?? [];
-          if (existing.length > 0) continue;
-          await restoreTerminalForConv(convId, savedTerms[0], false);
-        }
-
-        if (savedActiveSessionId && useStore.getState().activeSessionId !== savedActiveSessionId) {
-          useStore.getState().setActiveSession(savedActiveSessionId);
-        }
-      } catch (e) {
-        console.warn("[AIChatPanel] Failed to restore conversation terminals:", e);
-        useStore.getState().setTerminalRestoreInProgress(false);
-      } finally {
-        restoringTerminalsRef.current = false;
-      }
-    })();
-  }, [createTerminalTab, workspaceDataReady]);
+    if (!workspaceDataReady || !pendingTermData) return;
+    const data = pendingTermData;
+    useStore.getState().setPendingTerminalRestoreData(null);
+    void restoreBatchTerminals(data, createTerminalTab);
+  }, [pendingTermData, workspaceDataReady, createTerminalTab]);
 
   // DB auto-saver (createDbAutoSaver in App.tsx) handles all persistence to PostgreSQL.
   // No localStorage mirroring needed.
@@ -744,7 +701,17 @@ export const AIChatPanel = memo(function AIChatPanel() {
           );
 
           const store = useStore.getState();
-          const conv = store.getConversationBySessionId(event.session_id);
+          let conv = store.getConversationBySessionId(event.session_id);
+
+          // Fallback: check if the active conversation's aiSessionId matches
+          if (!conv) {
+            const activeConvId = store.activeConversationId;
+            const activeConv = activeConvId ? store.conversations[activeConvId] : null;
+            if (activeConv?.aiSessionId === event.session_id) {
+              conv = activeConv;
+            }
+          }
+
           if (!conv) {
             console.debug("[AIChatPanel] No matching conversation for session:", event.session_id);
             return;
@@ -1007,7 +974,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
     }
   }, [activeConvId]);
 
-  // When switching conversations, activate its terminal or lazily restore from saved data
+  // When switching conversations, activate its terminal
   useEffect(() => {
     if (!activeConvId) return;
     const store = useStore.getState();
@@ -1017,53 +984,8 @@ export const AIChatPanel = memo(function AIChatPanel() {
       if (store.sessions[firstTerminal] && store.activeSessionId !== firstTerminal) {
         store.setActiveSession(firstTerminal);
       }
-      return;
     }
-    // Lazy restore: create ALL terminals in parallel when user switches to this conversation
-    const pendingTerminals = pendingTermRestoreRef.current[activeConvId];
-    if (pendingTerminals) {
-      delete pendingTermRestoreRef.current[activeConvId];
-      (async () => {
-        restoringTerminalsRef.current = true;
-        try {
-          const createdIds = await Promise.all(
-            pendingTerminals.map((p) => createTerminalTab(p.workingDirectory, true, p.scrollback))
-          );
-          for (let i = 0; i < createdIds.length; i++) {
-            const termId = createdIds[i];
-            if (!termId) continue;
-            const pending = pendingTerminals[i];
-            useStore.getState().addTerminalToConversation(activeConvId, termId);
-            if (i === 0) useStore.getState().setActiveSession(termId);
-            if (pending.customName)
-              useStore.getState().setCustomTabName(termId, pending.customName);
-            if (pending.planJson) {
-              useStore.getState().setPlan(termId, pending.planJson as any);
-            }
-            if (pending.timelineBlocks?.length) {
-              const blocksToRestore = pending.timelineBlocks;
-              const tid = termId;
-              useStore.setState((state) => {
-                if (!state.timelines[tid]) state.timelines[tid] = [];
-                for (const block of blocksToRestore) {
-                  if (block.type === "command") {
-                    state.timelines[tid].push({
-                      ...block,
-                      data: { ...block.data, sessionId: tid },
-                    });
-                  } else {
-                    state.timelines[tid].push(block as any);
-                  }
-                }
-              });
-            }
-          }
-        } finally {
-          restoringTerminalsRef.current = false;
-        }
-      })();
-    }
-  }, [activeConvId, createTerminalTab]);
+  }, [activeConvId]);
 
   // Custom scrollbar state
   const [tabsHovered, setTabsHovered] = useState(false);
@@ -1288,6 +1210,10 @@ export const AIChatPanel = memo(function AIChatPanel() {
         if (nextActiveSessionId) {
           state.activeSessionId = nextActiveSessionId;
         }
+      });
+
+      convDelete(convId).catch((e) => {
+        logger.warn("[AIChatPanel] Failed to delete conversation from DB:", e);
       });
 
       // If no conversations remain, collapse the chat panel instead of creating
