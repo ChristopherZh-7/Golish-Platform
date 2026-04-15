@@ -45,6 +45,7 @@ export function usePaneControls(activeSessionId: string | null) {
         addSession(
           {
             id: newSession.id,
+            logicalTerminalId: crypto.randomUUID(),
             name: "Terminal",
             workingDirectory: newSession.working_directory,
             createdAt: new Date().toISOString(),

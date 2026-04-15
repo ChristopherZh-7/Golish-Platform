@@ -26,6 +26,8 @@ export interface ChatMessage {
   thinking?: string;
   /** Content offset when the first tool call was added (for interleaved rendering) */
   toolCallsContentOffset?: number;
+  /** Content offset at which each toolCalls[i] was inserted (for per-call interleaving) */
+  toolCallOffsets?: number[];
 }
 
 export interface ChatConversation {
@@ -221,6 +223,10 @@ export const createConversationSlice: SliceCreator<ConversationSlice> = (set, ge
           last.toolCalls = [];
           last.toolCallsContentOffset = last.content.length;
         }
+        if (!last.toolCallOffsets) {
+          last.toolCallOffsets = [];
+        }
+        last.toolCallOffsets.push(last.content.length);
         last.toolCalls.push(toolCall);
       }
     }),

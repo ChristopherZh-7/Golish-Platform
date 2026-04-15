@@ -318,6 +318,8 @@ function App() {
   }, [createTerminalTab]);
 
   useEffect(() => {
+    let cancelled = false;
+
     async function init() {
       try {
         const currentSessions = useStore.getState().sessions;
@@ -329,10 +331,8 @@ function App() {
 
         logger.info("[App] Starting initialization...");
 
-        // Create home tab first (always visible, leftmost)
         openHomeTab();
 
-        // Check and install shell integration in the background (non-blocking)
         void (async () => {
           try {
             const status = await shellIntegrationStatus();
@@ -350,21 +350,20 @@ function App() {
           }
         })();
 
-        // Try to restore last project's workspace state
         const lastProject = getLastProjectName();
         if (lastProject) {
           logger.info("[App] Restoring project:", lastProject);
           const { getProjectConfig } = await import("./lib/projects");
           const config = await getProjectConfig(lastProject);
+          if (cancelled) return;
 
           if (config) {
             useStore.getState().setCurrentProject(lastProject, config.rootPath);
 
-            // Restore conversations: try DB first, fall back to workspace.json/localStorage
             const saved = await loadFromDb(config.rootPath);
+            if (cancelled) return;
 
             if (saved && saved.conversations.length > 0) {
-              // DB has data — use it
               if (saved.aiModel) useStore.getState().setSelectedAiModel(saved.aiModel);
               if (saved.approvalMode) useStore.getState().setApprovalMode(saved.approvalMode);
 
@@ -378,6 +377,7 @@ function App() {
                 const termRestoreData: Record<string, import("@/lib/workspace-storage").PersistedTerminalData[]> = {};
                 for (const [convId, terminals] of Object.entries(saved.terminalData)) {
                   termRestoreData[convId] = terminals.map((t) => ({
+                    logicalTerminalId: t.sessionId,
                     workingDirectory: t.workingDirectory,
                     scrollback: t.scrollback,
                     customName: t.customName ?? undefined,
@@ -399,6 +399,7 @@ function App() {
               const hasConvTerminals = Object.keys(saved.terminalData).length > 0;
               if (!hasConvTerminals) {
                 const termId = await createTerminalTab(config.rootPath, true);
+                if (cancelled) return;
                 if (termId) {
                   const activeConv = useStore.getState().activeConversationId;
                   if (activeConv) {
@@ -408,8 +409,8 @@ function App() {
                 }
               }
             } else {
-              // DB empty — fall back to legacy workspace.json
               const legacy = await loadWorkspaceState(lastProject);
+              if (cancelled) return;
 
               if (legacy?.aiModel) useStore.getState().setSelectedAiModel(legacy.aiModel);
               if (legacy?.approvalMode) useStore.getState().setApprovalMode(legacy.approvalMode);
@@ -440,6 +441,7 @@ function App() {
               if (!hasConvTerminals) {
                 const wd = legacy?.terminalTabs?.[0]?.workingDirectory ?? config.rootPath;
                 const termId = await createTerminalTab(wd, true);
+                if (cancelled) return;
                 if (termId) {
                   const activeConv = useStore.getState().activeConversationId;
                   if (activeConv) {
@@ -452,7 +454,8 @@ function App() {
           }
         }
 
-        // Only show home tab if no project was restored (no terminals to show)
+        if (cancelled) return;
+
         if (!useStore.getState().currentProjectName) {
           useStore.getState().setWorkspaceDataReady(true);
           const homeId = useStore.getState().homeTabId;
@@ -463,6 +466,7 @@ function App() {
 
         setIsLoading(false);
       } catch (e) {
+        if (cancelled) return;
         logger.error("Failed to initialize:", e);
         setError(e instanceof Error ? e.message : String(e));
         useStore.getState().setWorkspaceDataReady(true);
@@ -471,6 +475,7 @@ function App() {
     }
 
     init();
+    return () => { cancelled = true; };
   }, [openHomeTab, createTerminalTab]);
 
   // Auto-save conversation state to PostgreSQL on changes + window close
@@ -489,6 +494,8 @@ function App() {
           timelines: s.timelines,
           selectedAiModel: s.selectedAiModel,
           approvalMode: s.approvalMode,
+          terminalRestoreInProgress: s.terminalRestoreInProgress,
+          pendingTerminalRestoreData: s.pendingTerminalRestoreData,
         };
       },
     );

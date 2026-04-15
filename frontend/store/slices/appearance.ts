@@ -67,7 +67,7 @@ export const defaultDisplaySettings: DisplaySettings = {
   showContextUsage: true,
   showMcpBadge: true,
   hideAiSettingsInShellMode: false,
-  uiScale: 1.0,
+  uiScale: 1.1,
 };
 
 function loadDisplaySettings(): DisplaySettings {

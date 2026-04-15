@@ -16,3 +16,6 @@ pub mod tool_calls;
 pub mod topology;
 pub mod vault;
 pub mod vuln_intel;
+pub mod wiki_kb;
+pub mod kb_research;
+pub mod vuln_scan;

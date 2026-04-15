@@ -46,8 +46,10 @@ import {
   loadWorkspaceState,
   setLastProjectName,
   toChatConversation,
+  type PersistedTerminalData,
 } from "@/lib/workspace-storage";
-import { loadFromDb } from "@/lib/conversation-db-sync";
+import { clearSaveFingerprints, loadFromDb } from "@/lib/conversation-db-sync";
+import { disposeAllRuntimeTerminals } from "@/lib/terminal-restore";
 import { useStore } from "@/store";
 import { createNewConversation } from "@/store/slices/conversation";
 import { NewWorktreeModal } from "./NewWorktreeModal";
@@ -529,18 +531,49 @@ export const HomeView = memo(function HomeView() {
       openingRef.current = true;
       setOpeningProject(projectName);
       try {
+        await disposeAllRuntimeTerminals();
+        clearSaveFingerprints();
+
         useStore.getState().setCurrentProject(projectName, rootPath);
         setLastProjectName(projectName);
 
         const saved = await loadFromDb(rootPath);
         if (saved && saved.conversations.length > 0) {
+          if (saved.aiModel) useStore.getState().setSelectedAiModel(saved.aiModel);
+          if (saved.approvalMode) useStore.getState().setApprovalMode(saved.approvalMode);
+
           useStore.getState().restoreConversations(
             saved.conversations,
             saved.conversationOrder,
             saved.activeConversationId,
           );
+
+          if (Object.keys(saved.terminalData).length > 0) {
+            const termRestoreData: Record<string, PersistedTerminalData[]> = {};
+            for (const [convId, terminals] of Object.entries(saved.terminalData)) {
+              termRestoreData[convId] = terminals.map((t) => ({
+                logicalTerminalId: t.sessionId,
+                workingDirectory: t.workingDirectory,
+                scrollback: t.scrollback,
+                customName: t.customName ?? undefined,
+                planJson: t.planJson ?? undefined,
+                timelineBlocks: t.timelineBlocks.map((b) => ({
+                  id: b.id,
+                  type: b.type as any,
+                  timestamp: b.timestamp ?? new Date().toISOString(),
+                  data: b.data as any,
+                  batchId: (b as { batchId?: string }).batchId,
+                })),
+              }));
+            }
+            useStore.getState().setPendingTerminalRestoreData(termRestoreData);
+          }
         } else {
           const legacy = await loadWorkspaceState(projectName);
+
+          if (legacy?.aiModel) useStore.getState().setSelectedAiModel(legacy.aiModel);
+          if (legacy?.approvalMode) useStore.getState().setApprovalMode(legacy.approvalMode);
+
           if (legacy && legacy.conversations.length > 0) {
             const restoredConvs = legacy.conversations.map(toChatConversation);
             useStore.getState().restoreConversations(
@@ -548,13 +581,29 @@ export const HomeView = memo(function HomeView() {
               legacy.conversationOrder,
               legacy.activeConversationId,
             );
+
+            if (legacy.conversationTerminalData) {
+              useStore.getState().setPendingTerminalRestoreData(legacy.conversationTerminalData);
+            }
           } else {
             const conv = createNewConversation();
             useStore.getState().restoreConversations([conv], [conv.id], conv.id);
           }
         }
 
+        useStore.getState().setWorkspaceDataReady(true);
+
+        // Always create at least one terminal so the UI transitions away from Home.
+        // If we have saved terminal data, the AIChatPanel effect will restore
+        // scrollback/timeline/plan into the terminal created here.
+        const activeConv = useStore.getState().activeConversationId;
         const sessionId = await createTerminalTab(rootPath);
+        if (sessionId) {
+          if (activeConv) {
+            useStore.getState().addTerminalToConversation(activeConv, sessionId);
+          }
+          useStore.getState().setActiveSession(sessionId);
+        }
         return sessionId;
       } catch (error) {
         logger.error("Failed to open project:", error);

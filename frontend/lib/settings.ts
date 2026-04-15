@@ -78,6 +78,10 @@ export interface AiSettings {
   default_reasoning_effort?: ReasoningEffort;
   /** Per-sub-agent model overrides (key = sub-agent id: "coder", "analyzer", etc.) */
   sub_agent_models: Record<string, SubAgentModelConfig>;
+  /** Provider for KB research agent. Falls back to default_provider if not set. */
+  research_provider?: AiProvider;
+  /** Model for KB research agent. Falls back to default_model if not set. */
+  research_model?: string;
   vertex_ai: VertexAiSettings;
   vertex_gemini: VertexGeminiSettings;
   openrouter: OpenRouterSettings;

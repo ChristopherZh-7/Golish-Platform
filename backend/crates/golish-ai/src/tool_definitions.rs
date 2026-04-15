@@ -112,6 +112,11 @@ impl ToolConfig {
                 "tavily_extract".to_string(),
                 "tavily_crawl".to_string(),
                 "tavily_map".to_string(),
+                // Vulnerability knowledge base
+                "search_knowledge_base".to_string(),
+                "write_knowledge".to_string(),
+                "read_knowledge".to_string(),
+                "ingest_cve".to_string(),
             ],
             // Hide run_pty_cmd - we expose it as run_command instead
             disabled: vec!["run_pty_cmd".to_string()],

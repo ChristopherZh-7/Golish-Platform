@@ -80,6 +80,17 @@ pub enum ToolName {
     // === Workflow ===
     /// Execute a workflow
     RunWorkflow,
+
+    // === Knowledge Base ===
+    /// Search the vulnerability knowledge base
+    SearchKnowledgeBase,
+    /// Write/update a knowledge base page
+    WriteKnowledge,
+    /// Read a knowledge base page
+    ReadKnowledge,
+    /// Ingest a CVE into the knowledge base
+    IngestCve,
+    SavePoc,
 }
 
 impl ToolName {
@@ -129,6 +140,13 @@ impl ToolName {
 
             // Workflow
             Self::RunWorkflow => "run_workflow",
+
+            // Knowledge Base
+            Self::SearchKnowledgeBase => "search_knowledge_base",
+            Self::WriteKnowledge => "write_knowledge",
+            Self::ReadKnowledge => "read_knowledge",
+            Self::IngestCve => "ingest_cve",
+            Self::SavePoc => "save_poc",
         }
     }
 
@@ -182,6 +200,13 @@ impl ToolName {
             // Workflow
             "run_workflow" => Some(Self::RunWorkflow),
 
+            // Knowledge Base
+            "search_knowledge_base" => Some(Self::SearchKnowledgeBase),
+            "write_knowledge" => Some(Self::WriteKnowledge),
+            "read_knowledge" => Some(Self::ReadKnowledge),
+            "ingest_cve" => Some(Self::IngestCve),
+            "save_poc" => Some(Self::SavePoc),
+
             // Unknown (includes dynamic sub-agent tools like "sub_agent_*")
             _ => None,
         }
@@ -227,6 +252,13 @@ impl ToolName {
 
             // Workflow
             Self::RunWorkflow => ToolCategory::Workflow,
+
+            // Knowledge Base
+            Self::SearchKnowledgeBase
+            | Self::WriteKnowledge
+            | Self::ReadKnowledge
+            | Self::IngestCve
+            | Self::SavePoc => ToolCategory::KnowledgeBase,
         }
     }
 
@@ -251,6 +283,8 @@ impl ToolName {
                 | Self::IndexerGetMetrics
                 | Self::IndexerDetectLanguage
                 | Self::AstGrep
+                | Self::SearchKnowledgeBase
+                | Self::ReadKnowledge
         )
     }
 
@@ -306,6 +340,8 @@ pub enum ToolCategory {
     Workflow,
     /// Sub-agent delegation
     SubAgent,
+    /// Vulnerability knowledge base operations
+    KnowledgeBase,
 }
 
 impl ToolCategory {
@@ -345,6 +381,13 @@ impl ToolCategory {
             Self::Ast => &[ToolName::AstGrep, ToolName::AstGrepReplace],
             Self::Workflow => &[ToolName::RunWorkflow],
             Self::SubAgent => &[], // Dynamic, not enumerable
+            Self::KnowledgeBase => &[
+                ToolName::SearchKnowledgeBase,
+                ToolName::WriteKnowledge,
+                ToolName::ReadKnowledge,
+                ToolName::IngestCve,
+                ToolName::SavePoc,
+            ],
         }
     }
 
@@ -366,6 +409,7 @@ impl std::fmt::Display for ToolCategory {
             Self::Ast => write!(f, "ast"),
             Self::Workflow => write!(f, "workflow"),
             Self::SubAgent => write!(f, "sub_agent"),
+            Self::KnowledgeBase => write!(f, "knowledge_base"),
         }
     }
 }

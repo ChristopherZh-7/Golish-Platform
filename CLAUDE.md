@@ -1,3 +1,8 @@
+---
+description: 
+alwaysApply: true
+---
+
 AI-powered terminal emulator built with Tauri 2 (Rust backend, React 19 frontend).
 
 ## About This Project

@@ -158,11 +158,11 @@ export function AppearanceSettings({
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium text-foreground">Zoom Level</span>
             <span className="text-xs text-muted-foreground tabular-nums">
-              {Math.round((displaySettings.uiScale ?? 1.0) * 100)}%
+              {Math.round((displaySettings.uiScale ?? 1.1) * 100)}%
             </span>
           </div>
           <Slider
-            value={[(displaySettings.uiScale ?? 1.0) * 100]}
+            value={[(displaySettings.uiScale ?? 1.1) * 100]}
             onValueChange={([v]: number[]) => update({ uiScale: Math.round(v) / 100 })}
             min={75}
             max={150}
@@ -173,13 +173,13 @@ export function AppearanceSettings({
             <p className="text-xs text-muted-foreground">
               Scale the entire UI (75% – 150%). Useful if text or buttons feel too small.
             </p>
-            {(displaySettings.uiScale ?? 1.0) !== 1.0 && (
+            {(displaySettings.uiScale ?? 1.1) !== 1.1 && (
               <button
                 type="button"
                 className="text-xs text-accent hover:underline"
-                onClick={() => update({ uiScale: 1.0 })}
+                onClick={() => update({ uiScale: 1.1 })}
               >
-                Reset to 100%
+                Reset to 110%
               </button>
             )}
           </div>
@@ -556,7 +556,7 @@ export function AppearanceSettings({
               showContextUsage: true,
               showMcpBadge: true,
               hideAiSettingsInShellMode: displaySettings.hideAiSettingsInShellMode,
-              uiScale: displaySettings.uiScale ?? 1.0,
+              uiScale: displaySettings.uiScale ?? 1.1,
             })
           }
           className="text-xs text-accent hover:underline disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed"
@@ -585,7 +585,7 @@ export function AppearanceSettings({
               showContextUsage: false,
               showMcpBadge: false,
               hideAiSettingsInShellMode: displaySettings.hideAiSettingsInShellMode,
-              uiScale: displaySettings.uiScale ?? 1.0,
+              uiScale: displaySettings.uiScale ?? 1.1,
             })
           }
           className="text-xs text-accent hover:underline disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed"

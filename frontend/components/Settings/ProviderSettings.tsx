@@ -833,91 +833,101 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
   };
 
   return (
-    <div className="flex flex-col" style={{ height: "calc(100vh - 140px)" }}>
-      {/* Top: left-right split */}
-      <div className="flex gap-4 flex-1 min-h-0">
-        {/* Left: provider list */}
-        <div className="w-56 flex-shrink-0 overflow-y-auto space-y-0.5 pr-1">
-          {providers.map((provider) => {
-            const isConfigured = provider.getConfigured(settings);
-            const isDefault = settings.default_provider === provider.id;
-            const isSelected = selectedId === provider.id;
+    <div className="flex gap-4" style={{ height: "calc(100vh - 140px)" }}>
+      {/* Left: provider list */}
+      <div className="w-56 flex-shrink-0 overflow-y-auto space-y-0.5 pr-1">
+        {providers.map((provider) => {
+          const isConfigured = provider.getConfigured(settings);
+          const isDefault = settings.default_provider === provider.id;
+          const isSelected = selectedId === provider.id;
 
-            return (
-              <button key={provider.id} type="button"
-                onClick={() => setSelectedId(isSelected ? null : provider.id)}
-                className={cn(
-                  "w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-colors",
-                  isSelected ? "bg-accent/10 text-foreground" : "hover:bg-[var(--bg-hover)] text-foreground/70"
-                )}
-              >
-                <span className="text-sm w-6 h-6 flex items-center justify-center flex-shrink-0">{provider.icon}</span>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[12px] font-medium truncate">{provider.name}</span>
-                    {isDefault && <Star className="w-2.5 h-2.5 text-accent fill-current flex-shrink-0" />}
-                  </div>
-                </div>
-                <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", isConfigured ? "bg-emerald-400" : "bg-muted-foreground/20")} />
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Right: config panel */}
-        <div className="flex-1 border-l border-border/15 pl-4 overflow-y-auto">
-          {selectedProvider ? (
-            <div className="space-y-5">
-              {/* Header */}
-              <div className="flex items-center gap-3">
-                <span className="text-xl">{selectedProvider.icon}</span>
-                <div>
-                  <div className="text-[14px] font-medium text-foreground">{selectedProvider.name}</div>
-                  <div className="text-[11px] text-muted-foreground/50">{selectedProvider.description}</div>
+          return (
+            <button key={provider.id} type="button"
+              onClick={() => setSelectedId(isSelected ? null : provider.id)}
+              className={cn(
+                "w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-colors",
+                isSelected ? "bg-accent/10 text-foreground" : "hover:bg-[var(--bg-hover)] text-foreground/70"
+              )}
+            >
+              <span className="text-sm w-6 h-6 flex items-center justify-center flex-shrink-0">{provider.icon}</span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[12px] font-medium truncate">{provider.name}</span>
+                  {isDefault && <Star className="w-2.5 h-2.5 text-accent fill-current flex-shrink-0" />}
                 </div>
               </div>
-
-              {/* Show in selector toggle */}
-              <div className="flex items-center justify-between py-2.5 border-y border-border/15">
-                <div>
-                  <div className="text-[12px] font-medium text-foreground/80">{t("provider.showInSelector")}</div>
-                  <div className="text-[11px] text-muted-foreground/40">{t("provider.showInSelectorDesc")}</div>
-                </div>
-                <Switch
-                  checked={getShowInSelector(selectedProvider.id)}
-                  onCheckedChange={(checked) => updateProvider(selectedProvider.id, "show_in_selector", checked)}
-                />
-              </div>
-
-              {/* Provider fields */}
-              {renderProviderFields(selectedProvider)}
-            </div>
-          ) : (
-            <div className="h-full flex items-center justify-center">
-              <span className="text-[12px] text-muted-foreground/30">{t("provider.selectProvider")}</span>
-            </div>
-          )}
-        </div>
+              <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", isConfigured ? "bg-emerald-400" : "bg-muted-foreground/20")} />
+            </button>
+          );
+        })}
       </div>
 
-      {/* Bottom: default model */}
-      <div className="pt-4 mt-4 border-t border-border/20 flex-shrink-0">
-        <div className="text-[12px] font-medium text-foreground/70 mb-2">{t("provider.defaultModel")}</div>
-        <ModelSelector
-          provider={settings.default_provider}
-          model={settings.default_model}
-          reasoningEffort={settings.default_reasoning_effort}
-          settings={settings}
-          onChange={(provider, model, reasoningEffort) =>
-            onChange({
-              ...settings,
-              default_provider: provider,
-              default_model: model,
-              default_reasoning_effort: reasoningEffort,
-            })
-          }
-        />
-        <p className="text-[11px] text-muted-foreground/40 mt-1.5">{t("provider.defaultModelDesc")}</p>
+      {/* Right: config panel or model assignments */}
+      <div className="flex-1 border-l border-border/15 pl-4 overflow-y-auto">
+        {selectedProvider ? (
+          <div className="space-y-5">
+            <div className="flex items-center gap-3">
+              <span className="text-xl">{selectedProvider.icon}</span>
+              <div>
+                <div className="text-[14px] font-medium text-foreground">{selectedProvider.name}</div>
+                <div className="text-[11px] text-muted-foreground/50">{selectedProvider.description}</div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between py-2.5 border-y border-border/15">
+              <div>
+                <div className="text-[12px] font-medium text-foreground/80">{t("provider.showInSelector")}</div>
+                <div className="text-[11px] text-muted-foreground/40">{t("provider.showInSelectorDesc")}</div>
+              </div>
+              <Switch
+                checked={getShowInSelector(selectedProvider.id)}
+                onCheckedChange={(checked) => updateProvider(selectedProvider.id, "show_in_selector", checked)}
+              />
+            </div>
+
+            {renderProviderFields(selectedProvider)}
+          </div>
+        ) : (
+          <div className="space-y-6 max-w-lg">
+            <div>
+              <div className="text-[13px] font-medium text-foreground/80 mb-1">{t("provider.defaultModel")}</div>
+              <p className="text-[11px] text-muted-foreground/40 mb-3">{t("provider.defaultModelDesc")}</p>
+              <ModelSelector
+                provider={settings.default_provider}
+                model={settings.default_model}
+                reasoningEffort={settings.default_reasoning_effort}
+                settings={settings}
+                onChange={(provider, model, reasoningEffort) =>
+                  onChange({
+                    ...settings,
+                    default_provider: provider,
+                    default_model: model,
+                    default_reasoning_effort: reasoningEffort,
+                  })
+                }
+              />
+            </div>
+
+            <div className="border-t border-border/10 pt-5">
+              <div className="text-[13px] font-medium text-foreground/80 mb-1">KB Research Model</div>
+              <p className="text-[11px] text-muted-foreground/40 mb-3">Model used by AI Research for vulnerability knowledge base. Inherits default if unchanged.</p>
+              <ModelSelector
+                provider={settings.research_provider ?? settings.default_provider}
+                model={settings.research_model ?? settings.default_model}
+                settings={settings}
+                onChange={(provider, model) =>
+                  onChange({
+                    ...settings,
+                    research_provider: provider,
+                    research_model: model,
+                  })
+                }
+              />
+            </div>
+
+            <div className="text-[10px] text-muted-foreground/20 pt-4">← Select a provider on the left to configure API keys</div>
+          </div>
+        )}
       </div>
     </div>
   );
