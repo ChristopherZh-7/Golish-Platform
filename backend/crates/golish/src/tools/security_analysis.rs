@@ -3,6 +3,10 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 
+fn non_empty(s: &str) -> Option<&str> {
+    if s.is_empty() { None } else { Some(s) }
+}
+
 // ─── Audit / Operation Logs (unified) ──────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,7 +56,7 @@ pub async fn oplog_list(
     limit: Option<i64>,
 ) -> Result<Vec<AuditRow>, String> {
     let pool = state.db_pool_ready().await?;
-    let rows = golish_db::repo::audit::list(pool, Some(&project_path), limit.unwrap_or(100))
+    let rows = golish_db::repo::audit::list(pool, non_empty(&project_path), limit.unwrap_or(100))
         .await
         .map_err(|e| e.to_string())?;
     Ok(rows.into_iter().map(AuditRow::from).collect())
@@ -83,7 +87,7 @@ pub async fn oplog_list_by_type(
     let rows = golish_db::repo::audit::list_by_category(
         pool,
         &op_type,
-        Some(&project_path),
+        non_empty(&project_path),
         limit.unwrap_or(100),
     )
     .await
@@ -101,7 +105,7 @@ pub async fn oplog_search(
     let pool = state.db_pool_ready().await?;
     let rows = golish_db::repo::audit::search(
         pool,
-        Some(&project_path),
+        non_empty(&project_path),
         &query,
         limit.unwrap_or(100),
     )
@@ -116,7 +120,7 @@ pub async fn oplog_count(
     project_path: String,
 ) -> Result<i64, String> {
     let pool = state.db_pool_ready().await?;
-    golish_db::repo::audit::count(pool, Some(&project_path))
+    golish_db::repo::audit::count(pool, non_empty(&project_path))
         .await
         .map_err(|e| e.to_string())
 }

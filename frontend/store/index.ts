@@ -175,6 +175,9 @@ interface GolishState
   workspaceDataReady: boolean;
   setWorkspaceDataReady: (ready: boolean) => void;
 
+  zapRunning: boolean;
+  setZapRunning: (running: boolean) => void;
+
   pendingTerminalRestoreData: Record<string, import("@/lib/workspace-storage").PersistedTerminalData[]> | null;
   setPendingTerminalRestoreData: (data: Record<string, import("@/lib/workspace-storage").PersistedTerminalData[]> | null) => void;
 
@@ -615,6 +618,12 @@ export const useStore = create<GolishState>()(
       setWorkspaceDataReady: (ready: boolean) =>
         set((state) => {
           state.workspaceDataReady = ready;
+        }),
+
+      zapRunning: false,
+      setZapRunning: (running: boolean) =>
+        set((state) => {
+          state.zapRunning = running;
         }),
 
       pendingTerminalRestoreData: null,
@@ -2742,11 +2751,25 @@ export const useStore = create<GolishState>()(
           });
         }),
 
-      setCurrentProject: (name, path) =>
+      setCurrentProject: (name, path) => {
+        const prevPath = get().currentProjectPath;
         set((state) => {
           state.currentProjectName = name;
           state.currentProjectPath = path ?? null;
-        }),
+        });
+        if (prevPath && prevPath !== (path ?? null)) {
+          set((state) => { state.zapRunning = false; });
+          import("@/lib/pentest/zap-api").then(({ zapStop, zapUpdateProject }) => {
+            zapStop(prevPath).catch(() => {}).then(() => {
+              zapUpdateProject(path ?? null).catch(() => {});
+            });
+          });
+        } else {
+          import("@/lib/pentest/zap-api").then(({ zapUpdateProject }) => {
+            zapUpdateProject(path ?? null).catch(() => {});
+          });
+        }
+      },
     })),
     { name: "golish" }
   )

@@ -71,7 +71,6 @@ pub async fn delete_project_config(
         let pool = &*state.db_pool;
         let tables_with_project_path = [
             "memories",
-            "tool_calls",
             "audit_log",
             "targets",
             "findings",
@@ -80,26 +79,29 @@ pub async fn delete_project_config(
             "topology_scans",
             "methodology_projects",
             "pipelines",
+            "api_endpoints",
+            "fingerprints",
+            "js_analysis_results",
         ];
+        let mut total_deleted = 0u64;
         for table in &tables_with_project_path {
-            if let Err(e) = sqlx::query(&format!(
-                "DELETE FROM {} WHERE project_path = $1",
+            match sqlx::query(&format!(
+                "DELETE FROM {} WHERE project_path = $1 OR project_path = ''",
                 table
             ))
             .bind(path)
             .execute(pool)
             .await
             {
-                tracing::warn!(
-                    "[delete-project] Failed to clean {}: {}",
-                    table,
-                    e
-                );
+                Ok(r) => total_deleted += r.rows_affected(),
+                Err(e) => {
+                    tracing::warn!("[delete-project] Failed to clean {}: {}", table, e);
+                }
             }
         }
         tracing::info!(
-            "[delete-project] Cleaned DB records for project_path={}",
-            path
+            "[delete-project] Cleaned {} DB records for project_path={}",
+            total_deleted, path
         );
     }
 

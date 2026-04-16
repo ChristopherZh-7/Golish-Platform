@@ -47,7 +47,7 @@ interface Finding {
   id: string;
   severity: string;
   status: string;
-  created_at: string;
+  created_at: number;
   tool?: string;
 }
 
@@ -341,7 +341,7 @@ export function DashboardPanel() {
       if (f.status === "open" || f.status === "confirmed") findingsOpen++;
       if (f.tool) findingsByTool[f.tool] = (findingsByTool[f.tool] || 0) + 1;
       if (f.created_at) {
-        const day = f.created_at.slice(0, 10);
+        const day = new Date(f.created_at * 1000).toISOString().slice(0, 10);
         dateMap[day] = (dateMap[day] || 0) + 1;
       }
     }

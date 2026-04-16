@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { js_beautify as jsBeautify, css_beautify as cssBeautify } from "js-beautify";
 import {
   Activity, ArrowDown, ArrowRight, ArrowUp, Check, ChevronDown,
   ChevronRight, ClipboardList, Copy, Crosshair, Database, Download, Eye, FileCode2, Globe, History, KeyRound, List,
@@ -13,7 +15,9 @@ import {
   zapGetAlerts, zapGetAlertCount, zapSendRequest, zapStartSpider,
   zapSpiderProgress, zapStopSpider,
   zapDownloadRootCert, zapInstallRootCert,
+  zapGetSiteMapData,
 } from "@/lib/pentest/zap-api";
+import type { SiteMapEntry, SiteMapData } from "@/lib/pentest/zap-api";
 import type {
   ZapStatusInfo, HttpHistoryEntry, HttpMessageDetail,
   ZapAlert, ScanProgress, ManualRequestResult,
@@ -40,27 +44,36 @@ const VaultSettings = lazy(() =>
   import("@/components/Settings/VaultSettings").then((m) => ({ default: m.VaultSettings }))
 );
 import { ScanPanel } from "@/components/ScanPanel/ScanPanel";
-export type SecurityTab = "history" | "sitemap" | "scanner" | "repeater" | "audit" | "passive" | "vault" | "scantools";
+import { IntruderPanel } from "@/components/SecurityView/IntruderPanel";
+export type SecurityTab = "history" | "sitemap" | "scanner" | "repeater" | "intruder" | "passive" | "vault" | "scantools";
 
 export function SecurityView({ standaloneTab }: { standaloneTab?: SecurityTab } = {}) {
   const { t } = useTranslation();
   const currentProjectPath = useStore((s) => s.currentProjectPath);
+  const globalZapRunning = useStore((s) => s.zapRunning);
+  const setGlobalZapRunning = useStore((s) => s.setZapRunning);
   const [activeTab, setActiveTab] = useState<SecurityTab>(standaloneTab || "history");
   const effectiveTab = standaloneTab || activeTab;
   const [zapState, setZapState] = useState<ZapStatusInfo>({
-    status: "stopped",
+    status: globalZapRunning ? "running" : "stopped",
     port: 8090,
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [zapInstalled, setZapInstalled] = useState<boolean | null>(null);
-  const [checkingInstall, setCheckingInstall] = useState(true);
+  const [zapInstalled, setZapInstalled] = useState<boolean | null>(globalZapRunning ? true : null);
+  const [checkingInstall, setCheckingInstall] = useState(!globalZapRunning);
   const [repeaterRequest, setRepeaterRequest] = useState<string | null>(null);
+  const [intruderRequest, setIntruderRequest] = useState<string | null>(null);
   const [pendingScanUrl, setPendingScanUrl] = useState<string | null>(null);
 
   const handleSendToRepeater = useCallback((rawRequest: string) => {
     setRepeaterRequest(rawRequest);
     setActiveTab("repeater");
+  }, []);
+
+  const handleSendToIntruder = useCallback((rawRequest: string) => {
+    setIntruderRequest(rawRequest);
+    setActiveTab("intruder");
   }, []);
 
   const handleActiveScan = useCallback((url: string) => {
@@ -79,40 +92,43 @@ export function SecurityView({ standaloneTab }: { standaloneTab?: SecurityTab } 
         if (cancelled) return;
         setZapState(status);
         setZapInstalled(status.status === "running" || path !== null);
+        setGlobalZapRunning(status.status === "running");
       } catch {
-        if (!cancelled) setZapInstalled(false);
+        if (!cancelled) { setZapInstalled(false); setGlobalZapRunning(false); }
       } finally {
         if (!cancelled) setCheckingInstall(false);
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [setGlobalZapRunning]);
 
   const handleStart = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const result = await zapStart();
+      const result = await zapStart(undefined, undefined, currentProjectPath);
       setZapState(result);
+      setGlobalZapRunning(result.status === "running");
     } catch (e) {
       setError(String(e));
       setZapState((s) => ({ ...s, status: "error", error: String(e) }));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [currentProjectPath, setGlobalZapRunning]);
 
   const handleStop = useCallback(async () => {
     setLoading(true);
     try {
       await zapStop();
       setZapState({ status: "stopped", port: zapState.port });
+      setGlobalZapRunning(false);
     } catch (e) {
       setError(String(e));
     } finally {
       setLoading(false);
     }
-  }, [zapState.port]);
+  }, [zapState.port, setGlobalZapRunning]);
 
   const isRunning = zapState.status === "running";
 
@@ -121,7 +137,7 @@ export function SecurityView({ standaloneTab }: { standaloneTab?: SecurityTab } 
     { id: "sitemap", label: t("security.siteMap", "Site Map"), icon: Globe },
     { id: "scanner", label: t("security.scanner"), icon: ShieldAlert },
     { id: "repeater", label: t("security.repeater"), icon: Send },
-    { id: "audit", label: t("security.auditLog", "Audit Log"), icon: ClipboardList },
+    { id: "intruder", label: "Intruder", icon: Crosshair },
     { id: "passive", label: t("security.passiveScan", "Passive Scan"), icon: Eye },
     { id: "vault", label: t("vault.title", "Credential Vault"), icon: KeyRound },
     { id: "scantools", label: t("security.scanTools", "Scan Tools"), icon: Crosshair },
@@ -199,12 +215,12 @@ export function SecurityView({ standaloneTab }: { standaloneTab?: SecurityTab } 
       return <ZapNotRunning onStart={handleStart} loading={loading} error={error} />;
     }
     switch (tab) {
-      case "sitemap": return <SiteMapPanel onSendToRepeater={handleSendToRepeater} onActiveScan={handleActiveScan} />;
-      case "history": return <HttpHistoryPanel onSendToRepeater={handleSendToRepeater} onActiveScan={handleActiveScan} />;
+      case "sitemap": return <SiteMapPanel onSendToRepeater={handleSendToRepeater} onSendToIntruder={handleSendToIntruder} onActiveScan={handleActiveScan} />;
+      case "history": return <HttpHistoryPanel onSendToRepeater={handleSendToRepeater} onSendToIntruder={handleSendToIntruder} onActiveScan={handleActiveScan} />;
       case "scanner": return <ScannerPanel initialUrl={pendingScanUrl} onUrlConsumed={() => setPendingScanUrl(null)} />;
-      case "audit": return <AuditLogPanel />;
       case "passive": return <PassiveScanPanel />;
       case "repeater": return null;
+      case "intruder": return null;
       default: return null;
     }
   };
@@ -296,6 +312,9 @@ export function SecurityView({ standaloneTab }: { standaloneTab?: SecurityTab } 
         {/* Repeater always mounted to preserve tab state, but hidden when ZAP not running */}
         <div className={cn("absolute inset-0", effectiveTab === "repeater" && isRunning ? "" : "invisible pointer-events-none")}>
           <RepeaterPanel injectedRequest={repeaterRequest} onInjectedConsumed={() => setRepeaterRequest(null)} />
+        </div>
+        <div className={cn("absolute inset-0", effectiveTab === "intruder" && isRunning ? "" : "invisible pointer-events-none")}>
+          <IntruderPanel injectedRequest={intruderRequest} onInjectedConsumed={() => setIntruderRequest(null)} />
         </div>
       </div>
     </div>
@@ -523,7 +542,7 @@ function buildRawRequest(detail: HttpMessageDetail): string {
 
 // ── HTTP History Panel ──
 
-function HttpHistoryPanel({ onSendToRepeater, onActiveScan }: { onSendToRepeater: (raw: string) => void; onActiveScan?: (url: string) => void }) {
+function HttpHistoryPanel({ onSendToRepeater, onSendToIntruder, onActiveScan }: { onSendToRepeater: (raw: string) => void; onSendToIntruder?: (raw: string) => void; onActiveScan?: (url: string) => void }) {
   const { t } = useTranslation();
   const [allEntries, setAllEntries] = useState<HttpHistoryEntry[]>([]);
   const [totalCount, setTotalCount] = useState(0);
@@ -661,9 +680,9 @@ function HttpHistoryPanel({ onSendToRepeater, onActiveScan }: { onSendToRepeater
         onCtxMenu={(x, y, entry) => setCtxMenu({ x, y, entry })}
         onClose={() => { setSelectedId(null); setDetail(null); }}
       />
-      {ctxMenu && (
+      {ctxMenu && createPortal(
         <div
-          className="fixed z-[100] min-w-[160px] rounded-lg border border-border/20 bg-popover shadow-lg py-1 text-[11px]"
+          className="fixed z-[9999] min-w-[160px] rounded-lg border border-border/20 bg-popover shadow-lg py-1 text-[11px]"
           style={{ top: ctxMenu.y, left: ctxMenu.x }}
         >
           <button
@@ -674,6 +693,19 @@ function HttpHistoryPanel({ onSendToRepeater, onActiveScan }: { onSendToRepeater
             <Send className="w-3 h-3 text-accent" />
             {t("security.sendToRepeater")}
           </button>
+          {onSendToIntruder && (
+            <button
+              type="button"
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-accent/10 transition-colors"
+              onClick={async () => {
+                try { const msg = await zapGetMessage(ctxMenu.entry.id); onSendToIntruder(buildRawRequest(msg)); } catch { /* ignore */ }
+                setCtxMenu(null);
+              }}
+            >
+              <Crosshair className="w-3 h-3 text-orange-400" />
+              Send to Intruder
+            </button>
+          )}
           {onActiveScan && (
             <button
               type="button"
@@ -692,7 +724,8 @@ function HttpHistoryPanel({ onSendToRepeater, onActiveScan }: { onSendToRepeater
             <Copy className="w-3 h-3 text-muted-foreground/50" />
             {t("security.copyUrl")}
           </button>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
@@ -843,6 +876,15 @@ function prettyPrintBody(content: string, headers?: string): string {
         }
       }
       return lines.join("\n");
+    } catch { /* fallback to raw */ }
+  }
+  if (ct.includes("javascript") || ct.includes("text/css")) {
+    try {
+      if (content.length > 500_000) return content;
+      if (ct.includes("css")) {
+        return cssBeautify(content, { indent_size: 2 });
+      }
+      return jsBeautify(content, { indent_size: 2, space_in_empty_paren: false });
     } catch { /* fallback to raw */ }
   }
   return content;
@@ -2352,6 +2394,12 @@ interface SiteTreeNode {
   nodeType?: "domain" | "subdomain" | "api" | "static" | "path";
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
 function normalizeHost(raw: string): string {
   let h = raw.toLowerCase().trim();
   h = h.replace(/^https?:\/\//, "");
@@ -2436,33 +2484,61 @@ function buildSiteTree(entries: HttpHistoryEntry[]): Map<string, SiteTreeNode> {
   return roots;
 }
 
-function SiteMapPanel({ onSendToRepeater, onActiveScan }: { onSendToRepeater: (raw: string) => void; onActiveScan?: (url: string) => void }) {
+function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan }: { onSendToRepeater: (raw: string) => void; onSendToIntruder?: (raw: string) => void; onActiveScan?: (url: string) => void }) {
   const { t } = useTranslation();
+  const currentProjectPath = useStore((s) => s.currentProjectPath);
+  const [siteMapData, setSiteMapData] = useState<SiteMapData | null>(null);
   const [allEntries, setAllEntries] = useState<HttpHistoryEntry[]>([]);
   const [selectedEntry, setSelectedEntry] = useState<HttpHistoryEntry | null>(null);
   const [detail, setDetail] = useState<HttpMessageDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [search, setSearch] = useState("");
-  const [filterMode, setFilterMode] = useState<"all" | "api" | "js">("all");
+  const [filterMode, setFilterMode] = useState<"all" | "api" | "js" | "captured">("all");
   const [viewMode, setViewMode] = useState<"tree" | "flat">("flat");
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; entry: HttpHistoryEntry } | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [hideBeforeId, setHideBeforeId] = useState(0);
 
+  const captureMap = useMemo(() => {
+    if (!siteMapData?.entries) return new Map<string, SiteMapEntry>();
+    const map = new Map<string, SiteMapEntry>();
+    for (const entry of Object.values(siteMapData.entries)) {
+      const key = `${entry.method}:${(entry.url || "").split("?")[0].split("#")[0]}`;
+      map.set(key, entry);
+    }
+    return map;
+  }, [siteMapData]);
+
   const entries = useMemo(() => allEntries.filter((e) => e.id > hideBeforeId), [allEntries, hideBeforeId]);
 
   const loadEntries = useCallback(async () => {
     try {
-      const items = await zapGetHistory(0, 2000);
+      const [items, dbData] = await Promise.all([
+        zapGetHistory(0, 2000),
+        zapGetSiteMapData(currentProjectPath),
+      ]);
       setAllEntries(items);
+      setSiteMapData(dbData);
     } catch { /* ignore */ }
-  }, []);
+  }, [currentProjectPath]);
 
   useEffect(() => {
     loadEntries();
-    intervalRef.current = setInterval(loadEntries, 5000);
+    intervalRef.current = setInterval(loadEntries, 3000);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [loadEntries]);
+
+  const isCaptured = useCallback((entry: HttpHistoryEntry) => {
+    const pathNoQuery = (entry.url || "").split("?")[0].split("#")[0];
+    const key = `${entry.method}:${pathNoQuery}`;
+    return captureMap.get(key)?.captured ?? false;
+  }, [captureMap]);
+
+  const getCaptureInfo = useCallback((entry: HttpHistoryEntry) => {
+    const pathNoQuery = (entry.url || "").split("?")[0].split("#")[0];
+    const key = `${entry.method}:${pathNoQuery}`;
+    return captureMap.get(key);
+  }, [captureMap]);
 
   const filtered = useMemo(() => {
     let items = entries;
@@ -2470,6 +2546,8 @@ function SiteMapPanel({ onSendToRepeater, onActiveScan }: { onSendToRepeater: (r
       items = items.filter((e) => /\.(js|jsx|ts|tsx|mjs|cjs|css|woff2?|svg|png|jpg|gif|ico)(\?|$)/i.test(e.path));
     } else if (filterMode === "api") {
       items = items.filter((e) => !(/\.(js|jsx|ts|tsx|mjs|cjs|css|woff2?|svg|png|jpg|gif|ico|html?)(\?|$)/i.test(e.path)));
+    } else if (filterMode === "captured") {
+      items = items.filter((e) => isCaptured(e));
     }
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -2478,7 +2556,7 @@ function SiteMapPanel({ onSendToRepeater, onActiveScan }: { onSendToRepeater: (r
       );
     }
     return items;
-  }, [entries, search, filterMode]);
+  }, [entries, search, filterMode, isCaptured]);
 
   const deduped = useMemo(() => {
     const seen = new Map<string, HttpHistoryEntry>();
@@ -2486,7 +2564,17 @@ function SiteMapPanel({ onSendToRepeater, onActiveScan }: { onSendToRepeater: (r
       const pathNoQuery = (e.path || "/").split("?")[0].split("#")[0];
       const host = normalizeHost(e.host || e.url);
       const key = `${e.method}:${host}${pathNoQuery}`;
-      if (!seen.has(key)) seen.set(key, e);
+      const existing = seen.get(key);
+      if (!existing) {
+        seen.set(key, e);
+        continue;
+      }
+      const newIsOk = e.status_code >= 200 && e.status_code < 300;
+      const oldIsOk = existing.status_code >= 200 && existing.status_code < 300;
+      // Prefer 2xx over non-2xx; among same quality, prefer the most recent
+      if ((newIsOk && !oldIsOk) || (newIsOk === oldIsOk && e.id > existing.id)) {
+        seen.set(key, e);
+      }
     }
     return [...seen.values()];
   }, [filtered]);
@@ -2544,6 +2632,7 @@ function SiteMapPanel({ onSendToRepeater, onActiveScan }: { onSendToRepeater: (r
 
   const hostCount = tree.size;
   const endpointCount = deduped.length;
+  const capturedCount = useMemo(() => deduped.filter((e) => isCaptured(e)).length, [deduped, isCaptured]);
   const siteContainerRef = useRef<HTMLDivElement>(null);
   const [siteDetailWidth, setSiteDetailWidth] = useState<number | null>(null);
 
@@ -2570,7 +2659,7 @@ function SiteMapPanel({ onSendToRepeater, onActiveScan }: { onSendToRepeater: (r
             className="w-full h-7 pl-8 pr-3 text-[11px] bg-[var(--bg-hover)]/30 rounded-lg border border-border/15 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40 transition-colors"
           />
         </div>
-        {(["all", "api", "js"] as const).map((mode) => (
+        {(["all", "api", "js", "captured"] as const).map((mode) => (
           <button
             key={mode}
             type="button"
@@ -2580,11 +2669,12 @@ function SiteMapPanel({ onSendToRepeater, onActiveScan }: { onSendToRepeater: (r
               filterMode === mode
                 ? mode === "api" ? "bg-green-500/15 text-green-400"
                   : mode === "js" ? "bg-yellow-500/15 text-yellow-400"
+                  : mode === "captured" ? "bg-blue-500/15 text-blue-400"
                   : "bg-accent/15 text-accent"
                 : "text-muted-foreground/40 hover:text-foreground hover:bg-[var(--bg-hover)]"
             )}
           >
-            {mode === "all" ? "All" : mode === "api" ? "API" : "Static"}
+            {mode === "all" ? "All" : mode === "api" ? "API" : mode === "js" ? "Static" : "Saved"}
           </button>
         ))}
         <div className="flex items-center border border-border/15 rounded-md overflow-hidden">
@@ -2612,7 +2702,7 @@ function SiteMapPanel({ onSendToRepeater, onActiveScan }: { onSendToRepeater: (r
           </button>
         </div>
         <span className="text-[10px] text-muted-foreground/30">
-          {hostCount} {t("security.hosts", "hosts")} · {endpointCount} {t("security.endpoints", "endpoints")}
+          {hostCount} {t("security.hosts", "hosts")} · {endpointCount} {t("security.endpoints", "endpoints")}{capturedCount > 0 && <> · <span className="text-blue-400">{capturedCount} saved</span></>}
         </span>
         <button
           type="button"
@@ -2687,6 +2777,15 @@ function SiteMapPanel({ onSendToRepeater, onActiveScan }: { onSendToRepeater: (r
                               <td className="px-3 py-1.5 text-foreground/80 font-mono text-[10px]">{normalizeHost(entry.host || entry.url)}</td>
                               <td className="px-3 py-1.5 text-muted-foreground/60 font-mono truncate max-w-[400px]">{(entry.path || "/").split("?")[0]}</td>
                               <td className={cn("px-3 py-1.5 font-mono w-[60px]", statusColor(entry.status_code))}>{entry.status_code || "-"}</td>
+                              <td className="px-1.5 py-1.5 w-[28px] text-center">
+                                {isCaptured(entry) ? (
+                                  <span title={getCaptureInfo(entry)?.capture?.local_path ?? "Saved"} className="text-blue-400">
+                                    <Download className="w-3 h-3 inline-block" />
+                                  </span>
+                                ) : (
+                                  <span className="text-muted-foreground/10">—</span>
+                                )}
+                              </td>
                               <td className="px-1.5 py-1.5 w-[36px]">
                                 <button
                                   type="button"
@@ -2740,6 +2839,17 @@ function SiteMapPanel({ onSendToRepeater, onActiveScan }: { onSendToRepeater: (r
                 <span className={cn("text-[10px] font-mono", statusColor(selectedEntry.status_code))}>
                   {selectedEntry.status_code}
                 </span>
+                {isCaptured(selectedEntry) && (
+                  <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 text-[9px] font-medium">
+                    <Download className="w-2.5 h-2.5" />
+                    Saved
+                    {getCaptureInfo(selectedEntry)?.capture?.file_size != null && (
+                      <span className="text-blue-400/60">
+                        ({formatBytes(getCaptureInfo(selectedEntry)!.capture!.file_size)})
+                      </span>
+                    )}
+                  </span>
+                )}
                 <button
                   type="button"
                   onClick={() => onSendToRepeater(buildRawRequest(detail))}
@@ -2772,9 +2882,9 @@ function SiteMapPanel({ onSendToRepeater, onActiveScan }: { onSendToRepeater: (r
           )}
         </div>
       </div>
-      {ctxMenu && (
+      {ctxMenu && createPortal(
         <div
-          className="fixed z-[100] min-w-[160px] rounded-lg border border-border/20 bg-popover shadow-lg py-1 text-[11px]"
+          className="fixed z-[9999] min-w-[160px] rounded-lg border border-border/20 bg-popover shadow-lg py-1 text-[11px]"
           style={{ top: ctxMenu.y, left: ctxMenu.x }}
         >
           <button
@@ -2785,6 +2895,19 @@ function SiteMapPanel({ onSendToRepeater, onActiveScan }: { onSendToRepeater: (r
             <Send className="w-3 h-3 text-accent" />
             {t("security.sendToRepeater")}
           </button>
+          {onSendToIntruder && (
+            <button
+              type="button"
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-accent/10 transition-colors"
+              onClick={async () => {
+                try { const msg = await zapGetMessage(ctxMenu.entry.id); onSendToIntruder(buildRawRequest(msg)); } catch { /* ignore */ }
+                setCtxMenu(null);
+              }}
+            >
+              <Crosshair className="w-3 h-3 text-orange-400" />
+              Send to Intruder
+            </button>
+          )}
           {onActiveScan && (
             <button
               type="button"
@@ -2803,7 +2926,8 @@ function SiteMapPanel({ onSendToRepeater, onActiveScan }: { onSendToRepeater: (r
             <Copy className="w-3 h-3 text-muted-foreground/50" />
             {t("security.copyUrl")}
           </button>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
