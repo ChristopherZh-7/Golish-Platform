@@ -64,10 +64,12 @@ interface StepState {
 interface ScanPanelProps {
   targetId: string;
   targetUrl: string;
+  /** Start expanded (true when used as main content, false when nested in target detail) */
+  initialExpanded?: boolean;
 }
 
-export function ScanPanel({ targetId, targetUrl }: ScanPanelProps) {
-  const [expanded, setExpanded] = useState(false);
+export function ScanPanel({ targetId, targetUrl, initialExpanded = false }: ScanPanelProps) {
+  const [expanded, setExpanded] = useState(initialExpanded);
 
   // Steps
   const [whatweb, setWhatweb] = useState<StepState>({ status: "idle" });

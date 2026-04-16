@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity, ArrowDown, ArrowRight, ArrowUp, Check, ChevronDown,
-  ChevronRight, ClipboardList, Copy, Database, Download, Eye, FileCode2, Globe, History, KeyRound, List,
+  ChevronRight, ClipboardList, Copy, Crosshair, Database, Download, Eye, FileCode2, Globe, History, KeyRound, List,
   Loader2, Play, Plus, RefreshCw, Search, Send, Shield, ShieldAlert, ShieldCheck,
   ShieldX, Square, Trash2, TreePine, X, Zap,
 } from "lucide-react";
@@ -39,7 +39,8 @@ import { lazy, Suspense } from "react";
 const VaultSettings = lazy(() =>
   import("@/components/Settings/VaultSettings").then((m) => ({ default: m.VaultSettings }))
 );
-export type SecurityTab = "history" | "sitemap" | "scanner" | "repeater" | "audit" | "passive" | "vault";
+import { ScanPanel } from "@/components/ScanPanel/ScanPanel";
+export type SecurityTab = "history" | "sitemap" | "scanner" | "repeater" | "audit" | "passive" | "vault" | "scantools";
 
 export function SecurityView({ standaloneTab }: { standaloneTab?: SecurityTab } = {}) {
   const { t } = useTranslation();
@@ -123,6 +124,7 @@ export function SecurityView({ standaloneTab }: { standaloneTab?: SecurityTab } 
     { id: "audit", label: t("security.auditLog", "Audit Log"), icon: ClipboardList },
     { id: "passive", label: t("security.passiveScan", "Passive Scan"), icon: Eye },
     { id: "vault", label: t("vault.title", "Credential Vault"), icon: KeyRound },
+    { id: "scantools", label: t("security.scanTools", "Scan Tools"), icon: Crosshair },
   ];
 
   const tabDragRef = useRef<{ tabId: SecurityTab | null; startX: number; startY: number; isDragging: boolean }>({ tabId: null, startX: 0, startY: 0, isDragging: false });
@@ -171,6 +173,9 @@ export function SecurityView({ standaloneTab }: { standaloneTab?: SecurityTab } 
           <VaultSettings />
         </Suspense>
       );
+    }
+    if (tab === "scantools") {
+      return <ScanToolsPanel />;
     }
     if (checkingInstall) {
       return (
@@ -4105,4 +4110,103 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}K`;
   return `${(bytes / (1024 * 1024)).toFixed(1)}M`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Scan Tools Panel (WhatWeb / Nuclei / feroxbuster)
+// ═══════════════════════════════════════════════════════════════════════
+
+interface TargetOption {
+  id: string;
+  value: string;
+  type: string;
+}
+
+function ScanToolsPanel() {
+  const [targets, setTargets] = useState<TargetOption[]>([]);
+  const [selectedTarget, setSelectedTarget] = useState<TargetOption | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await invoke<{ targets: TargetOption[] }>("target_list", {
+          projectPath: getProjectPath(),
+        });
+        if (cancelled) return;
+        const scannable = (data?.targets ?? []).filter(
+          (t) => t.type === "url" || t.type === "domain",
+        );
+        setTargets(scannable);
+        if (scannable.length > 0 && !selectedTarget) {
+          setSelectedTarget(scannable[0]);
+        }
+      } catch {
+        if (!cancelled) setTargets([]);
+      }
+      if (!cancelled) setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground/20" />
+      </div>
+    );
+  }
+
+  if (targets.length === 0) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center gap-3 text-muted-foreground/20">
+        <Crosshair className="w-12 h-12" />
+        <p className="text-[12px] font-medium">No scannable targets</p>
+        <p className="text-[10px] text-muted-foreground/15 max-w-[280px] text-center">
+          Add URL or domain targets in the Targets panel first.
+          Scan Tools supports WhatWeb fingerprinting, targeted Nuclei scanning, and feroxbuster directory brute-forcing.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col">
+      {/* Target selector */}
+      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border/10 flex-shrink-0">
+        <Crosshair className="w-3.5 h-3.5 text-accent flex-shrink-0" />
+        <span className="text-[10px] text-muted-foreground/50 flex-shrink-0">Target:</span>
+        <select
+          className="flex-1 text-[11px] bg-background border border-border/30 rounded px-2 py-1 outline-none focus:border-accent/40 transition-colors text-foreground appearance-none cursor-pointer"
+          value={selectedTarget?.id ?? ""}
+          onChange={(e) => {
+            const t = targets.find((t) => t.id === e.target.value);
+            if (t) setSelectedTarget(t);
+          }}
+        >
+          {targets.map((t) => (
+            <option key={t.id} value={t.id}>
+              [{t.type}] {t.value}
+            </option>
+          ))}
+        </select>
+        <span className="text-[9px] text-muted-foreground/30">
+          {targets.length} target{targets.length !== 1 ? "s" : ""}
+        </span>
+      </div>
+
+      {/* Scan panel */}
+      <div className="flex-1 overflow-y-auto px-4 py-3">
+        {selectedTarget && (
+          <ScanPanel
+            key={selectedTarget.id}
+            targetId={selectedTarget.id}
+            targetUrl={selectedTarget.value}
+            initialExpanded
+          />
+        )}
+      </div>
+    </div>
+  );
 }
