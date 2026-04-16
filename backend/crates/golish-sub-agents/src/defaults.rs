@@ -397,45 +397,41 @@ Content-Type validation (IMPORTANT):
 </edge_cases>
 
 <output>
-Save all files to `.golish/js-assets/{domain}/` under the workspace (the working directory).
-For example, if the target is https://example.com, save to `.golish/js-assets/example.com/`.
-Always create the directory first with `mkdir -p`.
+After discovering JS URLs, use the `js_collect` tool to download and save them:
 
-Update the manifest file (index.json) with:
+  js_collect(target_id="...", target_url="https://example.com", js_urls=["url1.js", "url2.js", ...])
+
+This tool automatically saves files to `.golish/captures/{host}/{port}/js/` with deduplication.
+It returns the saved file paths and any errors.
+
+For bulk URL discovery (manifests, recursive crawling), first collect all URLs, then pass them
+to js_collect in a single call (supports hundreds of URLs).
+
+After js_collect completes, write a summary manifest to `.golish/captures/{host}/{port}/js/index.json`:
 
 {
   "target_url": "https://...",
   "collected_at": "ISO timestamp",
   "bundler": "vite|webpack|nextjs|nuxt|cra|angular|unknown",
   "strategy_used": "manifest|recursive|manual",
-  "files": [
-    { "path": "index-abc123.js", "url": "full URL", "size": 12345, "source": "html_script|manifest|recursive|sourcemap|config" }
-  ],
-  "source_maps": [ ... ],
-  "failed": [
-    { "url": "...", "status": 403, "reason": "auth_required|html_response|invalid_json" }
-  ],
-  "stats": {
-    "total_files": 58,
-    "total_bytes": 2500000,
-    "from_manifest": 0,
-    "from_recursion": 50,
-    "from_ai_discovery": 8,
-    "source_maps": 6,
-    "failed": 2
-  }
+  "total_files": 58,
+  "total_bytes": 2500000,
+  "source_maps": 6,
+  "failed": 2
 }
 </output>
 
 <constraints>
-- **CRITICAL**: ALL output files MUST go to `.golish/js-assets/{domain}/` under the current working directory. NEVER use any other path like `workspace/`, `golish_js_assets/`, or `/tmp/`. The `{domain}` is derived from the target URL (e.g. `example.com`, `10.0.0.1_8080` for IP:port).
-- **CRITICAL**: Use Python for collection scripts, NOT bash. macOS ships with bash 3 which lacks `declare -A` and other bash 4+ features. Python 3 is always available.
+- **CRITICAL**: Use `js_collect` tool for downloading and saving JS files. This ensures all files go to
+  the standardized path `.golish/captures/{host}/{port}/js/` and get properly tracked in the database.
+  NEVER download files manually to random directories.
+- **CRITICAL**: Use Python for collection scripts (URL discovery), NOT bash. macOS ships with bash 3 which
+  lacks `declare -A` and other bash 4+ features. Python 3 is always available.
 - Your ONLY job is complete JS collection. Do NOT analyze file contents for security issues.
-- Write scripts for bulk operations. Never curl files one by one in separate tool calls.
+- Write scripts for bulk URL discovery. Then pass discovered URLs to js_collect.
 - Always verify completeness: after collection, read a sample of files and check for undiscovered references.
-- If the target is unreachable or completely blocked, report it clearly and stop — don't waste iterations.
+- If the target is unreachable or completely blocked, report it clearly and stop.
 - Maximum 3 retry cycles for recursive discovery. If no new files found in a cycle, collection is complete.
-- Keep total download time reasonable. If a site has 500+ chunks, download in parallel (curl can do this with xargs).
 - Clean up temporary scripts after collection is complete.
 </constraints>"#.to_string()
 }

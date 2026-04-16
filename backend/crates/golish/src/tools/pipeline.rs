@@ -122,9 +122,9 @@ fn recon_basic_template() -> Pipeline {
             input_from: None, requires: None,
         },
         StepDef {
-            id: "js_harvest", name: "js_harvest", step_type: "js_harvest",
-            cmd: "", args: vec!["{target}"],
-            input_from: None, requires: Some("domain"),
+            id: "js_harvest", name: "katana", step_type: "js_harvest",
+            cmd: "katana", args: vec!["-u", "{target}", "-jc", "-d", "2", "-ef", "css,png,jpg,gif,svg,woff,woff2,ttf,ico", "-silent"],
+            input_from: None, requires: Some("url"),
         },
     ];
 
