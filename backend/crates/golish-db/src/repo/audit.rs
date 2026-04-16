@@ -69,7 +69,7 @@ pub async fn log_operation(
 pub async fn list(pool: &PgPool, project_path: Option<&str>, limit: i64) -> Result<Vec<AuditEntry>> {
     let rows = sqlx::query_as::<_, AuditEntry>(
         r#"SELECT * FROM audit_log
-           WHERE project_path IS NOT DISTINCT FROM $1
+           WHERE ($1 IS NULL OR project_path = $1 OR project_path IS NULL)
            ORDER BY created_at DESC LIMIT $2"#,
     )
     .bind(project_path)
@@ -87,7 +87,8 @@ pub async fn list_by_category(
 ) -> Result<Vec<AuditEntry>> {
     let rows = sqlx::query_as::<_, AuditEntry>(
         r#"SELECT * FROM audit_log
-           WHERE category = $1 AND project_path IS NOT DISTINCT FROM $2
+           WHERE category = $1
+             AND ($2 IS NULL OR project_path = $2 OR project_path IS NULL)
            ORDER BY created_at DESC LIMIT $3"#,
     )
     .bind(category)
@@ -133,7 +134,7 @@ pub async fn search(
     let pattern = format!("%{}%", query.to_lowercase());
     let rows = sqlx::query_as::<_, AuditEntry>(
         r#"SELECT * FROM audit_log
-           WHERE project_path IS NOT DISTINCT FROM $1
+           WHERE ($1 IS NULL OR project_path = $1 OR project_path IS NULL)
              AND (LOWER(action) LIKE $2 OR LOWER(details) LIKE $2
                   OR LOWER(category) LIKE $2 OR LOWER(COALESCE(tool_name, '')) LIKE $2)
            ORDER BY created_at DESC LIMIT $3"#,
@@ -148,7 +149,7 @@ pub async fn search(
 
 pub async fn count(pool: &PgPool, project_path: Option<&str>) -> Result<i64> {
     let (count,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM audit_log WHERE project_path IS NOT DISTINCT FROM $1")
+        sqlx::query_as("SELECT COUNT(*) FROM audit_log WHERE ($1 IS NULL OR project_path = $1 OR project_path IS NULL)")
             .bind(project_path)
             .fetch_one(pool)
             .await?;
@@ -156,7 +157,7 @@ pub async fn count(pool: &PgPool, project_path: Option<&str>) -> Result<i64> {
 }
 
 pub async fn clear(pool: &PgPool, project_path: Option<&str>) -> Result<u64> {
-    let result = sqlx::query("DELETE FROM audit_log WHERE project_path IS NOT DISTINCT FROM $1")
+    let result = sqlx::query("DELETE FROM audit_log WHERE ($1 IS NULL OR project_path = $1 OR project_path IS NULL)")
         .bind(project_path)
         .execute(pool)
         .await?;

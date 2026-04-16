@@ -495,8 +495,14 @@ pub fn run_gui() {
                     }
                     api.prevent_close();
                     let w = window.clone();
+                    let app_handle = window.app_handle().clone();
                     let _ = window.emit("flush-state", ());
                     tauri::async_runtime::spawn(async move {
+                        // Stop ZAP on app close
+                        if let Some(pentest) = app_handle.try_state::<tools::pentest::PentestState>() {
+                            tracing::info!("[AppClose] Stopping ZAP before exit");
+                            let _ = pentest.zap_manager.stop().await;
+                        }
                         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                         persist_window_state_from_window(&w).await;
                         w.destroy().ok();
@@ -1147,6 +1153,7 @@ pub fn run_gui() {
             tools::pentest::zap_start,
             tools::pentest::zap_stop,
             tools::pentest::zap_status,
+            tools::pentest::zap_update_project,
             tools::pentest::zap_detect_path,
             tools::pentest::zap_set_path,
             tools::pentest::zap_get_history,
@@ -1167,6 +1174,7 @@ pub fn run_gui() {
             tools::pentest::zap_new_session,
             tools::pentest::zap_save_session,
             tools::pentest::zap_sync_to_db,
+            tools::pentest::zap_get_sitemap_data,
             tools::pentest::zap_download_root_cert,
             tools::pentest::zap_install_root_cert,
             tools::pentest::zap_api_call,

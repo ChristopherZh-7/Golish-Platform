@@ -215,15 +215,16 @@ pub async fn target_list(
 ) -> Result<TargetStore, String> {
     let pool = state.db_pool_ready().await?;
 
+    let pp = project_path.as_deref().filter(|s| !s.is_empty());
     let rows = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
                   status::text, source, parent_id, ports, technologies,
                      real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                      created_at, updated_at
-           FROM targets WHERE project_path IS NOT DISTINCT FROM $1
+           FROM targets WHERE ($1 IS NULL OR project_path = $1 OR project_path IS NULL OR project_path = '')
            ORDER BY created_at"#,
     )
-    .bind(project_path.as_deref())
+    .bind(pp)
     .fetch_all(pool)
     .await
     .map_err(|e| e.to_string())?;

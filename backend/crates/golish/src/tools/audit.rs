@@ -104,8 +104,9 @@ pub async fn audit_clear(
     project_path: Option<String>,
 ) -> Result<(), String> {
     let pool = state.db_pool_ready().await?;
-    sqlx::query("DELETE FROM audit_log WHERE project_path IS NOT DISTINCT FROM $1")
-        .bind(project_path.as_deref())
+    let pp = project_path.as_deref().filter(|s| !s.is_empty());
+    sqlx::query("DELETE FROM audit_log WHERE ($1 IS NULL OR project_path = $1 OR project_path IS NULL)")
+        .bind(pp)
         .execute(pool)
         .await
         .map_err(|e| e.to_string())?;
