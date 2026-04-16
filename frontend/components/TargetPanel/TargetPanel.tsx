@@ -597,9 +597,11 @@ export function TargetPanel() {
               const inCount = targets.filter((t) => t.scope === "in").length;
               const outCount = targets.length - inCount;
               const allChildCount = targets.reduce((acc, t) => acc + (childrenMap.get(t.id)?.length || 0), 0);
+              const isSingleFlat = targets.length === 1 && getRootDomain(targets[0].value) === domain;
               return (
               <div key={domain}>
-                {/* Domain group header */}
+                {/* Domain group header — only shown for multi-target groups */}
+                {!isSingleFlat && (
                 <button
                   type="button"
                   className="flex items-center gap-2 w-full px-4 py-2 hover:bg-muted/20 transition-colors text-left"
@@ -623,14 +625,15 @@ export function TargetPanel() {
                     <span className="text-[9px] px-1.5 py-0.5 rounded bg-accent/10 text-accent/70">{allChildCount} sub</span>
                   )}
                 </button>
+                )}
 
-                {/* Targets within this domain */}
-                {isDomainExpanded && targets.map((target) => {
+                {/* Targets — shown flat for single-target groups, or when expanded for multi-target groups */}
+                {(isSingleFlat || isDomainExpanded) && targets.map((target) => {
                   const children = childrenMap.get(target.id) || [];
                   const hasChildren = children.length > 0;
                   const isParentExpanded = expandedParents.has(target.id);
                   return (
-                  <div key={target.id} className="border-l-2 border-blue-400/20 ml-4">
+                  <div key={target.id} className={isSingleFlat ? "" : "border-l-2 border-blue-400/20 ml-4"}>
                   <div
                     className={cn(
                       "px-4 py-2.5 hover:bg-muted/30 transition-colors group cursor-pointer",
@@ -967,7 +970,7 @@ function TargetDetailView({
       )}
 
       {/* ── Scan Workflow Panel ── */}
-      {(target.type === "url" || target.type === "domain") && (
+      {(target.type === "url" || target.type === "domain" || target.type === "ip") && (
         <ScanPanel targetId={target.id} targetUrl={target.value} />
       )}
 

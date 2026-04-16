@@ -572,8 +572,13 @@ function HttpHistoryPanel({ onSendToRepeater, onSendToIntruder, onActiveScan }: 
 
   useEffect(() => {
     loadHistory();
-    intervalRef.current = setInterval(loadHistory, 3000);
+    let unlisten: (() => void) | null = null;
+    import("@tauri-apps/api/event").then(({ listen }) => {
+      listen("sitemap-updated", () => loadHistory()).then((fn) => { unlisten = fn; });
+    });
+    intervalRef.current = setInterval(loadHistory, 15000);
     return () => {
+      if (unlisten) unlisten();
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
   }, [loadHistory]);
@@ -2513,19 +2518,46 @@ function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan }: { on
 
   const loadEntries = useCallback(async () => {
     try {
-      const [items, dbData] = await Promise.all([
-        zapGetHistory(0, 2000),
-        zapGetSiteMapData(currentProjectPath),
-      ]);
-      setAllEntries(items);
+      const dbData = await zapGetSiteMapData(currentProjectPath);
       setSiteMapData(dbData);
+
+      let items: HttpHistoryEntry[] = [];
+      try {
+        items = await zapGetHistory(0, 2000);
+      } catch { /* ZAP not running */ }
+
+      if (items.length === 0 && dbData?.entries) {
+        // Fallback: reconstruct entries from persisted DB data
+        let idx = 1;
+        items = Object.values(dbData.entries).map((e) => ({
+          id: idx++,
+          method: e.method || "GET",
+          url: e.url,
+          status_code: e.status_code,
+          content_length: e.content_length || 0,
+          time_ms: 0,
+          timestamp: e.last_seen || e.first_seen || "",
+          host: e.host,
+          path: e.path || new URL(e.url).pathname,
+        }));
+      }
+      setAllEntries(items);
     } catch { /* ignore */ }
   }, [currentProjectPath]);
 
   useEffect(() => {
     loadEntries();
-    intervalRef.current = setInterval(loadEntries, 3000);
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+    // Listen for backend event when new sitemap data arrives
+    let unlisten: (() => void) | null = null;
+    import("@tauri-apps/api/event").then(({ listen }) => {
+      listen("sitemap-updated", () => loadEntries()).then((fn) => { unlisten = fn; });
+    });
+    // Fallback: poll every 15s in case events are missed
+    intervalRef.current = setInterval(loadEntries, 15000);
+    return () => {
+      if (unlisten) unlisten();
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
   }, [loadEntries]);
 
   const isCaptured = useCallback((entry: HttpHistoryEntry) => {

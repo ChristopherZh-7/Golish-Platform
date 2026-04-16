@@ -95,7 +95,7 @@ export function AuditLogPanel() {
   const [showFilter, setShowFilter] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [showSearch, setShowSearch] = useState(false);
-  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const [viewMode, setViewMode] = useState<ViewMode>("timeline");
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
     new Set()
@@ -216,8 +216,16 @@ export function AuditLogPanel() {
   const hasDetail = (detail: Record<string, unknown>) =>
     detail && Object.keys(detail).length > 0;
 
+  const toggleExpanded = useCallback((id: number) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
   const renderEntry = (entry: AuditRow, compact = false) => {
-    const isExpanded = expandedId === entry.id;
+    const isExpanded = expandedIds.has(entry.id);
     const showExpandable = hasDetail(entry.detail);
 
     return (
@@ -231,7 +239,7 @@ export function AuditLogPanel() {
           )}
           onClick={
             showExpandable
-              ? () => setExpandedId(isExpanded ? null : entry.id)
+              ? () => toggleExpanded(entry.id)
               : undefined
           }
         >
