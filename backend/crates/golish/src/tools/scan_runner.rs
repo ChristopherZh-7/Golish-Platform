@@ -68,6 +68,42 @@ async fn which_tool(name: &str) -> Option<String> {
 // WhatWeb scanner
 // ============================================================================
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhatWebOptions {
+    /// Aggression level: 1 (stealthy) to 4 (heavy)
+    pub aggression: Option<u32>,
+    /// Specific plugins to enable (comma-separated in WhatWeb)
+    pub plugins: Option<Vec<String>>,
+    /// Custom user-agent string
+    pub user_agent: Option<String>,
+    /// HTTP proxy (e.g. http://127.0.0.1:8080)
+    pub proxy: Option<String>,
+    /// Additional raw CLI arguments
+    pub extra_args: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NucleiScanOptions {
+    /// Rate limit (requests per second)
+    pub rate_limit: Option<u32>,
+    /// Bulk size (number of hosts to process per template)
+    pub bulk_size: Option<u32>,
+    /// Concurrency (number of templates to run in parallel)
+    pub concurrency: Option<u32>,
+    /// Tags to filter templates (e.g. ["cve", "rce"])
+    pub tags: Option<Vec<String>>,
+    /// Exclude tags
+    pub exclude_tags: Option<Vec<String>>,
+    /// Custom template directory path
+    pub template_path: Option<String>,
+    /// HTTP proxy
+    pub proxy: Option<String>,
+    /// Timeout per request (seconds)
+    pub timeout: Option<u32>,
+    /// Additional raw CLI arguments
+    pub extra_args: Option<Vec<String>>,
+}
+
 #[derive(Debug, Deserialize)]
 struct WhatWebResult {
     target: Option<String>,
@@ -206,6 +242,7 @@ pub async fn scan_whatweb(
     target_url: String,
     target_id: String,
     project_path: Option<String>,
+    options: Option<WhatWebOptions>,
 ) -> Result<ScanResult, String> {
     let start = std::time::Instant::now();
     let pool = state.db_pool_ready().await?;
@@ -216,8 +253,37 @@ pub async fn scan_whatweb(
 
     emit_progress(&app, "whatweb", "running", 0, 1, &format!("Scanning {}", target_url));
 
+    let opts = options.unwrap_or(WhatWebOptions {
+        aggression: None, plugins: None, user_agent: None, proxy: None, extra_args: None,
+    });
+
+    let mut args = vec![
+        "--color=never".to_string(),
+        "--log-json=-".to_string(),
+        "--quiet".to_string(),
+    ];
+
+    if let Some(agg) = opts.aggression {
+        args.push(format!("--aggression={}", agg.clamp(1, 4)));
+    }
+    if let Some(ref plugins) = opts.plugins {
+        if !plugins.is_empty() {
+            args.push(format!("--plugins={}", plugins.join(",")));
+        }
+    }
+    if let Some(ref ua) = opts.user_agent {
+        args.push(format!("--user-agent={}", ua));
+    }
+    if let Some(ref proxy) = opts.proxy {
+        args.push(format!("--proxy={}", proxy));
+    }
+    if let Some(ref extra) = opts.extra_args {
+        args.extend(extra.iter().cloned());
+    }
+    args.push(target_url.clone());
+
     let output = tokio::process::Command::new(&whatweb_path)
-        .args(["--color=never", "--log-json=-", "--quiet", &target_url])
+        .args(&args)
         .output()
         .await
         .map_err(|e| format!("WhatWeb execution failed: {}", e))?;
@@ -427,6 +493,7 @@ pub async fn scan_nuclei_targeted(
     project_path: Option<String>,
     template_ids: Vec<String>,
     severity_filter: Option<Vec<String>>,
+    options: Option<NucleiScanOptions>,
 ) -> Result<ScanResult, String> {
     let start = std::time::Instant::now();
     let pool = state.db_pool_ready().await?;
@@ -434,6 +501,11 @@ pub async fn scan_nuclei_targeted(
 
     let nuclei_path = which_tool("nuclei").await
         .ok_or_else(|| "Nuclei not found. Install via: brew install nuclei or go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest".to_string())?;
+
+    let opts = options.unwrap_or(NucleiScanOptions {
+        rate_limit: None, bulk_size: None, concurrency: None, tags: None,
+        exclude_tags: None, template_path: None, proxy: None, timeout: None, extra_args: None,
+    });
 
     let total = template_ids.len() as u32;
     emit_progress(&app, "nuclei", "preparing", 0, total, &format!("Preparing targeted scan with {} templates", total));
@@ -456,6 +528,38 @@ pub async fn scan_nuclei_targeted(
             args.push("-severity".to_string());
             args.push(sevs.join(","));
         }
+    }
+
+    if let Some(rl) = opts.rate_limit {
+        args.extend_from_slice(&["-rate-limit".to_string(), rl.to_string()]);
+    }
+    if let Some(bs) = opts.bulk_size {
+        args.extend_from_slice(&["-bulk-size".to_string(), bs.to_string()]);
+    }
+    if let Some(c) = opts.concurrency {
+        args.extend_from_slice(&["-concurrency".to_string(), c.to_string()]);
+    }
+    if let Some(ref tags) = opts.tags {
+        if !tags.is_empty() {
+            args.extend_from_slice(&["-tags".to_string(), tags.join(",")]);
+        }
+    }
+    if let Some(ref et) = opts.exclude_tags {
+        if !et.is_empty() {
+            args.extend_from_slice(&["-etags".to_string(), et.join(",")]);
+        }
+    }
+    if let Some(ref tp) = opts.template_path {
+        args.extend_from_slice(&["-t".to_string(), tp.clone()]);
+    }
+    if let Some(ref proxy) = opts.proxy {
+        args.extend_from_slice(&["-proxy".to_string(), proxy.clone()]);
+    }
+    if let Some(t) = opts.timeout {
+        args.extend_from_slice(&["-timeout".to_string(), t.to_string()]);
+    }
+    if let Some(ref extra) = opts.extra_args {
+        args.extend(extra.iter().cloned());
     }
 
     emit_progress(&app, "nuclei", "scanning", 0, total, &format!("Scanning {} with {} templates", target_url, total));
