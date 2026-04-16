@@ -979,22 +979,30 @@ pub async fn execute_security_analysis_tool(
             let source_maps = args.get("source_maps").and_then(|v| v.as_bool()).unwrap_or(false);
             let risk_summary = extract_string_param(args, &["risk_summary"]).unwrap_or_default();
 
+            let file_path_param = extract_string_param(args, &["file_path"]);
+
             match golish_db::repo::js_analysis::insert(
                 pool, target_id, project_path, &url, &filename,
                 None, None,
                 &frameworks, &libraries, &endpoints_found, &secrets_found,
                 &comments, source_maps, &risk_summary, &json!({}),
             ).await {
-                Ok(result) => Some((
-                    json!({
-                        "success": true,
-                        "analysis_id": result.id.to_string(),
-                        "frameworks_count": frameworks.as_array().map(|a| a.len()).unwrap_or(0),
-                        "endpoints_count": endpoints_found.as_array().map(|a| a.len()).unwrap_or(0),
-                        "secrets_count": secrets_found.as_array().map(|a| a.len()).unwrap_or(0),
-                    }),
-                    true,
-                )),
+                Ok(result) => {
+                    if let Some(ref fp) = file_path_param {
+                        let _ = golish_db::repo::js_analysis::update_file_path(pool, result.id, fp).await;
+                    }
+                    Some((
+                        json!({
+                            "success": true,
+                            "analysis_id": result.id.to_string(),
+                            "file_path": file_path_param,
+                            "frameworks_count": frameworks.as_array().map(|a| a.len()).unwrap_or(0),
+                            "endpoints_count": endpoints_found.as_array().map(|a| a.len()).unwrap_or(0),
+                            "secrets_count": secrets_found.as_array().map(|a| a.len()).unwrap_or(0),
+                        }),
+                        true,
+                    ))
+                },
                 Err(e) => Some(error_result(format!("Failed to save JS analysis: {}", e))),
             }
         }

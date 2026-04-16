@@ -57,6 +57,19 @@ pub async fn update_file_path(pool: &PgPool, id: Uuid, file_path: &str) -> Resul
     Ok(())
 }
 
+/// Update file_path for an existing JS analysis result matched by target_id + url.
+pub async fn update_file_path_by_url(pool: &PgPool, target_id: Uuid, url: &str, file_path: &str) -> Result<u64> {
+    let result = sqlx::query(
+        "UPDATE js_analysis_results SET file_path = $3 WHERE target_id = $1 AND url = $2 AND file_path IS NULL",
+    )
+    .bind(target_id)
+    .bind(url)
+    .bind(file_path)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 pub async fn list_by_target(pool: &PgPool, target_id: Uuid) -> Result<Vec<JsAnalysisResult>> {
     let rows = sqlx::query_as::<_, JsAnalysisResult>(
         "SELECT * FROM js_analysis_results WHERE target_id = $1 ORDER BY analyzed_at DESC",
