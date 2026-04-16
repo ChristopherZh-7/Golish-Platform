@@ -694,12 +694,33 @@ pub async fn pipeline_execute(
     // Cleanup temp dir
     let _ = std::fs::remove_dir_all(&tmp_dir);
 
+    let total_duration_ms = start.elapsed().as_millis() as u64;
+    let completed_steps = step_results.iter().filter(|s| s.exit_code == Some(0)).count();
+    let failed_steps = step_results.iter().filter(|s| s.exit_code.is_some() && s.exit_code != Some(0)).count();
+
+    let _ = golish_db::repo::audit::log_operation(
+        pool, "pipeline_executed", "recon",
+        &format!("Pipeline '{}' on {}: {}/{} steps completed, {} items stored",
+            pipeline.name, target, completed_steps, total_steps, total_stored),
+        project_path.as_deref(), "pipeline",
+        parent_target_id, None, Some(&pipeline.name),
+        if failed_steps == 0 { "completed" } else { "partial" },
+        &serde_json::json!({
+            "pipeline_id": pipeline_id,
+            "total_steps": total_steps,
+            "completed_steps": completed_steps,
+            "failed_steps": failed_steps,
+            "total_stored": total_stored,
+            "duration_ms": total_duration_ms,
+        }),
+    ).await;
+
     Ok(PipelineRunResult {
         pipeline_name: pipeline.name,
         target,
         steps: step_results,
         total_stored,
-        total_duration_ms: start.elapsed().as_millis() as u64,
+        total_duration_ms,
     })
 }
 
@@ -1155,12 +1176,33 @@ pub async fn execute_pipeline_headless(
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 
+    let total_duration_ms = start.elapsed().as_millis() as u64;
+    let completed_steps = step_results.iter().filter(|s| s.exit_code == Some(0)).count();
+    let failed_steps = step_results.iter().filter(|s| s.exit_code.is_some() && s.exit_code != Some(0)).count();
+
+    let _ = golish_db::repo::audit::log_operation(
+        pool, "pipeline_executed", "recon",
+        &format!("Pipeline '{}' on {}: {}/{} steps completed, {} items stored",
+            pipeline.name, target, completed_steps, total_steps, total_stored),
+        project_path, "pipeline",
+        parent_target_id, None, Some(&pipeline.name),
+        if failed_steps == 0 { "completed" } else { "partial" },
+        &serde_json::json!({
+            "pipeline_id": pipeline_id,
+            "total_steps": total_steps,
+            "completed_steps": completed_steps,
+            "failed_steps": failed_steps,
+            "total_stored": total_stored,
+            "duration_ms": total_duration_ms,
+        }),
+    ).await;
+
     Ok(PipelineRunResult {
         pipeline_name: pipeline.name.clone(),
         target: target.to_string(),
         steps: step_results,
         total_stored,
-        total_duration_ms: start.elapsed().as_millis() as u64,
+        total_duration_ms,
     })
 }
 

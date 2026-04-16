@@ -51,6 +51,22 @@ fn emit_progress(app: &tauri::AppHandle, tool: &str, phase: &str, current: u32, 
     });
 }
 
+async fn log_scan_op(
+    pool: &PgPool,
+    action: &str,
+    details: &str,
+    project_path: Option<&str>,
+    target_id: Option<Uuid>,
+    tool_name: &str,
+    status: &str,
+    detail: &serde_json::Value,
+) {
+    let _ = golish_db::repo::audit::log_operation(
+        pool, action, "scan", details, project_path,
+        tool_name, target_id, None, Some(tool_name), status, detail,
+    ).await;
+}
+
 async fn which_tool(name: &str) -> Option<String> {
     let output = tokio::process::Command::new("which")
         .arg(name)
@@ -303,14 +319,24 @@ pub async fn scan_whatweb(
 
     emit_progress(&app, "whatweb", "done", 1, 1, &format!("Found {} technologies", stored));
 
-    Ok(ScanResult {
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let result = ScanResult {
         tool: "whatweb".to_string(),
         success: errors.is_empty(),
         items_found: stored + errors.len() as u32,
         items_stored: stored,
         errors,
-        duration_ms: start.elapsed().as_millis() as u64,
-    })
+        duration_ms,
+    };
+
+    log_scan_op(
+        pool, "whatweb_scan", &format!("WhatWeb scan on {}: {} techs found", target_url, stored),
+        project_path.as_deref(), Some(tid), "whatweb",
+        if result.success { "completed" } else { "partial" },
+        &serde_json::json!({ "items_found": result.items_found, "items_stored": result.items_stored, "duration_ms": duration_ms }),
+    ).await;
+
+    Ok(result)
 }
 
 // ============================================================================
@@ -659,14 +685,25 @@ pub async fn scan_nuclei_targeted(
 
     emit_progress(&app, "nuclei", "done", items_stored, items_found, &format!("Scan complete: {} findings from {} templates", items_found, total));
 
-    Ok(ScanResult {
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let result = ScanResult {
         tool: "nuclei".to_string(),
         success: errors.is_empty(),
         items_found,
         items_stored,
         errors,
-        duration_ms: start.elapsed().as_millis() as u64,
-    })
+        duration_ms,
+    };
+
+    log_scan_op(
+        pool, "nuclei_targeted_scan",
+        &format!("Nuclei targeted scan on {}: {} templates, {} findings", target_url, total, items_found),
+        project_path.as_deref(), Some(tid), "nuclei",
+        if result.success { "completed" } else { "partial" },
+        &serde_json::json!({ "templates": total, "items_found": items_found, "items_stored": items_stored, "duration_ms": duration_ms }),
+    ).await;
+
+    Ok(result)
 }
 
 fn extract_cve_from_template(template_id: &str) -> Option<String> {
@@ -867,14 +904,25 @@ pub async fn scan_feroxbuster(
     emit_progress(&app, "feroxbuster", "done", all_items_stored, all_items_found,
         &format!("Found {} paths, {} stored", all_items_found, all_items_stored));
 
-    Ok(ScanResult {
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let result = ScanResult {
         tool: "feroxbuster".to_string(),
         success: all_errors.is_empty(),
         items_found: all_items_found,
         items_stored: all_items_stored,
         errors: all_errors,
-        duration_ms: start.elapsed().as_millis() as u64,
-    })
+        duration_ms,
+    };
+
+    log_scan_op(
+        pool, "feroxbuster_scan",
+        &format!("feroxbuster on {}: {} paths found, {} URLs scanned", target_url, all_items_found, total_urls),
+        project_path.as_deref(), Some(tid), "feroxbuster",
+        if result.success { "completed" } else { "partial" },
+        &serde_json::json!({ "urls_scanned": total_urls, "items_found": all_items_found, "items_stored": all_items_stored, "duration_ms": duration_ms }),
+    ).await;
+
+    Ok(result)
 }
 
 fn is_sensitive_path(url: &str) -> bool {
