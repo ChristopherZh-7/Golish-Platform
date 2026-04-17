@@ -32,6 +32,12 @@ interface PortInfo {
   protocol?: string;
   service?: string;
   state?: string;
+  http_title?: string;
+  http_status?: number;
+  webserver?: string;
+  content_type?: string;
+  technologies?: string[];
+  url?: string;
 }
 
 interface Target {
@@ -174,7 +180,6 @@ import { lazy, Suspense } from "react";
 const SecurityViewLazy = lazy(() =>
   import("@/components/SecurityView/SecurityView").then((m) => ({ default: m.SecurityView }))
 );
-import { ScanPanel } from "@/components/ScanPanel/ScanPanel";
 
 type TargetTab = "targets" | "topology" | "security";
 
@@ -381,6 +386,12 @@ export function TargetPanel() {
 
   const [expandedParents, setExpandedParents] = useState<Set<string>>(new Set());
   const [expandedDomains, setExpandedDomains] = useState<Set<string>>(new Set());
+  const [scanTarget, setScanTarget] = useState<{ id: string; value: string } | null>(null);
+
+  const openScanTools = useCallback((target: Target) => {
+    setScanTarget({ id: target.id, value: target.value });
+    setActiveTab("security");
+  }, []);
 
   const stats = useMemo(() => ({
     total: safeTargets.length,
@@ -468,7 +479,9 @@ export function TargetPanel() {
       ) : activeTab === "security" ? (
         <div className="flex-1 min-h-0 overflow-hidden">
           <Suspense fallback={<div className="h-full flex items-center justify-center"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground/20" /></div>}>
-            <SecurityViewLazy />
+            <SecurityViewLazy
+              initialScanTarget={scanTarget ?? undefined}
+            />
           </Suspense>
         </div>
       ) : (
@@ -700,7 +713,7 @@ export function TargetPanel() {
                     )}
 
                     {editingId === target.id && (
-                      <TargetDetailView target={target} t={t} onUpdateNotes={handleUpdateNotes} />
+                      <TargetDetailView target={target} t={t} onUpdateNotes={handleUpdateNotes} onScan={openScanTools} />
                     )}
                   </div>
 
@@ -786,10 +799,12 @@ function TargetDetailView({
   target,
   t,
   onUpdateNotes,
+  onScan,
 }: {
   target: Target;
   t: (key: string) => string;
   onUpdateNotes: (id: string, notes: string) => void;
+  onScan?: (target: Target) => void;
 }) {
   const [secData, setSecData] = useState<{
     assets: TargetAsset[];
@@ -907,42 +922,42 @@ function TargetDetailView({
         </div>
       )}
 
-      {/* ── Recon Info ── */}
-      {(target.http_title || target.http_status || target.real_ip || target.webserver || target.cdn_waf || target.os_info || target.content_type) && (
-        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
-          {target.http_title && (
-            <div className="col-span-2 text-muted-foreground"><span className="font-medium text-blue-400">Title:</span> {target.http_title}</div>
-          )}
-          {target.http_status != null && (
-            <div className="text-muted-foreground"><span className="font-medium text-cyan-400">Status:</span> <span className={cn("font-mono", target.http_status < 400 ? "text-green-400" : "text-red-400")}>{target.http_status}</span></div>
-          )}
-          {target.real_ip && (
-            <div className="text-muted-foreground"><span className="font-medium text-emerald-400">IP:</span> <span className="font-mono">{target.real_ip}</span></div>
-          )}
-          {target.webserver && (
-            <div className="text-muted-foreground"><span className="font-medium text-orange-400">Server:</span> {target.webserver}</div>
-          )}
-          {target.cdn_waf && (
-            <div className="text-muted-foreground"><span className="font-medium text-yellow-400">CDN/WAF:</span> {target.cdn_waf}</div>
-          )}
-          {target.os_info && (
-            <div className="text-muted-foreground"><span className="font-medium text-pink-400">OS:</span> {target.os_info}</div>
-          )}
-          {target.content_type && (
-            <div className="text-muted-foreground"><span className="font-medium text-violet-400">Content:</span> {target.content_type}</div>
-          )}
-        </div>
-      )}
-
-      {/* ── Technologies (target-level fingerprints) ── */}
-      {target.technologies && target.technologies.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1">
-          <Zap className="w-3 h-3 text-purple-400 shrink-0" />
-          {target.technologies.map((tech) => (
-            <span key={tech} className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400">{tech}</span>
-          ))}
-        </div>
-      )}
+      {/* ── Summary Bar ── */}
+      {(() => {
+        const httpPorts = allPorts.filter((p) => {
+          const info = getPortInfo(p);
+          return info?.service === "http" || info?.http_status != null;
+        });
+        return (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground px-2 py-1.5 rounded-md bg-muted/10">
+            {allPorts.length > 0 && (
+              <span className="flex items-center gap-1"><Wifi className="w-3 h-3 text-emerald-400" />{allPorts.length} Ports</span>
+            )}
+            {httpPorts.length > 0 && (
+              <span className="flex items-center gap-1"><Globe className="w-3 h-3 text-blue-400" />{httpPorts.length} Web</span>
+            )}
+            {target.real_ip && (
+              <span className="font-mono text-emerald-400/70">{target.real_ip}</span>
+            )}
+            {target.cdn_waf && (
+              <span className="text-yellow-400/70">{target.cdn_waf}</span>
+            )}
+            {target.os_info && (
+              <span className="text-pink-400/70">{target.os_info}</span>
+            )}
+            {target.technologies && target.technologies.length > 0 && (
+              <span className="flex flex-wrap gap-0.5">
+                {target.technologies.slice(0, 5).map((tech) => (
+                  <span key={tech} className="text-[9px] px-1 py-0.5 rounded bg-purple-500/10 text-purple-400/80">{tech}</span>
+                ))}
+                {target.technologies.length > 5 && (
+                  <span className="text-[9px] text-muted-foreground/30">+{target.technologies.length - 5}</span>
+                )}
+              </span>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ── Fingerprints from DB ── */}
       {secData.fingerprints.length > 0 && (
@@ -969,60 +984,107 @@ function TargetDetailView({
         </div>
       )}
 
-      {/* ── Scan Workflow Panel ── */}
-      {(target.type === "url" || target.type === "domain" || target.type === "ip") && (
-        <ScanPanel targetId={target.id} targetUrl={target.value} />
+      {/* ── Scan shortcut ── */}
+      {(target.type === "url" || target.type === "domain" || target.type === "ip") && onScan && (
+        <button
+          type="button"
+          onClick={() => onScan(target)}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium rounded-md border border-blue-500/25 bg-blue-500/[0.06] text-blue-300 hover:bg-blue-500/15 transition-colors w-fit"
+        >
+          <Zap className="w-3 h-3" />
+          Scan Target
+        </button>
       )}
 
-      {/* ── Ports (expandable, hierarchical) ── */}
+      {/* ── Services (per-port, expandable with HTTP metadata) ── */}
       {allPorts.length > 0 && (
         <div className="space-y-0.5">
           <div className="flex items-center gap-1 text-[11px] text-muted-foreground font-medium">
             <Server className="w-3 h-3" />
-            Ports ({allPorts.length})
+            Services ({allPorts.length})
             {secLoading && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground/20 ml-1" />}
           </div>
-          <div className="pl-2 space-y-0.5">
+          <div className="pl-1 space-y-1">
             {allPorts.map((port) => {
               const info = getPortInfo(port);
               const portEndpoints = endpointsByPort.get(port) || [];
               const portJs = jsByPort.get(port) || [];
               const isExpanded = expandedPorts.has(port);
-              const hasData = portEndpoints.length > 0 || portJs.length > 0;
+              const isHttp = info?.service === "http" || info?.http_status != null;
+              const hasChildren = portEndpoints.length > 0 || portJs.length > 0;
 
               return (
                 <div key={port} className="rounded-lg border border-border/10 overflow-hidden">
                   <button
                     type="button"
                     onClick={() => togglePort(port)}
-                    className="flex items-center gap-2 w-full px-2 py-1.5 text-left hover:bg-muted/10 transition-colors"
+                    className="flex items-start gap-2 w-full px-2 py-1.5 text-left hover:bg-muted/10 transition-colors"
                   >
-                    {hasData ? (
-                      isExpanded ? <ChevronDown className="w-2.5 h-2.5 text-muted-foreground/30" /> : <ChevronRight className="w-2.5 h-2.5 text-muted-foreground/30" />
-                    ) : (
-                      <span className="w-2.5" />
-                    )}
-                    <span className="text-[11px] font-mono text-emerald-400 font-medium">{port}</span>
-                    {info?.protocol && <span className="text-[9px] text-muted-foreground/40">/{info.protocol}</span>}
-                    {info?.service && <span className="text-[10px] text-foreground/60">{info.service}</span>}
-                    {info?.state && info.state !== "open" && (
-                      <span className="text-[9px] text-muted-foreground/30">[{info.state}]</span>
-                    )}
-                    {portEndpoints.length > 0 && (
-                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 ml-auto">
-                        {portEndpoints.length} endpoints
-                      </span>
-                    )}
-                    {portJs.length > 0 && (
-                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-yellow-500/10 text-yellow-400">
-                        {portJs.length} JS
-                      </span>
-                    )}
+                    {/* Port indicator */}
+                    <span className={cn(
+                      "w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0",
+                      isHttp ? "bg-emerald-400" : "bg-zinc-500",
+                    )} />
+
+                    <div className="flex-1 min-w-0">
+                      {/* Port header line */}
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-mono text-emerald-400 font-medium">:{port}</span>
+                        {info?.protocol && <span className="text-[9px] text-muted-foreground/40">/{info.protocol}</span>}
+                        {info?.service && <span className="text-[10px] text-foreground/50">{info.service}</span>}
+                        {info?.state && info.state !== "open" && (
+                          <span className="text-[9px] text-muted-foreground/30">[{info.state}]</span>
+                        )}
+                        {info?.http_status != null && (
+                          <span className={cn("text-[10px] font-mono font-medium",
+                            info.http_status < 300 ? "text-green-400" :
+                            info.http_status < 400 ? "text-blue-400" :
+                            info.http_status < 500 ? "text-yellow-400" : "text-red-400",
+                          )}>[{info.http_status}]</span>
+                        )}
+                        <div className="flex items-center gap-1.5 ml-auto flex-shrink-0">
+                          {portEndpoints.length > 0 && (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">
+                              {portEndpoints.length} ep
+                            </span>
+                          )}
+                          {portJs.length > 0 && (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-yellow-500/10 text-yellow-400">
+                              {portJs.length} JS
+                            </span>
+                          )}
+                          {(hasChildren || isHttp) && (
+                            isExpanded
+                              ? <ChevronDown className="w-2.5 h-2.5 text-muted-foreground/30" />
+                              : <ChevronRight className="w-2.5 h-2.5 text-muted-foreground/30" />
+                          )}
+                        </div>
+                      </div>
+
+                      {/* HTTP metadata inline (always visible for HTTP ports) */}
+                      {isHttp && info?.http_title && (
+                        <div className="text-[10px] text-foreground/60 truncate mt-0.5">
+                          {info.http_title}
+                        </div>
+                      )}
+                      {isHttp && info?.webserver && (
+                        <div className="text-[9px] text-muted-foreground/40 mt-0.5">
+                          {info.webserver}
+                        </div>
+                      )}
+                      {isHttp && info?.technologies && info.technologies.length > 0 && (
+                        <div className="flex flex-wrap gap-0.5 mt-1">
+                          {info.technologies.map((tech) => (
+                            <span key={tech} className="text-[8px] px-1 py-0.5 rounded bg-purple-500/10 text-purple-400/70">{tech}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </button>
 
-                  {isExpanded && hasData && (
+                  {/* Expanded content: endpoints, JS, etc. */}
+                  {isExpanded && (hasChildren || isHttp) && (
                     <div className="border-t border-border/5 px-2 py-1 space-y-1.5 bg-[var(--bg-hover)]/10">
-                      {/* Endpoints under this port */}
                       {portEndpoints.length > 0 && (
                         <div>
                           <div className="text-[9px] text-muted-foreground/40 font-medium mb-0.5">Endpoints</div>
@@ -1038,7 +1100,6 @@ function TargetDetailView({
                         </div>
                       )}
 
-                      {/* JS files under this port */}
                       {portJs.length > 0 && (
                         <div>
                           <div className="text-[9px] text-muted-foreground/40 font-medium mb-0.5">JS Files</div>
@@ -1054,6 +1115,10 @@ function TargetDetailView({
                             );
                           })}
                         </div>
+                      )}
+
+                      {!hasChildren && isHttp && info?.url && (
+                        <div className="text-[9px] text-muted-foreground/30 font-mono truncate py-1">{info.url}</div>
                       )}
                     </div>
                   )}

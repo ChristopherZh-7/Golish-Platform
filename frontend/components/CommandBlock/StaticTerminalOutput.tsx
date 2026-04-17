@@ -73,12 +73,14 @@ export function StaticTerminalOutput({
   const { openFile } = useFileEditorSidebar(workingDirectory);
 
   const lineCount = output.split("\n").length;
+  const isLargeOutput = lineCount > 100;
+  const MAX_TERMINAL_HEIGHT = 600;
 
   // Estimated min-height prevents layout shift when the xterm.js terminal
   // hasn't rendered yet (fixes output "jumping up" on fast commands).
   const estimatedMinHeight = useMemo(() => {
     const lineHeightPx = 17;
-    return Math.min(lineCount * lineHeightPx, 400);
+    return Math.min(lineCount * lineHeightPx, MAX_TERMINAL_HEIGHT);
   }, [lineCount]);
 
   // Effect to create terminal (runs once on mount)
@@ -95,7 +97,7 @@ export function StaticTerminalOutput({
         fontWeight: "normal",
         fontWeightBold: "bold",
         lineHeight: 1.4,
-        scrollback: 0,
+        scrollback: isLargeOutput ? 10000 : 0,
         convertEol: true,
         allowProposedApi: true,
       });
@@ -215,24 +217,25 @@ export function StaticTerminalOutput({
     const terminal = terminalRef.current;
     if (!terminal || !processedOutput) return;
 
-    // Calculate rows accounting for line wrapping at current column count
     const cols = terminal.cols || 80;
     const lines = processedOutput.split("\n");
     let totalRows = 0;
     for (const line of lines) {
-      // Strip ANSI escape codes to get visible character count
       const visibleLen = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").length;
       totalRows += Math.max(1, Math.ceil(visibleLen / cols));
     }
     totalRows = Math.max(totalRows, 1);
 
-    if (terminal.rows !== totalRows || terminal.cols !== cols) {
-      terminal.resize(cols, totalRows);
+    const maxVisibleRows = Math.floor(MAX_TERMINAL_HEIGHT / 17);
+    const displayRows = isLargeOutput ? Math.min(totalRows, maxVisibleRows) : totalRows;
+
+    if (terminal.rows !== displayRows || terminal.cols !== cols) {
+      terminal.resize(cols, displayRows);
     }
 
     terminal.clear();
     terminal.write(processedOutput);
-  }, [processedOutput, lineCount]);
+  }, [processedOutput, lineCount, isLargeOutput]);
 
   const handleOpenFile = useCallback(
     (absolutePath: string, _line?: number, _column?: number) => {
@@ -247,8 +250,11 @@ export function StaticTerminalOutput({
     <>
       <div
         ref={containerRef}
-        style={{ minHeight: estimatedMinHeight }}
-        className="overflow-hidden [&_.xterm-viewport]:!overflow-hidden [&_.xterm-screen]:!h-auto"
+        style={{ minHeight: estimatedMinHeight, maxHeight: isLargeOutput ? MAX_TERMINAL_HEIGHT : undefined }}
+        className={isLargeOutput
+          ? "overflow-hidden"
+          : "overflow-hidden [&_.xterm-viewport]:!overflow-hidden [&_.xterm-screen]:!h-auto"
+        }
       />
       {popupPosition && (
         <FilePathPopup

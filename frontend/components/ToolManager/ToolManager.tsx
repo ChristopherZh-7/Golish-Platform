@@ -29,6 +29,8 @@ interface OutputConfigData {
   detect?: string;
   patterns: OutputPattern[];
   fields: Record<string, string>;
+  db_action?: string;
+  transform?: string;
 }
 
 const PRODUCE_TYPES = ["host", "port", "vulnerability", "url", "credential"];
@@ -36,6 +38,13 @@ const OUTPUT_FORMATS = [
   { value: "text", label: "Text (Regex)" },
   { value: "json_lines", label: "JSON Lines" },
   { value: "json", label: "JSON" },
+];
+const DB_ACTIONS = [
+  { value: "", label: "None (don't store)" },
+  { value: "target_add", label: "Add Target" },
+  { value: "target_update_recon", label: "Update Target Recon" },
+  { value: "directory_entry_add", label: "Add Directory Entry" },
+  { value: "finding_add", label: "Add Finding" },
 ];
 
 function OutputMiniDropdown({
@@ -110,6 +119,8 @@ function OutputParserEditor({
     detect: "",
     patterns: [],
     fields: {},
+    db_action: undefined,
+    transform: undefined,
   };
 
   const [config, setConfig] = useState<OutputConfigData>(existing);
@@ -189,6 +200,23 @@ function OutputParserEditor({
                 value={config.detect || ""}
                 onChange={(e) => update({ detect: e.target.value })}
                 placeholder="Regex to match command or output"
+                className="flex-1 px-2 py-1 text-[11px] font-mono rounded-md bg-transparent border border-border/20 text-foreground placeholder:text-muted-foreground/20 outline-none"
+              />
+            </div>
+            <div className="flex items-center gap-3">
+              <label className="text-[11px] text-muted-foreground/50 w-20 flex-shrink-0">DB Action</label>
+              <OutputMiniDropdown
+                value={config.db_action || ""}
+                onChange={(v) => update({ db_action: v || undefined })}
+                options={DB_ACTIONS}
+              />
+            </div>
+            <div className="flex items-center gap-3">
+              <label className="text-[11px] text-muted-foreground/50 w-20 flex-shrink-0">Transform</label>
+              <input
+                value={config.transform || ""}
+                onChange={(e) => update({ transform: e.target.value || undefined })}
+                placeholder="jq expression to pre-process output (e.g. '.[] | .plugins | to_entries[]')"
                 className="flex-1 px-2 py-1 text-[11px] font-mono rounded-md bg-transparent border border-border/20 text-foreground placeholder:text-muted-foreground/20 outline-none"
               />
             </div>

@@ -215,6 +215,19 @@ pub async fn passive_scans_list(
 }
 
 #[tauri::command]
+pub async fn passive_scans_by_url(
+    state: tauri::State<'_, AppState>,
+    url: String,
+    limit: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    let pool = state.db_pool_ready().await?;
+    let rows = golish_db::repo::passive_scans::list_by_url(pool, &url, limit.unwrap_or(500))
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(rows).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn passive_scans_vulnerable(
     state: tauri::State<'_, AppState>,
     target_id: String,

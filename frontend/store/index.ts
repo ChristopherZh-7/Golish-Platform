@@ -131,9 +131,19 @@ enableMapSet();
  */
 const _outputBuffer = new Map<string, string>();
 
+const MAX_OUTPUT_BUFFER_BYTES = 512 * 1024; // 512 KB
+
+export function _drainOutputBufferSize(sessionId: string): number {
+  return _outputBuffer.get(sessionId)?.length ?? 0;
+}
+
 export function _drainOutputBuffer(sessionId: string): string {
-  const buf = _outputBuffer.get(sessionId) ?? "";
+  let buf = _outputBuffer.get(sessionId) ?? "";
   _outputBuffer.delete(sessionId);
+  if (buf.length > MAX_OUTPUT_BUFFER_BYTES) {
+    buf = `[Output truncated, showing last ${MAX_OUTPUT_BUFFER_BYTES} bytes]\n` +
+      buf.slice(buf.length - MAX_OUTPUT_BUFFER_BYTES);
+  }
   return buf;
 }
 
@@ -286,7 +296,7 @@ interface GolishState
   handlePromptStart: (sessionId: string) => void;
   handlePromptEnd: (sessionId: string) => void;
   handleCommandStart: (sessionId: string, command: string | null) => void;
-  handleCommandEnd: (sessionId: string, exitCode: number) => void;
+  handleCommandEnd: (sessionId: string, exitCode: number, endTime?: number) => void;
   appendOutput: (sessionId: string, data: string) => void;
   setPendingOutput: (sessionId: string, output: string) => void;
   toggleBlockCollapse: (blockId: string) => void;
@@ -1003,7 +1013,7 @@ export const useStore = create<GolishState>()(
         });
       },
 
-      handleCommandEnd: (sessionId, exitCode) => {
+      handleCommandEnd: (sessionId, exitCode, endTime?) => {
         const currentState = get();
         const pending = currentState.pendingCommand[sessionId];
         const command = pending?.command;
@@ -1028,7 +1038,7 @@ export const useStore = create<GolishState>()(
                 output: drainedOutput,
                 exitCode,
                 startTime: pending.startTime,
-                durationMs: Date.now() - new Date(pending.startTime).getTime(),
+                durationMs: (endTime ?? Date.now()) - new Date(pending.startTime).getTime(),
                 workingDirectory: currentWorkingDir,
                 isCollapsed: false,
               };
@@ -1082,7 +1092,11 @@ export const useStore = create<GolishState>()(
       },
 
       appendOutput: (sessionId, data) => {
-        _outputBuffer.set(sessionId, (_outputBuffer.get(sessionId) ?? "") + data);
+        let current = (_outputBuffer.get(sessionId) ?? "") + data;
+        if (current.length > MAX_OUTPUT_BUFFER_BYTES * 2) {
+          current = current.slice(current.length - MAX_OUTPUT_BUFFER_BYTES);
+        }
+        _outputBuffer.set(sessionId, current);
         // Auto-create pendingCommand once (fallback for missing command_start).
         // Only calls set() on the first output chunk per command, not on every chunk.
         if (!get().pendingCommand[sessionId]) {

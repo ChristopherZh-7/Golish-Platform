@@ -90,6 +90,7 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
   const prevHadPendingRef = useRef(hasPendingCommand);
   const [showLiveBlock, setShowLiveBlock] = useState(hasPendingCommand);
   const [liveBlockFading, setLiveBlockFading] = useState(false);
+  const liveBlockShowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const wasRunning = prevHadPendingRef.current;
@@ -97,23 +98,37 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
 
     if (wasRunning !== hasPendingCommand) {
       if (wasRunning && !hasPendingCommand) {
-        // Command just finished — fade out then unmount
-        setLiveBlockFading(true);
-        setTimeout(() => {
-          setShowLiveBlock(false);
-          setLiveBlockFading(false);
+        // Command just finished — cancel any pending show, then fade out
+        if (liveBlockShowTimerRef.current) {
+          clearTimeout(liveBlockShowTimerRef.current);
+          liveBlockShowTimerRef.current = null;
+        }
+        if (showLiveBlock) {
+          setLiveBlockFading(true);
+          setTimeout(() => {
+            setShowLiveBlock(false);
+            setLiveBlockFading(false);
+            setIsAtBottom(true);
+            scrollToBottom();
+          }, 200);
+        } else {
+          // LiveTerminalBlock was never shown (fast command) — just scroll
           setIsAtBottom(true);
-          scrollToBottom();
-        }, 200);
+          requestAnimationFrame(() => scrollToBottom());
+        }
       } else {
-        // Command starting — show immediately
-        setShowLiveBlock(true);
-        setLiveBlockFading(false);
+        // Command starting — debounce to avoid flash for fast commands.
+        // Only show LiveTerminalBlock if the command runs longer than 250ms.
         setIsAtBottom(true);
-        requestAnimationFrame(() => scrollToBottom());
+        liveBlockShowTimerRef.current = setTimeout(() => {
+          liveBlockShowTimerRef.current = null;
+          setShowLiveBlock(true);
+          setLiveBlockFading(false);
+          requestAnimationFrame(() => scrollToBottom());
+        }, 250);
       }
     }
-  }, [hasPendingCommand, scrollToBottom]);
+  }, [hasPendingCommand, scrollToBottom, showLiveBlock]);
 
   // Auto-scroll only when NEW blocks appear (not on content height changes from expand/collapse)
   const prevTimelineLengthRef = useRef(timeline.length);
@@ -131,7 +146,7 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
     hasPendingCommand,
   ]);
 
-  // Cleanup pending scroll on unmount
+  // Cleanup pending scroll and live block timer on unmount
   useEffect(() => {
     return () => {
       if (pendingScrollRef.current !== null) {
@@ -139,6 +154,9 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
       }
       if (scrollDebounceRef.current !== null) {
         clearTimeout(scrollDebounceRef.current);
+      }
+      if (liveBlockShowTimerRef.current !== null) {
+        clearTimeout(liveBlockShowTimerRef.current);
       }
     };
   }, []);

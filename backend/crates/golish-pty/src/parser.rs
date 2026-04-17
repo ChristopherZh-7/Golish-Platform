@@ -318,8 +318,10 @@ impl OscPerformer {
             }
             Some('D') => {
                 // Exit code may come from marker suffix (D;0) or params[2]
-                // Stay in Output region (will transition to Prompt on next 'A')
-                self.current_region = TerminalRegion::Output;
+                // Switch to Prompt so post-command shell artifacts (PROMPT_SP,
+                // bracketed-paste toggle, OSC 7, etc.) between D and the next A
+                // are NOT captured as command output.
+                self.current_region = TerminalRegion::Prompt;
                 let exit_code = marker
                     .strip_prefix("D;")
                     .or(extra_arg)
@@ -1295,9 +1297,37 @@ mod tests {
             OscEvent::CommandEnd { exit_code: 0 }
         ));
 
-        // 5. Next prompt (suppressed)
-        let r5 = parser.parse_filtered(b"\x1b]133;A\x07user@host:~$ \x1b]133;B\x07");
-        assert_eq!(r5.output, b""); // Prompt suppressed
+        // 5. Post-command shell artifacts (suppressed)
+        let r5 = parser.parse_filtered(b"\x1b[?2004h%\r \r");
+        assert_eq!(r5.output, b""); // Between D and A: suppressed
+
+        // 6. Next prompt (suppressed)
+        let r6 = parser.parse_filtered(b"\x1b]133;A\x07user@host:~$ \x1b]133;B\x07");
+        assert_eq!(r6.output, b""); // Prompt suppressed
+    }
+
+    #[test]
+    fn test_parse_filtered_post_command_suppressed() {
+        let mut parser = TerminalParser::new();
+
+        // Set up: command start → output → command end
+        parser.parse_filtered(b"\x1b]133;C;ls\x07");
+        let r1 = parser.parse_filtered(b"file1\nfile2\n");
+        assert_eq!(r1.output, b"file1\nfile2\n");
+
+        parser.parse_filtered(b"\x1b]133;D;0\x07");
+
+        // After command end, bytes should be suppressed (shell housekeeping)
+        let r2 = parser.parse_filtered(b"\x1b[?2004h%\r \r\x1b[1m\x1b[7m%\x1b[27m\x1b[0m");
+        assert_eq!(r2.output, b"");
+
+        // Until the next prompt starts a new cycle
+        parser.parse_filtered(b"\x1b]133;A\x07");
+        parser.parse_filtered(b"\x1b]133;B\x07");
+        parser.parse_filtered(b"\x1b]133;C;echo hi\x07");
+
+        let r3 = parser.parse_filtered(b"hi\n");
+        assert_eq!(r3.output, b"hi\n");
     }
 
     #[test]
@@ -1318,7 +1348,9 @@ mod tests {
         assert_eq!(parser.performer.current_region, TerminalRegion::Output);
 
         parser.parse_filtered(b"\x1b]133;D;0\x07");
-        assert_eq!(parser.performer.current_region, TerminalRegion::Output);
+        // After CommandEnd, region switches to Prompt so post-command
+        // artifacts (PROMPT_SP, bracketed paste, etc.) are suppressed.
+        assert_eq!(parser.performer.current_region, TerminalRegion::Prompt);
     }
 
     #[test]

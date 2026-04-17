@@ -71,6 +71,17 @@ pub async fn list_by_type(
     Ok(rows)
 }
 
+pub async fn list_by_url(pool: &PgPool, url: &str, limit: i64) -> Result<Vec<PassiveScanLog>> {
+    let rows = sqlx::query_as::<_, PassiveScanLog>(
+        "SELECT * FROM passive_scan_logs WHERE url LIKE $1 || '%' ORDER BY tested_at DESC LIMIT $2",
+    )
+    .bind(url)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 pub async fn list_vulnerable(pool: &PgPool, target_id: Uuid) -> Result<Vec<PassiveScanLog>> {
     let rows = sqlx::query_as::<_, PassiveScanLog>(
         "SELECT * FROM passive_scan_logs WHERE target_id = $1 AND result IN ('vulnerable', 'potential') ORDER BY severity DESC, tested_at DESC",

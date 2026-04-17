@@ -7,7 +7,7 @@ import { notify } from "@/lib/notify";
 import { getSettings } from "@/lib/settings";
 import { getGitBranch, gitStatus, ptyGetForegroundProcess } from "@/lib/tauri";
 import { liveTerminalManager, virtualTerminalManager } from "@/lib/terminal";
-import { useStore } from "@/store";
+import { useStore, _drainOutputBufferSize } from "@/store";
 
 // In browser mode, use the mock listen function if available
 declare global {
@@ -157,6 +157,16 @@ export function useTauriEvents() {
     // Used to skip output serialization for fullterm apps
     const usedAlternateScreen = new Map<string, boolean>();
 
+    // Track exit codes from command_end for deferred block creation in prompt_start.
+    // The PTY reader thread emits command_block events synchronously, but terminal_output
+    // goes through a separate coalescing thread (~16ms latency). For fast commands, this
+    // means command_end/prompt_start fire BEFORE the output data arrives. We defer block
+    // creation to prompt_start with a small delay to let terminal_output catch up.
+    const deferredExitCodes = new Map<
+      string,
+      { exitCode: number; endTime: number; fallbackTimer: ReturnType<typeof setTimeout> }
+    >();
+
     // Prevent out-of-order git refreshes per session
     const gitRefreshSeq = new Map<string, number>();
     // Track in-flight git refresh requests to avoid duplicate requests
@@ -236,12 +246,44 @@ export function useTauriEvents() {
         switch (event_type) {
           case "prompt_start": {
             const pendingCommand = state.pendingCommand[session_id]?.command;
+            const deferred = deferredExitCodes.get(session_id);
 
-            virtualTerminalManager.dispose(session_id);
-            liveTerminalManager.scrollToBottom(session_id);
-            liveTerminalManager.dispose(session_id);
+            if (deferred) {
+              // command_end already fired — cancel fallback and create block after
+              // a short delay so coalesced terminal_output events can arrive.
+              clearTimeout(deferred.fallbackTimer);
+              deferredExitCodes.delete(session_id);
 
-            state.handlePromptStart(session_id);
+              // Keep the live terminal alive during the delay so LiveTerminalBlock
+              // can still render without renderer errors. Just scroll to bottom
+              // for a nicer visual before transitioning to the static block.
+              liveTerminalManager.scrollToBottom(session_id);
+
+              void (async () => {
+                // Wait for the coalescing output thread to deliver terminal_output.
+                // The _outputBuffer (populated by appendOutput) will have the raw PTY
+                // data which preserves tab stops and column formatting from ls, etc.
+                // 150ms gives enough headroom even when the JS event loop is busy.
+                await new Promise((resolve) => setTimeout(resolve, 150));
+
+                logger.debug("[output-trace] deferred block creation", {
+                  session_id: session_id.slice(0, 8),
+                  bufferSize: _drainOutputBufferSize(session_id),
+                  exitCode: deferred.exitCode,
+                });
+                virtualTerminalManager.dispose(session_id);
+                liveTerminalManager.dispose(session_id);
+                store.getState().handleCommandEnd(session_id, deferred.exitCode, deferred.endTime);
+                store.getState().handlePromptStart(session_id);
+              })();
+            } else {
+              // No pending command_end (abnormal termination / SIGINT) — fall back
+              // to immediate block creation from _outputBuffer.
+              virtualTerminalManager.dispose(session_id);
+              liveTerminalManager.scrollToBottom(session_id);
+              liveTerminalManager.dispose(session_id);
+              state.handlePromptStart(session_id);
+            }
 
             lastStartedCommand.delete(session_id);
             // Switch back to timeline mode when shell is ready for next command
@@ -322,8 +364,6 @@ export function useTauriEvents() {
               null;
 
             if (exit_code !== null) {
-              // Check if this command used alternate screen (TUI apps like top, htop, vim)
-              // If so, skip output serialization - alternate screen content is discarded
               const wasFulltermApp = usedAlternateScreen.get(session_id) ?? false;
               usedAlternateScreen.delete(session_id);
 
@@ -333,15 +373,23 @@ export function useTauriEvents() {
                 state.setPendingOutput(session_id, "");
                 state.handleCommandEnd(session_id, exit_code);
               } else {
-                // Normal command - serialize output for display
-                void (async () => {
-                  const serializedOutput =
-                    await liveTerminalManager.serializeAndDispose(session_id);
-                  if (serializedOutput) {
-                    state.setPendingOutput(session_id, serializedOutput);
-                  }
-                  state.handleCommandEnd(session_id, exit_code);
-                })();
+                // Defer block creation to prompt_start. The coalescing output thread
+                // may not have delivered terminal_output yet for fast commands.
+                const prev = deferredExitCodes.get(session_id);
+                if (prev) clearTimeout(prev.fallbackTimer);
+
+                // Record the actual end time now (before any async delays)
+                const endTime = Date.now();
+
+                // Fallback: if prompt_start doesn't fire within 2s, create block ourselves
+                const fallbackTimer = setTimeout(() => {
+                  deferredExitCodes.delete(session_id);
+                  virtualTerminalManager.dispose(session_id);
+                  liveTerminalManager.dispose(session_id);
+                  store.getState().handleCommandEnd(session_id, exit_code, endTime);
+                }, 2000);
+
+                deferredExitCodes.set(session_id, { exitCode: exit_code, endTime, fallbackTimer });
               }
 
               if (commandText) {
@@ -352,7 +400,6 @@ export function useTauriEvents() {
             }
 
             // Refresh git branch/status after successful branch-changing commands.
-            // Without this, the git badge in UnifiedInput can get stale after `git checkout`.
             const commandForRefresh =
               command ??
               lastStartedCommand.get(session_id) ??
@@ -365,15 +412,8 @@ export function useTauriEvents() {
               }
             }
 
-            // If exit_code is null, don't create a block - we don't have valid completion info
-            // Cancel any pending process detection for this session
             clearProcessDetectionTimer(session_id);
-            // Clear process name when command ends
             state.setProcessName(session_id, null);
-            // Note: We don't switch back to timeline mode here anymore.
-            // The prompt_start event handles this more reliably, preventing
-            // premature switching for apps like codex/cdx that may trigger
-            // command_end before they're actually done.
             break;
           }
         }
@@ -388,6 +428,11 @@ export function useTauriEvents() {
       listen<TerminalOutputEvent>("terminal_output", (event) => {
         if (isStale()) return;
         const { session_id, data } = event.payload;
+        logger.debug("[output-trace] terminal_output received", {
+          session_id: session_id.slice(0, 8),
+          bytes: data.length,
+          hasDeferredEnd: deferredExitCodes.has(session_id),
+        });
         virtualTerminalManager.write(session_id, data);
         liveTerminalManager.write(session_id, data);
         store.getState().appendOutput(session_id, data);
@@ -478,6 +523,12 @@ export function useTauriEvents() {
         clearTimeout(timer);
       }
       processDetectionTimers.clear();
+
+      // Clear deferred command completion timers
+      for (const { fallbackTimer } of deferredExitCodes.values()) {
+        clearTimeout(fallbackTimer);
+      }
+      deferredExitCodes.clear();
 
       // Clear git status polling interval
       clearInterval(gitStatusPollInterval);

@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   zapStart, zapStop, zapStatus, zapDetectPath, zapGetHistory, zapGetHistoryCount,
   zapGetMessage, zapStartScan, zapScanProgress, zapStopScan,
@@ -16,6 +17,7 @@ import {
   zapSpiderProgress, zapStopSpider,
   zapDownloadRootCert, zapInstallRootCert,
   zapGetSiteMapData,
+  zapBatchScan,
 } from "@/lib/pentest/zap-api";
 import type { SiteMapEntry, SiteMapData } from "@/lib/pentest/zap-api";
 import type {
@@ -43,17 +45,67 @@ import { lazy, Suspense } from "react";
 const VaultSettings = lazy(() =>
   import("@/components/Settings/VaultSettings").then((m) => ({ default: m.VaultSettings }))
 );
-import { ScanPanel } from "@/components/ScanPanel/ScanPanel";
+import { PipelineLauncher } from "@/components/TargetPanel/PipelineLauncher";
 import { IntruderPanel } from "@/components/SecurityView/IntruderPanel";
 export type SecurityTab = "history" | "sitemap" | "scanner" | "repeater" | "intruder" | "passive" | "vault" | "scantools";
 
-export function SecurityView({ standaloneTab }: { standaloneTab?: SecurityTab } = {}) {
+function StyledSelect({ value, onChange, options, className }: {
+  value: string; onChange: (v: string) => void;
+  options: { value: string; label: string }[];
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const selected = options.find((o) => o.value === value) ?? options[0];
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  return (
+    <div ref={ref} className={cn("relative", className)}>
+      <button type="button" onClick={() => setOpen(!open)}
+        className="flex items-center gap-1 w-full h-full px-2.5 text-[10px] rounded-lg bg-white/[0.03] border border-white/[0.06] hover:border-white/[0.12] text-foreground/70 transition-colors cursor-pointer"
+      >
+        <span className="flex-1 text-left truncate">{selected?.label}</span>
+        <ChevronDown className={cn("w-2.5 h-2.5 text-muted-foreground/30 transition-transform flex-shrink-0", open && "rotate-180")} />
+      </button>
+      {open && (
+        <div className="absolute z-50 mt-0.5 w-full min-w-[100px] rounded-lg border border-white/[0.08] bg-[#1a1a1f] shadow-xl py-0.5 max-h-[200px] overflow-y-auto">
+          {options.map((o) => (
+            <button key={o.value} type="button" onClick={() => { onChange(o.value); setOpen(false); }}
+              className={cn("w-full text-left px-2.5 py-1.5 text-[10px] transition-colors", o.value === value ? "bg-accent/15 text-accent" : "text-foreground/60 hover:bg-white/[0.05] hover:text-foreground")}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function SecurityView({
+  standaloneTab,
+  initialScanTarget,
+}: {
+  standaloneTab?: SecurityTab;
+  initialScanTarget?: { id: string; value: string };
+} = {}) {
   const { t } = useTranslation();
   const currentProjectPath = useStore((s) => s.currentProjectPath);
   const globalZapRunning = useStore((s) => s.zapRunning);
   const setGlobalZapRunning = useStore((s) => s.setZapRunning);
-  const [activeTab, setActiveTab] = useState<SecurityTab>(standaloneTab || "history");
+  const [activeTab, setActiveTab] = useState<SecurityTab>(standaloneTab || (initialScanTarget ? "scantools" : "history"));
   const effectiveTab = standaloneTab || activeTab;
+
+  useEffect(() => {
+    if (initialScanTarget) setActiveTab("scantools");
+  }, [initialScanTarget?.id]);
+
   const [zapState, setZapState] = useState<ZapStatusInfo>({
     status: globalZapRunning ? "running" : "stopped",
     port: 8090,
@@ -76,8 +128,15 @@ export function SecurityView({ standaloneTab }: { standaloneTab?: SecurityTab } 
     setActiveTab("intruder");
   }, []);
 
+  const [pendingScanUrls, setPendingScanUrls] = useState<string[]>([]);
+
   const handleActiveScan = useCallback((url: string) => {
     setPendingScanUrl(url);
+    setActiveTab("scanner");
+  }, []);
+
+  const handleBatchActiveScan = useCallback((urls: string[]) => {
+    setPendingScanUrls(urls);
     setActiveTab("scanner");
   }, []);
 
@@ -191,7 +250,7 @@ export function SecurityView({ standaloneTab }: { standaloneTab?: SecurityTab } 
       );
     }
     if (tab === "scantools") {
-      return <ScanToolsPanel />;
+      return <ScanToolsPanel initialTarget={initialScanTarget} />;
     }
     if (checkingInstall) {
       return (
@@ -215,9 +274,9 @@ export function SecurityView({ standaloneTab }: { standaloneTab?: SecurityTab } 
       return <ZapNotRunning onStart={handleStart} loading={loading} error={error} />;
     }
     switch (tab) {
-      case "sitemap": return <SiteMapPanel onSendToRepeater={handleSendToRepeater} onSendToIntruder={handleSendToIntruder} onActiveScan={handleActiveScan} />;
+      case "sitemap": return <SiteMapPanel onSendToRepeater={handleSendToRepeater} onSendToIntruder={handleSendToIntruder} onActiveScan={handleActiveScan} onBatchScan={handleBatchActiveScan} />;
       case "history": return <HttpHistoryPanel onSendToRepeater={handleSendToRepeater} onSendToIntruder={handleSendToIntruder} onActiveScan={handleActiveScan} />;
-      case "scanner": return <ScannerPanel initialUrl={pendingScanUrl} onUrlConsumed={() => setPendingScanUrl(null)} />;
+      case "scanner": return <ScannerPanel initialUrl={pendingScanUrl} initialBatchUrls={pendingScanUrls} onUrlConsumed={() => { setPendingScanUrl(null); setPendingScanUrls([]); }} />;
       case "passive": return <PassiveScanPanel />;
       case "repeater": return null;
       case "intruder": return null;
@@ -1135,11 +1194,140 @@ interface ScanEndpoint {
   status: "queued" | "spidering" | "scanning" | "complete" | "error";
   alerts: ZapAlert[];
   addedAt: number;
+  messageCount?: number;
+}
+
+function PolicyDropdown({ value, onChange, options }: { value: string; onChange: (v: string) => void; options: { value: string; label: string }[] }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const selected = options.find((o) => o.value === value);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        className={cn(
+          "flex items-center gap-1.5 px-2 py-1 text-[10px] rounded-md border transition-colors",
+          "bg-[var(--bg-hover)]/20 border-border/20 text-muted-foreground/60",
+          "hover:bg-[var(--bg-hover)]/40 hover:border-border/40 hover:text-muted-foreground/80",
+          open && "border-accent/30 bg-[var(--bg-hover)]/30",
+        )}
+        onClick={() => setOpen(!open)}
+      >
+        <ShieldAlert className="w-3 h-3 flex-shrink-0" />
+        <span className="truncate max-w-[120px]">{selected?.label ?? value}</span>
+        <ChevronDown className={cn("w-2.5 h-2.5 text-muted-foreground/40 transition-transform", open && "rotate-180")} />
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1 min-w-[180px] max-h-48 overflow-y-auto rounded-lg border border-border/30 bg-card shadow-lg z-50 py-1">
+          {options.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              className={cn(
+                "w-full text-left px-3 py-1.5 text-[10px] transition-colors",
+                "hover:bg-[var(--bg-hover)]/60",
+                opt.value === value && "text-accent bg-accent/5 font-medium",
+              )}
+              onClick={() => { onChange(opt.value); setOpen(false); }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CredentialDropdown({ value, onChange, open, onToggle, entries }: {
+  value: string;
+  onChange: (v: string) => void;
+  open: boolean;
+  onToggle: () => void;
+  entries: VaultEntrySafe[];
+}) {
+  const { t } = useTranslation();
+  const ref = useRef<HTMLDivElement>(null);
+  const selected = entries.find((e) => e.id === value);
+  const filtered = entries.filter((e) => ["password", "token", "cookie", "apiKey"].includes(e.entry_type));
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onToggle();
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open, onToggle]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        className={cn(
+          "flex items-center gap-1.5 px-2 py-1 text-[10px] rounded-md border transition-colors",
+          "bg-[var(--bg-hover)]/20 border-border/20 text-muted-foreground/60",
+          "hover:bg-[var(--bg-hover)]/40 hover:border-border/40 hover:text-muted-foreground/80",
+          open && "border-accent/30 bg-[var(--bg-hover)]/30",
+        )}
+        onClick={onToggle}
+      >
+        <KeyRound className="w-3 h-3 flex-shrink-0" />
+        <span className="truncate max-w-[140px]">{selected ? selected.name : t("security.noCredential", "No credential (unauthenticated)")}</span>
+        <ChevronDown className={cn("w-2.5 h-2.5 text-muted-foreground/40 transition-transform", open && "rotate-180")} />
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1 min-w-[200px] max-h-48 overflow-y-auto rounded-lg border border-border/30 bg-card shadow-lg z-50 py-1">
+          <button
+            type="button"
+            className={cn(
+              "w-full text-left px-3 py-1.5 text-[10px] transition-colors hover:bg-[var(--bg-hover)]/60",
+              !value && "text-accent bg-accent/5 font-medium",
+            )}
+            onClick={() => { onChange(""); onToggle(); }}
+          >
+            {t("security.noCredential", "No credential (unauthenticated)")}
+          </button>
+          {filtered.map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              className={cn(
+                "w-full text-left px-3 py-1.5 text-[10px] transition-colors hover:bg-[var(--bg-hover)]/60 flex items-center gap-2",
+                value === entry.id && "text-accent bg-accent/5 font-medium",
+              )}
+              onClick={() => { onChange(entry.id); onToggle(); }}
+            >
+              <KeyRound className="w-2.5 h-2.5 flex-shrink-0" />
+              <span className="truncate">{entry.name}</span>
+              <span className="text-muted-foreground/40 text-[8px] ml-auto">{entry.entry_type}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function saveScanQueueToDb(q: ScanEndpoint[], pp: string | null) {
+  const seen = new Set<string>();
+  const deduped = q.filter((e) => {
+    if (seen.has(e.url)) return false;
+    seen.add(e.url);
+    return true;
+  });
   invoke("scan_queue_save_all", {
-    endpoints: q.map((e) => ({
+    endpoints: deduped.map((e) => ({
       url: e.url, status: e.status, alerts: e.alerts,
       addedAt: e.addedAt, scanId: e.scanId, progress: e.progress,
     })),
@@ -1174,7 +1362,7 @@ async function importZapAlerts(alerts: ZapAlert[], tool: string, pp: string | nu
   } catch { /* best effort */ }
 }
 
-function ScannerPanel({ initialUrl, onUrlConsumed }: { initialUrl?: string | null; onUrlConsumed?: () => void }) {
+function ScannerPanel({ initialUrl, initialBatchUrls, onUrlConsumed }: { initialUrl?: string | null; initialBatchUrls?: string[]; onUrlConsumed?: () => void }) {
   const { t } = useTranslation();
   const projectPath = useStore((s) => s.currentProjectPath);
   const [targetUrl, setTargetUrl] = useState("");
@@ -1185,33 +1373,74 @@ function ScannerPanel({ initialUrl, onUrlConsumed }: { initialUrl?: string | nul
   const [vaultEntries, setVaultEntries] = useState<VaultEntrySafe[]>([]);
   const [selectedCredential, setSelectedCredential] = useState<string>("");
   const [showCredSelector, setShowCredSelector] = useState(false);
+  const [scanPolicies, setScanPolicies] = useState<string[]>([]);
+  const [selectedPolicy, setSelectedPolicy] = useState<string>("");
+  const [scanLogs, setScanLogs] = useState<any[]>([]);
+  const [showPlugins, setShowPlugins] = useState(false);
+  const [scannerRules, setScannerRules] = useState<{ id: string; name: string; enabled: boolean; quality: string }[]>([]);
 
   useEffect(() => {
     const pp = getProjectPath();
     Promise.all([
       invoke<VaultEntrySafe[]>("vault_list", { projectPath: pp }).catch(() => []),
       invoke<ScanEndpoint[]>("scan_queue_list", { projectPath: pp }).catch(() => []),
-    ]).then(([v, q]) => {
+      invoke<string[]>("zap_list_scan_policies").catch(() => []),
+    ]).then(([v, q, policies]) => {
       setVaultEntries(Array.isArray(v) ? v : []);
-      const restored = (Array.isArray(q) ? q : []).map((e) => ({
+      const raw = (Array.isArray(q) ? q : []).map((e) => ({
         ...e,
-        status: (e.status === "scanning" || e.status === "spidering" ? "queued" : e.status) as ScanEndpoint["status"],
-      }));
-      if (restored.length > 0) setEndpoints(restored);
+        status: (e.status === "spidering" && !e.scanId ? "queued" : e.status) as ScanEndpoint["status"],
+      } as ScanEndpoint));
+      const seen = new Set<string>();
+      const restored = raw.filter((e) => {
+        if (seen.has(e.url)) return false;
+        seen.add(e.url);
+        return true;
+      });
+      if (restored.length > 0) {
+        setEndpoints(restored);
+        if (restored.length < raw.length) saveScanQueueToDb(restored, pp);
+      }
+      if (Array.isArray(policies)) setScanPolicies(policies);
     });
   }, [projectPath]);
 
   useEffect(() => {
     if (initialUrl) {
-      const exists = endpoints.some((e) => e.url === initialUrl);
-      if (!exists) {
+      setEndpoints((prev) => {
+        if (prev.some((e) => e.url === initialUrl)) return prev;
         const ep: ScanEndpoint = { url: initialUrl, scanId: null, progress: 0, status: "queued", alerts: [], addedAt: Date.now() };
-        setEndpoints((prev) => { const next = [...prev, ep]; saveScanQueueToDb(next, projectPath); return next; });
-      }
+        const next = [...prev, ep];
+        saveScanQueueToDb(next, projectPath);
+        return next;
+      });
       setSelectedUrl(initialUrl);
       onUrlConsumed?.();
     }
-  }, [initialUrl, onUrlConsumed, endpoints]);
+  }, [initialUrl, onUrlConsumed]);
+
+  useEffect(() => {
+    if (!initialBatchUrls?.length) return;
+    const now = Date.now();
+    setEndpoints((prev) => {
+      const existing = new Set(prev.map((e) => e.url));
+      const newEps = initialBatchUrls
+        .filter((url) => !existing.has(url))
+        .map((url, i) => ({
+          url,
+          scanId: null,
+          progress: 0,
+          status: "queued" as const,
+          alerts: [] as ZapAlert[],
+          addedAt: now + i,
+        }));
+      if (newEps.length === 0) return prev;
+      const next = [...prev, ...newEps];
+      saveScanQueueToDb(next, projectPath);
+      return next;
+    });
+    onUrlConsumed?.();
+  }, [initialBatchUrls]);
 
   const handleAddEndpoint = useCallback(() => {
     const url = targetUrl.trim();
@@ -1256,12 +1485,12 @@ function ScannerPanel({ initialUrl, onUrlConsumed }: { initialUrl?: string | nul
     try {
       await zapStartSpider(url);
       setEndpoints((prev) => prev.map((e) => e.url === url ? { ...e, status: "scanning" } : e));
-      const id = await zapStartScan(url);
+      const id = await zapStartScan(url, undefined, undefined, null, selectedPolicy || null);
       setEndpoints((prev) => prev.map((e) => e.url === url ? { ...e, scanId: id } : e));
     } catch {
       setEndpoints((prev) => prev.map((e) => e.url === url ? { ...e, status: "error" } : e));
     }
-  }, [applyCredential]);
+  }, [applyCredential, selectedPolicy]);
 
   const handleScanAll = useCallback(async () => {
     setScanning(true);
@@ -1285,15 +1514,18 @@ function ScannerPanel({ initialUrl, onUrlConsumed }: { initialUrl?: string | nul
     const poll = async () => {
       for (const ep of active) {
         try {
-          const prog = await zapScanProgress(ep.scanId!);
-          const alerts = await zapGetAlerts(ep.url, 0, 200);
+          const [prog, alerts, msgCount] = await Promise.all([
+            zapScanProgress(ep.scanId!),
+            zapGetAlerts(ep.url, 0, 200),
+            invoke<number>("zap_scan_message_count", { scanId: ep.scanId! }).catch(() => 0),
+          ]);
           const isComplete = prog.progress >= 100;
           if (isComplete && alerts.length > 0) {
             importZapAlerts(alerts, "ZAP Active Scan", projectPath);
           }
           setEndpoints((prev) => {
             const next = prev.map((e) => e.url === ep.url ? {
-              ...e, progress: prog.progress, alerts,
+              ...e, progress: prog.progress, alerts, messageCount: msgCount,
               status: isComplete ? "complete" as const : "scanning" as const,
             } : e);
             saveScanQueueToDb(next, projectPath);
@@ -1305,7 +1537,7 @@ function ScannerPanel({ initialUrl, onUrlConsumed }: { initialUrl?: string | nul
     poll();
     intervalRef.current = setInterval(poll, 2000);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [endpoints.filter((e) => e.status === "scanning").map((e) => e.url).join(",")]);
+  }, [endpoints.filter((e) => e.status === "scanning").map((e) => `${e.url}:${e.scanId}`).join(",")]);
 
   const handleStopAll = useCallback(async () => {
     for (const ep of endpoints.filter((e) => e.status === "scanning" && e.scanId)) {
@@ -1321,6 +1553,14 @@ function ScannerPanel({ initialUrl, onUrlConsumed }: { initialUrl?: string | nul
   }, [projectPath]);
 
   const sel = endpoints.find((e) => e.url === selectedUrl);
+
+  useEffect(() => {
+    if (!sel || sel.status !== "complete") { setScanLogs([]); return; }
+    invoke("passive_scans_by_url", { url: sel.url, limit: 500 })
+      .then((data: any) => setScanLogs(Array.isArray(data) ? data : []))
+      .catch(() => setScanLogs([]));
+  }, [sel?.url, sel?.status]);
+
   const totalAlerts = endpoints.reduce((acc, e) => acc + e.alerts.length, 0);
   const completedCount = endpoints.filter((e) => e.status === "complete").length;
   const scanningCount = endpoints.filter((e) => e.status === "scanning" || e.status === "spidering").length;
@@ -1380,21 +1620,38 @@ function ScannerPanel({ initialUrl, onUrlConsumed }: { initialUrl?: string | nul
         )}
       </div>
 
-      {/* Credential selector */}
+      {/* Credential & policy selector */}
       <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border/10 flex-shrink-0">
-        <KeyRound className="w-3 h-3 text-muted-foreground/30 flex-shrink-0" />
-        <button className="flex items-center gap-1.5 text-[10px] text-muted-foreground/50 hover:text-muted-foreground/80 transition-colors"
-          onClick={() => setShowCredSelector(!showCredSelector)}>
-          {selectedCredential ? (
-            <span className="text-accent/70 font-medium">{vaultEntries.find((e) => e.id === selectedCredential)?.name || "Credential"}</span>
-          ) : (
-            <span>{t("security.noCredential", "No credential (unauthenticated)")}</span>
-          )}
-          <ChevronDown className="w-3 h-3" />
+        <CredentialDropdown
+          value={selectedCredential}
+          onChange={setSelectedCredential}
+          open={showCredSelector}
+          onToggle={() => setShowCredSelector(!showCredSelector)}
+          entries={vaultEntries}
+        />
+        <span className="w-px h-3 bg-border/20" />
+        <PolicyDropdown
+          value={selectedPolicy}
+          onChange={setSelectedPolicy}
+          options={[
+            { value: "", label: t("security.defaultPolicy", "Default Policy (all)") },
+            ...scanPolicies.map((p) => ({ value: p, label: p })),
+          ]}
+        />
+        <button
+          className={cn("p-1 rounded text-muted-foreground/30 hover:text-muted-foreground/60 transition-colors", showPlugins && "text-accent/60 bg-accent/10")}
+          onClick={() => {
+            if (!showPlugins && scannerRules.length === 0) {
+              invoke<{ id: string; name: string; enabled: boolean; quality: string }[]>("zap_get_scanners")
+                .then((r) => setScannerRules(Array.isArray(r) ? r : []))
+                .catch(() => {});
+            }
+            setShowPlugins(!showPlugins);
+          }}
+          title={t("security.configurePlugins", "Configure scan plugins")}
+        >
+          <Crosshair className="w-3 h-3" />
         </button>
-        {selectedCredential && (
-          <button className="text-[10px] text-muted-foreground/40 hover:text-muted-foreground/70" onClick={() => setSelectedCredential("")}>×</button>
-        )}
         <div className="flex-1" />
         <span className="text-[9px] text-muted-foreground/30">
           {endpoints.length} {t("security.endpoints")} · {totalAlerts} {t("security.alertsTotal")}
@@ -1406,20 +1663,53 @@ function ScannerPanel({ initialUrl, onUrlConsumed }: { initialUrl?: string | nul
           </button>
         )}
       </div>
-      {showCredSelector && (
-        <div className="px-4 py-2 border-b border-border/10 space-y-1 max-h-32 overflow-y-auto bg-muted/5">
-          <div className={cn("px-2 py-1 rounded text-[10px] cursor-pointer hover:bg-muted/30 transition-colors", !selectedCredential && "bg-accent/10 text-accent")}
-            onClick={() => { setSelectedCredential(""); setShowCredSelector(false); }}>
-            {t("security.noCredential", "No credential (unauthenticated)")}
+      {showPlugins && (
+        <div className="border-b border-border/10 bg-muted/5 max-h-[300px] flex flex-col">
+          <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border/5 flex-shrink-0">
+            <span className="text-[10px] font-medium text-foreground/50">{t("security.scanPlugins", "Scan Plugins")}</span>
+            <span className="text-[9px] text-muted-foreground/30">
+              {scannerRules.filter((r) => r.enabled).length}/{scannerRules.length} {t("security.enabled", "enabled")}
+            </span>
+            <div className="flex-1" />
+            <button className="text-[9px] text-accent/50 hover:text-accent/80 transition-colors"
+              onClick={() => {
+                const allEnabled = scannerRules.every((r) => r.enabled);
+                const ids = scannerRules.map((r) => r.id);
+                invoke("zap_set_scanners_enabled", { ids, enabled: !allEnabled }).then(() => {
+                  setScannerRules((prev) => prev.map((r) => ({ ...r, enabled: !allEnabled })));
+                }).catch(() => {});
+              }}>
+              {scannerRules.every((r) => r.enabled) ? t("security.disableAll", "Disable All") : t("security.enableAll", "Enable All")}
+            </button>
           </div>
-          {vaultEntries.filter((e) => ["password", "token", "cookie", "apiKey"].includes(e.entry_type)).map((entry) => (
-            <div key={entry.id} className={cn("px-2 py-1 rounded text-[10px] cursor-pointer hover:bg-muted/30 transition-colors flex items-center gap-2", selectedCredential === entry.id && "bg-accent/10 text-accent")}
-              onClick={() => { setSelectedCredential(entry.id); setShowCredSelector(false); }}>
-              <KeyRound className="w-2.5 h-2.5 flex-shrink-0" />
-              <span className="truncate">{entry.name}</span>
-              <span className="text-muted-foreground/40 text-[9px]">{entry.entry_type}</span>
-            </div>
-          ))}
+          <div className="overflow-y-auto flex-1">
+            {scannerRules.length === 0 ? (
+              <div className="flex items-center justify-center py-6 text-muted-foreground/20 text-[11px]">
+                <Loader2 className="w-4 h-4 animate-spin mr-2" /> {t("security.loadingPlugins", "Loading plugins...")}
+              </div>
+            ) : (
+              <div className="divide-y divide-border/5">
+                {scannerRules.map((rule) => (
+                  <div key={rule.id} className="flex items-center gap-2 px-4 py-1 hover:bg-[var(--bg-hover)]/20 transition-colors">
+                    <button
+                      className={cn("w-3.5 h-3.5 rounded border flex items-center justify-center transition-colors flex-shrink-0",
+                        rule.enabled ? "bg-accent/20 border-accent/40 text-accent" : "border-border/30 text-transparent"
+                      )}
+                      onClick={() => {
+                        invoke("zap_set_scanners_enabled", { ids: [rule.id], enabled: !rule.enabled }).then(() => {
+                          setScannerRules((prev) => prev.map((r) => r.id === rule.id ? { ...r, enabled: !r.enabled } : r));
+                        }).catch(() => {});
+                      }}
+                    >
+                      {rule.enabled && <Check className="w-2.5 h-2.5" />}
+                    </button>
+                    <span className="text-[10px] text-foreground/60 flex-1 truncate">{rule.name}</span>
+                    <span className="text-[8px] text-muted-foreground/25 font-mono">{rule.id}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -1458,7 +1748,12 @@ function ScannerPanel({ initialUrl, onUrlConsumed }: { initialUrl?: string | nul
                       <div className="flex items-center gap-2 mb-1">
                         {statusBadge(ep.status)}
                         {(ep.status === "scanning" || ep.status === "spidering") && (
-                          <span className="text-[9px] text-muted-foreground/40">{ep.progress}%</span>
+                          <>
+                            <span className="text-[9px] text-muted-foreground/40">{ep.progress}%</span>
+                            {ep.messageCount != null && ep.messageCount > 0 && (
+                              <span className="text-[8px] text-muted-foreground/25">{ep.messageCount} req</span>
+                            )}
+                          </>
                         )}
                         <div className="flex-1" />
                         <button type="button" onClick={(e) => { e.stopPropagation(); handleRemoveEndpoint(ep.url); }}
@@ -1490,9 +1785,9 @@ function ScannerPanel({ initialUrl, onUrlConsumed }: { initialUrl?: string | nul
         </div>
 
         {/* Right: selected endpoint detail */}
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-hidden flex flex-col">
           {sel ? (
-            <div className="h-full flex flex-col">
+            <>
               <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border/10 flex-shrink-0">
                 <Globe className="w-3.5 h-3.5 text-blue-400 flex-shrink-0" />
                 <span className="text-[12px] font-mono text-foreground/80 truncate flex-1">{sel.url}</span>
@@ -1504,15 +1799,10 @@ function ScannerPanel({ initialUrl, onUrlConsumed }: { initialUrl?: string | nul
                   </button>
                 )}
               </div>
-              {sel.alerts.length === 0 ? (
-                <div className="flex-1 flex flex-col items-center justify-center gap-3 text-muted-foreground/20">
-                  <ShieldCheck className="w-12 h-12" />
-                  <p className="text-[13px] font-medium">
-                    {sel.status === "scanning" || sel.status === "spidering" ? t("security.scanInProgress") : sel.status === "complete" ? t("security.scanNoResults") : t("security.scanHint")}
-                  </p>
-                </div>
-              ) : (
-                <div className="px-4 py-3 space-y-2">
+              {sel.status === "complete" && (sel.alerts.length > 0 || scanLogs.length > 0) ? (
+                <ScanDetailTabs alerts={sel.alerts} scanLogs={scanLogs} riskColor={riskColor} riskIcon={riskIcon} />
+              ) : sel.alerts.length > 0 ? (
+                <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
                   <div className="flex items-center gap-2 mb-2">
                     <span className="text-[11px] font-medium text-foreground/60">{sel.alerts.length} {t("security.alertsTotal")}</span>
                     {(() => {
@@ -1524,8 +1814,31 @@ function ScannerPanel({ initialUrl, onUrlConsumed }: { initialUrl?: string | nul
                     <AlertCard key={`${alert.id}-${alert.url}`} alert={alert} riskColor={riskColor} riskIcon={riskIcon} />
                   ))}
                 </div>
+              ) : sel.status === "scanning" || sel.status === "spidering" ? (
+                <div className="flex-1 flex flex-col items-center justify-center gap-4 text-muted-foreground/30">
+                  <Loader2 className="w-8 h-8 animate-spin text-orange-400/40" />
+                  <div className="text-center space-y-1.5">
+                    <p className="text-[13px] font-medium text-foreground/50">{t("security.scanInProgress")}</p>
+                    <div className="flex items-center gap-3 justify-center">
+                      <span className="text-[11px] text-orange-400/60 font-mono">{sel.progress}%</span>
+                      {sel.messageCount != null && sel.messageCount > 0 && (
+                        <span className="text-[11px] text-muted-foreground/40">{sel.messageCount} {t("security.requestsSent", "requests sent")}</span>
+                      )}
+                      {sel.alerts.length > 0 && (
+                        <span className="text-[11px] text-red-400/60">{sel.alerts.length} alerts</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex-1 flex flex-col items-center justify-center gap-3 text-muted-foreground/20">
+                  <ShieldCheck className="w-12 h-12" />
+                  <p className="text-[13px] font-medium">
+                    {sel.status === "complete" ? t("security.scanNoResults") : t("security.scanHint")}
+                  </p>
+                </div>
               )}
-            </div>
+            </>
           ) : (
             <div className="h-full flex flex-col items-center justify-center gap-3 text-muted-foreground/20">
               <ShieldCheck className="w-12 h-12" />
@@ -1536,6 +1849,141 @@ function ScannerPanel({ initialUrl, onUrlConsumed }: { initialUrl?: string | nul
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function ScanDetailTabs({ alerts, scanLogs, riskColor, riskIcon }: {
+  alerts: ZapAlert[];
+  scanLogs: any[];
+  riskColor: (r: string) => string;
+  riskIcon: (r: string) => React.ReactNode;
+}) {
+  const { t } = useTranslation();
+  const [tab, setTab] = useState<"alerts" | "tests">(alerts.length > 0 ? "alerts" : "tests");
+  const vulnCount = scanLogs.filter((l) => l.result === "vulnerable" || l.result === "potential").length;
+  const testTypes = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const l of scanLogs) {
+      map.set(l.test_type || "unknown", (map.get(l.test_type || "unknown") || 0) + 1);
+    }
+    return [...map.entries()].sort((a, b) => b[1] - a[1]);
+  }, [scanLogs]);
+
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex items-center gap-1 px-4 py-1.5 border-b border-border/10 flex-shrink-0">
+        <button
+          className={cn("px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors", tab === "alerts" ? "bg-accent/10 text-accent" : "text-muted-foreground/40 hover:text-muted-foreground/70")}
+          onClick={() => setTab("alerts")}
+        >
+          {t("security.alertsTab", "Alerts")} ({alerts.length})
+        </button>
+        <button
+          className={cn("px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors", tab === "tests" ? "bg-accent/10 text-accent" : "text-muted-foreground/40 hover:text-muted-foreground/70")}
+          onClick={() => setTab("tests")}
+        >
+          {t("security.testsTab", "Test Details")} ({scanLogs.length})
+        </button>
+        {tab === "tests" && vulnCount > 0 && (
+          <span className="text-[9px] text-red-400 font-medium ml-1">{vulnCount} vulnerable</span>
+        )}
+      </div>
+      <div className="flex-1 overflow-y-auto">
+        {tab === "alerts" ? (
+          alerts.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground/20">
+              <ShieldCheck className="w-10 h-10" />
+              <p className="text-[12px]">{t("security.scanNoResults")}</p>
+            </div>
+          ) : (
+            <div className="px-4 py-3 space-y-2">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-[11px] font-medium text-foreground/60">{alerts.length} {t("security.alertsTotal")}</span>
+                {(() => {
+                  const vulnTypes = new Set(alerts.map((a) => a.name));
+                  return <span className="text-[10px] text-muted-foreground/30">{vulnTypes.size} {t("security.uniqueVulnTypes")}</span>;
+                })()}
+              </div>
+              {alerts.map((alert) => (
+                <AlertCard key={`${alert.id}-${alert.url}`} alert={alert} riskColor={riskColor} riskIcon={riskIcon} />
+              ))}
+            </div>
+          )
+        ) : (
+          scanLogs.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground/20">
+              <List className="w-10 h-10" />
+              <p className="text-[12px]">{t("security.noTestLogs", "No test logs available")}</p>
+            </div>
+          ) : (
+            <div className="px-4 py-3 space-y-1">
+              {testTypes.length > 1 && (
+                <div className="flex flex-wrap gap-1.5 mb-3">
+                  {testTypes.map(([type, count]) => (
+                    <span key={type} className="text-[9px] px-1.5 py-0.5 rounded-full bg-muted/20 text-muted-foreground/50">
+                      {type} ({count})
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="space-y-0.5">
+                {scanLogs.map((log) => (
+                  <ScanLogRow key={log.id} log={log} />
+                ))}
+              </div>
+            </div>
+          )
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ScanLogRow({ log }: { log: any }) {
+  const [expanded, setExpanded] = useState(false);
+  const isVuln = log.result === "vulnerable" || log.result === "potential";
+  const detail = typeof log.detail === "string" ? JSON.parse(log.detail || "{}") : (log.detail || {});
+
+  return (
+    <div className={cn("rounded-lg border transition-colors", isVuln ? "border-red-500/20 bg-red-500/5" : "border-border/5 bg-transparent hover:bg-[var(--bg-hover)]/20")}>
+      <button type="button" onClick={() => setExpanded(!expanded)} className="w-full flex items-center gap-2 px-3 py-1.5 text-left">
+        <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", isVuln ? "bg-red-400" : "bg-muted-foreground/15")} />
+        <span className="text-[10px] font-medium text-muted-foreground/50 w-[80px] flex-shrink-0 truncate">{log.test_type || "unknown"}</span>
+        <span className="text-[10px] font-mono text-foreground/50 flex-1 truncate">{log.parameter || "-"}</span>
+        <span className={cn("text-[9px] px-1.5 py-0.5 rounded-full font-medium", isVuln ? "bg-red-500/10 text-red-400" : "text-muted-foreground/30 bg-muted/10")}>
+          {log.result}
+        </span>
+        {detail.status_code && (
+          <span className="text-[9px] text-muted-foreground/30 font-mono">{detail.status_code}</span>
+        )}
+        {detail.response_time_ms != null && (
+          <span className="text-[9px] text-muted-foreground/20 font-mono w-[40px] text-right">{detail.response_time_ms}ms</span>
+        )}
+        {expanded ? <ChevronDown className="w-2.5 h-2.5 text-muted-foreground/20 flex-shrink-0" /> : <ChevronRight className="w-2.5 h-2.5 text-muted-foreground/20 flex-shrink-0" />}
+      </button>
+      {expanded && (
+        <div className="px-3 pb-2 space-y-1.5 border-t border-border/5">
+          {log.payload && (
+            <div className="mt-1.5">
+              <span className="text-[9px] text-muted-foreground/40 font-medium">Payload</span>
+              <pre className="text-[10px] font-mono text-foreground/50 bg-[var(--bg-hover)]/30 p-2 rounded-lg overflow-x-auto mt-0.5 whitespace-pre-wrap break-all">{log.payload}</pre>
+            </div>
+          )}
+          {log.url && (
+            <div>
+              <span className="text-[9px] text-muted-foreground/40 font-medium">URL</span>
+              <p className="text-[10px] font-mono text-foreground/40 truncate">{log.url}</p>
+            </div>
+          )}
+          {log.evidence && (
+            <div>
+              <span className="text-[9px] text-muted-foreground/40 font-medium">Evidence</span>
+              <pre className="text-[10px] font-mono text-foreground/50 bg-[var(--bg-hover)]/30 p-2 rounded-lg overflow-x-auto mt-0.5 whitespace-pre-wrap break-all">{log.evidence}</pre>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -2489,7 +2937,7 @@ function buildSiteTree(entries: HttpHistoryEntry[]): Map<string, SiteTreeNode> {
   return roots;
 }
 
-function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan }: { onSendToRepeater: (raw: string) => void; onSendToIntruder?: (raw: string) => void; onActiveScan?: (url: string) => void }) {
+function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan, onBatchScan }: { onSendToRepeater: (raw: string) => void; onSendToIntruder?: (raw: string) => void; onActiveScan?: (url: string) => void; onBatchScan?: (urls: string[]) => void }) {
   const { t } = useTranslation();
   const currentProjectPath = useStore((s) => s.currentProjectPath);
   const [siteMapData, setSiteMapData] = useState<SiteMapData | null>(null);
@@ -2503,6 +2951,9 @@ function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan }: { on
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; entry: HttpHistoryEntry } | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [hideBeforeId, setHideBeforeId] = useState(0);
+  const [scanSelection, setScanSelection] = useState<Set<string>>(new Set());
+
+  const entryKey = (e: HttpHistoryEntry) => `${e.method}:${e.url}`;
 
   const captureMap = useMemo(() => {
     if (!siteMapData?.entries) return new Map<string, SiteMapEntry>();
@@ -2610,6 +3061,36 @@ function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan }: { on
     }
     return [...seen.values()];
   }, [filtered]);
+
+  const toggleScanSelect = useCallback((entry: HttpHistoryEntry, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setScanSelection((prev) => {
+      const next = new Set(prev);
+      const key = entryKey(entry);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAll = useCallback(() => {
+    setScanSelection((prev) => {
+      if (prev.size > 0) return new Set();
+      return new Set(deduped.map(entryKey));
+    });
+  }, [deduped]);
+
+  const handleBatchScan = useCallback(() => {
+    if (scanSelection.size === 0) return;
+    const urls = deduped
+      .filter((e) => scanSelection.has(entryKey(e)))
+      .map((e) => e.url);
+    if (onBatchScan) {
+      onBatchScan(urls);
+    } else if (onActiveScan) {
+      urls.forEach((url) => onActiveScan(url));
+    }
+    setScanSelection(new Set());
+  }, [scanSelection, deduped, onBatchScan, onActiveScan]);
 
   const tree = useMemo(() => buildSiteTree(deduped), [deduped]);
 
@@ -2733,6 +3214,16 @@ function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan }: { on
             <TreePine className="w-3 h-3" />
           </button>
         </div>
+        {scanSelection.size > 0 && (
+          <button
+            type="button"
+            onClick={handleBatchScan}
+            className="flex items-center gap-1 px-2.5 py-1 text-[10px] font-medium rounded-md bg-orange-500/15 text-orange-400 hover:bg-orange-500/25 transition-colors"
+          >
+            <Zap className="w-3 h-3" />
+            Scan {scanSelection.size} selected
+          </button>
+        )}
         <span className="text-[10px] text-muted-foreground/30">
           {hostCount} {t("security.hosts", "hosts")} · {endpointCount} {t("security.endpoints", "endpoints")}{capturedCount > 0 && <> · <span className="text-blue-400">{capturedCount} saved</span></>}
         </span>
@@ -2777,6 +3268,25 @@ function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan }: { on
                       className="flex items-center gap-1.5 px-3 py-1.5 cursor-pointer hover:bg-[var(--bg-hover)]/40 transition-colors sticky top-0 bg-card z-10 border-b border-border/10"
                       onClick={() => toggleDomainExpand(domain)}
                     >
+                      <input
+                        type="checkbox"
+                        checked={groupEntries.every((e) => scanSelection.has(entryKey(e)))}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          setScanSelection((prev) => {
+                            const next = new Set(prev);
+                            const keys = groupEntries.map(entryKey);
+                            if (keys.every((k) => next.has(k))) {
+                              keys.forEach((k) => next.delete(k));
+                            } else {
+                              keys.forEach((k) => next.add(k));
+                            }
+                            return next;
+                          });
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-3 h-3 accent-orange-400 cursor-pointer flex-shrink-0"
+                      />
                       <ChevronRight className={cn("w-3 h-3 text-muted-foreground/40 transition-transform flex-shrink-0", isExpanded && "rotate-90")} />
                       <Globe className="w-3 h-3 text-blue-400 flex-shrink-0" />
                       <span className="font-medium text-foreground/80 flex-1 truncate">{domain}</span>
@@ -2805,11 +3315,26 @@ function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan }: { on
                                 selectedEntry?.id === entry.id ? "bg-accent/10" : "hover:bg-[var(--bg-hover)]/40"
                               )}
                             >
-                              <td className={cn("px-3 py-1.5 font-mono font-medium w-[60px]", methodColor(entry.method))}>{entry.method}</td>
-                              <td className="px-3 py-1.5 text-foreground/80 font-mono text-[10px]">{normalizeHost(entry.host || entry.url)}</td>
-                              <td className="px-3 py-1.5 text-muted-foreground/60 font-mono truncate max-w-[400px]">{(entry.path || "/").split("?")[0]}</td>
-                              <td className={cn("px-3 py-1.5 font-mono w-[60px]", statusColor(entry.status_code))}>{entry.status_code || "-"}</td>
-                              <td className="px-1.5 py-1.5 w-[28px] text-center">
+                              <td className="pl-2 pr-1 py-1.5 w-[28px]" onClick={(e) => e.stopPropagation()}>
+                                <input
+                                  type="checkbox"
+                                  checked={scanSelection.has(entryKey(entry))}
+                                  onChange={(e) => {
+                                    const key = entryKey(entry);
+                                    setScanSelection((prev) => {
+                                      const next = new Set(prev);
+                                      if (e.target.checked) next.add(key); else next.delete(key);
+                                      return next;
+                                    });
+                                  }}
+                                  className="w-3 h-3 accent-orange-400 cursor-pointer"
+                                />
+                              </td>
+                              <td className={cn("px-2 py-1.5 font-mono font-medium w-[55px]", methodColor(entry.method))}>{entry.method}</td>
+                              <td className="px-2 py-1.5 text-foreground/80 font-mono text-[10px]">{normalizeHost(entry.host || entry.url)}</td>
+                              <td className="px-2 py-1.5 text-muted-foreground/60 font-mono truncate max-w-[400px]">{(entry.path || "/").split("?")[0]}</td>
+                              <td className={cn("px-2 py-1.5 font-mono w-[55px]", statusColor(entry.status_code))}>{entry.status_code || "-"}</td>
+                              <td className="px-1 py-1.5 w-[28px] text-center">
                                 {isCaptured(entry) ? (
                                   <span title={getCaptureInfo(entry)?.capture?.local_path ?? "Saved"} className="text-blue-400">
                                     <Download className="w-3 h-3 inline-block" />
@@ -2818,15 +3343,28 @@ function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan }: { on
                                   <span className="text-muted-foreground/10">—</span>
                                 )}
                               </td>
-                              <td className="px-1.5 py-1.5 w-[36px]">
-                                <button
-                                  type="button"
-                                  title={t("security.sendToRepeater")}
-                                  onClick={(e) => { e.stopPropagation(); handleCtxSendToRepeater(entry); }}
-                                  className="p-1 rounded text-muted-foreground/0 group-hover:text-muted-foreground/40 hover:!text-accent hover:bg-accent/10 transition-colors"
-                                >
-                                  <Send className="w-3 h-3" />
-                                </button>
+                              <td className="px-1 py-1.5 w-[60px]">
+                                <div className="flex items-center gap-0.5">
+                                  <button
+                                    type="button"
+                                    title="Scan this endpoint"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onActiveScan?.(entry.url);
+                                    }}
+                                    className="p-1 rounded text-muted-foreground/0 group-hover:text-orange-400/60 hover:!text-orange-400 hover:bg-orange-400/10 transition-colors"
+                                  >
+                                    <Zap className="w-3 h-3" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    title={t("security.sendToRepeater")}
+                                    onClick={(e) => { e.stopPropagation(); handleCtxSendToRepeater(entry); }}
+                                    className="p-1 rounded text-muted-foreground/0 group-hover:text-muted-foreground/40 hover:!text-accent hover:bg-accent/10 transition-colors"
+                                  >
+                                    <Send className="w-3 h-3" />
+                                  </button>
+                                </div>
                               </td>
                             </tr>
                           ))}
@@ -3642,24 +4180,18 @@ function CustomRulesView({
               placeholder={t("security.ruleName")}
               className="flex-1 h-7 px-3 text-[11px] bg-[var(--bg-hover)]/30 rounded-lg border border-border/15 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40"
             />
-            <select
+            <StyledSelect
               value={formSeverity}
-              onChange={(e) => setFormSeverity(e.target.value as "low" | "medium" | "high")}
-              className="h-7 px-2 text-[10px] bg-[var(--bg-hover)]/30 rounded-lg border border-border/15 text-foreground outline-none"
-            >
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-            </select>
-            <select
+              onChange={(v) => setFormSeverity(v as "low" | "medium" | "high")}
+              options={[{ value: "low", label: "Low" }, { value: "medium", label: "Medium" }, { value: "high", label: "High" }]}
+              className="h-7"
+            />
+            <StyledSelect
               value={formScope}
-              onChange={(e) => setFormScope(e.target.value as "body" | "headers" | "all")}
-              className="h-7 px-2 text-[10px] bg-[var(--bg-hover)]/30 rounded-lg border border-border/15 text-foreground outline-none"
-            >
-              <option value="all">Body + Headers</option>
-              <option value="body">Body Only</option>
-              <option value="headers">Headers Only</option>
-            </select>
+              onChange={(v) => setFormScope(v as "body" | "headers" | "all")}
+              options={[{ value: "all", label: "Body + Headers" }, { value: "body", label: "Body Only" }, { value: "headers", label: "Headers Only" }]}
+              className="h-7"
+            />
           </div>
           <div className="flex items-center gap-2">
             <input
@@ -4278,7 +4810,7 @@ interface TargetOption {
   type: string;
 }
 
-function ScanToolsPanel() {
+function ScanToolsPanel({ initialTarget }: { initialTarget?: { id: string; value: string } }) {
   const [targets, setTargets] = useState<TargetOption[]>([]);
   const [selectedTarget, setSelectedTarget] = useState<TargetOption | null>(null);
   const [loading, setLoading] = useState(true);
@@ -4292,10 +4824,15 @@ function ScanToolsPanel() {
         });
         if (cancelled) return;
         const scannable = (data?.targets ?? []).filter(
-          (t) => t.type === "url" || t.type === "domain",
+          (t) => t.type === "url" || t.type === "domain" || t.type === "ip",
         );
         setTargets(scannable);
-        if (scannable.length > 0 && !selectedTarget) {
+        const initial = initialTarget
+          ? scannable.find((t) => t.id === initialTarget.id)
+          : null;
+        if (initial) {
+          setSelectedTarget(initial);
+        } else if (scannable.length > 0 && !selectedTarget) {
           setSelectedTarget(scannable[0]);
         }
       } catch {
@@ -4304,7 +4841,7 @@ function ScanToolsPanel() {
       if (!cancelled) setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [initialTarget?.id]);
 
   if (loading) {
     return (
@@ -4333,35 +4870,194 @@ function ScanToolsPanel() {
       <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border/10 flex-shrink-0">
         <Crosshair className="w-3.5 h-3.5 text-accent flex-shrink-0" />
         <span className="text-[10px] text-muted-foreground/50 flex-shrink-0">Target:</span>
-        <select
-          className="flex-1 text-[11px] bg-background border border-border/30 rounded px-2 py-1 outline-none focus:border-accent/40 transition-colors text-foreground appearance-none cursor-pointer"
+        <StyledSelect
           value={selectedTarget?.id ?? ""}
-          onChange={(e) => {
-            const t = targets.find((t) => t.id === e.target.value);
-            if (t) setSelectedTarget(t);
-          }}
-        >
-          {targets.map((t) => (
-            <option key={t.id} value={t.id}>
-              [{t.type}] {t.value}
-            </option>
-          ))}
-        </select>
+          onChange={(v) => { const t = targets.find((t) => t.id === v); if (t) setSelectedTarget(t); }}
+          options={targets.map((t) => ({ value: t.id, label: `[${t.type}] ${t.value}` }))}
+          className="flex-1"
+        />
         <span className="text-[9px] text-muted-foreground/30">
           {targets.length} target{targets.length !== 1 ? "s" : ""}
         </span>
       </div>
 
-      {/* Scan panel */}
-      <div className="flex-1 overflow-y-auto px-4 py-3">
+      {/* Pipeline launcher + scan history */}
+      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
         {selectedTarget && (
-          <ScanPanel
-            key={selectedTarget.id}
-            targetId={selectedTarget.id}
-            targetUrl={selectedTarget.value}
-            initialExpanded
-          />
+          <>
+            <PipelineLauncher
+              key={selectedTarget.id}
+              targetId={selectedTarget.id}
+              targetValue={selectedTarget.value}
+            />
+            <ScanTimeline targetId={selectedTarget.id} targetValue={selectedTarget.value} />
+          </>
         )}
+      </div>
+    </div>
+  );
+}
+
+interface StepSummary {
+  tool: string;
+  stored: number;
+  parsed: number;
+  exit: number | null;
+  ms: number;
+}
+
+function ScanTimeline({ targetId, targetValue }: { targetId: string; targetValue: string }) {
+  const [logs, setLogs] = useState<AuditRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [expandedRun, setExpandedRun] = useState<number | null>(null);
+
+  const loadLogs = useCallback(async () => {
+    try {
+      const all = await oplogListByTarget(targetId, 100);
+      const pipelineRuns = (Array.isArray(all) ? all : []).filter(
+        (r) => r.action === "pipeline_executed",
+      );
+      setLogs(pipelineRuns);
+    } catch {
+      setLogs([]);
+    }
+    setLoading(false);
+  }, [targetId]);
+
+  useEffect(() => {
+    setLoading(true);
+    loadLogs();
+  }, [loadLogs]);
+
+  useEffect(() => {
+    const unlistenTargets = listen("targets-changed", () => loadLogs());
+    return () => { unlistenTargets.then((fn) => fn()); };
+  }, [loadLogs]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 py-4 text-[10px] text-muted-foreground/30">
+        <Loader2 className="w-3 h-3 animate-spin" />
+        Loading scan history...
+      </div>
+    );
+  }
+
+  if (logs.length === 0) {
+    return (
+      <div className="text-center py-6 text-[10px] text-muted-foreground/20">
+        No scan history for this target yet
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-border/10 overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-border/10">
+        <History className="w-3.5 h-3.5 text-blue-400" />
+        <span className="text-[11px] font-semibold text-foreground/80">Scan History</span>
+        <span className="text-[10px] text-muted-foreground/30 ml-auto">{logs.length} run{logs.length !== 1 ? "s" : ""}</span>
+      </div>
+
+      <div className="divide-y divide-border/5">
+        {logs.map((run, i) => {
+          const detail = run.detail ?? {};
+          const steps = (detail.steps ?? []) as StepSummary[];
+          const totalStored = (detail.total_stored ?? 0) as number;
+          const durationMs = (detail.duration_ms ?? 0) as number;
+          const completedSteps = (detail.completed_steps ?? 0) as number;
+          const totalSteps = (detail.total_steps ?? 0) as number;
+          const status = run.status;
+          const isExpanded = expandedRun === run.id;
+          const prevRun = i < logs.length - 1 ? logs[i + 1] : null;
+          const prevStored = prevRun ? ((prevRun.detail?.total_stored ?? 0) as number) : 0;
+          const delta = totalStored - prevStored;
+
+          return (
+            <div key={run.id}>
+              <button
+                type="button"
+                onClick={() => setExpandedRun(isExpanded ? null : run.id)}
+                className="flex items-center gap-2.5 w-full px-3 py-2 text-left hover:bg-white/[0.02] transition-colors"
+              >
+                {/* Timeline dot */}
+                <div className="flex flex-col items-center gap-0.5 w-3 flex-shrink-0">
+                  <span className={cn(
+                    "w-2 h-2 rounded-full flex-shrink-0",
+                    status === "completed" ? "bg-emerald-400" : status === "partial" ? "bg-yellow-400" : "bg-red-400",
+                  )} />
+                  {i < logs.length - 1 && <div className="w-px flex-1 min-h-[8px] bg-border/10" />}
+                </div>
+
+                {/* Run info */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono text-muted-foreground/40">
+                      {new Date(run.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                      {" "}
+                      {new Date(run.createdAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
+                    </span>
+                    <span className="text-[10px] text-foreground/60 font-medium">
+                      {run.toolName ?? "Pipeline"}
+                    </span>
+                    {totalStored > 0 && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-300 font-medium">
+                        +{totalStored} items
+                      </span>
+                    )}
+                    {delta > 0 && prevRun && (
+                      <span className="text-[9px] text-emerald-400/60">
+                        {delta > prevStored ? "new" : `+${delta} vs prev`}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 mt-0.5 text-[9px] text-muted-foreground/30">
+                    <span>{completedSteps}/{totalSteps} steps</span>
+                    {durationMs > 0 && <span>{durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`}</span>}
+                    {steps.filter((s) => s.stored > 0).map((s) => (
+                      <span key={s.tool} className="text-[8px] px-1 py-0.5 rounded bg-white/[0.03]">
+                        {s.tool}: {s.stored}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                {steps.length > 0 && (
+                  isExpanded
+                    ? <ChevronDown className="w-3 h-3 text-muted-foreground/20 flex-shrink-0" />
+                    : <ChevronRight className="w-3 h-3 text-muted-foreground/20 flex-shrink-0" />
+                )}
+              </button>
+
+              {/* Expanded step details */}
+              {isExpanded && steps.length > 0 && (
+                <div className="border-t border-border/5 px-3 py-2 ml-5 space-y-1">
+                  {steps.map((step, si) => (
+                    <div key={si} className="flex items-center gap-2 text-[10px]">
+                      <span className={cn(
+                        "w-1.5 h-1.5 rounded-full flex-shrink-0",
+                        step.exit === 0 ? "bg-emerald-400/60" :
+                        step.exit === null ? "bg-zinc-500/40" : "bg-red-400/60",
+                      )} />
+                      <span className="font-mono text-foreground/50 w-16 flex-shrink-0">{step.tool}</span>
+                      {step.stored > 0 && (
+                        <span className="text-blue-300/60">+{step.stored} stored</span>
+                      )}
+                      {step.parsed > 0 && step.parsed !== step.stored && (
+                        <span className="text-muted-foreground/20">({step.parsed} parsed)</span>
+                      )}
+                      {step.ms > 0 && (
+                        <span className="text-muted-foreground/20 ml-auto">
+                          {step.ms < 1000 ? `${step.ms}ms` : `${(step.ms / 1000).toFixed(1)}s`}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
