@@ -31,9 +31,6 @@ pub mod pentest_ai;
 // Interactive PTY tool (allows AI to control visible terminal sessions)
 pub mod pty_interactive;
 
-// Network topology visualization
-pub mod topology;
-
 // Pentest methodology templates
 pub mod methodology;
 

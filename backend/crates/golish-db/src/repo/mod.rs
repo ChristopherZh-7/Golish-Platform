@@ -19,7 +19,6 @@ pub mod targets;
 pub mod tasks;
 pub mod terminal_logs;
 pub mod tool_calls;
-pub mod topology;
 pub mod vault;
 pub mod vuln_intel;
 pub mod vuln_scan;

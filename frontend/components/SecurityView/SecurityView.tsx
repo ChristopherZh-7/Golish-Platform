@@ -29,6 +29,7 @@ import { getProjectPath } from "@/lib/projects";
 import { useStore } from "@/store";
 import {
   oplogList,
+  oplogListByTarget,
   oplogSearch,
   targetAssetsList,
   apiEndpointsList,
@@ -1552,6 +1553,16 @@ function ScannerPanel({ initialUrl, initialBatchUrls, onUrlConsumed }: { initial
     invoke("scan_queue_clear_completed", { projectPath }).catch(() => {});
   }, [projectPath]);
 
+  const handleClearAll = useCallback(async () => {
+    for (const ep of endpoints.filter((e) => e.status === "scanning" && e.scanId)) {
+      await zapStopScan(ep.scanId!).catch(() => {});
+    }
+    setEndpoints([]);
+    setSelectedUrl(null);
+    setScanning(false);
+    saveScanQueueToDb([], projectPath);
+  }, [endpoints, projectPath]);
+
   const sel = endpoints.find((e) => e.url === selectedUrl);
 
   useEffect(() => {
@@ -1660,6 +1671,12 @@ function ScannerPanel({ initialUrl, initialBatchUrls, onUrlConsumed }: { initial
           <button type="button" onClick={handleClearCompleted}
             className="text-[9px] text-muted-foreground/30 hover:text-foreground transition-colors">
             {t("security.clearCompleted", "Clear Done")}
+          </button>
+        )}
+        {endpoints.length > 0 && (
+          <button type="button" onClick={handleClearAll}
+            className="flex items-center gap-1 text-[9px] text-muted-foreground/30 hover:text-destructive transition-colors">
+            <Trash2 className="w-2.5 h-2.5" /> {t("security.clearAll", "Clear All")}
           </button>
         )}
       </div>
@@ -2947,7 +2964,6 @@ function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan, onBatc
   const [detailLoading, setDetailLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [filterMode, setFilterMode] = useState<"all" | "api" | "js" | "captured">("all");
-  const [viewMode, setViewMode] = useState<"tree" | "flat">("flat");
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; entry: HttpHistoryEntry } | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [hideBeforeId, setHideBeforeId] = useState(0);
@@ -3062,23 +3078,6 @@ function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan, onBatc
     return [...seen.values()];
   }, [filtered]);
 
-  const toggleScanSelect = useCallback((entry: HttpHistoryEntry, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setScanSelection((prev) => {
-      const next = new Set(prev);
-      const key = entryKey(entry);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
-  }, []);
-
-  const toggleSelectAll = useCallback(() => {
-    setScanSelection((prev) => {
-      if (prev.size > 0) return new Set();
-      return new Set(deduped.map(entryKey));
-    });
-  }, [deduped]);
-
   const handleBatchScan = useCallback(() => {
     if (scanSelection.size === 0) return;
     const urls = deduped
@@ -3094,36 +3093,27 @@ function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan, onBatc
 
   const tree = useMemo(() => buildSiteTree(deduped), [deduped]);
 
-  const domainGroups = useMemo(() => {
-    const groups = new Map<string, HttpHistoryEntry[]>();
-    for (const e of deduped) {
-      const host = normalizeHost(e.host || e.url);
-      const root = getRootDomain(host);
-      if (!groups.has(root)) groups.set(root, []);
-      groups.get(root)!.push(e);
-    }
-    return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [deduped]);
-
-  const [expandedDomains, setExpandedDomains] = useState<Set<string>>(new Set());
-
-  const toggleDomainExpand = useCallback((domain: string) => {
-    setExpandedDomains((prev) => {
-      const next = new Set(prev);
-      if (next.has(domain)) next.delete(domain);
-      else next.add(domain);
-      return next;
-    });
-  }, []);
-
   const handleSelectEntry = useCallback(async (entry: HttpHistoryEntry) => {
     setSelectedEntry(entry);
     setDetailLoading(true);
     try {
       const msg = await zapGetMessage(entry.id);
-      setDetail(msg);
+      if (msg && (msg.request_headers || msg.response_headers)) {
+        setDetail(msg);
+      } else {
+        throw new Error("empty");
+      }
     } catch {
-      setDetail(null);
+      setDetail({
+        id: entry.id,
+        method: entry.method,
+        url: entry.url,
+        status_code: entry.status_code,
+        request_headers: `${entry.method} ${new URL(entry.url).pathname} HTTP/1.1\r\nHost: ${entry.host}\r\n`,
+        request_body: "",
+        response_headers: entry.status_code ? `HTTP/1.1 ${entry.status_code}\r\nContent-Length: ${entry.content_length}\r\n` : "",
+        response_body: `(Response body not available — ZAP session expired.\nURL: ${entry.url}\nStatus: ${entry.status_code}\nSize: ${entry.content_length} bytes)`,
+      });
     } finally {
       setDetailLoading(false);
     }
@@ -3190,29 +3180,8 @@ function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan, onBatc
             {mode === "all" ? "All" : mode === "api" ? "API" : mode === "js" ? "Static" : "Saved"}
           </button>
         ))}
-        <div className="flex items-center border border-border/15 rounded-md overflow-hidden">
-          <button
-            type="button"
-            onClick={() => setViewMode("flat")}
-            className={cn(
-              "p-1.5 transition-colors",
-              viewMode === "flat" ? "bg-accent/15 text-accent" : "text-muted-foreground/40 hover:text-foreground hover:bg-[var(--bg-hover)]"
-            )}
-            title={t("security.flatView")}
-          >
-            <List className="w-3 h-3" />
-          </button>
-          <button
-            type="button"
-            onClick={() => setViewMode("tree")}
-            className={cn(
-              "p-1.5 transition-colors",
-              viewMode === "tree" ? "bg-accent/15 text-accent" : "text-muted-foreground/40 hover:text-foreground hover:bg-[var(--bg-hover)]"
-            )}
-            title={t("security.treeView")}
-          >
-            <TreePine className="w-3 h-3" />
-          </button>
+        <div className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-accent/8 text-accent text-[10px]">
+          <TreePine className="w-3 h-3" />
         </div>
         {scanSelection.size > 0 && (
           <button
@@ -3251,129 +3220,11 @@ function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan, onBatc
       </div>
 
       <div ref={siteContainerRef} className="flex-1 flex min-h-0">
-        <div className={cn("flex-shrink-0 overflow-y-auto min-w-0", viewMode === "flat" ? "flex-1" : "w-[360px]")}>
+        <div className="flex-1 overflow-y-auto min-w-0">
           {deduped.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground/20">
               <Globe className="w-8 h-8" />
               <p className="text-[11px]">{t("security.noSiteData", "No site data yet")}</p>
-            </div>
-          ) : viewMode === "flat" ? (
-            <div className="text-[11px]">
-              {domainGroups.map(([domain, groupEntries]) => {
-                const isExpanded = expandedDomains.has(domain);
-                const methods = new Set(groupEntries.map((e) => e.method));
-                return (
-                  <div key={domain}>
-                    <div
-                      className="flex items-center gap-1.5 px-3 py-1.5 cursor-pointer hover:bg-[var(--bg-hover)]/40 transition-colors sticky top-0 bg-card z-10 border-b border-border/10"
-                      onClick={() => toggleDomainExpand(domain)}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={groupEntries.every((e) => scanSelection.has(entryKey(e)))}
-                        onChange={(e) => {
-                          e.stopPropagation();
-                          setScanSelection((prev) => {
-                            const next = new Set(prev);
-                            const keys = groupEntries.map(entryKey);
-                            if (keys.every((k) => next.has(k))) {
-                              keys.forEach((k) => next.delete(k));
-                            } else {
-                              keys.forEach((k) => next.add(k));
-                            }
-                            return next;
-                          });
-                        }}
-                        onClick={(e) => e.stopPropagation()}
-                        className="w-3 h-3 accent-orange-400 cursor-pointer flex-shrink-0"
-                      />
-                      <ChevronRight className={cn("w-3 h-3 text-muted-foreground/40 transition-transform flex-shrink-0", isExpanded && "rotate-90")} />
-                      <Globe className="w-3 h-3 text-blue-400 flex-shrink-0" />
-                      <span className="font-medium text-foreground/80 flex-1 truncate">{domain}</span>
-                      <span className="flex items-center gap-0.5 flex-shrink-0">
-                        {[...methods].map((m) => (
-                          <span key={m} className={cn("text-[8px] font-mono font-bold px-1 rounded", methodColor(m))}>{m}</span>
-                        ))}
-                      </span>
-                      <span className="text-[9px] text-muted-foreground/30 ml-1 flex-shrink-0 tabular-nums">
-                        {groupEntries.length}
-                      </span>
-                    </div>
-                    {isExpanded && (
-                      <table className="w-full">
-                        <tbody>
-                          {groupEntries.map((entry) => (
-                            <tr
-                              key={`${entry.method}-${entry.id}`}
-                              onClick={() => handleSelectEntry(entry)}
-                              onContextMenu={(e) => {
-                                e.preventDefault();
-                                setCtxMenu({ x: e.clientX, y: e.clientY, entry });
-                              }}
-                              className={cn(
-                                "cursor-pointer transition-colors border-b border-border/5 group",
-                                selectedEntry?.id === entry.id ? "bg-accent/10" : "hover:bg-[var(--bg-hover)]/40"
-                              )}
-                            >
-                              <td className="pl-2 pr-1 py-1.5 w-[28px]" onClick={(e) => e.stopPropagation()}>
-                                <input
-                                  type="checkbox"
-                                  checked={scanSelection.has(entryKey(entry))}
-                                  onChange={(e) => {
-                                    const key = entryKey(entry);
-                                    setScanSelection((prev) => {
-                                      const next = new Set(prev);
-                                      if (e.target.checked) next.add(key); else next.delete(key);
-                                      return next;
-                                    });
-                                  }}
-                                  className="w-3 h-3 accent-orange-400 cursor-pointer"
-                                />
-                              </td>
-                              <td className={cn("px-2 py-1.5 font-mono font-medium w-[55px]", methodColor(entry.method))}>{entry.method}</td>
-                              <td className="px-2 py-1.5 text-foreground/80 font-mono text-[10px]">{normalizeHost(entry.host || entry.url)}</td>
-                              <td className="px-2 py-1.5 text-muted-foreground/60 font-mono truncate max-w-[400px]">{(entry.path || "/").split("?")[0]}</td>
-                              <td className={cn("px-2 py-1.5 font-mono w-[55px]", statusColor(entry.status_code))}>{entry.status_code || "-"}</td>
-                              <td className="px-1 py-1.5 w-[28px] text-center">
-                                {isCaptured(entry) ? (
-                                  <span title={getCaptureInfo(entry)?.capture?.local_path ?? "Saved"} className="text-blue-400">
-                                    <Download className="w-3 h-3 inline-block" />
-                                  </span>
-                                ) : (
-                                  <span className="text-muted-foreground/10">—</span>
-                                )}
-                              </td>
-                              <td className="px-1 py-1.5 w-[60px]">
-                                <div className="flex items-center gap-0.5">
-                                  <button
-                                    type="button"
-                                    title="Scan this endpoint"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      onActiveScan?.(entry.url);
-                                    }}
-                                    className="p-1 rounded text-muted-foreground/0 group-hover:text-orange-400/60 hover:!text-orange-400 hover:bg-orange-400/10 transition-colors"
-                                  >
-                                    <Zap className="w-3 h-3" />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    title={t("security.sendToRepeater")}
-                                    onClick={(e) => { e.stopPropagation(); handleCtxSendToRepeater(entry); }}
-                                    className="p-1 rounded text-muted-foreground/0 group-hover:text-muted-foreground/40 hover:!text-accent hover:bg-accent/10 transition-colors"
-                                  >
-                                    <Send className="w-3 h-3" />
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    )}
-                  </div>
-                );
-              })}
             </div>
           ) : (
             <div className="py-1">
@@ -3510,7 +3361,7 @@ function SiteTreeNodeView({
   onSelect: (e: HttpHistoryEntry) => void; selectedId: number | null;
   onContextMenu?: (e: React.MouseEvent, entry: HttpHistoryEntry) => void;
 }) {
-  const [open, setOpen] = useState(depth < 2);
+  const [open, setOpen] = useState(false);
   const hasChildren = node.children.size > 0;
   const isJs = /\.(js|jsx|ts|tsx|mjs|cjs)(\?|$)/i.test(node.name);
   const isApi = /^(api|v\d|graphql|rest)/i.test(node.name);
@@ -4901,6 +4752,7 @@ function ScanToolsPanel({ initialTarget }: { initialTarget?: { id: string; value
 interface StepSummary {
   tool: string;
   stored: number;
+  new?: number;
   parsed: number;
   exit: number | null;
   ms: number;
@@ -4913,16 +4765,28 @@ function ScanTimeline({ targetId, targetValue }: { targetId: string; targetValue
 
   const loadLogs = useCallback(async () => {
     try {
-      const all = await oplogListByTarget(targetId, 100);
-      const pipelineRuns = (Array.isArray(all) ? all : []).filter(
-        (r) => r.action === "pipeline_executed",
-      );
-      setLogs(pipelineRuns);
+      const [byTarget, bySearch] = await Promise.all([
+        oplogListByTarget(targetId, 100).catch(() => [] as AuditRow[]),
+        oplogSearch(getProjectPath() ?? "", targetValue, 200).catch(() => [] as AuditRow[]),
+      ]);
+      const seen = new Set<number>();
+      const merged: AuditRow[] = [];
+      for (const entry of [...byTarget, ...bySearch]) {
+        if (entry.action !== "pipeline_executed" || seen.has(entry.id)) continue;
+        const detail = entry.detail as Record<string, unknown> | null;
+        const detailTarget = detail?.target as string | undefined;
+        if (entry.targetId === targetId || detailTarget === targetValue) {
+          seen.add(entry.id);
+          merged.push(entry);
+        }
+      }
+      merged.sort((a, b) => b.createdAt - a.createdAt);
+      setLogs(merged);
     } catch {
       setLogs([]);
     }
     setLoading(false);
-  }, [targetId]);
+  }, [targetId, targetValue]);
 
   useEffect(() => {
     setLoading(true);
@@ -4964,14 +4828,12 @@ function ScanTimeline({ targetId, targetValue }: { targetId: string; targetValue
           const detail = run.detail ?? {};
           const steps = (detail.steps ?? []) as StepSummary[];
           const totalStored = (detail.total_stored ?? 0) as number;
+          const totalNew = (detail.total_new ?? null) as number | null;
           const durationMs = (detail.duration_ms ?? 0) as number;
           const completedSteps = (detail.completed_steps ?? 0) as number;
           const totalSteps = (detail.total_steps ?? 0) as number;
           const status = run.status;
           const isExpanded = expandedRun === run.id;
-          const prevRun = i < logs.length - 1 ? logs[i + 1] : null;
-          const prevStored = prevRun ? ((prevRun.detail?.total_stored ?? 0) as number) : 0;
-          const delta = totalStored - prevStored;
 
           return (
             <div key={run.id}>
@@ -5000,23 +4862,28 @@ function ScanTimeline({ targetId, targetValue }: { targetId: string; targetValue
                     <span className="text-[10px] text-foreground/60 font-medium">
                       {run.toolName ?? "Pipeline"}
                     </span>
-                    {totalStored > 0 && (
+                    {totalNew !== null ? (
+                      totalNew > 0 ? (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 font-medium">
+                          +{totalNew} new
+                        </span>
+                      ) : totalStored > 0 ? (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/[0.05] text-muted-foreground/40 font-medium">
+                          no changes
+                        </span>
+                      ) : null
+                    ) : totalStored > 0 ? (
                       <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-300 font-medium">
                         +{totalStored} items
                       </span>
-                    )}
-                    {delta > 0 && prevRun && (
-                      <span className="text-[9px] text-emerald-400/60">
-                        {delta > prevStored ? "new" : `+${delta} vs prev`}
-                      </span>
-                    )}
+                    ) : null}
                   </div>
                   <div className="flex items-center gap-2 mt-0.5 text-[9px] text-muted-foreground/30">
                     <span>{completedSteps}/{totalSteps} steps</span>
                     {durationMs > 0 && <span>{durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`}</span>}
                     {steps.filter((s) => s.stored > 0).map((s) => (
                       <span key={s.tool} className="text-[8px] px-1 py-0.5 rounded bg-white/[0.03]">
-                        {s.tool}: {s.stored}
+                        {s.tool}: {s.new != null ? s.new : s.stored}
                       </span>
                     ))}
                   </div>
@@ -5040,8 +4907,13 @@ function ScanTimeline({ targetId, targetValue }: { targetId: string; targetValue
                         step.exit === null ? "bg-zinc-500/40" : "bg-red-400/60",
                       )} />
                       <span className="font-mono text-foreground/50 w-16 flex-shrink-0">{step.tool}</span>
-                      {step.stored > 0 && (
+                      {step.new != null && step.new > 0 ? (
+                        <span className="text-emerald-300/60">+{step.new} new</span>
+                      ) : step.stored > 0 ? (
                         <span className="text-blue-300/60">+{step.stored} stored</span>
+                      ) : null}
+                      {step.new != null && step.stored > step.new && step.new > 0 && (
+                        <span className="text-muted-foreground/25">({step.stored - step.new} existing)</span>
                       )}
                       {step.parsed > 0 && step.parsed !== step.stored && (
                         <span className="text-muted-foreground/20">({step.parsed} parsed)</span>

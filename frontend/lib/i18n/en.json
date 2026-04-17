@@ -33,7 +33,6 @@
     "database": "Database",
     "wiki": "Wiki",
     "targets": "Targets",
-    "topology": "Network Topology",
     "methodology": "Methodology",
     "findings": "Findings",
     "pipelines": "Pipelines",
@@ -186,16 +185,6 @@
     "scanning": "Scanning...",
     "noConfig": "No tool configs found",
     "addConfigHint": "Add tool JSON config files in the toolsconfig directory"
-  },
-  "topology": {
-    "hostDown": "Unreachable",
-    "hostUp": "Live",
-    "ip": "IP",
-    "os": "OS",
-    "ports": "Ports",
-    "findings": "Findings",
-    "notes": "Notes",
-    "localMachine": "Local"
   },
   "install": {
     "checkPythonEnv": "Checking Python environment {{env}}...",

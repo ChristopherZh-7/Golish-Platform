@@ -2740,10 +2740,6 @@ export function setupMocks(): void {
         return undefined;
       case "topo_list":
         return [];
-      case "topo_save":
-      case "topo_delete":
-      case "topo_diff":
-        return undefined;
       case "wiki_list":
         return [];
       case "pipeline_list":

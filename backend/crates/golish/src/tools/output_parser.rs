@@ -345,6 +345,8 @@ use uuid::Uuid;
 pub struct StoreStats {
     pub parsed_count: usize,
     pub stored_count: usize,
+    #[serde(default)]
+    pub new_count: usize,
     pub skipped_count: usize,
     pub errors: Vec<String>,
 }
@@ -389,6 +391,7 @@ pub async fn output_parse_and_store(
             store_stats: StoreStats {
                 parsed_count,
                 stored_count: 0,
+                new_count: 0,
                 skipped_count: parsed_count,
                 errors: vec![],
             },
@@ -431,6 +434,7 @@ pub async fn output_parse_and_store(
         store_stats: StoreStats {
             parsed_count,
             stored_count,
+            new_count: stored_count,
             skipped_count,
             errors,
         },

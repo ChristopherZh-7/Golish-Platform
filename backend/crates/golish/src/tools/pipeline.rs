@@ -828,6 +828,7 @@ pub async fn pipeline_execute(
 
             let parsed_count = items.len();
             let mut stored_count = 0usize;
+            let mut new_count = 0usize;
             let mut skipped_count = 0usize;
             let mut errors = Vec::new();
             let tool_name = &step.tool_name;
@@ -838,10 +839,18 @@ pub async fn pipeline_execute(
                     if !item.fields.contains_key("host") && !item.fields.contains_key("ip") && !item.fields.contains_key("url") {
                         item.fields.insert("host".to_string(), target.clone());
                     }
-                    let result = match db_action.as_str() {
-                        "target_add" => {
-                            store_target_from_item(pool, &item, project_path.as_deref(), parent_target_id).await
+                    if db_action == "target_add" {
+                        match store_target_from_item(pool, &item, project_path.as_deref(), parent_target_id).await {
+                            Ok(is_new) => { stored_count += 1; if is_new { new_count += 1; } }
+                            Err(e) => {
+                                tracing::warn!(tool = %step.tool_name, error = %e, "[pipeline-store] Store error");
+                                skipped_count += 1;
+                                if errors.len() < 5 { errors.push(e); }
+                            }
                         }
+                        continue;
+                    }
+                    let result = match db_action.as_str() {
                         "target_update_recon" => {
                             store_recon_from_item(pool, &item, project_path.as_deref()).await
                         }
@@ -859,7 +868,7 @@ pub async fn pipeline_execute(
                         }
                     };
                     match result {
-                        Ok(()) => stored_count += 1,
+                        Ok(()) => { stored_count += 1; new_count += 1; }
                         Err(e) => {
                             tracing::warn!(tool = %step.tool_name, error = %e, "[pipeline-store] Store error");
                             skipped_count += 1;
@@ -874,6 +883,7 @@ pub async fn pipeline_execute(
             tracing::info!(
                 tool = %step.tool_name,
                 stored = stored_count,
+                new = new_count,
                 skipped = skipped_count,
                 "[pipeline-store] Store complete"
             );
@@ -881,6 +891,7 @@ pub async fn pipeline_execute(
             Some(StoreStats {
                 parsed_count,
                 stored_count,
+                new_count,
                 skipped_count,
                 errors,
             })
@@ -967,18 +978,38 @@ pub async fn pipeline_execute(
         serde_json::json!({
             "tool": s.tool_name,
             "stored": s.store_stats.as_ref().map(|st| st.stored_count).unwrap_or(0),
+            "new": s.store_stats.as_ref().map(|st| st.new_count).unwrap_or(0),
             "parsed": s.store_stats.as_ref().map(|st| st.parsed_count).unwrap_or(0),
             "exit": s.exit_code,
             "ms": s.duration_ms,
         })
     }).collect();
 
+    let total_new: usize = step_results.iter()
+        .filter_map(|s| s.store_stats.as_ref())
+        .map(|st| st.new_count)
+        .sum();
+
+    let resolved_target_id = if parent_target_id.is_some() {
+        parent_target_id
+    } else {
+        sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM targets WHERE value = $1 AND project_path IS NOT DISTINCT FROM $2 LIMIT 1",
+        )
+        .bind(&target)
+        .bind(project_path.as_deref())
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+    };
+
     let _ = golish_db::repo::audit::log_operation(
         pool, "pipeline_executed", "recon",
         &format!("Pipeline '{}' on {}: {}/{} steps completed, {} items stored",
             pipeline.name, target, completed_steps, total_steps, total_stored),
         project_path.as_deref(), "pipeline",
-        parent_target_id, None, Some(&pipeline.name),
+        resolved_target_id, None, Some(&pipeline.name),
         if failed_steps == 0 { "completed" } else { "partial" },
         &serde_json::json!({
             "pipeline_id": pipeline_id,
@@ -988,6 +1019,7 @@ pub async fn pipeline_execute(
             "completed_steps": completed_steps,
             "failed_steps": failed_steps,
             "total_stored": total_stored,
+            "total_new": total_new,
             "duration_ms": total_duration_ms,
             "steps": step_summaries,
         }),
@@ -998,6 +1030,7 @@ pub async fn pipeline_execute(
             "source": "pipeline",
             "target": &target,
             "stored": total_stored,
+            "new": total_new,
         }));
     }
 
@@ -1013,12 +1046,13 @@ pub async fn pipeline_execute(
 // Helper DB storage functions for pipeline executor
 use super::output_parser::ParsedItem;
 
+/// Returns `Ok(true)` when a brand-new target was created, `Ok(false)` when it already existed.
 async fn store_target_from_item(
     pool: &sqlx::PgPool,
     item: &ParsedItem,
     project_path: Option<&str>,
     parent_id: Option<Uuid>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let hostname = item
         .fields
         .get("hostname")
@@ -1026,9 +1060,18 @@ async fn store_target_from_item(
         .or_else(|| item.fields.get("ip"))
         .ok_or("No hostname field")?;
 
+    let existed = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM targets WHERE value = $1 AND project_path IS NOT DISTINCT FROM $2)",
+    )
+    .bind(hostname)
+    .bind(project_path)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(false);
+
     super::targets::db_target_add(pool, hostname, hostname, None, project_path, "discovered", parent_id)
         .await?;
-    Ok(())
+    Ok(!existed)
 }
 
 async fn store_recon_from_item(
@@ -1443,6 +1486,7 @@ pub async fn execute_pipeline_headless(
 
             let parsed_count = items.len();
             let mut stored_count = 0usize;
+            let mut new_count = 0usize;
             let mut skipped_count = 0usize;
             let mut errors = Vec::new();
             let tool_name = &step.tool_name;
@@ -1453,15 +1497,25 @@ pub async fn execute_pipeline_headless(
                     if !item.fields.contains_key("host") && !item.fields.contains_key("ip") && !item.fields.contains_key("url") {
                         item.fields.insert("host".to_string(), target.to_string());
                     }
+                    if db_action == "target_add" {
+                        match store_target_from_item(pool, &item, project_path, parent_target_id).await {
+                            Ok(is_new) => { stored_count += 1; if is_new { new_count += 1; } }
+                            Err(e) => {
+                                tracing::warn!(tool = %step.tool_name, error = %e, "[pipeline-store] Store error");
+                                skipped_count += 1;
+                                if errors.len() < 5 { errors.push(e); }
+                            }
+                        }
+                        continue;
+                    }
                     let result = match db_action.as_str() {
-                        "target_add" => store_target_from_item(pool, &item, project_path, parent_target_id).await,
                         "target_update_recon" => store_recon_from_item(pool, &item, project_path).await,
                         "directory_entry_add" => store_dirent_from_item(pool, &item, tool_name, project_path).await,
                         "finding_add" => store_finding_from_item(pool, &item, tool_name, project_path).await,
                         _ => { skipped_count += 1; continue; }
                     };
                     match result {
-                        Ok(()) => stored_count += 1,
+                        Ok(()) => { stored_count += 1; new_count += 1; }
                         Err(e) => {
                             tracing::warn!(tool = %step.tool_name, error = %e, "[pipeline-store] Store error");
                             skipped_count += 1;
@@ -1474,11 +1528,12 @@ pub async fn execute_pipeline_headless(
             tracing::info!(
                 tool = %step.tool_name,
                 stored = stored_count,
+                new = new_count,
                 skipped = skipped_count,
                 "[pipeline-store] Store complete"
             );
             total_stored += stored_count;
-            Some(StoreStats { parsed_count, stored_count, skipped_count, errors })
+            Some(StoreStats { parsed_count, stored_count, new_count, skipped_count, errors })
         } else {
             tracing::debug!(tool = %step.tool_name, "[pipeline-store] No output config found");
             None
@@ -1540,12 +1595,26 @@ pub async fn execute_pipeline_headless(
     let completed_steps = step_results.iter().filter(|s| s.exit_code == Some(0)).count();
     let failed_steps = step_results.iter().filter(|s| s.exit_code.is_some() && s.exit_code != Some(0)).count();
 
+    let resolved_target_id = if parent_target_id.is_some() {
+        parent_target_id
+    } else {
+        sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM targets WHERE value = $1 AND project_path IS NOT DISTINCT FROM $2 LIMIT 1",
+        )
+        .bind(target)
+        .bind(project_path)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+    };
+
     let _ = golish_db::repo::audit::log_operation(
         pool, "pipeline_executed", "recon",
         &format!("Pipeline '{}' on {}: {}/{} steps completed, {} items stored",
             pipeline.name, target, completed_steps, total_steps, total_stored),
         project_path, "pipeline",
-        parent_target_id, None, Some(&pipeline.name),
+        resolved_target_id, None, Some(&pipeline.name),
         if failed_steps == 0 { "completed" } else { "partial" },
         &serde_json::json!({
             "pipeline_id": pipeline_id,
@@ -1553,6 +1622,7 @@ pub async fn execute_pipeline_headless(
             "completed_steps": completed_steps,
             "failed_steps": failed_steps,
             "total_stored": total_stored,
+            "total_new": step_results.iter().filter_map(|s| s.store_stats.as_ref()).map(|st| st.new_count).sum::<usize>(),
             "duration_ms": total_duration_ms,
         }),
     ).await;

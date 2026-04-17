@@ -90,7 +90,8 @@ export type PipelineStepStatus =
   | "running"
   | "success"
   | "failed"
-  | "skipped";
+  | "skipped"
+  | "interrupted";
 
 export interface PipelineSubTarget {
   target: string;
@@ -120,7 +121,7 @@ export interface PipelineExecution {
   pipelineName: string;
   target: string;
   steps: PipelineStepExecution[];
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "interrupted";
   startedAt: string;
   finishedAt?: string;
 }
@@ -256,7 +257,7 @@ export interface AiToolExecution {
   requestId: string;
   toolName: string;
   args: Record<string, unknown>;
-  status: "running" | "completed" | "error";
+  status: "running" | "completed" | "error" | "interrupted";
   result?: unknown;
   startedAt: string;
   completedAt?: string;
@@ -366,7 +367,7 @@ export interface ActiveSubAgent {
   parentRequestId: string;
   task: string;
   depth: number;
-  status: "running" | "completed" | "error";
+  status: "running" | "completed" | "error" | "interrupted";
   toolCalls: SubAgentToolCall[];
   entries: SubAgentEntry[];
   response?: string;

@@ -38,6 +38,8 @@ function StatusIcon({ status }: { status: PipelineStepStatus }) {
       return <AlertTriangle className="w-3.5 h-3.5 text-red-400" />;
     case "skipped":
       return <SkipForward className="w-3.5 h-3.5 text-muted-foreground/40" />;
+    case "interrupted":
+      return <AlertTriangle className="w-3.5 h-3.5 text-amber-400/60" />;
   }
 }
 
@@ -179,7 +181,7 @@ export const PipelineProgressBlock = memo(function PipelineProgressBlock({
 
   const running = execution.steps.filter((s) => s.status === "running").length;
   const completed = execution.steps.filter((s) => s.status === "success").length;
-  const failed = execution.steps.filter((s) => s.status === "failed").length;
+  const failed = execution.steps.filter((s) => s.status === "failed" || s.status === "interrupted").length;
   const skipped = execution.steps.filter((s) => s.status === "skipped").length;
 
   const totalDurationMs = useMemo(() => {
