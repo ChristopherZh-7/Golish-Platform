@@ -35,14 +35,25 @@ function restoreTimelineBlocks(
     if (!state.timelines[targetSessionId]) state.timelines[targetSessionId] = [];
     for (const block of blocks) {
       if (existingIds.has(block.id)) continue;
-      if (block.type === "command") {
-        state.timelines[targetSessionId].push({
-          ...block,
-          data: { ...block.data, sessionId: targetSessionId },
-        } as any);
-      } else {
-        state.timelines[targetSessionId].push(block as any);
+      const sanitized = { ...block } as any;
+      if (sanitized.type === "pipeline_progress" && sanitized.data?.status === "running") {
+        sanitized.data = { ...sanitized.data, status: "interrupted" };
+        if (Array.isArray(sanitized.data.steps)) {
+          sanitized.data.steps = sanitized.data.steps.map((s: any) =>
+            s.status === "running" || s.status === "pending" ? { ...s, status: "interrupted" } : s,
+          );
+        }
       }
+      if (sanitized.type === "ai_tool_execution" && sanitized.data?.status === "running") {
+        sanitized.data = { ...sanitized.data, status: "interrupted" };
+      }
+      if (sanitized.type === "sub_agent_activity" && sanitized.data?.status === "running") {
+        sanitized.data = { ...sanitized.data, status: "interrupted" };
+      }
+      if (sanitized.type === "command") {
+        sanitized.data = { ...sanitized.data, sessionId: targetSessionId };
+      }
+      state.timelines[targetSessionId].push(sanitized);
     }
   });
 }

@@ -12,6 +12,8 @@ import {
   Search,
   Settings2,
   Terminal,
+  AlertTriangle,
+  Circle,
   Wand2,
   XCircle,
 } from "lucide-react";
@@ -72,7 +74,7 @@ function StatusIcon({
   status,
   size = "md",
 }: {
-  status: "running" | "completed" | "error";
+  status: string;
   size?: "sm" | "md";
 }) {
   const sizeClass = size === "sm" ? "w-3 h-3" : "w-4 h-4";
@@ -84,12 +86,15 @@ function StatusIcon({
       return <Loader2 className={cn(sizeClass, "text-[var(--ansi-blue)] animate-spin")} />;
     case "error":
       return <XCircle className={cn(sizeClass, "text-[var(--ansi-red)]")} />;
+    case "interrupted":
+      return <AlertTriangle className={cn(sizeClass, "text-amber-400/60")} />;
+    default:
+      return <Circle className={cn(sizeClass, "text-muted-foreground/40")} />;
   }
 }
 
 /** Status badge component - styled like ToolGroup's running indicator */
-function StatusBadge({ status }: { status: "running" | "completed" | "error" }) {
-  // Only show badge for running status (completed/error show via other indicators)
+function StatusBadge({ status }: { status: string }) {
   if (status !== "running") return null;
 
   return (
@@ -115,7 +120,7 @@ const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall
   const isShellCmd = tool.name === "run_pty_cmd" || tool.name === "run_command";
   const [isExpanded, setIsExpanded] = useState(isShellCmd);
   const status =
-    tool.status === "completed" ? "completed" : tool.status === "error" ? "error" : "running";
+    tool.status === "completed" ? "completed" : tool.status === "error" ? "error" : tool.status === "interrupted" ? "interrupted" : "running";
 
   const primaryArg = (() => {
     const args = tool.args;

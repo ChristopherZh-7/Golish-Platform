@@ -33,7 +33,6 @@
     "database": "数据库",
     "wiki": "知识库",
     "targets": "目标管理",
-    "topology": "网络拓扑",
     "methodology": "方法论",
     "findings": "漏洞发现",
     "pipelines": "工具链",
@@ -187,16 +186,6 @@
     "scanning": "扫描中...",
     "noConfig": "未发现工具配置",
     "addConfigHint": "在 toolsconfig 目录下添加工具 JSON 配置文件"
-  },
-  "topology": {
-    "hostDown": "不可达",
-    "hostUp": "在线",
-    "ip": "IP",
-    "os": "系统",
-    "ports": "端口",
-    "findings": "漏洞发现",
-    "notes": "备注",
-    "localMachine": "本机"
   },
   "install": {
     "checkPythonEnv": "检查 Python 环境 {{env}}...",

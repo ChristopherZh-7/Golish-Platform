@@ -9,7 +9,6 @@ import {
   Crosshair,
   KeyRound,
   Layers,
-  Network,
   Shield,
   Target,
 } from "lucide-react";
@@ -60,7 +59,6 @@ interface DashboardStats {
   targetsInScope: number;
   targetsOutScope: number;
   methodProjects: ProjectMethodology[];
-  topoMaps: string[];
   vaultEntries: number;
   vaultByType: Record<string, number>;
   findingsTotal: number;
@@ -287,7 +285,6 @@ export function DashboardPanel() {
     targetsInScope: 0,
     targetsOutScope: 0,
     methodProjects: [],
-    topoMaps: [],
     vaultEntries: 0,
     vaultByType: {},
     findingsTotal: 0,
@@ -309,7 +306,6 @@ export function DashboardPanel() {
     const results = await Promise.allSettled([
       invoke<TargetStore>("target_list", { projectPath: pp }),
       invoke<ProjectMethodology[]>("method_list_projects", { projectPath: pp }),
-      invoke<string[]>("topo_list", { projectPath: pp }),
       invoke<VaultEntry[]>("vault_list", { projectPath: pp }),
       invoke<FindingsStore>("findings_list", { projectPath: pp }),
     ]);
@@ -320,11 +316,9 @@ export function DashboardPanel() {
       : { targets: [] };
     const methodRaw = results[1].status === "fulfilled" ? results[1].value : [];
     const methodData = Array.isArray(methodRaw) ? methodRaw : [];
-    const topoRaw = results[2].status === "fulfilled" ? results[2].value : [];
-    const topoData = Array.isArray(topoRaw) ? topoRaw : [];
-    const vaultRaw = results[3].status === "fulfilled" ? results[3].value : [];
+    const vaultRaw = results[2].status === "fulfilled" ? results[2].value : [];
     const vaultData = Array.isArray(vaultRaw) ? vaultRaw : [];
-    const findingsRaw = results[4].status === "fulfilled" ? results[4].value : null;
+    const findingsRaw = results[3].status === "fulfilled" ? results[3].value : null;
     const findingsData = findingsRaw && findingsRaw.findings ? findingsRaw : { findings: [] };
 
     const vaultByType: Record<string, number> = {};
@@ -354,7 +348,6 @@ export function DashboardPanel() {
       targetsInScope: targetData.targets.filter((t) => t.scope === "in").length,
       targetsOutScope: targetData.targets.filter((t) => t.scope === "out").length,
       methodProjects: methodData,
-      topoMaps: topoData,
       vaultEntries: vaultData.length,
       vaultByType,
       findingsTotal: findingsData.findings.length,
@@ -426,12 +419,6 @@ export function DashboardPanel() {
             value={stats.targetsTotal}
             sub={`${stats.targetsInScope} in / ${stats.targetsOutScope} out`}
             color="bg-blue-500/10 text-blue-400/80"
-          />
-          <StatCard
-            icon={Network}
-            label={t("dashboard.topoMaps", "Topology Maps")}
-            value={stats.topoMaps.length}
-            color="bg-emerald-500/10 text-emerald-400/80"
           />
           <StatCard
             icon={Bug}
@@ -545,32 +532,9 @@ export function DashboardPanel() {
           </div>
         )}
 
-        {/* Topology maps list */}
-        {stats.topoMaps.length > 0 && (
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <Network className="w-3.5 h-3.5 text-muted-foreground/50" />
-              <span className="text-xs font-medium text-muted-foreground/70">
-                {t("dashboard.savedTopologies", "Saved Topologies")}
-              </span>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {stats.topoMaps.map((name) => (
-                <span
-                  key={name}
-                  className="px-2 py-1 rounded-md bg-muted/15 text-[10px] text-muted-foreground/60 border border-border/10"
-                >
-                  {name}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-
         {/* Empty state */}
         {stats.targetsTotal === 0 &&
           stats.methodProjects.length === 0 &&
-          stats.topoMaps.length === 0 &&
           stats.vaultEntries === 0 &&
           stats.findingsTotal === 0 && (
             <div className="flex flex-col items-center justify-center py-12 text-center">

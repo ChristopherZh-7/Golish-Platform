@@ -593,14 +593,6 @@ function App() {
         const pp = getProjectPath();
         const produces = detected.output_config.produces;
 
-        if (produces.includes("host") || produces.includes("port")) {
-          const data = await invoke<{ nodes: unknown[]; edges: unknown[] }>("topo_parse", { rawOutput: output });
-          if (data.nodes.length > 0) {
-            notify.success(`${detected.tool_name}: ${data.nodes.length} hosts → Topology`);
-            await invoke("topo_save", { name: `${detected.tool_name}-${Date.now()}`, data, projectPath: pp });
-          }
-        }
-
         if (produces.includes("vulnerability")) {
           const vulnItems = parsed.items
             .filter((it) => it.data_type === "vulnerability")

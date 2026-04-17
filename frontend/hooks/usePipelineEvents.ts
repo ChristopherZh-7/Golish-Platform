@@ -66,7 +66,7 @@ function resolveSessionForPipeline(): string | null {
       return sessionId;
     }
   }
-  return state.activeSessionId ?? null;
+  return null;
 }
 
 export function usePipelineEvents() {

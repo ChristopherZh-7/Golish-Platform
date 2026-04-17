@@ -107,9 +107,10 @@ export const ToolDetailView = memo(function ToolDetailView({
 
   const totalCount = items.length + (plan ? 1 : 0);
   const doneCount = items.filter((item) => {
-    if (item.kind === "pipeline") return item.data.status === "completed" || item.data.status === "failed";
-    if (item.kind === "tool") return item.data.status === "completed" || item.data.status === "error";
-    return item.data.status === "completed" || item.data.status === "error";
+    const s = item.data.status as string;
+    if (item.kind === "pipeline") return s === "completed" || s === "failed" || s === "interrupted";
+    if (item.kind === "tool") return s === "completed" || s === "error" || s === "interrupted";
+    return s === "completed" || s === "error" || s === "interrupted";
   }).length + (plan && plan.summary.completed === plan.summary.total ? 1 : 0);
 
   const hasContent = items.length > 0 || plan;

@@ -151,15 +151,29 @@ export function AuditLogPanel() {
   }, [safeEntries, filterCategory]);
 
   const targetGroups = useMemo((): TargetGroup[] => {
+    const hostToTargetId = new Map<string, string>();
+    for (const entry of filtered) {
+      if (entry.targetId) {
+        const host = extractHost(entry);
+        if (host) hostToTargetId.set(host, entry.targetId);
+      }
+    }
+
     const map = new Map<string, AuditRow[]>();
     for (const entry of filtered) {
-      // Group by targetId first, then by host from detail, fallback to system
-      let key = entry.targetId;
-      if (!key) {
+      let groupKey: string;
+      if (entry.targetId) {
+        groupKey = entry.targetId;
+      } else {
         const host = extractHost(entry);
-        key = host ? `host:${host}` : null;
+        if (host && hostToTargetId.has(host)) {
+          groupKey = hostToTargetId.get(host)!;
+        } else if (host) {
+          groupKey = `host:${host}`;
+        } else {
+          groupKey = "__system__";
+        }
       }
-      const groupKey = key ?? "__system__";
       const arr = map.get(groupKey);
       if (arr) arr.push(entry);
       else map.set(groupKey, [entry]);
@@ -184,13 +198,15 @@ export function AuditLogPanel() {
     return groups;
   }, [filtered]);
 
+  const groupKey = (g: TargetGroup) => g.targetId ?? `label:${g.label}`;
+
   const isGroupCollapsed = (id: string) =>
     collapsedGroups === "all" || collapsedGroups.has(id);
 
   const toggleGroup = (id: string) => {
     setCollapsedGroups((prev) => {
       if (prev === "all") {
-        const allKeys = new Set(targetGroups.map((g) => g.targetId ?? "__system__"));
+        const allKeys = new Set(targetGroups.map(groupKey));
         allKeys.delete(id);
         return allKeys;
       }
@@ -350,16 +366,16 @@ export function AuditLogPanel() {
     }
 
     return targetGroups.map((group) => {
-      const groupKey = group.targetId ?? "__system__";
-      const isCollapsed = isGroupCollapsed(groupKey);
+      const gk = groupKey(group);
+      const isCollapsed = isGroupCollapsed(gk);
       const categoryBadges = Array.from(group.categories).slice(0, 4);
 
       return (
-        <div key={groupKey} className="mb-2">
+        <div key={gk} className="mb-2">
           {/* Group header */}
           <div
             className="flex items-center gap-2 px-2 py-2 rounded-lg cursor-pointer hover:bg-muted/10 transition-colors sticky top-0 bg-background/95 backdrop-blur-sm z-10 border-b border-border/10"
-            onClick={() => toggleGroup(groupKey)}
+            onClick={() => toggleGroup(gk)}
           >
             {isCollapsed ? (
               <ChevronRight className="w-3 h-3 text-muted-foreground/40" />

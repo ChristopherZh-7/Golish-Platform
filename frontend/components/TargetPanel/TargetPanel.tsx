@@ -4,10 +4,10 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { QuickNotes } from "@/components/QuickNotes/QuickNotes";
 import {
   Check, ChevronDown, ChevronRight, Crosshair, Database, FileCode2, Globe,
-  Hash, Loader2, Map as MapIcon, Network,
+  Hash, LayoutList, Loader2, Network, GitFork,
   Plus, Search, Server, Shield, ShieldOff, Tag, Trash2, Wifi, X, Zap,
 } from "lucide-react";
-import { TopologyView } from "@/components/TopologyView/TopologyView";
+import { TargetGraphView } from "@/components/TargetPanel/TargetGraphView";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import { getProjectPath } from "@/lib/projects";
@@ -181,12 +181,14 @@ const SecurityViewLazy = lazy(() =>
   import("@/components/SecurityView/SecurityView").then((m) => ({ default: m.SecurityView }))
 );
 
-type TargetTab = "targets" | "topology" | "security";
+type TargetTab = "targets" | "security";
+type TargetViewMode = "list" | "graph";
 
 export function TargetPanel() {
   const { t } = useTranslation();
   const currentProjectPath = useStore((s) => s.currentProjectPath);
   const [activeTab, setActiveTab] = useState<TargetTab>("targets");
+  const [viewMode, setViewMode] = useState<TargetViewMode>("list");
   const [store, setStore] = useState<TargetStore>({ targets: [] });
   const [search, setSearch] = useState("");
   const [scopeFilter, setScopeFilter] = useState<"all" | "in" | "out">("all");
@@ -422,19 +424,6 @@ export function TargetPanel() {
             type="button"
             className={cn(
               "flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md transition-colors",
-              activeTab === "topology"
-                ? "bg-accent/15 text-accent font-medium"
-                : "text-muted-foreground hover:text-foreground hover:bg-muted/40",
-            )}
-            onClick={() => setActiveTab("topology")}
-          >
-            <MapIcon className="w-3.5 h-3.5" />
-            {t("activity.topology")}
-          </button>
-          <button
-            type="button"
-            className={cn(
-              "flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md transition-colors",
               activeTab === "security"
                 ? "bg-accent/15 text-accent font-medium"
                 : "text-muted-foreground hover:text-foreground hover:bg-muted/40",
@@ -444,8 +433,38 @@ export function TargetPanel() {
             <Shield className="w-3.5 h-3.5" />
             {t("security.title", "Security")}
           </button>
+
+          {activeTab === "targets" && (
+            <>
+              <div className="w-px h-4 bg-border/30 mx-1" />
+              <div className="flex items-center rounded-md border border-border/30 overflow-hidden">
+                <button
+                  type="button"
+                  className={cn(
+                    "p-1.5 transition-colors",
+                    viewMode === "list" ? "bg-accent/15 text-accent" : "text-muted-foreground hover:text-foreground hover:bg-muted/30",
+                  )}
+                  onClick={() => setViewMode("list")}
+                  title={t("targets.listView", "List View")}
+                >
+                  <LayoutList className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  className={cn(
+                    "p-1.5 transition-colors",
+                    viewMode === "graph" ? "bg-accent/15 text-accent" : "text-muted-foreground hover:text-foreground hover:bg-muted/30",
+                  )}
+                  onClick={() => setViewMode("graph")}
+                  title={t("targets.graphView", "Graph View")}
+                >
+                  <GitFork className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </>
+          )}
         </div>
-        {activeTab === "targets" && (
+        {activeTab === "targets" && viewMode === "list" && (
         <div className="flex items-center gap-1">
           <button
             className="p-1.5 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
@@ -474,8 +493,10 @@ export function TargetPanel() {
         )}
       </div>
 
-      {activeTab === "topology" ? (
-        <div className="flex-1 min-h-0"><TopologyView /></div>
+      {activeTab === "targets" && viewMode === "graph" ? (
+        <div className="flex-1 min-h-0">
+          <TargetGraphView targets={safeTargets} />
+        </div>
       ) : activeTab === "security" ? (
         <div className="flex-1 min-h-0 overflow-hidden">
           <Suspense fallback={<div className="h-full flex items-center justify-center"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground/20" /></div>}>
