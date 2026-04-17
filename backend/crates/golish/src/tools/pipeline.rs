@@ -162,6 +162,7 @@ fn recon_basic_template() -> Pipeline {
         input_from: Option<&'static str>,
         requires: Option<&'static str>,
         iterate_over: Option<&'static str>,
+        db_action: Option<&'static str>,
     }
 
     let steps = vec![
@@ -169,31 +170,37 @@ fn recon_basic_template() -> Pipeline {
             id: "dns_lookup", name: "dig", step_type: "dns_lookup",
             cmd: "dig", args: vec!["+short", "{target}"],
             input_from: None, requires: Some("domain"),
-            iterate_over: None,
+            iterate_over: None, db_action: None,
         },
         StepDef {
             id: "subdomain_enum", name: "subfinder", step_type: "subdomain_enum",
             cmd: "subfinder", args: vec!["-d", "{target}", "-silent"],
             input_from: None, requires: Some("domain"),
-            iterate_over: None,
+            iterate_over: None, db_action: None,
         },
         StepDef {
             id: "port_scan", name: "naabu", step_type: "port_scan",
             cmd: "naabu", args: vec!["-host", "{target}", "-top-ports", "1000", "-json", "-silent"],
             input_from: None, requires: None,
-            iterate_over: None,
+            iterate_over: None, db_action: None,
         },
         StepDef {
             id: "http_probe", name: "httpx", step_type: "http_probe",
             cmd: "httpx", args: vec!["-u", "{target}", "-sc", "-title", "-tech-detect", "-json", "-silent"],
             input_from: None, requires: None,
-            iterate_over: Some("ports"),
+            iterate_over: Some("ports"), db_action: None,
         },
         StepDef {
             id: "tech_fingerprint", name: "whatweb", step_type: "tech_fingerprint",
             cmd: "whatweb", args: vec!["{target}", "--color=never"],
             input_from: None, requires: None,
-            iterate_over: Some("ports"),
+            iterate_over: Some("ports"), db_action: None,
+        },
+        StepDef {
+            id: "web_crawl", name: "katana", step_type: "web_crawl",
+            cmd: "katana", args: vec!["-u", "{target}", "-d", "3", "-js-crawl", "-silent"],
+            input_from: None, requires: None,
+            iterate_over: Some("ports"), db_action: Some("target_add"),
         },
     ];
 
@@ -212,7 +219,7 @@ fn recon_basic_template() -> Pipeline {
             exec_mode: "sequential".to_string(),
             requires: s.requires.map(|v| v.to_string()),
             iterate_over: s.iterate_over.map(|v| v.to_string()),
-            db_action: None,
+            db_action: s.db_action.map(|v| v.to_string()),
             x: (i as f64) * 220.0 + 40.0,
             y: 80.0,
         })
@@ -229,7 +236,7 @@ fn recon_basic_template() -> Pipeline {
     Pipeline {
         id: "recon_basic".to_string(),
         name: "Basic Reconnaissance".to_string(),
-        description: "DNS, subdomains, HTTP probe, port scan, tech fingerprint, JS collection. Use {target} as placeholder.".to_string(),
+        description: "DNS, subdomains, port scan, HTTP probe, tech fingerprint, web crawl (katana). Use {target} as placeholder.".to_string(),
         is_template: false,
         workflow_id: Some("recon_basic".to_string()),
         steps: pipeline_steps,
@@ -900,6 +907,19 @@ pub async fn pipeline_execute(
             None
         };
 
+        // After katana step: merge discovered URLs into ZAP sitemap
+        if step.step_type == "web_crawl" && exit_code == Some(0) && !stdout.is_empty() {
+            let urls: Vec<String> = stdout.lines()
+                .filter(|l| l.starts_with("http://") || l.starts_with("https://"))
+                .map(|l| l.trim().to_string())
+                .collect();
+            if !urls.is_empty() {
+                tracing::info!(count = urls.len(), "[pipeline] Merging katana URLs into sitemap");
+                merge_urls_into_sitemap(pool, &urls, project_path.as_deref()).await;
+                let _ = app.emit("sitemap-updated", serde_json::json!({ "source": "katana" }));
+            }
+        }
+
         let duration_ms = step_start.elapsed().as_millis() as u64;
 
         // Emit "completed" event with truncated output
@@ -1053,23 +1073,27 @@ async fn store_target_from_item(
     project_path: Option<&str>,
     parent_id: Option<Uuid>,
 ) -> Result<bool, String> {
-    let hostname = item
-        .fields
-        .get("hostname")
+    let hostname = if let Some(h) = item.fields.get("hostname")
         .or_else(|| item.fields.get("host"))
         .or_else(|| item.fields.get("ip"))
-        .ok_or("No hostname field")?;
+    {
+        h.clone()
+    } else if let Some(url) = item.fields.get("url") {
+        extract_hostname(url)
+    } else {
+        return Err("No hostname/host/ip/url field".to_string());
+    };
 
     let existed = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM targets WHERE value = $1 AND project_path IS NOT DISTINCT FROM $2)",
     )
-    .bind(hostname)
+    .bind(&hostname)
     .bind(project_path)
     .fetch_one(pool)
     .await
     .unwrap_or(false);
 
-    super::targets::db_target_add(pool, hostname, hostname, None, project_path, "discovered", parent_id)
+    super::targets::db_target_add(pool, &hostname, &hostname, None, project_path, "discovered", parent_id)
         .await?;
     Ok(!existed)
 }
@@ -1539,6 +1563,30 @@ pub async fn execute_pipeline_headless(
             None
         };
 
+        if step.step_type == "web_crawl" && exit_code == Some(0) && !stdout.is_empty() {
+            let urls: Vec<String> = stdout.lines()
+                .filter(|l| l.starts_with("http://") || l.starts_with("https://"))
+                .map(|l| l.trim().to_string())
+                .collect();
+            if !urls.is_empty() {
+                tracing::info!(count = urls.len(), "[pipeline] Merging katana URLs into sitemap");
+                merge_urls_into_sitemap(pool, &urls, project_path).await;
+                emit_pipeline_event(app, &PipelineEvent {
+                    pipeline_id: pipeline_id.clone(),
+                    run_id: run_id.clone(),
+                    step_id: "sitemap_merge".to_string(),
+                    step_index: idx,
+                    total_steps,
+                    status: "info".to_string(),
+                    tool_name: "katana".to_string(),
+                    message: Some(format!("Merged {} URLs into sitemap", urls.len())),
+                    store_stats: None,
+                    pipeline_name: None, target: None, all_steps: None,
+                    output: None, duration_ms: None, exit_code: None,
+                });
+            }
+        }
+
         let duration_ms = step_start.elapsed().as_millis() as u64;
 
         let truncated_output = if stdout.len() > 4096 {
@@ -1657,6 +1705,96 @@ fn extract_hostname(val: &str) -> String {
     }
 }
 
+/// Merge crawler-discovered URLs into the ZAP sitemap (topology_scans).
+/// Only appends entries whose dedup key (method:host:path) doesn't already exist.
+async fn merge_urls_into_sitemap(
+    pool: &sqlx::PgPool,
+    urls: &[String],
+    project_path: Option<&str>,
+) {
+    if urls.is_empty() { return; }
+    let pp = project_path.filter(|s| !s.is_empty());
+
+    let existing: Option<serde_json::Value> = sqlx::query_scalar(
+        "SELECT data FROM topology_scans WHERE name = 'zap-sitemap' AND project_path IS NOT DISTINCT FROM $1",
+    )
+    .bind(pp)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+
+    let mut sitemap_data = existing.unwrap_or_else(|| serde_json::json!({
+        "entries": {},
+        "meta": { "source": "katana-merge" },
+    }));
+
+    let entries = sitemap_data
+        .get_mut("entries")
+        .and_then(|e| e.as_object_mut());
+    let Some(entries) = entries else {
+        tracing::warn!("[katana-sitemap] Could not get entries map from sitemap data");
+        return;
+    };
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut added = 0usize;
+    for raw_url in urls {
+        let parsed = match url::Url::parse(raw_url) {
+            Ok(u) => u,
+            Err(_) => continue,
+        };
+        let host = parsed.host_str().unwrap_or("").to_string();
+        let path = parsed.path().to_string();
+        let dedup_key = format!("GET:{}:{}", host, path);
+
+        if entries.contains_key(&dedup_key) {
+            continue;
+        }
+
+        let port = parsed.port().unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
+
+        entries.insert(dedup_key, serde_json::json!({
+            "url": raw_url,
+            "host": host,
+            "method": "GET",
+            "path": path,
+            "port": port,
+            "status_code": 0,
+            "content_length": 0,
+            "first_seen": &now,
+            "last_seen": &now,
+            "source": "katana",
+            "captured": false,
+        }));
+        added += 1;
+    }
+
+    if added == 0 { return; }
+
+    tracing::info!(
+        added = added,
+        total = entries.len(),
+        "[katana-sitemap] Merged URLs into sitemap"
+    );
+
+    let _ = sqlx::query(
+        "DELETE FROM topology_scans WHERE name = 'zap-sitemap' AND project_path IS NOT DISTINCT FROM $1",
+    )
+    .bind(pp)
+    .execute(pool)
+    .await;
+
+    let _ = sqlx::query(
+        r#"INSERT INTO topology_scans (name, data, project_path)
+           VALUES ('zap-sitemap', $1, $2)"#,
+    )
+    .bind(&sitemap_data)
+    .bind(pp)
+    .execute(pool)
+    .await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1711,6 +1849,10 @@ mod tests {
 
         let whatweb = pipeline.steps.iter().find(|s| s.tool_name == "whatweb").unwrap();
         assert_eq!(whatweb.iterate_over.as_deref(), Some("ports"));
+
+        let katana = pipeline.steps.iter().find(|s| s.tool_name == "katana").unwrap();
+        assert_eq!(katana.iterate_over.as_deref(), Some("ports"));
+        assert_eq!(katana.db_action.as_deref(), Some("target_add"));
 
         let naabu = pipeline.steps.iter().find(|s| s.tool_name == "naabu").unwrap();
         assert_eq!(naabu.iterate_over, None);
