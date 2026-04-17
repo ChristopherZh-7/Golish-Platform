@@ -5,7 +5,6 @@ import {
   ClipboardList,
   Filter,
   Layers,
-  List,
   Loader2,
   RefreshCw,
   Search,
@@ -58,7 +57,7 @@ const CATEGORY_OPTIONS = [
   "ai",
 ];
 
-type ViewMode = "timeline" | "byTarget";
+type ViewMode = "byTarget";
 
 interface TargetGroup {
   targetId: string | null;
@@ -84,6 +83,9 @@ function extractTargetLabel(entries: AuditRow[]): string {
     if (host) return host;
     const d = e.detail as Record<string, unknown>;
     if (d?.target_value) return String(d.target_value);
+    if (d?.target) return String(d.target);
+    const onMatch = e.details?.match(/ on ([^:]+):/);
+    if (onMatch?.[1]) return onMatch[1];
   }
   return entries[0]?.targetId?.slice(0, 12) ?? "Unknown";
 }
@@ -96,10 +98,8 @@ export function AuditLogPanel() {
   const [searchQuery, setSearchQuery] = useState("");
   const [showSearch, setShowSearch] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
-  const [viewMode, setViewMode] = useState<ViewMode>("timeline");
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
-    new Set()
-  );
+  const [viewMode] = useState<ViewMode>("byTarget");
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string> | "all">("all");
   const currentProjectPath = useStore((s) => s.currentProjectPath);
   const pollRef = useRef<ReturnType<typeof setInterval>>();
 
@@ -184,8 +184,16 @@ export function AuditLogPanel() {
     return groups;
   }, [filtered]);
 
+  const isGroupCollapsed = (id: string) =>
+    collapsedGroups === "all" || collapsedGroups.has(id);
+
   const toggleGroup = (id: string) => {
     setCollapsedGroups((prev) => {
+      if (prev === "all") {
+        const allKeys = new Set(targetGroups.map((g) => g.targetId ?? "__system__"));
+        allKeys.delete(id);
+        return allKeys;
+      }
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -343,7 +351,7 @@ export function AuditLogPanel() {
 
     return targetGroups.map((group) => {
       const groupKey = group.targetId ?? "__system__";
-      const isCollapsed = collapsedGroups.has(groupKey);
+      const isCollapsed = isGroupCollapsed(groupKey);
       const categoryBadges = Array.from(group.categories).slice(0, 4);
 
       return (
@@ -409,34 +417,6 @@ export function AuditLogPanel() {
         <span className="text-[9px] text-muted-foreground/40">
           {filtered.length} entries
         </span>
-
-        {/* View mode toggle */}
-        <div className="flex items-center rounded bg-muted/10 p-0.5 gap-0.5">
-          <button
-            onClick={() => setViewMode("timeline")}
-            className={cn(
-              "p-1 rounded transition-colors",
-              viewMode === "timeline"
-                ? "text-accent bg-accent/15"
-                : "text-muted-foreground/30 hover:text-foreground"
-            )}
-            title="Timeline view"
-          >
-            <List className="w-3 h-3" />
-          </button>
-          <button
-            onClick={() => setViewMode("byTarget")}
-            className={cn(
-              "p-1 rounded transition-colors",
-              viewMode === "byTarget"
-                ? "text-accent bg-accent/15"
-                : "text-muted-foreground/30 hover:text-foreground"
-            )}
-            title="Group by target"
-          >
-            <Target className="w-3 h-3" />
-          </button>
-        </div>
 
         <button
           onClick={() => setShowSearch(!showSearch)}
@@ -522,14 +502,8 @@ export function AuditLogPanel() {
           <div className="flex items-center justify-center py-12">
             <Loader2 className="w-4 h-4 animate-spin text-muted-foreground/30" />
           </div>
-        ) : viewMode === "byTarget" ? (
-          renderTargetView()
-        ) : filtered.length === 0 ? (
-          <div className="text-center text-[11px] text-muted-foreground/30 py-12">
-            No operation log entries
-          </div>
         ) : (
-          filtered.map((entry) => renderEntry(entry))
+          renderTargetView()
         )}
       </div>
     </div>

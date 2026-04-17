@@ -605,14 +605,30 @@ pub async fn db_target_update_recon_extended(
             os_info       = CASE WHEN $6 != '' THEN $6 ELSE os_info END,
             content_type  = CASE WHEN $7 != '' THEN $7 ELSE content_type END,
             ports         = CASE WHEN $8::jsonb = '[]'::jsonb THEN ports
-                            ELSE ports || (
-                                SELECT COALESCE(jsonb_agg(np), '[]'::jsonb)
-                                FROM jsonb_array_elements($8::jsonb) np
-                                WHERE NOT EXISTS (
-                                    SELECT 1 FROM jsonb_array_elements(ports) ep
-                                    WHERE (ep->>'port') = (np->>'port')
-                                      AND COALESCE(ep->>'proto','tcp') = COALESCE(np->>'proto','tcp')
-                                )
+                            ELSE (
+                                SELECT COALESCE(jsonb_agg(merged), '[]'::jsonb) FROM (
+                                    -- Existing ports that are NOT in the new data (keep as-is)
+                                    SELECT ep AS merged
+                                    FROM jsonb_array_elements(ports) ep
+                                    WHERE NOT EXISTS (
+                                        SELECT 1 FROM jsonb_array_elements($8::jsonb) np
+                                        WHERE (ep->>'port') = (np->>'port')
+                                          AND COALESCE(ep->>'proto','tcp') = COALESCE(np->>'proto','tcp')
+                                    )
+                                    UNION ALL
+                                    -- New/updated ports: merge with existing entry if present
+                                    SELECT CASE
+                                        WHEN ep IS NOT NULL THEN ep || np
+                                        ELSE np
+                                    END AS merged
+                                    FROM jsonb_array_elements($8::jsonb) np
+                                    LEFT JOIN LATERAL (
+                                        SELECT ep FROM jsonb_array_elements(ports) ep
+                                        WHERE (ep->>'port') = (np->>'port')
+                                          AND COALESCE(ep->>'proto','tcp') = COALESCE(np->>'proto','tcp')
+                                        LIMIT 1
+                                    ) existing(ep) ON true
+                                ) sub
                             ) END,
             technologies  = CASE WHEN $9::jsonb = '[]'::jsonb THEN technologies
                             ELSE (

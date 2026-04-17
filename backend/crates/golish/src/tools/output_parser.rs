@@ -29,6 +29,10 @@ pub struct OutputParserConfig {
     pub detect: Option<String>,
     #[serde(default)]
     pub db_action: Option<String>,
+    /// Optional jq expression to pre-process tool output before parsing.
+    /// Runs `echo $stdout | jq '$transform'` and replaces stdout with the result.
+    #[serde(default)]
+    pub transform: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +41,52 @@ pub struct PatternConfig {
     pub data_type: String,
     pub regex: String,
     pub fields: HashMap<String, String>,
+}
+
+/// Run a jq expression against raw output to transform it before parsing.
+/// Falls back to the original output on any error.
+pub async fn transform_with_jq(raw: &str, jq_expr: &str) -> String {
+    let result = tokio::process::Command::new("jq")
+        .arg("-c")
+        .arg(jq_expr)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+
+    let mut child = match result {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("[output_parser] jq not available: {e}");
+            return raw.to_string();
+        }
+    };
+
+    if let Some(ref mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        let _ = stdin.write_all(raw.as_bytes()).await;
+    }
+
+    match child.wait_with_output().await {
+        Ok(output) if output.status.success() => {
+            let transformed = String::from_utf8_lossy(&output.stdout).to_string();
+            tracing::debug!(
+                "[output_parser] jq transform: {} bytes → {} bytes",
+                raw.len(),
+                transformed.len()
+            );
+            transformed
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!("[output_parser] jq failed: {stderr}");
+            raw.to_string()
+        }
+        Err(e) => {
+            tracing::warn!("[output_parser] jq exec error: {e}");
+            raw.to_string()
+        }
+    }
 }
 
 pub fn parse_text_standalone(raw: &str, patterns: &[PatternConfig]) -> Vec<ParsedItem> {
@@ -442,14 +492,40 @@ async fn store_target_update_recon(
         update.content_type = ct.clone();
     }
 
-    // Build port entries from port/protocol/service/state fields
+    // Build port entries with embedded HTTP metadata when available
     if let Some(port_str) = item.fields.get("port") {
-        let port_entry = serde_json::json!({
+        let mut port_entry = serde_json::json!({
             "port": port_str.parse::<u16>().unwrap_or(0),
             "proto": item.fields.get("protocol").cloned().unwrap_or_else(|| "tcp".to_string()),
             "service": item.fields.get("service").cloned().unwrap_or_default(),
             "state": item.fields.get("state").cloned().unwrap_or_else(|| "open".to_string()),
         });
+        if let Some(title) = item.fields.get("title") {
+            port_entry["http_title"] = serde_json::Value::String(title.clone());
+        }
+        if let Some(status) = item.fields.get("status_code").or_else(|| item.fields.get("status")) {
+            if let Ok(code) = status.parse::<i32>() {
+                port_entry["http_status"] = serde_json::json!(code);
+                port_entry["service"] = serde_json::Value::String("http".to_string());
+            }
+        }
+        if let Some(ws) = item.fields.get("webserver") {
+            port_entry["webserver"] = serde_json::Value::String(ws.clone());
+        }
+        if let Some(ct) = item.fields.get("content_type") {
+            port_entry["content_type"] = serde_json::Value::String(ct.clone());
+        }
+        if let Some(techs) = item.fields.get("technologies") {
+            if let Ok(arr) = serde_json::from_str::<serde_json::Value>(techs) {
+                port_entry["technologies"] = arr;
+            } else {
+                let tech_list: Vec<&str> = techs.split(',').map(|s| s.trim()).collect();
+                port_entry["technologies"] = serde_json::to_value(tech_list).unwrap_or_default();
+            }
+        }
+        if let Some(url) = item.fields.get("url") {
+            port_entry["url"] = serde_json::Value::String(url.clone());
+        }
         update.ports = serde_json::json!([port_entry]);
     }
 

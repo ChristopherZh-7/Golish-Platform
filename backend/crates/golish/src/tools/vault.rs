@@ -176,22 +176,13 @@ pub async fn vault_list(
     project_path: Option<String>,
 ) -> Result<Vec<VaultEntrySafe>, String> {
     let pool = state.db_pool_ready().await?;
-    let rows: Vec<VaultRow> = if let Some(ref pp) = project_path {
-        sqlx::query_as(
-            "SELECT id, name, entry_type::TEXT, username, notes, project, tags, status, source_url, last_validated_at, created_at, updated_at \
-             FROM vault_entries WHERE project_path = $1 ORDER BY created_at DESC",
-        )
-        .bind(pp)
-        .fetch_all(pool)
-        .await
-    } else {
-        sqlx::query_as(
-            "SELECT id, name, entry_type::TEXT, username, notes, project, tags, status, source_url, last_validated_at, created_at, updated_at \
-             FROM vault_entries WHERE project_path IS NULL ORDER BY created_at DESC",
-        )
-        .fetch_all(pool)
-        .await
-    }
+    let rows: Vec<VaultRow> = sqlx::query_as(
+        "SELECT id, name, entry_type::TEXT, username, notes, project, tags, status, source_url, last_validated_at, created_at, updated_at \
+         FROM vault_entries WHERE project_path IS NOT DISTINCT FROM $1 OR project_path IS NULL ORDER BY created_at DESC",
+    )
+    .bind(project_path.as_deref())
+    .fetch_all(pool)
+    .await
     .map_err(|e| e.to_string())?;
 
     Ok(rows.into_iter().map(VaultEntrySafe::from).collect())
