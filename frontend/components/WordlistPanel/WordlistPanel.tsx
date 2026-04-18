@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { CustomSelect } from "@/components/ui/custom-select";
 
 interface WordlistMeta {
   id: string;
@@ -258,15 +259,13 @@ export function WordlistPanel() {
             className="w-full text-[10px] px-2 py-1 bg-background border border-border/30 rounded outline-none"
           />
           <div className="flex gap-1.5">
-            <select
+            <CustomSelect
               value={importForm.category}
-              onChange={(e) => setImportForm((f) => ({ ...f, category: e.target.value }))}
-              className="text-[10px] px-2 py-1 bg-background border border-border/30 rounded outline-none flex-1"
-            >
-              {CATEGORIES.map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
+              onChange={(v) => setImportForm((f) => ({ ...f, category: v }))}
+              options={CATEGORIES.map((c) => ({ value: c, label: c }))}
+              size="sm"
+              className="flex-1"
+            />
             <input
               value={importForm.tags}
               onChange={(e) => setImportForm((f) => ({ ...f, tags: e.target.value }))}

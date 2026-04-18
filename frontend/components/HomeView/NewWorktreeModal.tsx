@@ -2,6 +2,7 @@ import { Loader2, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { createGitWorktree, listGitBranches } from "@/lib/indexer";
 import { logger } from "@/lib/logger";
+import { CustomSelect } from "@/components/ui/custom-select";
 
 export interface NewWorktreeModalProps {
   isOpen: boolean;
@@ -144,19 +145,14 @@ export function NewWorktreeModal({
                 Loading branches...
               </div>
             ) : (
-              <select
+              <CustomSelect
                 value={baseBranch}
-                onChange={(e) => setBaseBranch(e.target.value)}
-                className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-md text-gray-200 focus:outline-none focus:ring-2 focus:ring-[#58a6ff] focus:border-transparent"
-                disabled={isCreating}
-                aria-label="Base Branch"
-              >
-                {availableBranches.map((branch) => (
-                  <option key={branch} value={branch}>
-                    {branch}
-                  </option>
-                ))}
-              </select>
+                onChange={setBaseBranch}
+                options={availableBranches.map((branch) => ({
+                  value: branch,
+                  label: branch,
+                }))}
+              />
             )}
           </div>
 

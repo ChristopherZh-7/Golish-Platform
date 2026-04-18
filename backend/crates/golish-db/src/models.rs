@@ -201,6 +201,7 @@ pub struct TerminalLog {
     pub stream: StreamType,
     pub content: String,
     pub created_at: DateTime<Utc>,
+    pub project_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -214,6 +215,7 @@ pub struct SearchLog {
     pub query: String,
     pub result: Option<String>,
     pub created_at: DateTime<Utc>,
+    pub project_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -264,6 +266,7 @@ pub struct AgentLog {
     pub result: Option<String>,
     pub duration_ms: Option<i32>,
     pub created_at: DateTime<Utc>,
+    pub project_path: String,
 }
 
 #[derive(Debug)]

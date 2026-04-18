@@ -2,8 +2,17 @@ use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 use uuid::Uuid;
+
+static NUCLEI_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+pub async fn nuclei_cancel() -> Result<(), String> {
+    NUCLEI_CANCELLED.store(true, Ordering::SeqCst);
+    Ok(())
+}
 
 // ============================================================================
 // Shared types
@@ -351,61 +360,107 @@ pub async fn match_pocs_for_target(
     let pool = state.db_pool_ready().await?;
     let tid = Uuid::parse_str(&target_id).map_err(|e| e.to_string())?;
 
+    let start = std::time::Instant::now();
     let fingerprints = golish_db::repo::fingerprints::list_by_target(pool, tid)
         .await
         .map_err(|e| e.to_string())?;
+    tracing::info!("[PoC-Match] {} fingerprints for target {} ({}ms)",
+        fingerprints.len(), target_id, start.elapsed().as_millis());
 
     if fingerprints.is_empty() {
         return Ok(vec![]);
     }
 
-    let mut matches = Vec::new();
-
+    let mut all_terms: Vec<(String, String, String)> = Vec::new();
+    let mut tag_terms: Vec<String> = Vec::new();
     for fp in &fingerprints {
         let name_lower = fp.name.to_lowercase();
-        let search_terms = build_search_terms(&fp.name, fp.version.as_deref());
-
-        for term in &search_terms {
-            let rows = sqlx::query_as::<_, PocRow>(
-                r#"SELECT id, cve_id, name, poc_type, severity, source, content
-                   FROM vuln_kb_pocs
-                   WHERE LOWER(tags::text) LIKE $1
-                      OR LOWER(name) LIKE $1
-                      OR LOWER(cve_id) LIKE $1
-                      OR LOWER(description) LIKE $1
-                   LIMIT 50"#,
-            )
-            .bind(format!("%{}%", term))
-            .fetch_all(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-
-            for row in rows {
-                if matches.iter().any(|m: &PocMatch| m.poc_id == row.id.to_string()) {
-                    continue;
-                }
-
-                let template_id = extract_nuclei_template_id(&row.content);
-
-                matches.push(PocMatch {
-                    poc_id: row.id.to_string(),
-                    cve_id: row.cve_id,
-                    poc_name: row.name,
-                    poc_type: row.poc_type,
-                    severity: row.severity.unwrap_or_default(),
-                    source: row.source.unwrap_or_default(),
-                    matched_fingerprint: name_lower.clone(),
-                    matched_version: fp.version.clone().unwrap_or_default(),
-                    template_id,
-                });
-            }
+        let version = fp.version.clone().unwrap_or_default();
+        tag_terms.push(name_lower.clone());
+        for term in build_search_terms(&fp.name, fp.version.as_deref()) {
+            all_terms.push((term, name_lower.clone(), version.clone()));
         }
+    }
+
+    let combined_pattern = all_terms.iter()
+        .map(|(t, _, _)| regex::escape(t))
+        .collect::<Vec<_>>()
+        .join("|");
+
+    let q_start = std::time::Instant::now();
+
+    let rows_text = sqlx::query_as::<_, PocRow>(
+        r#"SELECT DISTINCT id, cve_id, name, poc_type, severity, source, content
+           FROM vuln_kb_pocs
+           WHERE LOWER(name) ~* $1
+              OR LOWER(cve_id) ~* $1
+              OR LOWER(description) ~* $1
+           LIMIT 200"#,
+    )
+    .bind(&combined_pattern)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let rows_tags = sqlx::query_as::<_, PocRow>(
+        r#"SELECT DISTINCT id, cve_id, name, poc_type, severity, source, content
+           FROM vuln_kb_pocs
+           WHERE tags && $1
+           LIMIT 200"#,
+    )
+    .bind(&tag_terms)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut rows = rows_text;
+    rows.extend(rows_tags);
+    tracing::info!("[PoC-Match] Queries returned {} rows ({}ms)",
+        rows.len(), q_start.elapsed().as_millis());
+
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut matches = Vec::new();
+
+    for row in rows {
+        let row_id_str = row.id.to_string();
+        if !seen_ids.insert(row_id_str.clone()) { continue; }
+
+        let row_name_lower = row.name.to_lowercase();
+        let row_cve_lower = row.cve_id.to_lowercase();
+
+        let matched = all_terms.iter().find(|(term, _, _)| {
+            row_name_lower.contains(term) || row_cve_lower.contains(term)
+        });
+
+        let (fp_name, fp_ver) = match matched {
+            Some((_, n, v)) => (n.clone(), v.clone()),
+            None => {
+                let fallback = all_terms.first().map(|(_, n, v)| (n.clone(), v.clone()))
+                    .unwrap_or_default();
+                fallback
+            }
+        };
+
+        let template_id = extract_nuclei_template_id(&row.content);
+
+        matches.push(PocMatch {
+            poc_id: row_id_str,
+            cve_id: row.cve_id,
+            poc_name: row.name,
+            poc_type: row.poc_type,
+            severity: row.severity.unwrap_or_default(),
+            source: row.source.unwrap_or_default(),
+            matched_fingerprint: fp_name,
+            matched_version: fp_ver,
+            template_id,
+        });
     }
 
     matches.sort_by(|a, b| {
         severity_rank(&b.severity).cmp(&severity_rank(&a.severity))
     });
 
+    tracing::info!("[PoC-Match] Total {} matches in {}ms", matches.len(), start.elapsed().as_millis());
     Ok(matches)
 }
 
@@ -588,15 +643,47 @@ pub async fn scan_nuclei_targeted(
         args.extend(extra.iter().cloned());
     }
 
+    NUCLEI_CANCELLED.store(false, Ordering::SeqCst);
     emit_progress(&app, "nuclei", "scanning", 0, total, &format!("Scanning {} with {} templates", target_url, total));
 
-    let output = tokio::process::Command::new(&nuclei_path)
+    let mut child = tokio::process::Command::new(&nuclei_path)
         .args(&args)
-        .output()
-        .await
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|e| format!("Nuclei execution failed: {}", e))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let child_stdout = child.stdout.take();
+    let child_stderr = child.stderr.take();
+
+    let stdout_handle = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        if let Some(mut r) = child_stdout { let _ = r.read_to_end(&mut buf).await; }
+        buf
+    });
+    let stderr_handle = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        if let Some(mut r) = child_stderr { let _ = r.read_to_end(&mut buf).await; }
+        buf
+    });
+
+    let wait_result = tokio::select! {
+        res = child.wait() => res.map_err(|e| format!("Nuclei wait failed: {}", e)),
+        _ = async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                if NUCLEI_CANCELLED.load(Ordering::SeqCst) { break; }
+            }
+        } => {
+            let _ = child.kill().await;
+            return Err("Nuclei scan cancelled".to_string());
+        }
+    };
+    let _exit_status = wait_result?;
+    let stdout_bytes = stdout_handle.await.unwrap_or_default();
+    let stdout = String::from_utf8_lossy(&stdout_bytes);
 
     let mut items_found = 0u32;
     let mut items_stored = 0u32;
@@ -980,7 +1067,7 @@ pub async fn get_zap_discovered_paths(
 
     let rows = sqlx::query_scalar::<_, String>(
         r#"SELECT DISTINCT url FROM (
-            SELECT unnest(urls) as url FROM topology_scans WHERE name = 'zap-sitemap'
+            SELECT unnest(urls) as url FROM sitemap_store WHERE name = 'zap-sitemap'
         ) sub
         WHERE url LIKE $1
         ORDER BY url"#,

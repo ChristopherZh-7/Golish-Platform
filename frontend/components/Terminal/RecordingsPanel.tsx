@@ -11,6 +11,7 @@ import {
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { cn } from "@/lib/utils";
+import { CustomSelect } from "@/components/ui/custom-select";
 import { ThemeManager } from "@/lib/theme";
 import {
   deleteRecording,
@@ -263,17 +264,18 @@ export function RecordingsPanel({ onClose }: { onClose: () => void }) {
                 </div>
                 <div className="flex items-center gap-1">
                   <SkipForward className="w-3 h-3 text-muted-foreground/40" />
-                  <select
-                    value={speed}
-                    onChange={(e) => setSpeed(Number(e.target.value))}
-                    className="bg-transparent text-[10px] text-muted-foreground/60 border-none outline-none cursor-pointer"
-                  >
-                    <option value={0.5}>0.5x</option>
-                    <option value={1}>1x</option>
-                    <option value={2}>2x</option>
-                    <option value={4}>4x</option>
-                    <option value={8}>8x</option>
-                  </select>
+                  <CustomSelect
+                    value={String(speed)}
+                    onChange={(v) => setSpeed(Number(v))}
+                    options={[
+                      { value: "0.5", label: "0.5x" },
+                      { value: "1", label: "1x" },
+                      { value: "2", label: "2x" },
+                      { value: "4", label: "4x" },
+                      { value: "8", label: "8x" },
+                    ]}
+                    size="xs"
+                  />
                 </div>
               </div>
               <div

@@ -15,6 +15,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { CustomSelect } from "@/components/ui/custom-select";
 import { useStore } from "@/store";
 
 interface CheckItem {
@@ -486,20 +487,19 @@ export function MethodologyPanel() {
                 onChange={(e) => setNewProjectName(e.target.value)}
                 autoFocus
               />
-              <select
-                className="w-full text-xs px-3 py-2 rounded-md bg-background border border-border/50 focus:border-accent outline-none"
+              <CustomSelect
                 value={newTemplateId}
-                onChange={(e) => setNewTemplateId(e.target.value)}
-              >
-                <option value="">
-                  {t("methodology.selectTemplate", "Select template...")}
-                </option>
-                {templates.map((tmpl) => (
-                  <option key={tmpl.id} value={tmpl.id}>
-                    {tmpl.name} - {tmpl.description}
-                  </option>
-                ))}
-              </select>
+                onChange={setNewTemplateId}
+                placeholder={t("methodology.selectTemplate", "Select template...")}
+                options={[
+                  { value: "", label: t("methodology.selectTemplate", "Select template...") },
+                  ...templates.map((tmpl) => ({
+                    value: tmpl.id,
+                    label: `${tmpl.name} - ${tmpl.description}`,
+                  })),
+                ]}
+                size="default"
+              />
             </div>
             <div className="flex justify-end gap-2 px-4 py-3 border-t border-border/30">
               <button

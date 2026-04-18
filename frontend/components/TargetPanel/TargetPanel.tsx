@@ -52,7 +52,6 @@ interface Target {
   source: string;
   parent_id: string | null;
   ports: PortInfo[];
-  technologies: string[];
   real_ip: string;
   cdn_waf: string;
   http_title: string;
@@ -784,13 +783,6 @@ export function TargetPanel() {
                           {editingId === child.id && (
                             <div className="mt-1 ml-4 space-y-1 text-[10px]">
                               {child.http_title && <div className="text-muted-foreground"><span className="text-blue-400">Title:</span> {child.http_title}</div>}
-                              {child.technologies && child.technologies.length > 0 && (
-                                <div className="flex flex-wrap gap-0.5">
-                                  {child.technologies.map((tech) => (
-                                    <span key={tech} className="px-1 py-0.5 rounded bg-purple-500/10 text-purple-400/80">{tech}</span>
-                                  ))}
-                                </div>
-                              )}
                               {child.real_ip && <div className="text-muted-foreground font-mono"><span className="text-emerald-400">IP:</span> {child.real_ip}</div>}
                               {child.webserver && <div className="text-muted-foreground"><span className="text-orange-400">Server:</span> {child.webserver}</div>}
                             </div>
@@ -965,16 +957,6 @@ function TargetDetailView({
             )}
             {target.os_info && (
               <span className="text-pink-400/70">{target.os_info}</span>
-            )}
-            {target.technologies && target.technologies.length > 0 && (
-              <span className="flex flex-wrap gap-0.5">
-                {target.technologies.slice(0, 5).map((tech) => (
-                  <span key={tech} className="text-[9px] px-1 py-0.5 rounded bg-purple-500/10 text-purple-400/80">{tech}</span>
-                ))}
-                {target.technologies.length > 5 && (
-                  <span className="text-[9px] text-muted-foreground/30">+{target.technologies.length - 5}</span>
-                )}
-              </span>
             )}
           </div>
         );

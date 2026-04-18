@@ -218,6 +218,7 @@ function App() {
   const [settingsSection, setSettingsSection] = useState("environment");
   const [currentPage, setCurrentPage] = useState<PageRoute>("main");
   const [activityView, setActivityView] = useState<ActivityView>(null);
+  const [visitedViews, setVisitedViews] = useState<Set<string>>(new Set());
   const [bottomTerminalOpen, setBottomTerminalOpen] = useState(true);
   const [shortcutsHelpOpen, setShortcutsHelpOpen] = useState(false);
   const [recordingsPanelOpen, setRecordingsPanelOpen] = useState(false);
@@ -724,6 +725,12 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (activityView && !visitedViews.has(activityView)) {
+      setVisitedViews((prev) => new Set(prev).add(activityView));
+    }
+  }, [activityView, visitedViews]);
+
   // Allow child components (e.g. TargetPanel) to close the activity overlay
   useEffect(() => {
     const closeHandler = () => setActivityView(null);
@@ -1139,6 +1146,7 @@ function App() {
           </div>
 
           {/* Settings view - overlays center+right area */}
+          {visitedViews.has("settings") && (
           <div className={cn(
             "absolute inset-0 left-[284px] flex transition-opacity duration-150 ease-out px-2 pb-2 pt-0",
             activityView === "settings"
@@ -1151,8 +1159,10 @@ function App() {
               </Suspense>
             </div>
           </div>
+          )}
 
           {/* Tool Manager view - overlays entire center+right area */}
+          {visitedViews.has("toolManage") && (
           <div className={cn(
             "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
             activityView === "toolManage"
@@ -1165,8 +1175,10 @@ function App() {
               </Suspense>
             </div>
           </div>
+          )}
 
           {/* Wiki view - overlays entire center+right area */}
+          {visitedViews.has("wiki") && (
           <div className={cn(
             "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
             activityView === "wiki"
@@ -1179,8 +1191,10 @@ function App() {
               </Suspense>
             </div>
           </div>
+          )}
 
           {/* Target view - overlays entire center+right area */}
+          {visitedViews.has("targets") && (
           <div className={cn(
             "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
             activityView === "targets"
@@ -1193,8 +1207,10 @@ function App() {
               </Suspense>
             </div>
           </div>
+          )}
 
           {/* Methodology view */}
+          {visitedViews.has("methodology") && (
           <div className={cn(
             "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
             activityView === "methodology"
@@ -1207,8 +1223,10 @@ function App() {
               </Suspense>
             </div>
           </div>
+          )}
 
           {/* Dashboard view */}
+          {visitedViews.has("dashboard") && (
           <div className={cn(
             "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
             activityView === "dashboard"
@@ -1221,8 +1239,10 @@ function App() {
               </Suspense>
             </div>
           </div>
+          )}
 
           {/* Findings view */}
+          {visitedViews.has("findings") && (
           <div className={cn(
             "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
             activityView === "findings"
@@ -1235,8 +1255,10 @@ function App() {
               </Suspense>
             </div>
           </div>
+          )}
 
           {/* Pipelines view */}
+          {visitedViews.has("pipelines") && (
           <div className={cn(
             "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
             activityView === "pipelines"
@@ -1249,8 +1271,10 @@ function App() {
               </Suspense>
             </div>
           </div>
+          )}
 
           {/* Audit log view */}
+          {visitedViews.has("auditLog") && (
           <div className={cn(
             "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
             activityView === "auditLog"
@@ -1263,8 +1287,10 @@ function App() {
               </Suspense>
             </div>
           </div>
+          )}
 
           {/* Wordlists view */}
+          {visitedViews.has("wordlists") && (
           <div className={cn(
             "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
             activityView === "wordlists"
@@ -1277,8 +1303,10 @@ function App() {
               </Suspense>
             </div>
           </div>
+          )}
 
           {/* Vuln intel view */}
+          {visitedViews.has("vulnIntel") && (
           <div className={cn(
             "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
             activityView === "vulnIntel"
@@ -1291,6 +1319,7 @@ function App() {
               </Suspense>
             </div>
           </div>
+          )}
 
           {/* Normal view - center + right panels */}
           <div className={cn(

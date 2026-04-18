@@ -533,15 +533,6 @@ async fn store_target_update_recon(
         update.ports = serde_json::json!([port_entry]);
     }
 
-    if let Some(techs) = item.fields.get("technologies") {
-        if let Ok(arr) = serde_json::from_str::<serde_json::Value>(techs) {
-            update.technologies = arr;
-        } else {
-            let tech_list: Vec<&str> = techs.split(',').map(|s| s.trim()).collect();
-            update.technologies = serde_json::to_value(tech_list).unwrap_or_default();
-        }
-    }
-
     db_target_update_recon_extended(pool, target_uuid, &update).await?;
     Ok(())
 }
@@ -649,7 +640,7 @@ async fn find_or_create_target(
 
     // Search for existing target by value
     let existing = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM targets WHERE value = $1 AND project_path IS NOT DISTINCT FROM $2 LIMIT 1",
+        "SELECT id FROM targets WHERE value = $1 AND project_path = $2 LIMIT 1",
     )
     .bind(&hostname)
     .bind(project_path)

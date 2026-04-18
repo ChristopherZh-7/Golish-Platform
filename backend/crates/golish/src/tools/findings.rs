@@ -35,6 +35,8 @@ pub struct Finding {
     pub url: String,
     #[serde(default)]
     pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<String>,
     #[serde(default)]
     pub description: String,
     #[serde(default)]
@@ -155,6 +157,7 @@ struct FindingRow {
     cvss: Option<f64>,
     url: String,
     target: String,
+    target_id: Option<Uuid>,
     description: String,
     steps: String,
     remediation: String,
@@ -178,6 +181,7 @@ impl From<FindingRow> for Finding {
             cvss: r.cvss,
             url: r.url,
             target: r.target,
+            target_id: r.target_id.map(|u| u.to_string()),
             description: r.description,
             steps: r.steps,
             remediation: r.remediation,
@@ -194,7 +198,7 @@ impl From<FindingRow> for Finding {
     }
 }
 
-const SELECT_COLS: &str = "id, title, sev::TEXT, cvss, url, target, description, steps, remediation, tags, tool, template, refs, evidence, status::TEXT, source, created_at, updated_at";
+const SELECT_COLS: &str = "id, title, sev::TEXT, cvss, url, target, target_id, description, steps, remediation, tags, tool, template, refs, evidence, status::TEXT, source, created_at, updated_at";
 
 #[tauri::command]
 pub async fn findings_list(
@@ -203,7 +207,7 @@ pub async fn findings_list(
 ) -> Result<FindingsStore, String> {
     let pool = state.db_pool_ready().await?;
     let sql = format!(
-        "SELECT {} FROM findings WHERE project_path IS NOT DISTINCT FROM $1 ORDER BY created_at DESC",
+        "SELECT {} FROM findings WHERE project_path = $1 ORDER BY created_at DESC",
         SELECT_COLS
     );
     let rows: Vec<FindingRow> = sqlx::query_as(&sql)
@@ -223,12 +227,13 @@ async fn insert_finding(pool: &sqlx::PgPool, f: &Finding, project_path: Option<&
     let refs_json = serde_json::to_value(&f.references).unwrap_or_else(|_| serde_json::json!([]));
     let evidence_json = serde_json::to_value(&f.evidence).unwrap_or_else(|_| serde_json::json!([]));
 
+    let tid: Option<Uuid> = f.target_id.as_ref().and_then(|s| s.parse().ok());
     sqlx::query(
-        r#"INSERT INTO findings (id, title, sev, cvss, url, target, description, steps, remediation, tags, tool, template, refs, evidence, status, source, project_path, created_at, updated_at)
-           VALUES ($1, $2, $3::severity, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::finding_status, $16, $17,
+        r#"INSERT INTO findings (id, title, sev, cvss, url, target, target_id, description, steps, remediation, tags, tool, template, refs, evidence, status, source, project_path, created_at, updated_at)
+           VALUES ($1, $2, $3::severity, $4, $5, $6, $20, $7, $8, $9, $10, $11, $12, $13, $14, $15::finding_status, $16, $17,
                    to_timestamp($18::DOUBLE PRECISION), to_timestamp($19::DOUBLE PRECISION))
            ON CONFLICT (id) DO UPDATE SET
-             title=$2, sev=$3::severity, cvss=$4, url=$5, target=$6, description=$7, steps=$8, remediation=$9,
+             title=$2, sev=$3::severity, cvss=$4, url=$5, target=$6, target_id=COALESCE($20, findings.target_id), description=$7, steps=$8, remediation=$9,
              tags=$10, tool=$11, template=$12, refs=$13, evidence=$14, status=$15::finding_status, source=$16, updated_at=to_timestamp($19::DOUBLE PRECISION)"#,
     )
     .bind(uid)
@@ -250,6 +255,7 @@ async fn insert_finding(pool: &sqlx::PgPool, f: &Finding, project_path: Option<&
     .bind(project_path)
     .bind(f.created_at as f64)
     .bind(f.updated_at as f64)
+    .bind(tid)
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -352,6 +358,7 @@ pub async fn findings_import_parsed(
             cvss: item.get("cvss").and_then(|v| v.parse().ok()),
             url,
             target: item.get("target").cloned().unwrap_or_default(),
+            target_id: None,
             description: item.get("description").cloned().unwrap_or_default(),
             steps: String::new(),
             remediation: String::new(),

@@ -77,6 +77,7 @@ interface Finding {
   created_at: number;
   tool?: string;
   title?: string;
+  targetId?: string;
 }
 
 interface FindingsStore {
@@ -356,11 +357,9 @@ export function DashboardPanel() {
     const outScope = targets.filter((t) => t.scope === "out").length;
     const byType: Record<string, number> = {};
     let totalPorts = 0;
-    const techSet = new Set<string>();
     for (const t of targets) {
       byType[t.type] = (byType[t.type] || 0) + 1;
       if (t.ports) totalPorts += t.ports.length;
-      if (t.technologies) t.technologies.forEach((tech) => techSet.add(tech));
     }
 
     const findingsBySev: Record<string, number> = {};
@@ -387,7 +386,7 @@ export function DashboardPanel() {
 
     return {
       inScope, outScope, byType, totalPorts,
-      techCount: techSet.size,
+      techCount: 0,
       findingsBySev, findingsByTool, timeline, openCount,
       vaultByType,
     };

@@ -139,8 +139,8 @@ pub async fn project_export(
     let audit = export_table_as_json(pool, "SELECT row_to_json(t) FROM audit_log t").await?;
     add_json_to_zip(&mut zip, "golish/db/audit_log.json", &audit, &mut count)?;
 
-    let topo = export_table_as_json(pool, "SELECT row_to_json(t) FROM topology_scans t").await?;
-    add_json_to_zip(&mut zip, "golish/db/topology_scans.json", &topo, &mut count)?;
+    let topo = export_table_as_json(pool, "SELECT row_to_json(t) FROM sitemap_store t").await?;
+    add_json_to_zip(&mut zip, "golish/db/sitemap_store.json", &topo, &mut count)?;
 
     let meth = export_table_as_json(pool, "SELECT row_to_json(t) FROM methodology_projects t").await?;
     add_json_to_zip(&mut zip, "golish/db/methodology_projects.json", &meth, &mut count)?;
@@ -268,7 +268,7 @@ pub async fn project_import(
         ("golish/db/vault_entries.json", "vault_entries"),
         ("golish/db/notes.json", "notes"),
         ("golish/db/audit_log.json", "audit_log"),
-        ("golish/db/topology_scans.json", "topology_scans"),
+        ("golish/db/sitemap_store.json", "sitemap_store"),
         ("golish/db/methodology_projects.json", "methodology_projects"),
         ("golish/db/pipelines.json", "pipelines"),
         ("golish/db/recordings.json", "recordings"),
@@ -294,7 +294,7 @@ pub async fn project_import(
                 "targets" => result.has_targets = true,
                 "findings" => result.has_findings = true,
                 "vault_entries" => result.has_vault = true,
-                "topology_scans" => result.has_topology = true,
+                "sitemap_store" => result.has_topology = true,
                 "methodology_projects" => result.has_methodology = true,
                 "recordings" => result.has_recordings = true,
                 _ => {}

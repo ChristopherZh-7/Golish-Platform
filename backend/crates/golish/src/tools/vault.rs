@@ -178,7 +178,7 @@ pub async fn vault_list(
     let pool = state.db_pool_ready().await?;
     let rows: Vec<VaultRow> = sqlx::query_as(
         "SELECT id, name, entry_type::TEXT, username, notes, project, tags, status, source_url, last_validated_at, created_at, updated_at \
-         FROM vault_entries WHERE project_path IS NOT DISTINCT FROM $1 OR project_path IS NULL ORDER BY created_at DESC",
+         FROM vault_entries WHERE project_path = $1 ORDER BY created_at DESC",
     )
     .bind(project_path.as_deref())
     .fetch_all(pool)
@@ -447,7 +447,7 @@ pub async fn vault_resolve(
         .await
     } else {
         sqlx::query_scalar(
-            "SELECT value FROM vault_entries WHERE (name=$1 OR id::TEXT=$1) AND project_path IS NULL",
+            "SELECT value FROM vault_entries WHERE (name=$1 OR id::TEXT=$1) AND project_path = ''",
         )
         .bind(name)
         .fetch_one(pool)

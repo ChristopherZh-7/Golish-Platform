@@ -33,7 +33,7 @@ pub async fn custom_rules_list(
     let pool = state.db_pool_ready().await?;
     let rows: Vec<(String, String, String, String, String, bool)> = sqlx::query_as(
         "SELECT id, name, pattern, scope, severity, enabled \
-         FROM custom_passive_rules WHERE project_path IS NOT DISTINCT FROM $1 \
+         FROM custom_passive_rules WHERE project_path = $1 \
          ORDER BY created_at ASC",
     )
     .bind(project_path.as_deref())
@@ -93,7 +93,7 @@ pub async fn custom_rules_save_all(
 ) -> Result<(), String> {
     let pool = state.db_pool_ready().await?;
 
-    sqlx::query("DELETE FROM custom_passive_rules WHERE project_path IS NOT DISTINCT FROM $1")
+    sqlx::query("DELETE FROM custom_passive_rules WHERE project_path = $1")
         .bind(project_path.as_deref())
         .execute(pool)
         .await

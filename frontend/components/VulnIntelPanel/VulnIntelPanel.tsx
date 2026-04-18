@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AlertTriangle,
@@ -27,6 +27,7 @@ import {
   MessageSquare,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { CustomSelect } from "@/components/ui/custom-select";
 import { getProjectPath } from "@/lib/projects";
 import { useTranslation } from "react-i18next";
 import { useStore } from "@/store";
@@ -145,6 +146,7 @@ type ViewMode = "feed" | "matched" | "feeds-config";
 type DetailTab = "intel" | "wiki" | "poc" | "history" | "research";
 type FilterMode = "all" | "has-poc" | "has-wiki" | "no-poc";
 type SeverityFilter = "all" | "critical" | "high" | "medium" | "low" | "info";
+type SourceFilter = "all" | "cve" | "cnvd" | "other";
 type TopTab = "intel" | "wiki" | "poc-library";
 
 import { lazy, Suspense } from "react";
@@ -170,6 +172,7 @@ export function VulnIntelPanel() {
   const [vulnLinks, setVulnLinks] = useState<Record<string, VulnLink>>({});
   const [filterMode, setFilterMode] = useState<FilterMode>("all");
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>("all");
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
 
   // Load all vuln links from PostgreSQL on mount
   useEffect(() => {
@@ -358,6 +361,17 @@ export function VulnIntelPanel() {
 
   const displayEntries = useMemo(() => {
     let filtered = baseEntries;
+    if (sourceFilter !== "all") {
+      filtered = filtered.filter((e) => {
+        const id = (e.cve_id || "").toUpperCase();
+        switch (sourceFilter) {
+          case "cve": return id.startsWith("CVE-");
+          case "cnvd": return id.startsWith("CNVD-") || id.startsWith("CNNVD-");
+          case "other": return !id.startsWith("CVE-") && !id.startsWith("CNVD-") && !id.startsWith("CNNVD-");
+          default: return true;
+        }
+      });
+    }
     if (severityFilter !== "all") {
       filtered = filtered.filter((e) => (e.severity || "").toLowerCase() === severityFilter);
     }
@@ -373,7 +387,12 @@ export function VulnIntelPanel() {
       });
     }
     return filtered;
-  }, [baseEntries, filterMode, severityFilter, vulnLinks]);
+  }, [baseEntries, filterMode, severityFilter, sourceFilter, vulnLinks]);
+
+  const INTEL_PAGE = 200;
+  const [intelDisplayCount, setIntelDisplayCount] = useState(INTEL_PAGE);
+  useEffect(() => { setIntelDisplayCount(INTEL_PAGE); }, [displayEntries]);
+  const displayedEntries = useMemo(() => displayEntries.slice(0, intelDisplayCount), [displayEntries, intelDisplayCount]);
 
   const pocCount = useMemo(() => Object.values(vulnLinks).reduce((acc, l) => acc + l.pocTemplates.length, 0), [vulnLinks]);
   const wikiCount = useMemo(() => Object.values(vulnLinks).reduce((acc, l) => acc + l.wikiPaths.length, 0), [vulnLinks]);
@@ -390,38 +409,48 @@ export function VulnIntelPanel() {
     return counts;
   }, [displayEntries]);
 
+  const sourceStats = useMemo(() => {
+    let cve = 0, cnvd = 0, other = 0;
+    for (const e of baseEntries) {
+      const id = (e.cve_id || "").toUpperCase();
+      if (id.startsWith("CVE-")) cve++;
+      else if (id.startsWith("CNVD-") || id.startsWith("CNNVD-")) cnvd++;
+      else other++;
+    }
+    return { cve, cnvd, other };
+  }, [baseEntries]);
+
   const selectedEntry = useMemo(
     () => displayEntries.find((e) => e.cve_id === expandedCve) || null,
     [displayEntries, expandedCve]
   );
 
-  if (topTab === "wiki") {
-    return (
-      <div className="h-full flex flex-col bg-background/95">
-        <VulnKbTopBar activeTab={topTab} onTabChange={setTopTab} />
-        <div className="flex-1 overflow-hidden min-h-0">
-          <Suspense fallback={<div className="h-full flex items-center justify-center"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground/30" /></div>}>
-            <WikiPanelEmbed initialPath={wikiOpenPath} />
-          </Suspense>
-        </div>
-      </div>
-    );
-  }
-
-  if (topTab === "poc-library") {
-    return (
-      <div className="h-full flex flex-col bg-background/95">
-        <VulnKbTopBar activeTab={topTab} onTabChange={setTopTab} />
-        <div className="flex-1 overflow-hidden min-h-0">
-          <PocLibraryView vulnLinks={vulnLinksForPocLib} onLinksChange={setVulnLinksForPocLib} onJumpToCve={handleJumpToCve} />
-        </div>
-      </div>
-    );
-  }
+  const [visitedTabs] = useState(() => new Set<TopTab>(["intel"]));
+  if (!visitedTabs.has(topTab)) visitedTabs.add(topTab);
 
   return (
     <div className="h-full flex flex-col bg-background/95">
       <VulnKbTopBar activeTab={topTab} onTabChange={setTopTab} />
+
+      {/* Wiki view - lazy mounted, hidden when not active */}
+      {visitedTabs.has("wiki") && (
+        <div className={cn("flex-1 overflow-hidden min-h-0", topTab !== "wiki" && "hidden")}>
+          <Suspense fallback={<div className="h-full flex items-center justify-center"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground/30" /></div>}>
+            <WikiPanelEmbed initialPath={wikiOpenPath} />
+          </Suspense>
+        </div>
+      )}
+
+      {/* PocLibraryView - lazy mounted, hidden when not active */}
+      {visitedTabs.has("poc-library") && (
+        <div className={cn("flex-1 overflow-hidden min-h-0", topTab !== "poc-library" && "hidden")}>
+          <PocLibraryView vulnLinks={vulnLinksForPocLib} onLinksChange={setVulnLinksForPocLib} onJumpToCve={handleJumpToCve} />
+        </div>
+      )}
+
+      {/* Intel content - hidden when wiki or poc-library active */}
+      <div className={cn(topTab !== "intel" && "hidden")}>
+        <>
 
       {/* Stats overview bar */}
       <div className="flex items-center gap-3 px-3 py-1.5 border-b border-border/15 flex-shrink-0">
@@ -440,6 +469,10 @@ export function VulnIntelPanel() {
         <div className="w-px h-3 bg-border/15" />
         <span className="text-[8px] text-muted-foreground/30">
           {pocCount} PoC · {wikiCount} Wiki
+        </span>
+        <div className="w-px h-3 bg-border/15" />
+        <span className="text-[8px] text-muted-foreground/30">
+          {sourceStats.cve} CVE · {sourceStats.cnvd} CNVD{sourceStats.other > 0 ? ` · ${sourceStats.other} other` : ""}
         </span>
         {displayEntries.length > 0 && (
           <>
@@ -476,29 +509,46 @@ export function VulnIntelPanel() {
 
         <div className="w-px h-3.5 bg-border/15 mx-1" />
 
-        <select
+        <CustomSelect
           value={severityFilter}
-          onChange={(e) => setSeverityFilter(e.target.value as SeverityFilter)}
-          className="text-[9px] px-1.5 py-0.5 rounded bg-transparent border border-border/15 text-muted-foreground/50 outline-none cursor-pointer"
-        >
-          <option value="all">{t("vulnIntel.severityAll", "All Severity")}</option>
-          <option value="critical">{t("vulnIntel.severityCritical", "Critical")}</option>
-          <option value="high">{t("vulnIntel.severityHigh", "High")}</option>
-          <option value="medium">{t("vulnIntel.severityMedium", "Medium")}</option>
-          <option value="low">{t("vulnIntel.severityLow", "Low")}</option>
-          <option value="info">{t("vulnIntel.severityInfo", "Info")}</option>
-        </select>
+          onChange={(v) => setSeverityFilter(v as SeverityFilter)}
+          options={[
+            { value: "all", label: t("vulnIntel.severityAll", "All Severity") },
+            { value: "critical", label: t("vulnIntel.severityCritical", "Critical") },
+            { value: "high", label: t("vulnIntel.severityHigh", "High") },
+            { value: "medium", label: t("vulnIntel.severityMedium", "Medium") },
+            { value: "low", label: t("vulnIntel.severityLow", "Low") },
+            { value: "info", label: t("vulnIntel.severityInfo", "Info") },
+          ]}
+          size="xs"
+          className="min-w-[80px]"
+        />
 
-        <select
+        <CustomSelect
           value={filterMode}
-          onChange={(e) => setFilterMode(e.target.value as FilterMode)}
-          className="text-[9px] px-1.5 py-0.5 rounded bg-transparent border border-border/15 text-muted-foreground/50 outline-none cursor-pointer"
-        >
-          <option value="all">{t("vulnIntel.filterAll", "All")}</option>
-          <option value="has-poc">{t("vulnIntel.filterHasPoc", "Has PoC")}</option>
-          <option value="has-wiki">{t("vulnIntel.filterHasWiki", "Has Wiki")}</option>
-          <option value="no-poc">{t("vulnIntel.filterNoPoc", "No PoC")}</option>
-        </select>
+          onChange={(v) => setFilterMode(v as FilterMode)}
+          options={[
+            { value: "all", label: t("vulnIntel.filterAll", "All") },
+            { value: "has-poc", label: t("vulnIntel.filterHasPoc", "Has PoC") },
+            { value: "has-wiki", label: t("vulnIntel.filterHasWiki", "Has Wiki") },
+            { value: "no-poc", label: t("vulnIntel.filterNoPoc", "No PoC") },
+          ]}
+          size="xs"
+          className="min-w-[60px]"
+        />
+
+        <CustomSelect
+          value={sourceFilter}
+          onChange={(v) => setSourceFilter(v as SourceFilter)}
+          options={[
+            { value: "all", label: t("vulnIntel.sourceAll", "All Sources") },
+            { value: "cve", label: "CVE" },
+            { value: "cnvd", label: "CNVD / CNNVD" },
+            { value: "other", label: t("vulnIntel.sourceOther", "Other") },
+          ]}
+          size="xs"
+          className="min-w-[80px]"
+        />
 
         <div className="flex-1" />
         <div className="relative" ref={searchHistoryRef}>
@@ -608,16 +658,17 @@ export function VulnIntelPanel() {
                 placeholder="Feed name..."
                 className="w-full text-[10px] px-2 py-1 bg-background border border-border/30 rounded outline-none"
               />
-              <select
+              <CustomSelect
                 value={newFeed.feed_type}
-                onChange={(e) => setNewFeed((f) => ({ ...f, feed_type: e.target.value }))}
-                className="w-full text-[10px] px-2 py-1 bg-background border border-border/30 rounded outline-none"
-              >
-                <option value="rss">RSS / Atom Feed</option>
-                <option value="nvd">NVD API</option>
-                <option value="cisa_kev">CISA KEV</option>
-                <option value="custom">Custom JSON</option>
-              </select>
+                onChange={(v) => setNewFeed((f) => ({ ...f, feed_type: v }))}
+                options={[
+                  { value: "rss", label: "RSS / Atom Feed" },
+                  { value: "nvd", label: "NVD API" },
+                  { value: "cisa_kev", label: "CISA KEV" },
+                  { value: "custom", label: "Custom JSON" },
+                ]}
+                size="sm"
+              />
               <input
                 value={newFeed.url}
                 onChange={(e) => setNewFeed((f) => ({ ...f, url: e.target.value }))}
@@ -656,7 +707,8 @@ export function VulnIntelPanel() {
                   {loading ? t("vulnIntel.fetching", "Fetching vulnerability data...") : viewMode === "matched" ? t("vulnIntel.noMatched", "No matched vulnerabilities") : t("vulnIntel.clickRefresh", "Click refresh to fetch latest CVEs")}
                 </div>
               ) : (
-                displayEntries.map((entry) => {
+                <>
+                {displayedEntries.map((entry) => {
                   const isSelected = expandedCve === entry.cve_id;
                   const link = vulnLinks[entry.cve_id];
                   const hasPoc = link && link.pocTemplates.length > 0;
@@ -700,7 +752,16 @@ export function VulnIntelPanel() {
                       </div>
                     </div>
                   );
-                })
+                })}
+                {intelDisplayCount < displayEntries.length && (
+                  <button
+                    onClick={() => setIntelDisplayCount((c) => c + INTEL_PAGE)}
+                    className="w-full py-2 mt-1 text-[10px] text-accent/60 hover:text-accent hover:bg-accent/5 rounded transition-colors"
+                  >
+                    Show more ({displayEntries.length - intelDisplayCount} remaining)
+                  </button>
+                )}
+                </>
               )}
               {displayEntries.length >= 10 && !loading && (
                 <button
@@ -734,6 +795,8 @@ export function VulnIntelPanel() {
           )}
         </div>
       )}
+        </>
+      </div>
     </div>
   );
 }
@@ -2517,21 +2580,27 @@ int main(int argc, char *argv[]) {
               placeholder={t("vulnIntel.pocName", "PoC name...")}
               className="flex-1 h-6 px-2 text-[10px] bg-[var(--bg-hover)]/30 rounded border border-border/15 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40"
             />
-            <select value={formType} onChange={(e) => handleTypeChange(e.target.value as PocTemplate["type"])}
-              className="h-6 px-1.5 text-[9px] bg-[var(--bg-hover)]/30 rounded border border-border/15 text-foreground outline-none">
-              <option value="nuclei">Nuclei YAML</option>
-              <option value="script">Script</option>
-              <option value="manual">Manual</option>
-            </select>
+            <CustomSelect value={formType} onChange={(v) => handleTypeChange(v as PocTemplate["type"])}
+              options={[
+                { value: "nuclei", label: "Nuclei YAML" },
+                { value: "script", label: "Script" },
+                { value: "manual", label: "Manual" },
+              ]}
+              size="xs"
+              className="min-w-[70px]"
+            />
             {formType === "script" && (
-              <select value={formLang} onChange={(e) => handleLangChange(e.target.value)}
-                className="h-6 px-1.5 text-[9px] bg-[var(--bg-hover)]/30 rounded border border-border/15 text-foreground outline-none">
-                <option value="python">Python</option>
-                <option value="bash">Bash</option>
-                <option value="go">Go</option>
-                <option value="c">C</option>
-                <option value="javascript">JS</option>
-              </select>
+              <CustomSelect value={formLang} onChange={handleLangChange}
+                options={[
+                  { value: "python", label: "Python" },
+                  { value: "bash", label: "Bash" },
+                  { value: "go", label: "Go" },
+                  { value: "c", label: "C" },
+                  { value: "javascript", label: "JS" },
+                ]}
+                size="xs"
+                className="min-w-[60px]"
+              />
             )}
           </div>
           <textarea
@@ -2804,16 +2873,18 @@ interface NucleiDiscoverResult {
   errors: number;
 }
 
-function PocLibraryView({ vulnLinks, onLinksChange, onJumpToCve }: { vulnLinks: Record<string, VulnLink>; onLinksChange: (links: Record<string, VulnLink>) => void; onJumpToCve?: (cveId: string) => void }) {
+let _discoverState = { searching: false, progress: "", found: 0 };
+
+const PocLibraryView = memo(function PocLibraryView({ vulnLinks, onLinksChange, onJumpToCve }: { vulnLinks: Record<string, VulnLink>; onLinksChange: (links: Record<string, VulnLink>) => void; onJumpToCve?: (cveId: string) => void }) {
   const { t } = useTranslation();
   const [search, setSearch] = useState("");
   const [expandedPoc, setExpandedPoc] = useState<string | null>(null);
   const [filterType, setFilterType] = useState<"all" | "nuclei" | "script" | "manual">("all");
   const [runTarget, setRunTarget] = useState<{ cveId: string; poc: PocTemplate } | null>(null);
   const [targetUrl, setTargetUrl] = useState("");
-  const [batchSearching, setBatchSearching] = useState(false);
-  const [batchProgress, setBatchProgress] = useState("");
-  const [batchFound, setBatchFound] = useState(0);
+  const [batchSearching, setBatchSearching] = useState(_discoverState.searching);
+  const [batchProgress, setBatchProgress] = useState(_discoverState.progress);
+  const [batchFound, setBatchFound] = useState(_discoverState.found);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -2822,31 +2893,39 @@ function PocLibraryView({ vulnLinks, onLinksChange, onJumpToCve }: { vulnLinks: 
         "nuclei-discover-progress",
         (e) => {
           const { phase, current, total, cve_id } = e.payload;
+          let msg = "";
           if (phase === "listing") {
-            setBatchProgress("Fetching nuclei-templates file tree...");
+            msg = "Fetching nuclei-templates file tree...";
+          } else if (phase === "listing_fallback") {
+            msg = `Scanning directories: ${current}/${total}${cve_id ? ` — ${cve_id}` : ""}`;
           } else if (phase === "downloading") {
             const pct = total > 0 ? Math.round((current / total) * 100) : 0;
-            setBatchProgress(`Downloading templates: ${current}/${total} (${pct}%)${cve_id ? ` — ${cve_id}` : ""}`);
+            msg = `Downloading templates: ${current}/${total} (${pct}%)${cve_id ? ` — ${cve_id}` : ""}`;
           } else if (phase === "done") {
-            setBatchProgress(`Finished processing ${total} template files.`);
+            msg = `Finished processing ${total} template files.`;
           }
+          _discoverState.progress = msg;
+          setBatchProgress(msg);
         }
       ).then((fn) => { unlisten = fn; });
     });
     return () => { unlisten?.(); };
   }, []);
 
+  const setSearchingPersist = useCallback((v: boolean) => { _discoverState.searching = v; setBatchSearching(v); }, []);
+  const setProgressPersist = useCallback((v: string) => { _discoverState.progress = v; setBatchProgress(v); }, []);
+  const setFoundPersist = useCallback((v: number) => { _discoverState.found = v; setBatchFound(v); }, []);
+
   const batchSearchNuclei = useCallback(async () => {
-    setBatchSearching(true);
-    setBatchFound(0);
-    setBatchProgress("Starting full Nuclei template discovery...");
+    setSearchingPersist(true);
+    setFoundPersist(0);
+    setProgressPersist("Starting full Nuclei template discovery...");
     try {
       const result = await invoke<NucleiDiscoverResult>("intel_discover_all_nuclei");
-      setBatchFound(result.imported);
-      setBatchProgress(
+      setFoundPersist(result.imported);
+      setProgressPersist(
         `Done: ${result.imported} imported, ${result.skipped} skipped, ${result.errors} errors — ${result.total_cves} unique CVEs from ${result.total_files} files`
       );
-      // Refresh vuln links from DB to pick up all newly created CVE entries
       try {
         const allLinks = await invoke<Record<string, DbVulnLinkFull>>("vuln_link_get_all");
         const converted: Record<string, VulnLink> = {};
@@ -2856,10 +2935,10 @@ function PocLibraryView({ vulnLinks, onLinksChange, onJumpToCve }: { vulnLinks: 
         onLinksChange(converted);
       } catch { /* refresh failed, user can reload */ }
     } catch (e) {
-      setBatchProgress(`Error: ${String(e)}`);
+      setProgressPersist(`Error: ${String(e)}`);
     }
-    setBatchSearching(false);
-  }, [onLinksChange]);
+    setSearchingPersist(false);
+  }, [onLinksChange, setSearchingPersist, setProgressPersist, setFoundPersist]);
 
   const allPocs = useMemo(() => {
     const result: { cveId: string; poc: PocTemplate }[] = [];
@@ -2876,10 +2955,20 @@ function PocLibraryView({ vulnLinks, onLinksChange, onJumpToCve }: { vulnLinks: 
     if (filterType !== "all") items = items.filter((p) => p.poc.type === filterType);
     if (search.trim()) {
       const q = search.toLowerCase();
-      items = items.filter((p) => p.poc.name.toLowerCase().includes(q) || p.cveId.toLowerCase().includes(q) || p.poc.content.toLowerCase().includes(q));
+      items = items.filter((p) =>
+        p.poc.name.toLowerCase().includes(q)
+        || p.cveId.toLowerCase().includes(q)
+        || p.poc.tags?.some((tag) => tag.toLowerCase().includes(q))
+        || p.poc.description?.toLowerCase().includes(q),
+      );
     }
     return items;
   }, [allPocs, filterType, search]);
+
+  const PAGE_SIZE = 100;
+  const [displayCount, setDisplayCount] = useState(PAGE_SIZE);
+  useEffect(() => { setDisplayCount(PAGE_SIZE); }, [filtered]);
+  const displayedPocs = useMemo(() => filtered.slice(0, displayCount), [filtered, displayCount]);
 
   const handleDeletePoc = useCallback((cveId: string, pocId: string) => {
     const next = { ...vulnLinks };
@@ -2937,16 +3026,18 @@ function PocLibraryView({ vulnLinks, onLinksChange, onJumpToCve }: { vulnLinks: 
             className="w-full h-7 pl-8 pr-3 text-[11px] bg-[var(--bg-hover)]/30 rounded-lg border border-border/15 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40 transition-colors"
           />
         </div>
-        <select
+        <CustomSelect
           value={filterType}
-          onChange={(e) => setFilterType(e.target.value as typeof filterType)}
-          className="h-7 px-2 text-[10px] bg-[var(--bg-hover)]/30 rounded-lg border border-border/15 text-foreground outline-none"
-        >
-          <option value="all">{t("vulnKb.allTypes", "All Types")}</option>
-          <option value="nuclei">Nuclei</option>
-          <option value="script">Script</option>
-          <option value="manual">Manual</option>
-        </select>
+          onChange={(v) => setFilterType(v as typeof filterType)}
+          options={[
+            { value: "all", label: t("vulnKb.allTypes", "All Types") },
+            { value: "nuclei", label: "Nuclei" },
+            { value: "script", label: "Script" },
+            { value: "manual", label: "Manual" },
+          ]}
+          size="sm"
+          className="min-w-[80px]"
+        />
         <button
           onClick={batchSearchNuclei}
           disabled={batchSearching}
@@ -2987,7 +3078,7 @@ function PocLibraryView({ vulnLinks, onLinksChange, onJumpToCve }: { vulnLinks: 
           </div>
         ) : (
           <div className="divide-y divide-border/5">
-            {filtered.map(({ cveId, poc }) => (
+            {displayedPocs.map(({ cveId, poc }) => (
               <div key={poc.id} className="group">
                 <div
                   className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-[var(--bg-hover)]/30 transition-colors"
@@ -3034,6 +3125,14 @@ function PocLibraryView({ vulnLinks, onLinksChange, onJumpToCve }: { vulnLinks: 
                 )}
               </div>
             ))}
+            {displayCount < filtered.length && (
+              <button
+                onClick={() => setDisplayCount((c) => c + PAGE_SIZE)}
+                className="w-full py-2.5 text-[10px] text-accent/60 hover:text-accent hover:bg-accent/5 transition-colors"
+              >
+                Show more ({filtered.length - displayCount} remaining)
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -3078,4 +3177,4 @@ function PocLibraryView({ vulnLinks, onLinksChange, onJumpToCve }: { vulnLinks: 
       )}
     </div>
   );
-}
+});

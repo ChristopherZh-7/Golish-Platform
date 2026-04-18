@@ -33,7 +33,7 @@ pub async fn scan_queue_list(
     let rows: Vec<(String, String, Option<String>, i32, String, serde_json::Value, i64)> =
         sqlx::query_as(
             "SELECT id::text, url, scan_id, progress, status, alerts, added_at \
-             FROM scan_queue WHERE project_path IS NOT DISTINCT FROM $1 \
+             FROM scan_queue WHERE project_path = $1 \
              ORDER BY added_at ASC",
         )
         .bind(project_path.as_deref())
@@ -102,7 +102,7 @@ pub async fn scan_queue_save_all(
     let pool = state.db_pool_ready().await?;
 
     // Delete existing entries for this project, then re-insert
-    sqlx::query("DELETE FROM scan_queue WHERE project_path IS NOT DISTINCT FROM $1")
+    sqlx::query("DELETE FROM scan_queue WHERE project_path = $1")
         .bind(project_path.as_deref())
         .execute(pool)
         .await
@@ -143,7 +143,7 @@ pub async fn scan_queue_remove(
 ) -> Result<(), String> {
     let pool = state.db_pool_ready().await?;
     sqlx::query(
-        "DELETE FROM scan_queue WHERE url = $1 AND project_path IS NOT DISTINCT FROM $2",
+        "DELETE FROM scan_queue WHERE url = $1 AND project_path = $2",
     )
     .bind(&url)
     .bind(project_path.as_deref())
@@ -160,7 +160,7 @@ pub async fn scan_queue_clear_completed(
 ) -> Result<(), String> {
     let pool = state.db_pool_ready().await?;
     sqlx::query(
-        "DELETE FROM scan_queue WHERE status = 'complete' AND project_path IS NOT DISTINCT FROM $1",
+        "DELETE FROM scan_queue WHERE status = 'complete' AND project_path = $1",
     )
     .bind(project_path.as_deref())
     .execute(pool)

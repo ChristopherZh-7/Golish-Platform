@@ -224,7 +224,7 @@ pub async fn method_list_projects(
 ) -> Result<Vec<ProjectMethodology>, String> {
     let pool = state.db_pool_ready().await?;
     let rows: Vec<serde_json::Value> = sqlx::query_scalar(
-        "SELECT data FROM methodology_projects WHERE project_path IS NOT DISTINCT FROM $1 ORDER BY updated_at DESC",
+        "SELECT data FROM methodology_projects WHERE project_path = $1 ORDER BY updated_at DESC",
     )
     .bind(project_path.as_deref())
     .fetch_all(pool)
