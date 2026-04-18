@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
+import { CustomSelect } from "@/components/ui/custom-select";
 import { getProjectPath } from "@/lib/projects";
 import {
   ChevronDown,
@@ -12,6 +13,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   X,
+  XCircle,
   Clock,
   SkipForward,
   Copy,
@@ -390,6 +392,18 @@ export function PipelineLauncher({ targetId, targetValue }: PipelineLauncherProp
         return;
       }
 
+      if (p.status === "cancelled") {
+        setRunning(false);
+        setProgress(null);
+        setSteps((prev) => prev.map((s) =>
+          s.status === "running" || s.status === "pending"
+            ? { ...s, status: "skipped" as const, message: "Cancelled" }
+            : s,
+        ));
+        setSummary({ total_stored: 0, success: false });
+        return;
+      }
+
       if (p.status === "completed" || p.status === "error") {
         setSteps((prev) => {
           const next = ensureLength(prev, p.step_index, p.tool_name);
@@ -437,6 +451,10 @@ export function PipelineLauncher({ targetId, targetValue }: PipelineLauncherProp
     setProgress(null);
   }, [selected, targetValue, running]);
 
+  const cancelPipeline = useCallback(async () => {
+    try { await invoke("pipeline_cancel"); } catch { /* ignore */ }
+  }, []);
+
   const hasResults = steps.length > 0;
 
   return (
@@ -483,37 +501,39 @@ export function PipelineLauncher({ targetId, targetValue }: PipelineLauncherProp
         <div className="border-t border-zinc-700/20 px-3 py-2.5 space-y-2">
           {/* Pipeline selector + run button */}
           <div className="flex items-center gap-2">
-            <select
+            <CustomSelect
               value={selected?.id ?? ""}
-              onChange={(e) => {
-                const p = pipelines.find((pp) => pp.id === e.target.value);
+              onChange={(v) => {
+                const p = pipelines.find((pp) => pp.id === v);
                 if (p) setSelected(p);
               }}
-              className="flex-1 px-2 py-1.5 text-[11px] rounded-md bg-zinc-800/60 border border-zinc-700/40 text-foreground/90 outline-none hover:border-zinc-600/50 transition-colors"
-            >
-              {pipelines.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} ({p.steps.length} steps)
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              disabled={!selected || running}
-              onClick={runPipeline}
-              className={cn(
-                "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-semibold transition-colors",
-                !selected || running
-                  ? "bg-zinc-800/40 text-zinc-600 cursor-not-allowed"
-                  : "bg-blue-500/15 text-blue-300 hover:bg-blue-500/25 border border-blue-500/25",
-              )}
-            >
-              {running ? (
-                <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Running</>
-              ) : (
-                <><Play className="w-3.5 h-3.5" /> Run</>
-              )}
-            </button>
+              options={pipelines.map((p) => ({ value: p.id, label: `${p.name} (${p.steps.length} steps)` }))}
+              className="flex-1"
+              size="sm"
+            />
+            {running ? (
+              <button
+                type="button"
+                onClick={cancelPipeline}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-semibold transition-colors text-red-400 hover:bg-red-500/10 border border-red-500/20"
+              >
+                <XCircle className="w-3.5 h-3.5" /> Cancel
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={!selected}
+                onClick={runPipeline}
+                className={cn(
+                  "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-semibold transition-colors",
+                  !selected
+                    ? "bg-zinc-800/40 text-zinc-600 cursor-not-allowed"
+                    : "bg-blue-500/15 text-blue-300 hover:bg-blue-500/25 border border-blue-500/25",
+                )}
+              >
+                <Play className="w-3.5 h-3.5" /> Run
+              </button>
+            )}
           </div>
 
           {/* Step rows or preview */}

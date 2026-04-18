@@ -56,7 +56,7 @@ pub async fn notes_list(
            FROM notes
            WHERE ($1::text IS NULL OR entity_type = $1)
              AND ($2::text IS NULL OR entity_id = $2)
-             AND project_path IS NOT DISTINCT FROM $3
+             AND project_path = $3
            ORDER BY created_at DESC"#,
     )
     .bind(entity_type.as_deref())

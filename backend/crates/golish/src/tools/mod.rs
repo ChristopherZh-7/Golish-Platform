@@ -78,3 +78,6 @@ pub mod security_analysis;
 
 // Scan runner (WhatWeb, Nuclei targeted, feroxbuster)
 pub mod scan_runner;
+
+// Sensitive file scanner (directory-level probing)
+pub mod sensitive_scan;

@@ -1,8 +1,17 @@
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 use uuid::Uuid;
 
 use crate::state::AppState;
+
+static PIPELINE_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+pub async fn pipeline_cancel() -> Result<(), String> {
+    PIPELINE_CANCELLED.store(true, Ordering::SeqCst);
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineStep {
@@ -98,7 +107,7 @@ async fn resolve_port_targets(
 ) -> Vec<String> {
     let ports_json: Option<serde_json::Value> = sqlx::query_scalar(
         r#"SELECT ports FROM targets
-           WHERE value = $1 AND ($2::text IS NULL OR project_path = $2 OR project_path IS NULL)
+           WHERE value = $1 AND project_path = $2
            LIMIT 1"#,
     )
     .bind(target)
@@ -253,7 +262,7 @@ pub async fn pipeline_list(
 ) -> Result<Vec<Pipeline>, String> {
     let pool = state.db_pool_ready().await?;
     let rows: Vec<serde_json::Value> = sqlx::query_scalar(
-        "SELECT data FROM pipelines WHERE project_path IS NOT DISTINCT FROM $1 ORDER BY updated_at DESC",
+        "SELECT data FROM pipelines WHERE project_path = $1 ORDER BY updated_at DESC",
     )
     .bind(project_path.as_deref())
     .fetch_all(pool)
@@ -505,7 +514,7 @@ pub async fn pipeline_execute(
     std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
 
     let parent_target_id: Option<Uuid> = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM targets WHERE value = $1 AND project_path IS NOT DISTINCT FROM $2 LIMIT 1",
+        "SELECT id FROM targets WHERE value = $1 AND project_path = $2 LIMIT 1",
     )
     .bind(&target)
     .bind(project_path.as_deref())
@@ -543,8 +552,29 @@ pub async fn pipeline_execute(
     // Map step_id → output file path for input_from references
     let mut step_outputs: std::collections::HashMap<String, std::path::PathBuf> = std::collections::HashMap::new();
     let mut prev_output_file: Option<std::path::PathBuf> = None;
+    PIPELINE_CANCELLED.store(false, Ordering::SeqCst);
 
     for (idx, step) in pipeline.steps.iter().enumerate() {
+        if PIPELINE_CANCELLED.load(Ordering::SeqCst) {
+            let _ = app.emit("pipeline-event", PipelineEvent {
+                pipeline_id: pipeline_id.clone(),
+                run_id: run_id.clone(),
+                step_id: String::new(),
+                step_index: idx,
+                total_steps,
+                status: "cancelled".to_string(),
+                tool_name: String::new(),
+                message: Some("Pipeline cancelled by user".to_string()),
+                store_stats: None,
+                pipeline_name: None,
+                target: Some(target.to_string()),
+                all_steps: None,
+                output: None,
+                duration_ms: None,
+                exit_code: None,
+            });
+            return Err("Pipeline cancelled".to_string());
+        }
         // Skip step if target type doesn't match the requires condition
         if let Some(ref req) = step.requires {
             if req != target_type {
@@ -632,6 +662,7 @@ pub async fn pipeline_execute(
         let mut last_cmd_str = String::new();
 
         for iter_target in &iter_targets {
+            if PIPELINE_CANCELLED.load(Ordering::SeqCst) { break; }
             let mut cmd_str = if args_str.is_empty() {
                 resolved_cmd.clone()
             } else {
@@ -768,7 +799,35 @@ pub async fn pipeline_execute(
             let iter_stdout = stdout_result.unwrap_or_default();
             let iter_stderr = stderr_result.unwrap_or_default();
 
-            let status = child.wait().await.map_err(|e| format!("wait failed: {e}"))?;
+            let status = tokio::select! {
+                res = child.wait() => res.map_err(|e| format!("wait failed: {e}"))?,
+                _ = async {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                        if PIPELINE_CANCELLED.load(Ordering::SeqCst) { break; }
+                    }
+                } => {
+                    let _ = child.kill().await;
+                    let _ = app.emit("pipeline-event", PipelineEvent {
+                        pipeline_id: pipeline_id.clone(),
+                        run_id: run_id.clone(),
+                        step_id: step.id.clone(),
+                        step_index: idx,
+                        total_steps,
+                        status: "cancelled".to_string(),
+                        tool_name: step.tool_name.clone(),
+                        message: Some("Pipeline cancelled by user".to_string()),
+                        store_stats: None,
+                        pipeline_name: None,
+                        target: Some(target.to_string()),
+                        all_steps: None,
+                        output: None,
+                        duration_ms: None,
+                        exit_code: None,
+                    });
+                    return Err("Pipeline cancelled".to_string());
+                }
+            };
 
             combined_stdout.push_str(&iter_stdout);
             combined_stderr.push_str(&iter_stderr);
@@ -875,7 +934,7 @@ pub async fn pipeline_execute(
                         }
                     };
                     match result {
-                        Ok(()) => { stored_count += 1; new_count += 1; }
+                        Ok(is_new) => { stored_count += 1; if is_new { new_count += 1; } }
                         Err(e) => {
                             tracing::warn!(tool = %step.tool_name, error = %e, "[pipeline-store] Store error");
                             skipped_count += 1;
@@ -1014,7 +1073,7 @@ pub async fn pipeline_execute(
         parent_target_id
     } else {
         sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM targets WHERE value = $1 AND project_path IS NOT DISTINCT FROM $2 LIMIT 1",
+            "SELECT id FROM targets WHERE value = $1 AND project_path = $2 LIMIT 1",
         )
         .bind(&target)
         .bind(project_path.as_deref())
@@ -1085,7 +1144,7 @@ async fn store_target_from_item(
     };
 
     let existed = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM targets WHERE value = $1 AND project_path IS NOT DISTINCT FROM $2)",
+        "SELECT EXISTS(SELECT 1 FROM targets WHERE value = $1 AND project_path = $2)",
     )
     .bind(&hostname)
     .bind(project_path)
@@ -1098,11 +1157,12 @@ async fn store_target_from_item(
     Ok(!existed)
 }
 
+/// Returns `Ok(true)` if a port that didn't previously exist was added.
 async fn store_recon_from_item(
     pool: &sqlx::PgPool,
     item: &ParsedItem,
     project_path: Option<&str>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let host_val = item
         .fields
         .get("host")
@@ -1167,6 +1227,22 @@ async fn store_recon_from_item(
         update.ports = serde_json::json!([port_entry]);
     }
 
+    // Check if the specific port already exists on this target
+    let is_new_port = if let Some(port_str) = item.fields.get("port") {
+        let port_num: i32 = port_str.parse().unwrap_or(0);
+        let proto = item.fields.get("protocol").cloned().unwrap_or_else(|| "tcp".to_string());
+        !sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM targets WHERE id = $1 AND ports @> $2::jsonb)",
+        )
+        .bind(target_uuid)
+        .bind(serde_json::json!([{"port": port_num, "proto": proto}]))
+        .fetch_one(pool)
+        .await
+        .unwrap_or(false)
+    } else {
+        false
+    };
+
     // Still set target-level fields for backward compatibility and summary display.
     if let Some(title) = item.fields.get("title") {
         update.http_title = title.clone();
@@ -1177,25 +1253,29 @@ async fn store_recon_from_item(
     if let Some(ws) = item.fields.get("webserver") {
         update.webserver = ws.clone();
     }
-    if let Some(techs) = item.fields.get("technologies") {
-        if let Ok(arr) = serde_json::from_str::<serde_json::Value>(techs) {
-            update.technologies = arr;
-        } else {
-            let tech_list: Vec<&str> = techs.split(',').map(|s| s.trim()).collect();
-            update.technologies = serde_json::to_value(tech_list).unwrap_or_default();
-        }
-    }
 
-    super::targets::db_target_update_recon_extended(pool, target_uuid, &update).await
+    super::targets::db_target_update_recon_extended(pool, target_uuid, &update).await?;
+    Ok(is_new_port)
 }
 
+/// Returns `Ok(true)` if this is a new directory entry.
 async fn store_dirent_from_item(
     pool: &sqlx::PgPool,
     item: &ParsedItem,
     tool_name: &str,
     project_path: Option<&str>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let url = item.fields.get("url").ok_or("No url field")?;
+
+    let existed = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM directory_entries WHERE url = $1 AND project_path = $2)",
+    )
+    .bind(url)
+    .bind(project_path)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(false);
+
     let status: Option<i32> = item.fields.get("status").and_then(|s| s.parse().ok());
     let size: Option<i32> = item
         .fields
@@ -1217,15 +1297,16 @@ async fn store_dirent_from_item(
         project_path,
     )
     .await?;
-    Ok(())
+    Ok(!existed)
 }
 
+/// Returns `Ok(true)` if this is a new finding (not a duplicate).
 async fn store_finding_from_item(
     pool: &sqlx::PgPool,
     item: &ParsedItem,
     tool_name: &str,
     project_path: Option<&str>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let title = item
         .fields
         .get("title")
@@ -1248,7 +1329,7 @@ async fn store_finding_from_item(
         _ => "info",
     };
 
-    sqlx::query(
+    let result = sqlx::query(
         r#"INSERT INTO findings (title, sev, url, target, description, tool, template, project_path)
            VALUES ($1, $2::severity, $3, $4, $5, $6, $7, $8)
            ON CONFLICT DO NOTHING"#,
@@ -1264,7 +1345,7 @@ async fn store_finding_from_item(
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(result.rows_affected() > 0)
 }
 
 /// Emit a pipeline event to the frontend if an AppHandle is available.
@@ -1302,7 +1383,7 @@ pub async fn execute_pipeline_headless(
     std::fs::create_dir_all(&tmp_dir)?;
 
     let parent_target_id: Option<Uuid> = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM targets WHERE value = $1 AND project_path IS NOT DISTINCT FROM $2 LIMIT 1",
+        "SELECT id FROM targets WHERE value = $1 AND project_path = $2 LIMIT 1",
     )
     .bind(target)
     .bind(project_path)
@@ -1539,7 +1620,7 @@ pub async fn execute_pipeline_headless(
                         _ => { skipped_count += 1; continue; }
                     };
                     match result {
-                        Ok(()) => { stored_count += 1; new_count += 1; }
+                        Ok(is_new) => { stored_count += 1; if is_new { new_count += 1; } }
                         Err(e) => {
                             tracing::warn!(tool = %step.tool_name, error = %e, "[pipeline-store] Store error");
                             skipped_count += 1;
@@ -1647,7 +1728,7 @@ pub async fn execute_pipeline_headless(
         parent_target_id
     } else {
         sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM targets WHERE value = $1 AND project_path IS NOT DISTINCT FROM $2 LIMIT 1",
+            "SELECT id FROM targets WHERE value = $1 AND project_path = $2 LIMIT 1",
         )
         .bind(target)
         .bind(project_path)
@@ -1656,6 +1737,17 @@ pub async fn execute_pipeline_headless(
         .ok()
         .flatten()
     };
+
+    let step_summaries: Vec<serde_json::Value> = step_results.iter().map(|s| {
+        serde_json::json!({
+            "tool": s.tool_name,
+            "stored": s.store_stats.as_ref().map(|st| st.stored_count).unwrap_or(0),
+            "new": s.store_stats.as_ref().map(|st| st.new_count).unwrap_or(0),
+            "parsed": s.store_stats.as_ref().map(|st| st.parsed_count).unwrap_or(0),
+            "exit": s.exit_code,
+            "ms": s.duration_ms,
+        })
+    }).collect();
 
     let _ = golish_db::repo::audit::log_operation(
         pool, "pipeline_executed", "recon",
@@ -1666,12 +1758,15 @@ pub async fn execute_pipeline_headless(
         if failed_steps == 0 { "completed" } else { "partial" },
         &serde_json::json!({
             "pipeline_id": pipeline_id,
+            "run_id": run_id,
+            "target": target,
             "total_steps": total_steps,
             "completed_steps": completed_steps,
             "failed_steps": failed_steps,
             "total_stored": total_stored,
             "total_new": step_results.iter().filter_map(|s| s.store_stats.as_ref()).map(|st| st.new_count).sum::<usize>(),
             "duration_ms": total_duration_ms,
+            "steps": step_summaries,
         }),
     ).await;
 
@@ -1705,7 +1800,7 @@ fn extract_hostname(val: &str) -> String {
     }
 }
 
-/// Merge crawler-discovered URLs into the ZAP sitemap (topology_scans).
+/// Merge crawler-discovered URLs into the ZAP sitemap (sitemap_store).
 /// Only appends entries whose dedup key (method:host:path) doesn't already exist.
 async fn merge_urls_into_sitemap(
     pool: &sqlx::PgPool,
@@ -1716,7 +1811,7 @@ async fn merge_urls_into_sitemap(
     let pp = project_path.filter(|s| !s.is_empty());
 
     let existing: Option<serde_json::Value> = sqlx::query_scalar(
-        "SELECT data FROM topology_scans WHERE name = 'zap-sitemap' AND project_path IS NOT DISTINCT FROM $1",
+        "SELECT data FROM sitemap_store WHERE name = 'zap-sitemap' AND project_path = $1",
     )
     .bind(pp)
     .fetch_optional(pool)
@@ -1779,14 +1874,14 @@ async fn merge_urls_into_sitemap(
     );
 
     let _ = sqlx::query(
-        "DELETE FROM topology_scans WHERE name = 'zap-sitemap' AND project_path IS NOT DISTINCT FROM $1",
+        "DELETE FROM sitemap_store WHERE name = 'zap-sitemap' AND project_path = $1",
     )
     .bind(pp)
     .execute(pool)
     .await;
 
     let _ = sqlx::query(
-        r#"INSERT INTO topology_scans (name, data, project_path)
+        r#"INSERT INTO sitemap_store (name, data, project_path)
            VALUES ('zap-sitemap', $1, $2)"#,
     )
     .bind(&sitemap_data)

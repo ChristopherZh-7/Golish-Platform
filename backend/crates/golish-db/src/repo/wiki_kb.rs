@@ -199,7 +199,13 @@ pub async fn upsert_poc_full(
         r#"INSERT INTO vuln_kb_pocs
                (cve_id, name, poc_type, language, content, source, source_url, severity, description, tags)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-           ON CONFLICT DO NOTHING
+           ON CONFLICT (cve_id, name) DO UPDATE SET
+               content = EXCLUDED.content,
+               severity = EXCLUDED.severity,
+               description = EXCLUDED.description,
+               tags = EXCLUDED.tags,
+               source_url = EXCLUDED.source_url,
+               updated_at = NOW()
            RETURNING *"#,
     )
     .bind(cve_id)

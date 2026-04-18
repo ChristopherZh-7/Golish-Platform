@@ -181,6 +181,7 @@ impl DbTracker {
         let session_uuid = self.session_uuid;
         let stream = stream.to_string();
         let content = truncate_for_db(content, 100_000);
+        let pp = self.project_path.clone().unwrap_or_default();
         let mut gate = self.ready_gate.clone();
 
         tokio::spawn(async move {
@@ -188,12 +189,13 @@ impl DbTracker {
                 return;
             }
             let res = sqlx::query(
-                r#"INSERT INTO terminal_logs (session_id, stream, content)
-                   VALUES ($1, $2::stream_type, $3)"#,
+                r#"INSERT INTO terminal_logs (session_id, stream, content, project_path)
+                   VALUES ($1, $2::stream_type, $3, $4)"#,
             )
             .bind(session_uuid)
             .bind(&stream)
             .bind(&content)
+            .bind(&pp)
             .execute(pool.as_ref())
             .await;
 
@@ -212,6 +214,7 @@ impl DbTracker {
         let engine = engine.to_string();
         let query = query.to_string();
         let result = result.map(|r| truncate_for_db(r, 50_000));
+        let pp = self.project_path.clone().unwrap_or_default();
         let mut gate = self.ready_gate.clone();
 
         tokio::spawn(async move {
@@ -219,13 +222,14 @@ impl DbTracker {
                 return;
             }
             let res = sqlx::query(
-                r#"INSERT INTO search_logs (session_id, initiator, engine, query, result)
-                   VALUES ($1, 'primary'::agent_type, $2, $3, $4)"#,
+                r#"INSERT INTO search_logs (session_id, initiator, engine, query, result, project_path)
+                   VALUES ($1, 'primary'::agent_type, $2, $3, $4, $5)"#,
             )
             .bind(session_uuid)
             .bind(&engine)
             .bind(&query)
             .bind(&result)
+            .bind(&pp)
             .execute(pool.as_ref())
             .await;
 
@@ -604,6 +608,7 @@ impl DbTracker {
         let task = task.to_string();
         let result = result.map(|r| r.to_string());
         let duration_ms = duration_ms as i32;
+        let pp = self.project_path.clone().unwrap_or_default();
         let mut gate = self.ready_gate.clone();
 
         tokio::spawn(async move {
@@ -611,8 +616,8 @@ impl DbTracker {
                 return;
             }
             let res = sqlx::query(
-                r#"INSERT INTO agent_logs (session_id, initiator, executor, task, result, duration_ms)
-                   VALUES ($1, $2::agent_type, $3::agent_type, $4, $5, $6)"#,
+                r#"INSERT INTO agent_logs (session_id, initiator, executor, task, result, duration_ms, project_path)
+                   VALUES ($1, $2::agent_type, $3::agent_type, $4, $5, $6, $7)"#,
             )
             .bind(session_uuid)
             .bind(&initiator)
@@ -620,6 +625,7 @@ impl DbTracker {
             .bind(&task)
             .bind(&result)
             .bind(duration_ms)
+            .bind(&pp)
             .execute(pool.as_ref())
             .await;
 

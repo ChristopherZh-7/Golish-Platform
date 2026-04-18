@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { CustomSelect } from "@/components/ui/custom-select";
 import { zapSendRequest } from "@/lib/pentest/zap-api";
 import {
   AlertTriangle, Crosshair,
@@ -253,15 +254,17 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
         <Crosshair className="w-3.5 h-3.5 text-accent" />
         <span className="font-medium text-foreground/80">Intruder</span>
 
-        <select
-          className="ml-2 text-[10px] bg-background border border-border/30 rounded px-1.5 py-0.5 outline-none"
+        <CustomSelect
+          className="ml-2 min-w-[100px]"
           value={attackMode}
-          onChange={(e) => setAttackMode(e.target.value as AttackMode)}
-        >
-          <option value="sniper">Sniper</option>
-          <option value="battering_ram">Battering Ram</option>
-          <option value="pitchfork">Pitchfork</option>
-        </select>
+          onChange={(v) => setAttackMode(v as AttackMode)}
+          options={[
+            { value: "sniper", label: "Sniper" },
+            { value: "battering_ram", label: "Battering Ram" },
+            { value: "pitchfork", label: "Pitchfork" },
+          ]}
+          size="xs"
+        />
 
         <span className="text-muted-foreground/30 text-[9px] ml-1">
           {positions.length} position{positions.length !== 1 ? "s" : ""} · {totalRequests} request{totalRequests !== 1 ? "s" : ""}
@@ -415,16 +418,18 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
 
             {/* Builtin selector */}
             <div className="flex items-center gap-1 px-2 py-1">
-              <select
-                className="flex-1 text-[9px] bg-background border border-border/30 rounded px-1 py-0.5 outline-none"
+              <CustomSelect
+                className="flex-1"
                 value={selectedBuiltin}
-                onChange={(e) => setSelectedBuiltin(e.target.value)}
-              >
-                <option value="">Load built-in list…</option>
-                {Object.keys(BUILTIN_PAYLOADS).map((k) => (
-                  <option key={k} value={k}>{k} ({BUILTIN_PAYLOADS[k].length})</option>
-                ))}
-              </select>
+                onChange={setSelectedBuiltin}
+                options={[
+                  { value: "", label: "Load built-in list…" },
+                  ...Object.keys(BUILTIN_PAYLOADS).map((k) => ({
+                    value: k, label: `${k} (${BUILTIN_PAYLOADS[k].length})`,
+                  })),
+                ]}
+                size="xs"
+              />
               <button
                 type="button"
                 onClick={loadBuiltin}

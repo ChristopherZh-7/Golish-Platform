@@ -641,16 +641,6 @@ export function TargetGraphView({ targets }: { targets: Target[] }) {
               </dl>
             )}
 
-            {selectedTarget.technologies?.length > 0 && (
-              <div className="flex flex-wrap gap-1">
-                {selectedTarget.technologies.map((tech) => (
-                  <span key={tech} className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400/80 border border-purple-500/15">
-                    {tech}
-                  </span>
-                ))}
-              </div>
-            )}
-
             {selectedTarget.ports?.length > 0 && (
               <div>
                 <div className="mb-2 flex items-center justify-between gap-2">

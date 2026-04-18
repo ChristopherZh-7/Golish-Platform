@@ -29,6 +29,7 @@ interface Finding {
   cvss?: number;
   url: string;
   target: string;
+  targetId?: string;
   description: string;
   steps: string;
   remediation: string;

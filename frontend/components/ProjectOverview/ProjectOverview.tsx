@@ -45,7 +45,6 @@ interface TargetEntry {
   scope: string;
   source: string;
   ports: unknown[];
-  technologies: string[];
   real_ip: string;
   cdn_waf: string;
   http_title: string;

@@ -76,12 +76,20 @@ pub async fn delete_project_config(
             "findings",
             "notes",
             "vault_entries",
-            "topology_scans",
+            "sitemap_store",
             "methodology_projects",
             "pipelines",
             "api_endpoints",
             "fingerprints",
             "js_analysis_results",
+            "agent_logs",
+            "terminal_logs",
+            "search_logs",
+            "passive_scan_logs",
+            "sensitive_scan_results",
+            "sensitive_scan_history",
+            "directory_entries",
+            "target_assets",
         ];
         let mut total_deleted = 0u64;
         for table in &tables_with_project_path {
