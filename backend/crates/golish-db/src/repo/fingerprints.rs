@@ -16,6 +16,7 @@ pub async fn upsert(
     cpe: Option<&str>,
     source: &str,
 ) -> Result<Fingerprint> {
+    let pp = project_path.unwrap_or("");
     let row = sqlx::query_as::<_, Fingerprint>(
         r#"INSERT INTO fingerprints
                (target_id, project_path, category, name, version, confidence, evidence, cpe, source)
@@ -29,7 +30,7 @@ pub async fn upsert(
            RETURNING *"#,
     )
     .bind(target_id)
-    .bind(project_path)
+    .bind(pp)
     .bind(category)
     .bind(name)
     .bind(version)

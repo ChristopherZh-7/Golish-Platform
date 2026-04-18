@@ -905,6 +905,7 @@ pub async fn pipeline_execute(
                     if !item.fields.contains_key("host") && !item.fields.contains_key("ip") && !item.fields.contains_key("url") {
                         item.fields.insert("host".to_string(), target.clone());
                     }
+                    item.fields.entry("_tool".to_string()).or_insert_with(|| tool_name.clone());
                     if db_action == "target_add" {
                         match store_target_from_item(pool, &item, project_path.as_deref(), parent_target_id).await {
                             Ok(is_new) => { stored_count += 1; if is_new { new_count += 1; } }
@@ -1255,6 +1256,10 @@ async fn store_recon_from_item(
     }
 
     super::targets::db_target_update_recon_extended(pool, target_uuid, &update).await?;
+
+    let tool_source = item.fields.get("_tool").map(|s| s.as_str()).unwrap_or("httpx");
+    super::output_parser::store_recon_fingerprints(pool, target_uuid, project_path, item, tool_source).await;
+
     Ok(is_new_port)
 }
 
@@ -1602,6 +1607,7 @@ pub async fn execute_pipeline_headless(
                     if !item.fields.contains_key("host") && !item.fields.contains_key("ip") && !item.fields.contains_key("url") {
                         item.fields.insert("host".to_string(), target.to_string());
                     }
+                    item.fields.entry("_tool".to_string()).or_insert_with(|| tool_name.clone());
                     if db_action == "target_add" {
                         match store_target_from_item(pool, &item, project_path, parent_target_id).await {
                             Ok(is_new) => { stored_count += 1; if is_new { new_count += 1; } }

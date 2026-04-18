@@ -534,7 +534,100 @@ async fn store_target_update_recon(
     }
 
     db_target_update_recon_extended(pool, target_uuid, &update).await?;
+
+    let tool_source = item.fields.get("_tool").map(|s| s.as_str()).unwrap_or("httpx");
+    tracing::info!("[store-recon] target={}, tool={}, fields={:?}", target_uuid, tool_source,
+        item.fields.keys().collect::<Vec<_>>());
+    store_recon_fingerprints(pool, target_uuid, project_path, item, tool_source).await;
+
     Ok(())
+}
+
+pub async fn store_recon_fingerprints(
+    pool: &sqlx::PgPool,
+    target_id: uuid::Uuid,
+    project_path: Option<&str>,
+    item: &ParsedItem,
+    source: &str,
+) {
+    let mut count = 0u32;
+    if let Some(ws) = item.fields.get("webserver") {
+        if !ws.is_empty() {
+            let (name, version) = parse_server_version(ws);
+            let ev = serde_json::json!({ "source": source, "raw": ws });
+            match golish_db::repo::fingerprints::upsert(
+                pool, target_id, project_path, "webserver", &name,
+                version.as_deref(), 0.8, &ev, None, source,
+            ).await {
+                Ok(_) => count += 1,
+                Err(e) => tracing::warn!("[fingerprint-store] webserver upsert failed: {}", e),
+            };
+        }
+    }
+    if let Some(techs) = item.fields.get("technologies") {
+        let tech_list: Vec<String> = if let Ok(arr) = serde_json::from_str::<Vec<String>>(techs) {
+            arr
+        } else {
+            techs.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+        };
+        for tech in &tech_list {
+            let (name, version) = parse_server_version(tech);
+            let ev = serde_json::json!({ "source": source, "technology": tech });
+            match golish_db::repo::fingerprints::upsert(
+                pool, target_id, project_path, "technology", &name,
+                version.as_deref(), 0.7, &ev, None, source,
+            ).await {
+                Ok(_) => count += 1,
+                Err(e) => tracing::warn!("[fingerprint-store] technology upsert failed: {}", e),
+            };
+        }
+    }
+    if let Some(cdn) = item.fields.get("cdn") {
+        if !cdn.is_empty() {
+            let ev = serde_json::json!({ "source": source, "raw": cdn });
+            match golish_db::repo::fingerprints::upsert(
+                pool, target_id, project_path, "cdn", cdn,
+                None, 0.9, &ev, None, source,
+            ).await {
+                Ok(_) => count += 1,
+                Err(e) => tracing::warn!("[fingerprint-store] cdn upsert failed: {}", e),
+            };
+        }
+    }
+    if let Some(os) = item.fields.get("os") {
+        if !os.is_empty() {
+            let (name, version) = parse_server_version(os);
+            let ev = serde_json::json!({ "source": source, "raw": os });
+            match golish_db::repo::fingerprints::upsert(
+                pool, target_id, project_path, "os", &name,
+                version.as_deref(), 0.6, &ev, None, source,
+            ).await {
+                Ok(_) => count += 1,
+                Err(e) => tracing::warn!("[fingerprint-store] os upsert failed: {}", e),
+            };
+        }
+    }
+    if count > 0 {
+        tracing::info!("[fingerprint-store] Stored {} fingerprints for target {} from {}", count, target_id, source);
+    }
+}
+
+fn parse_server_version(s: &str) -> (String, Option<String>) {
+    let s = s.trim();
+    if let Some(idx) = s.find('/') {
+        let name = s[..idx].trim().to_string();
+        let ver = s[idx + 1..].trim().to_string();
+        if ver.is_empty() { (name, None) } else { (name, Some(ver)) }
+    } else if let Some(idx) = s.rfind(' ') {
+        let maybe_ver = s[idx + 1..].trim();
+        if maybe_ver.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+            (s[..idx].trim().to_string(), Some(maybe_ver.to_string()))
+        } else {
+            (s.to_string(), None)
+        }
+    } else {
+        (s.to_string(), None)
+    }
 }
 
 async fn store_directory_entry(

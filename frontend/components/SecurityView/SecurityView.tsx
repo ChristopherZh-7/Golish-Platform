@@ -4731,6 +4731,7 @@ const SEV_DOT: Record<string, string> = {
 function NucleiSection({ targetId, targetUrl }: { targetId: string; targetUrl: string }) {
   const [expanded, setExpanded] = useState(false);
   const [pocMatches, setPocMatches] = useState<PocMatch[]>([]);
+  const [matchDone, setMatchDone] = useState(false);
   const [matching, setMatching] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState<ToolScanResult | null>(null);
@@ -4738,11 +4739,10 @@ function NucleiSection({ targetId, targetUrl }: { targetId: string; targetUrl: s
   const [showConfig, setShowConfig] = useState(false);
   const [opts, setOpts] = useState<NucleiScanOptions>({});
   const projectPath = getProjectPath();
-  const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
 
   useEffect(() => {
     setPocMatches([]);
+    setMatchDone(false);
     setScanResult(null);
     setScanError(null);
   }, [targetId]);
@@ -4766,11 +4766,13 @@ function NucleiSection({ targetId, targetUrl }: { targetId: string; targetUrl: s
     setScanError(null);
     try {
       const matches = await matchPocsForTarget(targetId);
-      if (mountedRef.current) setPocMatches(matches);
+      setPocMatches(matches);
+      setMatchDone(true);
     } catch (e) {
-      if (mountedRef.current) setScanError(String(e));
+      setScanError(String(e));
+    } finally {
+      setMatching(false);
     }
-    if (mountedRef.current) setMatching(false);
   }, [targetId]);
 
   const handleRunNuclei = useCallback(async () => {
@@ -4783,11 +4785,12 @@ function NucleiSection({ targetId, targetUrl }: { targetId: string; targetUrl: s
         targetUrl, targetId, templateIds, projectPath, undefined,
         Object.keys(opts).length > 0 ? opts : undefined,
       );
-      if (mountedRef.current) setScanResult(result);
+      setScanResult(result);
     } catch (e) {
-      if (mountedRef.current) setScanError(String(e));
+      setScanError(String(e));
+    } finally {
+      setScanning(false);
     }
-    if (mountedRef.current) setScanning(false);
   }, [targetUrl, targetId, templateIds, projectPath, opts]);
 
   const handleRunAll = useCallback(async () => {
@@ -4796,9 +4799,8 @@ function NucleiSection({ targetId, targetUrl }: { targetId: string; targetUrl: s
     setScanError(null);
     try {
       const matches = await matchPocsForTarget(targetId);
-      if (!mountedRef.current) return;
       setPocMatches(matches);
-      setMatching(false);
+      setMatchDone(true);
 
       const tids = matches.filter((p) => p.template_id).map((p) => p.template_id!);
       if (tids.length === 0) {
@@ -4806,16 +4808,19 @@ function NucleiSection({ targetId, targetUrl }: { targetId: string; targetUrl: s
         return;
       }
 
+      setMatching(false);
       setScanning(true);
       const result = await scanNucleiTargeted(
         targetUrl, targetId, tids, projectPath, undefined,
         Object.keys(opts).length > 0 ? opts : undefined,
       );
-      if (mountedRef.current) setScanResult(result);
+      setScanResult(result);
     } catch (e) {
-      if (mountedRef.current) setScanError(String(e));
+      setScanError(String(e));
+    } finally {
+      setMatching(false);
+      setScanning(false);
     }
-    if (mountedRef.current) { setMatching(false); setScanning(false); }
   }, [targetId, targetUrl, projectPath, opts]);
 
   const handleCancel = useCallback(async () => {
@@ -4853,6 +4858,9 @@ function NucleiSection({ targetId, targetUrl }: { targetId: string; targetUrl: s
           <span className="ml-auto text-[9px] text-muted-foreground/40">
             {templateIds.length} templates ready
           </span>
+        )}
+        {matchDone && pocMatches.length === 0 && !scanResult && !anyRunning && (
+          <span className="ml-auto text-[9px] text-muted-foreground/30">No matches</span>
         )}
       </button>
 
@@ -5018,6 +5026,17 @@ function NucleiSection({ targetId, targetUrl }: { targetId: string; targetUrl: s
             </div>
           )}
 
+          {/* No matches state */}
+          {matchDone && pocMatches.length === 0 && !anyRunning && !scanError && (
+            <div className="flex items-center gap-2 text-[10px] text-muted-foreground/40 p-2 rounded-md bg-muted/5 border border-border/10">
+              <Shield className="w-3.5 h-3.5" />
+              <div>
+                <span className="text-foreground/50">No matching PoC templates found.</span>
+                <span className="ml-1">Run the pipeline first to populate fingerprints, then try again.</span>
+              </div>
+            </div>
+          )}
+
           {/* PoC Matches */}
           {pocMatches.length > 0 && (
             <div className="space-y-1.5">
@@ -5113,9 +5132,12 @@ function ScanToolsPanel({ initialTarget }: { initialTarget?: { id: string; value
   const [targets, setTargets] = useState<TargetOption[]>([]);
   const [selectedTarget, setSelectedTarget] = useState<TargetOption | null>(null);
   const [loading, setLoading] = useState(true);
+  const projectPath = useStore((s) => s.currentProjectPath);
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
+    setSelectedTarget(null);
     (async () => {
       try {
         const data = await invoke<{ targets: TargetOption[] }>("target_list", {
@@ -5131,7 +5153,7 @@ function ScanToolsPanel({ initialTarget }: { initialTarget?: { id: string; value
           : null;
         if (initial) {
           setSelectedTarget(initial);
-        } else if (scannable.length > 0 && !selectedTarget) {
+        } else if (scannable.length > 0) {
           setSelectedTarget(scannable[0]);
         }
       } catch {
@@ -5140,7 +5162,7 @@ function ScanToolsPanel({ initialTarget }: { initialTarget?: { id: string; value
       if (!cancelled) setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [initialTarget?.id]);
+  }, [initialTarget?.id, projectPath]);
 
   if (loading) {
     return (

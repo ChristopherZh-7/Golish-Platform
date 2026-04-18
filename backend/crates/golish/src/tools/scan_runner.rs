@@ -361,15 +361,28 @@ pub async fn match_pocs_for_target(
     let tid = Uuid::parse_str(&target_id).map_err(|e| e.to_string())?;
 
     let start = std::time::Instant::now();
-    let fingerprints = golish_db::repo::fingerprints::list_by_target(pool, tid)
+    let mut fingerprints = golish_db::repo::fingerprints::list_by_target(pool, tid)
         .await
         .map_err(|e| e.to_string())?;
-    tracing::info!("[PoC-Match] {} fingerprints for target {} ({}ms)",
-        fingerprints.len(), target_id, start.elapsed().as_millis());
 
     if fingerprints.is_empty() {
+        let backfilled = backfill_fingerprints_from_target(pool, tid).await;
+        if backfilled > 0 {
+            tracing::info!("[PoC-Match] Backfilled {} fingerprints from targets table for {}", backfilled, target_id);
+            fingerprints = golish_db::repo::fingerprints::list_by_target(pool, tid)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    if fingerprints.is_empty() {
+        tracing::info!("[PoC-Match] 0 fingerprints for target {} after backfill attempt ({}ms)", target_id, start.elapsed().as_millis());
         return Ok(vec![]);
     }
+
+    tracing::info!("[PoC-Match] {} fingerprints for target {} ({}ms): {:?}",
+        fingerprints.len(), target_id, start.elapsed().as_millis(),
+        fingerprints.iter().map(|f| format!("{}:{}", f.category, f.name)).collect::<Vec<_>>());
 
     let mut all_terms: Vec<(String, String, String)> = Vec::new();
     let mut tag_terms: Vec<String> = Vec::new();
@@ -473,6 +486,82 @@ struct PocRow {
     severity: Option<String>,
     source: Option<String>,
     content: String,
+}
+
+async fn backfill_fingerprints_from_target(pool: &sqlx::PgPool, target_id: Uuid) -> u32 {
+    let row: Option<(String, String, String, sqlx::types::Json<serde_json::Value>, String)> = sqlx::query_as(
+        "SELECT webserver, cdn_waf, os_info, ports, COALESCE(project_path, '') FROM targets WHERE id = $1"
+    )
+    .bind(target_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+
+    let Some((ws, cdn, os, ports, project_path)) = row else { return 0 };
+    let pp = if project_path.is_empty() { None } else { Some(project_path.as_str()) };
+    let mut count = 0u32;
+
+    fn parse_sv(s: &str) -> (String, Option<String>) {
+        let s = s.trim();
+        if let Some(idx) = s.find('/') {
+            let name = s[..idx].trim().to_string();
+            let ver = s[idx + 1..].trim().to_string();
+            if ver.is_empty() { (name, None) } else { (name, Some(ver)) }
+        } else {
+            (s.to_string(), None)
+        }
+    }
+
+    if !ws.is_empty() {
+        let (name, version) = parse_sv(&ws);
+        let ev = serde_json::json!({ "source": "backfill", "raw": ws });
+        if golish_db::repo::fingerprints::upsert(pool, target_id, pp, "webserver", &name, version.as_deref(), 0.8, &ev, None, "httpx").await.is_ok() {
+            count += 1;
+        }
+    }
+    if !cdn.is_empty() {
+        let ev = serde_json::json!({ "source": "backfill", "raw": cdn });
+        if golish_db::repo::fingerprints::upsert(pool, target_id, pp, "cdn", &cdn, None, 0.9, &ev, None, "httpx").await.is_ok() {
+            count += 1;
+        }
+    }
+    if !os.is_empty() {
+        let (name, version) = parse_sv(&os);
+        let ev = serde_json::json!({ "source": "backfill", "raw": os });
+        if golish_db::repo::fingerprints::upsert(pool, target_id, pp, "os", &name, version.as_deref(), 0.6, &ev, None, "httpx").await.is_ok() {
+            count += 1;
+        }
+    }
+
+    if let Some(arr) = ports.0.as_array() {
+        for port_entry in arr {
+            if let Some(techs) = port_entry.get("technologies").and_then(|t| t.as_array()) {
+                for tech_val in techs {
+                    if let Some(tech) = tech_val.as_str() {
+                        if !tech.is_empty() {
+                            let (name, version) = parse_sv(tech);
+                            let ev = serde_json::json!({ "source": "backfill", "port": port_entry.get("port") });
+                            if golish_db::repo::fingerprints::upsert(pool, target_id, pp, "technology", &name, version.as_deref(), 0.7, &ev, None, "httpx").await.is_ok() {
+                                count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(ws_val) = port_entry.get("webserver").and_then(|w| w.as_str()) {
+                if !ws_val.is_empty() {
+                    let (name, version) = parse_sv(ws_val);
+                    let ev = serde_json::json!({ "source": "backfill", "port": port_entry.get("port") });
+                    if golish_db::repo::fingerprints::upsert(pool, target_id, pp, "webserver", &name, version.as_deref(), 0.8, &ev, None, "httpx").await.is_ok() {
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    count
 }
 
 fn build_search_terms(name: &str, version: Option<&str>) -> Vec<String> {
@@ -724,14 +813,16 @@ pub async fn scan_nuclei_targeted(
         );
 
         let insert_result = sqlx::query(
-            r#"INSERT INTO findings (id, target, title, severity, description, evidence, tool, source, project_path)
-               VALUES ($1, $2, $3, $4, $5, $6, 'nuclei', 'nuclei', $7)
+            r#"INSERT INTO findings (id, target, target_id, title, severity, description, evidence, tool, source, project_path)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, 'nuclei', 'nuclei', $8)
                ON CONFLICT (id) DO UPDATE SET
                    description = EXCLUDED.description,
-                   evidence = EXCLUDED.evidence"#,
+                   evidence = EXCLUDED.evidence,
+                   target_id = COALESCE(EXCLUDED.target_id, findings.target_id)"#,
         )
         .bind(finding_id)
         .bind(matched_url)
+        .bind(tid)
         .bind(title)
         .bind(severity)
         .bind(description)
@@ -969,12 +1060,13 @@ pub async fn scan_feroxbuster(
                     format!("ferox:sensitive:{}:{}", url, target_id).as_bytes(),
                 );
                 let _ = sqlx::query(
-                    r#"INSERT INTO findings (id, target, title, severity, description, tool, source, project_path)
-                       VALUES ($1, $2, $3, $4, $5, 'feroxbuster', 'feroxbuster', $6)
+                    r#"INSERT INTO findings (id, target, target_id, title, severity, description, tool, source, project_path)
+                       VALUES ($1, $2, $3, $4, $5, $6, 'feroxbuster', 'feroxbuster', $7)
                        ON CONFLICT (id) DO NOTHING"#,
                 )
                 .bind(finding_id)
                 .bind(&url)
+                .bind(tid)
                 .bind(format!("Sensitive file/directory: {}", extract_path(&url)))
                 .bind(classify_sensitive_severity(&url))
                 .bind(format!("Directory enumeration discovered a potentially sensitive resource at {} (HTTP {})", url, status))
