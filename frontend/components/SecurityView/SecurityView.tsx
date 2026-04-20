@@ -4584,7 +4584,7 @@ function JsAnalysisPanel() {
           <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground/20">
             <FileCode2 className="w-10 h-10" />
             <p className="text-[12px]">Enter a target UUID to view JS analysis</p>
-            <p className="text-[10px] text-muted-foreground/15">Results from the js_analyzer sub-agent appear here</p>
+            <p className="text-[10px] text-muted-foreground/15">Results from JS security analysis appear here</p>
           </div>
         ) : results.length === 0 ? (
           <div className="text-center text-[11px] text-muted-foreground/20 py-12">No JS analysis results</div>

@@ -448,7 +448,7 @@ async function saveConversationsToDb(
     });
 
     const dbMessages = conv.messages
-      .filter((m) => !m.isStreaming)
+      .filter((m) => m.content || m.toolCalls?.length)
       .map((m, idx) => chatMessageToDbRow(m, conv.id, idx));
 
     const terminalStates: ConvBatchItem["terminalStates"] = [];

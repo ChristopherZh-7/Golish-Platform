@@ -1,14 +1,14 @@
 # Workspaces
 
-This document explains how workspaces work in Qbit, when they are auto-updated, and the architecture behind workspace synchronization.
+This document explains how workspaces work in Golish, when they are auto-updated, and the architecture behind workspace synchronization.
 
 ## Overview
 
-A **workspace** in Qbit represents the root directory that the AI agent uses as a base for all file operations. When the AI agent reads, writes, or searches files, paths are resolved relative to the workspace, and operations outside the workspace are blocked for security.
+A **workspace** in Golish represents the root directory that the AI agent uses as a base for all file operations. When the AI agent reads, writes, or searches files, paths are resolved relative to the workspace, and operations outside the workspace are blocked for security.
 
 ## Architecture
 
-Qbit uses two types of AI bridges:
+Golish uses two types of AI bridges:
 
 1. **Legacy Bridge** (`AiState.bridge`) - A single shared bridge for backwards compatibility
 2. **Session Bridges** (`AiState.bridges`) - A HashMap of session-specific bridges keyed by `session_id`

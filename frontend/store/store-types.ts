@@ -40,6 +40,7 @@ export type RenderMode = "timeline" | "fullterm";
 export type AiStatus = "disconnected" | "initializing" | "ready" | "error";
 export type TabType = "terminal" | "settings" | "home" | "browser" | "security";
 export type AgentMode = "default" | "auto-approve" | "planning";
+export type ExecutionMode = "chat" | "task";
 
 export interface AiConfig {
   provider: string;
@@ -73,6 +74,8 @@ export interface Session {
   mode: SessionMode;
   inputMode?: InputMode;
   agentMode?: AgentMode;
+  useAgents?: boolean;
+  executionMode?: ExecutionMode;
   renderMode?: RenderMode;
   customName?: string;
   processName?: string;

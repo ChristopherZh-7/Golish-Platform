@@ -423,6 +423,59 @@ pub enum AiEvent {
         /// Duration of the generation call in milliseconds
         duration_ms: u64,
     },
+
+    // Task mode events (PentAGI-style automated execution)
+    /// Task progress update (status changes, phase transitions)
+    TaskProgress {
+        task_id: String,
+        status: String,
+        message: String,
+    },
+
+    /// A new subtask was created by the Generator or Refiner
+    SubtaskCreated {
+        task_id: String,
+        subtask_id: String,
+        title: String,
+        agent: Option<String>,
+    },
+
+    /// A subtask finished executing
+    SubtaskCompleted {
+        task_id: String,
+        subtask_id: String,
+        title: String,
+        result: String,
+    },
+
+    /// A subtask is waiting for user input before continuing
+    SubtaskWaitingForInput {
+        task_id: String,
+        subtask_id: String,
+        title: String,
+        prompt: String,
+    },
+
+    /// User provided input for a waiting subtask
+    SubtaskUserInput {
+        task_id: String,
+        subtask_id: String,
+        input: String,
+    },
+
+    /// A previously interrupted task is being resumed
+    TaskResumed {
+        task_id: String,
+        subtask_index: usize,
+        total_subtasks: usize,
+    },
+
+    /// Enricher gathered additional context after a subtask
+    EnricherResult {
+        task_id: String,
+        subtask_id: String,
+        context_added: String,
+    },
 }
 
 impl AiEvent {
@@ -470,6 +523,13 @@ impl AiEvent {
             AiEvent::PromptGenerationCompleted { .. } => "prompt_generation_completed",
             AiEvent::AskHumanRequest { .. } => "ask_human_request",
             AiEvent::AskHumanResponse { .. } => "ask_human_response",
+            AiEvent::TaskProgress { .. } => "task_progress",
+            AiEvent::SubtaskCreated { .. } => "subtask_created",
+            AiEvent::SubtaskCompleted { .. } => "subtask_completed",
+            AiEvent::SubtaskWaitingForInput { .. } => "subtask_waiting_for_input",
+            AiEvent::SubtaskUserInput { .. } => "subtask_user_input",
+            AiEvent::TaskResumed { .. } => "task_resumed",
+            AiEvent::EnricherResult { .. } => "enricher_result",
         }
     }
 }

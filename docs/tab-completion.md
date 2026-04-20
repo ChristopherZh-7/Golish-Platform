@@ -142,7 +142,7 @@ In browser-only mode (without Tauri backend), the mock system provides simulated
 pnpm test -- usePathCompletion
 
 # Rust unit tests
-cargo test -p qbit --lib completions
+cargo test -p golish --lib completions
 ```
 
 ### Property-Based Tests

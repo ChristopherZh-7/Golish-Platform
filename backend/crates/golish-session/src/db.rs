@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::{QbitMessageRole, QbitSessionMessage, QbitSessionSnapshot, SessionListingInfo};
+use crate::{GolishMessageRole, GolishSessionMessage, GolishSessionSnapshot, SessionListingInfo};
 
 #[derive(sqlx::FromRow)]
 struct SessionDataRow {
@@ -33,7 +33,7 @@ struct SessionDataRow {
 
 pub async fn save_session_to_db(
     pool: &PgPool,
-    snapshot: &QbitSessionSnapshot,
+    snapshot: &GolishSessionSnapshot,
     session_uuid: &Uuid,
 ) -> Result<()> {
     let messages_json = serde_json::to_value(&snapshot.messages)?;
@@ -49,7 +49,7 @@ pub async fn save_session_to_db(
     )
     .bind(session_uuid)
     .bind(snapshot.messages.first().and_then(|m| {
-        if m.role == QbitMessageRole::User {
+        if m.role == GolishMessageRole::User {
             let preview: String = m.content.chars().take(100).collect();
             Some(preview)
         } else {
@@ -86,7 +86,7 @@ pub async fn save_session_to_db(
 
 pub async fn finalize_session_in_db(
     pool: &PgPool,
-    snapshot: &QbitSessionSnapshot,
+    snapshot: &GolishSessionSnapshot,
     session_uuid: &Uuid,
 ) -> Result<()> {
     save_session_to_db(pool, snapshot, session_uuid).await?;
@@ -163,7 +163,7 @@ pub async fn find_session_from_db(
 pub async fn load_session_from_db(
     pool: &PgPool,
     identifier: &str,
-) -> Result<Option<QbitSessionSnapshot>> {
+) -> Result<Option<GolishSessionSnapshot>> {
     let uid = Uuid::parse_str(identifier).ok();
 
     let row: Option<SessionDataRow> = if let Some(uid) = uid {
@@ -200,14 +200,14 @@ pub async fn load_session_from_db(
 }
 
 fn row_to_listing(r: SessionDataRow) -> SessionListingInfo {
-    let messages: Vec<QbitSessionMessage> = r.messages
+    let messages: Vec<GolishSessionMessage> = r.messages
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
 
-    let first_prompt = messages.iter().find(|m| m.role == QbitMessageRole::User).map(|m| {
+    let first_prompt = messages.iter().find(|m| m.role == GolishMessageRole::User).map(|m| {
         m.content.chars().take(200).collect::<String>()
     });
-    let first_reply = messages.iter().find(|m| m.role == QbitMessageRole::Assistant).map(|m| {
+    let first_reply = messages.iter().find(|m| m.role == GolishMessageRole::Assistant).map(|m| {
         m.content.chars().take(200).collect::<String>()
     });
 
@@ -231,8 +231,8 @@ fn row_to_listing(r: SessionDataRow) -> SessionListingInfo {
     }
 }
 
-fn row_to_snapshot(r: SessionDataRow) -> QbitSessionSnapshot {
-    QbitSessionSnapshot {
+fn row_to_snapshot(r: SessionDataRow) -> GolishSessionSnapshot {
+    GolishSessionSnapshot {
         workspace_label: r.workspace_label.unwrap_or_default(),
         workspace_path: r.workspace_path.unwrap_or_default(),
         model: r.model.unwrap_or_default(),
@@ -256,7 +256,7 @@ fn row_to_snapshot(r: SessionDataRow) -> QbitSessionSnapshot {
 }
 
 /// Database session persistence handle.
-/// Stored in QbitSessionManager for dual-write support.
+/// Stored in GolishSessionManager for dual-write support.
 pub struct DbSessionHandle {
     pub pool: Arc<PgPool>,
     pub session_uuid: Uuid,

@@ -82,13 +82,13 @@ All tasks have been completed. Consider updating the following files with any ne
 
 | File | Purpose |
 |------|---------|
-| `backend/crates/qbit-ai/src/system_hooks.rs` | Trigger functions, formatting, collection |
-| `backend/crates/qbit-ai/src/agentic_loop.rs` | Integration point (queue management) |
+| `backend/crates/golish-ai/src/system_hooks.rs` | Trigger functions, formatting, collection |
+| `backend/crates/golish-ai/src/agentic_loop.rs` | Integration point (queue management) |
 
 ### Module Structure
 
 ```rust
-// backend/crates/qbit-ai/src/system_hooks.rs
+// backend/crates/golish-ai/src/system_hooks.rs
 
 // Private helper functions
 fn is_plan_complete(value: &Value) -> bool { ... }
@@ -102,7 +102,7 @@ pub fn collect_system_hooks(tool_name: &str, result: &Value) -> Vec<String> { ..
 ### Integration in Agentic Loop
 
 ```rust
-// backend/crates/qbit-ai/src/agentic_loop.rs
+// backend/crates/golish-ai/src/agentic_loop.rs
 
 // 1. Import
 use super::system_hooks::{collect_system_hooks, format_system_hooks};
@@ -323,7 +323,7 @@ The system is designed to be easily extended. Potential future triggers:
 Run the system hook tests:
 
 ```bash
-cargo test -p qbit-ai system_hook
+cargo test -p golish-ai system_hook
 ```
 
 ### Test Coverage

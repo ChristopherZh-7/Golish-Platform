@@ -148,7 +148,7 @@ async fn download_and_cache(&self) -> Result<Vec<SWEBenchInstance>> {
 To avoid repeated downloads, we cache locally:
 
 ```
-~/.qbit/benchmarks/swebench/datasets/lite.json
+~/.golish/benchmarks/swebench/datasets/lite.json
 ```
 
 ```rust
@@ -229,7 +229,7 @@ See the [original SWE-bench paper](https://arxiv.org/abs/2310.06770) for methodo
 1. **No modification** - We use the dataset exactly as published
 2. **Consistent ordering** - Instance indices are stable
 3. **Complete dataset** - All 300 instances are available
-4. **Cache freshness** - Delete `~/.qbit/benchmarks/` to re-download
+4. **Cache freshness** - Delete `~/.golish/benchmarks/` to re-download
 
 ## Verifying Dataset Integrity
 
@@ -257,7 +257,7 @@ assert 'memoryview' in django_instance['problem_statement'].lower()
 curl -I https://datasets-server.huggingface.co/
 
 # Clear cache and retry
-rm -rf ~/.qbit/benchmarks/swebench/datasets/
+rm -rf ~/.golish/benchmarks/swebench/datasets/
 just swebench 0-1  # Will re-download
 ```
 
@@ -265,8 +265,8 @@ just swebench 0-1  # Will re-download
 
 ```bash
 # Validate JSON
-python -c "import json; json.load(open('~/.qbit/benchmarks/swebench/datasets/lite.json'))"
+python -c "import json; json.load(open('~/.golish/benchmarks/swebench/datasets/lite.json'))"
 
 # If invalid, delete and re-download
-rm ~/.qbit/benchmarks/swebench/datasets/lite.json
+rm ~/.golish/benchmarks/swebench/datasets/lite.json
 ```

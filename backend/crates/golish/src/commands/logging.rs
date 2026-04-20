@@ -52,7 +52,7 @@ pub fn write_frontend_log(
         Some(p) => p,
         None => {
             tracing::error!("[frontend-log] Could not determine home directory");
-            return Err(crate::error::QbitError::Internal(
+            return Err(crate::error::GolishError::Internal(
                 "Could not determine home directory".to_string(),
             ));
         }

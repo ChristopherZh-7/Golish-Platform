@@ -1,12 +1,12 @@
-# Graph-Flow Integration Plan for Qbit
+# Graph-Flow Integration Plan for Golish
 
 ## Status: Infrastructure COMPLETE, Wiring Needed
 
-The `qbit-workflow` crate already provides full graph-flow integration. The remaining work is connecting it to the agent system.
+The `golish-workflow` crate already provides full graph-flow integration. The remaining work is connecting it to the agent system.
 
 ---
 
-## What Already Exists in `qbit-workflow`
+## What Already Exists in `golish-workflow`
 
 ### Core Infrastructure ✅
 | Component | Location | Purpose |
@@ -34,14 +34,14 @@ initialize → gatherer → analyzer → organizer → planner → formatter
 ### 1. Implement `WorkflowLlmExecutor` (connects to AgentBridge)
 
 ```rust
-// NEW: qbit-ai/src/workflow_executor.rs
+// NEW: golish-ai/src/workflow_executor.rs
 
-pub struct QbitWorkflowExecutor {
+pub struct GolishWorkflowExecutor {
     bridge: Arc<AgentBridge>,
 }
 
 #[async_trait]
-impl WorkflowLlmExecutor for QbitWorkflowExecutor {
+impl WorkflowLlmExecutor for GolishWorkflowExecutor {
     async fn complete(&self, system: &str, user: &str, _ctx: HashMap<String, Value>) -> Result<String> {
         self.bridge.complete(system, user).await
     }
@@ -226,7 +226,7 @@ let result = sub_agent.execute(xml).await?;
 // Main agent triggers workflow
 let registry = create_default_registry();
 let workflow = registry.get("implement")?;
-let executor = Arc::new(QbitWorkflowExecutor::new(bridge));
+let executor = Arc::new(GolishWorkflowExecutor::new(bridge));
 let graph = workflow.build_graph(executor);
 let runner = WorkflowRunner::new_in_memory(graph);
 
@@ -259,14 +259,14 @@ let result = runner.run_to_completion(&session_id).await?;
 ## Files to Create/Modify
 
 ### New Files
-- `qbit-ai/src/workflow_executor.rs` - `WorkflowLlmExecutor` impl
-- `qbit-workflow/src/definitions/implement/` - Implement workflow
-- `qbit-workflow/src/definitions/code_review/` - Review workflow
+- `golish-ai/src/workflow_executor.rs` - `WorkflowLlmExecutor` impl
+- `golish-workflow/src/definitions/implement/` - Implement workflow
+- `golish-workflow/src/definitions/code_review/` - Review workflow
 
 ### Modify
-- `qbit-ai/src/agent_bridge.rs` - Add `run_mini_agent()` method
-- `qbit-ai/src/tools/mod.rs` - Add `run_workflow` tool (optional)
-- `qbit-workflow/src/definitions/mod.rs` - Register new workflows
+- `golish-ai/src/agent_bridge.rs` - Add `run_mini_agent()` method
+- `golish-ai/src/tools/mod.rs` - Add `run_workflow` tool (optional)
+- `golish-workflow/src/definitions/mod.rs` - Register new workflows
 
 ---
 

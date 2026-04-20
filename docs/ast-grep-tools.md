@@ -1,6 +1,6 @@
 # AST-Grep Tools
 
-Qbit includes two AST-based code search and replace tools powered by [ast-grep](https://ast-grep.github.io/). Unlike regex-based search, these tools understand code structure and can match syntactic patterns like function definitions, method calls, and control flow statements.
+Golish includes two AST-based code search and replace tools powered by [ast-grep](https://ast-grep.github.io/). Unlike regex-based search, these tools understand code structure and can match syntactic patterns like function definitions, method calls, and control flow statements.
 
 ## Tools
 
@@ -215,7 +215,7 @@ for $VAR in $ITER:
 
 ## Implementation Details
 
-The tools are implemented in the `qbit-ast-grep` crate, which uses:
+The tools are implemented in the `golish-ast-grep` crate, which uses:
 
 - `ast-grep-core` - Core pattern matching engine
 - `ast-grep-language` - Built-in language parsers via tree-sitter

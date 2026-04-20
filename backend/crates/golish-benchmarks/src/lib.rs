@@ -1,7 +1,7 @@
-//! Benchmark integrations for Qbit AI agent evaluation.
+//! Benchmark integrations for Golish AI agent evaluation.
 //!
 //! This crate provides standard benchmark suites for evaluating
-//! the Qbit agent's capabilities, starting with HumanEval for
+//! the Golish agent's capabilities, starting with HumanEval for
 //! Python function synthesis.
 //!
 //! # Benchmarks

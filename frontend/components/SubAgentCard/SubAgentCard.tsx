@@ -5,12 +5,12 @@ import {
   ChevronRight,
   Clock,
   Code2,
-  Download,
-  FileCode2,
+  FileText,
   Loader2,
   Maximize2,
   Search,
   Settings2,
+  Shield,
   Terminal,
   AlertTriangle,
   Circle,
@@ -38,9 +38,11 @@ const AGENT_COLORS: Record<string, string> = {
   reviewer: "var(--ansi-cyan)",
   explorer: "var(--ansi-yellow)",
   analyst: "var(--ansi-cyan)",
-  js_harvester: "#f59e0b",
-  js_analyzer: "#f59e0b",
-  executor: "var(--ansi-magenta)",
+  adviser: "var(--ansi-cyan)",
+  reporter: "#10b981",
+  pentester: "var(--ansi-red)",
+  memorist: "var(--ansi-blue)",
+  reflector: "var(--ansi-magenta)",
 };
 
 const AGENT_ICONS: Record<string, typeof Bot> = {
@@ -48,9 +50,9 @@ const AGENT_ICONS: Record<string, typeof Bot> = {
   researcher: Search,
   explorer: Search,
   planner: Settings2,
-  js_harvester: Download,
-  js_analyzer: FileCode2,
-  executor: Terminal,
+  adviser: Shield,
+  reporter: FileText,
+  pentester: Terminal,
 };
 
 function getAgentColor(agentName: string): string {

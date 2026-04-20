@@ -1,17 +1,17 @@
 # System Prompt Development Guide
 
-This document explains how to update, build, and maintain the Qbit system prompts. Use this as a reference when modifying agent behavior or adding new capabilities.
+This document explains how to update, build, and maintain the Golish system prompts. Use this as a reference when modifying agent behavior or adding new capabilities.
 
 ## Quick Reference
 
 | What to Change | Where |
 |----------------|-------|
-| Main agent behavior | `qbit-ai/src/system_prompt.rs` → `build_system_prompt_with_contributions()` |
-| Agent modes (Planning, AutoApprove) | `qbit-ai/src/system_prompt.rs` → `get_agent_mode_instructions()` |
-| Sub-agent prompts | `qbit-sub-agents/src/defaults.rs` → `create_default_sub_agents()` |
+| Main agent behavior | `golish-ai/src/system_prompt.rs` → `build_system_prompt_with_contributions()` |
+| Agent modes (Planning, AutoApprove) | `golish-ai/src/system_prompt.rs` → `get_agent_mode_instructions()` |
+| Sub-agent prompts | `golish-sub-agents/src/defaults.rs` → `create_default_sub_agents()` |
 | Sub-agent tool allocation | Same file, `.with_tools(vec![...])` on each definition |
-| Dynamic contributions | `qbit-ai/src/contributors/` directory |
-| Tool definitions (schemas) | `qbit-tools/src/definitions.rs` |
+| Dynamic contributions | `golish-ai/src/contributors/` directory |
+| Tool definitions (schemas) | `golish-tools/src/definitions.rs` |
 
 ---
 
@@ -24,7 +24,7 @@ The system prompt is composed at runtime from multiple sources:
 │            build_system_prompt_with_contributions()            │
 ├────────────────────────────────────────────────────────────────┤
 │  1. BASE PROMPT (static, inline in system_prompt.rs)           │
-│     ├── <identity> - Who is Qbit                               │
+│     ├── <identity> - Who is Golish                               │
 │     ├── <environment> - Workspace, date                        │
 │     ├── <style> - Communication rules                          │
 │     ├── # Workflow - 5-phase execution model                   │
@@ -51,7 +51,7 @@ The system prompt is composed at runtime from multiple sources:
 
 ### Location
 
-`backend/crates/qbit-ai/src/system_prompt.rs`
+`backend/crates/golish-ai/src/system_prompt.rs`
 
 ### Structure
 
@@ -125,7 +125,7 @@ Existing rules:
 
 ### Location
 
-`backend/crates/qbit-ai/src/system_prompt.rs` → `get_agent_mode_instructions()`
+`backend/crates/golish-ai/src/system_prompt.rs` → `get_agent_mode_instructions()`
 
 ### Available Modes
 
@@ -171,7 +171,7 @@ You are in READ-ONLY mode...
 
 ### Location
 
-`backend/crates/qbit-sub-agents/src/defaults.rs`
+`backend/crates/golish-sub-agents/src/defaults.rs`
 
 ### Structure
 
@@ -257,7 +257,7 @@ Also update the sub-agent's system prompt `<constraints>` section to mention the
 
 ### Location
 
-`backend/crates/qbit-ai/src/contributors/`
+`backend/crates/golish-ai/src/contributors/`
 
 ### When to Use Contributors
 
@@ -323,7 +323,7 @@ pub fn create_default_contributors(...) -> Vec<Arc<dyn PromptContributor>> {
 
 ### Location
 
-`backend/crates/qbit-tools/src/definitions.rs`
+`backend/crates/golish-tools/src/definitions.rs`
 
 ### Adding Tool Documentation
 
@@ -348,13 +348,13 @@ The tool description is critical - it's the primary guidance the LLM has for usi
 
 ```bash
 # Test system prompt generation
-cargo test -p qbit-ai system_prompt
+cargo test -p golish-ai system_prompt
 
 # Test sub-agent definitions
-cargo test -p qbit-sub-agents
+cargo test -p golish-sub-agents
 
 # Test prompt parity (evals match main agent)
-cargo test -p qbit-evals prompt
+cargo test -p golish-evals prompt
 ```
 
 ### Verification Checklist

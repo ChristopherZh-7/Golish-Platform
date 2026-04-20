@@ -20,7 +20,7 @@ pub async fn register_client(
         "response_types": ["code"],
         "token_endpoint_auth_method": "none",
         "application_type": "native",
-        "client_name": "Qbit"
+        "client_name": "Golish"
     });
 
     let response = client

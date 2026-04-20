@@ -31,214 +31,40 @@ use super::tool_definitions::{
     get_all_tool_definitions_with_config, get_ask_human_tool_definition,
     get_run_command_tool_definition, get_sub_agent_tool_definitions, sanitize_schema, ToolConfig,
 };
-use super::tool_executors::{
-    execute_ask_human_tool, execute_plan_tool, execute_web_fetch_tool, normalize_run_pty_cmd_args,
-};
-use super::tool_provider_impl::DefaultToolProvider;
+use super::tool_executors::normalize_run_pty_cmd_args;
 use crate::hitl::ApprovalRecorder;
 use crate::indexer::IndexerState;
-use crate::loop_detection::{LoopDetectionResult, LoopDetector};
-use crate::tool_policy::{PolicyConstraintResult, ToolPolicy, ToolPolicyManager};
+use crate::loop_detection::LoopDetector;
+use crate::tool_policy::ToolPolicyManager;
 use golish_context::token_budget::TokenUsage;
 use golish_context::{CompactionState, ContextManager};
 use golish_core::events::AiEvent;
-use golish_core::hitl::{ApprovalDecision, RiskLevel};
-use golish_core::runtime::QbitRuntime;
+use golish_core::hitl::ApprovalDecision;
+use golish_core::runtime::GolishRuntime;
 use golish_core::utils::truncate_str;
 use golish_core::ApiRequestStats;
 use golish_llm_providers::ModelCapabilities;
 use golish_sidecar::{CaptureContext, SidecarState};
-use golish_sub_agents::{
-    execute_sub_agent, SubAgentContext, SubAgentExecutorContext, SubAgentRegistry, MAX_AGENT_DEPTH,
-};
+use golish_sub_agents::{SubAgentContext, SubAgentRegistry, MAX_AGENT_DEPTH};
 
 use crate::event_coordinator::CoordinatorHandle;
+
+mod helpers;
+mod sub_agent_dispatch;
+mod tool_execution;
+pub mod toolcall_fixer;
+
+use helpers::{estimate_message_tokens, handle_loop_detection};
+use sub_agent_dispatch::{detect_repetitive_text, partition_tool_calls};
+pub use tool_execution::{
+    execute_tool_direct_generic, execute_with_hitl_generic,
+};
 
 /// Maximum number of tool call iterations before stopping
 pub const MAX_TOOL_ITERATIONS: usize = 100;
 
-// =============================================================================
-// Sub-agent model dispatch helper
-// =============================================================================
-
-/// Execute a sub-agent with an LlmClient by dispatching to the correct model type.
-///
-/// This function matches on the LlmClient variant and calls execute_sub_agent
-/// with the appropriate inner model type.
-async fn execute_sub_agent_with_client(
-    agent_def: &golish_sub_agents::SubAgentDefinition,
-    args: &serde_json::Value,
-    context: &SubAgentContext,
-    client: &golish_llm_providers::LlmClient,
-    ctx: SubAgentExecutorContext<'_>,
-    tool_provider: &DefaultToolProvider,
-    parent_request_id: &str,
-) -> anyhow::Result<golish_sub_agents::SubAgentResult> {
-    use golish_llm_providers::LlmClient;
-
-    match client {
-        LlmClient::VertexAnthropic(model) => {
-            execute_sub_agent(
-                agent_def,
-                args,
-                context,
-                model,
-                ctx,
-                tool_provider,
-                parent_request_id,
-            )
-            .await
-        }
-        LlmClient::RigOpenRouter(model) => {
-            execute_sub_agent(
-                agent_def,
-                args,
-                context,
-                model,
-                ctx,
-                tool_provider,
-                parent_request_id,
-            )
-            .await
-        }
-        LlmClient::RigOpenAi(model) => {
-            execute_sub_agent(
-                agent_def,
-                args,
-                context,
-                model,
-                ctx,
-                tool_provider,
-                parent_request_id,
-            )
-            .await
-        }
-        LlmClient::RigOpenAiResponses(model) => {
-            execute_sub_agent(
-                agent_def,
-                args,
-                context,
-                model,
-                ctx,
-                tool_provider,
-                parent_request_id,
-            )
-            .await
-        }
-        LlmClient::OpenAiReasoning(model) => {
-            execute_sub_agent(
-                agent_def,
-                args,
-                context,
-                model,
-                ctx,
-                tool_provider,
-                parent_request_id,
-            )
-            .await
-        }
-        LlmClient::RigAnthropic(model) => {
-            execute_sub_agent(
-                agent_def,
-                args,
-                context,
-                model,
-                ctx,
-                tool_provider,
-                parent_request_id,
-            )
-            .await
-        }
-        LlmClient::RigOllama(model) => {
-            execute_sub_agent(
-                agent_def,
-                args,
-                context,
-                model,
-                ctx,
-                tool_provider,
-                parent_request_id,
-            )
-            .await
-        }
-        LlmClient::RigGemini(model) => {
-            execute_sub_agent(
-                agent_def,
-                args,
-                context,
-                model,
-                ctx,
-                tool_provider,
-                parent_request_id,
-            )
-            .await
-        }
-        LlmClient::RigGroq(model) => {
-            execute_sub_agent(
-                agent_def,
-                args,
-                context,
-                model,
-                ctx,
-                tool_provider,
-                parent_request_id,
-            )
-            .await
-        }
-        LlmClient::RigXai(model) => {
-            execute_sub_agent(
-                agent_def,
-                args,
-                context,
-                model,
-                ctx,
-                tool_provider,
-                parent_request_id,
-            )
-            .await
-        }
-        LlmClient::RigZaiSdk(model) => {
-            execute_sub_agent(
-                agent_def,
-                args,
-                context,
-                model,
-                ctx,
-                tool_provider,
-                parent_request_id,
-            )
-            .await
-        }
-        LlmClient::RigNvidia(model) => {
-            execute_sub_agent(
-                agent_def,
-                args,
-                context,
-                model,
-                ctx,
-                tool_provider,
-                parent_request_id,
-            )
-            .await
-        }
-        LlmClient::VertexGemini(model) => {
-            execute_sub_agent(
-                agent_def,
-                args,
-                context,
-                model,
-                ctx,
-                tool_provider,
-                parent_request_id,
-            )
-            .await
-        }
-        LlmClient::Mock => Err(anyhow::anyhow!("Cannot execute sub-agent with Mock client")),
-    }
-}
-
-/// Timeout for approval requests in seconds (5 minutes)
-pub const APPROVAL_TIMEOUT_SECS: u64 = 300;
+/// Timeout for approval requests in seconds (30 minutes)
+pub const APPROVAL_TIMEOUT_SECS: u64 = 1800;
 
 /// Maximum tokens for a single completion request
 pub const MAX_COMPLETION_TOKENS: u32 = 10_000;
@@ -314,7 +140,7 @@ pub struct AgenticLoopContext<'a> {
     /// Sidecar state for context capture (optional)
     pub sidecar_state: Option<&'a Arc<SidecarState>>,
     /// Runtime for auto-approve checks (optional for backward compatibility)
-    pub runtime: Option<&'a Arc<dyn QbitRuntime>>,
+    pub runtime: Option<&'a Arc<dyn GolishRuntime>>,
     /// Agent mode for controlling tool approval behavior
     pub agent_mode: &'a Arc<RwLock<super::agent_mode::AgentMode>>,
     /// Plan manager for update_plan tool
@@ -365,6 +191,10 @@ pub struct AgenticLoopContext<'a> {
     pub db_tracker: Option<&'a crate::db_tracking::DbTracker>,
     /// Cancellation flag: checked between loop iterations to support user-initiated stop.
     pub cancelled: Option<&'a Arc<std::sync::atomic::AtomicBool>>,
+    /// Execution monitor for the Mentor pattern (PentAGI-style).
+    /// When present, tracks tool call patterns and the agentic loop can
+    /// inject mentor advice into tool results when the monitor triggers.
+    pub execution_monitor: Option<Arc<RwLock<crate::loop_detection::ExecutionMonitor>>>,
 }
 
 /// Result of a single tool execution.
@@ -449,136 +279,6 @@ fn emit_event(ctx: &AgenticLoopContext<'_>, event: AiEvent) {
     }
 }
 
-/// Estimate the character count of a message for heuristic token estimation.
-///
-/// This is used as a fallback when the provider doesn't return token usage.
-/// Uses tokenx-rs for ~96% accuracy vs tiktoken cl100k_base.
-fn estimate_message_tokens(message: &Message) -> usize {
-    match message {
-        Message::User { content } => content
-            .iter()
-            .map(|c| match c {
-                UserContent::Text(text) => tokenx_rs::estimate_token_count(&text.text),
-                UserContent::ToolResult(result) => {
-                    tokenx_rs::estimate_token_count(&result.id)
-                        + result
-                            .content
-                            .iter()
-                            .map(|r| match r {
-                                ToolResultContent::Text(t) => {
-                                    tokenx_rs::estimate_token_count(&t.text)
-                                }
-                                ToolResultContent::Image(_) => 250, // ~1000 chars worth
-                            })
-                            .sum::<usize>()
-                }
-                UserContent::Image(_) => 250,
-                UserContent::Audio(_) => 1250,
-                UserContent::Video(_) => 2500,
-                UserContent::Document(_) => 1250,
-            })
-            .sum(),
-        Message::Assistant { content, .. } => content
-            .iter()
-            .map(|c| match c {
-                AssistantContent::Text(text) => tokenx_rs::estimate_token_count(&text.text),
-                AssistantContent::ToolCall(call) => {
-                    tokenx_rs::estimate_token_count(&call.function.name)
-                        + serde_json::to_string(&call.function.arguments)
-                            .map(|s| tokenx_rs::estimate_token_count(&s))
-                            .unwrap_or(0)
-                }
-                AssistantContent::Reasoning(reasoning) => reasoning
-                    .content
-                    .iter()
-                    .map(|c| match c {
-                        ReasoningContent::Text { text, .. } => {
-                            tokenx_rs::estimate_token_count(text)
-                        }
-                        _ => 0,
-                    })
-                    .sum::<usize>(),
-                AssistantContent::Image(_) => 250,
-            })
-            .sum(),
-    }
-}
-
-/// Handle loop detection result and create appropriate tool result if blocked.
-///
-/// `tool_id` is the main identifier (used for events/UI).
-/// `tool_call_id` is used for the tool result's call_id (OpenAI uses call_* format).
-pub fn handle_loop_detection(
-    loop_result: &LoopDetectionResult,
-    tool_id: &str,
-    tool_call_id: &str,
-    event_tx: &mpsc::UnboundedSender<AiEvent>,
-) -> Option<UserContent> {
-    match loop_result {
-        LoopDetectionResult::Blocked {
-            tool_name,
-            repeat_count,
-            max_count,
-            message,
-        } => {
-            let _ = event_tx.send(AiEvent::LoopBlocked {
-                tool_name: tool_name.clone(),
-                repeat_count: *repeat_count,
-                max_count: *max_count,
-                message: message.clone(),
-            });
-            let result_text = serde_json::to_string(&json!({
-                "error": message,
-                "loop_detected": true,
-                "repeat_count": repeat_count,
-                "suggestion": "Try a different approach or modify the arguments"
-            }))
-            .unwrap_or_default();
-            Some(UserContent::ToolResult(ToolResult {
-                id: tool_id.to_string(),
-                call_id: Some(tool_call_id.to_string()),
-                content: OneOrMany::one(ToolResultContent::Text(Text { text: result_text })),
-            }))
-        }
-        LoopDetectionResult::MaxIterationsReached {
-            iterations,
-            max_iterations,
-            message,
-        } => {
-            let _ = event_tx.send(AiEvent::MaxIterationsReached {
-                iterations: *iterations,
-                max_iterations: *max_iterations,
-                message: message.clone(),
-            });
-            let result_text = serde_json::to_string(&json!({
-                "error": message,
-                "max_iterations_reached": true,
-                "suggestion": "Provide a final response to the user"
-            }))
-            .unwrap_or_default();
-            Some(UserContent::ToolResult(ToolResult {
-                id: tool_id.to_string(),
-                call_id: Some(tool_call_id.to_string()),
-                content: OneOrMany::one(ToolResultContent::Text(Text { text: result_text })),
-            }))
-        }
-        LoopDetectionResult::Warning {
-            tool_name,
-            current_count,
-            max_count,
-            message,
-        } => {
-            let _ = event_tx.send(AiEvent::LoopWarning {
-                tool_name: tool_name.clone(),
-                current_count: *current_count,
-                max_count: *max_count,
-                message: message.clone(),
-            });
-            None // Warning doesn't block execution
-        }
-        LoopDetectionResult::Allowed => None,
-    }
-}
 
 /// Execute the main agentic loop with tool calling.
 ///
@@ -614,741 +314,6 @@ pub async fn run_agentic_loop(
     .await
 }
 
-/// Execute a tool directly for generic models (after approval or auto-approved).
-pub async fn execute_tool_direct_generic<M>(
-    tool_name: &str,
-    tool_args: &serde_json::Value,
-    ctx: &AgenticLoopContext<'_>,
-    model: &M,
-    context: &SubAgentContext,
-    tool_id: &str,
-) -> Result<ToolExecutionResult>
-where
-    M: RigCompletionModel + Sync,
-{
-    // Check if this is an indexer tool call
-    if tool_name.starts_with("indexer_") {
-        return Ok(ToolExecutionResult {
-            value: serde_json::json!({"error": "Indexer tools are no longer available. Use grep_file, ast_grep, read_file, or sub-agents for code analysis."}),
-            success: false,
-        });
-    }
-
-    // Check if this is our custom web_fetch tool (with readability extraction)
-    if tool_name == "web_fetch" {
-        let (value, success) = execute_web_fetch_tool(tool_name, tool_args).await;
-        return Ok(ToolExecutionResult { value, success });
-    }
-
-    // Check if this is an update_plan tool call
-    if tool_name == "update_plan" {
-        let (value, success) = execute_plan_tool(ctx.plan_manager, ctx.event_tx, tool_args).await;
-        return Ok(ToolExecutionResult { value, success });
-    }
-
-    // Check if this is a memory tool call
-    if matches!(tool_name, "search_memories" | "store_memory" | "list_memories") {
-        if let Some((value, success)) =
-            crate::tool_executors::execute_memory_tool(tool_name, tool_args, ctx.db_tracker).await
-        {
-            return Ok(ToolExecutionResult { value, success });
-        }
-    }
-
-    // Check if this is a knowledge base tool call
-    if matches!(
-        tool_name,
-        "search_knowledge_base" | "write_knowledge" | "read_knowledge" | "ingest_cve" | "save_poc"
-    ) {
-        if let Some((value, success)) =
-            crate::tool_executors::execute_knowledge_base_tool(tool_name, tool_args, ctx.db_tracker)
-                .await
-        {
-            return Ok(ToolExecutionResult { value, success });
-        }
-    }
-
-    // Check if this is a security analysis tool call
-    if matches!(
-        tool_name,
-        "log_operation" | "discover_apis" | "save_js_analysis"
-        | "fingerprint_target" | "log_scan_result" | "query_target_data"
-    ) {
-        let ws_path = ctx.workspace.read().await;
-        let project_path_str = ws_path.to_string_lossy().to_string();
-        drop(ws_path);
-        if let Some((value, success)) =
-            crate::tool_executors::execute_security_analysis_tool(
-                tool_name, tool_args, ctx.db_tracker,
-                Some(project_path_str.as_str()),
-                ctx.session_id,
-            ).await
-        {
-            return Ok(ToolExecutionResult { value, success });
-        }
-    }
-
-    // Check if this is an ask_human barrier tool call
-    if tool_name == "ask_human" {
-        let (value, success) = execute_ask_human_tool(
-            tool_args,
-            ctx.event_tx,
-            ctx.coordinator,
-            ctx.pending_approvals,
-        ).await;
-        return Ok(ToolExecutionResult { value, success });
-    }
-
-    // Check if this is handled by a custom tool executor (e.g., SWE-bench test tool)
-    if let Some(ref executor) = ctx.custom_tool_executor {
-        if let Some((value, success)) = executor(tool_name, tool_args).await {
-            return Ok(ToolExecutionResult { value, success });
-        }
-    }
-
-    // Check if this is a sub-agent call
-    if tool_name.starts_with("sub_agent_") {
-        let agent_id = tool_name.strip_prefix("sub_agent_").unwrap_or("");
-
-        // Get the agent definition
-        let registry = ctx.sub_agent_registry.read().await;
-        let agent_def = match registry.get(agent_id) {
-            Some(def) => def.clone(),
-            None => {
-                return Ok(ToolExecutionResult {
-                    value: json!({ "error": format!("Sub-agent '{}' not found", agent_id) }),
-                    success: false,
-                });
-            }
-        };
-        drop(registry);
-
-        let tool_provider = DefaultToolProvider::new();
-
-        // Build orchestrator briefing from shared memories + active execution plans
-        let task_desc = tool_args.get("task").and_then(|v| v.as_str()).unwrap_or("");
-        let briefing = build_sub_agent_briefing(ctx.db_tracker, agent_id, task_desc).await;
-
-        // Check if this sub-agent has a model override
-        let result = if let Some((override_provider, override_model)) = &agent_def.model_override {
-            // Try to get/create the override model client
-            let override_client = if let Some(factory) = ctx.model_factory {
-                match factory
-                    .get_or_create(override_provider, override_model)
-                    .await
-                {
-                    Ok(client) => Some(client),
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to create override model {}/{} for sub-agent '{}': {}. Using main model.",
-                            override_provider, override_model, agent_id, e
-                        );
-                        None
-                    }
-                }
-            } else {
-                tracing::warn!(
-                    "Sub-agent '{}' has model override but no factory available. Using main model.",
-                    agent_id
-                );
-                None
-            };
-
-            if let Some(client) = override_client {
-                // Execute with override model - dispatch based on LlmClient variant
-                tracing::info!(
-                    "[sub-agent:{}] Executing with override model: provider={}, model={}",
-                    agent_id,
-                    override_provider,
-                    override_model
-                );
-                let sub_ctx = SubAgentExecutorContext {
-                    event_tx: ctx.event_tx,
-                    tool_registry: ctx.tool_registry,
-                    workspace: ctx.workspace,
-                    provider_name: override_provider,
-                    model_name: override_model,
-                    session_id: ctx.session_id,
-                    transcript_base_dir: ctx.transcript_base_dir,
-                    api_request_stats: Some(ctx.api_request_stats),
-                    briefing: briefing.clone(),
-                };
-                execute_sub_agent_with_client(
-                    &agent_def,
-                    tool_args,
-                    context,
-                    &client,
-                    sub_ctx,
-                    &tool_provider,
-                    tool_id,
-                )
-                .await
-            } else {
-                // Fallback to main model
-                tracing::info!(
-                    "[sub-agent:{}] Executing with main model (override failed): provider={}, model={}",
-                    agent_id,
-                    ctx.provider_name,
-                    ctx.model_name
-                );
-                let sub_ctx = SubAgentExecutorContext {
-                    event_tx: ctx.event_tx,
-                    tool_registry: ctx.tool_registry,
-                    workspace: ctx.workspace,
-                    provider_name: ctx.provider_name,
-                    model_name: ctx.model_name,
-                    session_id: ctx.session_id,
-                    transcript_base_dir: ctx.transcript_base_dir,
-                    api_request_stats: Some(ctx.api_request_stats),
-                    briefing: briefing.clone(),
-                };
-                execute_sub_agent(
-                    &agent_def,
-                    tool_args,
-                    context,
-                    model,
-                    sub_ctx,
-                    &tool_provider,
-                    tool_id,
-                )
-                .await
-            }
-        } else {
-            // No override - use main model (current behavior)
-            tracing::info!(
-                "[sub-agent:{}] Executing with main model (no override): provider={}, model={}",
-                agent_id,
-                ctx.provider_name,
-                ctx.model_name
-            );
-            let sub_ctx = SubAgentExecutorContext {
-                event_tx: ctx.event_tx,
-                tool_registry: ctx.tool_registry,
-                workspace: ctx.workspace,
-                provider_name: ctx.provider_name,
-                model_name: ctx.model_name,
-                session_id: ctx.session_id,
-                transcript_base_dir: ctx.transcript_base_dir,
-                api_request_stats: Some(ctx.api_request_stats),
-                briefing,
-            };
-            execute_sub_agent(
-                &agent_def,
-                tool_args,
-                context,
-                model,
-                sub_ctx,
-                &tool_provider,
-                tool_id,
-            )
-            .await
-        };
-
-        match result {
-            Ok(result) => {
-                // Record the agent call in the DB for analytics/audit
-                if let Some(tracker) = ctx.db_tracker {
-                    let result_preview = truncate_str(&result.response, 500);
-                    tracker.record_agent_call(
-                        "primary",
-                        agent_id,
-                        &context.original_request,
-                        Some(result_preview),
-                        result.duration_ms,
-                    );
-                }
-
-                return Ok(ToolExecutionResult {
-                    value: json!({
-                        "agent_id": result.agent_id,
-                        "response": result.response,
-                        "success": result.success,
-                        "duration_ms": result.duration_ms,
-                        "files_modified": result.files_modified
-                    }),
-                    success: result.success,
-                });
-            }
-            Err(e) => {
-                return Ok(ToolExecutionResult {
-                    value: json!({ "error": e.to_string() }),
-                    success: false,
-                });
-            }
-        }
-    }
-
-    // Map run_command to run_pty_cmd (run_command is a user-friendly alias)
-    let effective_tool_name = if tool_name == "run_command" {
-        "run_pty_cmd"
-    } else {
-        tool_name
-    };
-
-    // Execute tool via registry (run_pty_cmd uses VisibleRunPtyCmdTool when registered)
-    let registry = ctx.tool_registry.read().await;
-    let result = registry
-        .execute_tool(effective_tool_name, tool_args.clone())
-        .await;
-
-    match &result {
-        Ok(v) => {
-            // Check for failure: exit_code != 0 OR presence of "error" field
-            let is_failure_by_exit_code = v
-                .get("exit_code")
-                .and_then(|ec| ec.as_i64())
-                .map(|ec| ec != 0)
-                .unwrap_or(false);
-            let has_error_field = v.get("error").is_some();
-            let is_success = !is_failure_by_exit_code && !has_error_field;
-            Ok(ToolExecutionResult {
-                value: v.clone(),
-                success: is_success,
-            })
-        }
-        Err(e) => Ok(ToolExecutionResult {
-            value: json!({"error": e.to_string()}),
-            success: false,
-        }),
-    }
-}
-
-/// Execute a shell command with streaming output (background execution).
-///
-/// This function uses `golish_shell_exec::execute_streaming` to run the command
-/// and emits `ToolOutputChunk` events as output arrives, providing real-time
-/// feedback for long-running commands.
-///
-/// Currently unused: commands route through VisibleRunPtyCmdTool in the registry
-/// so they execute in the user's visible terminal instead of in the background.
-#[allow(dead_code)]
-async fn execute_shell_command_streaming(
-    tool_args: &serde_json::Value,
-    tool_id: &str,
-    ctx: &AgenticLoopContext<'_>,
-) -> Result<ToolExecutionResult> {
-    use golish_shell_exec::{execute_streaming, OutputChunk};
-
-    // Parse arguments
-    let command = tool_args
-        .get("command")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing required argument: command"))?;
-
-    let cwd = tool_args.get("cwd").and_then(|v| v.as_str());
-
-    const MAX_SHELL_TIMEOUT_SECS: u64 = 600;
-    let timeout_secs = tool_args
-        .get("timeout")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(120)
-        .min(MAX_SHELL_TIMEOUT_SECS);
-
-    let workspace = ctx.workspace.read().await;
-
-    // Get shell override from settings (if available)
-    let shell_override: Option<String> = None; // TODO: Get from settings if needed
-
-    // Create channel for streaming output
-    let (chunk_tx, mut chunk_rx) = mpsc::channel::<OutputChunk>(100);
-
-    // Clone values needed for the spawned task
-    let event_tx = ctx.event_tx.clone();
-    let request_id = tool_id.to_string();
-
-    // Spawn task to forward output chunks as events
-    let chunk_forwarder = tokio::spawn(async move {
-        tracing::debug!("Chunk forwarder started for tool: {}", request_id);
-        while let Some(chunk) = chunk_rx.recv().await {
-            tracing::debug!(
-                "Received output chunk for {}: {} bytes",
-                request_id,
-                chunk.data.len()
-            );
-            let event = AiEvent::ToolOutputChunk {
-                request_id: request_id.clone(),
-                tool_name: "run_pty_cmd".to_string(),
-                chunk: chunk.data,
-                stream: chunk.stream.as_str().to_string(),
-                source: golish_core::events::ToolSource::Main,
-            };
-            if let Err(e) = event_tx.send(event) {
-                tracing::error!("Failed to send ToolOutputChunk event: {:?}", e);
-            } else {
-                tracing::debug!("Sent ToolOutputChunk event for {}", request_id);
-            }
-        }
-        tracing::debug!("Chunk forwarder finished for tool");
-    });
-
-    // Execute the command with streaming
-    let result = execute_streaming(
-        command,
-        cwd,
-        timeout_secs,
-        &workspace,
-        shell_override.as_deref(),
-        chunk_tx,
-    )
-    .await;
-
-    // Wait for chunk forwarder to finish
-    let _ = chunk_forwarder.await;
-
-    match result {
-        Ok(streaming_result) => {
-            let exit_code = streaming_result.exit_code;
-            let is_success = exit_code == 0 && !streaming_result.timed_out;
-
-            let mut value = json!({
-                "stdout": streaming_result.stdout,
-                "stderr": streaming_result.stderr,
-                "exit_code": exit_code,
-                "command": command
-            });
-
-            if let Some(c) = cwd {
-                value["cwd"] = json!(c);
-            }
-
-            if streaming_result.timed_out {
-                value["error"] = json!(format!("Command timed out after {} seconds", timeout_secs));
-                value["timeout"] = json!(true);
-            } else if exit_code != 0 {
-                let error_output = if streaming_result.stderr.is_empty() {
-                    &streaming_result.stdout
-                } else {
-                    &streaming_result.stderr
-                };
-                value["error"] = json!(format!(
-                    "Command exited with code {}: {}",
-                    exit_code, error_output
-                ));
-            }
-
-            Ok(ToolExecutionResult {
-                value,
-                success: is_success,
-            })
-        }
-        Err(e) => Ok(ToolExecutionResult {
-            value: json!({"error": e.to_string(), "exit_code": 1}),
-            success: false,
-        }),
-    }
-}
-
-/// Execute a tool with HITL approval check for generic models.
-pub async fn execute_with_hitl_generic<M>(
-    tool_name: &str,
-    tool_args: &serde_json::Value,
-    tool_id: &str,
-    ctx: &AgenticLoopContext<'_>,
-    capture_ctx: &LoopCaptureContext,
-    model: &M,
-    context: &SubAgentContext,
-) -> Result<ToolExecutionResult>
-where
-    M: RigCompletionModel + Sync,
-{
-    // Capture tool request for file tracking
-    capture_ctx.process(&AiEvent::ToolRequest {
-        request_id: tool_id.to_string(),
-        tool_name: tool_name.to_string(),
-        args: tool_args.clone(),
-        source: golish_core::events::ToolSource::Main,
-    });
-
-    // Step 0: Check agent mode for special handling
-    let agent_mode = *ctx.agent_mode.read().await;
-
-    // Check if auto-approve is enabled (via agent mode or runtime flag)
-    // This is used to bypass policy deny checks while still enforcing constraints
-    let is_auto_approve =
-        agent_mode.is_auto_approve() || ctx.runtime.is_some_and(|r| r.auto_approve());
-
-    // Step 0.1: Planning mode restrictions (read-only tools only)
-    if agent_mode.is_planning() {
-        // In planning mode, only allow read-only tools
-        // Check against the ALLOW_TOOLS list from tool_policy
-        use crate::tool_policy::ALLOW_TOOLS;
-        if !ALLOW_TOOLS.contains(&tool_name) {
-            let denied_event = AiEvent::ToolDenied {
-                request_id: tool_id.to_string(),
-                tool_name: tool_name.to_string(),
-                args: tool_args.clone(),
-                reason: "Planning mode: only read-only tools are allowed".to_string(),
-                source: golish_core::events::ToolSource::Main,
-            };
-            emit_to_frontend(ctx, denied_event.clone());
-            capture_ctx.process(&denied_event);
-            return Ok(ToolExecutionResult {
-                value: json!({
-                    "error": format!("Tool '{}' is not allowed in planning mode (read-only)", tool_name),
-                    "planning_mode_denied": true
-                }),
-                success: false,
-            });
-        }
-    }
-
-    // Step 1: Check if tool is denied by policy
-    // Skip this check if auto-approve is enabled (policy is bypassed, but constraints still apply)
-    if !is_auto_approve && ctx.tool_policy_manager.is_denied(tool_name).await {
-        let denied_event = AiEvent::ToolDenied {
-            request_id: tool_id.to_string(),
-            tool_name: tool_name.to_string(),
-            args: tool_args.clone(),
-            reason: "Tool is denied by policy".to_string(),
-            source: golish_core::events::ToolSource::Main,
-        };
-        emit_to_frontend(ctx, denied_event.clone());
-        capture_ctx.process(&denied_event);
-        return Ok(ToolExecutionResult {
-            value: json!({
-                "error": format!("Tool '{}' is denied by policy", tool_name),
-                "denied_by_policy": true
-            }),
-            success: false,
-        });
-    }
-
-    // Step 2: Apply constraints and check for violations
-    let (effective_args, constraint_note) = match ctx
-        .tool_policy_manager
-        .apply_constraints(tool_name, tool_args)
-        .await
-    {
-        PolicyConstraintResult::Allowed => (tool_args.clone(), None),
-        PolicyConstraintResult::Violated(reason) => {
-            emit_event(
-                ctx,
-                AiEvent::ToolDenied {
-                    request_id: tool_id.to_string(),
-                    tool_name: tool_name.to_string(),
-                    args: tool_args.clone(),
-                    reason: reason.clone(),
-                    source: golish_core::events::ToolSource::Main,
-                },
-            );
-            return Ok(ToolExecutionResult {
-                value: json!({
-                    "error": format!("Tool constraint violated: {}", reason),
-                    "constraint_violated": true
-                }),
-                success: false,
-            });
-        }
-        PolicyConstraintResult::Modified(modified_args, note) => {
-            tracing::info!("Tool '{}' args modified by constraint: {}", tool_name, note);
-            (modified_args, Some(note))
-        }
-    };
-
-    // Step 3: Check if tool is allowed by policy (bypasses HITL)
-    let policy = ctx.tool_policy_manager.get_policy(tool_name).await;
-    if policy == ToolPolicy::Allow {
-        let reason = if let Some(note) = constraint_note {
-            format!("Allowed by policy ({})", note)
-        } else {
-            "Allowed by tool policy".to_string()
-        };
-        emit_event(
-            ctx,
-            AiEvent::ToolAutoApproved {
-                request_id: tool_id.to_string(),
-                tool_name: tool_name.to_string(),
-                args: effective_args.clone(),
-                reason,
-                source: golish_core::events::ToolSource::Main,
-            },
-        );
-
-        return execute_tool_direct_generic(
-            tool_name,
-            &effective_args,
-            ctx,
-            model,
-            context,
-            tool_id,
-        )
-        .await;
-    }
-
-    // Step 4: Check if tool should be auto-approved based on learned patterns
-    if ctx.approval_recorder.should_auto_approve(tool_name).await {
-        emit_event(
-            ctx,
-            AiEvent::ToolAutoApproved {
-                request_id: tool_id.to_string(),
-                tool_name: tool_name.to_string(),
-                args: effective_args.clone(),
-                reason: "Auto-approved based on learned patterns or always-allow list".to_string(),
-                source: golish_core::events::ToolSource::Main,
-            },
-        );
-
-        return execute_tool_direct_generic(
-            tool_name,
-            &effective_args,
-            ctx,
-            model,
-            context,
-            tool_id,
-        )
-        .await;
-    }
-
-    // Step 4.2: Auto-approve pentest tools only.
-    // run_command / run_pty_cmd require explicit user approval (HITL).
-    if tool_name.starts_with("pentest_") {
-        tracing::info!("[hitl] Auto-approving pentest tool: {}", tool_name);
-        emit_event(
-            ctx,
-            AiEvent::ToolAutoApproved {
-                request_id: tool_id.to_string(),
-                tool_name: tool_name.to_string(),
-                args: effective_args.clone(),
-                reason: "Auto-approved: Golish platform tool".to_string(),
-                source: golish_core::events::ToolSource::Main,
-            },
-        );
-
-        return execute_tool_direct_generic(
-            tool_name,
-            &effective_args,
-            ctx,
-            model,
-            context,
-            tool_id,
-        )
-        .await;
-    }
-
-    // Step 4.4: Auto-approve if agent mode or runtime flag is set
-    // This happens AFTER constraints are checked (Step 2) to ensure safety limits apply
-    if is_auto_approve {
-        let reason = if agent_mode.is_auto_approve() {
-            "Auto-approved via agent mode"
-        } else {
-            "Auto-approved via --auto-approve flag"
-        };
-        emit_event(
-            ctx,
-            AiEvent::ToolAutoApproved {
-                request_id: tool_id.to_string(),
-                tool_name: tool_name.to_string(),
-                args: effective_args.clone(),
-                reason: reason.to_string(),
-                source: golish_core::events::ToolSource::Main,
-            },
-        );
-
-        return execute_tool_direct_generic(
-            tool_name,
-            &effective_args,
-            ctx,
-            model,
-            context,
-            tool_id,
-        )
-        .await;
-    }
-
-    // Step 5: Need approval - create request with stats
-    let stats = ctx.approval_recorder.get_pattern(tool_name).await;
-    let risk_level = RiskLevel::for_tool(tool_name);
-    let config = ctx.approval_recorder.get_config().await;
-    let can_learn = !config
-        .always_require_approval
-        .contains(&tool_name.to_string());
-    let suggestion = ctx.approval_recorder.get_suggestion(tool_name).await;
-
-    // Register approval request - use coordinator if available, otherwise legacy path
-    let rx = if let Some(coordinator) = ctx.coordinator {
-        // New path: register via coordinator
-        coordinator.register_approval(tool_id.to_string())
-    } else {
-        // Legacy path: create oneshot channel and store sender
-        let (tx, rx) = oneshot::channel::<ApprovalDecision>();
-        {
-            let mut pending = ctx.pending_approvals.write().await;
-            pending.insert(tool_id.to_string(), tx);
-        }
-        rx
-    };
-
-    // Emit approval request event with HITL metadata
-    emit_to_frontend(
-        ctx,
-        AiEvent::ToolApprovalRequest {
-            request_id: tool_id.to_string(),
-            tool_name: tool_name.to_string(),
-            args: effective_args.clone(),
-            stats,
-            risk_level,
-            can_learn,
-            suggestion,
-            source: golish_core::events::ToolSource::Main,
-        },
-    );
-
-    tracing::info!(
-        "[hitl] Waiting for user approval: tool={}, risk={:?}, id={}",
-        tool_name, risk_level, tool_id
-    );
-
-    // Wait for approval response (with timeout)
-    match tokio::time::timeout(std::time::Duration::from_secs(APPROVAL_TIMEOUT_SECS), rx).await {
-        Ok(Ok(decision)) => {
-            tracing::info!("[hitl] User decision: tool={}, approved={}", tool_name, decision.approved);
-            if decision.approved {
-                let _ = ctx
-                    .approval_recorder
-                    .record_approval(tool_name, true, decision.reason, decision.always_allow)
-                    .await;
-
-                execute_tool_direct_generic(
-                    tool_name,
-                    &effective_args,
-                    ctx,
-                    model,
-                    context,
-                    tool_id,
-                )
-                .await
-            } else {
-                let _ = ctx
-                    .approval_recorder
-                    .record_approval(tool_name, false, decision.reason, false)
-                    .await;
-
-                Ok(ToolExecutionResult {
-                    value: json!({"error": "Tool execution denied by user", "denied": true}),
-                    success: false,
-                })
-            }
-        }
-        Ok(Err(_)) => Ok(ToolExecutionResult {
-            value: json!({"error": "Approval request cancelled", "cancelled": true}),
-            success: false,
-        }),
-        Err(_) => {
-            tracing::warn!("[hitl] Approval TIMED OUT after {}s: tool={}", APPROVAL_TIMEOUT_SECS, tool_name);
-            // Only need to clean up pending_approvals in legacy path
-            // Coordinator handles cleanup automatically
-            if ctx.coordinator.is_none() {
-                let mut pending = ctx.pending_approvals.write().await;
-                pending.remove(tool_id);
-            }
-
-            Ok(ToolExecutionResult {
-                value: json!({"error": format!("Approval request timed out after {} seconds", APPROVAL_TIMEOUT_SECS), "timeout": true}),
-                success: false,
-            })
-        }
-    }
-}
 
 /// Generic agentic loop that works with any rig CompletionModel.
 ///
@@ -3192,7 +2157,7 @@ where
         .map(|t| t.start_tool_call(&tool_id, tool_name, &tool_args));
 
     // Execute tool with HITL approval check
-    let result = execute_with_hitl_generic(
+    let mut result = execute_with_hitl_generic(
         tool_name,
         &tool_args,
         &tool_id,
@@ -3206,6 +2171,50 @@ where
         value: json!({ "error": e.to_string() }),
         success: false,
     });
+
+    // Tool Call Auto-Fixer: if execution failed with a schema/argument error,
+    // try a lightweight LLM call to repair the args and retry once.
+    if !result.success {
+        let error_text = result.value.get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let tool_schema = {
+            let registry = ctx.tool_registry.read().await;
+            registry.get_tool_definitions()
+                .into_iter()
+                .find(|td| td.name == *tool_name)
+                .map(|td| td.parameters)
+        };
+
+        if let Some(fixed_args) = toolcall_fixer::try_fix_tool_args(
+            model,
+            tool_name,
+            &tool_args,
+            &error_text,
+            tool_schema.as_ref(),
+        ).await {
+            tracing::info!(
+                "[toolcall-fixer] Retrying '{}' with repaired args",
+                tool_name
+            );
+            result = execute_with_hitl_generic(
+                tool_name,
+                &fixed_args,
+                &tool_id,
+                ctx,
+                capture_ctx,
+                model,
+                sub_agent_context,
+            )
+            .await
+            .unwrap_or_else(|e| ToolExecutionResult {
+                value: json!({ "error": e.to_string() }),
+                success: false,
+            });
+        }
+    }
 
     // Finish DB tracking with result
     if let (Some(tracker), Some(guard)) = (ctx.db_tracker, db_guard) {
@@ -3266,8 +2275,57 @@ where
     emit_to_frontend(ctx, result_event.clone());
     capture_ctx.process(&result_event);
 
+    // Execution Mentor check (PentAGI pattern): when the monitor detects
+    // repetitive tool usage, generate corrective advice and append it.
+    let mentor_advice = if let Some(ref monitor) = ctx.execution_monitor {
+        let args_summary = serde_json::to_string(&tool_args).unwrap_or_default();
+        let should_mentor = {
+            let mut mon = monitor.write().await;
+            mon.record_and_check(tool_name, &args_summary)
+        };
+        if should_mentor {
+            let (repeated_tool, repeat_count, recent_summary) = {
+                let mon = monitor.read().await;
+                (
+                    mon.repeated_tool_name().to_string(),
+                    mon.same_tool_count(),
+                    mon.recent_calls_summary(),
+                )
+            };
+            tracing::info!(
+                "[ExecutionMentor] Monitor triggered: '{}' called {} times, invoking mentor",
+                repeated_tool,
+                repeat_count,
+            );
+            // For now, provide a static corrective message.
+            // TODO: Use LLM-based mentor when simple_completion is accessible here.
+            let advice = format!(
+                "\n\n--- EXECUTION ADVISOR ---\n\
+                 You have called '{}' {} times. Consider a different approach:\n\
+                 - Try a different tool to make progress\n\
+                 - Check if previous results already contain the information you need\n\
+                 - If stuck, use a different strategy entirely\n\
+                 Recent calls: {}\n\
+                 -------------------------",
+                repeated_tool, repeat_count, recent_summary,
+            );
+            {
+                let mut mon = monitor.write().await;
+                mon.reset_after_mentor();
+            }
+            Some(advice)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // Convert result to text and truncate if necessary
-    let raw_result_text = serde_json::to_string(&result.value).unwrap_or_default();
+    let mut raw_result_text = serde_json::to_string(&result.value).unwrap_or_default();
+    if let Some(ref advice) = mentor_advice {
+        raw_result_text.push_str(advice);
+    }
     let truncation_result = ctx
         .context_manager
         .truncate_tool_response(&raw_result_text, tool_name)
@@ -3306,165 +2364,6 @@ where
     (user_content, hooks)
 }
 
-/// Check if a tool call is a sub-agent invocation.
-fn is_sub_agent_tool(tool_name: &str) -> bool {
-    tool_name.starts_with("sub_agent_")
-}
-
-/// Partition tool calls into sub-agent calls and non-sub-agent calls,
-/// preserving original indices for result ordering.
-#[allow(clippy::type_complexity)]
-fn partition_tool_calls(
-    tool_calls: Vec<ToolCall>,
-) -> (Vec<(usize, ToolCall)>, Vec<(usize, ToolCall)>) {
-    let mut sub_agent_calls = Vec::new();
-    let mut other_calls = Vec::new();
-
-    for (idx, tc) in tool_calls.into_iter().enumerate() {
-        if is_sub_agent_tool(&tc.function.name) {
-            sub_agent_calls.push((idx, tc));
-        } else {
-            other_calls.push((idx, tc));
-        }
-    }
-
-    (sub_agent_calls, other_calls)
-}
-
-/// Detect repetitive text patterns that indicate degenerate model generation.
-///
-/// Splits text into sentences by common terminators and checks for repeated
-/// sentence prefixes. Returns true if 3+ sentences share the same opening.
-fn detect_repetitive_text(text: &str) -> bool {
-    let char_count = text.chars().count();
-    if char_count < 100 {
-        return false;
-    }
-
-    let mut sentences = Vec::new();
-    let mut current = String::new();
-    for c in text.chars() {
-        current.push(c);
-        if matches!(c, '。' | '！' | '？' | '\n') {
-            let trimmed = current.trim().to_string();
-            let trimmed_chars = trimmed.chars().count();
-            if trimmed_chars >= 8 {
-                sentences.push(trimmed);
-            }
-            current = String::new();
-        }
-    }
-
-    if sentences.len() < 3 {
-        return false;
-    }
-
-    // Count sentence fingerprints (first 12 chars) — catches "我已经完成了你的请求。..." repeated
-    let mut fingerprints: HashMap<String, usize> = HashMap::new();
-    for sentence in &sentences {
-        let fp: String = sentence.chars().take(12).collect();
-        *fingerprints.entry(fp).or_default() += 1;
-    }
-    if fingerprints.values().any(|&count| count >= 3) {
-        return true;
-    }
-
-    // Also check for the tail of text repeating a long segment from earlier
-    if char_count >= 200 {
-        let chars: Vec<char> = text.chars().collect();
-        let window_size = 40.min(chars.len() / 4);
-        if window_size >= 20 {
-            let tail: String = chars[chars.len() - window_size..].iter().collect();
-            let head: String = chars[..chars.len() - window_size].iter().collect();
-            if head.matches(&tail).count() >= 2 {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
-/// Build an orchestrator briefing for a sub-agent by querying shared memories
-/// and active execution plans from the database.
-///
-/// Returns `None` if no relevant context is found or DB is not available,
-/// avoiding unnecessary prompt inflation.
-async fn build_sub_agent_briefing(
-    db_tracker: Option<&crate::db_tracking::DbTracker>,
-    agent_id: &str,
-    task_description: &str,
-) -> Option<String> {
-    let tracker = db_tracker?;
-
-    // Extract 2-3 meaningful keywords from the task description for memory search
-    let keywords: Vec<&str> = task_description
-        .split_whitespace()
-        .filter(|w| w.len() > 3)
-        .take(3)
-        .collect();
-
-    if keywords.is_empty() {
-        return None;
-    }
-
-    // Fetch relevant memories and active plans concurrently
-    let (memories, plans) = tokio::join!(
-        tracker.fetch_memories_for_briefing(&keywords, 5),
-        tracker.fetch_active_plans(),
-    );
-
-    let has_memories = !memories.is_empty();
-    let has_plans = !plans.is_empty();
-
-    if !has_memories && !has_plans {
-        return None;
-    }
-
-    let mut briefing = String::from("## Briefing from Orchestrator\n");
-
-    // Active execution plans
-    if has_plans {
-        briefing.push_str("\n### Active Execution Plans\n");
-        for plan in &plans {
-            briefing.push_str(&format!("- **{}** (status: {}, step {}):\n", plan.title, plan.status, plan.current_step));
-            if let Some(desc) = &plan.description {
-                briefing.push_str(&format!("  {}\n", desc));
-            }
-            if let Some(steps) = plan.steps.as_array() {
-                for (i, step) in steps.iter().enumerate() {
-                    let name = step.get("name").and_then(|v| v.as_str()).unwrap_or("unnamed");
-                    let status = step.get("status").and_then(|v| v.as_str()).unwrap_or("pending");
-                    let marker = if i as i32 == plan.current_step { ">>>" } else { "   " };
-                    briefing.push_str(&format!("  {} {}. {} [{}]\n", marker, i + 1, name, status));
-                }
-            }
-        }
-    }
-
-    // Relevant memories from other agents
-    if has_memories {
-        briefing.push_str("\n### Relevant Findings from Other Agents\n");
-        for mem in &memories {
-            let content_preview = if mem.content.len() > 300 {
-                format!("{}...", &mem.content[..mem.content.char_indices().take_while(|(i, _)| *i < 300).last().map(|(i, c)| i + c.len_utf8()).unwrap_or(300)])
-            } else {
-                mem.content.clone()
-            };
-            briefing.push_str(&format!("- [{}] {}\n", mem.mem_type, content_preview));
-        }
-    }
-
-    tracing::info!(
-        "[briefing] Built briefing for sub-agent '{}': {} memories, {} plans, {} chars",
-        agent_id,
-        memories.len(),
-        plans.len(),
-        briefing.len()
-    );
-
-    Some(briefing)
-}
 
 #[cfg(test)]
 mod concurrent_dispatch_tests {

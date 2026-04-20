@@ -1,6 +1,6 @@
 # Configuration
 
-Settings are stored in `~/.qbit/settings.toml` (auto-generated on first run).
+Settings are stored in `~/.golish/settings.toml` (auto-generated on first run).
 
 Most settings can be configured through the in-app Settings UI.
 

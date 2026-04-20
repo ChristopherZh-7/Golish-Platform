@@ -5,7 +5,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-/// Qbit - AI-powered terminal emulator
+/// Golish - AI-powered terminal emulator
 ///
 /// By default, runs as a GUI application. Use --headless for CLI mode.
 #[derive(Parser, Debug, Clone)]

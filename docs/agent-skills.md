@@ -20,7 +20,7 @@ Skills support:
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
 │  ┌────────────────────────┐    ┌────────────────────────────────┐   │
-│  │   ~/.qbit/skills/      │    │   <project>/.qbit/skills/      │   │
+│  │   ~/.golish/skills/      │    │   <project>/.golish/skills/      │   │
 │  │   (Global skills)      │    │   (Local skills - override)    │   │
 │  └───────────┬────────────┘    └───────────────┬────────────────┘   │
 │              │                                  │                   │
@@ -28,7 +28,7 @@ Skills support:
 │                         │                                           │
 │                         ▼                                           │
 │              ┌─────────────────────┐                                │
-│              │   qbit-skills crate │                                │
+│              │   golish-skills crate │                                │
 │              │   - Discovery       │                                │
 │              │   - Parsing         │                                │
 │              │   - Matching        │                                │
@@ -49,14 +49,14 @@ Skills support:
 Skills are discovered from two locations:
 
 ```
-~/.qbit/skills/                   # Global skills (user-level)
+~/.golish/skills/                   # Global skills (user-level)
   skill-name/
     SKILL.md                      # Required: YAML frontmatter + instructions
     scripts/                      # Optional: executable scripts
     references/                   # Optional: reference documents
     assets/                       # Optional: assets (images, etc.)
 
-<project>/.qbit/skills/           # Local skills (project-level, override global)
+<project>/.golish/skills/           # Local skills (project-level, override global)
   skill-name/
     SKILL.md
     ...
@@ -133,7 +133,7 @@ When skills are matched, their instructions are injected into the system prompt 
 
 ## Key Components
 
-### qbit-skills Crate (`backend/crates/qbit-skills/`)
+### golish-skills Crate (`backend/crates/golish-skills/`)
 
 The core skill library providing:
 
@@ -142,9 +142,9 @@ The core skill library providing:
 - **Matching** (`matcher.rs`) - Keyword-based skill matching algorithm
 - **Types** (`types.rs`) - SkillInfo, SkillMetadata, MatchedSkill, etc.
 
-### Tauri Commands (`backend/crates/qbit/src/commands/skills.rs`)
+### Tauri Commands (`backend/crates/golish/src/commands/skills.rs`)
 
-Thin wrappers around the qbit-skills crate:
+Thin wrappers around the golish-skills crate:
 
 ```rust
 // List available skills
@@ -163,7 +163,7 @@ pub async fn list_skill_files(skill_path: String, subdir: String) -> Result<Vec<
 pub async fn read_skill_file(skill_path: String, relative_path: String) -> Result<String>
 ```
 
-### Prompt Contributor (`backend/crates/qbit-ai/src/contributors/skills.rs`)
+### Prompt Contributor (`backend/crates/golish-ai/src/contributors/skills.rs`)
 
 Injects skill content into the system prompt:
 
@@ -189,7 +189,7 @@ impl PromptContributor for SkillsPromptContributor {
 Here's a complete example of a git commit skill:
 
 ```
-~/.qbit/skills/git-commit/
+~/.golish/skills/git-commit/
 ├── SKILL.md
 ├── scripts/
 │   └── validate-message.sh
@@ -207,7 +207,7 @@ license: MIT
 compatibility: Git 2.0+
 allowed-tools: bash read_file write_file
 metadata:
-  author: qbit-team
+  author: golish-team
   version: 1.0.0
 ---
 
@@ -247,9 +247,9 @@ Closes #123
 
 When resolving slash commands, the following precedence applies:
 
-1. **Prompts** (`.qbit/prompts/*.md`) - Highest priority
-2. **Local skills** (`<project>/.qbit/skills/`) - Override global
-3. **Global skills** (`~/.qbit/skills/`) - Lowest priority
+1. **Prompts** (`.golish/prompts/*.md`) - Highest priority
+2. **Local skills** (`<project>/.golish/skills/`) - Override global
+3. **Global skills** (`~/.golish/skills/`) - Lowest priority
 
 If a prompt and skill have the same name, the prompt takes precedence.
 
@@ -287,8 +287,8 @@ Run skill-related tests:
 
 ```bash
 # Unit tests
-cargo test -p qbit-skills
-cargo test -p qbit -- skills
+cargo test -p golish-skills
+cargo test -p golish -- skills
 
 # E2E tests
 pnpm test:e2e -- slash-commands
@@ -296,15 +296,15 @@ pnpm test:e2e -- slash-commands
 
 ## Related Files
 
-- `backend/crates/qbit-skills/` - Core skills library
+- `backend/crates/golish-skills/` - Core skills library
   - `src/lib.rs` - Public API and error types
   - `src/types.rs` - SkillInfo, SkillMetadata, SkillFrontmatter
   - `src/discovery.rs` - Skill discovery from directories
   - `src/parser.rs` - SKILL.md parsing and validation
   - `src/matcher.rs` - Keyword-based skill matching
-- `backend/crates/qbit/src/commands/skills.rs` - Tauri command wrappers
-- `backend/crates/qbit-ai/src/contributors/skills.rs` - Prompt contribution
-- `backend/crates/qbit-core/src/prompt.rs` - PromptSkillInfo, PromptMatchedSkill
+- `backend/crates/golish/src/commands/skills.rs` - Tauri command wrappers
+- `backend/crates/golish-ai/src/contributors/skills.rs` - Prompt contribution
+- `backend/crates/golish-core/src/prompt.rs` - PromptSkillInfo, PromptMatchedSkill
 - `frontend/hooks/useSlashCommands.ts` - Unified slash command loading
 - `frontend/components/SlashCommandPopup/` - UI for slash commands
 - `frontend/lib/tauri.ts` - Frontend skill invoke wrappers

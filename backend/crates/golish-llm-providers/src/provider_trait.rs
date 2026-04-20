@@ -683,13 +683,13 @@ pub fn create_provider(
     }
 }
 
-/// Extract ProviderSettings from QbitSettings for a given provider.
+/// Extract ProviderSettings from GolishSettings for a given provider.
 ///
-/// This helper function maps the typed settings from `QbitSettings` to the
+/// This helper function maps the typed settings from `GolishSettings` to the
 /// unified `ProviderSettings` structure used by the provider trait.
 pub fn extract_provider_settings(
     provider_type: AiProvider,
-    settings: &golish_settings::QbitSettings,
+    settings: &golish_settings::GolishSettings,
 ) -> ProviderSettings {
     match provider_type {
         AiProvider::Openai => ProviderSettings {
@@ -774,7 +774,7 @@ pub fn extract_provider_settings(
 pub async fn create_client_for_model(
     provider_type: AiProvider,
     model: &str,
-    settings: &golish_settings::QbitSettings,
+    settings: &golish_settings::GolishSettings,
 ) -> Result<crate::LlmClient> {
     let provider_settings = extract_provider_settings(provider_type, settings);
     let provider = create_provider(provider_type, &provider_settings)?;

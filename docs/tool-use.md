@@ -1,6 +1,6 @@
 # Tool Use Architecture
 
-This document explains how the AI agent's tool system works in Qbit.
+This document explains how the AI agent's tool system works in Golish.
 
 ## Overview
 
@@ -25,9 +25,9 @@ HITL Approval (safety)
 
 ## Tool Categories
 
-### 1. Standard Tools (from qbit-tools)
+### 1. Standard Tools (from golish-tools)
 
-Provided by the qbit-tools crate via `build_function_declarations()`:
+Provided by the golish-tools crate via `build_function_declarations()`:
 
 - **File operations**: `read_file`, `write_file`, `edit_file`, `delete_file`, `create_file`
 - **Search**: `grep_file`, `list_files`
@@ -277,9 +277,9 @@ Run tool-related tests:
 
 ```bash
 # Rust tests
-cargo test -p qbit tool
+cargo test -p golish tool
 
 # Specific module
-cargo test -p qbit tool_definitions
-cargo test -p qbit tool_executors
+cargo test -p golish tool_definitions
+cargo test -p golish tool_executors
 ```

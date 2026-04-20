@@ -1229,6 +1229,7 @@ struct GhTreeEntry {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct GhContentsEntry {
     name: String,
     path: String,

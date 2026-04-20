@@ -2,13 +2,13 @@
 
 ## Overview
 
-Add support for legacy SSE (Server-Sent Events) transport in the `qbit-mcp` crate, enabling connections to MCP servers like DeepWiki that only support the deprecated HTTP+SSE protocol (MCP protocol version 2024-11-05).
+Add support for legacy SSE (Server-Sent Events) transport in the `golish-mcp` crate, enabling connections to MCP servers like DeepWiki that only support the deprecated HTTP+SSE protocol (MCP protocol version 2024-11-05).
 
 ## Current State
 
 ### Dependencies
 ```toml
-# backend/crates/qbit-mcp/Cargo.toml
+# backend/crates/golish-mcp/Cargo.toml
 rmcp = { version = "0.14", features = [
     "client",
     "client-side-sse",
@@ -33,12 +33,12 @@ sse-stream = "0.2"
 **`rmcp` is the official MCP Rust SDK** (maintained at `modelcontextprotocol/rust-sdk`). In version 0.14, the only two built-in client transport types are `TokioChildProcess` (stdio) and `StreamableHttpClientTransport` (streamable HTTP). There is no standalone `SseTransport` for legacy SSE client connections, so we built a custom one using rmcp's `SinkStreamTransport`.
 
 ### Files
-- `backend/crates/qbit-mcp/Cargo.toml` — Dependencies (added `client-side-sse`, `futures`, `sse-stream`)
-- `backend/crates/qbit-mcp/src/sse_transport.rs` — **New** — Custom legacy SSE transport implementation
-- `backend/crates/qbit-mcp/src/client.rs` — Updated `connect_sse()` to use the new transport
-- `backend/crates/qbit-mcp/src/lib.rs` — Added `pub mod sse_transport`
-- `backend/crates/qbit-mcp/src/config.rs` — `McpTransportType::Sse` variant (already existed)
-- `backend/crates/qbit-mcp/src/manager.rs` — Server connection management (unchanged)
+- `backend/crates/golish-mcp/Cargo.toml` — Dependencies (added `client-side-sse`, `futures`, `sse-stream`)
+- `backend/crates/golish-mcp/src/sse_transport.rs` — **New** — Custom legacy SSE transport implementation
+- `backend/crates/golish-mcp/src/client.rs` — Updated `connect_sse()` to use the new transport
+- `backend/crates/golish-mcp/src/lib.rs` — Added `pub mod sse_transport`
+- `backend/crates/golish-mcp/src/config.rs` — `McpTransportType::Sse` variant (already existed)
+- `backend/crates/golish-mcp/src/manager.rs` — Server connection management (unchanged)
 
 ---
 
@@ -78,8 +78,8 @@ Skipped testing `StreamableHttpClientTransport` against legacy SSE servers. The 
 ### Phase 3: Testing — PARTIAL
 
 #### 3.1 Build & Lint
-- [x] `cargo check -p qbit-mcp` passes
-- [x] `cargo clippy -p qbit-mcp` passes (zero warnings)
+- [x] `cargo check -p golish-mcp` passes
+- [x] `cargo clippy -p golish-mcp` passes (zero warnings)
 - [x] `cargo clippy --workspace` passes
 
 #### 3.2 Unit Tests
@@ -103,7 +103,7 @@ Skipped testing `StreamableHttpClientTransport` against legacy SSE servers. The 
 
 ### Phase 4: Cleanup — DONE
 - [x] No workaround code
-- [x] `cargo clippy -p qbit-mcp` clean
+- [x] `cargo clippy -p golish-mcp` clean
 - [x] `cargo clippy --workspace` clean
 
 ---
@@ -111,12 +111,12 @@ Skipped testing `StreamableHttpClientTransport` against legacy SSE servers. The 
 ## Remaining Work
 
 ### Required
-1. **Integration test against a real SSE server** — Configure DeepWiki in `~/.qbit/mcp.json` or project `.qbit/mcp.json` and verify the full flow (connect → list tools → call tool)
+1. **Integration test against a real SSE server** — Configure DeepWiki in `~/.golish/mcp.json` or project `.golish/mcp.json` and verify the full flow (connect → list tools → call tool)
 2. **Regression test stdio/HTTP transports** — Verify existing MCP server connections still work after the changes
 
 ### Optional / Future
 3. **Reconnection logic** — If the SSE stream drops, the transport currently fails. A reconnection mechanism with backoff could improve reliability.
-4. **Fix pre-existing loader test failures** — 3 loader tests fail because they pick up the user's real `~/.qbit/mcp.json`. These should be isolated via `HOME` override or similar.
+4. **Fix pre-existing loader test failures** — 3 loader tests fail because they pick up the user's real `~/.golish/mcp.json`. These should be isolated via `HOME` override or similar.
 
 ---
 
@@ -131,7 +131,7 @@ Skipped testing `StreamableHttpClientTransport` against legacy SSE servers. The 
 ## Rollback Plan
 
 If the custom transport proves unreliable:
-1. Revert changes to `qbit-mcp` crate (3 files modified, 1 file added)
+1. Revert changes to `golish-mcp` crate (3 files modified, 1 file added)
 2. Keep the descriptive error message in `connect_sse()`
 3. Consider contributing SSE client transport upstream to `modelcontextprotocol/rust-sdk`
 
@@ -149,4 +149,4 @@ If the custom transport proves unreliable:
 - rmcp 0.14 docs: https://docs.rs/rmcp/0.14.0
 - rmcp transport module: https://docs.rs/rmcp/0.14.0/rmcp/transport/index.html
 - MCP legacy SSE spec: https://modelcontextprotocol.io/legacy/concepts/transports
-- Current qbit-mcp code: `backend/crates/qbit-mcp/`
+- Current golish-mcp code: `backend/crates/golish-mcp/`

@@ -12,7 +12,8 @@ pub use commands::{
     generate_commit_message, get_agent_mode, get_ai_conversation_length,
     get_ai_conversation_length_session, get_api_request_stats, get_approval_patterns,
     get_audit_log, get_db_token_usage_stats, get_memory_count, get_tool_call_stats,
-    list_recent_memories, search_memories,
+    get_usage_by_agent, list_recent_memories, search_memories,
+    list_agent_definitions, read_agent_prompt, save_agent_definition, delete_agent_definition, seed_agents,
     get_available_tools, get_context_summary, get_context_trim_config, get_context_utilization,
     get_hitl_config, get_loop_detector_stats, get_loop_protection_config, get_openai_api_key,
     get_openrouter_api_key, get_plan, get_project_settings, get_remaining_tokens,
@@ -31,5 +32,7 @@ pub use commands::{
     set_ai_session_persistence, set_hitl_config, set_loop_protection_config, set_sub_agent_model,
     set_tool_policy, set_tool_policy_config, shutdown_ai_agent, shutdown_ai_session,
     check_recon_tools_cmd, run_recon_pipeline, signal_frontend_ready,
+    set_use_agents, get_use_agents,
+    set_execution_mode, get_execution_mode,
     update_ai_workspace, AiState, CommitMessageResponse,
 };

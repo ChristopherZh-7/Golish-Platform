@@ -1,9 +1,9 @@
-//! MCP (Model Context Protocol) client integration for Qbit.
+//! MCP (Model Context Protocol) client integration for Golish.
 //!
 //! This crate provides:
 //! - MCP config loading and trust handling
 //! - MCP client/transport management via rmcp
-//! - Tool conversion to Qbit's tool definition format
+//! - Tool conversion to Golish's tool definition format
 
 pub mod client;
 pub mod config;

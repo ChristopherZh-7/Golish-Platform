@@ -70,14 +70,14 @@ The agent is given the problem statement and must:
 Test with one instance to verify setup:
 
 ```bash
-cargo run --no-default-features --features evals,cli --bin qbit-cli -- \
+cargo run --no-default-features --features evals,cli --bin golish-cli -- \
     --swebench --instance django__django-11133
 ```
 
 ### Run First 10 Instances
 
 ```bash
-cargo run --no-default-features --features evals,cli --bin qbit-cli -- \
+cargo run --no-default-features --features evals,cli --bin golish-cli -- \
     --swebench --problems 0-9
 ```
 
@@ -86,7 +86,7 @@ cargo run --no-default-features --features evals,cli --bin qbit-cli -- \
 Run 50 instances with max 4 concurrent:
 
 ```bash
-cargo run --no-default-features --features evals,cli --bin qbit-cli -- \
+cargo run --no-default-features --features evals,cli --bin golish-cli -- \
     --swebench --problems 0-49 --parallel --concurrency 4
 ```
 
@@ -95,7 +95,7 @@ cargo run --no-default-features --features evals,cli --bin qbit-cli -- \
 Run with Claude Opus 4.5 on Vertex AI:
 
 ```bash
-cargo run --no-default-features --features evals,cli --bin qbit-cli -- \
+cargo run --no-default-features --features evals,cli --bin golish-cli -- \
     --swebench --instance django__django-11133 \
     --eval-provider vertex-claude \
     --eval-model claude-opus-4-5@20250929
@@ -106,7 +106,7 @@ cargo run --no-default-features --features evals,cli --bin qbit-cli -- \
 Save per-instance JSON files for post-hoc analysis:
 
 ```bash
-cargo run --no-default-features --features evals,cli --bin qbit-cli -- \
+cargo run --no-default-features --features evals,cli --bin golish-cli -- \
     --swebench --problems 0-49 --parallel \
     --results-dir ./swebench-results \
     --output ./swebench-summary.json
@@ -125,12 +125,12 @@ Use persistent workspace to debug without re-running the agent:
 
 ```bash
 # First run - saves workspace
-cargo run --no-default-features --features evals,cli --bin qbit-cli -- \
+cargo run --no-default-features --features evals,cli --bin golish-cli -- \
     --swebench --instance django__django-11133 \
     --workspace-dir ./debug-workspace
 
 # Later - re-run just the tests after manual changes
-cargo run --no-default-features --features evals,cli --bin qbit-cli -- \
+cargo run --no-default-features --features evals,cli --bin golish-cli -- \
     --swebench --instance django__django-11133 \
     --workspace-dir ./debug-workspace \
     --test-only
@@ -141,7 +141,7 @@ cargo run --no-default-features --features evals,cli --bin qbit-cli -- \
 For CI pipelines, use JSON output and save results:
 
 ```bash
-cargo run --no-default-features --features evals,cli --bin qbit-cli -- \
+cargo run --no-default-features --features evals,cli --bin golish-cli -- \
     --swebench --problems 0-299 \
     --parallel --concurrency 8 \
     --json \
@@ -250,7 +250,7 @@ Some instances have large repositories or many tests. Use `--concurrency 2` to r
 
 Clear cached repositories:
 ```bash
-rm -rf ~/.qbit/benchmarks/swebench/repos/
+rm -rf ~/.golish/benchmarks/swebench/repos/
 ```
 
 Clear Docker images:
@@ -260,7 +260,7 @@ docker system prune -a
 
 ## Repository Cache
 
-Repositories are cached at `~/.qbit/benchmarks/swebench/repos/` to avoid re-cloning. Each repository is cloned once and then worktrees are created for each instance's specific commit.
+Repositories are cached at `~/.golish/benchmarks/swebench/repos/` to avoid re-cloning. Each repository is cloned once and then worktrees are created for each instance's specific commit.
 
 ## Docker Images
 

@@ -1,12 +1,12 @@
 # Langfuse Tracing Integration
 
-Qbit integrates with [Langfuse](https://langfuse.com) for LLM observability using OpenTelemetry (OTel). This provides visibility into agent behavior, token usage, tool execution, and context management.
+Golish integrates with [Langfuse](https://langfuse.com) for LLM observability using OpenTelemetry (OTel). This provides visibility into agent behavior, token usage, tool execution, and context management.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Qbit Application                          │
+│                        Golish Application                          │
 │                                                                  │
 │  ┌──────────────┐    ┌──────────────────┐    ┌───────────────┐  │
 │  │  tracing     │───▶│ tracing-otel     │───▶│ OTel SDK      │  │
@@ -33,7 +33,7 @@ Qbit integrates with [Langfuse](https://langfuse.com) for LLM observability usin
 
 ### Via Settings File
 
-Add to `~/.qbit/settings.toml`:
+Add to `~/.golish/settings.toml`:
 
 ```toml
 [telemetry.langfuse]
@@ -62,7 +62,7 @@ export LANGFUSE_HOST="https://cloud.langfuse.com"  # optional
 
 ## Trace Hierarchy
 
-Langfuse organizes data into Sessions, Traces, and Observations. Qbit maps its agentic loop to this hierarchy:
+Langfuse organizes data into Sessions, Traces, and Observations. Golish maps its agentic loop to this hierarchy:
 
 ```
 Session (conversation)
@@ -177,7 +177,7 @@ Emitted when the loop detector blocks a repetitive tool call.
 
 ### Async Span Handling
 
-Rust's `tracing` crate requires special handling for async code. The standard `span.enter()` pattern doesn't work across `.await` points. Instead, Qbit uses explicit parent relationships:
+Rust's `tracing` crate requires special handling for async code. The standard `span.enter()` pattern doesn't work across `.await` points. Instead, Golish uses explicit parent relationships:
 
 ```rust
 // Create parent span
@@ -248,7 +248,7 @@ Token usage is recorded after the LLM response is received. If a request fails o
 
 | File | Purpose |
 |------|---------|
-| `backend/crates/qbit/src/telemetry.rs` | Telemetry initialization and config |
-| `backend/crates/qbit-ai/src/agentic_loop.rs` | Span instrumentation |
-| `backend/crates/qbit-settings/src/schema.rs` | LangfuseSettings struct |
-| `backend/crates/qbit-settings/src/template.toml` | Settings template |
+| `backend/crates/golish/src/telemetry.rs` | Telemetry initialization and config |
+| `backend/crates/golish-ai/src/agentic_loop.rs` | Span instrumentation |
+| `backend/crates/golish-settings/src/schema.rs` | LangfuseSettings struct |
+| `backend/crates/golish-settings/src/template.toml` | Settings template |

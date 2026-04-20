@@ -1,6 +1,6 @@
 # Browser-Only Development Mode
 
-Develop and test the Qbit UI without running the Rust backend.
+Develop and test the Golish UI without running the Rust backend.
 
 ## Quick Start
 

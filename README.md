@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="app-icon.png" width="128" height="128" alt="Qbit Logo">
+<img src="app-icon.png" width="128" height="128" alt="Golish Logo">
 
-# qbit
+# golish
 ## Open Source Agentic Terminal Application
 
 
@@ -10,8 +10,8 @@
 [![Rust](https://img.shields.io/badge/Rust-000000?style=flat&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Tauri](https://img.shields.io/badge/Tauri_2-24C8D8?style=flat&logo=tauri&logoColor=white)](https://tauri.app/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-![Last Commit](https://img.shields.io/github/last-commit/qbit-ai/qbit)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/qbit-ai/qbit/pulls)
+![Last Commit](https://img.shields.io/github/last-commit/golish-ai/golish)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/golish-ai/golish/pulls)
 
 [Quickstart](#quickstart) • [Docs](docs/README.md) • [Development](docs/development.md)
 
@@ -19,7 +19,7 @@
 
 ---
 
-## About Qbit
+## About Golish
 
 - Free and open-source.
 - No account or subscription required. Bring your own keys.
@@ -76,15 +76,15 @@ Built-in version control with diff visualization
 ### Install (macOS)
 
 ```bash
-brew tap qbit-ai/tap
-brew install --cask qbit
+brew tap golish-ai/tap
+brew install --cask golish
 ```
 
 ### Run from source
 
 ```bash
-git clone https://github.com/qbit-ai/qbit.git
-cd qbit
+git clone https://github.com/golish-ai/golish.git
+cd golish
 just install
 just dev
 ```
@@ -98,18 +98,18 @@ just dev
 Download and extract the release build:
 
 ```bash
-curl -L -o qbit_x64.app.tar.gz \
-  https://github.com/qbit-ai/qbit/releases/download/v0.2.13/qbit_x64.app.tar.gz
+curl -L -o golish_x64.app.tar.gz \
+  https://github.com/golish-ai/golish/releases/download/v0.2.13/golish_x64.app.tar.gz
 
-mkdir -p qbit-release
+mkdir -p golish-release
 
-tar -xzf qbit_x64.app.tar.gz -C qbit-release
+tar -xzf golish_x64.app.tar.gz -C golish-release
 ```
 
 Add the binary to your `PATH` (adjust as needed for your system):
 
 ```bash
-sudo install -m 755 qbit-release/qbit /usr/local/bin/qbit
+sudo install -m 755 golish-release/golish /usr/local/bin/golish
 ```
 
 For source builds and Linux prerequisites, see [Getting started](docs/getting-started.md).
@@ -124,7 +124,7 @@ Start here:
 - [Configuration](docs/configuration.md)
 - [Providers](docs/providers.md)
 
-Using Qbit:
+Using Golish:
 - [Workspaces](docs/workspaces.md)
 - [Agent modes](docs/agent-modes.md)
 - [Agent skills](docs/agent-skills.md)

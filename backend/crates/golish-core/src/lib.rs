@@ -1,4 +1,4 @@
-//! Core types and traits for the Qbit application.
+//! Core types and traits for the Golish application.
 //!
 //! This crate provides the foundation types used across all other golish crates.
 //! It has ZERO internal crate dependencies and only depends on external libraries.
@@ -40,7 +40,7 @@ pub use prompt::{
     PromptContext, PromptContributor, PromptMatchedSkill, PromptPriority, PromptSection,
     PromptSkillInfo,
 };
-pub use runtime::{ApprovalResult, QbitRuntime, RuntimeError, RuntimeEvent};
+pub use runtime::{ApprovalResult, GolishRuntime, RuntimeError, RuntimeEvent};
 pub use session::{
     find_session_by_identifier, list_recent_sessions, MessageContent, MessageRole, SessionArchive,
     SessionArchiveMetadata, SessionListing, SessionMessage, SessionSnapshot,

@@ -101,7 +101,7 @@ pub fn detect_shell(settings: Option<&TerminalSettings>, shell_env: Option<&str>
 
 /// The zsh integration script that emits OSC 133 sequences.
 /// This is embedded in the binary to avoid file path dependencies.
-const ZSH_INTEGRATION_SCRIPT: &str = r#"# Qbit Shell Integration (auto-injected)
+const ZSH_INTEGRATION_SCRIPT: &str = r#"# Golish Shell Integration (auto-injected)
 # Emits OSC 133 sequences for command tracking
 
 # Debug: confirm script is being sourced
@@ -219,7 +219,7 @@ __golish_report_venv
 /// - User input is in Input region (visible)
 /// - C is emitted in preexec when command actually starts
 /// - Command output is in Output region (shown in timeline)
-const BASH_INTEGRATION_SCRIPT: &str = r#"# Qbit Shell Integration for Bash (auto-injected)
+const BASH_INTEGRATION_SCRIPT: &str = r#"# Golish Shell Integration for Bash (auto-injected)
 # Emits OSC 133 sequences for command tracking
 
 # Guard against double-sourcing
@@ -345,13 +345,13 @@ fi
 
 /// The wrapper .zshrc that sources our integration BEFORE user's config.
 /// This ensures our hooks run even if user's .zshrc has old integration lines.
-const ZSH_WRAPPER_ZSHRC: &str = r#"# Qbit ZDOTDIR wrapper - sources integration + user config
+const ZSH_WRAPPER_ZSHRC: &str = r#"# Golish ZDOTDIR wrapper - sources integration + user config
 
 # Debug: confirm wrapper is being sourced
 [[ -n "$QBIT_DEBUG" ]] && echo "[golish-wrapper] ZDOTDIR wrapper .zshrc loading..."
 [[ -n "$QBIT_DEBUG" ]] && echo "[golish-wrapper] QBIT_INTEGRATION_PATH=$QBIT_INTEGRATION_PATH"
 
-# Source Qbit integration FIRST (before user config)
+# Source Golish integration FIRST (before user config)
 # This ensures our OSC 133 hooks are always registered, even if user's
 # .zshrc has an old integration line that would set QBIT_INTEGRATION_LOADED
 if [[ -f "$QBIT_INTEGRATION_PATH" ]]; then
@@ -362,7 +362,7 @@ fi
 # If it has an old integration line, the guard will skip it (QBIT_INTEGRATION_LOADED=1)
 if [[ -n "$QBIT_REAL_ZDOTDIR" && "$QBIT_REAL_ZDOTDIR" != "$ZDOTDIR" ]]; then
     # Guard: skip sourcing when QBIT_REAL_ZDOTDIR points back at this wrapper
-    # dir (nested Qbit). Without this check we'd source ourselves infinitely.
+    # dir (nested Golish). Without this check we'd source ourselves infinitely.
     if [[ -f "$QBIT_REAL_ZDOTDIR/.zshrc" ]]; then
         ZDOTDIR="$QBIT_REAL_ZDOTDIR"
         source "$QBIT_REAL_ZDOTDIR/.zshrc"
@@ -472,10 +472,10 @@ impl ShellIntegration {
         // Write a wrapper script that sources integration + user's bashrc
         let wrapper_path = config_dir.join("wrapper.bash");
         let wrapper_content = format!(
-            r#"# Qbit Bash Wrapper (auto-generated)
-# Sources Qbit integration before user's bashrc
+            r#"# Golish Bash Wrapper (auto-generated)
+# Sources Golish integration before user's bashrc
 
-# Source Qbit integration first
+# Source Golish integration first
 if [[ -f "{integration}" ]]; then
     source "{integration}"
 fi
@@ -521,7 +521,7 @@ fi
                 ];
 
                 // Preserve user's original ZDOTDIR if set, but only when it
-                // differs from our wrapper dir. When a nested Qbit inherits
+                // differs from our wrapper dir. When a nested Golish inherits
                 // ZDOTDIR pointing at the wrapper, forwarding it as
                 // QBIT_REAL_ZDOTDIR would cause the wrapper .zshrc to source
                 // itself, leading to infinite recursion ("job table full").

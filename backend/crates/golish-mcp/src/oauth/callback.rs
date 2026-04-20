@@ -96,7 +96,7 @@ async fn handle_callback(listener: TcpListener) -> Result<CallbackResult> {
                    <head><title>Authentication Successful</title></head>\
                    <body>\
                    <h1>✓ Authentication Successful</h1>\
-                   <p>You have successfully authenticated with Qbit.</p>\
+                   <p>You have successfully authenticated with Golish.</p>\
                    <p>You can close this window and return to your terminal.</p>\
                    </body>\
                    </html>";

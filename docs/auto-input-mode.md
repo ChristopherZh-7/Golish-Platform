@@ -7,7 +7,7 @@ Auto input mode intelligently classifies user input as either a terminal command
 1. Press **Cmd+I** to cycle input modes: Terminal → Agent → **Auto** → Terminal
 2. Alternatively, click a mode button in the input status row — clicking the active mode button advances to Auto
 3. Type your input and press **Enter**
-4. Qbit classifies your input and routes it:
+4. Golish classifies your input and routes it:
    - Commands like `ls -la` or `git status` go to the terminal
    - Natural language like `explain this code` goes to the AI agent
 
@@ -174,10 +174,10 @@ pub struct ClassifyResult {
 
 | File | Purpose |
 |------|---------|
-| `backend/crates/qbit/src/commands/command_index.rs` | `CommandIndex`, `ClassifyResult`, classification heuristics, Tauri command, unit tests |
-| `backend/crates/qbit/src/commands/mod.rs` | Module declaration and re-export |
-| `backend/crates/qbit/src/state.rs` | `command_index` field on `AppState` |
-| `backend/crates/qbit/src/lib.rs` | Background index build at startup, `classify_input` command registration |
+| `backend/crates/golish/src/commands/command_index.rs` | `CommandIndex`, `ClassifyResult`, classification heuristics, Tauri command, unit tests |
+| `backend/crates/golish/src/commands/mod.rs` | Module declaration and re-export |
+| `backend/crates/golish/src/state.rs` | `command_index` field on `AppState` |
+| `backend/crates/golish/src/lib.rs` | Background index build at startup, `classify_input` command registration |
 | `frontend/lib/tauri.ts` | `classifyInput()` typed wrapper, `ClassifyResult` interface |
 | `frontend/store/index.ts` | `InputMode` type extended with `"auto"` |
 | `frontend/store/selectors/unified-input.ts` | `inputMode` selector type updated |
@@ -191,7 +191,7 @@ pub struct ClassifyResult {
 ### Rust Unit Tests
 
 ```bash
-cargo test -p qbit --lib command_index
+cargo test -p golish --lib command_index
 ```
 
 Tests cover:

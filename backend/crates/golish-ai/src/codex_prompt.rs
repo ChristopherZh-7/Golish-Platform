@@ -15,7 +15,7 @@ use super::system_prompt::{get_agent_mode_instructions, read_project_instruction
 /// - Less XML-style structure, more natural language
 /// - Fewer rigid rules, more guidance-based instructions
 /// - Optimized for o-series reasoning models
-const CODEX_STYLE_BASE_PROMPT: &str = r#"You are a coding agent running in Qbit, an AI-powered terminal emulator. You help users with software engineering tasks including writing code, fixing bugs, refactoring, and explaining code.
+const CODEX_STYLE_BASE_PROMPT: &str = r#"You are a coding agent running in Golish, an AI-powered terminal emulator. You help users with software engineering tasks including writing code, fixing bugs, refactoring, and explaining code.
 
 ## Core Principles
 

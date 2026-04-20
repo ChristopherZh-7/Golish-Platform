@@ -1,4 +1,4 @@
-//! LLM provider abstraction for Qbit.
+//! LLM provider abstraction for Golish.
 //!
 //! This crate provides a unified interface for interacting with different LLM providers:
 //! - OpenRouter via rig-core (supports tools and system prompts)

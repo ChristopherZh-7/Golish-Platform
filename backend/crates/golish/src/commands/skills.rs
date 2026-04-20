@@ -46,6 +46,62 @@ pub async fn read_skill_file(skill_path: String, relative_path: String) -> Resul
     golish_skills::read_skill_file(&skill_path, &relative_path).map_err(Into::into)
 }
 
+/// Save (create or update) a skill.
+#[tauri::command]
+pub async fn save_skill(
+    name: String,
+    description: String,
+    body: String,
+    scope: Option<String>,
+    working_directory: Option<String>,
+) -> Result<String> {
+    let base_dir = match scope.as_deref() {
+        Some("local") => {
+            let wd = working_directory.ok_or_else(|| {
+                crate::error::GolishError::Internal(
+                    "Working directory required for local skills".into(),
+                )
+            })?;
+            std::path::PathBuf::from(wd)
+                .join(".golish")
+                .join("skills")
+        }
+        _ => {
+            let home = dirs::home_dir().ok_or_else(|| {
+                crate::error::GolishError::Internal("No home directory".into())
+            })?;
+            home.join(".golish").join("skills")
+        }
+    };
+
+    let skill_dir = base_dir.join(&name);
+    std::fs::create_dir_all(&skill_dir)?;
+
+    let content = format!(
+        "---\nname: {name}\ndescription: \"{}\"\n---\n\n{body}\n",
+        description.replace('"', "\\\"")
+    );
+
+    let file_path = skill_dir.join("SKILL.md");
+    std::fs::write(&file_path, &content)?;
+
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+/// Delete a skill directory.
+#[tauri::command]
+pub async fn delete_skill(skill_path: String) -> Result<()> {
+    let path = std::path::Path::new(&skill_path);
+    if !path.exists() {
+        return Err(crate::error::GolishError::Internal(format!(
+            "Skill not found: {}",
+            skill_path
+        )));
+    }
+    std::fs::remove_dir_all(path)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

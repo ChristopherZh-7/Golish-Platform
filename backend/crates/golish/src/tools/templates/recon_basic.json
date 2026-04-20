@@ -1,0 +1,70 @@
+{
+  "id": "recon_basic",
+  "name": "Basic Reconnaissance",
+  "description": "DNS, subdomains, port scan, HTTP probe, tech fingerprint, web crawl (katana). Use {target} as placeholder.",
+  "is_template": true,
+  "workflow_id": "recon_basic",
+  "tags": ["recon", "passive", "builtin"],
+  "steps": [
+    {
+      "id": "dns_lookup",
+      "step_type": "dns_lookup",
+      "tool_name": "dig",
+      "command_template": "dig",
+      "args": ["+short", "{target}"],
+      "requires": "domain",
+      "on_failure": "continue"
+    },
+    {
+      "id": "subdomain_enum",
+      "step_type": "subdomain_enum",
+      "tool_name": "subfinder",
+      "command_template": "subfinder",
+      "args": ["-d", "{target}", "-silent"],
+      "requires": "domain",
+      "on_failure": "continue"
+    },
+    {
+      "id": "port_scan",
+      "step_type": "port_scan",
+      "tool_name": "naabu",
+      "command_template": "naabu",
+      "args": ["-host", "{target}", "-top-ports", "1000", "-json", "-silent"],
+      "on_failure": "continue"
+    },
+    {
+      "id": "http_probe",
+      "step_type": "http_probe",
+      "tool_name": "httpx",
+      "command_template": "httpx",
+      "args": ["-u", "{target}", "-sc", "-title", "-tech-detect", "-json", "-silent"],
+      "iterate_over": "ports",
+      "on_failure": "continue"
+    },
+    {
+      "id": "tech_fingerprint",
+      "step_type": "tech_fingerprint",
+      "tool_name": "whatweb",
+      "command_template": "whatweb",
+      "args": ["{target}", "--color=never"],
+      "iterate_over": "ports",
+      "on_failure": "continue"
+    },
+    {
+      "id": "web_crawl",
+      "step_type": "web_crawl",
+      "tool_name": "katana",
+      "command_template": "katana",
+      "args": ["-u", "{target}", "-d", "3", "-js-crawl", "-silent"],
+      "iterate_over": "ports",
+      "db_action": "target_add",
+      "on_failure": "continue"
+    }
+  ],
+  "connections": [
+    { "from_step": "port_scan", "to_step": "http_probe" },
+    { "from_step": "port_scan", "to_step": "tech_fingerprint" },
+    { "from_step": "http_probe", "to_step": "web_crawl" },
+    { "from_step": "tech_fingerprint", "to_step": "web_crawl" }
+  ]
+}

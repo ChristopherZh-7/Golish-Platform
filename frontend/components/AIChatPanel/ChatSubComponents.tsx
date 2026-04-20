@@ -2,6 +2,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Clock,
   GitBranch,
   KeyRound,
   List,
@@ -213,9 +214,11 @@ function parseToolPrimary(
 function ToolCallCard({
   tc,
   onClick,
+  isMessageComplete,
 }: {
   tc: { name: string; args?: string; result?: string; success?: boolean };
   onClick: () => void;
+  isMessageComplete?: boolean;
 }) {
   let label = TOOL_LABEL[tc.name] || tc.name.replace(/_/g, " ");
   if (tc.name === "run_pipeline" && tc.args) {
@@ -231,7 +234,9 @@ function ToolCallCard({
     } catch { /* keep default */ }
   }
   const color = TOOL_ICON_COLOR[tc.name] || "var(--ansi-blue)";
-  const isRunning = tc.success === undefined;
+  const isNoResult = tc.success === undefined;
+  const isExpired = isNoResult && isMessageComplete;
+  const isRunning = isNoResult && !isMessageComplete;
   const isError = tc.success === false;
   const isShell = tc.name === "run_command" || tc.name === "run_pty_cmd";
   const primary = parseToolPrimary(tc.name, tc.args);
@@ -242,28 +247,36 @@ function ToolCallCard({
       onClick={onClick}
       className={cn(
         "w-full rounded-lg border bg-background/50 px-3 py-2 text-left transition-colors cursor-pointer group",
-        isRunning
-          ? "border-l-2 animate-[pulse-border_2s_ease-in-out_infinite]"
-          : isError
-            ? "border-red-500/30 hover:border-red-500/50"
-            : "border-border/30 hover:border-accent/40",
+        isExpired
+          ? "border-[#565f89]/30 opacity-60"
+          : isRunning
+            ? "border-l-2 animate-[pulse-border_2s_ease-in-out_infinite]"
+            : isError
+              ? "border-red-500/30 hover:border-red-500/50"
+              : "border-border/30 hover:border-accent/40",
       )}
       style={isRunning ? { borderLeftColor: color } : undefined}
     >
       <div className="flex items-center gap-2">
-        <Wrench className="w-3.5 h-3.5 flex-shrink-0" style={{ color }} />
+        <Wrench className="w-3.5 h-3.5 flex-shrink-0" style={{ color: isExpired ? "var(--muted-foreground)" : color }} />
         <span className="text-[11px] font-medium text-foreground/80">{label}</span>
         <div className="ml-auto flex items-center gap-1.5">
-          {isRunning ? (
+          {isExpired ? (
+            <Clock className="w-3 h-3 text-[#565f89]" />
+          ) : isRunning ? (
             <Loader2 className="w-3 h-3 text-blue-400 animate-spin" />
           ) : isError ? (
             <XCircle className="w-3 h-3 text-red-400" />
           ) : (
             <CheckCircle2 className="w-3 h-3 text-[var(--ansi-green)]" />
           )}
-          <span className="text-[10px] text-muted-foreground/40 group-hover:text-accent/60 transition-colors">
-            Details →
-          </span>
+          {isExpired ? (
+            <span className="text-[10px] text-[#565f89]">Expired</span>
+          ) : (
+            <span className="text-[10px] text-muted-foreground/40 group-hover:text-accent/60 transition-colors">
+              Details →
+            </span>
+          )}
         </div>
       </div>
       {primary && (
@@ -286,9 +299,11 @@ function ToolCallCard({
 export function ToolCallSummary({
   toolCalls,
   requestIds,
+  isMessageComplete,
 }: {
   toolCalls: Array<{ name: string; args?: string; result?: string; success?: boolean; requestId?: string }>;
   requestIds?: string[];
+  isMessageComplete?: boolean;
 }) {
   if (toolCalls.length === 0) return null;
 
@@ -340,6 +355,7 @@ export function ToolCallSummary({
           key={`${tc.name}-${i}`}
           tc={tc}
           onClick={handleShowDetail}
+          isMessageComplete={isMessageComplete}
         />
       ))}
     </div>

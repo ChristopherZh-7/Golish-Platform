@@ -108,7 +108,7 @@ let host_config = HostConfig {
 
 **Mount structure:**
 ```
-Host: ~/.qbit/workspaces/{session_id}/{instance_id}/
+Host: ~/.golish/workspaces/{session_id}/{instance_id}/
   └── repo/                    # Repository with agent's changes
       ├── src/
       ├── tests/

@@ -1,6 +1,6 @@
 # MCP (Model Context Protocol) Support
 
-Qbit supports the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), an open standard created by Anthropic for connecting AI applications to external tools and data sources. This allows you to extend Qbit's capabilities by connecting to any MCP-compatible server.
+Golish supports the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), an open standard created by Anthropic for connecting AI applications to external tools and data sources. This allows you to extend Golish's capabilities by connecting to any MCP-compatible server.
 
 ## What is MCP?
 
@@ -17,7 +17,7 @@ MCP servers are configured in JSON files, not in `settings.toml`.
 
 ### User-Global Configuration
 
-Create `~/.qbit/mcp.json` for servers available across all projects:
+Create `~/.golish/mcp.json` for servers available across all projects:
 
 ```json
 {
@@ -40,7 +40,7 @@ Create `~/.qbit/mcp.json` for servers available across all projects:
 
 ### Project-Specific Configuration
 
-Create `<project>/.qbit/mcp.json` for project-specific servers. These override user-global servers with the same name:
+Create `<project>/.golish/mcp.json` for project-specific servers. These override user-global servers with the same name:
 
 ```json
 {
@@ -151,17 +151,17 @@ MCP servers auto-connect when running in headless CLI mode:
 
 ```bash
 # MCP servers will connect automatically based on workspace config
-qbit -e "Query the database for recent users"
+golish -e "Query the database for recent users"
 
 # Verbose mode shows MCP connection info
-qbit -v -e "List files in documents"
+golish -v -e "List files in documents"
 ```
 
 ## Security
 
 ### Project Config Trust
 
-When opening a workspace with a `.qbit/mcp.json` file for the first time, Qbit tracks whether you've approved it. Trusted project configs are stored in `~/.qbit/trusted-mcp-configs.json`.
+When opening a workspace with a `.golish/mcp.json` file for the first time, Golish tracks whether you've approved it. Trusted project configs are stored in `~/.golish/trusted-mcp-configs.json`.
 
 This prevents malicious repositories from running arbitrary commands through MCP servers without your knowledge.
 
@@ -190,7 +190,7 @@ Popular servers include:
 
 1. Check the command exists and is executable
 2. Verify environment variables are set
-3. Check logs in `~/.qbit/backend.log` for error details
+3. Check logs in `~/.golish/backend.log` for error details
 4. Try running the command manually to see error output
 
 ### Tools not appearing
@@ -201,7 +201,7 @@ Popular servers include:
 
 ### Environment variables not resolved
 
-1. Variables must be set in your shell environment before starting Qbit
+1. Variables must be set in your shell environment before starting Golish
 2. Use `${VAR}` syntax for variables with special characters
 3. Check for typos in variable names
 
@@ -250,4 +250,4 @@ Popular servers include:
 
 - [MCP Specification](https://modelcontextprotocol.io/specification/2025-11-25)
 - [Official Rust SDK (rmcp)](https://github.com/modelcontextprotocol/rust-sdk)
-- [Tool Use in Qbit](tool-use.md)
+- [Tool Use in Golish](tool-use.md)

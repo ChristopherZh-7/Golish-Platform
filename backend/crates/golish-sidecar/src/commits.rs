@@ -9,7 +9,7 @@
 //!
 //! ```patch
 //! From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-//! From: Qbit Agent <agent@golish.dev>
+//! From: Golish Agent <agent@golish.dev>
 //! Date: Tue, 10 Dec 2025 14:30:00 +0000
 //! Subject: [PATCH] feat(auth): add JWT authentication module
 //!
@@ -769,7 +769,7 @@ fn format_patch_content(message: &str, diff: &str) -> String {
 
     // Header
     patch.push_str("From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001\n");
-    patch.push_str("From: Qbit Agent <agent@golish.dev>\n");
+    patch.push_str("From: Golish Agent <agent@golish.dev>\n");
     patch.push_str(&format!("Date: {}\n", date));
     patch.push_str(&format!("Subject: [PATCH] {}\n", subject));
     patch.push('\n');
@@ -960,7 +960,7 @@ mod tests {
 
         let patch = format_patch_content(message, diff);
 
-        assert!(patch.contains("From: Qbit Agent"));
+        assert!(patch.contains("From: Golish Agent"));
         assert!(patch.contains("Subject: [PATCH] feat(auth): add authentication"));
         assert!(patch.contains("Adds JWT-based auth."));
         assert!(patch.contains("diff --git"));

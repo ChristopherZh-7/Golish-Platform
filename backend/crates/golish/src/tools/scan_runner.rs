@@ -628,6 +628,7 @@ fn severity_rank(s: &str) -> u8 {
 // ============================================================================
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct NucleiJsonResult {
     #[serde(rename = "template-id")]
     template_id: Option<String>,
@@ -751,7 +752,7 @@ pub async fn scan_nuclei_targeted(
         if let Some(mut r) = child_stdout { let _ = r.read_to_end(&mut buf).await; }
         buf
     });
-    let stderr_handle = tokio::spawn(async move {
+    let _stderr_handle = tokio::spawn(async move {
         use tokio::io::AsyncReadExt;
         let mut buf = Vec::new();
         if let Some(mut r) = child_stderr { let _ = r.read_to_end(&mut buf).await; }

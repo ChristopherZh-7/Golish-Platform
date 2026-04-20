@@ -118,8 +118,6 @@ fn sub_agent_auto_store_hook() -> ToolHook {
         ToolMatcher::custom_post(|ctx| {
             ctx.tool_name_raw.starts_with("sub_agent_pentester")
                 || ctx.tool_name_raw.starts_with("sub_agent_researcher")
-                || ctx.tool_name_raw.starts_with("sub_agent_js_harvester")
-                || ctx.tool_name_raw.starts_with("sub_agent_js_analyzer")
         }),
         |ctx| {
             if !ctx.success {

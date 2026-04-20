@@ -94,13 +94,13 @@ pub enum ApprovalResult {
 /// - Querying runtime capabilities
 ///
 /// # Object Safety
-/// This trait is object-safe and intended to be used as `Arc<dyn QbitRuntime>`.
+/// This trait is object-safe and intended to be used as `Arc<dyn GolishRuntime>`.
 ///
 /// # Performance
 /// `request_approval()` uses `#[async_trait]` which boxes the future. This is
 /// acceptable since approval is infrequent and IO-bound.
 #[async_trait]
-pub trait QbitRuntime: Send + Sync + 'static {
+pub trait GolishRuntime: Send + Sync + 'static {
     /// Emit an event to the frontend/output
     ///
     /// # Errors

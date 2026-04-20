@@ -85,7 +85,7 @@ impl SidecarConfig {
             .unwrap_or_else(super::session::default_sessions_dir)
     }
 
-    /// Create config from QbitSettings
+    /// Create config from GolishSettings
     pub fn from_golish_settings(settings: &golish_settings::schema::SidecarSettings) -> Self {
         let backend = settings
             .synthesis_backend

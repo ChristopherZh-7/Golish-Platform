@@ -5,7 +5,7 @@
 ### Download (macOS)
 
 1. Download the latest `.dmg` from GitHub Releases.
-2. Open the `.dmg` and drag **Qbit** to Applications.
+2. Open the `.dmg` and drag **Golish** to Applications.
 3. On first launch: **System Settings → Privacy & Security → Open Anyway**.
 
 ### Build from source (macOS)
@@ -13,8 +13,8 @@
 **Requirements**: macOS, Node.js 20+, pnpm, Rust (stable), `just`.
 
 ```bash
-git clone https://github.com/qbit-ai/qbit.git
-cd qbit
+git clone https://github.com/golish-ai/golish.git
+cd golish
 just install
 just dev
 ```
@@ -26,18 +26,18 @@ just dev
 Download and extract the release build:
 
 ```bash
-curl -L -o qbit_x64.app.tar.gz \
-  https://github.com/qbit-ai/qbit/releases/download/v0.2.13/qbit_x64.app.tar.gz
+curl -L -o golish_x64.app.tar.gz \
+  https://github.com/golish-ai/golish/releases/download/v0.2.13/golish_x64.app.tar.gz
 
-mkdir -p qbit-release
+mkdir -p golish-release
 
-tar -xzf qbit_x64.app.tar.gz -C qbit-release
+tar -xzf golish_x64.app.tar.gz -C golish-release
 ```
 
 Add the binary to your `PATH` (adjust as needed for your system):
 
 ```bash
-sudo install -m 755 qbit-release/qbit /usr/local/bin/qbit
+sudo install -m 755 golish-release/golish /usr/local/bin/golish
 ```
 
 #### Build from source
@@ -64,7 +64,7 @@ sudo apt install -y \
 
 ###### Rust toolchain
 
-Qbit is written in Rust.
+Golish is written in Rust.
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -82,7 +82,7 @@ cargo --version
 
 ###### Just (command runner)
 
-Qbit uses **just** to manage build and install commands.
+Golish uses **just** to manage build and install commands.
 
 ```bash
 cargo install just
@@ -99,15 +99,15 @@ just --version
 ###### 1. Clone the repository
 
 ```bash
-git clone https://github.com/qbit-ai/qbit.git
-cd qbit
+git clone https://github.com/golish-ai/golish.git
+cd golish
 ```
 
 ---
 
 ###### 2. Development build (optional)
 
-Build and run Qbit in development mode:
+Build and run Golish in development mode:
 
 ```bash
 just dev
@@ -117,7 +117,7 @@ just dev
 
 ###### 3. Install system-wide
 
-Build and install Qbit to your system (typically `/usr/local/bin`):
+Build and install Golish to your system (typically `/usr/local/bin`):
 
 ```bash
 just install
@@ -127,16 +127,16 @@ You may be prompted for `sudo` depending on your system configuration.
 
 ##### Verification
 
-After installation, verify Qbit is available:
+After installation, verify Golish is available:
 
 ```bash
-qbit --version
+golish --version
 ```
 
 For available commands:
 
 ```bash
-qbit help
+golish help
 ```
 
 ##### Notes
@@ -147,7 +147,7 @@ qbit help
 
 ## First run
 
-- Settings live at `~/.qbit/settings.toml` (auto-generated on first run).
+- Settings live at `~/.golish/settings.toml` (auto-generated on first run).
 - Pick an LLM provider in the Settings UI or via `settings.toml`.
 
 Next:

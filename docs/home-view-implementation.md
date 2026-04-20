@@ -36,7 +36,7 @@ The Home tab is always visible as the leftmost tab and cannot be closed.
 
 ## 1.2 Backend Stub Endpoints ✅
 
-**File: `backend/crates/qbit/src/indexer/commands.rs`**
+**File: `backend/crates/golish/src/indexer/commands.rs`**
 
 Added placeholder commands that return empty data:
 - ✅ `list_projects_for_home` - Returns `Vec<ProjectInfo>`
@@ -144,11 +144,11 @@ case "home":
 
 ## 2.1 Design
 
-**Location**: `~/.qbit/projects/`
+**Location**: `~/.golish/projects/`
 
 **File format**: One TOML file per project, named by slugified project name
 
-**Example**: `~/.qbit/projects/my-project.toml`
+**Example**: `~/.golish/projects/my-project.toml`
 ```toml
 name = "my-project"
 root_path = "/Users/xlyk/Code/my-project"
@@ -171,7 +171,7 @@ npm run setup
 
 ## 2.2 Backend: Project Storage ✅
 
-**Module**: `backend/crates/qbit/src/projects/`
+**Module**: `backend/crates/golish/src/projects/`
 
 ### Files:
 - `schema.rs` - Rust types (ProjectConfig, ProjectCommands, WorktreeConfig)
@@ -180,8 +180,8 @@ npm run setup
 - `mod.rs` - Module exports
 
 ### Functions Implemented:
-- ✅ `list_projects() -> Vec<ProjectConfig>` - Load all from `~/.qbit/projects/`
-- ✅ `save_project(config: &ProjectConfig)` - Save to `~/.qbit/projects/{slug}.toml`
+- ✅ `list_projects() -> Vec<ProjectConfig>` - Load all from `~/.golish/projects/`
+- ✅ `save_project(config: &ProjectConfig)` - Save to `~/.golish/projects/{slug}.toml`
 - ✅ `delete_project(name: &str)` - Remove project file
 - ✅ `slugify(name: &str) -> String` - Convert name to valid filename
 
@@ -189,7 +189,7 @@ npm run setup
 
 ## 2.3 Backend: Tauri Commands ✅
 
-**File**: `backend/crates/qbit/src/projects/commands.rs`
+**File**: `backend/crates/golish/src/projects/commands.rs`
 
 Commands implemented:
 - ✅ `save_project(form: ProjectFormData)` - Save project config to disk
@@ -205,7 +205,7 @@ Registered in `lib.rs`:
 ## 2.4 Backend: Update list_projects_for_home ✅
 
 Modified `list_projects_for_home` in `indexer/commands.rs` to:
-- ✅ Load project configs from `~/.qbit/projects/` (via `crate::projects::list_projects()`)
+- ✅ Load project configs from `~/.golish/projects/` (via `crate::projects::list_projects()`)
 - ✅ For each project, get git stats (branch name, file count, insertions, deletions)
 - ✅ Return enriched `ProjectInfo` structs
 
@@ -314,13 +314,13 @@ Wire up folder picker buttons in SetupProjectModal:
 - ✅ `frontend/components/PaneContainer/PaneLeaf.tsx` - Route home tab
 - ✅ `frontend/App.tsx` - Auto-create home tab on init
 - ✅ `frontend/lib/indexer.ts` - Added invoke wrappers
-- ✅ `backend/crates/qbit/src/indexer/commands.rs` - Stub commands
-- ✅ `backend/crates/qbit/src/lib.rs` - Register commands
+- ✅ `backend/crates/golish/src/indexer/commands.rs` - Stub commands
+- ✅ `backend/crates/golish/src/lib.rs` - Register commands
 
 ## To Create
 - ⏳ `frontend/lib/projects.ts` - Project CRUD API
-- ⏳ `backend/crates/qbit/src/commands/projects.rs` - Project commands
+- ⏳ `backend/crates/golish/src/commands/projects.rs` - Project commands
 
 ## To Modify
-- ⏳ `backend/crates/qbit/src/lib.rs` - Register project commands
-- ⏳ `backend/crates/qbit/src/indexer/commands.rs` - Real project loading
+- ⏳ `backend/crates/golish/src/lib.rs` - Register project commands
+- ⏳ `backend/crates/golish/src/indexer/commands.rs` - Real project loading

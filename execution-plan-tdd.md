@@ -47,7 +47,7 @@ Update `frontend/hooks/ai-events/core-handlers.ts` (`handleError`):
 
 ## Phase 2 — Backend TDD (single terminal error + partial persistence)
 ### Red (tests first)
-Add failing tests in `backend/crates/qbit-ai/src/test_utils.rs` and/or `agent_bridge` tests:
+Add failing tests in `backend/crates/golish-ai/src/test_utils.rs` and/or `agent_bridge` tests:
 1. Stream-start/provider failure emits exactly one terminal error event.
 2. If partial response exists before failure, it is persisted to conversation/session history.
 
@@ -63,7 +63,7 @@ Add failing tests in `backend/crates/qbit-ai/src/test_utils.rs` and/or `agent_br
 
 ## Phase 3 — Retry/Backoff TDD (transient API resilience)
 ### Red (tests first)
-Add failing tests for retry policy in `backend/crates/qbit-ai/src/agentic_loop.rs` tests:
+Add failing tests for retry policy in `backend/crates/golish-ai/src/agentic_loop.rs` tests:
 1. Retries on transient errors (429, 5xx, timeout/transport) up to max attempts.
 2. Succeeds when a subsequent retry succeeds.
 3. Does not retry on non-retriable errors (401/403/invalid request).
@@ -87,7 +87,7 @@ Add failing tests for retry policy in `backend/crates/qbit-ai/src/agentic_loop.r
 ## Phase 4 — Verification
 ### Targeted test runs
 - `just test-fe` (or focused Vitest for `useAiEvents`)
-- `just test-rust` (or focused cargo test for `qbit-ai`)
+- `just test-rust` (or focused cargo test for `golish-ai`)
 
 ### Full validation
 - `just check` (if time permits before merge)

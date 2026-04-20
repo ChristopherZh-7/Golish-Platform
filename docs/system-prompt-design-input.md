@@ -1,10 +1,10 @@
-# System Prompt Design Brief for Qbit
+# System Prompt Design Brief for Golish
 
 ## Project Overview
 
-**Qbit** is an AI-powered terminal emulator built with Tauri 2 (Rust backend, React frontend). It serves as an intelligent software engineering assistant that operates within a terminal environment and can delegate work to specialized sub-agents.
+**Golish** is an AI-powered terminal emulator built with Tauri 2 (Rust backend, React frontend). It serves as an intelligent software engineering assistant that operates within a terminal environment and can delegate work to specialized sub-agents.
 
-The system prompt for Qbit is dynamically generated at runtime based on:
+The system prompt for Golish is dynamically generated at runtime based on:
 - Available tools (configured via presets and custom allow/block lists)
 - Registered sub-agents
 - LLM provider being used (Anthropic, OpenAI, Gemini, etc.)
@@ -241,7 +241,7 @@ The base system prompt currently includes these sections:
 
 ### 1. Identity & Environment
 ```
-You are Qbit, an intelligent and highly advanced software engineering assistant.
+You are Golish, an intelligent and highly advanced software engineering assistant.
 
 ## Environment
 - **Working Directory**: {workspace}
@@ -325,7 +325,7 @@ The system includes provider-specific prompt sections:
 
 You must produce system prompts for:
 
-1. **Main Agent (Qbit)** - The primary orchestrating agent
+1. **Main Agent (Golish)** - The primary orchestrating agent
 2. **coder** - Code editing sub-agent
 3. **analyzer** - Code analysis sub-agent
 4. **explorer** - Codebase navigation sub-agent

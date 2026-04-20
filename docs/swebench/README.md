@@ -1,6 +1,6 @@
 # SWE-bench Evaluation Documentation
 
-This documentation provides complete transparency into how Qbit runs the SWE-bench Lite benchmark. We've designed our evaluation to be:
+This documentation provides complete transparency into how Golish runs the SWE-bench Lite benchmark. We've designed our evaluation to be:
 
 - **Reproducible** - Anyone can verify results using the same methodology
 - **Fair** - The agent operates under the same constraints as human developers
@@ -60,7 +60,7 @@ just swebench 0-9 vertex-claude claude-sonnet-4-20250514  # Custom model
 ### CLI Options
 
 ```bash
-cargo run --no-default-features --features evals --bin qbit-cli -- \
+cargo run --no-default-features --features evals --bin golish-cli -- \
     --swebench \
     --problems 0-49 \
     --eval-provider vertex-claude \
@@ -115,7 +115,7 @@ Partial fixes are tracked separately and do not count toward the pass rate.
 
 ## Transparency Commitments
 
-1. **Open Source** - All evaluation code is in `backend/crates/qbit-swebench/`
+1. **Open Source** - All evaluation code is in `backend/crates/golish-swebench/`
 2. **Logged Outputs** - Full agent transcripts available for review
 3. **Reproducible** - Same inputs produce same evaluation results
 4. **No Cherry-picking** - All attempted instances are reported

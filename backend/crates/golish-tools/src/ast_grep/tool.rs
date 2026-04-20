@@ -1,7 +1,7 @@
 //! Tool implementations for AST-grep search and replace.
 //!
 //! These tools implement the `golish_core::Tool` trait for integration
-//! with the Qbit tool registry.
+//! with the Golish tool registry.
 
 use std::path::Path;
 

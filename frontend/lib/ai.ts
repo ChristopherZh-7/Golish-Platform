@@ -411,6 +411,52 @@ export type AiEvent = AiEventBase &
         response: string;
         skipped: boolean;
       }
+    // Task mode events (PentAGI-style automated execution)
+    | {
+        type: "task_progress";
+        task_id: string;
+        status: string;
+        message: string;
+      }
+    | {
+        type: "subtask_created";
+        task_id: string;
+        subtask_id: string;
+        title: string;
+        agent: string | null;
+      }
+    | {
+        type: "subtask_completed";
+        task_id: string;
+        subtask_id: string;
+        title: string;
+        result: string;
+      }
+    | {
+        type: "subtask_waiting_for_input";
+        task_id: string;
+        subtask_id: string;
+        title: string;
+        prompt: string;
+      }
+    | {
+        type: "subtask_user_input";
+        task_id: string;
+        subtask_id: string;
+        input: string;
+      }
+    | {
+        type: "task_resumed";
+        task_id: string;
+        subtask_index: number;
+        total_subtasks: number;
+      }
+    | {
+        type: "enricher_result";
+        task_id: string;
+        subtask_id: string;
+        context_added: string;
+      }
   );
 
 export interface ToolDefinition {
@@ -1553,6 +1599,45 @@ export async function getAgentMode(sessionId: string): Promise<AgentMode> {
   return invoke("get_agent_mode", { sessionId });
 }
 
+/**
+ * Set the useAgents flag for a session.
+ * Controls whether the AI can delegate tasks to specialist sub-agents.
+ */
+export async function setUseAgents(
+  sessionId: string,
+  enabled: boolean
+): Promise<void> {
+  return invoke("set_use_agents", { sessionId, enabled });
+}
+
+/**
+ * Get the current useAgents setting for a session.
+ */
+export async function getUseAgents(sessionId: string): Promise<boolean> {
+  return invoke("get_use_agents", { sessionId });
+}
+
+/**
+ * Set the execution mode for a session.
+ * - "chat": conversational assistant (default)
+ * - "task": PentAGI-style automated orchestration
+ */
+export async function setExecutionMode(
+  sessionId: string,
+  mode: "chat" | "task"
+): Promise<void> {
+  return invoke("set_execution_mode", { sessionId, mode });
+}
+
+/**
+ * Get the current execution mode for a session.
+ */
+export async function getExecutionMode(
+  sessionId: string
+): Promise<string> {
+  return invoke("get_execution_mode", { sessionId });
+}
+
 // =============================================================================
 // Project Settings API
 // =============================================================================
@@ -2026,4 +2111,142 @@ export async function listRecentMemories(
 
 export async function getMemoryCount(): Promise<number> {
   return invoke("get_memory_count", {});
+}
+
+// ── Agent Definition Management ──────────────────────
+
+export interface AgentFileInfo {
+  id: string;
+  name: string;
+  description: string;
+  path: string;
+  source: "built-in" | "file";
+  is_system: boolean;
+  model: string | null;
+  allowed_tools: string[];
+  max_iterations: number;
+  timeout_secs: number | null;
+  idle_timeout_secs: number | null;
+  readonly: boolean;
+  is_background: boolean;
+  temperature: number | null;
+  max_tokens: number | null;
+  top_p: number | null;
+}
+
+export async function listAgentDefinitions(
+  workingDirectory?: string
+): Promise<AgentFileInfo[]> {
+  return invoke("list_agent_definitions", { workingDirectory });
+}
+
+export async function readAgentPrompt(
+  agentId: string,
+  workingDirectory?: string
+): Promise<string> {
+  return invoke("read_agent_prompt", { agentId, workingDirectory });
+}
+
+export async function saveAgentDefinition(params: {
+  agentId: string;
+  name: string;
+  description: string;
+  systemPrompt: string;
+  allowedTools: string[];
+  maxIterations?: number;
+  timeoutSecs?: number;
+  idleTimeoutSecs?: number;
+  readonly?: boolean;
+  isBackground?: boolean;
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  topP?: number;
+  workingDirectory?: string;
+}): Promise<string> {
+  return invoke("save_agent_definition", params);
+}
+
+export async function deleteAgentDefinition(
+  agentId: string,
+  workingDirectory?: string
+): Promise<void> {
+  return invoke("delete_agent_definition", { agentId, workingDirectory });
+}
+
+export async function seedAgents(): Promise<number> {
+  return invoke("seed_agents");
+}
+
+// ── Skill Management ──────────────────────
+
+export interface SkillInfo {
+  name: string;
+  path: string;
+  source: "global" | "local";
+  description: string;
+  license: string | null;
+  compatibility: string | null;
+  metadata: Record<string, string> | null;
+  allowed_tools: string[] | null;
+  has_scripts: boolean;
+  has_references: boolean;
+  has_assets: boolean;
+}
+
+export async function listSkills(workingDirectory?: string): Promise<SkillInfo[]> {
+  return invoke("list_skills", { workingDirectory });
+}
+
+export async function readSkillBody(path: string): Promise<string> {
+  return invoke("read_skill_body", { path });
+}
+
+export async function saveSkill(params: {
+  name: string;
+  description: string;
+  body: string;
+  scope?: "global" | "local";
+  workingDirectory?: string;
+}): Promise<string> {
+  return invoke("save_skill", params);
+}
+
+export async function deleteSkill(skillPath: string): Promise<void> {
+  return invoke("delete_skill", { skillPath });
+}
+
+// ── Rule Management ──────────────────────
+
+export interface RuleInfo {
+  name: string;
+  path: string;
+  source: "global" | "local";
+  description: string;
+  globs: string | null;
+  always_apply: boolean;
+}
+
+export async function listRules(workingDirectory?: string): Promise<RuleInfo[]> {
+  return invoke("list_rules", { workingDirectory });
+}
+
+export async function readRuleBody(rulePath: string): Promise<string> {
+  return invoke("read_rule_body", { rulePath });
+}
+
+export async function saveRule(params: {
+  name: string;
+  description: string;
+  body: string;
+  globs?: string;
+  alwaysApply: boolean;
+  scope?: "global" | "local";
+  workingDirectory?: string;
+}): Promise<string> {
+  return invoke("save_rule", params);
+}
+
+export async function deleteRule(rulePath: string): Promise<void> {
+  return invoke("delete_rule", { rulePath });
 }

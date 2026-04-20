@@ -1,6 +1,6 @@
-//! Centralized TOML-based settings system for Qbit.
+//! Centralized TOML-based settings system for Golish.
 //!
-//! This crate provides configuration management for the Qbit application, including:
+//! This crate provides configuration management for the Golish application, including:
 //! - Loading settings from `~/.golish/settings.toml`
 //! - Environment variable interpolation (`$VAR` and `${VAR}` syntax)
 //! - Atomic file writes with temp file + rename
@@ -9,14 +9,14 @@
 //!
 //! # Architecture
 //!
-//! This is a **Layer 2 (Infrastructure)** crate in the Qbit architecture:
+//! This is a **Layer 2 (Infrastructure)** crate in the Golish architecture:
 //! - Depends on: external crates only (serde, toml, tokio, etc.)
 //! - Used by: golish (main application), golish-tools, golish-ai, etc.
 //!
 //! # Usage
 //!
 //! ```rust,ignore
-//! use golish_settings::{SettingsManager, QbitSettings, get_with_env_fallback};
+//! use golish_settings::{SettingsManager, GolishSettings, get_with_env_fallback};
 //!
 //! // Load settings
 //! let manager = SettingsManager::new().await?;
@@ -50,5 +50,5 @@ pub mod schema;
 pub use loader::{apply_proxy_env, get_with_env_fallback, settings_path, SettingsManager};
 pub use project::{ProjectSettings, ProjectSettingsManager};
 pub use schema::{
-    LangfuseSettings, NetworkSettings, QbitSettings, TelemetrySettings, WindowSettings,
+    LangfuseSettings, NetworkSettings, GolishSettings, TelemetrySettings, WindowSettings,
 };

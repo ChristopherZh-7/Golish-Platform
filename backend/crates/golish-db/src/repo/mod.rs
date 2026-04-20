@@ -16,6 +16,7 @@ pub mod search_logs;
 pub mod sessions;
 pub mod target_assets;
 pub mod targets;
+pub mod subtasks;
 pub mod tasks;
 pub mod terminal_logs;
 pub mod tool_calls;

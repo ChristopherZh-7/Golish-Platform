@@ -73,7 +73,7 @@ struct SharedComponents {
 #[derive(Default, Clone)]
 pub struct SharedComponentsConfig {
     /// Settings instance.
-    pub settings: golish_settings::QbitSettings,
+    pub settings: golish_settings::GolishSettings,
     /// Context manager configuration.
     pub context_config: Option<ContextManagerConfig>,
 }

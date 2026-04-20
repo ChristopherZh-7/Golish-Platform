@@ -1,10 +1,10 @@
 # Rust Evaluation Framework
 
-This guide explains the Rust-native evaluation framework for testing Qbit agent capabilities using the `rig` library.
+This guide explains the Rust-native evaluation framework for testing Golish agent capabilities using the `rig` library.
 
 ## Overview
 
-The Rust evals framework provides end-to-end testing of the Qbit agent through 5 evaluation scenarios that test real-world software engineering tasks. Unlike the Python/DeepEval approach, this framework:
+The Rust evals framework provides end-to-end testing of the Golish agent through 5 evaluation scenarios that test real-world software engineering tasks. Unlike the Python/DeepEval approach, this framework:
 
 - Runs entirely in Rust (no Python dependencies)
 - Uses a lightweight agent executor (no PTY/sidecar overhead)
@@ -19,7 +19,7 @@ Evals require Vertex AI credentials. Configure in one of two ways:
 
 #### Option 1: settings.toml (Recommended)
 
-Add to `~/.qbit/settings.toml`:
+Add to `~/.golish/settings.toml`:
 
 ```toml
 [ai.vertex_ai]
@@ -47,39 +47,39 @@ export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
 #### Priority Order
 
 Settings are resolved in this order:
-1. Value in `~/.qbit/settings.toml`
+1. Value in `~/.golish/settings.toml`
 2. Environment variable
 3. Default value (for `location` only: "us-east5")
 
 ### Build Requirements
 
 ```bash
-cargo build --no-default-features --features evals --bin qbit-cli
+cargo build --no-default-features --features evals --bin golish-cli
 ```
 
 ## Quick Start
 
 ```bash
 # List available scenarios
-cargo run --features evals --bin qbit-cli -- --list-scenarios
+cargo run --features evals --bin golish-cli -- --list-scenarios
 
 # Run all scenarios
-cargo run --features evals --bin qbit-cli -- --eval
+cargo run --features evals --bin golish-cli -- --eval
 
 # Run a specific scenario
-cargo run --features evals --bin qbit-cli -- --eval --scenario bug-fix
+cargo run --features evals --bin golish-cli -- --eval --scenario bug-fix
 
 # Verbose output (shows agent conversation in real-time)
-cargo run --features evals --bin qbit-cli -- --eval -v
+cargo run --features evals --bin golish-cli -- --eval -v
 
 # Run scenarios in parallel (faster execution)
-cargo run --features evals --bin qbit-cli -- --eval --parallel
+cargo run --features evals --bin golish-cli -- --eval --parallel
 
 # Parallel with verbose (logs written to files)
-cargo run --features evals --bin qbit-cli -- --eval --parallel -v
+cargo run --features evals --bin golish-cli -- --eval --parallel -v
 
 # JSON output (for CI integration)
-cargo run --features evals --bin qbit-cli -- --eval --json
+cargo run --features evals --bin golish-cli -- --eval --json
 ```
 
 ### Verbose Output
@@ -90,7 +90,7 @@ The `-v` / `--verbose` flag shows the agent conversation in real-time:
 - Tool calls with arguments
 - Tool results (success/failure)
 
-When running in **parallel mode with verbose**, logs are written to individual files in a temp directory (e.g., `/tmp/qbit-eval-logs/bug-fix.log`) to avoid interleaved console output. The log paths are displayed after each scenario completes.
+When running in **parallel mode with verbose**, logs are written to individual files in a temp directory (e.g., `/tmp/golish-eval-logs/bug-fix.log`) to avoid interleaved console output. The log paths are displayed after each scenario completes.
 
 ## Scenarios
 
@@ -389,7 +389,7 @@ Required secrets/variables:
 
 ### "Vertex AI project_id not configured"
 
-Configure Vertex AI in `~/.qbit/settings.toml`:
+Configure Vertex AI in `~/.golish/settings.toml`:
 
 ```toml
 [ai.vertex_ai]

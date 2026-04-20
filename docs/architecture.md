@@ -3,16 +3,16 @@
 High-level repo structure:
 
 ```text
-qbit/
+golish/
 ├── frontend/               # React 19 + TypeScript + Vite
 │   ├── components/         # UI components
 │   ├── hooks/              # Tauri event subscriptions
 │   ├── lib/                # Typed invoke() wrappers
 │   └── store/              # Zustand + Immer state
 └── backend/crates/         # Rust workspace
-    ├── qbit/               # Main app: Tauri commands, CLI
-    ├── qbit-ai/            # Agent orchestration, LLM clients
-    ├── qbit-core/          # Foundation types
+    ├── golish/               # Main app: Tauri commands, CLI
+    ├── golish-ai/            # Agent orchestration, LLM clients
+    ├── golish-core/          # Foundation types
     └── ...
 ```
 

@@ -1,6 +1,6 @@
 # Documentation
 
-This directory contains Qbit’s user guides, integrations, developer docs, and evaluation notes.
+This directory contains Golish’s user guides, integrations, developer docs, and evaluation notes.
 
 ## Getting started
 - [Getting started](getting-started.md)
@@ -8,7 +8,7 @@ This directory contains Qbit’s user guides, integrations, developer docs, and 
 - [Providers](providers.md)
 - [Workspaces](workspaces.md)
 
-## Using Qbit
+## Using Golish
 - [Agent modes](agent-modes.md)
 - [Auto input mode](auto-input-mode.md)
 - [Agent skills](agent-skills.md)

@@ -1,4 +1,4 @@
-//! SWE-bench Lite integration for Qbit AI agent evaluation.
+//! SWE-bench Lite integration for Golish AI agent evaluation.
 //!
 //! This crate provides integration with the SWE-bench Lite benchmark,
 //! a collection of 300 real GitHub issues from Python repositories

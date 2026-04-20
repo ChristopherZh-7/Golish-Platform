@@ -1,4 +1,4 @@
-//! AI Agent Orchestration for Qbit
+//! AI Agent Orchestration for Golish
 //!
 //! This crate provides the core AI agent system including:
 //! - Agent bridge and lifecycle management
@@ -40,6 +40,8 @@ pub mod tool_policy;
 pub mod agent_bridge;
 pub mod agent_mode;
 pub mod agentic_loop;
+pub mod execution_mode;
+pub mod task_orchestrator;
 pub mod db_tracking;
 mod bridge_context;
 mod bridge_hitl;

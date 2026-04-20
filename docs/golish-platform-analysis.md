@@ -65,7 +65,7 @@ Layer 2: Infrastructure (22 crates)
 
 Layer 1: Foundation (golish-core)
   ├── Event types (AiEvent, AiEventEnvelope)
-  ├── Runtime trait (QbitRuntime)
+  ├── Runtime trait (GolishRuntime)
   ├── Session types
   ├── HITL interfaces
   ├── Planning types
@@ -753,10 +753,10 @@ build_system_prompt_with_contributions(workspace, mode, memory_file, registry, c
       └── summary-{ts}.md          # Compaction 摘要
 ```
 
-### 13.2 QbitSessionManager
+### 13.2 GolishSessionManager
 
 ```
-QbitSessionManager:
+GolishSessionManager:
   ├── create_session(workspace, mode)
   ├── save_messages(messages)
   ├── load_messages() → Vec<Message>

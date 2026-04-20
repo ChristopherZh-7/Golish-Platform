@@ -647,6 +647,100 @@ pub fn convert_to_cli_json(event: &AiEvent) -> CliJsonEvent {
                 "skipped": skipped
             }),
         ),
+        AiEvent::TaskProgress {
+            task_id,
+            status,
+            message,
+        } => CliJsonEvent::new(
+            "task_progress",
+            serde_json::json!({
+                "task_id": task_id,
+                "status": status,
+                "message": message
+            }),
+        ),
+        AiEvent::SubtaskCreated {
+            task_id,
+            subtask_id,
+            title,
+            agent,
+        } => CliJsonEvent::new(
+            "subtask_created",
+            serde_json::json!({
+                "task_id": task_id,
+                "subtask_id": subtask_id,
+                "title": title,
+                "agent": agent
+            }),
+        ),
+        AiEvent::SubtaskCompleted {
+            task_id,
+            subtask_id,
+            title,
+            result,
+        } => CliJsonEvent::new(
+            "subtask_completed",
+            serde_json::json!({
+                "task_id": task_id,
+                "subtask_id": subtask_id,
+                "title": title,
+                "result": result
+            }),
+        ),
+
+        AiEvent::SubtaskWaitingForInput {
+            task_id,
+            subtask_id,
+            title,
+            prompt,
+        } => CliJsonEvent::new(
+            "subtask_waiting_for_input",
+            serde_json::json!({
+                "task_id": task_id,
+                "subtask_id": subtask_id,
+                "title": title,
+                "prompt": prompt
+            }),
+        ),
+
+        AiEvent::SubtaskUserInput {
+            task_id,
+            subtask_id,
+            input,
+        } => CliJsonEvent::new(
+            "subtask_user_input",
+            serde_json::json!({
+                "task_id": task_id,
+                "subtask_id": subtask_id,
+                "input": input
+            }),
+        ),
+
+        AiEvent::TaskResumed {
+            task_id,
+            subtask_index,
+            total_subtasks,
+        } => CliJsonEvent::new(
+            "task_resumed",
+            serde_json::json!({
+                "task_id": task_id,
+                "subtask_index": subtask_index,
+                "total_subtasks": total_subtasks
+            }),
+        ),
+
+        AiEvent::EnricherResult {
+            task_id,
+            subtask_id,
+            context_added,
+        } => CliJsonEvent::new(
+            "enricher_result",
+            serde_json::json!({
+                "task_id": task_id,
+                "subtask_id": subtask_id,
+                "context_added": context_added
+            }),
+        ),
     }
 }
 

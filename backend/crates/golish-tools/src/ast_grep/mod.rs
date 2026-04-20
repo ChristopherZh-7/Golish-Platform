@@ -1,4 +1,4 @@
-//! AST-grep based code search and replace for Qbit.
+//! AST-grep based code search and replace for Golish.
 //!
 //! This crate provides structural code search using AST patterns.
 //! Unlike regex, it understands code structure and can match

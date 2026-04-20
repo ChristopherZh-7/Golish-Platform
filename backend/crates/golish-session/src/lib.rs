@@ -1,4 +1,4 @@
-//! Session persistence module for Qbit AI conversations.
+//! Session persistence module for Golish AI conversations.
 //!
 //! This module provides session archiving, conversation logs, and transcript export
 //! capabilities by integrating with golish-core's session module.
@@ -22,21 +22,21 @@ use golish_core::session::{
 
 pub mod db;
 
-/// Role of a message in the conversation (simplified for Qbit).
+/// Role of a message in the conversation (simplified for Golish).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum QbitMessageRole {
+pub enum GolishMessageRole {
     User,
     Assistant,
     System,
     Tool,
 }
 
-/// A simplified message format for Qbit sessions.
+/// A simplified message format for Golish sessions.
 /// This provides a bridge between rig's Message type and golish-core's SessionMessage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QbitSessionMessage {
-    pub role: QbitMessageRole,
+pub struct GolishSessionMessage {
+    pub role: GolishMessageRole,
     pub content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
@@ -46,10 +46,10 @@ pub struct QbitSessionMessage {
     pub tokens_used: Option<u32>,
 }
 
-impl QbitSessionMessage {
+impl GolishSessionMessage {
     pub fn user(content: impl Into<String>) -> Self {
         Self {
-            role: QbitMessageRole::User,
+            role: GolishMessageRole::User,
             content: content.into(),
             tool_call_id: None,
             tool_name: None,
@@ -59,7 +59,7 @@ impl QbitSessionMessage {
 
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
-            role: QbitMessageRole::Assistant,
+            role: GolishMessageRole::Assistant,
             content: content.into(),
             tool_call_id: None,
             tool_name: None,
@@ -70,7 +70,7 @@ impl QbitSessionMessage {
     #[allow(dead_code)] // Public API for session construction
     pub fn system(content: impl Into<String>) -> Self {
         Self {
-            role: QbitMessageRole::System,
+            role: GolishMessageRole::System,
             content: content.into(),
             tool_call_id: None,
             tool_name: None,
@@ -82,7 +82,7 @@ impl QbitSessionMessage {
     pub fn tool_use(tool_name: impl Into<String>, result: impl Into<String>) -> Self {
         let tool_name = tool_name.into();
         Self {
-            role: QbitMessageRole::Tool,
+            role: GolishMessageRole::Tool,
             content: result.into(),
             tool_call_id: None,
             tool_name: Some(tool_name),
@@ -93,7 +93,7 @@ impl QbitSessionMessage {
     #[allow(dead_code)] // Public API for session construction
     pub fn tool_result(content: impl Into<String>, tool_call_id: impl Into<String>) -> Self {
         Self {
-            role: QbitMessageRole::Tool,
+            role: GolishMessageRole::Tool,
             content: content.into(),
             tool_call_id: Some(tool_call_id.into()),
             tool_name: None,
@@ -102,8 +102,8 @@ impl QbitSessionMessage {
     }
 }
 
-/// Convert rig Message to QbitSessionMessage for persistence.
-impl From<&Message> for QbitSessionMessage {
+/// Convert rig Message to GolishSessionMessage for persistence.
+impl From<&Message> for GolishSessionMessage {
     fn from(message: &Message) -> Self {
         match message {
             Message::User { content } => {
@@ -132,18 +132,18 @@ impl From<&Message> for QbitSessionMessage {
     }
 }
 
-impl QbitSessionMessage {
-    /// Convert QbitSessionMessage back to rig Message for restoring sessions.
+impl GolishSessionMessage {
+    /// Convert GolishSessionMessage back to rig Message for restoring sessions.
     /// Note: Tool messages are converted to assistant messages since rig's Message
     /// enum only supports User and Assistant variants for chat history.
     pub fn to_rig_message(&self) -> Option<Message> {
         match self.role {
-            QbitMessageRole::User => Some(Message::User {
+            GolishMessageRole::User => Some(Message::User {
                 content: OneOrMany::one(UserContent::Text(rig::message::Text {
                     text: self.content.clone(),
                 })),
             }),
-            QbitMessageRole::Assistant => Some(Message::Assistant {
+            GolishMessageRole::Assistant => Some(Message::Assistant {
                 id: None,
                 content: OneOrMany::one(AssistantContent::Text(rig::message::Text {
                     text: self.content.clone(),
@@ -151,15 +151,15 @@ impl QbitSessionMessage {
             }),
             // System and Tool messages cannot be directly represented in rig's Message enum
             // for chat history, so we skip them (they were already processed)
-            QbitMessageRole::System | QbitMessageRole::Tool => None,
+            GolishMessageRole::System | GolishMessageRole::Tool => None,
         }
     }
 }
 
-/// Qbit session snapshot containing conversation data.
+/// Golish session snapshot containing conversation data.
 #[cfg_attr(not(feature = "tauri"), allow(dead_code))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QbitSessionSnapshot {
+pub struct GolishSessionSnapshot {
     /// Session metadata
     pub workspace_label: String,
     pub workspace_path: String,
@@ -178,7 +178,7 @@ pub struct QbitSessionSnapshot {
     pub transcript: Vec<String>,
 
     /// Full message history
-    pub messages: Vec<QbitSessionMessage>,
+    pub messages: Vec<GolishSessionMessage>,
 
     /// Associated sidecar session ID (for context restoration)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -194,7 +194,7 @@ pub struct QbitSessionSnapshot {
 }
 
 /// Active session manager for creating and finalizing session archives.
-pub struct QbitSessionManager {
+pub struct GolishSessionManager {
     archive: Option<SessionArchive>,
     #[allow(dead_code)] // Metadata stored in archive; kept for debugging
     workspace_label: String,
@@ -204,7 +204,7 @@ pub struct QbitSessionManager {
     model: String,
     #[allow(dead_code)] // Metadata stored in archive; kept for debugging
     provider: String,
-    messages: Vec<QbitSessionMessage>,
+    messages: Vec<GolishSessionMessage>,
     tools_used: std::collections::HashSet<String>,
     transcript: Vec<String>,
     /// Associated sidecar session ID (for context restoration)
@@ -215,7 +215,7 @@ pub struct QbitSessionManager {
     db_handle: Option<db::DbSessionHandle>,
 }
 
-impl QbitSessionManager {
+impl GolishSessionManager {
     /// Create a new session manager.
     pub async fn new(
         workspace_path: PathBuf,
@@ -316,14 +316,14 @@ impl QbitSessionManager {
 
     /// Record a user message.
     pub fn add_user_message(&mut self, content: &str) {
-        self.messages.push(QbitSessionMessage::user(content));
+        self.messages.push(GolishSessionMessage::user(content));
         self.transcript
             .push(format!("User: {}", truncate(content, 200)));
     }
 
     /// Record an assistant message.
     pub fn add_assistant_message(&mut self, content: &str) {
-        self.messages.push(QbitSessionMessage::assistant(content));
+        self.messages.push(GolishSessionMessage::assistant(content));
         self.transcript
             .push(format!("Assistant: {}", truncate(content, 200)));
     }
@@ -333,7 +333,7 @@ impl QbitSessionManager {
     pub fn add_tool_use(&mut self, tool_name: &str, result: &str) {
         self.tools_used.insert(tool_name.to_string());
         self.messages
-            .push(QbitSessionMessage::tool_use(tool_name, result));
+            .push(GolishSessionMessage::tool_use(tool_name, result));
         self.transcript
             .push(format!("Tool[{}]: {}", tool_name, truncate(result, 100)));
     }
@@ -345,16 +345,16 @@ impl QbitSessionManager {
     pub fn save(&self) -> Result<PathBuf> {
         let archive = self.archive.as_ref().context("Session already finalized")?;
 
-        // Convert QbitSessionMessages to SessionMessages
+        // Convert GolishSessionMessages to SessionMessages
         let session_messages: Vec<SessionMessage> = self
             .messages
             .iter()
             .map(|m| {
                 let role = match m.role {
-                    QbitMessageRole::User => MessageRole::User,
-                    QbitMessageRole::Assistant => MessageRole::Assistant,
-                    QbitMessageRole::System => MessageRole::System,
-                    QbitMessageRole::Tool => MessageRole::Tool,
+                    GolishMessageRole::User => MessageRole::User,
+                    GolishMessageRole::Assistant => MessageRole::Assistant,
+                    GolishMessageRole::System => MessageRole::System,
+                    GolishMessageRole::Tool => MessageRole::Tool,
                 };
                 SessionMessage::with_tool_call_id(role, &m.content, m.tool_call_id.clone())
             })
@@ -407,16 +407,16 @@ impl QbitSessionManager {
     pub fn finalize(&mut self) -> Result<PathBuf> {
         let archive = self.archive.take().context("Session already finalized")?;
 
-        // Convert QbitSessionMessages to SessionMessages
+        // Convert GolishSessionMessages to SessionMessages
         let session_messages: Vec<SessionMessage> = self
             .messages
             .iter()
             .map(|m| {
                 let role = match m.role {
-                    QbitMessageRole::User => MessageRole::User,
-                    QbitMessageRole::Assistant => MessageRole::Assistant,
-                    QbitMessageRole::System => MessageRole::System,
-                    QbitMessageRole::Tool => MessageRole::Tool,
+                    GolishMessageRole::User => MessageRole::User,
+                    GolishMessageRole::Assistant => MessageRole::Assistant,
+                    GolishMessageRole::System => MessageRole::System,
+                    GolishMessageRole::Tool => MessageRole::Tool,
                 };
                 SessionMessage::with_tool_call_id(role, &m.content, m.tool_call_id.clone())
             })
@@ -462,9 +462,9 @@ impl QbitSessionManager {
         Ok(path)
     }
 
-    /// Build a QbitSessionSnapshot from current state (for DB persistence).
-    fn build_snapshot(&self) -> QbitSessionSnapshot {
-        QbitSessionSnapshot {
+    /// Build a GolishSessionSnapshot from current state (for DB persistence).
+    fn build_snapshot(&self) -> GolishSessionSnapshot {
+        GolishSessionSnapshot {
             workspace_label: self.workspace_label.clone(),
             workspace_path: self.workspace_path.display().to_string(),
             model: self.model.clone(),
@@ -602,7 +602,7 @@ pub async fn find_session(identifier: &str) -> Result<Option<SessionListingInfo>
 
 /// Load a full session by identifier.
 #[cfg_attr(not(feature = "tauri"), allow(dead_code))]
-pub async fn load_session(identifier: &str) -> Result<Option<QbitSessionSnapshot>> {
+pub async fn load_session(identifier: &str) -> Result<Option<GolishSessionSnapshot>> {
     let listing = find_session_by_identifier(identifier).await?;
 
     Ok(listing.map(|l| {
@@ -612,12 +612,12 @@ pub async fn load_session(identifier: &str) -> Result<Option<QbitSessionSnapshot
             .iter()
             .map(|m| {
                 let role = match m.role {
-                    MessageRole::User => QbitMessageRole::User,
-                    MessageRole::Assistant => QbitMessageRole::Assistant,
-                    MessageRole::System => QbitMessageRole::System,
-                    MessageRole::Tool => QbitMessageRole::Tool,
+                    MessageRole::User => GolishMessageRole::User,
+                    MessageRole::Assistant => GolishMessageRole::Assistant,
+                    MessageRole::System => GolishMessageRole::System,
+                    MessageRole::Tool => GolishMessageRole::Tool,
                 };
-                QbitSessionMessage {
+                GolishSessionMessage {
                     role,
                     content: m.content.as_text().to_string(),
                     tool_call_id: m.tool_call_id.clone(),
@@ -628,12 +628,12 @@ pub async fn load_session(identifier: &str) -> Result<Option<QbitSessionSnapshot
             .collect();
 
         // Read sidecar session ID from companion file
-        let sidecar_session_id = QbitSessionManager::read_sidecar_session_id(&l.path);
+        let sidecar_session_id = GolishSessionManager::read_sidecar_session_id(&l.path);
 
         // Read agent mode from companion file
-        let agent_mode = QbitSessionManager::read_agent_mode(&l.path);
+        let agent_mode = GolishSessionManager::read_agent_mode(&l.path);
 
-        QbitSessionSnapshot {
+        GolishSessionSnapshot {
             workspace_label: l.snapshot.metadata.workspace_label,
             workspace_path: l.snapshot.metadata.workspace_path,
             model: l.snapshot.metadata.model,
@@ -815,19 +815,19 @@ mod tests {
 
     #[test]
     fn test_golish_session_message_creation() {
-        let user_msg = QbitSessionMessage::user("Hello");
-        assert_eq!(user_msg.role, QbitMessageRole::User);
+        let user_msg = GolishSessionMessage::user("Hello");
+        assert_eq!(user_msg.role, GolishMessageRole::User);
         assert_eq!(user_msg.content, "Hello");
 
-        let assistant_msg = QbitSessionMessage::assistant("Hi there");
-        assert_eq!(assistant_msg.role, QbitMessageRole::Assistant);
+        let assistant_msg = GolishSessionMessage::assistant("Hi there");
+        assert_eq!(assistant_msg.role, GolishMessageRole::Assistant);
         assert_eq!(assistant_msg.content, "Hi there");
     }
 
     #[test]
     fn test_golish_session_message_system() {
-        let system_msg = QbitSessionMessage::system("You are a helpful assistant");
-        assert_eq!(system_msg.role, QbitMessageRole::System);
+        let system_msg = GolishSessionMessage::system("You are a helpful assistant");
+        assert_eq!(system_msg.role, GolishMessageRole::System);
         assert_eq!(system_msg.content, "You are a helpful assistant");
         assert!(system_msg.tool_call_id.is_none());
         assert!(system_msg.tool_name.is_none());
@@ -835,8 +835,8 @@ mod tests {
 
     #[test]
     fn test_golish_session_message_tool_result() {
-        let tool_msg = QbitSessionMessage::tool_result("File contents here", "call_123");
-        assert_eq!(tool_msg.role, QbitMessageRole::Tool);
+        let tool_msg = GolishSessionMessage::tool_result("File contents here", "call_123");
+        assert_eq!(tool_msg.role, GolishMessageRole::Tool);
         assert_eq!(tool_msg.content, "File contents here");
         assert_eq!(tool_msg.tool_call_id, Some("call_123".to_string()));
         assert!(tool_msg.tool_name.is_none());
@@ -870,8 +870,8 @@ mod tests {
             })),
         };
 
-        let golish_msg = QbitSessionMessage::from(&rig_msg);
-        assert_eq!(golish_msg.role, QbitMessageRole::User);
+        let golish_msg = GolishSessionMessage::from(&rig_msg);
+        assert_eq!(golish_msg.role, GolishMessageRole::User);
         assert_eq!(golish_msg.content, "Hello from user");
     }
 
@@ -884,14 +884,14 @@ mod tests {
             })),
         };
 
-        let golish_msg = QbitSessionMessage::from(&rig_msg);
-        assert_eq!(golish_msg.role, QbitMessageRole::Assistant);
+        let golish_msg = GolishSessionMessage::from(&rig_msg);
+        assert_eq!(golish_msg.role, GolishMessageRole::Assistant);
         assert_eq!(golish_msg.content, "Hello from assistant");
     }
 
     #[test]
     fn test_golish_message_to_rig_user() {
-        let golish_msg = QbitSessionMessage::user("Test user message");
+        let golish_msg = GolishSessionMessage::user("Test user message");
         let rig_msg = golish_msg.to_rig_message();
 
         assert!(rig_msg.is_some());
@@ -914,7 +914,7 @@ mod tests {
 
     #[test]
     fn test_golish_message_to_rig_assistant() {
-        let golish_msg = QbitSessionMessage::assistant("Test assistant message");
+        let golish_msg = GolishSessionMessage::assistant("Test assistant message");
         let rig_msg = golish_msg.to_rig_message();
 
         assert!(rig_msg.is_some());
@@ -937,19 +937,19 @@ mod tests {
 
     #[test]
     fn test_golish_message_to_rig_system_returns_none() {
-        let golish_msg = QbitSessionMessage::system("System prompt");
+        let golish_msg = GolishSessionMessage::system("System prompt");
         assert!(golish_msg.to_rig_message().is_none());
     }
 
     #[test]
     fn test_golish_message_to_rig_tool_returns_none() {
-        let golish_msg = QbitSessionMessage::tool_result("Result", "call_id");
+        let golish_msg = GolishSessionMessage::tool_result("Result", "call_id");
         assert!(golish_msg.to_rig_message().is_none());
     }
 
     #[test]
     fn test_golish_session_snapshot_serialization() {
-        let snapshot = QbitSessionSnapshot {
+        let snapshot = GolishSessionSnapshot {
             workspace_label: "test-workspace".to_string(),
             workspace_path: "/tmp/test".to_string(),
             model: "claude-3".to_string(),
@@ -960,8 +960,8 @@ mod tests {
             distinct_tools: vec!["read_file".to_string(), "write_file".to_string()],
             transcript: vec!["User: Hello".to_string(), "Assistant: Hi".to_string()],
             messages: vec![
-                QbitSessionMessage::user("Hello"),
-                QbitSessionMessage::assistant("Hi"),
+                GolishSessionMessage::user("Hello"),
+                GolishSessionMessage::assistant("Hi"),
             ],
             sidecar_session_id: None,
             total_tokens: None,
@@ -969,7 +969,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&snapshot).expect("Failed to serialize");
-        let deserialized: QbitSessionSnapshot =
+        let deserialized: GolishSessionSnapshot =
             serde_json::from_str(&json).expect("Failed to deserialize");
 
         assert_eq!(deserialized.workspace_label, "test-workspace");
@@ -1012,26 +1012,26 @@ mod tests {
     #[test]
     fn test_golish_message_role_serialization() {
         // Test that roles serialize to lowercase as expected
-        let user_msg = QbitSessionMessage::user("test");
+        let user_msg = GolishSessionMessage::user("test");
         let json = serde_json::to_string(&user_msg).unwrap();
         assert!(json.contains("\"role\":\"user\""));
 
-        let assistant_msg = QbitSessionMessage::assistant("test");
+        let assistant_msg = GolishSessionMessage::assistant("test");
         let json = serde_json::to_string(&assistant_msg).unwrap();
         assert!(json.contains("\"role\":\"assistant\""));
 
-        let system_msg = QbitSessionMessage::system("test");
+        let system_msg = GolishSessionMessage::system("test");
         let json = serde_json::to_string(&system_msg).unwrap();
         assert!(json.contains("\"role\":\"system\""));
 
-        let tool_msg = QbitSessionMessage::tool_result("test", "id");
+        let tool_msg = GolishSessionMessage::tool_result("test", "id");
         let json = serde_json::to_string(&tool_msg).unwrap();
         assert!(json.contains("\"role\":\"tool\""));
     }
 
     #[test]
     fn test_golish_message_optional_fields_skip_when_none() {
-        let msg = QbitSessionMessage::user("Hello");
+        let msg = GolishSessionMessage::user("Hello");
         let json = serde_json::to_string(&msg).unwrap();
 
         // tool_call_id and tool_name should not appear when None
@@ -1041,7 +1041,7 @@ mod tests {
 
     #[test]
     fn test_golish_message_includes_tool_call_id_when_present() {
-        let msg = QbitSessionMessage::tool_result("result", "call_abc");
+        let msg = GolishSessionMessage::tool_result("result", "call_abc");
         let json = serde_json::to_string(&msg).unwrap();
 
         assert!(json.contains("\"tool_call_id\":\"call_abc\""));
@@ -1088,7 +1088,7 @@ mod tests {
         std::env::set_var("VT_SESSION_DIR", temp_dir.path());
 
         let manager =
-            QbitSessionManager::new(temp_dir.path().to_path_buf(), "test-model", "test-provider")
+            GolishSessionManager::new(temp_dir.path().to_path_buf(), "test-model", "test-provider")
                 .await;
 
         assert!(manager.is_ok());
@@ -1107,7 +1107,7 @@ mod tests {
         std::env::set_var("VT_SESSION_DIR", temp_dir.path());
 
         let mut manager =
-            QbitSessionManager::new(temp_dir.path().to_path_buf(), "test-model", "test-provider")
+            GolishSessionManager::new(temp_dir.path().to_path_buf(), "test-model", "test-provider")
                 .await
                 .expect("Failed to create manager");
 
@@ -1131,7 +1131,7 @@ mod tests {
         std::env::set_var("VT_SESSION_DIR", temp_dir.path());
 
         let mut manager =
-            QbitSessionManager::new(temp_dir.path().to_path_buf(), "test-model", "test-provider")
+            GolishSessionManager::new(temp_dir.path().to_path_buf(), "test-model", "test-provider")
                 .await
                 .expect("Failed to create manager");
 
@@ -1167,7 +1167,7 @@ mod tests {
 
         // Create 5 sessions
         for i in 0..5 {
-            let mut manager = QbitSessionManager::new(
+            let mut manager = GolishSessionManager::new(
                 temp_dir.path().to_path_buf(),
                 format!("model-{}", i),
                 "provider",
@@ -1188,8 +1188,8 @@ mod tests {
     #[test]
     fn test_session_message_roundtrip() {
         // Test that messages survive serialization roundtrip
-        let original = QbitSessionMessage {
-            role: QbitMessageRole::Tool,
+        let original = GolishSessionMessage {
+            role: GolishMessageRole::Tool,
             content: "Tool result with special chars: <>&\"'".to_string(),
             tool_call_id: Some("call_123".to_string()),
             tool_name: Some("read_file".to_string()),
@@ -1197,7 +1197,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&original).unwrap();
-        let restored: QbitSessionMessage = serde_json::from_str(&json).unwrap();
+        let restored: GolishSessionMessage = serde_json::from_str(&json).unwrap();
 
         assert_eq!(restored.role, original.role);
         assert_eq!(restored.content, original.content);
@@ -1215,7 +1215,7 @@ mod tests {
 
         // Create and populate a session
         let mut manager =
-            QbitSessionManager::new(temp_dir.path().to_path_buf(), "test-model", "test-provider")
+            GolishSessionManager::new(temp_dir.path().to_path_buf(), "test-model", "test-provider")
                 .await
                 .expect("Failed to create manager");
 
@@ -1264,7 +1264,7 @@ mod tests {
         std::env::set_var("VT_SESSION_DIR", temp_dir.path());
 
         let mut manager =
-            QbitSessionManager::new(temp_dir.path().to_path_buf(), "test-model", "test-provider")
+            GolishSessionManager::new(temp_dir.path().to_path_buf(), "test-model", "test-provider")
                 .await
                 .expect("Failed to create manager");
 
@@ -1292,7 +1292,7 @@ mod tests {
         std::env::set_var("VT_SESSION_DIR", temp_dir.path());
 
         let mut manager =
-            QbitSessionManager::new(temp_dir.path().to_path_buf(), "test-model", "test-provider")
+            GolishSessionManager::new(temp_dir.path().to_path_buf(), "test-model", "test-provider")
                 .await
                 .expect("Failed to create manager");
 
@@ -1330,10 +1330,10 @@ mod tests {
             "tool_name": null
         }"#;
 
-        let message: QbitSessionMessage =
+        let message: GolishSessionMessage =
             serde_json::from_str(json_without_tokens).expect("Failed to deserialize old format");
 
-        assert_eq!(message.role, QbitMessageRole::User);
+        assert_eq!(message.role, GolishMessageRole::User);
         assert_eq!(message.content, "Hello world");
         assert_eq!(message.tokens_used, None);
     }
@@ -1363,7 +1363,7 @@ mod tests {
             ]
         }"#;
 
-        let snapshot: QbitSessionSnapshot = serde_json::from_str(json_without_total_tokens)
+        let snapshot: GolishSessionSnapshot = serde_json::from_str(json_without_total_tokens)
             .expect("Failed to deserialize old format");
 
         assert_eq!(snapshot.workspace_label, "test");
@@ -1374,13 +1374,13 @@ mod tests {
     #[test]
     fn test_new_fields_are_not_serialized_when_none() {
         // Verify that None values are omitted from JSON (keeps files compact)
-        let message = QbitSessionMessage::user("Test");
+        let message = GolishSessionMessage::user("Test");
         let json = serde_json::to_string(&message).expect("Failed to serialize");
 
         // Should not contain tokens_used field
         assert!(!json.contains("tokens_used"));
 
-        let snapshot = QbitSessionSnapshot {
+        let snapshot = GolishSessionSnapshot {
             workspace_label: "test".to_string(),
             workspace_path: "/tmp".to_string(),
             model: "test".to_string(),

@@ -1,4 +1,4 @@
-use crate::error::{QbitError, Result};
+use crate::error::{GolishError, Result};
 use crate::pty::ShellType;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -12,14 +12,14 @@ const INTEGRATION_VERSION: &str = "1.1.0";
 // =============================================================================
 
 const INTEGRATION_SCRIPT_ZSH: &str = r#"# ~/.config/golish/integration.zsh
-# Qbit Shell Integration v1.1.0
-# Do not edit - managed by Qbit
+# Golish Shell Integration v1.1.0
+# Do not edit - managed by Golish
 
 # Guard against double-sourcing
 [[ -n "$QBIT_INTEGRATION_LOADED" ]] && return
 export QBIT_INTEGRATION_LOADED=1
 
-# Only run inside Qbit
+# Only run inside Golish
 [[ -z "$QBIT" ]] && return
 
 # ============ OSC Helpers ============
@@ -133,14 +133,14 @@ __golish_report_venv
 // =============================================================================
 
 const INTEGRATION_SCRIPT_BASH: &str = r#"# ~/.config/golish/integration.bash
-# Qbit Shell Integration v1.1.0
-# Do not edit - managed by Qbit
+# Golish Shell Integration v1.1.0
+# Do not edit - managed by Golish
 
 # Guard against double-sourcing
 [[ -n "$QBIT_INTEGRATION_LOADED" ]] && return
 export QBIT_INTEGRATION_LOADED=1
 
-# Only run inside Qbit
+# Only run inside Golish
 [[ "$QBIT" != "1" ]] && return
 
 # ============ OSC Helpers ============
@@ -213,15 +213,15 @@ __golish_report_venv
 // =============================================================================
 
 const INTEGRATION_SCRIPT_FISH: &str = r#"# ~/.config/fish/conf.d/golish.fish
-# Qbit Shell Integration v1.1.0
-# Do not edit - managed by Qbit
+# Golish Shell Integration v1.1.0
+# Do not edit - managed by Golish
 
 # Guard against double-sourcing
 if set -q QBIT_INTEGRATION_LOADED
     exit
 end
 
-# Only run inside Qbit
+# Only run inside Golish
 if test "$QBIT" != "1"
     exit
 end
@@ -375,15 +375,15 @@ fn install_integration_internal(
     home_dir: &std::path::Path,
 ) -> Result<()> {
     // Create config directory
-    fs::create_dir_all(config_dir).map_err(QbitError::Io)?;
+    fs::create_dir_all(config_dir).map_err(GolishError::Io)?;
 
     // Write integration script
     let script_path = get_integration_path_for_shell(config_dir, shell_type);
-    fs::write(&script_path, get_integration_script(shell_type)).map_err(QbitError::Io)?;
+    fs::write(&script_path, get_integration_script(shell_type)).map_err(GolishError::Io)?;
 
     // Write version marker
     let version_path = config_dir.join("integration.version");
-    fs::write(&version_path, INTEGRATION_VERSION).map_err(QbitError::Io)?;
+    fs::write(&version_path, INTEGRATION_VERSION).map_err(GolishError::Io)?;
 
     // Update RC files
     let rc_paths = get_rc_file_paths(home_dir, shell_type);
@@ -403,13 +403,13 @@ fn update_rc_file_internal(
 ) -> Result<()> {
     // Create parent directories if needed (for fish config)
     if let Some(parent) = rc_path.parent() {
-        fs::create_dir_all(parent).map_err(QbitError::Io)?;
+        fs::create_dir_all(parent).map_err(GolishError::Io)?;
     }
 
     let source_line = match shell_type {
         ShellType::Fish => format!(
             r#"
-# Qbit shell integration
+# Golish shell integration
 if test "$QBIT" = "1"
     source "{}"
 end
@@ -418,7 +418,7 @@ end
         ),
         _ => format!(
             r#"
-# Qbit shell integration
+# Golish shell integration
 [[ -n "$QBIT" ]] && source "{}"
 "#,
             integration_path.display()
@@ -426,7 +426,7 @@ end
     };
 
     if rc_path.exists() {
-        let content = fs::read_to_string(rc_path).map_err(QbitError::Io)?;
+        let content = fs::read_to_string(rc_path).map_err(GolishError::Io)?;
         let integration_path_str = integration_path.display().to_string();
 
         // Check if already configured correctly
@@ -441,7 +441,7 @@ end
             let mut skip_next = false;
 
             for line in content.lines() {
-                if line.trim() == "# Qbit shell integration" {
+                if line.trim() == "# Golish shell integration" {
                     skip_next = true;
                     continue;
                 }
@@ -469,7 +469,7 @@ end
             }
             new_content.push_str(&source_line);
 
-            fs::write(rc_path, new_content).map_err(QbitError::Io)?;
+            fs::write(rc_path, new_content).map_err(GolishError::Io)?;
             return Ok(());
         }
     }
@@ -479,9 +479,9 @@ end
         .create(true)
         .append(true)
         .open(rc_path)
-        .map_err(QbitError::Io)?;
+        .map_err(GolishError::Io)?;
 
-    writeln!(file, "{}", source_line).map_err(QbitError::Io)?;
+    writeln!(file, "{}", source_line).map_err(GolishError::Io)?;
 
     Ok(())
 }
@@ -496,10 +496,10 @@ fn uninstall_integration_internal(
     let version_path = config_dir.join("integration.version");
 
     if script_path.exists() {
-        fs::remove_file(&script_path).map_err(QbitError::Io)?;
+        fs::remove_file(&script_path).map_err(GolishError::Io)?;
     }
     if version_path.exists() {
-        fs::remove_file(&version_path).map_err(QbitError::Io)?;
+        fs::remove_file(&version_path).map_err(GolishError::Io)?;
     }
 
     Ok(())
@@ -553,7 +553,7 @@ fn get_integration_status_internal(
             if rc_path.exists() {
                 return IntegrationStatus::Misconfigured {
                     expected_path: script_path_str,
-                    issue: format!("No Qbit integration found in {}", rc_path.display()),
+                    issue: format!("No Golish integration found in {}", rc_path.display()),
                 };
             }
         }
@@ -574,20 +574,20 @@ fn get_integration_status_internal(
 /// Validates that the .zshrc sources the integration script from the correct path
 fn validate_zshrc_integration() -> Result<Option<String>> {
     let zshrc_path = get_zshrc_path()
-        .ok_or_else(|| QbitError::Internal("Could not determine home directory".into()))?;
+        .ok_or_else(|| GolishError::Internal("Could not determine home directory".into()))?;
 
     let integration_path = get_integration_path()
-        .ok_or_else(|| QbitError::Internal("Could not determine integration path".into()))?;
+        .ok_or_else(|| GolishError::Internal("Could not determine integration path".into()))?;
 
     if !zshrc_path.exists() {
         return Ok(Some("No .zshrc file found".to_string()));
     }
 
-    let content = fs::read_to_string(&zshrc_path).map_err(QbitError::Io)?;
+    let content = fs::read_to_string(&zshrc_path).map_err(GolishError::Io)?;
 
     // Check if there's any golish integration line
     if !content.contains("golish/integration.zsh") && !content.contains("golish\\integration.zsh") {
-        return Ok(Some("No Qbit integration found in .zshrc".to_string()));
+        return Ok(Some("No Golish integration found in .zshrc".to_string()));
     }
 
     // Check if the correct path is referenced
@@ -596,7 +596,7 @@ fn validate_zshrc_integration() -> Result<Option<String>> {
         // Try to find what path is actually being used
         for line in content.lines() {
             if line.contains("golish/integration.zsh") || line.contains("golish\\integration.zsh") {
-                if line.trim().starts_with('#') && !line.contains("# Qbit shell integration") {
+                if line.trim().starts_with('#') && !line.contains("# Golish shell integration") {
                     continue; // Skip comments that aren't our marker
                 }
                 return Ok(Some(format!(
@@ -637,10 +637,10 @@ pub async fn get_git_branch(path: String) -> std::result::Result<Option<String>,
 #[tauri::command]
 pub async fn shell_integration_status() -> Result<IntegrationStatus> {
     let version_path = get_version_path()
-        .ok_or_else(|| QbitError::Internal("Could not determine config directory".into()))?;
+        .ok_or_else(|| GolishError::Internal("Could not determine config directory".into()))?;
 
     let integration_path = get_integration_path()
-        .ok_or_else(|| QbitError::Internal("Could not determine integration path".into()))?;
+        .ok_or_else(|| GolishError::Internal("Could not determine integration path".into()))?;
 
     if !version_path.exists() {
         return Ok(IntegrationStatus::NotInstalled);
@@ -652,7 +652,7 @@ pub async fn shell_integration_status() -> Result<IntegrationStatus> {
     }
 
     let current_version = fs::read_to_string(&version_path)
-        .map_err(QbitError::Io)?
+        .map_err(GolishError::Io)?
         .trim()
         .to_string();
 
@@ -679,18 +679,18 @@ pub async fn shell_integration_status() -> Result<IntegrationStatus> {
 #[tauri::command]
 pub async fn shell_integration_install() -> Result<()> {
     let config_dir = get_config_dir()
-        .ok_or_else(|| QbitError::Internal("Could not determine config directory".into()))?;
+        .ok_or_else(|| GolishError::Internal("Could not determine config directory".into()))?;
 
     // Create config directory
-    fs::create_dir_all(&config_dir).map_err(QbitError::Io)?;
+    fs::create_dir_all(&config_dir).map_err(GolishError::Io)?;
 
     // Write integration script (currently zsh-only, will be extended for multi-shell)
     let script_path = config_dir.join("integration.zsh");
-    fs::write(&script_path, get_integration_script(ShellType::Zsh)).map_err(QbitError::Io)?;
+    fs::write(&script_path, get_integration_script(ShellType::Zsh)).map_err(GolishError::Io)?;
 
     // Write version marker
     let version_path = config_dir.join("integration.version");
-    fs::write(&version_path, INTEGRATION_VERSION).map_err(QbitError::Io)?;
+    fs::write(&version_path, INTEGRATION_VERSION).map_err(GolishError::Io)?;
 
     // Update .zshrc
     update_zshrc()?;
@@ -701,16 +701,16 @@ pub async fn shell_integration_install() -> Result<()> {
 #[tauri::command]
 pub async fn shell_integration_uninstall() -> Result<()> {
     let config_dir = get_config_dir()
-        .ok_or_else(|| QbitError::Internal("Could not determine config directory".into()))?;
+        .ok_or_else(|| GolishError::Internal("Could not determine config directory".into()))?;
 
     let script_path = config_dir.join("integration.zsh");
     let version_path = config_dir.join("integration.version");
 
     if script_path.exists() {
-        fs::remove_file(&script_path).map_err(QbitError::Io)?;
+        fs::remove_file(&script_path).map_err(GolishError::Io)?;
     }
     if version_path.exists() {
-        fs::remove_file(&version_path).map_err(QbitError::Io)?;
+        fs::remove_file(&version_path).map_err(GolishError::Io)?;
     }
 
     Ok(())
@@ -718,21 +718,21 @@ pub async fn shell_integration_uninstall() -> Result<()> {
 
 fn update_zshrc() -> Result<()> {
     let zshrc_path = get_zshrc_path()
-        .ok_or_else(|| QbitError::Internal("Could not determine home directory".into()))?;
+        .ok_or_else(|| GolishError::Internal("Could not determine home directory".into()))?;
 
     let integration_path = get_integration_path()
-        .ok_or_else(|| QbitError::Internal("Could not determine integration path".into()))?;
+        .ok_or_else(|| GolishError::Internal("Could not determine integration path".into()))?;
 
     let source_line = format!(
         r#"
-# Qbit shell integration
+# Golish shell integration
 [[ -n "$QBIT" ]] && source "{}"
 "#,
         integration_path.display()
     );
 
     if zshrc_path.exists() {
-        let content = fs::read_to_string(&zshrc_path).map_err(QbitError::Io)?;
+        let content = fs::read_to_string(&zshrc_path).map_err(GolishError::Io)?;
         let expected_path_str = integration_path.display().to_string();
 
         // Check if correctly configured
@@ -749,7 +749,7 @@ fn update_zshrc() -> Result<()> {
 
             for line in content.lines() {
                 // Skip the comment line before source command
-                if line.trim() == "# Qbit shell integration" {
+                if line.trim() == "# Golish shell integration" {
                     skip_next = true;
                     continue;
                 }
@@ -779,7 +779,7 @@ fn update_zshrc() -> Result<()> {
             }
             new_content.push_str(&source_line);
 
-            fs::write(&zshrc_path, new_content).map_err(QbitError::Io)?;
+            fs::write(&zshrc_path, new_content).map_err(GolishError::Io)?;
             return Ok(());
         }
     }
@@ -789,9 +789,9 @@ fn update_zshrc() -> Result<()> {
         .create(true)
         .append(true)
         .open(&zshrc_path)
-        .map_err(QbitError::Io)?;
+        .map_err(GolishError::Io)?;
 
-    writeln!(file, "{}", source_line).map_err(QbitError::Io)?;
+    writeln!(file, "{}", source_line).map_err(GolishError::Io)?;
 
     Ok(())
 }
@@ -1290,8 +1290,8 @@ mod tests {
 
             let rc_content = std::fs::read_to_string(home.path().join(".zshrc")).unwrap();
             assert!(
-                rc_content.contains("Qbit shell integration"),
-                "RC file missing Qbit header"
+                rc_content.contains("Golish shell integration"),
+                "RC file missing Golish header"
             );
             assert!(
                 rc_content.contains("integration.zsh"),

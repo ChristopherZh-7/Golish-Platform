@@ -39,6 +39,7 @@ golish-db = { path = "../golish-db" }
 
 # Domain crate
 golish-ai = { path = "../golish-ai" }
+golish-sub-agents = { path = "../golish-sub-agents" }
 
 # Tauri (for GUI app)
 tauri = { workspace = true }
@@ -110,6 +111,9 @@ nucleo-matcher = "0.3"
 
 # TOML settings file support
 toml.workspace = true
+
+# YAML parsing for rule frontmatter
+serde_yaml.workspace = true
 
 # File locking (for history)
 fs2 = "0.4"

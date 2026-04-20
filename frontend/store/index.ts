@@ -55,6 +55,7 @@ import type {
   AskHumanRequest,
   CommandBlock,
   DetailViewMode,
+  ExecutionMode,
   InputMode,
   PendingCommand,
   PipelineExecution,
@@ -103,6 +104,7 @@ export type {
   AgentMode,
   AiStatus,
   ApprovalPattern,
+  ExecutionMode,
   InputMode,
   PlanStep,
   PlanSummary,
@@ -288,6 +290,8 @@ interface GolishState
   setSessionMode: (sessionId: string, mode: SessionMode) => void;
   setInputMode: (sessionId: string, mode: InputMode) => void;
   setAgentMode: (sessionId: string, mode: AgentMode) => void;
+  setUseAgents: (sessionId: string, enabled: boolean) => void;
+  setExecutionMode: (sessionId: string, mode: ExecutionMode) => void;
   setCustomTabName: (sessionId: string, customName: string | null) => void;
   setProcessName: (sessionId: string, processName: string | null) => void;
   setRenderMode: (sessionId: string, mode: RenderMode) => void;
@@ -916,6 +920,20 @@ export const useStore = create<GolishState>()(
         set((state) => {
           if (state.sessions[sessionId]) {
             state.sessions[sessionId].agentMode = mode;
+          }
+        }),
+
+      setUseAgents: (sessionId, enabled) =>
+        set((state) => {
+          if (state.sessions[sessionId]) {
+            state.sessions[sessionId].useAgents = enabled;
+          }
+        }),
+
+      setExecutionMode: (sessionId, mode) =>
+        set((state) => {
+          if (state.sessions[sessionId]) {
+            state.sessions[sessionId].executionMode = mode;
           }
         }),
 
@@ -2850,6 +2868,14 @@ export const useInputMode = (sessionId: string) =>
 export const useAgentMode = (sessionId: string) =>
   useStore((state) => state.sessions[sessionId]?.agentMode ?? "default");
 
+export const useUseAgents = (sessionId: string) =>
+  useStore((state) => state.sessions[sessionId]?.useAgents ?? true);
+
+export const useExecutionMode = (sessionId: string) =>
+  useStore(
+    (state) => state.sessions[sessionId]?.executionMode ?? "chat"
+  );
+
 export const useRenderMode = (sessionId: string) =>
   useStore((state) => state.sessions[sessionId]?.renderMode ?? "timeline");
 
@@ -3052,5 +3078,5 @@ export async function restoreSession(sessionId: string, identifier: string): Pro
 
 // Expose store for testing in development
 if (import.meta.env.DEV) {
-  (window as unknown as { __QBIT_STORE__: typeof useStore }).__QBIT_STORE__ = useStore;
+  (window as unknown as { __GOLISH_STORE__: typeof useStore }).__GOLISH_STORE__ = useStore;
 }
