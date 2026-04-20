@@ -25,7 +25,7 @@ use super::shell::{detect_shell, ShellIntegration};
 
 // Import runtime types for the runtime-based emitter
 
-use golish_core::runtime::{QbitRuntime, RuntimeEvent};
+use golish_core::runtime::{GolishRuntime, RuntimeEvent};
 
 // ============================================================================
 // PtyEventEmitter Trait - Internal abstraction for event emission
@@ -35,7 +35,7 @@ use golish_core::runtime::{QbitRuntime, RuntimeEvent};
 ///
 /// This trait abstracts over how PTY events (output, exit, directory changes, etc.)
 /// are delivered to consumers. The primary implementation is:
-/// - `RuntimeEmitter`: Emits events via QbitRuntime (for Tauri, CLI and other runtimes)
+/// - `RuntimeEmitter`: Emits events via GolishRuntime (for Tauri, CLI and other runtimes)
 ///
 /// # Thread Safety
 /// Implementors must be `Send + Sync + 'static` to work with std::thread spawning
@@ -66,15 +66,15 @@ trait PtyEventEmitter: Send + Sync + 'static {
 }
 
 // ============================================================================
-// RuntimeEmitter - QbitRuntime-based implementation
+// RuntimeEmitter - GolishRuntime-based implementation
 // ============================================================================
 
-/// Event emitter that uses QbitRuntime for CLI and other non-Tauri environments.
+/// Event emitter that uses GolishRuntime for CLI and other non-Tauri environments.
 ///
 /// This emitter converts PTY events to `RuntimeEvent` variants and emits them
 /// through the runtime's `emit()` method. This allows the CLI to receive
 /// terminal events through the same abstraction used for AI events.
-struct RuntimeEmitter(Arc<dyn QbitRuntime>);
+struct RuntimeEmitter(Arc<dyn GolishRuntime>);
 
 impl PtyEventEmitter for RuntimeEmitter {
     fn emit_output(&self, session_id: &str, data: &str) {
@@ -810,7 +810,7 @@ impl PtyManager {
     /// Create a PTY session with runtime-based event emission.
     ///
     /// This method is the preferred way to create PTY sessions as it works with
-    /// any `QbitRuntime` implementation (Tauri, CLI, or future runtimes).
+    /// any `GolishRuntime` implementation (Tauri, CLI, or future runtimes).
     ///
     /// # Arguments
     /// * `runtime` - Runtime implementation for event emission
@@ -830,7 +830,7 @@ impl PtyManager {
     /// ```
     pub fn create_session_with_runtime(
         &self,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
         working_directory: Option<PathBuf>,
         rows: u16,
         cols: u16,

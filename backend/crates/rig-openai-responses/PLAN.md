@@ -280,7 +280,7 @@ impl completion::CompletionModel for CompletionModel {
 
 ## Integration Points
 
-### 1. LlmClient Enum (`qbit-llm-providers/src/lib.rs`)
+### 1. LlmClient Enum (`golish-llm-providers/src/lib.rs`)
 
 ```rust
 pub enum LlmClient {
@@ -291,7 +291,7 @@ pub enum LlmClient {
 }
 ```
 
-### 2. Client Creation (`qbit-ai/src/llm_client.rs`)
+### 2. Client Creation (`golish-ai/src/llm_client.rs`)
 
 ```rust
 pub async fn create_openai_reasoning_components(

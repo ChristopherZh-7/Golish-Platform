@@ -362,7 +362,7 @@ use crate::tool_definitions::ToolConfig;
 // ============================================================================
 
 use async_trait::async_trait;
-use golish_core::runtime::{ApprovalResult, QbitRuntime, RuntimeError, RuntimeEvent};
+use golish_core::runtime::{ApprovalResult, GolishRuntime, RuntimeError, RuntimeEvent};
 use std::any::Any;
 
 /// A mock runtime for testing HITL approval flows.
@@ -402,7 +402,7 @@ impl Default for MockRuntime {
 }
 
 #[async_trait]
-impl QbitRuntime for MockRuntime {
+impl GolishRuntime for MockRuntime {
     fn emit(&self, _event: RuntimeEvent) -> Result<(), RuntimeError> {
         Ok(())
     }
@@ -440,7 +440,7 @@ impl QbitRuntime for MockRuntime {
 pub struct TestContextBuilder {
     workspace: PathBuf,
     agent_mode: AgentMode,
-    runtime: Option<Arc<dyn QbitRuntime>>,
+    runtime: Option<Arc<dyn GolishRuntime>>,
     denied_tools: Vec<String>,
     allowed_tools: Vec<String>,
 }
@@ -476,7 +476,7 @@ impl TestContextBuilder {
     }
 
     /// Set a runtime for testing.
-    pub fn runtime(mut self, runtime: Arc<dyn QbitRuntime>) -> Self {
+    pub fn runtime(mut self, runtime: Arc<dyn GolishRuntime>) -> Self {
         self.runtime = Some(runtime);
         self
     }
@@ -581,7 +581,7 @@ pub struct TestContext {
     pub tool_config: ToolConfig,
     pub api_request_stats: Arc<ApiRequestStats>,
     /// Optional runtime for testing auto-approve flag
-    pub runtime: Option<Arc<dyn QbitRuntime>>,
+    pub runtime: Option<Arc<dyn GolishRuntime>>,
     // Keep temp dir alive for the duration of the test
     _temp_dir: tempfile::TempDir,
 }
@@ -628,6 +628,7 @@ impl TestContext {
             coordinator: None, // Tests use legacy path
             db_tracker: None,
             cancelled: None,
+            execution_monitor: None,
         }
     }
 
@@ -2983,6 +2984,9 @@ mod tests {
             transcript_base_dir: None,
             api_request_stats: None,
             briefing: None,
+            temperature_override: None,
+            max_tokens_override: None,
+            top_p_override: None,
         };
 
         let agent_def = test_sub_agent_definition_for_executor("analyzer");
@@ -3083,6 +3087,9 @@ mod tests {
             transcript_base_dir: None,
             api_request_stats: None,
             briefing: None,
+            temperature_override: None,
+            max_tokens_override: None,
+            top_p_override: None,
         };
 
         let agent_def = test_sub_agent_definition_for_executor("executor");
@@ -3145,6 +3152,9 @@ mod tests {
             transcript_base_dir: None,
             api_request_stats: None,
             briefing: None,
+            temperature_override: None,
+            max_tokens_override: None,
+            top_p_override: None,
         };
 
         let agent_def = test_sub_agent_definition_for_executor("event_tester");
@@ -3245,6 +3255,9 @@ mod tests {
             transcript_base_dir: None,
             api_request_stats: None,
             briefing: None,
+            temperature_override: None,
+            max_tokens_override: None,
+            top_p_override: None,
         };
 
         // Create agent with very low max_iterations to trigger the error path
@@ -3324,6 +3337,9 @@ mod tests {
             transcript_base_dir: None,
             api_request_stats: None,
             briefing: None,
+            temperature_override: None,
+            max_tokens_override: None,
+            top_p_override: None,
         };
 
         // Create agent with restricted tools (only read_file allowed)
@@ -3412,6 +3428,9 @@ mod tests {
             transcript_base_dir: None,
             api_request_stats: None,
             briefing: None,
+            temperature_override: None,
+            max_tokens_override: None,
+            top_p_override: None,
         };
 
         // Create agent with very low max_iterations to simulate timeout

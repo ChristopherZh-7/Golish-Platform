@@ -1,4 +1,4 @@
-//! OpenTelemetry/Langfuse tracing integration for Qbit.
+//! OpenTelemetry/Langfuse tracing integration for Golish.
 //!
 //! This module provides OpenTelemetry tracing setup that exports traces
 //! to Langfuse for observability of LLM interactions and agent behavior.

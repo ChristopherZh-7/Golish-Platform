@@ -24,8 +24,8 @@ This starts Vite with a mock Tauri environment (useful for rapid UI iteration wi
 
 ## Adding a new tool
 
-1. Define schema in `backend/crates/qbit-ai/src/tool_definitions.rs`
-2. Implement executor in `backend/crates/qbit-ai/src/tool_executors.rs`
+1. Define schema in `backend/crates/golish-ai/src/tool_definitions.rs`
+2. Implement executor in `backend/crates/golish-ai/src/tool_executors.rs`
 3. Register in the tool registry
 4. Add event handler in `frontend/hooks/useAiEvents.ts`
 

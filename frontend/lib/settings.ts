@@ -67,6 +67,12 @@ export type ReasoningEffort = "low" | "medium" | "high" | "extra_high";
 export interface SubAgentModelConfig {
   provider?: AiProvider;
   model?: string;
+  /** Temperature (0.0–2.0). Lower = deterministic, higher = creative. */
+  temperature?: number;
+  /** Max output tokens. */
+  max_tokens?: number;
+  /** Top-p nucleus sampling (0.0–1.0). */
+  top_p?: number;
 }
 
 /**

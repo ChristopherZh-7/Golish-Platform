@@ -76,6 +76,12 @@ pub struct SubAgentExecutorContext<'a> {
     /// execution plan context, and findings from other agents. Appended to the
     /// effective system prompt as a `## Briefing from Orchestrator` section.
     pub briefing: Option<String>,
+    /// Per-agent temperature override from settings (None = use default 0.3).
+    pub temperature_override: Option<f32>,
+    /// Per-agent max_tokens override from settings (None = use default 8192).
+    pub max_tokens_override: Option<u32>,
+    /// Per-agent top_p override from settings (None = not sent to provider).
+    pub top_p_override: Option<f32>,
 }
 
 /// Execute a sub-agent with the given task and context.
@@ -368,6 +374,35 @@ where
         );
     }
 
+    // Inject matched skills into the system prompt
+    {
+        let workspace = ctx.workspace.read().await;
+        let workspace_str = workspace.to_string_lossy();
+        let skills = golish_skills::discover_skills(Some(&workspace_str));
+        if !skills.is_empty() {
+            let metadata: Vec<golish_skills::SkillMetadata> =
+                skills.iter().map(golish_skills::SkillMetadata::from).collect();
+            let matcher = golish_skills::SkillMatcher::default();
+            let matches = matcher.match_skills(task, &metadata);
+            for (matched_meta, _score, reason) in &matches {
+                if let Ok(body) = golish_skills::load_skill_body(&matched_meta.path) {
+                    effective_system_prompt.push_str("\n\n<skill name=\"");
+                    effective_system_prompt.push_str(&matched_meta.name);
+                    effective_system_prompt.push_str("\">\n");
+                    effective_system_prompt.push_str(&body);
+                    effective_system_prompt.push_str("\n</skill>");
+                    tracing::info!(
+                        "[sub-agent:{}] Injected skill '{}' ({} chars, reason: {})",
+                        agent_id,
+                        matched_meta.name,
+                        body.len(),
+                        reason
+                    );
+                }
+            }
+        }
+    }
+
     // Build the sub-agent context with incremented depth
     let sub_context = SubAgentContext {
         original_request: parent_context.original_request.clone(),
@@ -429,10 +464,12 @@ where
             // Make one final LLM call with no tools to force a text summary response
             let caps = ModelCapabilities::detect(ctx.provider_name, ctx.model_name);
             let temperature = if caps.supports_temperature {
-                Some(0.3)
+                Some(ctx.temperature_override.unwrap_or(0.3) as f64)
             } else {
                 None
             };
+            let max_tokens = ctx.max_tokens_override.unwrap_or(8192) as u64;
+            let additional_params = ctx.top_p_override.map(|tp| serde_json::json!({ "top_p": tp }));
 
             let is_nvidia = ctx.provider_name == "nvidia";
             let (preamble, effective_history) = if is_nvidia {
@@ -451,9 +488,9 @@ where
                 documents: vec![],
                 tools: vec![],
                 temperature,
-                max_tokens: Some(8192),
+                max_tokens: Some(max_tokens),
                 tool_choice: None,
-                additional_params: None,
+                additional_params,
                 model: None,
                 output_schema: None,
             };
@@ -494,7 +531,7 @@ where
         // Conditionally set temperature based on model support (e.g., OpenAI o1/o3 models don't support it)
         let caps = ModelCapabilities::detect(ctx.provider_name, ctx.model_name);
         let temperature = if caps.supports_temperature {
-            Some(0.3)
+            Some(ctx.temperature_override.unwrap_or(0.3) as f64)
         } else {
             tracing::debug!(
                 "Model {} does not support temperature parameter in sub-agent, omitting",
@@ -502,6 +539,8 @@ where
             );
             None
         };
+        let max_tokens = ctx.max_tokens_override.unwrap_or(8192) as u64;
+        let additional_params = ctx.top_p_override.map(|tp| serde_json::json!({ "top_p": tp }));
 
         let is_nvidia = ctx.provider_name == "nvidia";
         let (preamble, effective_history) = if is_nvidia {
@@ -520,9 +559,9 @@ where
             documents: vec![],
             tools: tools.clone(),
             temperature,
-            max_tokens: Some(8192),
+            max_tokens: Some(max_tokens),
             tool_choice: None,
-            additional_params: None,
+            additional_params,
             model: None,
             output_schema: None,
         };

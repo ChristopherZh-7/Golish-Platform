@@ -16,7 +16,7 @@
 //!                                      │  - pending_approvals: HashMap   │
 //!                                      │                                 │
 //!                                      │ Emits via:                      │
-//!                                      │  - runtime: Arc<dyn QbitRuntime>│
+//!                                      │  - runtime: Arc<dyn GolishRuntime>│
 //!                                      └─────────────────────────────────┘
 //! ```
 //!
@@ -53,7 +53,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use golish_core::events::{AiEvent, AiEventEnvelope};
 use golish_core::hitl::ApprovalDecision;
-use golish_core::runtime::{QbitRuntime, RuntimeEvent};
+use golish_core::runtime::{GolishRuntime, RuntimeEvent};
 
 use crate::transcript::TranscriptWriter;
 
@@ -199,7 +199,7 @@ pub struct EventCoordinator {
     /// Session ID for event routing.
     session_id: String,
     /// Runtime for emitting events.
-    runtime: Arc<dyn QbitRuntime>,
+    runtime: Arc<dyn GolishRuntime>,
     /// Transcript writer for persisting events (optional).
     transcript_writer: Option<Arc<TranscriptWriter>>,
 }
@@ -210,7 +210,7 @@ impl EventCoordinator {
     /// Returns a handle for sending commands to the coordinator.
     pub fn spawn(
         session_id: String,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
         transcript_writer: Option<Arc<TranscriptWriter>>,
     ) -> CoordinatorHandle {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -425,7 +425,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl QbitRuntime for MockRuntime {
+    impl GolishRuntime for MockRuntime {
         fn emit(&self, _event: RuntimeEvent) -> Result<(), golish_core::runtime::RuntimeError> {
             self.emit_count.fetch_add(1, Ordering::SeqCst);
             Ok(())

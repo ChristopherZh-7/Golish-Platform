@@ -48,6 +48,15 @@ import {
 } from "./tool-handlers";
 import type { EventHandler, EventHandlerContext, EventHandlerRegistry } from "./types";
 import {
+  handleEnricherResult,
+  handleSubtaskCompleted,
+  handleSubtaskCreated,
+  handleSubtaskUserInput,
+  handleSubtaskWaitingForInput,
+  handleTaskProgress,
+  handleTaskResumed,
+} from "./task-handlers";
+import {
   handleWorkflowCompleted,
   handleWorkflowError,
   handleWorkflowStarted,
@@ -110,6 +119,15 @@ export const eventHandlerRegistry: EventHandlerRegistry = {
   server_tool_started: handleServerToolStarted,
   web_search_result: handleWebSearchResult,
   web_fetch_result: handleWebFetchResult,
+
+  // Task mode events (PentAGI-style automated execution)
+  task_progress: handleTaskProgress,
+  subtask_created: handleSubtaskCreated,
+  subtask_completed: handleSubtaskCompleted,
+  subtask_waiting_for_input: handleSubtaskWaitingForInput,
+  subtask_user_input: handleSubtaskUserInput,
+  task_resumed: handleTaskResumed,
+  enricher_result: handleEnricherResult,
 };
 
 /**

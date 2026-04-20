@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use anyhow::Result;
 
-use golish_settings::{get_with_env_fallback, QbitSettings, SettingsManager};
+use golish_settings::{get_with_env_fallback, GolishSettings, SettingsManager};
 
 /// LLM provider for running evaluations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -107,7 +107,7 @@ impl EvalConfig {
 
     /// Create config from loaded settings for a specific provider.
     pub fn from_settings_for_provider(
-        settings: &QbitSettings,
+        settings: &GolishSettings,
         provider: EvalProvider,
     ) -> Result<Self> {
         match provider {
@@ -151,7 +151,7 @@ impl EvalConfig {
     }
 
     /// Load Vertex AI configuration.
-    fn load_vertex_config(settings: &QbitSettings) -> Result<VertexConfig> {
+    fn load_vertex_config(settings: &GolishSettings) -> Result<VertexConfig> {
         let project_id = get_with_env_fallback(
             &settings.ai.vertex_ai.project_id,
             &["VERTEX_AI_PROJECT_ID", "GOOGLE_CLOUD_PROJECT"],
@@ -191,7 +191,7 @@ impl EvalConfig {
     }
 
     /// Load Z.AI configuration.
-    fn load_zai_config(settings: &QbitSettings) -> Result<ZaiConfig> {
+    fn load_zai_config(settings: &GolishSettings) -> Result<ZaiConfig> {
         let api_key = get_with_env_fallback(&settings.ai.zai_sdk.api_key, &["ZAI_API_KEY"], None)
             .ok_or_else(|| {
             anyhow::anyhow!(
@@ -207,7 +207,7 @@ impl EvalConfig {
     }
 
     /// Load OpenAI configuration.
-    fn load_openai_config(settings: &QbitSettings) -> Result<OpenAiConfig> {
+    fn load_openai_config(settings: &GolishSettings) -> Result<OpenAiConfig> {
         let api_key = get_with_env_fallback(&settings.ai.openai.api_key, &["OPENAI_API_KEY"], None)
             .ok_or_else(|| {
                 anyhow::anyhow!(
@@ -223,7 +223,7 @@ impl EvalConfig {
     }
 
     /// Create config from loaded settings (legacy compatibility).
-    pub fn from_settings(settings: &QbitSettings) -> Result<Self> {
+    pub fn from_settings(settings: &GolishSettings) -> Result<Self> {
         Self::from_settings_for_provider(settings, EvalProvider::default())
     }
 }
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn test_eval_config_from_settings_with_values() {
-        let mut settings = QbitSettings::default();
+        let mut settings = GolishSettings::default();
         settings.ai.vertex_ai.project_id = Some("test-project".to_string());
         settings.ai.vertex_ai.location = Some("us-central1".to_string());
 
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn test_eval_config_default_location() {
-        let mut settings = QbitSettings::default();
+        let mut settings = GolishSettings::default();
         settings.ai.vertex_ai.project_id = Some("test-project".to_string());
         settings.ai.vertex_ai.location = None;
 
@@ -266,7 +266,7 @@ mod tests {
         std::env::remove_var("VERTEX_AI_PROJECT_ID");
         std::env::remove_var("GOOGLE_CLOUD_PROJECT");
 
-        let settings = QbitSettings::default();
+        let settings = GolishSettings::default();
         let result = EvalConfig::from_settings_for_provider(&settings, EvalProvider::VertexClaude);
 
         // Restore environment variables

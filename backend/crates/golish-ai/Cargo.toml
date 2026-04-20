@@ -15,6 +15,7 @@ golish-tools = { workspace = true }
 vtcode-indexer = { workspace = true }
 golish-pty = { workspace = true }
 golish-sidecar = { workspace = true }
+golish-db = { workspace = true }
 
 # Extracted AI subsystem crates
 golish-session = { workspace = true }
@@ -61,7 +62,6 @@ reqwest = { workspace = true }
 
 # Database (session persistence + analytics tracking)
 sqlx = { workspace = true }
-golish-db = { workspace = true }
 
 [features]
 default = []

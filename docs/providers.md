@@ -1,6 +1,6 @@
 # Providers
 
-Qbit supports multiple LLM providers and can switch providers mid-session.
+Golish supports multiple LLM providers and can switch providers mid-session.
 
 ## Provider matrix
 
@@ -35,7 +35,7 @@ default_reasoning_effort = "medium" # low | medium | high
 gcloud auth application-default login
 ```
 
-Then add to `~/.qbit/settings.toml`:
+Then add to `~/.golish/settings.toml`:
 
 ```toml
 [ai]

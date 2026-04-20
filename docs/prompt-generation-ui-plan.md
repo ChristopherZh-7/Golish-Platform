@@ -19,7 +19,7 @@ When a worker agent is dispatched, the prompt generation step should be visible 
 
 ### 1. New AiEvent Variant
 
-Add a new event to `AiEvent` in `qbit-core/src/events.rs`:
+Add a new event to `AiEvent` in `golish-core/src/events.rs`:
 
 ```rust
 /// Emitted when a sub-agent's system prompt is being generated via an LLM call.
@@ -123,9 +123,9 @@ Add a new `UnifiedBlock` type for prompt generation in the store, similar to how
 
 | File | Change |
 |------|--------|
-| `qbit-core/src/events.rs` | Add `PromptGenerationStarted` and `PromptGenerationCompleted` event variants |
-| `qbit-sub-agents/src/executor.rs` | Emit the new events around the `model.completion()` call |
-| `qbit-ai/src/transcript.rs` | Add new events to `should_transcript()` |
+| `golish-core/src/events.rs` | Add `PromptGenerationStarted` and `PromptGenerationCompleted` event variants |
+| `golish-sub-agents/src/executor.rs` | Emit the new events around the `model.completion()` call |
+| `golish-ai/src/transcript.rs` | Add new events to `should_transcript()` |
 | `frontend/hooks/useAiEvents.ts` | Handle new event types |
 | `frontend/store/index.ts` | Add prompt generation block type to store |
 | `frontend/components/PromptGenerationBlock/` | New component for timeline display |
@@ -133,7 +133,7 @@ Add a new `UnifiedBlock` type for prompt generation in the store, similar to how
 
 ## Implementation Order
 
-1. Add event variants to `qbit-core` (Rust)
+1. Add event variants to `golish-core` (Rust)
 2. Emit events in executor (Rust)
 3. Add to transcript filter (Rust)
 4. Handle events in `useAiEvents.ts` (Frontend)

@@ -494,6 +494,28 @@ pub fn format_for_summarizer(events: &[TranscriptEvent]) -> String {
                     output.push_str(&format!("\n**[User Response]** {}\n", response));
                 }
             }
+            AiEvent::TaskProgress { status, message, .. } => {
+                output.push_str(&format!("\n**[Task {}]** {}\n", status, message));
+            }
+            AiEvent::SubtaskCreated { title, agent, .. } => {
+                let agent_str = agent.as_deref().unwrap_or("auto");
+                output.push_str(&format!("\n**[Subtask Created]** {} (agent: {})\n", title, agent_str));
+            }
+            AiEvent::SubtaskCompleted { title, result, .. } => {
+                output.push_str(&format!("\n**[Subtask Completed]** {}\n{}\n", title, result));
+            }
+            AiEvent::SubtaskWaitingForInput { title, prompt, .. } => {
+                output.push_str(&format!("\n**[Waiting for Input]** {}: {}\n", title, prompt));
+            }
+            AiEvent::SubtaskUserInput { input, .. } => {
+                output.push_str(&format!("\n**[User Input]** {}\n", input));
+            }
+            AiEvent::TaskResumed { subtask_index, total_subtasks, .. } => {
+                output.push_str(&format!("\n**[Task Resumed]** from subtask {}/{}\n", subtask_index, total_subtasks));
+            }
+            AiEvent::EnricherResult { context_added, .. } => {
+                output.push_str(&format!("\n**[Enricher]** {}\n", context_added));
+            }
         }
     }
 
@@ -1924,6 +1946,39 @@ mod should_transcript_tests {
                 },
                 false,
             ),
+            (
+                AiEvent::SubtaskWaitingForInput {
+                    task_id: "t".into(),
+                    subtask_id: "s".into(),
+                    title: "title".into(),
+                    prompt: "question".into(),
+                },
+                true,
+            ),
+            (
+                AiEvent::SubtaskUserInput {
+                    task_id: "t".into(),
+                    subtask_id: "s".into(),
+                    input: "answer".into(),
+                },
+                true,
+            ),
+            (
+                AiEvent::TaskResumed {
+                    task_id: "t".into(),
+                    subtask_index: 2,
+                    total_subtasks: 5,
+                },
+                true,
+            ),
+            (
+                AiEvent::EnricherResult {
+                    task_id: "t".into(),
+                    subtask_id: "s".into(),
+                    context_added: "extra context".into(),
+                },
+                true,
+            ),
         ];
 
         // Compile-time exhaustiveness check: if a new variant is added to AiEvent,
@@ -1970,7 +2025,11 @@ mod should_transcript_tests {
                 | AiEvent::PromptGenerationStarted { .. }
                 | AiEvent::PromptGenerationCompleted { .. }
                 | AiEvent::AskHumanRequest { .. }
-                | AiEvent::AskHumanResponse { .. } => {}
+                | AiEvent::AskHumanResponse { .. }
+                | AiEvent::SubtaskWaitingForInput { .. }
+                | AiEvent::SubtaskUserInput { .. }
+                | AiEvent::TaskResumed { .. }
+                | AiEvent::EnricherResult { .. } => {}
             }
         }
 

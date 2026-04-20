@@ -1,4 +1,4 @@
-//! Sub-agent system for Qbit.
+//! Sub-agent system for Golish.
 //!
 //! This crate provides the sub-agent system infrastructure including:
 //! - Sub-agent definitions with custom system prompts and tool restrictions
@@ -39,17 +39,26 @@
 
 pub mod defaults;
 pub mod definition;
+pub mod discovery;
 pub mod executor;
+pub mod file_loader;
 pub mod schemas;
 pub mod transcript;
 
 // Re-export main types from definition module
 pub use definition::{
-    SubAgentContext, SubAgentDefinition, SubAgentRegistry, SubAgentResult, MAX_AGENT_DEPTH,
+    AgentSource, SubAgentContext, SubAgentDefinition, SubAgentRegistry, SubAgentResult,
+    MAX_AGENT_DEPTH,
 };
 
 // Re-export default sub-agents function
 pub use defaults::create_default_sub_agents;
+
+// Re-export discovery
+pub use discovery::discover_agents;
+
+// Re-export file loader types
+pub use file_loader::AgentFileInfo;
 
 // Re-export executor types
 pub use executor::{execute_sub_agent, SubAgentExecutorContext, ToolProvider};

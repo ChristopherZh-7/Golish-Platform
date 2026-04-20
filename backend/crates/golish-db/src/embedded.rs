@@ -70,6 +70,8 @@ impl EmbeddedPg {
             return Err(anyhow::anyhow!("PostgreSQL setup failed: {e:?}"));
         }
 
+        Self::try_install_pgvector(&pg).await;
+
         info!("Starting PostgreSQL server on port {}...", config.port);
         if let Err(e) = pg.start_db().await {
             warn!(error = ?e, "pg-embed start_db failed, attempting manual pg_ctl start");
@@ -202,6 +204,70 @@ impl EmbeddedPg {
         }
     }
 
+    /// Try to find and install the pgvector extension from system paths.
+    ///
+    /// Searches Homebrew and common system locations for a pre-built pgvector.
+    /// Copies the shared library + extension SQL/control files into a staging
+    /// directory, then calls `pg.install_extension()` to deploy them into the
+    /// pg-embed cache. Runs between `setup()` and `start_db()`.
+    async fn try_install_pgvector(pg: &PgEmbed) {
+        let cache_dir = Self::cache_dir();
+        let lib_marker = if cfg!(target_os = "macos") {
+            cache_dir.join("lib").join("vector.dylib")
+        } else if cfg!(target_os = "windows") {
+            cache_dir.join("lib").join("vector.dll")
+        } else {
+            cache_dir.join("lib").join("vector.so")
+        };
+
+        if lib_marker.exists() {
+            info!("pgvector already installed in pg-embed cache");
+            return;
+        }
+
+        let found = find_system_pgvector();
+        if found.is_empty() {
+            info!(
+                "pgvector not found in system paths. \
+                 Install with: brew install pgvector (macOS) or \
+                 apt install postgresql-17-pgvector (Linux). \
+                 Falling back to application-level vector search."
+            );
+            return;
+        }
+
+        let staging = cache_dir.join(".pgvector_staging");
+        let _ = std::fs::remove_dir_all(&staging);
+        if let Err(e) = std::fs::create_dir_all(&staging) {
+            warn!(error = %e, "Failed to create pgvector staging directory");
+            return;
+        }
+
+        for src in &found {
+            let name = match src.file_name() {
+                Some(n) => n,
+                None => continue,
+            };
+            if let Err(e) = std::fs::copy(src, staging.join(name)) {
+                warn!(src = %src.display(), error = %e, "Failed to copy pgvector file");
+                let _ = std::fs::remove_dir_all(&staging);
+                return;
+            }
+        }
+
+        info!(
+            files = found.len(),
+            "Found pgvector in system, installing into pg-embed cache"
+        );
+
+        match pg.install_extension(&staging).await {
+            Ok(()) => info!("pgvector extension installed successfully"),
+            Err(e) => warn!(error = ?e, "Failed to install pgvector extension"),
+        }
+
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+
     /// Fallback: start PostgreSQL using pg_ctl directly with a log file for diagnostics.
     ///
     /// pg-embed's `start_db()` sometimes fails on macOS because it doesn't propagate
@@ -295,6 +361,132 @@ impl EmbeddedPg {
             warn!(error = %e, "Error stopping embedded PostgreSQL");
         }
     }
+}
+
+/// Search common system paths for pgvector extension files.
+/// Returns paths to the shared library (.dylib/.so) and the control + SQL files.
+fn find_system_pgvector() -> Vec<PathBuf> {
+    let lib_ext = if cfg!(target_os = "macos") {
+        "dylib"
+    } else if cfg!(target_os = "windows") {
+        "dll"
+    } else {
+        "so"
+    };
+
+    let lib_candidates: Vec<PathBuf> = if cfg!(target_os = "macos") {
+        vec![
+            // Homebrew Apple Silicon
+            PathBuf::from("/opt/homebrew/lib/postgresql@17/vector.dylib"),
+            PathBuf::from("/opt/homebrew/opt/postgresql@17/lib/postgresql/vector.dylib"),
+            // Homebrew Intel
+            PathBuf::from("/usr/local/lib/postgresql@17/vector.dylib"),
+            PathBuf::from("/usr/local/opt/postgresql@17/lib/postgresql/vector.dylib"),
+            // Unversioned Homebrew
+            PathBuf::from("/opt/homebrew/lib/postgresql/vector.dylib"),
+            PathBuf::from("/usr/local/lib/postgresql/vector.dylib"),
+        ]
+    } else if cfg!(target_os = "linux") {
+        vec![
+            PathBuf::from("/usr/lib/postgresql/17/lib/vector.so"),
+            PathBuf::from("/usr/lib64/pgsql/vector.so"),
+        ]
+    } else {
+        vec![]
+    };
+
+    let ext_candidates: Vec<PathBuf> = if cfg!(target_os = "macos") {
+        vec![
+            PathBuf::from("/opt/homebrew/share/postgresql@17/extension"),
+            PathBuf::from("/opt/homebrew/opt/postgresql@17/share/postgresql@17/extension"),
+            PathBuf::from("/usr/local/share/postgresql@17/extension"),
+            PathBuf::from("/usr/local/opt/postgresql@17/share/postgresql@17/extension"),
+            PathBuf::from("/opt/homebrew/share/postgresql/extension"),
+            PathBuf::from("/usr/local/share/postgresql/extension"),
+        ]
+    } else if cfg!(target_os = "linux") {
+        vec![
+            PathBuf::from("/usr/share/postgresql/17/extension"),
+            PathBuf::from("/usr/share/pgsql/extension"),
+        ]
+    } else {
+        vec![]
+    };
+
+    let mut files = Vec::new();
+
+    let lib_found = lib_candidates.iter().find(|p| p.exists());
+    if lib_found.is_none() {
+        // Also try pg_config --pkglibdir if available
+        if let Ok(output) = std::process::Command::new("pg_config")
+            .arg("--pkglibdir")
+            .output()
+        {
+            if output.status.success() {
+                let dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let candidate = PathBuf::from(&dir).join(format!("vector.{lib_ext}"));
+                if candidate.exists() {
+                    files.push(candidate);
+                }
+            }
+        }
+    } else if let Some(path) = lib_found {
+        files.push(path.clone());
+    }
+
+    let ext_found = ext_candidates.iter().find(|p| p.join("vector.control").exists());
+    if let Some(ext_dir) = ext_found {
+        if let Ok(entries) = std::fs::read_dir(ext_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str.starts_with("vector") && (name_str.ends_with(".control") || name_str.ends_with(".sql")) {
+                    files.push(entry.path());
+                }
+            }
+        }
+    } else {
+        // Fallback: pg_config --sharedir
+        if let Ok(output) = std::process::Command::new("pg_config")
+            .arg("--sharedir")
+            .output()
+        {
+            if output.status.success() {
+                let dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let ext_dir = PathBuf::from(&dir).join("extension");
+                if ext_dir.join("vector.control").exists() {
+                    if let Ok(entries) = std::fs::read_dir(&ext_dir) {
+                        for entry in entries.flatten() {
+                            let name = entry.file_name();
+                            let name_str = name.to_string_lossy();
+                            if name_str.starts_with("vector") && (name_str.ends_with(".control") || name_str.ends_with(".sql")) {
+                                files.push(entry.path());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if !files.is_empty() {
+        let has_lib = files.iter().any(|f| {
+            f.extension().map_or(false, |e| e == "dylib" || e == "so" || e == "dll")
+        });
+        let has_control = files.iter().any(|f| {
+            f.extension().map_or(false, |e| e == "control")
+        });
+        if !has_lib || !has_control {
+            info!(
+                has_lib,
+                has_control,
+                "Incomplete pgvector installation found, skipping"
+            );
+            return vec![];
+        }
+    }
+
+    files
 }
 
 fn platform_strings() -> (&'static str, &'static str) {

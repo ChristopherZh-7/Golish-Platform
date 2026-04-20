@@ -1,7 +1,7 @@
 //! Tool implementations for Tavily web search.
 //!
 //! These tools implement the `golish_core::Tool` trait for integration
-//! with the Qbit tool registry.
+//! with the Golish tool registry.
 
 use std::path::Path;
 use std::sync::Arc;

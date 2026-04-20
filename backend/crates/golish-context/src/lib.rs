@@ -1,4 +1,4 @@
-//! Context window and token budget management for Qbit AI.
+//! Context window and token budget management for Golish AI.
 //!
 //! This crate provides token counting, context compaction, and budget management
 //! for managing LLM context windows.

@@ -1,6 +1,6 @@
 //! Evaluation framework for testing agent capabilities.
 //!
-//! This module provides end-to-end evaluation of the Qbit agent using
+//! This module provides end-to-end evaluation of the Golish agent using
 //! rig's experimental evals framework.
 //!
 //! # Feature Flag

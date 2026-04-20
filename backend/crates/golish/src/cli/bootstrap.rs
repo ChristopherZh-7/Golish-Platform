@@ -1,4 +1,4 @@
-//! CLI bootstrap - Initialize the full Qbit stack for CLI usage.
+//! CLI bootstrap - Initialize the full Golish stack for CLI usage.
 //!
 //! This module provides `CliContext` which initializes all the same services
 //! as the Tauri GUI application, ensuring feature parity between CLI and GUI.
@@ -14,10 +14,10 @@ use crate::history::{HistoryConfig, HistoryManager};
 use crate::indexer::IndexerState;
 use crate::pty::PtyManager;
 use crate::runtime::CliRuntime;
-use crate::settings::{get_with_env_fallback, QbitSettings, SettingsManager};
+use crate::settings::{get_with_env_fallback, GolishSettings, SettingsManager};
 use crate::sidecar::SidecarState;
 use golish_ai::llm_client::SharedComponentsConfig;
-use golish_core::runtime::{QbitRuntime, RuntimeEvent};
+use golish_core::runtime::{GolishRuntime, RuntimeEvent};
 
 use super::args::Args;
 
@@ -26,7 +26,7 @@ use super::args::Args;
 /// This mirrors the Tauri `AppState` but is owned rather than managed by Tauri.
 pub struct CliContext {
     /// Runtime abstraction for event emission
-    pub runtime: Arc<dyn QbitRuntime>,
+    pub runtime: Arc<dyn GolishRuntime>,
 
     /// Global history manager (best-effort)
     pub history: Option<crate::history::HistoryManager>,
@@ -209,7 +209,7 @@ pub async fn initialize(args: &Args) -> Result<CliContext> {
     let (event_tx, event_rx) = mpsc::unbounded_channel::<RuntimeEvent>();
 
     // Create CLI runtime
-    let runtime: Arc<dyn QbitRuntime> =
+    let runtime: Arc<dyn GolishRuntime> =
         Arc::new(CliRuntime::new(event_tx, args.auto_approve, args.json));
 
     // Initialize services
@@ -274,9 +274,9 @@ pub async fn initialize(args: &Args) -> Result<CliContext> {
 #[allow(clippy::too_many_arguments)]
 async fn initialize_agent(
     workspace: &Path,
-    settings: &QbitSettings,
+    settings: &GolishSettings,
     args: &Args,
-    runtime: Arc<dyn QbitRuntime>,
+    runtime: Arc<dyn GolishRuntime>,
     pty_manager: Arc<PtyManager>,
     indexer_state: Arc<IndexerState>,
     sidecar_state: Arc<SidecarState>,
@@ -542,7 +542,7 @@ async fn initialize_mcp_integration(
 }
 
 /// Resolve API key from CLI args, settings, or environment variables.
-fn resolve_api_key(settings: &QbitSettings, provider: &str, args: &Args) -> Result<String> {
+fn resolve_api_key(settings: &GolishSettings, provider: &str, args: &Args) -> Result<String> {
     // 1. CLI argument takes precedence
     if let Some(ref key) = args.api_key {
         return Ok(key.clone());
@@ -581,7 +581,7 @@ mod tests {
 
     #[test]
     fn test_resolve_api_key_from_args() {
-        let settings = QbitSettings::default();
+        let settings = GolishSettings::default();
         let mut args = Args::parse_from(["golish-cli"]);
         args.api_key = Some("test-key".to_string());
 

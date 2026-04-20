@@ -1,8 +1,8 @@
-# MCP (Model Context Protocol) Support for Qbit
+# MCP (Model Context Protocol) Support for Golish
 
 ## Executive Summary
 
-This document outlines a plan to add MCP support to Qbit, enabling it to connect to external tools, databases, and APIs through the standardized Model Context Protocol. This will allow users to extend Qbit's capabilities by connecting to any MCP-compatible server.
+This document outlines a plan to add MCP support to Golish, enabling it to connect to external tools, databases, and APIs through the standardized Model Context Protocol. This will allow users to extend Golish's capabilities by connecting to any MCP-compatible server.
 
 ## What is MCP?
 
@@ -14,7 +14,7 @@ The Model Context Protocol (MCP) is an open standard created by Anthropic for co
 - Communicate over multiple transport types (stdio, HTTP)
 
 The protocol uses JSON-RPC 2.0 for message exchange between:
-- **Hosts** (LLM applications like Qbit)
+- **Hosts** (LLM applications like Golish)
 - **Clients** (connectors within the host)
 - **Servers** (services providing tools/resources)
 
@@ -71,9 +71,9 @@ let result = service.call_tool(CallToolRequestParams {
 service.cancel().await?;
 ```
 
-### Existing Qbit Architecture
+### Existing Golish Architecture
 
-Qbit already has extension points designed for MCP integration:
+Golish already has extension points designed for MCP integration:
 
 1. **`McpServerConfig`** in settings schema (stub already exists):
    ```rust
@@ -120,12 +120,12 @@ Claude Code uses a JSON configuration format:
 
 ### Phase 1: Core MCP Client Infrastructure
 
-Create a new crate `qbit-mcp` (Layer 2 - Infrastructure) to handle MCP client functionality.
+Create a new crate `golish-mcp` (Layer 2 - Infrastructure) to handle MCP client functionality.
 
 #### 1.1 New Crate Structure
 
 ```
-backend/crates/qbit-mcp/
+backend/crates/golish-mcp/
 ├── Cargo.toml
 └── src/
     ├── lib.rs           # Public API
@@ -133,7 +133,7 @@ backend/crates/qbit-mcp/
     ├── config.rs        # Configuration types
     ├── manager.rs       # Multi-server connection manager
     ├── transport.rs     # Transport abstraction
-    └── tools.rs         # Tool bridging to Qbit format
+    └── tools.rs         # Tool bridging to Golish format
 ```
 
 #### 1.2 Dependencies
@@ -282,7 +282,7 @@ pub enum ServerStatus {
 
 #### 2.1 Extend Tool Routing
 
-Add a new routing category in `qbit-ai/src/tool_execution.rs`:
+Add a new routing category in `golish-ai/src/tool_execution.rs`:
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -310,7 +310,7 @@ impl ToolRoutingCategory {
 
 #### 2.2 Add MCP to Agentic Loop Context
 
-Extend `AgenticLoopContext` in `qbit-ai/src/agentic_loop.rs`:
+Extend `AgenticLoopContext` in `golish-ai/src/agentic_loop.rs`:
 
 ```rust
 pub struct AgenticLoopContext<'a> {
@@ -323,10 +323,10 @@ pub struct AgenticLoopContext<'a> {
 
 #### 2.3 Tool Definition Generation
 
-Create a bridge to convert MCP tools to Qbit tool definitions:
+Create a bridge to convert MCP tools to Golish tool definitions:
 
 ```rust
-// In qbit-mcp/src/tools.rs
+// In golish-mcp/src/tools.rs
 use rig::completion::ToolDefinition;
 
 impl McpTool {
@@ -354,7 +354,7 @@ MCP configuration lives in dedicated `mcp.json` files (not in `settings.toml`).
 
 #### 3.1 Config File Schema
 
-Create `qbit-mcp/src/config.rs` with JSON schema types:
+Create `golish-mcp/src/config.rs` with JSON schema types:
 
 ```rust
 use std::collections::HashMap;
@@ -421,15 +421,15 @@ fn default_timeout() -> u64 { 30 }
 #### 3.2 Config Loading Logic
 
 ```rust
-// qbit-mcp/src/loader.rs
+// golish-mcp/src/loader.rs
 
 /// Load and merge MCP configs from user-global and project locations
 pub fn load_mcp_config(project_dir: &Path) -> Result<McpConfigFile> {
     let mut merged = McpConfigFile::default();
     
-    // 1. Load user-global config (~/.qbit/mcp.json)
+    // 1. Load user-global config (~/.golish/mcp.json)
     let user_config_path = dirs::home_dir()
-        .map(|h| h.join(".qbit/mcp.json"));
+        .map(|h| h.join(".golish/mcp.json"));
     if let Some(path) = user_config_path {
         if path.exists() {
             let user_config: McpConfigFile = load_json_file(&path)?;
@@ -437,9 +437,9 @@ pub fn load_mcp_config(project_dir: &Path) -> Result<McpConfigFile> {
         }
     }
     
-    // 2. Load project config (<project>/.qbit/mcp.json)
+    // 2. Load project config (<project>/.golish/mcp.json)
     // Project servers override user-global servers with same name
-    let project_config_path = project_dir.join(".qbit/mcp.json");
+    let project_config_path = project_dir.join(".golish/mcp.json");
     if project_config_path.exists() {
         let project_config: McpConfigFile = load_json_file(&project_config_path)?;
         merged.mcp_servers.extend(project_config.mcp_servers);
@@ -455,7 +455,7 @@ pub fn interpolate_env_vars(value: &str) -> String { ... }
 
 #### 3.3 Project Config Trust
 
-Track approved project configs in `~/.qbit/trusted-mcp-configs.json`:
+Track approved project configs in `~/.golish/trusted-mcp-configs.json`:
 
 ```rust
 /// Check if a project's MCP config has been approved
@@ -469,7 +469,7 @@ pub fn trust_project_config(project_dir: &Path) -> Result<()> { ... }
 
 #### 4.1 New Tauri Commands
 
-Create `backend/crates/qbit/src/mcp/commands.rs`:
+Create `backend/crates/golish/src/mcp/commands.rs`:
 
 ```rust
 /// List configured MCP servers and their status
@@ -541,7 +541,7 @@ export function McpSettings() {
 
 #### 5.1 New AI Events
 
-Add to `qbit-core/src/events.rs`:
+Add to `golish-core/src/events.rs`:
 
 ```rust
 pub enum AiEvent {
@@ -577,7 +577,7 @@ pub enum AiEvent {
 
 ## Configuration Examples
 
-### User-Global Configuration (`~/.qbit/mcp.json`)
+### User-Global Configuration (`~/.golish/mcp.json`)
 
 ```json
 {
@@ -598,7 +598,7 @@ pub enum AiEvent {
 }
 ```
 
-### Project Configuration (`<project>/.qbit/mcp.json`)
+### Project Configuration (`<project>/.golish/mcp.json`)
 
 ```json
 {
@@ -638,9 +638,9 @@ pub enum AiEvent {
 ## Implementation Checklist
 
 ### Step 1: Foundation
-- [x] Create `qbit-mcp` crate with basic structure
+- [x] Create `golish-mcp` crate with basic structure
 - [x] Define `McpConfigFile` and `McpServerConfig` types (JSON schema)
-- [x] Implement config file loading (`~/.qbit/mcp.json`)
+- [x] Implement config file loading (`~/.golish/mcp.json`)
 - [x] Implement environment variable interpolation (both `$VAR` and `${VAR}`)
 - [x] Implement single server connection (stdio transport)
 - [x] Basic tool listing and calling via `rmcp`
@@ -666,7 +666,7 @@ pub enum AiEvent {
 - Tool calls are routed via `custom_tool_executor` closure that calls `manager.call_tool()`
 - No special routing category needed - the executor handles all `mcp__*` prefixed tools
 - MCP tools go through the same HITL approval flow as registry tools (no special handling)
-- Integration happens in `qbit/src/ai/commands/mod.rs::configure_bridge()` after sidecar/settings setup
+- Integration happens in `golish/src/ai/commands/mod.rs::configure_bridge()` after sidecar/settings setup
 
 ### Step 4: HTTP/SSE Transport
 - [x] Add HTTP transport support (via `StreamableHttpClientTransport`)
@@ -675,10 +675,10 @@ pub enum AiEvent {
 - [x] Implement header environment variable interpolation
 
 ### Step 5: Configuration Loading
-- [x] Load user-global config (`~/.qbit/mcp.json`)
-- [x] Load project config (`<project>/.qbit/mcp.json`)
+- [x] Load user-global config (`~/.golish/mcp.json`)
+- [x] Load project config (`<project>/.golish/mcp.json`)
 - [x] Implement config merging (project overrides user-global)
-- [x] Implement project config trust system (`~/.qbit/trusted-mcp-configs.json`)
+- [x] Implement project config trust system (`~/.golish/trusted-mcp-configs.json`)
 - [ ] First-time approval prompt for untrusted project configs (frontend UI needed)
 
 ### Step 6: Tauri Commands
@@ -698,7 +698,7 @@ pub enum AiEvent {
 - Added `mcp_managers` field to `AiState` with `get_session_mcp_manager()`, `set_session_mcp_manager()`, `remove_session_mcp_manager()` methods
 - `configure_bridge()` now passes session_id to `initialize_mcp_integration()`
 - Manager is stored in AiState after initialization for later access by connect/disconnect commands
-- Commands implemented in `backend/crates/qbit/src/mcp/commands.rs`
+- Commands implemented in `backend/crates/golish/src/mcp/commands.rs`
 
 ### Step 7: CLI Support
 - [x] Load MCP config in headless CLI mode
@@ -706,7 +706,7 @@ pub enum AiEvent {
 - [x] Ensure MCP tools available in CLI agent loop
 
 **Implementation notes**:
-- MCP integration added to `backend/crates/qbit/src/cli/bootstrap.rs`
+- MCP integration added to `backend/crates/golish/src/cli/bootstrap.rs`
 - `initialize_mcp_integration()` function mirrors the Tauri implementation
 - Config loaded from user-global and project-specific paths
 - Servers auto-connect during agent initialization
@@ -732,7 +732,7 @@ pub enum AiEvent {
   - Tool browser (expandable per connected server) showing tool name and description
   - Session-aware: shows warning if no active session
   - Refresh button and "Browse servers" link to MCP registry
-  - Config location info pointing to `~/.qbit/mcp.json` and project paths
+  - Config location info pointing to `~/.golish/mcp.json` and project paths
 
 ### Step 9: Auto-Connect & Lifecycle
 - [x] Auto-connect to enabled servers on session start (in `configure_bridge()`)
@@ -745,7 +745,7 @@ pub enum AiEvent {
 - Tauri: Session cleanup calls `disconnect_all()` when bridge is removed
 
 ### Step 10: Polish & Testing
-- [x] Add unit tests for config loading and merging (41 tests in qbit-mcp)
+- [x] Add unit tests for config loading and merging (41 tests in golish-mcp)
 - [ ] Add integration tests for server connections (deferred - requires external MCP server)
 - [ ] Error handling and user-friendly error messages
 - [ ] Logging and diagnostics (without exposing secrets)
@@ -765,7 +765,7 @@ The following decisions have been made:
 
 1. **Transport scope**: Include all three transports from the start: stdio, HTTP, and SSE
 
-2. **Config location**: MCP servers are configured exclusively in `.qbit/mcp.json` files (not in `settings.toml`). User-global config lives at `~/.qbit/mcp.json`, project-specific config at `<project>/.qbit/mcp.json`
+2. **Config location**: MCP servers are configured exclusively in `.golish/mcp.json` files (not in `settings.toml`). User-global config lives at `~/.golish/mcp.json`, project-specific config at `<project>/.golish/mcp.json`
 
 3. **Tool approval UX**: MCP tools use the same `registry` category as built-in tools (no separate category)
 
@@ -773,11 +773,11 @@ The following decisions have been made:
 
 5. **CLI support**: Yes, headless CLI mode should also support MCP servers
 
-6. **Server process lifecycle**: stdio MCP servers are killed immediately when Qbit closes
+6. **Server process lifecycle**: stdio MCP servers are killed immediately when Golish closes
 
 7. **Resources & Prompts**: Tools only for v1; resources and prompts deferred to future iteration
 
-8. **Project config trust**: First-time approval prompt when a project's `.qbit/mcp.json` is detected (security for untrusted repos)
+8. **Project config trust**: First-time approval prompt when a project's `.golish/mcp.json` is detected (security for untrusted repos)
 
 9. **Failed server behavior**: Show warning but continue (don't block on failed MCP server connections)
 
@@ -951,11 +951,11 @@ let quit_reason = client.waiting().await?;
 
 ---
 
-## Appendix B: Qbit Codebase Integration Points
+## Appendix B: Golish Codebase Integration Points
 
 ### 1. ToolRoutingCategory
 
-**Location:** `backend/crates/qbit-ai/src/tool_execution.rs` (lines ~190-250)
+**Location:** `backend/crates/golish-ai/src/tool_execution.rs` (lines ~190-250)
 
 Add new variant for MCP:
 ```rust
@@ -983,7 +983,7 @@ impl ToolRoutingCategory {
 
 ### 2. AgenticLoopContext
 
-**Location:** `backend/crates/qbit-ai/src/agentic_loop.rs` (lines ~233-296)
+**Location:** `backend/crates/golish-ai/src/agentic_loop.rs` (lines ~233-296)
 
 Key fields for MCP integration:
 ```rust
@@ -1001,7 +1001,7 @@ pub struct AgenticLoopContext<'a> {
 }
 ```
 
-**Construction:** `build_loop_context()` in `backend/crates/qbit-ai/src/agent_bridge.rs` (line ~1417)
+**Construction:** `build_loop_context()` in `backend/crates/golish-ai/src/agent_bridge.rs` (line ~1417)
 
 ### 3. Using additional_tool_definitions
 
@@ -1028,21 +1028,21 @@ impl McpTool {
 
 ### 4. HITL Approval Flow
 
-**Location:** `backend/crates/qbit-ai/src/agentic_loop.rs` (lines ~1090-1175)
+**Location:** `backend/crates/golish-ai/src/agentic_loop.rs` (lines ~1090-1175)
 
 MCP tools go through the same flow:
 1. `ToolApprovalRequest` event emitted to frontend
 2. Frontend responds via coordinator or channel
 3. `ApprovalRecorder` learns patterns for auto-approve
 
-**Key event type:** `AiEvent::ToolApprovalRequest` in `backend/crates/qbit-core/src/events.rs`
+**Key event type:** `AiEvent::ToolApprovalRequest` in `backend/crates/golish-core/src/events.rs`
 
 MCP tools will use `ToolRoutingCategory::Registry` for approval (per design decision #3), 
 so no changes needed to the approval logic itself.
 
 ### 5. Event Emission Pattern
 
-**Event definitions:** `backend/crates/qbit-core/src/events.rs`
+**Event definitions:** `backend/crates/golish-core/src/events.rs`
 
 **Emission helpers in agentic_loop.rs:**
 ```rust

@@ -344,6 +344,98 @@ impl DbTracker {
         });
     }
 
+    /// Store a memory with a specific `doc_type` (for multi-vector store: "code", "guide").
+    pub fn store_memory_with_doc_type(
+        &self,
+        content: &str,
+        mem_type: &str,
+        doc_type: &str,
+        metadata: Option<serde_json::Value>,
+    ) {
+        let pool = self.pool.clone();
+        let session_uuid = self.session_uuid;
+        let content = content.to_string();
+        let mem_type = mem_type.to_string();
+        let doc_type = doc_type.to_string();
+        let project_path = self.project_path.clone();
+        let mut gate = self.ready_gate.clone();
+
+        tokio::spawn(async move {
+            if !await_db_ready(&mut gate).await {
+                return;
+            }
+            let res = sqlx::query(
+                r#"INSERT INTO memories (session_id, content, mem_type, doc_type, project_path, metadata)
+                   VALUES ($1, $2, $3::memory_type, $4, $5, $6)"#,
+            )
+            .bind(session_uuid)
+            .bind(&content)
+            .bind(&mem_type)
+            .bind(&doc_type)
+            .bind(&project_path)
+            .bind(&metadata)
+            .execute(pool.as_ref())
+            .await;
+
+            if let Err(e) = res {
+                tracing::warn!("[db-track] Failed to store {} memory: {e}", doc_type);
+            }
+        });
+    }
+
+    /// Search memories filtered by `doc_type` (for multi-vector store).
+    /// Optional `sub_filter` is matched against metadata or content tags.
+    pub async fn search_memories_by_doc_type(
+        &self,
+        query: &str,
+        doc_type: &str,
+        sub_filter: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<MemoryHit>, sqlx::Error> {
+        let mut gate = self.ready_gate.clone();
+        if !gate.is_ready() && !gate.wait().await {
+            return Ok(Vec::new());
+        }
+        let pattern = format!("%{}%", query);
+
+        if let Some(sf) = sub_filter {
+            let sf_pattern = format!("%{}%", sf);
+            sqlx::query_as::<_, MemoryHit>(
+                r#"SELECT id, content, mem_type::TEXT as mem_type, metadata, created_at
+                   FROM memories
+                   WHERE doc_type = $1
+                     AND content ILIKE $2
+                     AND content ILIKE $3
+                     AND ($4::text IS NULL OR project_path = $4 OR project_path IS NULL)
+                   ORDER BY created_at DESC
+                   LIMIT $5"#,
+            )
+            .bind(doc_type)
+            .bind(&pattern)
+            .bind(&sf_pattern)
+            .bind(&self.project_path)
+            .bind(limit)
+            .fetch_all(self.pool.as_ref())
+            .await
+        } else {
+            sqlx::query_as::<_, MemoryHit>(
+                r#"SELECT id, content, mem_type::TEXT as mem_type, metadata, created_at
+                   FROM memories
+                   WHERE doc_type = $1
+                     AND content ILIKE $2
+                     AND ($3::text IS NULL OR project_path = $3 OR project_path IS NULL)
+                   ORDER BY created_at DESC
+                   LIMIT $4"#,
+            )
+            .bind(doc_type)
+            .bind(&pattern)
+            .bind(&self.project_path)
+            .bind(limit)
+            .fetch_all(self.pool.as_ref())
+            .await
+        }
+    }
+
     /// Store a memory with an embedding vector for semantic search.
     /// Adapts to pgvector (native vector type) or BYTEA fallback automatically.
     pub fn store_memory_with_embedding(
@@ -367,41 +459,22 @@ impl DbTracker {
                 return;
             }
 
-            let res = if gate.has_pgvector() {
-                let emb_str = vec_to_pgvector(&embedding);
-                sqlx::query(
-                    r#"INSERT INTO memories
-                       (session_id, content, mem_type, doc_type, tool_name,
-                        embedding, project_path, metadata)
-                       VALUES ($1, $2, $3::memory_type, 'tool_result', $4, $5::vector, $6, $7)"#,
-                )
-                .bind(session_uuid)
-                .bind(&content)
-                .bind(&mem_type)
-                .bind(&tool_name)
-                .bind(&emb_str)
-                .bind(&project_path)
-                .bind(&metadata)
-                .execute(pool.as_ref())
-                .await
-            } else {
-                let emb_bytes = embedding_to_bytes(&embedding);
-                sqlx::query(
-                    r#"INSERT INTO memories
-                       (session_id, content, mem_type, doc_type, tool_name,
-                        embedding, project_path, metadata)
-                       VALUES ($1, $2, $3::memory_type, 'tool_result', $4, $5, $6, $7)"#,
-                )
-                .bind(session_uuid)
-                .bind(&content)
-                .bind(&mem_type)
-                .bind(&tool_name)
-                .bind(&emb_bytes)
-                .bind(&project_path)
-                .bind(&metadata)
-                .execute(pool.as_ref())
-                .await
-            };
+            let emb_str = vec_to_pgvector(&embedding);
+            let res = sqlx::query(
+                r#"INSERT INTO memories
+                   (session_id, content, mem_type, doc_type, tool_name,
+                    embedding, project_path, metadata)
+                   VALUES ($1, $2, $3::memory_type, 'tool_result', $4, $5::vector, $6, $7)"#,
+            )
+            .bind(session_uuid)
+            .bind(&content)
+            .bind(&mem_type)
+            .bind(&tool_name)
+            .bind(&emb_str)
+            .bind(&project_path)
+            .bind(&metadata)
+            .execute(pool.as_ref())
+            .await;
 
             if let Err(e) = res {
                 tracing::warn!("[db-track] Failed to store memory with embedding: {e}");
@@ -455,9 +528,7 @@ impl DbTracker {
         self.store_memory(&memory_content, &mem_type_str, Some(metadata));
     }
 
-    /// Semantic similarity search over memories.
-    /// Uses pgvector's native `<=>` operator when available, falls back to
-    /// Rust-side cosine similarity with BYTEA embeddings otherwise.
+    /// Semantic similarity search over memories using pgvector's `<=>` operator.
     pub async fn search_memories_semantic(
         &mut self,
         query_embedding: &[f32],
@@ -470,20 +541,6 @@ impl DbTracker {
             }
         }
 
-        if self.ready_gate.has_pgvector() {
-            self.search_pgvector(query_embedding, limit, threshold).await
-        } else {
-            self.search_bytea_fallback(query_embedding, limit, threshold)
-                .await
-        }
-    }
-
-    async fn search_pgvector(
-        &self,
-        query_embedding: &[f32],
-        limit: usize,
-        threshold: f32,
-    ) -> Vec<ScoredMemoryHit> {
         let emb_str = vec_to_pgvector(query_embedding);
         let rows: Vec<PgvectorScoredRow> = sqlx::query_as(
             r#"SELECT id, content, mem_type::TEXT as mem_type, tool_name,
@@ -516,55 +573,6 @@ impl DbTracker {
                 score: r.score,
             })
             .collect()
-    }
-
-    async fn search_bytea_fallback(
-        &self,
-        query_embedding: &[f32],
-        limit: usize,
-        threshold: f32,
-    ) -> Vec<ScoredMemoryHit> {
-        let rows: Vec<ByteaEmbeddingRow> = sqlx::query_as(
-            r#"SELECT id, content, mem_type::TEXT as mem_type, tool_name,
-                      metadata, created_at, embedding
-               FROM memories
-               WHERE embedding IS NOT NULL
-                 AND ($1::text IS NULL OR project_path = $1 OR project_path IS NULL)
-               ORDER BY created_at DESC
-               LIMIT $2"#,
-        )
-        .bind(&self.project_path)
-        .bind((limit * 5) as i64) // fetch more, filter by score in Rust
-        .fetch_all(self.pool.as_ref())
-        .await
-        .unwrap_or_default();
-
-        let mut scored: Vec<ScoredMemoryHit> = rows
-            .into_iter()
-            .filter_map(|r| {
-                let stored = bytes_to_embedding(&r.embedding?)?;
-                let score = cosine_similarity(query_embedding, &stored);
-                if score >= threshold {
-                    Some(ScoredMemoryHit {
-                        hit: MemoryHit {
-                            id: r.id,
-                            content: r.content,
-                            mem_type: r.mem_type,
-                            metadata: r.metadata,
-                            created_at: r.created_at,
-                        },
-                        tool_name: r.tool_name,
-                        score,
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(limit);
-        scored
     }
 
     /// Search memories by text content (ILIKE), scoped to current project + global.
@@ -851,58 +859,10 @@ struct PgvectorScoredRow {
     score: f32,
 }
 
-#[derive(Debug, sqlx::FromRow)]
-struct ByteaEmbeddingRow {
-    id: Uuid,
-    content: String,
-    mem_type: String,
-    tool_name: Option<String>,
-    metadata: Option<serde_json::Value>,
-    created_at: chrono::DateTime<chrono::Utc>,
-    embedding: Option<Vec<u8>>,
-}
-
 /// Convert a Vec<f32> into pgvector's text format: `[0.1,0.2,...]`
 fn vec_to_pgvector(v: &[f32]) -> String {
     let parts: Vec<String> = v.iter().map(|f| f.to_string()).collect();
     format!("[{}]", parts.join(","))
-}
-
-/// Serialize f32 embedding to bytes (little-endian) for BYTEA storage.
-fn embedding_to_bytes(v: &[f32]) -> Vec<u8> {
-    v.iter().flat_map(|f| f.to_le_bytes()).collect()
-}
-
-/// Deserialize f32 embedding from BYTEA (little-endian).
-fn bytes_to_embedding(bytes: &[u8]) -> Option<Vec<f32>> {
-    if bytes.len() % 4 != 0 {
-        return None;
-    }
-    Some(
-        bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect(),
-    )
-}
-
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let (mut dot, mut norm_a, mut norm_b) = (0.0f64, 0.0f64, 0.0f64);
-    for (x, y) in a.iter().zip(b.iter()) {
-        let (x, y) = (*x as f64, *y as f64);
-        dot += x * y;
-        norm_a += x * x;
-        norm_b += y * y;
-    }
-    let denom = (norm_a * norm_b).sqrt();
-    if denom < 1e-12 {
-        0.0
-    } else {
-        (dot / denom) as f32
-    }
 }
 
 fn truncate_for_db(s: &str, max_bytes: usize) -> String {

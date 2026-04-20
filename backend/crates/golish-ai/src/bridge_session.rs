@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use rig::completion::Message;
 
 use super::agent_bridge::AgentBridge;
-use golish_session::QbitSessionManager;
+use golish_session::GolishSessionManager;
 
 impl AgentBridge {
     // ========================================================================
@@ -37,7 +37,7 @@ impl AgentBridge {
         }
 
         let workspace = self.workspace.read().await.clone();
-        match QbitSessionManager::new(workspace, &self.model_name, &self.provider_name).await {
+        match GolishSessionManager::new(workspace, &self.model_name, &self.provider_name).await {
             Ok(mut manager) => {
                 if let Some(ref pool) = self.db_pool {
                     manager.set_db_pool(pool.clone());
@@ -54,7 +54,7 @@ impl AgentBridge {
     /// Execute an operation with the session manager if available.
     pub(crate) async fn with_session_manager<F>(&self, f: F)
     where
-        F: FnOnce(&mut QbitSessionManager),
+        F: FnOnce(&mut GolishSessionManager),
     {
         let mut guard = self.session_manager.write().await;
         if let Some(ref mut manager) = *guard {
@@ -146,7 +146,7 @@ impl AgentBridge {
     }
 
     /// Restore conversation history from a previous session.
-    pub async fn restore_session(&self, messages: Vec<golish_session::QbitSessionMessage>) {
+    pub async fn restore_session(&self, messages: Vec<golish_session::GolishSessionMessage>) {
         self.finalize_session().await;
 
         let rig_messages: Vec<Message> =

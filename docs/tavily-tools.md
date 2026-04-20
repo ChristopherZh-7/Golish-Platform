@@ -1,25 +1,25 @@
 # Tavily Web Tools Implementation
 
-This document provides a comprehensive guide to the Tavily web tools integration in Qbit. It covers architecture, configuration, tool descriptions, and how the tools contribute to system prompts.
+This document provides a comprehensive guide to the Tavily web tools integration in Golish. It covers architecture, configuration, tool descriptions, and how the tools contribute to system prompts.
 
 ## Overview
 
-Tavily provides AI-powered web search capabilities. Qbit integrates 5 Tavily tools that enable the agent to search the web, extract content from URLs, crawl websites, and map site structures.
+Tavily provides AI-powered web search capabilities. Golish integrates 5 Tavily tools that enable the agent to search the web, extract content from URLs, crawl websites, and map site structures.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Qbit Agent                               │
+│                        Golish Agent                               │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │   ┌──────────────────┐         ┌────────────────────────────┐   │
 │   │  Tool Registry   │────────▶│  ToolDefinition (to LLM)   │   │
-│   │  (qbit-tools)    │         │  - name, description       │   │
+│   │  (golish-tools)    │         │  - name, description       │   │
 │   └────────┬─────────┘         │  - parameters schema       │   │
 │            │                   └────────────────────────────┘   │
 │            │                                                     │
 │   ┌────────▼─────────┐         ┌────────────────────────────┐   │
 │   │  TavilyState     │         │  TavilyToolsContributor    │   │
-│   │  (qbit-web)      │         │  (system prompt section)   │   │
+│   │  (golish-web)      │         │  (system prompt section)   │   │
 │   └────────┬─────────┘         └────────────────────────────┘   │
 │            │                                                     │
 │   ┌────────▼─────────┐                                          │
@@ -33,12 +33,12 @@ Tavily provides AI-powered web search capabilities. Qbit integrates 5 Tavily too
 
 | File | Purpose |
 |------|---------|
-| `backend/crates/qbit-web/src/tavily.rs` | Tavily API client (`TavilyState`) |
-| `backend/crates/qbit-web/src/tool.rs` | Tool implementations (`WebSearchTool`, etc.) |
-| `backend/crates/qbit-web/src/lib.rs` | Crate exports |
-| `backend/crates/qbit-tools/src/registry.rs` | Tool registration logic |
-| `backend/crates/qbit-ai/src/contributors/tavily_tools.rs` | System prompt contributor |
-| `backend/crates/qbit-ai/src/contributors/mod.rs` | Contributor registration |
+| `backend/crates/golish-web/src/tavily.rs` | Tavily API client (`TavilyState`) |
+| `backend/crates/golish-web/src/tool.rs` | Tool implementations (`WebSearchTool`, etc.) |
+| `backend/crates/golish-web/src/lib.rs` | Crate exports |
+| `backend/crates/golish-tools/src/registry.rs` | Tool registration logic |
+| `backend/crates/golish-ai/src/contributors/tavily_tools.rs` | System prompt contributor |
+| `backend/crates/golish-ai/src/contributors/mod.rs` | Contributor registration |
 
 ## Available Tools
 
@@ -118,7 +118,7 @@ Map the structure of a website, returning discovered URLs.
 
 ### Settings File
 
-Configure Tavily in `~/.qbit/settings.toml`:
+Configure Tavily in `~/.golish/settings.toml`:
 
 ```toml
 [tools]
@@ -130,7 +130,7 @@ tavily = "tvly-your-api-key-here"
 
 ### Environment Variable Fallback
 
-If `api_keys.tavily` is not set in settings, Qbit falls back to:
+If `api_keys.tavily` is not set in settings, Golish falls back to:
 
 ```bash
 export TAVILY_API_KEY="tvly-your-api-key-here"
@@ -147,7 +147,7 @@ export TAVILY_API_KEY="tvly-your-api-key-here"
 ### Tool Registration Flow
 
 ```
-QbitSettings
+GolishSettings
     │
     ├── tools.web_search = true?
     │       │
@@ -172,7 +172,7 @@ Vec<rig::completion::ToolDefinition>  →  LLM API
 
 ### Tool Trait Implementation
 
-Each tool implements `qbit_core::Tool`:
+Each tool implements `golish_core::Tool`:
 
 ```rust
 #[async_trait::async_trait]
@@ -233,7 +233,7 @@ This is the standard mechanism for tool documentation.
 
 A `PromptContributor` adds detailed usage instructions to the system prompt:
 
-**Location**: `backend/crates/qbit-ai/src/contributors/tavily_tools.rs`
+**Location**: `backend/crates/golish-ai/src/contributors/tavily_tools.rs`
 
 **Activation conditions**:
 - `ctx.has_web_search == true` (Tavily tools registered)
@@ -272,7 +272,7 @@ let has_web_search = self
 
 ## Native vs Tavily Web Tools
 
-Qbit supports **two** web search backends:
+Golish supports **two** web search backends:
 
 | Feature | Native (Claude) | Tavily |
 |---------|-----------------|--------|
@@ -291,10 +291,10 @@ Run Tavily-related tests:
 
 ```bash
 # Tavily contributor tests
-cargo test --package qbit-ai -- tavily
+cargo test --package golish-ai -- tavily
 
 # Tavily tool tests
-cargo test --package qbit-web
+cargo test --package golish-web
 ```
 
 ### Manual Testing
@@ -306,12 +306,12 @@ cargo test --package qbit-web
 
 2. Enable web search in settings:
    ```toml
-   # ~/.qbit/settings.toml
+   # ~/.golish/settings.toml
    [tools]
    web_search = true
    ```
 
-3. Start Qbit and ask a question requiring web search:
+3. Start Golish and ask a question requiring web search:
    ```
    What's the latest news about Rust 2024 edition?
    ```
@@ -322,13 +322,13 @@ cargo test --package qbit-web
 
 **Cause**: No API key in settings or environment.
 
-**Fix**: Set `api_keys.tavily` in `~/.qbit/settings.toml` or export `TAVILY_API_KEY`.
+**Fix**: Set `api_keys.tavily` in `~/.golish/settings.toml` or export `TAVILY_API_KEY`.
 
 ### Tools not appearing in LLM context
 
 **Cause**: `tools.web_search = false` in settings.
 
-**Fix**: Set `tools.web_search = true` in `~/.qbit/settings.toml`.
+**Fix**: Set `tools.web_search = true` in `~/.golish/settings.toml`.
 
 ### System prompt doesn't include Tavily documentation
 

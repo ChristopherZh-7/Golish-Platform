@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Golish Platform — 架构脑图</title>
+<style>
+  :root { --bg: #0d1117; --surface: #161b22; --border: #30363d; --text: #e6edf3; --text2: #8b949e; --accent: #58a6ff; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; font-size: 13px; }
+  .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+  .header { display: flex; align-items: baseline; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
+  h1 { font-size: 22px; font-weight: 700; white-space: nowrap; }
+  .subtitle { color: var(--text2); font-size: 13px; }
+  .top-row { display: flex; gap: 12px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
+  .tags { display: flex; gap: 6px; }
+  .tag { padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 500; border: 1px solid var(--border); }
+  .tag.blue { color: #58a6ff; border-color: #1f6feb44; background: #1f6feb15; }
+  .tag.green { color: #3fb950; border-color: #23863644; background: #23863615; }
+  .tag.orange { color: #d29922; border-color: #9e6a0344; background: #9e6a0315; }
+  .stats { display: flex; gap: 10px; }
+  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 6px 14px; text-align: center; }
+  .stat-value { font-size: 18px; font-weight: 700; color: var(--accent); }
+  .stat-label { font-size: 10px; color: var(--text2); }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .section { margin-bottom: 12px; }
+  .section h2 { font-size: 14px; font-weight: 600; margin-bottom: 8px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; }
+  .diagram-box { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 12px; overflow-x: auto; }
+  .diagram-box .mermaid { display: flex; justify-content: center; }
+  table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; font-size: 12px; }
+  th { background: #1c2129; text-align: left; padding: 6px 12px; font-weight: 600; color: var(--text2); border-bottom: 1px solid var(--border); }
+  td { padding: 5px 12px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  td strong { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>Golish Platform — 架构脑图</h1>
+    <span class="subtitle">AI 驱动的安全测试终端 | Tauri 2 (Rust + React 19)</span>
+  </div>
+  <div class="top-row">
+    <div class="tags">
+      <span class="tag blue">AI 驱动</span>
+      <span class="tag green">Tauri 2</span>
+      <span class="tag">安全测试</span>
+      <span class="tag orange">渗透平台</span>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="stat-value">28</div><div class="stat-label">Rust Crates</div></div>
+      <div class="stat"><div class="stat-value">4</div><div class="stat-label">架构层级</div></div>
+      <div class="stat"><div class="stat-value">7</div><div class="stat-label">安全工具</div></div>
+      <div class="stat"><div class="stat-value">30+</div><div class="stat-label">数据表</div></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>系统架构</h2>
+    <div class="diagram-box">
+      <pre class="mermaid">
+graph LR
+    subgraph CLIENT["前端 React 19"]
+        direction TB
+        T["终端"] ~~~ AC["AI 对话"] ~~~ SP["安全面板"]
+        VI["情报"] ~~~ WK["Wiki"] ~~~ AU["审计"]
+        VT["凭据库"] ~~~ MT["方法论"]
+    end
+
+    CLIENT <-->|"Tauri IPC"| BACKEND
+
+    subgraph BACKEND["后端 Rust"]
+        direction TB
+        L4["应用层: Tauri 命令 · CLI"]
+        L3["领域层: Agent 循环 · 提示词 · 压缩"]
+        L2["基础设施: PTY · 工具 · DB · 会话 · MCP"]
+        L1["基石层: 核心类型 · Trait"]
+        L4 --> L3 --> L2 --> L1
+    end
+
+    BACKEND --> FEATURES
+    BACKEND --> AI_E
+    BACKEND --> DATA
+
+    subgraph FEATURES["功能模块"]
+        direction TB
+        PIPE["侦察流水线<br/>naabu→httpx→whatweb→katana"]
+        VSCAN["漏洞扫描<br/>nuclei · feroxbuster · ZAP"]
+        INTEL["情报引擎<br/>RSS · CVE/CNVD · PoC"]
+        WIKI_S["Wiki · 审计 · Vault · 方法论"]
+    end
+
+    subgraph AI_E["AI 引擎"]
+        direction TB
+        LLMS["Anthropic · OpenAI · Gemini · 智谱"]
+        MCP_S["MCP 外部工具"]
+    end
+
+    subgraph DATA["数据层"]
+        DB[("PostgreSQL")]
+        FS["~/.golish/"]
+    end
+      </pre>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="section">
+      <h2>安全测试流水线</h2>
+      <div class="diagram-box">
+        <pre class="mermaid">
+graph LR
+    IN["目标<br/>IP/域名"] --> N["naabu<br/>端口"] --> H["httpx<br/>探测"]
+    H --> W["whatweb<br/>指纹"]
+    H --> K["katana<br/>爬虫"]
+    W & K --> DB_W["入库"]
+    DB_W --> NU["nuclei<br/>漏扫"]
+    DB_W --> FE["feroxbuster<br/>目录"]
+    DB_W --> ZP["ZAP<br/>DAST"]
+    NU & FE & ZP --> F["漏洞发现"]
+        </pre>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>后端分层</h2>
+      <div class="diagram-box">
+        <pre class="mermaid">
+graph TB
+    subgraph L4["应用层"]
+        A1["Tauri 命令"] ~~~ A2["CLI 模式"] ~~~ A3["安全工具编排"]
+    end
+    subgraph L3["领域层"]
+        B1["Agent 循环"] ~~~ B2["提示词"] ~~~ B3["上下文压缩"]
+    end
+    subgraph L2["基础设施 (18 Crates)"]
+        C1["PTY"] ~~~ C2["工具"] ~~~ C3["DB"] ~~~ C4["LLM×5"] ~~~ C5["MCP"]
+    end
+    subgraph L1["基石层"]
+        D1["golish-core: 事件 · Trait · 类型"]
+    end
+    L4 --> L3 --> L2 --> L1
+        </pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>项目脑图</h2>
+    <div class="diagram-box">
+      <pre class="mermaid">
+mindmap
+  root((Golish Platform))
+    前端 React 19
+      终端: xterm.js 分屏 全屏检测
+      AI 对话: 流式 工具卡片 审批
+      安全面板: 目标 扫描 漏洞 流水线
+      功能面板: 情报 Wiki 审计 凭据 方法论
+      状态: Zustand Immer Tauri IPC
+    后端 Rust 28 Crates
+      应用层: Tauri CLI 安全编排
+      领域层: Agent 提示词 压缩 子代理
+      基础设施: PTY 工具 DB LLM MCP
+      基石层: 核心类型 Trait
+    功能模块
+      流水线: naabu httpx whatweb katana
+      扫描: nuclei feroxbuster ZAP
+      情报: RSS CVE CNVD PoC
+      Wiki: 文档 版本 搜索
+      Vault: 加密 注入
+      审计: 操作日志 追溯
+      方法论: 计划 进度
+    数据库 PostgreSQL
+      资产: 目标 指纹 API
+      漏洞: 发现 PoC 情报
+      扫描: 历史 队列 站点图
+      日志: 审计 代理 终端
+      配置: 方法论 凭据 规则
+    DevOps
+      构建: just pnpm Cargo
+      测试: Vitest Playwright nextest
+      质量: Biome Clippy rustfmt
+      </pre>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>技术栈</h2>
+    <table>
+      <thead><tr><th>领域</th><th>技术选型</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>桌面框架</td><td><strong>Tauri 2</strong></td><td>Rust 后端 + WebView</td></tr>
+        <tr><td>前端</td><td><strong>React 19</strong> + Vite + Tailwind v4</td><td>shadcn/ui 组件库</td></tr>
+        <tr><td>后端</td><td><strong>Rust</strong> (28 Crates)</td><td>4 层模块化架构</td></tr>
+        <tr><td>数据库</td><td><strong>PostgreSQL</strong> + sqlx</td><td>编译期 SQL 检查</td></tr>
+        <tr><td>AI</td><td><strong>rig-core</strong> + 5 适配器</td><td>Anthropic / OpenAI / Gemini / 智谱</td></tr>
+        <tr><td>安全工具</td><td>naabu / httpx / nuclei / ZAP 等</td><td>7 个托管二进制</td></tr>
+        <tr><td>测试</td><td>Vitest + Playwright + nextest</td><td>前端 + E2E + Rust</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, theme: 'dark', themeVariables: { primaryColor: '#1f6feb', primaryTextColor: '#e6edf3', primaryBorderColor: '#30363d', lineColor: '#58a6ff', secondaryColor: '#161b22', tertiaryColor: '#0d1117' }});
+</script>
+</body>
+</html>

@@ -13,7 +13,7 @@ use anyhow::Result;
 use tokio::sync::RwLock;
 
 use golish_context::{CompactionState, ContextManagerConfig};
-use golish_core::runtime::QbitRuntime;
+use golish_core::runtime::GolishRuntime;
 use golish_core::ApiRequestStats;
 use super::AgentBridge;
 use crate::agent_mode::AgentMode;
@@ -40,7 +40,7 @@ impl AgentBridge {
         _provider: &str,
         model: &str,
         api_key: &str,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
         Self::new_openrouter_with_runtime(workspace, model, api_key, None, runtime).await
     }
@@ -50,11 +50,11 @@ impl AgentBridge {
         model: &str,
         api_key: &str,
         context_config: Option<ContextManagerConfig>,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
         let shared_config = SharedComponentsConfig {
             context_config,
-            settings: golish_settings::QbitSettings::default(),
+            settings: golish_settings::GolishSettings::default(),
         };
         Self::new_openrouter_with_shared_config(
             workspace,
@@ -74,7 +74,7 @@ impl AgentBridge {
         api_key: &str,
         provider_preferences: Option<serde_json::Value>,
         shared_config: SharedComponentsConfig,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
         event_session_id: &str,
     ) -> Result<Self> {
         let config = OpenRouterClientConfig {
@@ -99,7 +99,7 @@ impl AgentBridge {
         project_id: &str,
         location: &str,
         model: &str,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
         Self::new_vertex_anthropic_with_context(
             workspace,
@@ -120,11 +120,11 @@ impl AgentBridge {
         location: &str,
         model: &str,
         context_config: Option<ContextManagerConfig>,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
         let shared_config = SharedComponentsConfig {
             context_config,
-            settings: golish_settings::QbitSettings::default(),
+            settings: golish_settings::GolishSettings::default(),
         };
         Self::new_vertex_anthropic_with_shared_config(
             workspace,
@@ -147,7 +147,7 @@ impl AgentBridge {
         location: &str,
         model: &str,
         shared_config: SharedComponentsConfig,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
         event_session_id: &str,
     ) -> Result<Self> {
         let config = VertexAnthropicClientConfig {
@@ -174,7 +174,7 @@ impl AgentBridge {
         location: &str,
         model: &str,
         include_thoughts: bool,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
         Self::new_vertex_gemini_with_context(
             workspace,
@@ -198,11 +198,11 @@ impl AgentBridge {
         model: &str,
         include_thoughts: bool,
         context_config: Option<ContextManagerConfig>,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
         let shared_config = SharedComponentsConfig {
             context_config,
-            settings: golish_settings::QbitSettings::default(),
+            settings: golish_settings::GolishSettings::default(),
         };
         Self::new_vertex_gemini_with_shared_config(
             workspace,
@@ -227,7 +227,7 @@ impl AgentBridge {
         model: &str,
         include_thoughts: bool,
         shared_config: SharedComponentsConfig,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
         event_session_id: &str,
     ) -> Result<Self> {
         let config = VertexGeminiClientConfig {
@@ -254,7 +254,7 @@ impl AgentBridge {
         api_key: &str,
         base_url: Option<&str>,
         reasoning_effort: Option<&str>,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
         Self::new_openai_with_context(
             workspace,
@@ -275,11 +275,11 @@ impl AgentBridge {
         base_url: Option<&str>,
         reasoning_effort: Option<&str>,
         context_config: Option<ContextManagerConfig>,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
         let shared_config = SharedComponentsConfig {
             context_config,
-            settings: golish_settings::QbitSettings::default(),
+            settings: golish_settings::GolishSettings::default(),
         };
         Self::new_openai_with_shared_config(
             workspace,
@@ -302,7 +302,7 @@ impl AgentBridge {
         base_url: Option<&str>,
         reasoning_effort: Option<&str>,
         shared_config: SharedComponentsConfig,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
         event_session_id: &str,
     ) -> Result<Self> {
         let config = OpenAiClientConfig {
@@ -326,7 +326,7 @@ impl AgentBridge {
         workspace: PathBuf,
         model: &str,
         api_key: &str,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
         Self::new_anthropic_with_context(workspace, model, api_key, None, runtime).await
     }
@@ -336,11 +336,11 @@ impl AgentBridge {
         model: &str,
         api_key: &str,
         context_config: Option<ContextManagerConfig>,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
         let shared_config = SharedComponentsConfig {
             context_config,
-            settings: golish_settings::QbitSettings::default(),
+            settings: golish_settings::GolishSettings::default(),
         };
         Self::new_anthropic_with_shared_config(
             workspace,
@@ -358,7 +358,7 @@ impl AgentBridge {
         model: &str,
         api_key: &str,
         shared_config: SharedComponentsConfig,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
         event_session_id: &str,
     ) -> Result<Self> {
         let config = AnthropicClientConfig {
@@ -378,7 +378,7 @@ impl AgentBridge {
         workspace: PathBuf,
         model: &str,
         base_url: Option<&str>,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
         Self::new_ollama_with_context(workspace, model, base_url, None, runtime).await
     }
@@ -388,11 +388,11 @@ impl AgentBridge {
         model: &str,
         base_url: Option<&str>,
         context_config: Option<ContextManagerConfig>,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
         let shared_config = SharedComponentsConfig {
             context_config,
-            settings: golish_settings::QbitSettings::default(),
+            settings: golish_settings::GolishSettings::default(),
         };
         Self::new_ollama_with_shared_config(workspace, model, base_url, shared_config, runtime, "")
             .await
@@ -403,7 +403,7 @@ impl AgentBridge {
         model: &str,
         base_url: Option<&str>,
         shared_config: SharedComponentsConfig,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
         event_session_id: &str,
     ) -> Result<Self> {
         let config = OllamaClientConfig {
@@ -423,7 +423,7 @@ impl AgentBridge {
         workspace: PathBuf,
         model: &str,
         api_key: &str,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
         Self::new_gemini_with_context(workspace, model, api_key, None, runtime).await
     }
@@ -433,11 +433,11 @@ impl AgentBridge {
         model: &str,
         api_key: &str,
         context_config: Option<ContextManagerConfig>,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
         let shared_config = SharedComponentsConfig {
             context_config,
-            settings: golish_settings::QbitSettings::default(),
+            settings: golish_settings::GolishSettings::default(),
         };
         Self::new_gemini_with_shared_config(workspace, model, api_key, shared_config, runtime, "")
             .await
@@ -448,7 +448,7 @@ impl AgentBridge {
         model: &str,
         api_key: &str,
         shared_config: SharedComponentsConfig,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
         event_session_id: &str,
     ) -> Result<Self> {
         let config = GeminiClientConfig {
@@ -468,7 +468,7 @@ impl AgentBridge {
         workspace: PathBuf,
         model: &str,
         api_key: &str,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
         Self::new_groq_with_context(workspace, model, api_key, None, runtime).await
     }
@@ -478,11 +478,11 @@ impl AgentBridge {
         model: &str,
         api_key: &str,
         context_config: Option<ContextManagerConfig>,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
         let shared_config = SharedComponentsConfig {
             context_config,
-            settings: golish_settings::QbitSettings::default(),
+            settings: golish_settings::GolishSettings::default(),
         };
         Self::new_groq_with_shared_config(workspace, model, api_key, shared_config, runtime, "")
             .await
@@ -493,7 +493,7 @@ impl AgentBridge {
         model: &str,
         api_key: &str,
         shared_config: SharedComponentsConfig,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
         event_session_id: &str,
     ) -> Result<Self> {
         let config = GroqClientConfig {
@@ -513,7 +513,7 @@ impl AgentBridge {
         workspace: PathBuf,
         model: &str,
         api_key: &str,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
         Self::new_xai_with_context(workspace, model, api_key, None, runtime).await
     }
@@ -523,11 +523,11 @@ impl AgentBridge {
         model: &str,
         api_key: &str,
         context_config: Option<ContextManagerConfig>,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
         let shared_config = SharedComponentsConfig {
             context_config,
-            settings: golish_settings::QbitSettings::default(),
+            settings: golish_settings::GolishSettings::default(),
         };
         Self::new_xai_with_shared_config(workspace, model, api_key, shared_config, runtime, "")
             .await
@@ -538,7 +538,7 @@ impl AgentBridge {
         model: &str,
         api_key: &str,
         shared_config: SharedComponentsConfig,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
         event_session_id: &str,
     ) -> Result<Self> {
         let config = XaiClientConfig {
@@ -560,7 +560,7 @@ impl AgentBridge {
         api_key: &str,
         base_url: Option<&str>,
         source_channel: Option<&str>,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
         Self::new_zai_sdk_with_context(workspace, model, api_key, base_url, source_channel, None, runtime).await
     }
@@ -573,11 +573,11 @@ impl AgentBridge {
         base_url: Option<&str>,
         source_channel: Option<&str>,
         context_config: Option<ContextManagerConfig>,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
         let shared_config = SharedComponentsConfig {
             context_config,
-            settings: golish_settings::QbitSettings::default(),
+            settings: golish_settings::GolishSettings::default(),
         };
         Self::new_zai_sdk_with_shared_config(
             workspace,
@@ -600,7 +600,7 @@ impl AgentBridge {
         base_url: Option<&str>,
         source_channel: Option<&str>,
         shared_config: SharedComponentsConfig,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
         event_session_id: &str,
     ) -> Result<Self> {
         let config = ZaiSdkClientConfig {
@@ -624,7 +624,7 @@ impl AgentBridge {
         api_key: &str,
         base_url: Option<&str>,
         shared_config: SharedComponentsConfig,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
         event_session_id: &str,
     ) -> Result<Self> {
         let config = NvidiaClientConfig {
@@ -644,7 +644,7 @@ impl AgentBridge {
     /// Core constructor: builds an AgentBridge from pre-built components.
     pub(super) fn from_components_with_runtime(
         components: AgentBridgeComponents,
-        runtime: Arc<dyn QbitRuntime>,
+        runtime: Arc<dyn GolishRuntime>,
         event_session_id: String,
     ) -> Self {
         let AgentBridgeComponents {
@@ -715,6 +715,8 @@ impl AgentBridge {
             cancelled: Arc::new(AtomicBool::new(false)),
             mcp_tool_definitions: Arc::new(RwLock::new(Vec::new())),
             mcp_tool_executor: Arc::new(RwLock::new(None)),
+            use_agents: Arc::new(RwLock::new(true)),
+            execution_mode: Arc::new(RwLock::new(crate::execution_mode::ExecutionMode::default())),
         }
     }
 }

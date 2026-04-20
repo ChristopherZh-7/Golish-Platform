@@ -7,11 +7,11 @@ use tauri::State;
 
 use crate::state::AppState;
 use crate::telemetry::TelemetryStatsSnapshot;
-use golish_settings::QbitSettings;
+use golish_settings::GolishSettings;
 
 /// Get all settings.
 #[tauri::command]
-pub async fn get_settings(state: State<'_, AppState>) -> Result<QbitSettings, String> {
+pub async fn get_settings(state: State<'_, AppState>) -> Result<GolishSettings, String> {
     Ok(state.settings_manager.get().await)
 }
 
@@ -19,7 +19,7 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<QbitSettings, St
 #[tauri::command]
 pub async fn update_settings(
     state: State<'_, AppState>,
-    settings: QbitSettings,
+    settings: GolishSettings,
 ) -> Result<(), String> {
     state
         .settings_manager

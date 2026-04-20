@@ -1,4 +1,4 @@
-//! Per-project settings for Qbit.
+//! Per-project settings for Golish.
 //!
 //! This module provides project-level settings that override global defaults
 //! for specific values like AI provider, model, and agent mode.

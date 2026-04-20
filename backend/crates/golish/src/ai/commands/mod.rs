@@ -9,8 +9,9 @@ use tokio::sync::RwLock;
 
 use super::agent_bridge::AgentBridge;
 use crate::state::AppState;
-use golish_core::runtime::QbitRuntime;
+use golish_core::runtime::GolishRuntime;
 
+pub mod agents;
 pub mod analytics;
 pub mod commit_writer;
 pub mod config;
@@ -27,6 +28,7 @@ pub mod summarizer;
 pub mod workflow;
 
 // Re-export all commands for easier access
+pub use agents::*;
 pub use analytics::*;
 pub use commit_writer::*;
 pub use config::*;
@@ -59,7 +61,7 @@ pub struct AiState {
     /// Runtime abstraction for event emission and approval handling.
     /// Stored here for later phases when AgentBridge will use it directly.
     /// Currently created during init but the existing event_tx path is used.
-    pub runtime: Arc<RwLock<Option<Arc<dyn QbitRuntime>>>>,
+    pub runtime: Arc<RwLock<Option<Arc<dyn GolishRuntime>>>>,
 }
 
 impl Default for AiState {
@@ -348,6 +350,9 @@ async fn apply_sub_agent_model_settings(
                     model
                 );
             }
+            agent.temperature = config.temperature;
+            agent.max_tokens = config.max_tokens;
+            agent.top_p = config.top_p;
         } else {
             tracing::warn!(
                 "Sub-agent model config for '{}' ignored: agent not found in registry",

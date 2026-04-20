@@ -283,7 +283,14 @@ impl CaptureContext {
             | AiEvent::PromptGenerationStarted { .. }
             | AiEvent::PromptGenerationCompleted { .. }
             | AiEvent::AskHumanRequest { .. }
-            | AiEvent::AskHumanResponse { .. } => {
+            | AiEvent::AskHumanResponse { .. }
+            | AiEvent::TaskProgress { .. }
+            | AiEvent::SubtaskCreated { .. }
+            | AiEvent::SubtaskCompleted { .. }
+            | AiEvent::SubtaskWaitingForInput { .. }
+            | AiEvent::SubtaskUserInput { .. }
+            | AiEvent::TaskResumed { .. }
+            | AiEvent::EnricherResult { .. } => {
                 // These events are not captured (ToolOutputChunk is streaming output)
             }
         }

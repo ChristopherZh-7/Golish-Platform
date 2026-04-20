@@ -1,13 +1,13 @@
-//! Runtime implementations for Qbit.
+//! Runtime implementations for Golish.
 //!
-//! This crate provides platform-specific runtime implementations for the Qbit application:
+//! This crate provides platform-specific runtime implementations for the Golish application:
 //! - **TauriRuntime**: For GUI application (Tauri framework)
 //! - **CliRuntime**: For headless CLI usage
 //!
 //! # Architecture
 //!
 //! This is a **Layer 2 (Infrastructure)** crate:
-//! - Depends on: golish-core (for QbitRuntime trait and types)
+//! - Depends on: golish-core (for GolishRuntime trait and types)
 //! - Used by: golish (main application)
 //!
 //! # Usage
@@ -15,7 +15,7 @@
 //! ```rust,ignore
 //! // Tauri runtime (GUI)
 //! use crate::runtime::TauriRuntime;
-//! use golish_core::runtime::QbitRuntime;
+//! use golish_core::runtime::GolishRuntime;
 //!
 //! let runtime = TauriRuntime::new(app_handle);
 //! runtime.emit(RuntimeEvent::Ai { ... })?;
@@ -28,7 +28,7 @@
 //! ```
 
 // Re-export core runtime types for convenience
-pub use golish_core::runtime::{ApprovalResult, QbitRuntime, RuntimeError, RuntimeEvent};
+pub use golish_core::runtime::{ApprovalResult, GolishRuntime, RuntimeError, RuntimeEvent};
 
 // Both runtime implementations are always available
 pub mod cli;

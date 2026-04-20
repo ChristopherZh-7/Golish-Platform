@@ -1,6 +1,6 @@
 # Independent Verification Guide
 
-This guide explains how to independently verify Qbit's SWE-bench evaluation results. We encourage skeptics to audit our methodology.
+This guide explains how to independently verify Golish's SWE-bench evaluation results. We encourage skeptics to audit our methodology.
 
 ## What You Can Verify
 
@@ -18,8 +18,8 @@ pip install swebench
 # Ensure Docker is running
 docker info
 
-# Clone Qbit (optional, for code inspection)
-git clone https://github.com/your-org/qbit
+# Clone Golish (optional, for code inspection)
+git clone https://github.com/your-org/golish
 ```
 
 ## Verification Steps
@@ -34,21 +34,21 @@ from datasets import load_dataset
 # Load official dataset
 official = load_dataset("princeton-nlp/SWE-bench_Lite", split="test")
 
-# Load Qbit's cached dataset
+# Load Golish's cached dataset
 import json
-with open("~/.qbit/benchmarks/swebench/datasets/lite.json") as f:
-    qbit_data = json.load(f)
+with open("~/.golish/benchmarks/swebench/datasets/lite.json") as f:
+    golish_data = json.load(f)
 
 # Compare instance count
 assert len(official) == 300
-assert len(qbit_data) == 300
+assert len(golish_data) == 300
 
 # Compare specific instance
 official_django = next(d for d in official if d['instance_id'] == 'django__django-11133')
-qbit_django = next(d for d in qbit_data if d['instance_id'] == 'django__django-11133')
+golish_django = next(d for d in golish_data if d['instance_id'] == 'django__django-11133')
 
-assert official_django['problem_statement'] == qbit_django['problem_statement']
-assert official_django['FAIL_TO_PASS'] == qbit_django['fail_to_pass']
+assert official_django['problem_statement'] == golish_django['problem_statement']
+assert official_django['FAIL_TO_PASS'] == golish_django['fail_to_pass']
 print("✓ Dataset matches official SWE-bench Lite")
 ```
 
@@ -82,7 +82,7 @@ print(instance['patch'][:500])
 The most rigorous verification: run the official SWE-bench harness on our patch.
 
 ```bash
-# Create predictions file from Qbit's patch
+# Create predictions file from Golish's patch
 cat > predictions.jsonl << EOF
 {"instance_id": "django__django-11133", "model_name_or_path": "verification", "model_patch": "$(cat $RESULTS_DIR/django__django-11133/patch.diff | jq -Rs .)"}
 EOF
@@ -177,7 +177,7 @@ cat $RESULTS_DIR/django__django-11133/transcript.json
 
 ```python
 #!/usr/bin/env python3
-"""Verify Qbit SWE-bench results for suspicious patterns."""
+"""Verify Golish SWE-bench results for suspicious patterns."""
 
 import json
 import sys
@@ -266,8 +266,8 @@ To fully reproduce an evaluation:
 
 ```bash
 # 1. Clone the repo at the same commit
-git clone https://github.com/your-org/qbit
-cd qbit
+git clone https://github.com/your-org/golish
+cd golish
 git checkout <evaluation-commit>
 
 # 2. Run the same evaluation

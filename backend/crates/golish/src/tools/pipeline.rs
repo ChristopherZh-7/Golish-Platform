@@ -41,6 +41,24 @@ pub struct PipelineStep {
     /// Override the tool's default db_action for this step.
     #[serde(default)]
     pub db_action: Option<String>,
+    /// What to do when this step fails: "abort" (default), "skip", "continue"
+    #[serde(default = "default_on_failure")]
+    pub on_failure: String,
+    /// Timeout for this step in seconds. None = no timeout.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    /// Template ID to execute as a nested sub-pipeline (step_type = "sub_pipeline").
+    #[serde(default)]
+    pub sub_pipeline: Option<String>,
+    /// Inline pipeline definition for nesting (alternative to sub_pipeline ID reference).
+    #[serde(default)]
+    pub inline_pipeline: Option<Box<Pipeline>>,
+    /// Step ID whose output lines become iteration targets (step_type = "foreach").
+    #[serde(default)]
+    pub foreach_source: Option<String>,
+    /// Max concurrent iterations for foreach steps. Defaults to 5.
+    #[serde(default)]
+    pub max_parallel: Option<usize>,
     #[serde(default)]
     pub x: f64,
     #[serde(default)]
@@ -49,11 +67,16 @@ pub struct PipelineStep {
 
 fn default_step_type() -> String { "shell_command".to_string() }
 fn default_exec_mode() -> String { "pipe".to_string() }
+fn default_on_failure() -> String { "abort".to_string() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineConnection {
     pub from_step: String,
     pub to_step: String,
+    /// Condition expression evaluated against the upstream step's result.
+    /// None = always pass. Examples: "exit_ok", "output_contains:80", "output_not_empty".
+    #[serde(default)]
+    pub condition: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,7 +91,9 @@ pub struct Pipeline {
     pub workflow_id: Option<String>,
     pub steps: Vec<PipelineStep>,
     pub connections: Vec<PipelineConnection>,
+    #[serde(default)]
     pub created_at: u64,
+    #[serde(default)]
     pub updated_at: u64,
 }
 
@@ -76,12 +101,67 @@ fn now_ts() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
 }
 
+/// Deserialize a Pipeline from JSON, filling in missing defaults (x/y layout, timestamps).
+fn pipeline_from_json(json: &str) -> Option<Pipeline> {
+    let mut p: Pipeline = serde_json::from_str(json).ok()?;
+    for (i, step) in p.steps.iter_mut().enumerate() {
+        if step.x == 0.0 && step.y == 0.0 {
+            step.x = (i as f64) * 220.0 + 40.0;
+            step.y = 80.0;
+        }
+    }
+    Some(p)
+}
+
+/// Embedded built-in templates (compiled into the binary).
+fn embedded_templates() -> Vec<Pipeline> {
+    const RECON_BASIC: &str = include_str!("templates/recon_basic.json");
+    [RECON_BASIC]
+        .iter()
+        .filter_map(|json| pipeline_from_json(json))
+        .collect()
+}
+
+/// Load user-created templates from the `flow-templates/` directory in app data.
+fn user_templates() -> Vec<Pipeline> {
+    let Some(dir) = templates_dir() else {
+        return vec![];
+    };
+    if !dir.exists() {
+        return vec![];
+    }
+    let mut templates = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "json") {
+                if let Ok(data) = std::fs::read_to_string(&path) {
+                    if let Some(mut p) = pipeline_from_json(&data) {
+                        p.is_template = true;
+                        templates.push(p);
+                    }
+                }
+            }
+        }
+    }
+    templates
+}
+
 fn builtin_templates() -> Vec<Pipeline> {
-    vec![recon_basic_template()]
+    let mut all = embedded_templates();
+    let user = user_templates();
+    let user_ids: std::collections::HashSet<&str> =
+        user.iter().map(|p| p.id.as_str()).collect();
+    all.retain(|p| !user_ids.contains(p.id.as_str()));
+    all.extend(user);
+    all
 }
 
 pub fn get_builtin_recon_basic() -> Pipeline {
-    recon_basic_template()
+    embedded_templates()
+        .into_iter()
+        .find(|p| p.id == "recon_basic")
+        .unwrap_or_else(recon_basic_template)
 }
 
 /// Detect target type: "domain", "ip", or "url"
@@ -96,6 +176,164 @@ pub fn detect_target_type(target: &str) -> &'static str {
         return "ip";
     }
     "domain"
+}
+
+/// Topological sort of pipeline steps into execution layers.
+/// Steps in the same layer have no dependencies between each other and can run concurrently.
+/// Falls back to sequential execution (one step per layer) when connections are empty.
+fn topo_layers<'a>(
+    steps: &'a [PipelineStep],
+    connections: &[PipelineConnection],
+) -> Vec<Vec<&'a PipelineStep>> {
+    if connections.is_empty() {
+        return steps.iter().map(|s| vec![s]).collect();
+    }
+
+    let step_ids: std::collections::HashSet<&str> =
+        steps.iter().map(|s| s.id.as_str()).collect();
+
+    let mut in_degree: std::collections::HashMap<&str, usize> =
+        steps.iter().map(|s| (s.id.as_str(), 0)).collect();
+
+    let mut adj: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+
+    for conn in connections {
+        if step_ids.contains(conn.from_step.as_str())
+            && step_ids.contains(conn.to_step.as_str())
+        {
+            *in_degree.entry(conn.to_step.as_str()).or_insert(0) += 1;
+            adj.entry(conn.from_step.as_str())
+                .or_default()
+                .push(conn.to_step.as_str());
+        }
+    }
+
+    let step_map: std::collections::HashMap<&str, &PipelineStep> =
+        steps.iter().map(|s| (s.id.as_str(), s)).collect();
+
+    let mut layers: Vec<Vec<&PipelineStep>> = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+
+    let mut current: Vec<&str> = in_degree
+        .iter()
+        .filter(|(_, &deg)| deg == 0)
+        .map(|(&id, _)| id)
+        .collect();
+    current.sort();
+
+    while !current.is_empty() {
+        let layer: Vec<&PipelineStep> = current
+            .iter()
+            .filter_map(|id| step_map.get(id).copied())
+            .collect();
+
+        for &id in &current {
+            visited.insert(id);
+        }
+
+        if !layer.is_empty() {
+            layers.push(layer);
+        }
+
+        let mut next = Vec::new();
+        for &id in &current {
+            if let Some(neighbors) = adj.get(id) {
+                for &nid in neighbors {
+                    if let Some(deg) = in_degree.get_mut(nid) {
+                        *deg = deg.saturating_sub(1);
+                        if *deg == 0 && !visited.contains(nid) {
+                            next.push(nid);
+                        }
+                    }
+                }
+            }
+        }
+        next.sort();
+        next.dedup();
+        current = next;
+    }
+
+    let remaining: Vec<&PipelineStep> = steps
+        .iter()
+        .filter(|s| !visited.contains(s.id.as_str()))
+        .collect();
+    if !remaining.is_empty() {
+        layers.push(remaining);
+    }
+
+    layers
+}
+
+/// Resolve the input file for a step, using explicit `input_from`, upstream connections,
+/// or falling back to the target seed when the command uses `{prev_output}`.
+fn resolve_step_input(
+    step: &PipelineStep,
+    step_outputs: &std::collections::HashMap<String, std::path::PathBuf>,
+    connections: &[PipelineConnection],
+    tmp_dir: &std::path::Path,
+    target: &str,
+) -> Option<std::path::PathBuf> {
+    if let Some(ref from_id) = step.input_from {
+        if let Some(path) = step_outputs.get(from_id) {
+            return Some(path.clone());
+        }
+    }
+
+    let upstream: Vec<&str> = connections
+        .iter()
+        .filter(|c| c.to_step == step.id)
+        .map(|c| c.from_step.as_str())
+        .collect();
+    for uid in &upstream {
+        if let Some(path) = step_outputs.get(*uid) {
+            return Some(path.clone());
+        }
+    }
+
+    let full_cmd_preview = format!("{} {}", step.command_template, step.args.join(" "));
+    if full_cmd_preview.contains("{prev_output}") {
+        let seed = tmp_dir.join(format!("seed-{}.txt", step.id));
+        let _ = std::fs::write(&seed, target);
+        return Some(seed);
+    }
+
+    None
+}
+
+/// Evaluate a condition expression against an upstream step's result and output file.
+/// Returns `true` if the condition passes (step should run), `false` to skip.
+fn evaluate_condition(
+    condition: &str,
+    result: &StepResult,
+    output_path: &std::path::Path,
+) -> bool {
+    match condition {
+        "exit_ok" => result.exit_code == Some(0),
+        "exit_fail" => result.exit_code.is_some() && result.exit_code != Some(0),
+        "output_not_empty" => result.stdout_lines > 0,
+        _ if condition.starts_with("output_contains:") => {
+            let pattern = &condition["output_contains:".len()..];
+            std::fs::read_to_string(output_path)
+                .map(|s| s.contains(pattern))
+                .unwrap_or(false)
+        }
+        _ if condition.starts_with("output_lines_gt:") => {
+            let n: usize = condition["output_lines_gt:".len()..].parse().unwrap_or(0);
+            result.stdout_lines > n
+        }
+        _ if condition.starts_with("stored_gt:") => {
+            let n: usize = condition["stored_gt:".len()..].parse().unwrap_or(0);
+            result
+                .store_stats
+                .as_ref()
+                .map(|s| s.stored_count > n)
+                .unwrap_or(false)
+        }
+        other => {
+            tracing::warn!("[pipeline] Unknown condition '{}', treating as pass", other);
+            true
+        }
+    }
 }
 
 /// Resolve per-port target URLs from the `targets.ports` JSONB column.
@@ -229,18 +467,25 @@ fn recon_basic_template() -> Pipeline {
             requires: s.requires.map(|v| v.to_string()),
             iterate_over: s.iterate_over.map(|v| v.to_string()),
             db_action: s.db_action.map(|v| v.to_string()),
+            on_failure: "continue".to_string(),
+            timeout_secs: None,
+            sub_pipeline: None,
+            inline_pipeline: None,
+            foreach_source: None,
+            max_parallel: None,
             x: (i as f64) * 220.0 + 40.0,
             y: 80.0,
         })
         .collect();
 
-    let connections: Vec<PipelineConnection> = steps
-        .windows(2)
-        .map(|w| PipelineConnection {
-            from_step: w[0].id.to_string(),
-            to_step: w[1].id.to_string(),
-        })
-        .collect();
+    // DAG connections: Layer 0 (dig, subfinder, naabu) → Layer 1 (httpx, whatweb) → Layer 2 (katana)
+    let connections: Vec<PipelineConnection> = vec![
+        // port_scan feeds into http_probe and tech_fingerprint
+        PipelineConnection { from_step: "port_scan".into(), to_step: "http_probe".into(), condition: None },
+        PipelineConnection { from_step: "port_scan".into(), to_step: "tech_fingerprint".into(), condition: None },
+        PipelineConnection { from_step: "http_probe".into(), to_step: "web_crawl".into(), condition: None },
+        PipelineConnection { from_step: "tech_fingerprint".into(), to_step: "web_crawl".into(), condition: None },
+    ];
 
     Pipeline {
         id: "recon_basic".to_string(),
@@ -364,7 +609,108 @@ pub async fn pipeline_load(
 }
 
 // ============================================================================
-// Pipeline executor: run steps sequentially with output parsing and DB storage
+// Template management: save/list/delete user flow templates (JSON files)
+// ============================================================================
+
+fn templates_dir() -> Option<std::path::PathBuf> {
+    let home = dirs::home_dir()?;
+    #[cfg(target_os = "macos")]
+    let base = home.join("Library").join("Application Support").join("golish-platform");
+    #[cfg(target_os = "windows")]
+    let base = home.join("AppData").join("Local").join("golish-platform");
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let base = home.join(".golish-platform");
+    Some(base.join("flow-templates"))
+}
+
+#[tauri::command]
+pub async fn pipeline_list_templates() -> Result<Vec<Pipeline>, String> {
+    let mut all = builtin_templates();
+    for p in &mut all {
+        p.is_template = true;
+    }
+    Ok(all)
+}
+
+/// Save a pipeline as a JSON template file (non-async, for use from AI tools).
+pub fn pipeline_save_template_inner(pipeline: &Pipeline) -> Result<String, String> {
+    let dir = templates_dir().ok_or("Cannot determine app data directory")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let id = if pipeline.id.is_empty() {
+        Uuid::new_v4().to_string()
+    } else {
+        pipeline.id.clone()
+    };
+    let ts = now_ts();
+    let entry = Pipeline {
+        id: id.clone(),
+        is_template: true,
+        updated_at: ts,
+        created_at: if pipeline.created_at == 0 { ts } else { pipeline.created_at },
+        ..pipeline.clone()
+    };
+    let filename = format!("{}.json", entry.name.to_lowercase().replace(' ', "_"));
+    let path = dir.join(&filename);
+    let json = serde_json::to_string_pretty(&entry).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    tracing::info!("[pipeline] Saved template '{}' to {}", entry.name, path.display());
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn pipeline_save_template(pipeline: Pipeline) -> Result<String, String> {
+    let dir = templates_dir().ok_or("Cannot determine app data directory")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    let id = if pipeline.id.is_empty() {
+        Uuid::new_v4().to_string()
+    } else {
+        pipeline.id.clone()
+    };
+    let ts = now_ts();
+    let entry = Pipeline {
+        id: id.clone(),
+        is_template: true,
+        updated_at: ts,
+        created_at: if pipeline.created_at == 0 { ts } else { pipeline.created_at },
+        ..pipeline
+    };
+
+    let filename = format!("{}.json", entry.name.to_lowercase().replace(' ', "_"));
+    let path = dir.join(&filename);
+    let json = serde_json::to_string_pretty(&entry).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    tracing::info!("[pipeline] Saved template '{}' to {}", entry.name, path.display());
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn pipeline_delete_template(id: String) -> Result<(), String> {
+    let dir = templates_dir().ok_or("Cannot determine app data directory")?;
+    if !dir.exists() {
+        return Ok(());
+    }
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "json") {
+                if let Ok(data) = std::fs::read_to_string(&path) {
+                    if let Ok(p) = serde_json::from_str::<Pipeline>(&data) {
+                        if p.id == id {
+                            std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+                            tracing::info!("[pipeline] Deleted template '{}' at {}", id, path.display());
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+// ============================================================================
+// Pipeline executor: run steps with DAG-parallel execution and DB storage
 // ============================================================================
 
 use super::output_parser::{OutputParserConfig, PatternConfig, StoreStats};
@@ -492,6 +838,8 @@ async fn resolve_tool_command(bare_cmd: &str, config_manager: &golish_pentest::C
     }
 }
 
+/// Tauri command wrapper around [`execute_pipeline_headless`] with cancel support.
+/// Resets the cancel flag before execution; cancellation is checked between layers.
 #[tauri::command]
 pub async fn pipeline_execute(
     app: tauri::AppHandle,
@@ -500,627 +848,22 @@ pub async fn pipeline_execute(
     target: String,
     project_path: Option<String>,
 ) -> Result<PipelineRunResult, String> {
-    let pool = state.db_pool_ready().await?;
-    let total_steps = pipeline.steps.len();
-    let pipeline_id = pipeline.id.clone();
-    let run_id = Uuid::new_v4().to_string();
-    let mut step_results = Vec::new();
-    let mut total_stored = 0usize;
-    let start = std::time::Instant::now();
-    let target_type = detect_target_type(&target);
-
-    // Temp directory for intermediate output files
-    let tmp_dir = std::env::temp_dir().join(format!("golish-pipeline-{}", Uuid::new_v4()));
-    std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
-
-    let parent_target_id: Option<Uuid> = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM targets WHERE value = $1 AND project_path = $2 LIMIT 1",
-    )
-    .bind(&target)
-    .bind(project_path.as_deref())
-    .fetch_optional(pool)
-    .await
-    .ok()
-    .flatten();
-
-    // Emit "started" event so the frontend can build the full progress block immediately.
-    let _ = app.emit(
-        "pipeline-event",
-        PipelineEvent {
-            pipeline_id: pipeline_id.clone(),
-            run_id: run_id.clone(),
-            step_id: String::new(),
-            step_index: 0,
-            total_steps,
-            status: "started".to_string(),
-            tool_name: String::new(),
-            message: None,
-            store_stats: None,
-            pipeline_name: Some(pipeline.name.clone()),
-            target: Some(target.clone()),
-            all_steps: Some(
-                pipeline.steps.iter().map(|s| PipelineStepInfo {
-                    id: s.id.clone(),
-                    tool_name: s.tool_name.clone(),
-                    command_template: s.command_template.clone(),
-                }).collect(),
-            ),
-            output: None, duration_ms: None, exit_code: None,
-        },
-    );
-
-    // Map step_id → output file path for input_from references
-    let mut step_outputs: std::collections::HashMap<String, std::path::PathBuf> = std::collections::HashMap::new();
-    let mut prev_output_file: Option<std::path::PathBuf> = None;
     PIPELINE_CANCELLED.store(false, Ordering::SeqCst);
 
-    for (idx, step) in pipeline.steps.iter().enumerate() {
-        if PIPELINE_CANCELLED.load(Ordering::SeqCst) {
-            let _ = app.emit("pipeline-event", PipelineEvent {
-                pipeline_id: pipeline_id.clone(),
-                run_id: run_id.clone(),
-                step_id: String::new(),
-                step_index: idx,
-                total_steps,
-                status: "cancelled".to_string(),
-                tool_name: String::new(),
-                message: Some("Pipeline cancelled by user".to_string()),
-                store_stats: None,
-                pipeline_name: None,
-                target: Some(target.to_string()),
-                all_steps: None,
-                output: None,
-                duration_ms: None,
-                exit_code: None,
-            });
-            return Err("Pipeline cancelled".to_string());
-        }
-        // Skip step if target type doesn't match the requires condition
-        if let Some(ref req) = step.requires {
-            if req != target_type {
-                tracing::info!(
-                    "[pipeline] Skipping step '{}': requires={}, target_type={}",
-                    step.tool_name, req, target_type
-                );
-                let _ = app.emit(
-                    "pipeline-event",
-                    PipelineEvent {
-                        pipeline_id: pipeline_id.clone(),
-                        run_id: run_id.clone(),
-                        step_id: step.id.clone(),
-                        step_index: idx,
-                        total_steps,
-                        status: "skipped".to_string(),
-                        tool_name: step.tool_name.clone(),
-                        message: Some(format!("Skipped: requires {} target", req)),
-                        store_stats: None,
-                        pipeline_name: None, target: None, all_steps: None,
-                        output: None, duration_ms: None, exit_code: None,
-                    },
-                );
-                step_results.push(StepResult {
-                    step_id: step.id.clone(),
-                    tool_name: step.tool_name.clone(),
-                    command: String::new(),
-                    exit_code: None,
-                    stdout_lines: 0,
-                    stderr_preview: format!("Skipped: requires {} target", req),
-                    store_stats: None,
-                    duration_ms: 0,
-                });
-                continue;
-            }
-        }
+    let pool = state.db_pool_ready().await?;
+    let result = execute_pipeline_headless(
+        pool,
+        &pipeline,
+        &target,
+        project_path.as_deref(),
+        &state.pentest_config_manager,
+        Some(&app),
+    )
+    .await
+    .map_err(|e| e.to_string());
 
-        let step_start = std::time::Instant::now();
-
-        // Emit "running" event
-        let _ = app.emit(
-            "pipeline-event",
-            PipelineEvent {
-                pipeline_id: pipeline_id.clone(),
-                run_id: run_id.clone(),
-                step_id: step.id.clone(),
-                step_index: idx,
-                total_steps,
-                status: "running".to_string(),
-                tool_name: step.tool_name.clone(),
-                message: None,
-                store_stats: None,
-                pipeline_name: None, target: None, all_steps: None,
-                output: None, duration_ms: None, exit_code: None,
-            },
-        );
-
-        // Resolve the input file: explicit input_from step, or fallback to previous step
-        let mut input_file = step.input_from.as_ref()
-            .and_then(|id| step_outputs.get(id).cloned())
-            .or_else(|| prev_output_file.clone());
-
-        // When the command uses {prev_output} but no prior step produced output
-        // (e.g. domain-only steps were skipped for an IP target), create a seed
-        // file containing just the target value so the tool has valid input.
-        let full_cmd_preview = format!("{} {}", step.command_template, step.args.join(" "));
-        if input_file.is_none() && full_cmd_preview.contains("{prev_output}") {
-            let seed = tmp_dir.join(format!("seed-{}.txt", step.id));
-            let _ = std::fs::write(&seed, &target);
-            input_file = Some(seed);
-        }
-
-        // Resolve iteration targets (per-port or single)
-        let iter_targets: Vec<String> = if step.iterate_over.as_deref() == Some("ports") {
-            resolve_port_targets(pool, &target, project_path.as_deref()).await
-        } else {
-            vec![target.clone()]
-        };
-
-        let resolved_cmd = resolve_tool_command(&step.command_template, &state.pentest_config_manager).await;
-        let args_str = step.args.join(" ");
-        let mut combined_stdout = String::new();
-        let mut combined_stderr = String::new();
-        let mut last_exit_code: Option<i32> = Some(0);
-        let mut last_cmd_str = String::new();
-
-        for iter_target in &iter_targets {
-            if PIPELINE_CANCELLED.load(Ordering::SeqCst) { break; }
-            let mut cmd_str = if args_str.is_empty() {
-                resolved_cmd.clone()
-            } else {
-                format!("{} {}", resolved_cmd, args_str)
-            };
-            cmd_str = cmd_str.replace("{target}", iter_target);
-
-            if let Some(ref input) = input_file {
-                cmd_str = cmd_str.replace("{prev_output}", &input.to_string_lossy());
-            }
-            last_cmd_str = cmd_str.clone();
-
-            tracing::info!(
-                "[pipeline] Step {}/{}: {} → {}{}",
-                idx + 1,
-                total_steps,
-                step.tool_name,
-                cmd_str,
-                if iter_targets.len() > 1 { format!(" (port iter {}/{})", iter_targets.iter().position(|t| t == iter_target).unwrap_or(0) + 1, iter_targets.len()) } else { String::new() }
-            );
-
-            let mut child = tokio::process::Command::new("sh")
-                .arg("-c")
-                .arg(&cmd_str)
-                .stdin(if let Some(ref pf) = input_file {
-                    if step.exec_mode == "pipe" {
-                        std::process::Stdio::from(
-                            std::fs::File::open(pf).map_err(|e| e.to_string())?,
-                        )
-                    } else {
-                        std::process::Stdio::null()
-                    }
-                } else {
-                    std::process::Stdio::null()
-                })
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .map_err(|e| format!("Failed to execute '{}': {}", cmd_str, e))?;
-
-            let stdout_pipe = child.stdout.take();
-            let stderr_pipe = child.stderr.take();
-
-            let app_for_stdout = app.clone();
-            let pid_for_stdout = pipeline_id.clone();
-            let rid_for_stdout = run_id.clone();
-            let sid_for_stdout = step.id.clone();
-            let tool_for_stdout = step.tool_name.clone();
-            let step_idx = idx;
-            let ts = total_steps;
-
-            let app_for_stderr = app.clone();
-            let pid_for_stderr = pipeline_id.clone();
-            let rid_for_stderr = run_id.clone();
-            let sid_for_stderr = step.id.clone();
-            let tool_for_stderr = step.tool_name.clone();
-
-            // Read stdout and stderr concurrently
-            let stdout_handle = tokio::spawn(async move {
-                let mut collected = String::new();
-                if let Some(pipe) = stdout_pipe {
-                    use tokio::io::{AsyncBufReadExt, BufReader};
-                    let mut reader = BufReader::new(pipe);
-                    let mut line = String::new();
-                    loop {
-                        line.clear();
-                        match reader.read_line(&mut line).await {
-                            Ok(0) => break,
-                            Ok(_) => {
-                                collected.push_str(&line);
-                                let _ = app_for_stdout.emit(
-                                    "pipeline-event",
-                                    PipelineEvent {
-                                        pipeline_id: pid_for_stdout.clone(),
-                                        run_id: rid_for_stdout.clone(),
-                                        step_id: sid_for_stdout.clone(),
-                                        step_index: step_idx,
-                                        total_steps: ts,
-                                        status: "output".to_string(),
-                                        tool_name: tool_for_stdout.clone(),
-                                        message: None,
-                                        store_stats: None,
-                                        pipeline_name: None, target: None, all_steps: None,
-                                        output: Some(line.clone()),
-                                        duration_ms: None, exit_code: None,
-                                    },
-                                );
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                }
-                collected
-            });
-
-            let stderr_handle = tokio::spawn(async move {
-                let mut collected = String::new();
-                if let Some(pipe) = stderr_pipe {
-                    use tokio::io::{AsyncBufReadExt, BufReader};
-                    let mut reader = BufReader::new(pipe);
-                    let mut line = String::new();
-                    loop {
-                        line.clear();
-                        match reader.read_line(&mut line).await {
-                            Ok(0) => break,
-                            Ok(_) => {
-                                collected.push_str(&line);
-                                let _ = app_for_stderr.emit(
-                                    "pipeline-event",
-                                    PipelineEvent {
-                                        pipeline_id: pid_for_stderr.clone(),
-                                        run_id: rid_for_stderr.clone(),
-                                        step_id: sid_for_stderr.clone(),
-                                        step_index: step_idx,
-                                        total_steps: ts,
-                                        status: "output".to_string(),
-                                        tool_name: tool_for_stderr.clone(),
-                                        message: Some("stderr".to_string()),
-                                        store_stats: None,
-                                        pipeline_name: None, target: None, all_steps: None,
-                                        output: Some(line.clone()),
-                                        duration_ms: None, exit_code: None,
-                                    },
-                                );
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                }
-                collected
-            });
-
-            let (stdout_result, stderr_result) = tokio::join!(stdout_handle, stderr_handle);
-            let iter_stdout = stdout_result.unwrap_or_default();
-            let iter_stderr = stderr_result.unwrap_or_default();
-
-            let status = tokio::select! {
-                res = child.wait() => res.map_err(|e| format!("wait failed: {e}"))?,
-                _ = async {
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                        if PIPELINE_CANCELLED.load(Ordering::SeqCst) { break; }
-                    }
-                } => {
-                    let _ = child.kill().await;
-                    let _ = app.emit("pipeline-event", PipelineEvent {
-                        pipeline_id: pipeline_id.clone(),
-                        run_id: run_id.clone(),
-                        step_id: step.id.clone(),
-                        step_index: idx,
-                        total_steps,
-                        status: "cancelled".to_string(),
-                        tool_name: step.tool_name.clone(),
-                        message: Some("Pipeline cancelled by user".to_string()),
-                        store_stats: None,
-                        pipeline_name: None,
-                        target: Some(target.to_string()),
-                        all_steps: None,
-                        output: None,
-                        duration_ms: None,
-                        exit_code: None,
-                    });
-                    return Err("Pipeline cancelled".to_string());
-                }
-            };
-
-            combined_stdout.push_str(&iter_stdout);
-            combined_stderr.push_str(&iter_stderr);
-            if status.code() != Some(0) {
-                last_exit_code = status.code();
-            }
-        }
-
-        let stdout = combined_stdout;
-        let stderr = combined_stderr;
-        let exit_code = last_exit_code;
-
-        // Save stdout to temp file and register in step_outputs
-        let output_file = tmp_dir.join(format!("step-{}-{}.txt", idx, step.tool_name));
-        let _ = std::fs::write(&output_file, &stdout);
-        step_outputs.insert(step.id.clone(), output_file.clone());
-        prev_output_file = Some(output_file);
-
-        // Parse and store if tool has output config
-        let store_stats = if let Some(mut output_config) = load_tool_output_config(&step.tool_name) {
-            if let Some(ref override_action) = step.db_action {
-                output_config.db_action = Some(override_action.clone());
-            }
-
-            tracing::info!(
-                tool = %step.tool_name,
-                format = %output_config.format,
-                db_action = ?output_config.db_action,
-                stdout_len = stdout.len(),
-                stdout_lines = stdout.lines().count(),
-                "[pipeline-store] Found output config"
-            );
-
-            let parse_input = if let Some(ref jq_expr) = output_config.transform {
-                super::output_parser::transform_with_jq(&stdout, jq_expr).await
-            } else {
-                stdout.clone()
-            };
-
-            let items = match output_config.format.as_str() {
-                "text" => {
-                    let patterns: Vec<PatternConfig> = output_config
-                        .patterns
-                        .iter()
-                        .map(|p| PatternConfig {
-                            data_type: p.data_type.clone(),
-                            regex: p.regex.clone(),
-                            fields: p.fields.clone(),
-                        })
-                        .collect();
-                    super::output_parser::parse_text_standalone(&parse_input, &patterns)
-                }
-                "json_lines" | "json" => {
-                    super::output_parser::parse_json_standalone(&parse_input, &output_config.fields, output_config.format == "json_lines")
-                }
-                _ => vec![],
-            };
-
-            tracing::info!(
-                tool = %step.tool_name,
-                parsed_count = items.len(),
-                "[pipeline-store] Parsed items"
-            );
-
-            let parsed_count = items.len();
-            let mut stored_count = 0usize;
-            let mut new_count = 0usize;
-            let mut skipped_count = 0usize;
-            let mut errors = Vec::new();
-            let tool_name = &step.tool_name;
-
-            if let Some(ref db_action) = output_config.db_action {
-                for item in &items {
-                    let mut item = item.clone();
-                    if !item.fields.contains_key("host") && !item.fields.contains_key("ip") && !item.fields.contains_key("url") {
-                        item.fields.insert("host".to_string(), target.clone());
-                    }
-                    item.fields.entry("_tool".to_string()).or_insert_with(|| tool_name.clone());
-                    if db_action == "target_add" {
-                        match store_target_from_item(pool, &item, project_path.as_deref(), parent_target_id).await {
-                            Ok(is_new) => { stored_count += 1; if is_new { new_count += 1; } }
-                            Err(e) => {
-                                tracing::warn!(tool = %step.tool_name, error = %e, "[pipeline-store] Store error");
-                                skipped_count += 1;
-                                if errors.len() < 5 { errors.push(e); }
-                            }
-                        }
-                        continue;
-                    }
-                    let result = match db_action.as_str() {
-                        "target_update_recon" => {
-                            store_recon_from_item(pool, &item, project_path.as_deref()).await
-                        }
-                        "directory_entry_add" => {
-                            store_dirent_from_item(pool, &item, tool_name, project_path.as_deref())
-                                .await
-                        }
-                        "finding_add" => {
-                            store_finding_from_item(pool, &item, tool_name, project_path.as_deref())
-                                .await
-                        }
-                        _ => {
-                            skipped_count += 1;
-                            continue;
-                        }
-                    };
-                    match result {
-                        Ok(is_new) => { stored_count += 1; if is_new { new_count += 1; } }
-                        Err(e) => {
-                            tracing::warn!(tool = %step.tool_name, error = %e, "[pipeline-store] Store error");
-                            skipped_count += 1;
-                            if errors.len() < 5 {
-                                errors.push(e);
-                            }
-                        }
-                    }
-                }
-            }
-
-            tracing::info!(
-                tool = %step.tool_name,
-                stored = stored_count,
-                new = new_count,
-                skipped = skipped_count,
-                "[pipeline-store] Store complete"
-            );
-            total_stored += stored_count;
-            Some(StoreStats {
-                parsed_count,
-                stored_count,
-                new_count,
-                skipped_count,
-                errors,
-            })
-        } else {
-            tracing::debug!(tool = %step.tool_name, "[pipeline-store] No output config found");
-            None
-        };
-
-        // After katana step: merge discovered URLs into ZAP sitemap
-        if step.step_type == "web_crawl" && exit_code == Some(0) && !stdout.is_empty() {
-            let urls: Vec<String> = stdout.lines()
-                .filter(|l| l.starts_with("http://") || l.starts_with("https://"))
-                .map(|l| l.trim().to_string())
-                .collect();
-            if !urls.is_empty() {
-                tracing::info!(count = urls.len(), "[pipeline] Merging katana URLs into sitemap");
-                merge_urls_into_sitemap(pool, &urls, project_path.as_deref()).await;
-                let _ = app.emit("sitemap-updated", serde_json::json!({ "source": "katana" }));
-            }
-        }
-
-        let duration_ms = step_start.elapsed().as_millis() as u64;
-
-        // Emit "completed" event with truncated output
-        let truncated_output = if stdout.len() > 4096 {
-            let mut s = stdout[..4096].to_string();
-            s.push_str("\n… (truncated)");
-            Some(s)
-        } else if stdout.is_empty() {
-            None
-        } else {
-            Some(stdout.clone())
-        };
-        let _ = app.emit(
-            "pipeline-event",
-            PipelineEvent {
-                pipeline_id: pipeline_id.clone(),
-                run_id: run_id.clone(),
-                step_id: step.id.clone(),
-                step_index: idx,
-                total_steps,
-                status: if exit_code == Some(0) {
-                    "completed".to_string()
-                } else {
-                    "error".to_string()
-                },
-                tool_name: step.tool_name.clone(),
-                message: Some(format!(
-                    "exit={}, lines={}, stored={}",
-                    exit_code.unwrap_or(-1),
-                    stdout.lines().count(),
-                    store_stats
-                        .as_ref()
-                        .map(|s| s.stored_count)
-                        .unwrap_or(0),
-                )),
-                store_stats: store_stats.clone(),
-                pipeline_name: None, target: None, all_steps: None,
-                output: truncated_output,
-                duration_ms: Some(duration_ms),
-                exit_code,
-            },
-        );
-
-        step_results.push(StepResult {
-            step_id: step.id.clone(),
-            tool_name: step.tool_name.clone(),
-            command: last_cmd_str,
-            exit_code,
-            stdout_lines: stdout.lines().count(),
-            stderr_preview: stderr.chars().take(500).collect(),
-            store_stats,
-            duration_ms,
-        });
-
-        // Stop on failure if exec_mode is sequential/on_success
-        if exit_code != Some(0)
-            && matches!(step.exec_mode.as_str(), "sequential" | "on_success")
-        {
-            tracing::warn!(
-                "[pipeline] Step '{}' failed (exit={}), stopping",
-                step.tool_name,
-                exit_code.unwrap_or(-1),
-            );
-            break;
-        }
-    }
-
-    // Cleanup temp dir
-    let _ = std::fs::remove_dir_all(&tmp_dir);
-
-    let total_duration_ms = start.elapsed().as_millis() as u64;
-    let completed_steps = step_results.iter().filter(|s| s.exit_code == Some(0)).count();
-    let failed_steps = step_results.iter().filter(|s| s.exit_code.is_some() && s.exit_code != Some(0)).count();
-
-    let step_summaries: Vec<serde_json::Value> = step_results.iter().map(|s| {
-        serde_json::json!({
-            "tool": s.tool_name,
-            "stored": s.store_stats.as_ref().map(|st| st.stored_count).unwrap_or(0),
-            "new": s.store_stats.as_ref().map(|st| st.new_count).unwrap_or(0),
-            "parsed": s.store_stats.as_ref().map(|st| st.parsed_count).unwrap_or(0),
-            "exit": s.exit_code,
-            "ms": s.duration_ms,
-        })
-    }).collect();
-
-    let total_new: usize = step_results.iter()
-        .filter_map(|s| s.store_stats.as_ref())
-        .map(|st| st.new_count)
-        .sum();
-
-    let resolved_target_id = if parent_target_id.is_some() {
-        parent_target_id
-    } else {
-        sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM targets WHERE value = $1 AND project_path = $2 LIMIT 1",
-        )
-        .bind(&target)
-        .bind(project_path.as_deref())
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
-    };
-
-    let _ = golish_db::repo::audit::log_operation(
-        pool, "pipeline_executed", "recon",
-        &format!("Pipeline '{}' on {}: {}/{} steps completed, {} items stored",
-            pipeline.name, target, completed_steps, total_steps, total_stored),
-        project_path.as_deref(), "pipeline",
-        resolved_target_id, None, Some(&pipeline.name),
-        if failed_steps == 0 { "completed" } else { "partial" },
-        &serde_json::json!({
-            "pipeline_id": pipeline_id,
-            "run_id": run_id,
-            "target": target,
-            "total_steps": total_steps,
-            "completed_steps": completed_steps,
-            "failed_steps": failed_steps,
-            "total_stored": total_stored,
-            "total_new": total_new,
-            "duration_ms": total_duration_ms,
-            "steps": step_summaries,
-        }),
-    ).await;
-
-    if total_stored > 0 {
-        let _ = app.emit("targets-changed", serde_json::json!({
-            "source": "pipeline",
-            "target": &target,
-            "stored": total_stored,
-            "new": total_new,
-        }));
-    }
-
-    Ok(PipelineRunResult {
-        pipeline_name: pipeline.name,
-        target,
-        steps: step_results,
-        total_stored,
-        total_duration_ms,
-    })
+    PIPELINE_CANCELLED.store(false, Ordering::SeqCst);
+    result
 }
 
 // Helper DB storage functions for pipeline executor
@@ -1366,8 +1109,742 @@ fn emit_pipeline_event(app: Option<&tauri::AppHandle>, event: &PipelineEvent) {
     }
 }
 
+/// Result of executing a single pipeline step.
+struct SingleStepResult {
+    step_result: StepResult,
+    output_path: std::path::PathBuf,
+    stored_count: usize,
+}
+
+const MAX_NESTING_DEPTH: usize = 5;
+
+/// Resolve a sub-pipeline by template ID or inline definition.
+fn resolve_sub_pipeline(step: &PipelineStep) -> Option<Pipeline> {
+    if let Some(ref inline) = step.inline_pipeline {
+        return Some(*inline.clone());
+    }
+    if let Some(ref template_id) = step.sub_pipeline {
+        let all = builtin_templates();
+        if let Some(p) = all.into_iter().find(|p| p.id == *template_id || p.name == *template_id) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Execute a sub-pipeline step by recursively calling `execute_pipeline_headless_inner`.
+#[allow(clippy::too_many_arguments)]
+async fn run_sub_pipeline_step<'a>(
+    pool: &'a sqlx::PgPool,
+    step: &'a PipelineStep,
+    step_index: usize,
+    total_steps: usize,
+    target: &'a str,
+    project_path: Option<&'a str>,
+    _parent_target_id: Option<Uuid>,
+    tmp_dir: &'a std::path::Path,
+    config_manager: &'a golish_pentest::ConfigManager,
+    pipeline_id: &'a str,
+    run_id: &'a str,
+    app: Option<&'a tauri::AppHandle>,
+    depth: usize,
+) -> SingleStepResult {
+    let step_start = std::time::Instant::now();
+
+    if depth >= MAX_NESTING_DEPTH {
+        let msg = format!("Max nesting depth ({}) exceeded", MAX_NESTING_DEPTH);
+        tracing::warn!("[pipeline] {}", msg);
+        emit_pipeline_event(app, &PipelineEvent {
+            pipeline_id: pipeline_id.to_string(), run_id: run_id.to_string(),
+            step_id: step.id.clone(), step_index, total_steps,
+            status: "error".to_string(), tool_name: step.tool_name.clone(),
+            message: Some(msg.clone()), store_stats: None,
+            pipeline_name: None, target: None, all_steps: None,
+            output: None, duration_ms: Some(0), exit_code: Some(-3),
+        });
+        return SingleStepResult {
+            step_result: StepResult {
+                step_id: step.id.clone(), tool_name: step.tool_name.clone(),
+                command: String::new(), exit_code: Some(-3),
+                stdout_lines: 0, stderr_preview: msg, store_stats: None, duration_ms: 0,
+            },
+            output_path: tmp_dir.join(format!("step-{}-{}.txt", step_index, step.tool_name)),
+            stored_count: 0,
+        };
+    }
+
+    let sub = match resolve_sub_pipeline(step) {
+        Some(p) => p,
+        None => {
+            let msg = format!("Sub-pipeline '{}' not found", step.sub_pipeline.as_deref().unwrap_or("?"));
+            emit_pipeline_event(app, &PipelineEvent {
+                pipeline_id: pipeline_id.to_string(), run_id: run_id.to_string(),
+                step_id: step.id.clone(), step_index, total_steps,
+                status: "error".to_string(), tool_name: step.tool_name.clone(),
+                message: Some(msg.clone()), store_stats: None,
+                pipeline_name: None, target: None, all_steps: None,
+                output: None, duration_ms: Some(0), exit_code: Some(-4),
+            });
+            return SingleStepResult {
+                step_result: StepResult {
+                    step_id: step.id.clone(), tool_name: step.tool_name.clone(),
+                    command: String::new(), exit_code: Some(-4),
+                    stdout_lines: 0, stderr_preview: msg, store_stats: None, duration_ms: 0,
+                },
+                output_path: tmp_dir.join(format!("step-{}-{}.txt", step_index, step.tool_name)),
+                stored_count: 0,
+            };
+        }
+    };
+
+    tracing::info!(
+        "[pipeline] Sub-pipeline '{}' at depth {} for target '{}'",
+        sub.name, depth + 1, target
+    );
+
+    let sub_result = execute_pipeline_headless_inner(
+        pool, &sub, target, project_path, config_manager, app, depth + 1,
+    ).await;
+
+    let duration_ms = step_start.elapsed().as_millis() as u64;
+    let output_file = tmp_dir.join(format!("step-{}-{}.txt", step_index, step.tool_name));
+
+    match sub_result {
+        Ok(result) => {
+            let summary: String = result.steps.iter()
+                .map(|s| format!("{}: exit={}", s.tool_name, s.exit_code.unwrap_or(-1)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = std::fs::write(&output_file, &summary);
+
+            let all_ok = result.steps.iter().all(|s| s.exit_code == Some(0) || s.exit_code.is_none());
+            emit_pipeline_event(app, &PipelineEvent {
+                pipeline_id: pipeline_id.to_string(), run_id: run_id.to_string(),
+                step_id: step.id.clone(), step_index, total_steps,
+                status: if all_ok { "completed" } else { "error" }.to_string(),
+                tool_name: step.tool_name.clone(),
+                message: Some(format!("Sub-pipeline '{}': {}", sub.name, summary)),
+                store_stats: None, pipeline_name: None, target: None, all_steps: None,
+                output: Some(summary.clone()), duration_ms: Some(duration_ms),
+                exit_code: if all_ok { Some(0) } else { Some(1) },
+            });
+
+            SingleStepResult {
+                step_result: StepResult {
+                    step_id: step.id.clone(), tool_name: step.tool_name.clone(),
+                    command: format!("[sub_pipeline:{}]", sub.name),
+                    exit_code: if all_ok { Some(0) } else { Some(1) },
+                    stdout_lines: summary.lines().count(),
+                    stderr_preview: String::new(),
+                    store_stats: None,
+                    duration_ms,
+                },
+                output_path: output_file,
+                stored_count: result.total_stored,
+            }
+        }
+        Err(e) => {
+            let msg = format!("Sub-pipeline error: {}", e);
+            let _ = std::fs::write(&output_file, &msg);
+            emit_pipeline_event(app, &PipelineEvent {
+                pipeline_id: pipeline_id.to_string(), run_id: run_id.to_string(),
+                step_id: step.id.clone(), step_index, total_steps,
+                status: "error".to_string(), tool_name: step.tool_name.clone(),
+                message: Some(msg.clone()), store_stats: None,
+                pipeline_name: None, target: None, all_steps: None,
+                output: None, duration_ms: Some(duration_ms), exit_code: Some(-5),
+            });
+            SingleStepResult {
+                step_result: StepResult {
+                    step_id: step.id.clone(), tool_name: step.tool_name.clone(),
+                    command: format!("[sub_pipeline:{}]", step.sub_pipeline.as_deref().unwrap_or("?")),
+                    exit_code: Some(-5), stdout_lines: 0,
+                    stderr_preview: msg, store_stats: None, duration_ms,
+                },
+                output_path: output_file,
+                stored_count: 0,
+            }
+        }
+    }
+}
+
+/// Execute a foreach step: iterate over output lines from a source step, running either
+/// a sub-pipeline or a command for each line as the target.
+#[allow(clippy::too_many_arguments)]
+async fn run_foreach_step<'a>(
+    pool: &'a sqlx::PgPool,
+    step: &'a PipelineStep,
+    step_index: usize,
+    total_steps: usize,
+    _target: &'a str,
+    project_path: Option<&'a str>,
+    _parent_target_id: Option<Uuid>,
+    tmp_dir: &'a std::path::Path,
+    config_manager: &'a golish_pentest::ConfigManager,
+    pipeline_id: &'a str,
+    run_id: &'a str,
+    app: Option<&'a tauri::AppHandle>,
+    step_outputs: &'a std::collections::HashMap<String, std::path::PathBuf>,
+    depth: usize,
+) -> SingleStepResult {
+    let step_start = std::time::Instant::now();
+    let output_file = tmp_dir.join(format!("step-{}-{}.txt", step_index, step.tool_name));
+    let max_par = step.max_parallel.unwrap_or(5);
+
+    let source_id = match step.foreach_source.as_deref() {
+        Some(id) => id,
+        None => {
+            let msg = "foreach step requires foreach_source".to_string();
+            let _ = std::fs::write(&output_file, &msg);
+            return SingleStepResult {
+                step_result: StepResult {
+                    step_id: step.id.clone(), tool_name: step.tool_name.clone(),
+                    command: String::new(), exit_code: Some(-6),
+                    stdout_lines: 0, stderr_preview: msg, store_stats: None, duration_ms: 0,
+                },
+                output_path: output_file, stored_count: 0,
+            };
+        }
+    };
+
+    let source_path = match step_outputs.get(source_id) {
+        Some(p) => p.clone(),
+        None => {
+            let msg = format!("foreach source step '{}' has no output", source_id);
+            let _ = std::fs::write(&output_file, &msg);
+            return SingleStepResult {
+                step_result: StepResult {
+                    step_id: step.id.clone(), tool_name: step.tool_name.clone(),
+                    command: String::new(), exit_code: Some(-6),
+                    stdout_lines: 0, stderr_preview: msg, store_stats: None, duration_ms: 0,
+                },
+                output_path: output_file, stored_count: 0,
+            };
+        }
+    };
+
+    let lines: Vec<String> = std::fs::read_to_string(&source_path)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    if lines.is_empty() {
+        let _ = std::fs::write(&output_file, "No iteration targets");
+        let duration_ms = step_start.elapsed().as_millis() as u64;
+        emit_pipeline_event(app, &PipelineEvent {
+            pipeline_id: pipeline_id.to_string(), run_id: run_id.to_string(),
+            step_id: step.id.clone(), step_index, total_steps,
+            status: "completed".to_string(), tool_name: step.tool_name.clone(),
+            message: Some("foreach: 0 iterations".to_string()), store_stats: None,
+            pipeline_name: None, target: None, all_steps: None,
+            output: None, duration_ms: Some(duration_ms), exit_code: Some(0),
+        });
+        return SingleStepResult {
+            step_result: StepResult {
+                step_id: step.id.clone(), tool_name: step.tool_name.clone(),
+                command: format!("[foreach:{}]", source_id), exit_code: Some(0),
+                stdout_lines: 0, stderr_preview: String::new(), store_stats: None, duration_ms,
+            },
+            output_path: output_file, stored_count: 0,
+        };
+    }
+
+    tracing::info!(
+        "[pipeline] foreach '{}': {} targets from '{}', max_parallel={}",
+        step.tool_name, lines.len(), source_id, max_par
+    );
+
+    let mut total_stored = 0usize;
+    let mut total_lines = 0usize;
+    let mut any_failed = false;
+    let mut combined_output = String::new();
+
+    // Process in chunks of max_parallel
+    for chunk in lines.chunks(max_par) {
+        let chunk_futures = chunk.iter().enumerate().map(|(ci, iter_target)| {
+            let sub_tmp = tmp_dir.join(format!("foreach-{}-{}", step.id, ci));
+            let _ = std::fs::create_dir_all(&sub_tmp);
+
+            async move {
+                if let Some(sub_pipeline) = resolve_sub_pipeline(step) {
+                    execute_pipeline_headless_inner(
+                        pool, &sub_pipeline, iter_target, project_path,
+                        config_manager, app, depth + 1,
+                    ).await
+                } else if !step.command_template.is_empty() {
+                    let cmd = resolve_tool_command(&step.command_template, config_manager).await;
+                    let args_str = step.args.join(" ");
+                    let mut cmd_str = if args_str.is_empty() { cmd } else { format!("{} {}", cmd, args_str) };
+                    cmd_str = cmd_str.replace("{target}", iter_target);
+
+                    let output = tokio::process::Command::new("sh")
+                        .arg("-c").arg(&cmd_str)
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .output().await;
+
+                    match output {
+                        Ok(out) => {
+                            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+                            Ok(PipelineRunResult {
+                                pipeline_name: step.tool_name.clone(),
+                                target: iter_target.clone(),
+                                steps: vec![StepResult {
+                                    step_id: step.id.clone(),
+                                    tool_name: step.tool_name.clone(),
+                                    command: cmd_str,
+                                    exit_code: out.status.code(),
+                                    stdout_lines: stdout.lines().count(),
+                                    stderr_preview: String::from_utf8_lossy(&out.stderr).chars().take(200).collect(),
+                                    store_stats: None,
+                                    duration_ms: 0,
+                                }],
+                                total_stored: 0,
+                                total_duration_ms: 0,
+                            })
+                        }
+                        Err(e) => Err(anyhow::anyhow!("foreach cmd error: {}", e)),
+                    }
+                } else {
+                    Err(anyhow::anyhow!("foreach step has neither sub_pipeline nor command_template"))
+                }
+            }
+        });
+
+        let chunk_results = futures::future::join_all(chunk_futures).await;
+        for res in chunk_results {
+            match res {
+                Ok(r) => {
+                    total_stored += r.total_stored;
+                    for s in &r.steps {
+                        total_lines += s.stdout_lines;
+                        if s.exit_code.is_some() && s.exit_code != Some(0) {
+                            any_failed = true;
+                        }
+                    }
+                    combined_output.push_str(&format!("{}: {} stored\n", r.target, r.total_stored));
+                }
+                Err(e) => {
+                    any_failed = true;
+                    combined_output.push_str(&format!("ERROR: {}\n", e));
+                }
+            }
+        }
+    }
+
+    let _ = std::fs::write(&output_file, &combined_output);
+    let duration_ms = step_start.elapsed().as_millis() as u64;
+
+    emit_pipeline_event(app, &PipelineEvent {
+        pipeline_id: pipeline_id.to_string(), run_id: run_id.to_string(),
+        step_id: step.id.clone(), step_index, total_steps,
+        status: if any_failed { "error" } else { "completed" }.to_string(),
+        tool_name: step.tool_name.clone(),
+        message: Some(format!("foreach: {} iterations, {} stored", lines.len(), total_stored)),
+        store_stats: None, pipeline_name: None, target: None, all_steps: None,
+        output: if combined_output.len() > 4096 { Some(combined_output[..4096].to_string()) } else { Some(combined_output) },
+        duration_ms: Some(duration_ms),
+        exit_code: if any_failed { Some(1) } else { Some(0) },
+    });
+
+    SingleStepResult {
+        step_result: StepResult {
+            step_id: step.id.clone(), tool_name: step.tool_name.clone(),
+            command: format!("[foreach:{}:{}]", source_id, lines.len()),
+            exit_code: if any_failed { Some(1) } else { Some(0) },
+            stdout_lines: total_lines,
+            stderr_preview: String::new(), store_stats: None, duration_ms,
+        },
+        output_path: output_file,
+        stored_count: total_stored,
+    }
+}
+
+/// Execute a single pipeline step: resolve command, run process(es), parse output, store to DB.
+/// This is the shared core used by both the headless and Tauri executors.
+
+async fn run_single_step<'a>(
+    pool: &'a sqlx::PgPool,
+    step: &'a PipelineStep,
+    step_index: usize,
+    total_steps: usize,
+    target: &'a str,
+    project_path: Option<&'a str>,
+    parent_target_id: Option<Uuid>,
+    input_file: Option<std::path::PathBuf>,
+    tmp_dir: &'a std::path::Path,
+    config_manager: &'a golish_pentest::ConfigManager,
+    pipeline_id: &'a str,
+    run_id: &'a str,
+    app: Option<&'a tauri::AppHandle>,
+    step_outputs: &'a std::collections::HashMap<String, std::path::PathBuf>,
+    depth: usize,
+) -> SingleStepResult {
+    let step_start = std::time::Instant::now();
+
+    emit_pipeline_event(app, &PipelineEvent {
+        pipeline_id: pipeline_id.to_string(),
+        run_id: run_id.to_string(),
+        step_id: step.id.clone(),
+        step_index,
+        total_steps,
+        status: "running".to_string(),
+        tool_name: step.tool_name.clone(),
+        message: None,
+        store_stats: None,
+        pipeline_name: None, target: None, all_steps: None,
+        output: None, duration_ms: None, exit_code: None,
+    });
+
+    // ── Sub-pipeline execution ──
+    if step.step_type == "sub_pipeline" {
+        return run_sub_pipeline_step(
+            pool, step, step_index, total_steps, target, project_path,
+            parent_target_id, tmp_dir, config_manager, pipeline_id, run_id, app, depth,
+        ).await;
+    }
+
+    // ── Foreach iteration ──
+    if step.step_type == "foreach" {
+        return run_foreach_step(
+            pool, step, step_index, total_steps, target, project_path,
+            parent_target_id, tmp_dir, config_manager, pipeline_id, run_id, app,
+            step_outputs, depth,
+        ).await;
+    }
+
+    let iter_targets: Vec<String> = if step.iterate_over.as_deref() == Some("ports") {
+        resolve_port_targets(pool, target, project_path).await
+    } else {
+        vec![target.to_string()]
+    };
+
+    let resolved_cmd = resolve_tool_command(&step.command_template, config_manager).await;
+    let args_str = step.args.join(" ");
+    let mut combined_stdout = String::new();
+    let mut combined_stderr = String::new();
+    let mut last_exit_code: Option<i32> = Some(0);
+    let mut last_cmd_str = String::new();
+
+    for iter_target in &iter_targets {
+        let mut cmd_str = if args_str.is_empty() {
+            resolved_cmd.clone()
+        } else {
+            format!("{} {}", resolved_cmd, args_str)
+        };
+        cmd_str = cmd_str.replace("{target}", iter_target);
+
+        if let Some(ref input) = input_file {
+            cmd_str = cmd_str.replace("{prev_output}", &input.to_string_lossy());
+        }
+        last_cmd_str = cmd_str.clone();
+
+        tracing::info!(
+            "[pipeline] Step {}/{}: {} → {}{}",
+            step_index + 1, total_steps, step.tool_name, cmd_str,
+            if iter_targets.len() > 1 { format!(" (port iter {}/{})", iter_targets.iter().position(|t| t == iter_target).unwrap_or(0) + 1, iter_targets.len()) } else { String::new() }
+        );
+
+        let proc_result = if let Some(timeout_s) = step.timeout_secs {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(timeout_s),
+                tokio::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&cmd_str)
+                    .stdin(if let Some(ref pf) = input_file {
+                        if step.exec_mode == "pipe" {
+                            match std::fs::File::open(pf) {
+                                Ok(f) => std::process::Stdio::from(f),
+                                Err(_) => std::process::Stdio::null(),
+                            }
+                        } else {
+                            std::process::Stdio::null()
+                        }
+                    } else {
+                        std::process::Stdio::null()
+                    })
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .output(),
+            )
+            .await
+        } else {
+            Ok(
+                tokio::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&cmd_str)
+                    .stdin(if let Some(ref pf) = input_file {
+                        if step.exec_mode == "pipe" {
+                            match std::fs::File::open(pf) {
+                                Ok(f) => std::process::Stdio::from(f),
+                                Err(_) => std::process::Stdio::null(),
+                            }
+                        } else {
+                            std::process::Stdio::null()
+                        }
+                    } else {
+                        std::process::Stdio::null()
+                    })
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .output()
+                    .await,
+            )
+        };
+
+        match proc_result {
+            Ok(Ok(output)) => {
+                combined_stdout.push_str(&String::from_utf8_lossy(&output.stdout));
+                combined_stderr.push_str(&String::from_utf8_lossy(&output.stderr));
+                if output.status.code() != Some(0) {
+                    last_exit_code = output.status.code();
+                }
+            }
+            Ok(Err(e)) => {
+                combined_stderr.push_str(&format!("Process error: {e}\n"));
+                last_exit_code = Some(-1);
+            }
+            Err(_) => {
+                combined_stderr.push_str(&format!("Step timed out after {}s\n", step.timeout_secs.unwrap_or(0)));
+                last_exit_code = Some(-2);
+            }
+        }
+    }
+
+    let stdout = combined_stdout;
+    let stderr = combined_stderr;
+    let exit_code = last_exit_code;
+
+    let output_file = tmp_dir.join(format!("step-{}-{}.txt", step_index, step.tool_name));
+    let _ = std::fs::write(&output_file, &stdout);
+
+    // Parse output and store to DB
+    let mut step_stored = 0usize;
+    let store_stats = if let Some(mut output_config) = load_tool_output_config(&step.tool_name) {
+        if let Some(ref override_action) = step.db_action {
+            output_config.db_action = Some(override_action.clone());
+        }
+        tracing::info!(
+            tool = %step.tool_name,
+            format = %output_config.format,
+            db_action = ?output_config.db_action,
+            stdout_len = stdout.len(),
+            "[pipeline-store] Found output config"
+        );
+        let parse_input = if let Some(ref jq_expr) = output_config.transform {
+            super::output_parser::transform_with_jq(&stdout, jq_expr).await
+        } else {
+            stdout.clone()
+        };
+
+        let items = match output_config.format.as_str() {
+            "text" => {
+                let patterns: Vec<PatternConfig> = output_config
+                    .patterns
+                    .iter()
+                    .map(|p| PatternConfig {
+                        data_type: p.data_type.clone(),
+                        regex: p.regex.clone(),
+                        fields: p.fields.clone(),
+                    })
+                    .collect();
+                super::output_parser::parse_text_standalone(&parse_input, &patterns)
+            }
+            "json_lines" | "json" => {
+                super::output_parser::parse_json_standalone(
+                    &parse_input,
+                    &output_config.fields,
+                    output_config.format == "json_lines",
+                )
+            }
+            _ => vec![],
+        };
+
+        let parsed_count = items.len();
+        let mut stored_count = 0usize;
+        let mut new_count = 0usize;
+        let mut skipped_count = 0usize;
+        let mut errors = Vec::new();
+        let tool_name = &step.tool_name;
+
+        if let Some(ref db_action) = output_config.db_action {
+            for item in &items {
+                let mut item = item.clone();
+                if !item.fields.contains_key("host")
+                    && !item.fields.contains_key("ip")
+                    && !item.fields.contains_key("url")
+                {
+                    item.fields.insert("host".to_string(), target.to_string());
+                }
+                item.fields
+                    .entry("_tool".to_string())
+                    .or_insert_with(|| tool_name.clone());
+                if db_action == "target_add" {
+                    match store_target_from_item(pool, &item, project_path, parent_target_id).await
+                    {
+                        Ok(is_new) => {
+                            stored_count += 1;
+                            if is_new {
+                                new_count += 1;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(tool = %step.tool_name, error = %e, "[pipeline-store] Store error");
+                            skipped_count += 1;
+                            if errors.len() < 5 {
+                                errors.push(e);
+                            }
+                        }
+                    }
+                    continue;
+                }
+                let result = match db_action.as_str() {
+                    "target_update_recon" => {
+                        store_recon_from_item(pool, &item, project_path).await
+                    }
+                    "directory_entry_add" => {
+                        store_dirent_from_item(pool, &item, tool_name, project_path).await
+                    }
+                    "finding_add" => {
+                        store_finding_from_item(pool, &item, tool_name, project_path).await
+                    }
+                    _ => {
+                        skipped_count += 1;
+                        continue;
+                    }
+                };
+                match result {
+                    Ok(is_new) => {
+                        stored_count += 1;
+                        if is_new {
+                            new_count += 1;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(tool = %step.tool_name, error = %e, "[pipeline-store] Store error");
+                        skipped_count += 1;
+                        if errors.len() < 5 {
+                            errors.push(e);
+                        }
+                    }
+                }
+            }
+        }
+
+        tracing::info!(
+            tool = %step.tool_name,
+            stored = stored_count,
+            new = new_count,
+            skipped = skipped_count,
+            "[pipeline-store] Store complete"
+        );
+        step_stored = stored_count;
+        Some(StoreStats {
+            parsed_count,
+            stored_count,
+            new_count,
+            skipped_count,
+            errors,
+        })
+    } else {
+        tracing::debug!(tool = %step.tool_name, "[pipeline-store] No output config found");
+        None
+    };
+
+    // Post-step actions: merge crawler URLs into sitemap
+    if step.step_type == "web_crawl" && exit_code == Some(0) && !stdout.is_empty() {
+        let urls: Vec<String> = stdout
+            .lines()
+            .filter(|l| l.starts_with("http://") || l.starts_with("https://"))
+            .map(|l| l.trim().to_string())
+            .collect();
+        if !urls.is_empty() {
+            tracing::info!(count = urls.len(), "[pipeline] Merging katana URLs into sitemap");
+            merge_urls_into_sitemap(pool, &urls, project_path).await;
+            emit_pipeline_event(app, &PipelineEvent {
+                pipeline_id: pipeline_id.to_string(),
+                run_id: run_id.to_string(),
+                step_id: "sitemap_merge".to_string(),
+                step_index,
+                total_steps,
+                status: "info".to_string(),
+                tool_name: "katana".to_string(),
+                message: Some(format!("Merged {} URLs into sitemap", urls.len())),
+                store_stats: None,
+                pipeline_name: None,
+                target: None,
+                all_steps: None,
+                output: None,
+                duration_ms: None,
+                exit_code: None,
+            });
+        }
+    }
+
+    let duration_ms = step_start.elapsed().as_millis() as u64;
+
+    let truncated_output = if stdout.len() > 4096 {
+        let mut s = stdout[..4096].to_string();
+        s.push_str("\n… (truncated)");
+        Some(s)
+    } else if stdout.is_empty() {
+        None
+    } else {
+        Some(stdout.clone())
+    };
+    emit_pipeline_event(app, &PipelineEvent {
+        pipeline_id: pipeline_id.to_string(),
+        run_id: run_id.to_string(),
+        step_id: step.id.clone(),
+        step_index,
+        total_steps,
+        status: if exit_code == Some(0) {
+            "completed".to_string()
+        } else {
+            "error".to_string()
+        },
+        tool_name: step.tool_name.clone(),
+        message: Some(format!(
+            "exit={}, lines={}, stored={}",
+            exit_code.unwrap_or(-1),
+            stdout.lines().count(),
+            store_stats
+                .as_ref()
+                .map(|s| s.stored_count)
+                .unwrap_or(0),
+        )),
+        store_stats: store_stats.clone(),
+        pipeline_name: None,
+        target: None,
+        all_steps: None,
+        output: truncated_output,
+        duration_ms: Some(duration_ms),
+        exit_code,
+    });
+
+    SingleStepResult {
+        step_result: StepResult {
+            step_id: step.id.clone(),
+            tool_name: step.tool_name.clone(),
+            command: last_cmd_str,
+            exit_code,
+            stdout_lines: stdout.lines().count(),
+            stderr_preview: stderr.chars().take(500).collect(),
+            store_stats,
+            duration_ms,
+        },
+        output_path: tmp_dir.join(format!("step-{}-{}.txt", step_index, step.tool_name)),
+        stored_count: step_stored,
+    }
+}
+
 /// Pipeline executor for AI tool usage. Optionally emits `pipeline-event` to
 /// the frontend when an `AppHandle` is provided, enabling real-time step progress.
+///
+/// Uses DAG-based parallel execution: steps are grouped into layers via topological
+/// sort of `pipeline.connections`. Steps within the same layer run concurrently.
 pub async fn execute_pipeline_headless(
     pool: &sqlx::PgPool,
     pipeline: &Pipeline,
@@ -1375,6 +1852,18 @@ pub async fn execute_pipeline_headless(
     project_path: Option<&str>,
     config_manager: &golish_pentest::ConfigManager,
     app: Option<&tauri::AppHandle>,
+) -> anyhow::Result<PipelineRunResult> {
+    execute_pipeline_headless_inner(pool, pipeline, target, project_path, config_manager, app, 0).await
+}
+
+async fn execute_pipeline_headless_inner(
+    pool: &sqlx::PgPool,
+    pipeline: &Pipeline,
+    target: &str,
+    project_path: Option<&str>,
+    config_manager: &golish_pentest::ConfigManager,
+    app: Option<&tauri::AppHandle>,
+    depth: usize,
 ) -> anyhow::Result<PipelineRunResult> {
     let total_steps = pipeline.steps.len();
     let pipeline_id = pipeline.id.clone();
@@ -1397,11 +1886,26 @@ pub async fn execute_pipeline_headless(
     .ok()
     .flatten();
 
-    let mut step_outputs: std::collections::HashMap<String, std::path::PathBuf> = std::collections::HashMap::new();
-    let mut prev_output_file: Option<std::path::PathBuf> = None;
+    let mut step_outputs: std::collections::HashMap<String, std::path::PathBuf> =
+        std::collections::HashMap::new();
 
-    // Emit "started" event with full step manifest so the frontend can
-    // build the progress block immediately.
+    // Build step-id → original-index map for correct event numbering
+    let step_index_map: std::collections::HashMap<&str, usize> = pipeline
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.id.as_str(), i))
+        .collect();
+
+    let layers = topo_layers(&pipeline.steps, &pipeline.connections);
+    tracing::info!(
+        "[pipeline] DAG: {} steps in {} layers, connections={}",
+        total_steps,
+        layers.len(),
+        pipeline.connections.len()
+    );
+
+    // Emit "started" event with full step manifest
     emit_pipeline_event(app, &PipelineEvent {
         pipeline_id: pipeline_id.clone(),
         run_id: run_id.clone(),
@@ -1415,23 +1919,123 @@ pub async fn execute_pipeline_headless(
         pipeline_name: Some(pipeline.name.clone()),
         target: Some(target.to_string()),
         all_steps: Some(
-            pipeline.steps.iter().map(|s| PipelineStepInfo {
-                id: s.id.clone(),
-                tool_name: s.tool_name.clone(),
-                command_template: s.command_template.clone(),
-            }).collect(),
+            pipeline
+                .steps
+                .iter()
+                .map(|s| PipelineStepInfo {
+                    id: s.id.clone(),
+                    tool_name: s.tool_name.clone(),
+                    command_template: s.command_template.clone(),
+                })
+                .collect(),
         ),
-        output: None, duration_ms: None, exit_code: None,
+        output: None,
+        duration_ms: None,
+        exit_code: None,
     });
 
-    for (idx, step) in pipeline.steps.iter().enumerate() {
-        // Skip step if target type doesn't match
-        if let Some(ref req) = step.requires {
-            if req != target_type {
-                tracing::info!(
-                    "[pipeline-headless] Skipping '{}': requires={}, target_type={}",
-                    step.tool_name, req, target_type
-                );
+    let mut had_abort = false;
+
+    for (layer_idx, layer) in layers.iter().enumerate() {
+        if had_abort {
+            break;
+        }
+
+        // Check cancel flag between layers
+        if PIPELINE_CANCELLED.load(Ordering::SeqCst) {
+            tracing::info!("[pipeline] Cancelled by user before layer {}", layer_idx + 1);
+            emit_pipeline_event(app, &PipelineEvent {
+                pipeline_id: pipeline_id.clone(),
+                run_id: run_id.clone(),
+                step_id: String::new(),
+                step_index: 0,
+                total_steps,
+                status: "cancelled".to_string(),
+                tool_name: String::new(),
+                message: Some("Pipeline cancelled by user".to_string()),
+                store_stats: None,
+                pipeline_name: None,
+                target: Some(target.to_string()),
+                all_steps: None,
+                output: None,
+                duration_ms: None,
+                exit_code: None,
+            });
+            break;
+        }
+
+        // Separate skipped steps from runnable steps
+        let mut runnable: Vec<(&PipelineStep, usize, Option<std::path::PathBuf>)> = Vec::new();
+
+        for &step in layer {
+            let idx = step_index_map.get(step.id.as_str()).copied().unwrap_or(0);
+
+            if let Some(ref req) = step.requires {
+                if req != target_type {
+                    tracing::info!(
+                        "[pipeline] Skipping '{}': requires={}, target_type={}",
+                        step.tool_name, req, target_type
+                    );
+                    emit_pipeline_event(app, &PipelineEvent {
+                        pipeline_id: pipeline_id.clone(),
+                        run_id: run_id.clone(),
+                        step_id: step.id.clone(),
+                        step_index: idx,
+                        total_steps,
+                        status: "skipped".to_string(),
+                        tool_name: step.tool_name.clone(),
+                        message: Some(format!("Skipped: requires {} target", req)),
+                        store_stats: None,
+                        pipeline_name: None,
+                        target: None,
+                        all_steps: None,
+                        output: None,
+                        duration_ms: None,
+                        exit_code: None,
+                    });
+                    step_results.push(StepResult {
+                        step_id: step.id.clone(),
+                        tool_name: step.tool_name.clone(),
+                        command: String::new(),
+                        exit_code: None,
+                        stdout_lines: 0,
+                        stderr_preview: format!("Skipped: requires {} target", req),
+                        store_stats: None,
+                        duration_ms: 0,
+                    });
+                    continue;
+                }
+            }
+
+            // Check conditional connections: all conditions on incoming edges must pass
+            let incoming_conds: Vec<(&str, &str)> = pipeline.connections.iter()
+                .filter(|c| c.to_step == step.id && c.condition.is_some())
+                .map(|c| (c.from_step.as_str(), c.condition.as_deref().unwrap()))
+                .collect();
+
+            let mut cond_failed = false;
+            for (from_id, cond_expr) in &incoming_conds {
+                let upstream = step_results.iter().find(|r| r.step_id == *from_id);
+                let upstream_output = step_outputs.get(*from_id);
+                if let (Some(res), Some(out)) = (upstream, upstream_output) {
+                    if !evaluate_condition(cond_expr, res, out) {
+                        tracing::info!(
+                            "[pipeline] Skipping '{}': condition '{}' on edge from '{}' not met",
+                            step.tool_name, cond_expr, from_id
+                        );
+                        cond_failed = true;
+                        break;
+                    }
+                } else {
+                    tracing::warn!(
+                        "[pipeline] Skipping '{}': upstream '{}' has no result for condition eval",
+                        step.tool_name, from_id
+                    );
+                    cond_failed = true;
+                    break;
+                }
+            }
+            if cond_failed {
                 emit_pipeline_event(app, &PipelineEvent {
                     pipeline_id: pipeline_id.clone(),
                     run_id: run_id.clone(),
@@ -1440,7 +2044,7 @@ pub async fn execute_pipeline_headless(
                     total_steps,
                     status: "skipped".to_string(),
                     tool_name: step.tool_name.clone(),
-                    message: Some(format!("Skipped: requires {} target", req)),
+                    message: Some("Skipped: condition not met".to_string()),
                     store_stats: None,
                     pipeline_name: None, target: None, all_steps: None,
                     output: None, duration_ms: None, exit_code: None,
@@ -1451,284 +2055,96 @@ pub async fn execute_pipeline_headless(
                     command: String::new(),
                     exit_code: None,
                     stdout_lines: 0,
-                    stderr_preview: format!("Skipped: requires {} target", req),
+                    stderr_preview: "Skipped: condition not met".to_string(),
                     store_stats: None,
                     duration_ms: 0,
                 });
                 continue;
             }
+
+            let input_file = resolve_step_input(
+                step,
+                &step_outputs,
+                &pipeline.connections,
+                &tmp_dir,
+                target,
+            );
+            runnable.push((step, idx, input_file));
         }
 
-        let step_start = std::time::Instant::now();
+        if runnable.is_empty() {
+            continue;
+        }
 
-        emit_pipeline_event(app, &PipelineEvent {
-            pipeline_id: pipeline_id.clone(),
-            run_id: run_id.clone(),
-            step_id: step.id.clone(),
-            step_index: idx,
-            total_steps,
-            status: "running".to_string(),
-            tool_name: step.tool_name.clone(),
-            message: None,
-            store_stats: None,
-            pipeline_name: None, target: None, all_steps: None,
-            output: None, duration_ms: None, exit_code: None,
+        tracing::info!(
+            "[pipeline] Layer {}/{}: running {} steps concurrently: [{}]",
+            layer_idx + 1,
+            layers.len(),
+            runnable.len(),
+            runnable.iter().map(|(s, _, _)| s.tool_name.as_str()).collect::<Vec<_>>().join(", ")
+        );
+
+        // Execute all runnable steps in this layer concurrently
+        let layer_futures = runnable.iter().map(|(step, idx, input_file)| {
+            run_single_step(
+                pool,
+                step,
+                *idx,
+                total_steps,
+                target,
+                project_path,
+                parent_target_id,
+                input_file.clone(),
+                &tmp_dir,
+                config_manager,
+                &pipeline_id,
+                &run_id,
+                app,
+                &step_outputs,
+                depth,
+            )
         });
 
-        // Resolve the input file
-        let mut input_file = step.input_from.as_ref()
-            .and_then(|id| step_outputs.get(id).cloned())
-            .or_else(|| prev_output_file.clone());
+        let layer_results = futures::future::join_all(layer_futures).await;
 
-        let full_cmd_preview = format!("{} {}", step.command_template, step.args.join(" "));
-        if input_file.is_none() && full_cmd_preview.contains("{prev_output}") {
-            let seed = tmp_dir.join(format!("seed-{}.txt", step.id));
-            let _ = std::fs::write(&seed, target);
-            input_file = Some(seed);
-        }
-
-        let iter_targets: Vec<String> = if step.iterate_over.as_deref() == Some("ports") {
-            resolve_port_targets(pool, target, project_path).await
-        } else {
-            vec![target.to_string()]
-        };
-
-        let resolved_cmd = resolve_tool_command(&step.command_template, config_manager).await;
-        let args_str = step.args.join(" ");
-        let mut combined_stdout = String::new();
-        let mut combined_stderr = String::new();
-        let mut last_exit_code: Option<i32> = Some(0);
-        let mut last_cmd_str = String::new();
-
-        for iter_target in &iter_targets {
-            let mut cmd_str = if args_str.is_empty() {
-                resolved_cmd.clone()
-            } else {
-                format!("{} {}", resolved_cmd, args_str)
-            };
-            cmd_str = cmd_str.replace("{target}", iter_target);
-
-            if let Some(ref input) = input_file {
-                cmd_str = cmd_str.replace("{prev_output}", &input.to_string_lossy());
-            }
-            last_cmd_str = cmd_str.clone();
-
-            tracing::info!(
-                "[pipeline-headless] Step {}/{}: {} → {}{}",
-                idx + 1, total_steps, step.tool_name, cmd_str,
-                if iter_targets.len() > 1 { format!(" (port iter {}/{})", iter_targets.iter().position(|t| t == iter_target).unwrap_or(0) + 1, iter_targets.len()) } else { String::new() }
+        // Merge results from this layer
+        for result in layer_results {
+            step_outputs.insert(
+                result.step_result.step_id.clone(),
+                result.output_path,
             );
+            total_stored += result.stored_count;
 
-            let output = tokio::process::Command::new("sh")
-                .arg("-c")
-                .arg(&cmd_str)
-                .stdin(if let Some(ref pf) = input_file {
-                    if step.exec_mode == "pipe" {
-                        std::process::Stdio::from(std::fs::File::open(pf)?)
-                    } else {
-                        std::process::Stdio::null()
-                    }
-                } else {
-                    std::process::Stdio::null()
-                })
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output()
-                .await?;
+            let failed = result.step_result.exit_code.is_some()
+                && result.step_result.exit_code != Some(0);
 
-            combined_stdout.push_str(&String::from_utf8_lossy(&output.stdout));
-            combined_stderr.push_str(&String::from_utf8_lossy(&output.stderr));
-            if output.status.code() != Some(0) {
-                last_exit_code = output.status.code();
+            // Find the step's on_failure policy
+            let on_failure = pipeline
+                .steps
+                .iter()
+                .find(|s| s.id == result.step_result.step_id)
+                .map(|s| s.on_failure.as_str())
+                .unwrap_or("abort");
+
+            step_results.push(result.step_result);
+
+            if failed && on_failure == "abort" {
+                had_abort = true;
             }
-        }
-
-        let stdout = combined_stdout;
-        let stderr = combined_stderr;
-        let exit_code = last_exit_code;
-
-        let output_file = tmp_dir.join(format!("step-{}-{}.txt", idx, step.tool_name));
-        let _ = std::fs::write(&output_file, &stdout);
-        step_outputs.insert(step.id.clone(), output_file.clone());
-        prev_output_file = Some(output_file);
-
-        let store_stats = if let Some(mut output_config) = load_tool_output_config(&step.tool_name) {
-            if let Some(ref override_action) = step.db_action {
-                output_config.db_action = Some(override_action.clone());
-            }
-            tracing::info!(
-                tool = %step.tool_name,
-                format = %output_config.format,
-                db_action = ?output_config.db_action,
-                stdout_len = stdout.len(),
-                "[pipeline-store] Found output config"
-            );
-            let parse_input = if let Some(ref jq_expr) = output_config.transform {
-                super::output_parser::transform_with_jq(&stdout, jq_expr).await
-            } else {
-                stdout.clone()
-            };
-
-            let items = match output_config.format.as_str() {
-                "text" => {
-                    let patterns: Vec<PatternConfig> = output_config
-                        .patterns
-                        .iter()
-                        .map(|p| PatternConfig {
-                            data_type: p.data_type.clone(),
-                            regex: p.regex.clone(),
-                            fields: p.fields.clone(),
-                        })
-                        .collect();
-                    super::output_parser::parse_text_standalone(&parse_input, &patterns)
-                }
-                "json_lines" | "json" => {
-                    super::output_parser::parse_json_standalone(&parse_input, &output_config.fields, output_config.format == "json_lines")
-                }
-                _ => vec![],
-            };
-
-            tracing::info!(
-                tool = %step.tool_name,
-                parsed_count = items.len(),
-                "[pipeline-store] Parsed items"
-            );
-
-            let parsed_count = items.len();
-            let mut stored_count = 0usize;
-            let mut new_count = 0usize;
-            let mut skipped_count = 0usize;
-            let mut errors = Vec::new();
-            let tool_name = &step.tool_name;
-
-            if let Some(ref db_action) = output_config.db_action {
-                for item in &items {
-                    let mut item = item.clone();
-                    if !item.fields.contains_key("host") && !item.fields.contains_key("ip") && !item.fields.contains_key("url") {
-                        item.fields.insert("host".to_string(), target.to_string());
-                    }
-                    item.fields.entry("_tool".to_string()).or_insert_with(|| tool_name.clone());
-                    if db_action == "target_add" {
-                        match store_target_from_item(pool, &item, project_path, parent_target_id).await {
-                            Ok(is_new) => { stored_count += 1; if is_new { new_count += 1; } }
-                            Err(e) => {
-                                tracing::warn!(tool = %step.tool_name, error = %e, "[pipeline-store] Store error");
-                                skipped_count += 1;
-                                if errors.len() < 5 { errors.push(e); }
-                            }
-                        }
-                        continue;
-                    }
-                    let result = match db_action.as_str() {
-                        "target_update_recon" => store_recon_from_item(pool, &item, project_path).await,
-                        "directory_entry_add" => store_dirent_from_item(pool, &item, tool_name, project_path).await,
-                        "finding_add" => store_finding_from_item(pool, &item, tool_name, project_path).await,
-                        _ => { skipped_count += 1; continue; }
-                    };
-                    match result {
-                        Ok(is_new) => { stored_count += 1; if is_new { new_count += 1; } }
-                        Err(e) => {
-                            tracing::warn!(tool = %step.tool_name, error = %e, "[pipeline-store] Store error");
-                            skipped_count += 1;
-                            if errors.len() < 5 { errors.push(e); }
-                        }
-                    }
-                }
-            }
-
-            tracing::info!(
-                tool = %step.tool_name,
-                stored = stored_count,
-                new = new_count,
-                skipped = skipped_count,
-                "[pipeline-store] Store complete"
-            );
-            total_stored += stored_count;
-            Some(StoreStats { parsed_count, stored_count, new_count, skipped_count, errors })
-        } else {
-            tracing::debug!(tool = %step.tool_name, "[pipeline-store] No output config found");
-            None
-        };
-
-        if step.step_type == "web_crawl" && exit_code == Some(0) && !stdout.is_empty() {
-            let urls: Vec<String> = stdout.lines()
-                .filter(|l| l.starts_with("http://") || l.starts_with("https://"))
-                .map(|l| l.trim().to_string())
-                .collect();
-            if !urls.is_empty() {
-                tracing::info!(count = urls.len(), "[pipeline] Merging katana URLs into sitemap");
-                merge_urls_into_sitemap(pool, &urls, project_path).await;
-                emit_pipeline_event(app, &PipelineEvent {
-                    pipeline_id: pipeline_id.clone(),
-                    run_id: run_id.clone(),
-                    step_id: "sitemap_merge".to_string(),
-                    step_index: idx,
-                    total_steps,
-                    status: "info".to_string(),
-                    tool_name: "katana".to_string(),
-                    message: Some(format!("Merged {} URLs into sitemap", urls.len())),
-                    store_stats: None,
-                    pipeline_name: None, target: None, all_steps: None,
-                    output: None, duration_ms: None, exit_code: None,
-                });
-            }
-        }
-
-        let duration_ms = step_start.elapsed().as_millis() as u64;
-
-        let truncated_output = if stdout.len() > 4096 {
-            let mut s = stdout[..4096].to_string();
-            s.push_str("\n… (truncated)");
-            Some(s)
-        } else if stdout.is_empty() {
-            None
-        } else {
-            Some(stdout.clone())
-        };
-        emit_pipeline_event(app, &PipelineEvent {
-            pipeline_id: pipeline_id.clone(),
-            run_id: run_id.clone(),
-            step_id: step.id.clone(),
-            step_index: idx,
-            total_steps,
-            status: if exit_code == Some(0) { "completed".to_string() } else { "error".to_string() },
-            tool_name: step.tool_name.clone(),
-            message: Some(format!(
-                "exit={}, lines={}, stored={}",
-                exit_code.unwrap_or(-1),
-                stdout.lines().count(),
-                store_stats.as_ref().map(|s| s.stored_count).unwrap_or(0),
-            )),
-            store_stats: store_stats.clone(),
-            pipeline_name: None, target: None, all_steps: None,
-            output: truncated_output,
-            duration_ms: Some(duration_ms),
-            exit_code,
-        });
-
-        step_results.push(StepResult {
-            step_id: step.id.clone(),
-            tool_name: step.tool_name.clone(),
-            command: last_cmd_str,
-            exit_code,
-            stdout_lines: stdout.lines().count(),
-            stderr_preview: stderr.chars().take(500).collect(),
-            store_stats,
-            duration_ms,
-        });
-
-        // Only skip if this step explicitly depends on a failed upstream step.
-        // Independent steps (no input_from, different exec_mode) continue running.
-        if exit_code != Some(0) && step.exec_mode == "on_success" {
-            break;
         }
     }
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 
     let total_duration_ms = start.elapsed().as_millis() as u64;
-    let completed_steps = step_results.iter().filter(|s| s.exit_code == Some(0)).count();
-    let failed_steps = step_results.iter().filter(|s| s.exit_code.is_some() && s.exit_code != Some(0)).count();
+    let completed_steps = step_results
+        .iter()
+        .filter(|s| s.exit_code == Some(0))
+        .count();
+    let failed_steps = step_results
+        .iter()
+        .filter(|s| s.exit_code.is_some() && s.exit_code != Some(0))
+        .count();
 
     let resolved_target_id = if parent_target_id.is_some() {
         parent_target_id
@@ -1744,24 +2160,38 @@ pub async fn execute_pipeline_headless(
         .flatten()
     };
 
-    let step_summaries: Vec<serde_json::Value> = step_results.iter().map(|s| {
-        serde_json::json!({
-            "tool": s.tool_name,
-            "stored": s.store_stats.as_ref().map(|st| st.stored_count).unwrap_or(0),
-            "new": s.store_stats.as_ref().map(|st| st.new_count).unwrap_or(0),
-            "parsed": s.store_stats.as_ref().map(|st| st.parsed_count).unwrap_or(0),
-            "exit": s.exit_code,
-            "ms": s.duration_ms,
+    let step_summaries: Vec<serde_json::Value> = step_results
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "tool": s.tool_name,
+                "stored": s.store_stats.as_ref().map(|st| st.stored_count).unwrap_or(0),
+                "new": s.store_stats.as_ref().map(|st| st.new_count).unwrap_or(0),
+                "parsed": s.store_stats.as_ref().map(|st| st.parsed_count).unwrap_or(0),
+                "exit": s.exit_code,
+                "ms": s.duration_ms,
+            })
         })
-    }).collect();
+        .collect();
 
     let _ = golish_db::repo::audit::log_operation(
-        pool, "pipeline_executed", "recon",
-        &format!("Pipeline '{}' on {}: {}/{} steps completed, {} items stored",
-            pipeline.name, target, completed_steps, total_steps, total_stored),
-        project_path, "pipeline",
-        resolved_target_id, None, Some(&pipeline.name),
-        if failed_steps == 0 { "completed" } else { "partial" },
+        pool,
+        "pipeline_executed",
+        "recon",
+        &format!(
+            "Pipeline '{}' on {}: {}/{} steps completed, {} items stored",
+            pipeline.name, target, completed_steps, total_steps, total_stored
+        ),
+        project_path,
+        "pipeline",
+        resolved_target_id,
+        None,
+        Some(&pipeline.name),
+        if failed_steps == 0 {
+            "completed"
+        } else {
+            "partial"
+        },
         &serde_json::json!({
             "pipeline_id": pipeline_id,
             "run_id": run_id,
@@ -1774,15 +2204,19 @@ pub async fn execute_pipeline_headless(
             "duration_ms": total_duration_ms,
             "steps": step_summaries,
         }),
-    ).await;
+    )
+    .await;
 
     if total_stored > 0 {
         if let Some(app) = app {
-            let _ = app.emit("targets-changed", serde_json::json!({
-                "source": "pipeline",
-                "target": target,
-                "stored": total_stored,
-            }));
+            let _ = app.emit(
+                "targets-changed",
+                serde_json::json!({
+                    "source": "pipeline",
+                    "target": target,
+                    "stored": total_stored,
+                }),
+            );
         }
     }
 
@@ -1957,5 +2391,347 @@ mod tests {
 
         let naabu = pipeline.steps.iter().find(|s| s.tool_name == "naabu").unwrap();
         assert_eq!(naabu.iterate_over, None);
+    }
+
+    // ── Helpers ──
+
+    fn conn(from: &str, to: &str) -> PipelineConnection {
+        PipelineConnection { from_step: from.into(), to_step: to.into(), condition: None }
+    }
+
+    fn conn_if(from: &str, to: &str, cond: &str) -> PipelineConnection {
+        PipelineConnection { from_step: from.into(), to_step: to.into(), condition: Some(cond.into()) }
+    }
+
+    fn make_step(id: &str) -> PipelineStep {
+        PipelineStep {
+            id: id.to_string(),
+            step_type: "shell_command".to_string(),
+            tool_name: id.to_string(),
+            tool_id: String::new(),
+            command_template: "echo".to_string(),
+            args: vec![],
+            params: serde_json::json!({}),
+            input_from: None,
+            exec_mode: "sequential".to_string(),
+            requires: None,
+            iterate_over: None,
+            db_action: None,
+            on_failure: "continue".to_string(),
+            timeout_secs: None,
+            sub_pipeline: None,
+            inline_pipeline: None,
+            foreach_source: None,
+            max_parallel: None,
+            x: 0.0,
+            y: 0.0,
+        }
+    }
+
+    #[test]
+    fn test_topo_layers_empty_connections_is_sequential() {
+        let steps = vec![make_step("a"), make_step("b"), make_step("c")];
+        let layers = topo_layers(&steps, &[]);
+        assert_eq!(layers.len(), 3, "empty connections → one layer per step");
+        assert_eq!(layers[0][0].id, "a");
+        assert_eq!(layers[1][0].id, "b");
+        assert_eq!(layers[2][0].id, "c");
+    }
+
+    #[test]
+    fn test_topo_layers_linear_chain() {
+        let steps = vec![make_step("a"), make_step("b"), make_step("c")];
+        let conns = vec![conn("a", "b"), conn("b", "c")];
+        let layers = topo_layers(&steps, &conns);
+        assert_eq!(layers.len(), 3);
+        assert_eq!(layers[0].len(), 1);
+        assert_eq!(layers[0][0].id, "a");
+        assert_eq!(layers[1][0].id, "b");
+        assert_eq!(layers[2][0].id, "c");
+    }
+
+    #[test]
+    fn test_topo_layers_parallel_fan_out() {
+        // a → b, a → c (b and c should be in the same layer)
+        let steps = vec![make_step("a"), make_step("b"), make_step("c")];
+        let conns = vec![conn("a", "b"), conn("a", "c")];
+        let layers = topo_layers(&steps, &conns);
+        assert_eq!(layers.len(), 2);
+        assert_eq!(layers[0].len(), 1);
+        assert_eq!(layers[0][0].id, "a");
+        assert_eq!(layers[1].len(), 2, "b and c should run in parallel");
+        let ids: Vec<&str> = layers[1].iter().map(|s| s.id.as_str()).collect();
+        assert!(ids.contains(&"b"));
+        assert!(ids.contains(&"c"));
+    }
+
+    #[test]
+    fn test_topo_layers_diamond() {
+        // a → b, a → c, b → d, c → d
+        let steps = vec![make_step("a"), make_step("b"), make_step("c"), make_step("d")];
+        let conns = vec![conn("a", "b"), conn("a", "c"), conn("b", "d"), conn("c", "d")];
+        let layers = topo_layers(&steps, &conns);
+        assert_eq!(layers.len(), 3);
+        assert_eq!(layers[0][0].id, "a");
+        assert_eq!(layers[1].len(), 2, "b and c parallel");
+        assert_eq!(layers[2].len(), 1);
+        assert_eq!(layers[2][0].id, "d");
+    }
+
+    #[test]
+    fn test_topo_layers_recon_basic_dag() {
+        let pipeline = recon_basic_template();
+        let layers = topo_layers(&pipeline.steps, &pipeline.connections);
+
+        // Layer 0: dig, subfinder, naabu (no incoming connections)
+        assert_eq!(layers[0].len(), 3, "layer 0 should have dig, subfinder, naabu");
+        let l0_ids: Vec<&str> = layers[0].iter().map(|s| s.id.as_str()).collect();
+        assert!(l0_ids.contains(&"dns_lookup"));
+        assert!(l0_ids.contains(&"subdomain_enum"));
+        assert!(l0_ids.contains(&"port_scan"));
+
+        // Layer 1: httpx, whatweb (depend on port_scan)
+        assert_eq!(layers[1].len(), 2, "layer 1 should have httpx, whatweb");
+        let l1_ids: Vec<&str> = layers[1].iter().map(|s| s.id.as_str()).collect();
+        assert!(l1_ids.contains(&"http_probe"));
+        assert!(l1_ids.contains(&"tech_fingerprint"));
+
+        // Layer 2: katana (depends on httpx and whatweb)
+        assert_eq!(layers[2].len(), 1);
+        assert_eq!(layers[2][0].id, "web_crawl");
+    }
+
+    #[test]
+    fn test_topo_layers_disconnected_steps_at_start() {
+        // Steps e and f have no connections, should appear in layer 0
+        let steps = vec![
+            make_step("a"), make_step("b"), make_step("e"), make_step("f"),
+        ];
+        let conns = vec![conn("a", "b")];
+        let layers = topo_layers(&steps, &conns);
+        // a, e, f all have in_degree 0 → layer 0
+        assert!(layers[0].len() >= 3);
+        let l0_ids: Vec<&str> = layers[0].iter().map(|s| s.id.as_str()).collect();
+        assert!(l0_ids.contains(&"a"));
+        assert!(l0_ids.contains(&"e"));
+        assert!(l0_ids.contains(&"f"));
+        // b depends on a → later layer
+        let all_later: Vec<&str> = layers[1..].iter().flat_map(|l| l.iter().map(|s| s.id.as_str())).collect();
+        assert!(all_later.contains(&"b"));
+    }
+
+    #[test]
+    fn test_new_fields_have_defaults() {
+        let json = r#"{"id":"test","tool_name":"echo","steps":[],"connections":[],"name":"t","created_at":0,"updated_at":0}"#;
+        let pipeline: Pipeline = serde_json::from_str(json).unwrap();
+        assert!(pipeline.steps.is_empty());
+
+        let step_json = r#"{"id":"s1","tool_name":"nmap"}"#;
+        let step: PipelineStep = serde_json::from_str(step_json).unwrap();
+        assert_eq!(step.on_failure, "abort");
+        assert_eq!(step.timeout_secs, None);
+        assert!(step.sub_pipeline.is_none());
+        assert!(step.inline_pipeline.is_none());
+        assert!(step.foreach_source.is_none());
+        assert!(step.max_parallel.is_none());
+    }
+
+    #[test]
+    fn test_connection_condition_default() {
+        let json = r#"{"from_step":"a","to_step":"b"}"#;
+        let c: PipelineConnection = serde_json::from_str(json).unwrap();
+        assert!(c.condition.is_none());
+
+        let json2 = r#"{"from_step":"a","to_step":"b","condition":"exit_ok"}"#;
+        let c2: PipelineConnection = serde_json::from_str(json2).unwrap();
+        assert_eq!(c2.condition.as_deref(), Some("exit_ok"));
+    }
+
+    #[test]
+    fn test_step_sub_pipeline_fields_deser() {
+        let json = r#"{"id":"s1","step_type":"sub_pipeline","tool_name":"web","sub_pipeline":"web_vuln_v1"}"#;
+        let step: PipelineStep = serde_json::from_str(json).unwrap();
+        assert_eq!(step.step_type, "sub_pipeline");
+        assert_eq!(step.sub_pipeline.as_deref(), Some("web_vuln_v1"));
+        assert!(step.inline_pipeline.is_none());
+    }
+
+    #[test]
+    fn test_step_foreach_fields_deser() {
+        let json = r#"{"id":"s1","step_type":"foreach","tool_name":"scan","foreach_source":"subfinder","max_parallel":3}"#;
+        let step: PipelineStep = serde_json::from_str(json).unwrap();
+        assert_eq!(step.step_type, "foreach");
+        assert_eq!(step.foreach_source.as_deref(), Some("subfinder"));
+        assert_eq!(step.max_parallel, Some(3));
+    }
+
+    // ── evaluate_condition tests ──
+
+    fn make_result(exit: Option<i32>, lines: usize) -> StepResult {
+        StepResult {
+            step_id: "test".into(),
+            tool_name: "test".into(),
+            command: String::new(),
+            exit_code: exit,
+            stdout_lines: lines,
+            stderr_preview: String::new(),
+            store_stats: None,
+            duration_ms: 0,
+        }
+    }
+
+    #[test]
+    fn test_evaluate_condition_exit_ok() {
+        let tmp = std::env::temp_dir().join("test_cond_exit_ok.txt");
+        std::fs::write(&tmp, "some output").unwrap();
+
+        assert!(evaluate_condition("exit_ok", &make_result(Some(0), 1), &tmp));
+        assert!(!evaluate_condition("exit_ok", &make_result(Some(1), 1), &tmp));
+        assert!(!evaluate_condition("exit_ok", &make_result(None, 0), &tmp));
+    }
+
+    #[test]
+    fn test_evaluate_condition_exit_fail() {
+        let tmp = std::env::temp_dir().join("test_cond_exit_fail.txt");
+        std::fs::write(&tmp, "").unwrap();
+
+        assert!(evaluate_condition("exit_fail", &make_result(Some(1), 0), &tmp));
+        assert!(!evaluate_condition("exit_fail", &make_result(Some(0), 0), &tmp));
+        assert!(!evaluate_condition("exit_fail", &make_result(None, 0), &tmp));
+    }
+
+    #[test]
+    fn test_evaluate_condition_output_not_empty() {
+        let tmp = std::env::temp_dir().join("test_cond_not_empty.txt");
+        std::fs::write(&tmp, "data").unwrap();
+
+        assert!(evaluate_condition("output_not_empty", &make_result(Some(0), 3), &tmp));
+        assert!(!evaluate_condition("output_not_empty", &make_result(Some(0), 0), &tmp));
+    }
+
+    #[test]
+    fn test_evaluate_condition_output_contains() {
+        let tmp = std::env::temp_dir().join("test_cond_contains.txt");
+        std::fs::write(&tmp, "80/tcp open http\n22/tcp open ssh").unwrap();
+
+        assert!(evaluate_condition("output_contains:80", &make_result(Some(0), 2), &tmp));
+        assert!(evaluate_condition("output_contains:22", &make_result(Some(0), 2), &tmp));
+        assert!(!evaluate_condition("output_contains:443", &make_result(Some(0), 2), &tmp));
+    }
+
+    #[test]
+    fn test_evaluate_condition_output_lines_gt() {
+        let tmp = std::env::temp_dir().join("test_cond_lines_gt.txt");
+        std::fs::write(&tmp, "").unwrap();
+
+        assert!(evaluate_condition("output_lines_gt:5", &make_result(Some(0), 10), &tmp));
+        assert!(!evaluate_condition("output_lines_gt:5", &make_result(Some(0), 3), &tmp));
+        assert!(!evaluate_condition("output_lines_gt:5", &make_result(Some(0), 5), &tmp));
+    }
+
+    #[test]
+    fn test_evaluate_condition_stored_gt() {
+        let tmp = std::env::temp_dir().join("test_cond_stored_gt.txt");
+        std::fs::write(&tmp, "").unwrap();
+
+        let mut res = make_result(Some(0), 0);
+        res.store_stats = Some(StoreStats {
+            parsed_count: 12,
+            stored_count: 10,
+            new_count: 10,
+            skipped_count: 2,
+            errors: vec![],
+        });
+        assert!(evaluate_condition("stored_gt:5", &res, &tmp));
+        assert!(!evaluate_condition("stored_gt:15", &res, &tmp));
+
+        let res2 = make_result(Some(0), 0);
+        assert!(!evaluate_condition("stored_gt:0", &res2, &tmp));
+    }
+
+    #[test]
+    fn test_evaluate_condition_unknown_passes() {
+        let tmp = std::env::temp_dir().join("test_cond_unknown.txt");
+        std::fs::write(&tmp, "").unwrap();
+        assert!(evaluate_condition("some_future_condition", &make_result(Some(0), 0), &tmp));
+    }
+
+    // ── Condition-based DAG skipping (via topo) ──
+
+    #[test]
+    fn test_topo_with_conditional_connections() {
+        let steps = vec![make_step("scan"), make_step("web"), make_step("ssh")];
+        let conns = vec![
+            conn_if("scan", "web", "output_contains:80"),
+            conn_if("scan", "ssh", "output_contains:22"),
+        ];
+        let layers = topo_layers(&steps, &conns);
+        assert_eq!(layers.len(), 2);
+        assert_eq!(layers[0][0].id, "scan");
+        let l1_ids: Vec<&str> = layers[1].iter().map(|s| s.id.as_str()).collect();
+        assert!(l1_ids.contains(&"web"));
+        assert!(l1_ids.contains(&"ssh"));
+    }
+
+    #[test]
+    fn test_inline_pipeline_deser() {
+        let json = r#"{
+            "id": "nest",
+            "step_type": "sub_pipeline",
+            "tool_name": "inner",
+            "inline_pipeline": {
+                "id": "inner_p",
+                "name": "Inner Pipeline",
+                "steps": [{"id": "echo_step", "tool_name": "echo"}],
+                "connections": []
+            }
+        }"#;
+        let step: PipelineStep = serde_json::from_str(json).unwrap();
+        assert_eq!(step.step_type, "sub_pipeline");
+        let inner = step.inline_pipeline.unwrap();
+        assert_eq!(inner.id, "inner_p");
+        assert_eq!(inner.steps.len(), 1);
+        assert_eq!(inner.steps[0].id, "echo_step");
+    }
+
+    #[test]
+    fn test_advanced_flow_json_roundtrip() {
+        let json = r#"{
+            "id": "advanced",
+            "name": "Advanced Recon",
+            "steps": [
+                {"id": "subfinder", "tool_name": "subfinder", "command_template": "subfinder", "args": ["-d", "{target}", "-silent"]},
+                {"id": "naabu", "tool_name": "naabu", "command_template": "naabu", "args": ["-host", "{target}"]},
+                {"id": "web_scan", "step_type": "sub_pipeline", "tool_name": "web", "sub_pipeline": "web_vuln_v1"},
+                {"id": "ssh_audit", "tool_name": "ssh-audit", "command_template": "ssh-audit", "args": ["{target}"]},
+                {"id": "per_sub", "step_type": "foreach", "tool_name": "scan", "foreach_source": "subfinder", "sub_pipeline": "single_host_recon", "max_parallel": 3}
+            ],
+            "connections": [
+                {"from_step": "naabu", "to_step": "web_scan", "condition": "output_contains:80"},
+                {"from_step": "naabu", "to_step": "ssh_audit", "condition": "output_contains:22"},
+                {"from_step": "subfinder", "to_step": "per_sub", "condition": "output_not_empty"}
+            ]
+        }"#;
+        let pipeline: Pipeline = serde_json::from_str(json).unwrap();
+        assert_eq!(pipeline.steps.len(), 5);
+        assert_eq!(pipeline.connections.len(), 3);
+
+        assert_eq!(pipeline.steps[2].step_type, "sub_pipeline");
+        assert_eq!(pipeline.steps[2].sub_pipeline.as_deref(), Some("web_vuln_v1"));
+        assert_eq!(pipeline.steps[4].step_type, "foreach");
+        assert_eq!(pipeline.steps[4].foreach_source.as_deref(), Some("subfinder"));
+        assert_eq!(pipeline.steps[4].max_parallel, Some(3));
+
+        assert_eq!(pipeline.connections[0].condition.as_deref(), Some("output_contains:80"));
+        assert_eq!(pipeline.connections[1].condition.as_deref(), Some("output_contains:22"));
+        assert_eq!(pipeline.connections[2].condition.as_deref(), Some("output_not_empty"));
+
+        let layers = topo_layers(&pipeline.steps, &pipeline.connections);
+        assert_eq!(layers[0].len(), 2, "subfinder and naabu in parallel (layer 0)");
+        let l0_ids: Vec<&str> = layers[0].iter().map(|s| s.id.as_str()).collect();
+        assert!(l0_ids.contains(&"subfinder"));
+        assert!(l0_ids.contains(&"naabu"));
+
+        assert!(layers.len() >= 2);
     }
 }

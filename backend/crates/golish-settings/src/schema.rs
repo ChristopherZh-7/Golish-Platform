@@ -1,4 +1,4 @@
-//! Settings schema definitions for Qbit configuration.
+//! Settings schema definitions for Golish configuration.
 //!
 //! All settings structs use `#[serde(default)]` to allow partial configuration files.
 //! Missing fields are filled with sensible defaults.
@@ -156,13 +156,13 @@ impl std::fmt::Display for ReasoningEffort {
 // Settings structs
 // =============================================================================
 
-/// Root settings structure for Qbit.
+/// Root settings structure for Golish.
 ///
 /// Loaded from `~/.golish/settings.toml` with environment variable interpolation support.
 /// Version field enables future migrations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct QbitSettings {
+pub struct GolishSettings {
     /// Schema version for migrations
     pub version: u32,
 
@@ -230,8 +230,9 @@ pub struct QbitSettings {
 
 /// Per-sub-agent model configuration.
 ///
-/// Allows overriding the model used for specific sub-agents (e.g., "coder", "analyzer").
-/// When both provider and model are None, the sub-agent inherits the main agent's model.
+/// Allows overriding the model and LLM parameters for specific sub-agents
+/// (e.g., "coder", "analyzer"). When fields are None, the sub-agent inherits
+/// from the main agent's defaults.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SubAgentModelConfig {
     /// Provider override (None = inherit from main agent)
@@ -241,6 +242,21 @@ pub struct SubAgentModelConfig {
     /// Model override (None = inherit from main agent)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+
+    /// Temperature override (0.0 - 2.0). Lower = more deterministic, higher = more creative.
+    /// None = use the model's default (typically 0.3 for agents).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+
+    /// Max output tokens override.
+    /// None = use the model's default (typically 16384).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+
+    /// Top-p (nucleus sampling) override (0.0 - 1.0).
+    /// None = not sent to the provider (uses their default).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
 }
 
 /// AI provider configuration.
@@ -1127,7 +1143,7 @@ fn default_web_search_context_size() -> String {
 // Default implementations
 // =============================================================================
 
-impl Default for QbitSettings {
+impl Default for GolishSettings {
     fn default() -> Self {
         Self {
             version: 1,
@@ -1390,7 +1406,7 @@ mod tests {
 
     #[test]
     fn test_default_settings() {
-        let settings = QbitSettings::default();
+        let settings = GolishSettings::default();
         assert_eq!(settings.version, 1);
         assert_eq!(settings.ai.default_provider, AiProvider::VertexAi);
         assert_eq!(settings.ai.default_model, "claude-opus-4-5@20251101");
@@ -1408,7 +1424,7 @@ mod tests {
             default_provider = "openrouter"
         "#;
 
-        let settings: QbitSettings = toml::from_str(toml).unwrap();
+        let settings: GolishSettings = toml::from_str(toml).unwrap();
         assert_eq!(settings.ai.default_provider, AiProvider::Openrouter);
         // Defaults should fill in missing fields
         assert_eq!(settings.terminal.font_size, 14);
@@ -1416,7 +1432,7 @@ mod tests {
 
     #[test]
     fn test_serialize_settings() {
-        let settings = QbitSettings::default();
+        let settings = GolishSettings::default();
         let toml_str = toml::to_string_pretty(&settings).unwrap();
         assert!(toml_str.contains("version = 1"));
         assert!(toml_str.contains("[ai]"));
@@ -1441,7 +1457,7 @@ mod tests {
             cooldown_seconds = 120
         "#;
 
-        let settings: QbitSettings = toml::from_str(toml).unwrap();
+        let settings: GolishSettings = toml::from_str(toml).unwrap();
         assert!(!settings.context.enabled);
         assert!((settings.context.compaction_threshold - 0.75).abs() < f64::EPSILON);
         assert_eq!(settings.context.protected_turns, 3);
@@ -1457,7 +1473,7 @@ mod tests {
             default_provider = "anthropic"
         "#;
 
-        let settings: QbitSettings = toml::from_str(toml).unwrap();
+        let settings: GolishSettings = toml::from_str(toml).unwrap();
         // Context settings should have defaults
         assert!(settings.context.enabled);
         assert!((settings.context.compaction_threshold - 0.80).abs() < f64::EPSILON);
@@ -1473,7 +1489,7 @@ mod tests {
             enabled = false
         "#;
 
-        let settings: QbitSettings = toml::from_str(toml).unwrap();
+        let settings: GolishSettings = toml::from_str(toml).unwrap();
         assert!(!settings.context.enabled);
         // Other fields should have defaults
         assert!((settings.context.compaction_threshold - 0.80).abs() < f64::EPSILON);
@@ -1488,7 +1504,7 @@ mod tests {
             summarizer_model = "claude-haiku-4-5@20251001"
         "#;
 
-        let settings: QbitSettings = toml::from_str(toml).unwrap();
+        let settings: GolishSettings = toml::from_str(toml).unwrap();
         assert_eq!(
             settings.ai.summarizer_model,
             Some("claude-haiku-4-5@20251001".to_string())
@@ -1502,7 +1518,7 @@ mod tests {
             default_provider = "anthropic"
         "#;
 
-        let settings: QbitSettings = toml::from_str(toml).unwrap();
+        let settings: GolishSettings = toml::from_str(toml).unwrap();
         assert!(settings.ai.summarizer_model.is_none());
     }
 
@@ -1534,7 +1550,7 @@ mod tests {
             opacity = 0.8
         "##;
 
-        let settings: QbitSettings = toml::from_str(toml).unwrap();
+        let settings: GolishSettings = toml::from_str(toml).unwrap();
         assert_eq!(settings.terminal.caret.style, "block");
         assert!((settings.terminal.caret.width - 2.0).abs() < f64::EPSILON);
         assert_eq!(settings.terminal.caret.color, Some("#ff0000".to_string()));
@@ -1549,7 +1565,7 @@ mod tests {
             font_size = 16
         "#;
 
-        let settings: QbitSettings = toml::from_str(toml).unwrap();
+        let settings: GolishSettings = toml::from_str(toml).unwrap();
         assert_eq!(settings.terminal.caret.style, "default");
         assert!((settings.terminal.caret.width - 1.0).abs() < f64::EPSILON);
         assert!(settings.terminal.caret.color.is_none());
@@ -1562,7 +1578,7 @@ mod tests {
             style = "block"
         "#;
 
-        let settings: QbitSettings = toml::from_str(toml).unwrap();
+        let settings: GolishSettings = toml::from_str(toml).unwrap();
         assert_eq!(settings.terminal.caret.style, "block");
         // Other fields should have defaults
         assert!((settings.terminal.caret.width - 1.0).abs() < f64::EPSILON);
@@ -1573,7 +1589,7 @@ mod tests {
 
     #[test]
     fn test_caret_settings_color_none_not_serialized() {
-        let settings = QbitSettings::default();
+        let settings = GolishSettings::default();
         let toml_str = toml::to_string_pretty(&settings).unwrap();
         // color is None, so it should not appear in output (skip_serializing_if)
         assert!(!toml_str.contains("color"));
@@ -1585,7 +1601,7 @@ mod tests {
 
     #[test]
     fn test_openrouter_preferences_default_is_none() {
-        let settings = QbitSettings::default();
+        let settings = GolishSettings::default();
         assert!(settings.ai.openrouter.provider_preferences.is_none());
     }
 
@@ -1712,7 +1728,7 @@ mod tests {
             quantizations = ["fp8"]
         "#;
 
-        let settings: QbitSettings = toml::from_str(toml_str).unwrap();
+        let settings: GolishSettings = toml::from_str(toml_str).unwrap();
         assert_eq!(settings.ai.default_provider, AiProvider::Openrouter);
         assert_eq!(settings.ai.openrouter.api_key, Some("sk-or-v1-test".to_string()));
         let prefs = settings.ai.openrouter.provider_preferences.unwrap();
@@ -1741,7 +1757,7 @@ mod tests {
         "#;
 
         // Step 1: Load from TOML (simulating app startup)
-        let settings: QbitSettings = toml::from_str(toml_str).unwrap();
+        let settings: GolishSettings = toml::from_str(toml_str).unwrap();
         assert!(settings.ai.openrouter.provider_preferences.is_some());
 
         // Step 2: Serialize back to TOML (simulating save_window_state)
@@ -1755,7 +1771,7 @@ mod tests {
         );
 
         // Step 4: Parse back and verify data integrity
-        let reloaded: QbitSettings = toml::from_str(&serialized).unwrap();
+        let reloaded: GolishSettings = toml::from_str(&serialized).unwrap();
         let prefs = reloaded.ai.openrouter.provider_preferences.unwrap();
         assert_eq!(
             prefs.order,
@@ -1780,13 +1796,13 @@ mod tests {
         "#;
 
         // Step 1: Load from TOML
-        let settings: QbitSettings = toml::from_str(toml_str).unwrap();
+        let settings: GolishSettings = toml::from_str(toml_str).unwrap();
 
         // Step 2: Serialize to JSON (simulating Tauri sending to frontend)
         let json_str = serde_json::to_string(&settings).unwrap();
 
         // Step 3: Deserialize from JSON (simulating Tauri receiving from frontend)
-        let from_json: QbitSettings = serde_json::from_str(&json_str).unwrap();
+        let from_json: GolishSettings = serde_json::from_str(&json_str).unwrap();
 
         // Step 4: Serialize to TOML (simulating settings save)
         let toml_output = toml::to_string_pretty(&from_json).unwrap();
@@ -1798,7 +1814,7 @@ mod tests {
             toml_output
         );
 
-        let final_settings: QbitSettings = toml::from_str(&toml_output).unwrap();
+        let final_settings: GolishSettings = toml::from_str(&toml_output).unwrap();
         let prefs = final_settings.ai.openrouter.provider_preferences.unwrap();
         assert_eq!(prefs.order, Some(vec!["deepinfra".to_string()]));
         assert_eq!(prefs.sort, Some("throughput".to_string()));

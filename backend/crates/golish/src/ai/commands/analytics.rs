@@ -67,6 +67,33 @@ pub async fn get_db_token_usage_stats(
     })
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AgentUsage {
+    pub agent: String,
+    pub total_tokens_in: i64,
+    pub total_tokens_out: i64,
+    pub total_cost: f64,
+}
+
+#[tauri::command]
+pub async fn get_usage_by_agent(
+    state: State<'_, AppState>,
+) -> Result<Vec<AgentUsage>, String> {
+    let rows = golish_db::repo::message_chains::usage_by_agent(&state.db_pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| AgentUsage {
+            agent: format!("{:?}", r.agent),
+            total_tokens_in: r.total_tokens_in,
+            total_tokens_out: r.total_tokens_out,
+            total_cost: r.total_cost,
+        })
+        .collect())
+}
+
 // -- Audit log -------------------------------------------------------------
 
 #[derive(Debug, Serialize, Deserialize)]

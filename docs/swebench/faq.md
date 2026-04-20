@@ -30,7 +30,7 @@ This FAQ addresses common questions and concerns about our SWE-bench evaluation 
 **A:** We download the dataset directly from HuggingFace:
 - **Dataset ID:** `princeton-nlp/SWE-bench_Lite`
 - **API:** HuggingFace Datasets Server
-- **Cache:** `~/.qbit/benchmarks/swebench/datasets/lite.json`
+- **Cache:** `~/.golish/benchmarks/swebench/datasets/lite.json`
 
 You can verify this matches the official dataset. See [Dataset Source](./dataset-source.md).
 

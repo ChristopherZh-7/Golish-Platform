@@ -1,4 +1,4 @@
-//! Agent Skills discovery, parsing, and matching for Qbit.
+//! Agent Skills discovery, parsing, and matching for Golish.
 //!
 //! This crate implements the [agentskills.io](https://agentskills.io) specification
 //! for discovering and loading skill-based extensions that provide specialized

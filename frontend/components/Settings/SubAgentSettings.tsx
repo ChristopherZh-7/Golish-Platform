@@ -1,24 +1,36 @@
-import { Trash2 } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Edit3,
+  Loader2,
+  Lock,
+  Plus,
+  Save,
+  Trash2,
+  X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
 import { CustomSelect } from "@/components/ui/custom-select";
+import { Switch } from "@/components/ui/switch";
 import type { AiProvider, SubAgentModelConfig } from "@/lib/settings";
+import {
+  type AgentFileInfo,
+  deleteAgentDefinition,
+  listAgentDefinitions,
+  readAgentPrompt,
+  saveAgentDefinition,
+  seedAgents,
+} from "@/lib/ai";
+import { notify } from "@/lib/notify";
 
 interface SubAgentSettingsProps {
   subAgentModels: Record<string, SubAgentModelConfig>;
   onChange: (models: Record<string, SubAgentModelConfig>) => void;
 }
-
-// Known sub-agents (these match what's registered in the backend)
-const KNOWN_SUB_AGENTS = [
-  { id: "coder", name: "Coder", description: "Specialized for code generation tasks" },
-  { id: "researcher", name: "Researcher", description: "Specialized for research tasks" },
-  { id: "analyzer", name: "Analyzer", description: "Specialized for code analysis" },
-  { id: "js_harvester", name: "JS Harvester", description: "AI-driven JavaScript collection from target URLs" },
-  { id: "js_analyzer", name: "JS Analyzer", description: "Security analysis of collected JavaScript assets" },
-  { id: "executor", name: "Executor", description: "Shell command execution and system operations" },
-  { id: "explorer", name: "Explorer", description: "Fast file search and codebase navigation" },
-];
 
 const PROVIDER_OPTIONS: { value: AiProvider; label: string }[] = [
   { value: "vertex_ai", label: "Vertex AI (Claude)" },
@@ -34,7 +46,6 @@ const PROVIDER_OPTIONS: { value: AiProvider; label: string }[] = [
   { value: "nvidia", label: "NVIDIA NIM" },
 ];
 
-// Common models by provider (not exhaustive, users can type custom models)
 const MODEL_SUGGESTIONS: Record<AiProvider, string[]> = {
   vertex_ai: [
     "claude-sonnet-4-6@default",
@@ -73,32 +84,190 @@ const MODEL_SUGGESTIONS: Record<AiProvider, string[]> = {
   ],
 };
 
-function SimpleSelect({
-  value,
-  onValueChange,
-  options,
-  placeholder,
-}: {
-  id?: string;
-  value: string;
-  onValueChange: (value: string) => void;
-  options: { value: string; label: string }[];
-  placeholder?: string;
-}) {
-  return (
-    <CustomSelect
-      value={value}
-      onChange={onValueChange}
-      options={options}
-      placeholder={placeholder}
-    />
-  );
+interface EditingAgent {
+  id: string;
+  name: string;
+  description: string;
+  systemPrompt: string;
+  allowedTools: string[];
+  maxIterations: number;
+  timeoutSecs: number | null;
+  idleTimeoutSecs: number | null;
+  readonly: boolean;
+  isBackground: boolean;
+  model: string;
+  temperature: number | null;
+  maxTokens: number | null;
+  topP: number | null;
+  isNew: boolean;
+}
+
+function emptyAgent(): EditingAgent {
+  return {
+    id: "",
+    name: "",
+    description: "",
+    systemPrompt: "",
+    allowedTools: [],
+    maxIterations: 50,
+    timeoutSecs: 600,
+    idleTimeoutSecs: 180,
+    readonly: false,
+    isBackground: false,
+    model: "inherit",
+    temperature: null,
+    maxTokens: null,
+    topP: null,
+    isNew: true,
+  };
 }
 
 export function SubAgentSettings({ subAgentModels, onChange }: SubAgentSettingsProps) {
-  const updateSubAgent = (agentId: string, config: SubAgentModelConfig | null) => {
+  const [agents, setAgents] = useState<AgentFileInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [editingAgent, setEditingAgent] = useState<EditingAgent | null>(null);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [toolInput, setToolInput] = useState("");
+
+  const loadAgents = useCallback(async () => {
+    try {
+      setLoading(true);
+      await seedAgents();
+      const list = await listAgentDefinitions();
+      setAgents(list);
+    } catch (err) {
+      console.error("Failed to load agents:", err);
+      notify.error("Failed to load agent definitions");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadAgents();
+  }, [loadAgents]);
+
+  const toggleExpand = (id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const startEditing = async (agent: AgentFileInfo) => {
+    try {
+      const prompt = await readAgentPrompt(agent.id);
+      setEditingAgent({
+        id: agent.id,
+        name: agent.name,
+        description: agent.description,
+        systemPrompt: prompt,
+        allowedTools: [...agent.allowed_tools],
+        maxIterations: agent.max_iterations,
+        timeoutSecs: agent.timeout_secs,
+        idleTimeoutSecs: agent.idle_timeout_secs,
+        readonly: agent.readonly,
+        isBackground: agent.is_background,
+        model: agent.model || "inherit",
+        temperature: agent.temperature,
+        maxTokens: agent.max_tokens,
+        topP: agent.top_p,
+        isNew: false,
+      });
+    } catch (err) {
+      console.error("Failed to read agent prompt:", err);
+      notify.error("Failed to load agent prompt");
+    }
+  };
+
+  const startCreating = () => {
+    setEditingAgent(emptyAgent());
+  };
+
+  const cancelEditing = () => {
+    setEditingAgent(null);
+    setToolInput("");
+  };
+
+  const addTool = () => {
+    if (!editingAgent || !toolInput.trim()) return;
+    const tool = toolInput.trim();
+    if (!editingAgent.allowedTools.includes(tool)) {
+      setEditingAgent({ ...editingAgent, allowedTools: [...editingAgent.allowedTools, tool] });
+    }
+    setToolInput("");
+  };
+
+  const removeTool = (tool: string) => {
+    if (!editingAgent) return;
+    setEditingAgent({
+      ...editingAgent,
+      allowedTools: editingAgent.allowedTools.filter((t) => t !== tool),
+    });
+  };
+
+  const handleSave = async () => {
+    if (!editingAgent) return;
+    if (!editingAgent.id.trim()) {
+      notify.error("Agent ID is required");
+      return;
+    }
+    if (!editingAgent.name.trim()) {
+      notify.error("Agent name is required");
+      return;
+    }
+
+    try {
+      setSavingId(editingAgent.id);
+      await saveAgentDefinition({
+        agentId: editingAgent.id.trim(),
+        name: editingAgent.name.trim(),
+        description: editingAgent.description.trim(),
+        systemPrompt: editingAgent.systemPrompt,
+        allowedTools: editingAgent.allowedTools,
+        maxIterations: editingAgent.maxIterations,
+        timeoutSecs: editingAgent.timeoutSecs ?? undefined,
+        idleTimeoutSecs: editingAgent.idleTimeoutSecs ?? undefined,
+        readonly: editingAgent.readonly,
+        isBackground: editingAgent.isBackground,
+        model: editingAgent.model !== "inherit" ? editingAgent.model : undefined,
+        temperature: editingAgent.temperature ?? undefined,
+        maxTokens: editingAgent.maxTokens ?? undefined,
+        topP: editingAgent.topP ?? undefined,
+      });
+      notify.success(`Agent "${editingAgent.name}" saved`);
+      setEditingAgent(null);
+      setToolInput("");
+      await loadAgents();
+    } catch (err) {
+      console.error("Failed to save agent:", err);
+      notify.error(`Failed to save agent: ${err}`);
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const handleDelete = async (agent: AgentFileInfo) => {
+    if (agent.is_system) {
+      notify.error("System agents cannot be deleted");
+      return;
+    }
+    try {
+      await deleteAgentDefinition(agent.id);
+      notify.success(`Agent "${agent.name}" deleted`);
+      await loadAgents();
+    } catch (err) {
+      console.error("Failed to delete agent:", err);
+      notify.error(`Failed to delete: ${err}`);
+    }
+  };
+
+  // Model override helpers (settings-based, separate from file-based config)
+  const updateModelOverride = (agentId: string, config: SubAgentModelConfig | null) => {
     if (config === null) {
-      // Remove the config
       const { [agentId]: _, ...rest } = subAgentModels;
       onChange(rest);
     } else {
@@ -106,126 +275,548 @@ export function SubAgentSettings({ subAgentModels, onChange }: SubAgentSettingsP
     }
   };
 
-  const getConfig = (agentId: string): SubAgentModelConfig => {
+  const getModelConfig = (agentId: string): SubAgentModelConfig => {
     return subAgentModels[agentId] || {};
   };
 
-  const hasOverride = (agentId: string): boolean => {
+  const hasModelOverride = (agentId: string): boolean => {
     const config = subAgentModels[agentId];
     return Boolean(config?.provider && config?.model);
   };
 
+  // ── Editing form ──
+
+  if (editingAgent) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <h4 className="text-sm font-medium text-accent">
+            {editingAgent.isNew ? "Create New Agent" : `Edit: ${editingAgent.name}`}
+          </h4>
+          <div className="flex gap-2">
+            <Button variant="ghost" size="sm" onClick={cancelEditing}>
+              <X className="w-4 h-4 mr-1" /> Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleSave}
+              disabled={savingId === editingAgent.id}
+              className="bg-accent text-accent-foreground hover:bg-accent/90"
+            >
+              {savingId === editingAgent.id ? (
+                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+              ) : (
+                <Save className="w-4 h-4 mr-1" />
+              )}
+              Save
+            </Button>
+          </div>
+        </div>
+
+        {/* Basic Info */}
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">
+                ID {!editingAgent.isNew && <span className="text-[10px]">(read-only)</span>}
+              </label>
+              <Input
+                value={editingAgent.id}
+                onChange={(e) =>
+                  editingAgent.isNew && setEditingAgent({ ...editingAgent, id: e.target.value.replace(/[^a-z0-9_-]/g, "") })
+                }
+                readOnly={!editingAgent.isNew}
+                placeholder="my-agent"
+                className="bg-background border-border text-foreground h-9 font-mono text-xs"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Name</label>
+              <Input
+                value={editingAgent.name}
+                onChange={(e) => setEditingAgent({ ...editingAgent, name: e.target.value })}
+                placeholder="My Agent"
+                className="bg-background border-border text-foreground h-9"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground">Description</label>
+            <Input
+              value={editingAgent.description}
+              onChange={(e) => setEditingAgent({ ...editingAgent, description: e.target.value })}
+              placeholder="What this agent specializes in..."
+              className="bg-background border-border text-foreground h-9"
+            />
+          </div>
+        </div>
+
+        {/* System Prompt */}
+        <div className="space-y-1">
+          <label className="text-xs text-muted-foreground">System Prompt</label>
+          <Textarea
+            value={editingAgent.systemPrompt}
+            onChange={(e) => setEditingAgent({ ...editingAgent, systemPrompt: e.target.value })}
+            placeholder="You are a specialized agent for..."
+            className="bg-background border-border text-foreground font-mono text-xs min-h-[200px] resize-y"
+          />
+          <p className="text-[10px] text-muted-foreground">
+            {editingAgent.systemPrompt.length} characters
+          </p>
+        </div>
+
+        {/* Allowed Tools */}
+        <div className="space-y-2">
+          <label className="text-xs text-muted-foreground">
+            Allowed Tools ({editingAgent.allowedTools.length})
+          </label>
+          <div className="flex flex-wrap gap-1.5">
+            {editingAgent.allowedTools.map((tool) => (
+              <Badge
+                key={tool}
+                variant="secondary"
+                className="text-xs flex items-center gap-1 px-2 py-0.5"
+              >
+                {tool}
+                <button
+                  type="button"
+                  onClick={() => removeTool(tool)}
+                  className="hover:text-destructive"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </Badge>
+            ))}
+            {editingAgent.allowedTools.length === 0 && (
+              <span className="text-xs text-muted-foreground italic">
+                Empty = all tools allowed
+              </span>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Input
+              value={toolInput}
+              onChange={(e) => setToolInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addTool())}
+              placeholder="run_pty_cmd"
+              className="bg-background border-border text-foreground h-8 text-xs font-mono flex-1"
+            />
+            <Button variant="outline" size="sm" onClick={addTool} className="h-8 px-3 text-xs">
+              Add
+            </Button>
+          </div>
+        </div>
+
+        {/* Execution Config */}
+        <div className="space-y-3">
+          <label className="text-xs text-muted-foreground font-medium">Execution</label>
+          <div className="grid grid-cols-3 gap-3">
+            <div className="space-y-1">
+              <label className="text-[10px] text-muted-foreground">Max Iterations</label>
+              <Input
+                type="number"
+                min={1}
+                max={200}
+                value={editingAgent.maxIterations}
+                onChange={(e) =>
+                  setEditingAgent({ ...editingAgent, maxIterations: parseInt(e.target.value) || 50 })
+                }
+                className="bg-background border-border h-8 text-xs"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] text-muted-foreground">Timeout (sec)</label>
+              <Input
+                type="number"
+                min={0}
+                value={editingAgent.timeoutSecs ?? ""}
+                onChange={(e) =>
+                  setEditingAgent({
+                    ...editingAgent,
+                    timeoutSecs: e.target.value ? parseInt(e.target.value) : null,
+                  })
+                }
+                placeholder="600"
+                className="bg-background border-border h-8 text-xs"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] text-muted-foreground">Idle Timeout (sec)</label>
+              <Input
+                type="number"
+                min={0}
+                value={editingAgent.idleTimeoutSecs ?? ""}
+                onChange={(e) =>
+                  setEditingAgent({
+                    ...editingAgent,
+                    idleTimeoutSecs: e.target.value ? parseInt(e.target.value) : null,
+                  })
+                }
+                placeholder="180"
+                className="bg-background border-border h-8 text-xs"
+              />
+            </div>
+          </div>
+
+          <div className="flex gap-6">
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={editingAgent.readonly}
+                onCheckedChange={(v) => setEditingAgent({ ...editingAgent, readonly: v })}
+              />
+              <label className="text-xs text-muted-foreground">Read-only</label>
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={editingAgent.isBackground}
+                onCheckedChange={(v) => setEditingAgent({ ...editingAgent, isBackground: v })}
+              />
+              <label className="text-xs text-muted-foreground">Background</label>
+            </div>
+          </div>
+        </div>
+
+        {/* LLM Parameters */}
+        <div className="space-y-3">
+          <label className="text-xs text-muted-foreground font-medium">LLM Parameters</label>
+          <div className="space-y-1">
+            <label className="text-[10px] text-muted-foreground">Model</label>
+            <Input
+              value={editingAgent.model}
+              onChange={(e) => setEditingAgent({ ...editingAgent, model: e.target.value })}
+              placeholder="inherit (use main model)"
+              className="bg-background border-border h-8 text-xs font-mono"
+            />
+            <p className="text-[10px] text-muted-foreground">
+              &quot;inherit&quot; = use main agent model, &quot;fast&quot; = auto-pick fast model
+            </p>
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <div className="space-y-1">
+              <label className="text-[10px] text-muted-foreground">Temperature</label>
+              <Input
+                type="number"
+                min={0}
+                max={2}
+                step={0.1}
+                value={editingAgent.temperature ?? ""}
+                onChange={(e) =>
+                  setEditingAgent({
+                    ...editingAgent,
+                    temperature: e.target.value ? parseFloat(e.target.value) : null,
+                  })
+                }
+                placeholder="default"
+                className="bg-background border-border h-8 text-xs"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] text-muted-foreground">Max Tokens</label>
+              <Input
+                type="number"
+                min={256}
+                max={200000}
+                step={256}
+                value={editingAgent.maxTokens ?? ""}
+                onChange={(e) =>
+                  setEditingAgent({
+                    ...editingAgent,
+                    maxTokens: e.target.value ? parseInt(e.target.value) : null,
+                  })
+                }
+                placeholder="default"
+                className="bg-background border-border h-8 text-xs"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] text-muted-foreground">Top P</label>
+              <Input
+                type="number"
+                min={0}
+                max={1}
+                step={0.05}
+                value={editingAgent.topP ?? ""}
+                onChange={(e) =>
+                  setEditingAgent({
+                    ...editingAgent,
+                    topP: e.target.value ? parseFloat(e.target.value) : null,
+                  })
+                }
+                placeholder="default"
+                className="bg-background border-border h-8 text-xs"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Agent List ──
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="w-5 h-5 text-muted-foreground animate-spin" />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
-      <div className="space-y-2">
-        <h4 className="text-sm font-medium text-accent">Sub-Agent Model Overrides</h4>
-        <p className="text-xs text-muted-foreground">
-          Configure different models for specific sub-agents. By default, sub-agents inherit the
-          main agent&apos;s model. Changes apply to new sessions.
-        </p>
+      <div className="flex items-center justify-between">
+        <div className="space-y-1">
+          <h4 className="text-sm font-medium text-accent">Agents</h4>
+          <p className="text-xs text-muted-foreground">
+            Manage sub-agent definitions. Agents are stored as <code>.md</code> files in{" "}
+            <code>~/.golish/agents/</code>.
+          </p>
+        </div>
+        <Button
+          size="sm"
+          onClick={startCreating}
+          className="bg-accent text-accent-foreground hover:bg-accent/90"
+        >
+          <Plus className="w-4 h-4 mr-1" /> New Agent
+        </Button>
       </div>
 
-      <div className="space-y-4">
-        {KNOWN_SUB_AGENTS.map((agent) => {
-          const config = getConfig(agent.id);
-          const isConfigured = hasOverride(agent.id);
+      <div className="space-y-2">
+        {agents.map((agent) => {
+          const isExpanded = expandedIds.has(agent.id);
+          const modelConfig = getModelConfig(agent.id);
+          const hasOverride = hasModelOverride(agent.id);
 
           return (
             <div
               key={agent.id}
-              className="p-4 rounded-lg bg-muted border border-[var(--border-medium)] space-y-3"
+              className="rounded-lg bg-muted border border-[var(--border-medium)] overflow-hidden"
             >
-              <div className="flex items-center justify-between">
-                <div>
-                  <h5 className="text-sm font-medium text-foreground">{agent.name}</h5>
-                  <p className="text-xs text-muted-foreground">{agent.description}</p>
-                </div>
-                {isConfigured && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => updateSubAgent(agent.id, null)}
-                    className="text-muted-foreground hover:text-destructive"
-                    title="Clear override (use main model)"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
+              {/* Header row */}
+              <button
+                type="button"
+                onClick={() => toggleExpand(agent.id)}
+                className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-[var(--bg-hover)] transition-colors"
+              >
+                {isExpanded ? (
+                  <ChevronDown className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+                ) : (
+                  <ChevronRight className="w-4 h-4 text-muted-foreground flex-shrink-0" />
                 )}
-              </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label htmlFor={`${agent.id}-provider`} className="text-xs text-muted-foreground">
-                    Provider
-                  </label>
-                  <SimpleSelect
-                    id={`${agent.id}-provider`}
-                    value={config.provider || ""}
-                    onValueChange={(value) =>
-                      updateSubAgent(agent.id, {
-                        ...config,
-                        provider: value as AiProvider,
-                        // Clear model when provider changes
-                        model: value !== config.provider ? undefined : config.model,
-                      })
-                    }
-                    options={PROVIDER_OPTIONS}
-                    placeholder="Use main agent"
-                  />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-foreground">{agent.name}</span>
+                    <span className="text-[10px] font-mono text-muted-foreground/60">
+                      {agent.id}
+                    </span>
+                    {agent.is_system && (
+                      <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4">
+                        <Lock className="w-2.5 h-2.5 mr-0.5" /> system
+                      </Badge>
+                    )}
+                    {agent.source === "file" && (
+                      <Badge variant="secondary" className="text-[9px] px-1.5 py-0 h-4">
+                        file
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground truncate">{agent.description}</p>
                 </div>
 
-                <div className="space-y-1">
-                  <label htmlFor={`${agent.id}-model`} className="text-xs text-muted-foreground">
-                    Model
-                  </label>
-                  {config.provider ? (
-                    <div className="relative">
-                      <Input
-                        id={`${agent.id}-model`}
-                        type="text"
-                        value={config.model || ""}
-                        onChange={(e) =>
-                          updateSubAgent(agent.id, { ...config, model: e.target.value })
-                        }
-                        placeholder="Enter model name"
-                        list={`${agent.id}-models`}
-                        className="bg-background border-border text-foreground h-9"
-                      />
-                      <datalist id={`${agent.id}-models`}>
-                        {(MODEL_SUGGESTIONS[config.provider] || []).map((model) => (
-                          <option key={model} value={model} />
-                        ))}
-                      </datalist>
-                    </div>
-                  ) : (
-                    <Input
-                      disabled
-                      placeholder="Select provider first"
-                      className="bg-muted border-border text-muted-foreground h-9"
-                    />
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <span className="text-[10px] text-muted-foreground">
+                    {agent.allowed_tools.length} tools
+                  </span>
+                  {hasOverride && (
+                    <Badge variant="secondary" className="text-[9px]">
+                      model override
+                    </Badge>
                   )}
                 </div>
-              </div>
+              </button>
 
-              {isConfigured && (
-                <p className="text-xs text-[var(--success)]">
-                  Using {config.provider} / {config.model}
-                </p>
-              )}
-              {!isConfigured && (
-                <p className="text-xs text-muted-foreground">
-                  Using main agent&apos;s model (default)
-                </p>
+              {/* Expanded detail */}
+              {isExpanded && (
+                <div className="px-4 pb-4 pt-1 border-t border-[var(--border-medium)] space-y-4">
+                  {/* Quick info */}
+                  <div className="grid grid-cols-4 gap-3 text-xs">
+                    <div>
+                      <span className="text-muted-foreground">Model:</span>{" "}
+                      <span className="font-mono">{agent.model || "inherit"}</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Max iter:</span>{" "}
+                      {agent.max_iterations}
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Timeout:</span>{" "}
+                      {agent.timeout_secs ? `${agent.timeout_secs}s` : "none"}
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Idle:</span>{" "}
+                      {agent.idle_timeout_secs ? `${agent.idle_timeout_secs}s` : "none"}
+                    </div>
+                  </div>
+
+                  {/* Tools */}
+                  {agent.allowed_tools.length > 0 && (
+                    <div className="space-y-1">
+                      <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                        Allowed Tools
+                      </span>
+                      <div className="flex flex-wrap gap-1">
+                        {agent.allowed_tools.map((tool) => (
+                          <Badge
+                            key={tool}
+                            variant="secondary"
+                            className="text-[10px] font-mono px-1.5 py-0"
+                          >
+                            {tool}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Runtime model override (settings-based) */}
+                  <div className="space-y-2 p-3 rounded bg-background border border-[var(--border-medium)]">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                        Runtime Model Override
+                      </span>
+                      {hasOverride && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => updateModelOverride(agent.id, null)}
+                          className="h-6 px-2 text-muted-foreground hover:text-destructive"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </Button>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <CustomSelect
+                        value={modelConfig.provider || ""}
+                        onChange={(value) =>
+                          updateModelOverride(agent.id, {
+                            ...modelConfig,
+                            provider: value as AiProvider,
+                            model: value !== modelConfig.provider ? undefined : modelConfig.model,
+                          })
+                        }
+                        options={PROVIDER_OPTIONS}
+                        placeholder="Use default"
+                      />
+                      {modelConfig.provider ? (
+                        <div className="relative">
+                          <Input
+                            value={modelConfig.model || ""}
+                            onChange={(e) =>
+                              updateModelOverride(agent.id, {
+                                ...modelConfig,
+                                model: e.target.value,
+                              })
+                            }
+                            placeholder="Enter model name"
+                            list={`override-${agent.id}-models`}
+                            className="bg-background border-border h-9 text-xs"
+                          />
+                          <datalist id={`override-${agent.id}-models`}>
+                            {(MODEL_SUGGESTIONS[modelConfig.provider] || []).map((m) => (
+                              <option key={m} value={m} />
+                            ))}
+                          </datalist>
+                        </div>
+                      ) : (
+                        <Input
+                          disabled
+                          placeholder="Select provider first"
+                          className="bg-muted border-border h-9 text-xs"
+                        />
+                      )}
+                    </div>
+                    {hasOverride && (
+                      <p className="text-[10px] text-[var(--success)]">
+                        Runtime override: {modelConfig.provider} / {modelConfig.model}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* LLM params if set */}
+                  {(agent.temperature != null || agent.max_tokens != null || agent.top_p != null) && (
+                    <div className="flex gap-4 text-xs">
+                      {agent.temperature != null && (
+                        <span>
+                          <span className="text-muted-foreground">temp:</span> {agent.temperature}
+                        </span>
+                      )}
+                      {agent.max_tokens != null && (
+                        <span>
+                          <span className="text-muted-foreground">max_tokens:</span>{" "}
+                          {agent.max_tokens}
+                        </span>
+                      )}
+                      {agent.top_p != null && (
+                        <span>
+                          <span className="text-muted-foreground">top_p:</span> {agent.top_p}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* File path */}
+                  {agent.path && (
+                    <p className="text-[10px] text-muted-foreground/50 font-mono truncate">
+                      {agent.path}
+                    </p>
+                  )}
+
+                  {/* Action buttons */}
+                  <div className="flex gap-2 pt-1">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => startEditing(agent)}
+                      className="h-7 text-xs"
+                    >
+                      <Edit3 className="w-3 h-3 mr-1" /> Edit Definition
+                    </Button>
+                    {!agent.is_system && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDelete(agent)}
+                        className="h-7 text-xs text-muted-foreground hover:text-destructive"
+                      >
+                        <Trash2 className="w-3 h-3 mr-1" /> Delete
+                      </Button>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
           );
         })}
       </div>
 
+      {agents.length === 0 && (
+        <div className="text-center py-8">
+          <p className="text-sm text-muted-foreground">No agents found.</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Click &quot;New Agent&quot; to create one or restart to seed defaults.
+          </p>
+        </div>
+      )}
+
       <div className="text-xs text-muted-foreground border-t border-[var(--border-medium)] pt-4">
         <p>
-          <strong>Tip:</strong> Use a faster/cheaper model for sub-agents that do simpler tasks. For
-          example, use GPT-4o-mini for the coder agent while keeping Claude Opus for the main agent.
+          <strong>Tip:</strong> Agent definitions are stored as Markdown files with YAML frontmatter.
+          System agents (Worker, Memorist, Reflector) can be edited but not deleted.
+          Changes take effect on the next session.
         </p>
       </div>
     </div>

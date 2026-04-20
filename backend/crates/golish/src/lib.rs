@@ -30,8 +30,9 @@ use ai::{
     generate_commit_message, get_agent_mode, get_ai_conversation_length,
     get_ai_conversation_length_session, get_api_request_stats, get_approval_patterns,
     get_audit_log, get_db_token_usage_stats, get_memory_count, get_tool_call_stats,
-    list_recent_memories, search_memories,
+    get_usage_by_agent, list_recent_memories, search_memories,
     restore_ai_conversation,
+    list_agent_definitions, read_agent_prompt, save_agent_definition, delete_agent_definition, seed_agents,
     get_available_tools, get_context_summary, get_context_trim_config, get_context_utilization,
     get_hitl_config, get_loop_detector_stats, get_loop_protection_config, get_openai_api_key,
     get_openrouter_api_key, get_plan, get_project_settings, get_remaining_tokens,
@@ -49,6 +50,8 @@ use ai::{
     set_ai_session_persistence, set_hitl_config, set_loop_protection_config, set_sub_agent_model,
     set_tool_policy, set_tool_policy_config, shutdown_ai_agent, shutdown_ai_session,
     check_recon_tools_cmd, run_recon_pipeline, signal_frontend_ready,
+    set_use_agents, get_use_agents,
+    set_execution_mode, get_execution_mode,
     update_ai_workspace,
 };
 use commands::*;
@@ -269,6 +272,11 @@ pub fn run_gui() {
                 }
             }
         });
+    }
+
+    // Seed default agent .md files on first run
+    if let Err(e) = golish_sub_agents::discovery::seed_default_agent_files() {
+        tracing::warn!(error = %e, "Failed to seed default agent files");
     }
 
     // Initialize HistoryManager in the background (deferred to avoid blocking startup)
@@ -874,10 +882,17 @@ pub fn run_gui() {
             // Analytics / DB commands
             get_tool_call_stats,
             get_db_token_usage_stats,
+            get_usage_by_agent,
             get_audit_log,
             search_memories,
             list_recent_memories,
             get_memory_count,
+            // Agent definition management
+            list_agent_definitions,
+            read_agent_prompt,
+            save_agent_definition,
+            delete_agent_definition,
+            seed_agents,
             // HITL commands
             get_approval_patterns,
             get_tool_approval_pattern,
@@ -900,6 +915,10 @@ pub fn run_gui() {
             get_agent_mode,
             set_agent_mode,
             save_project_agent_mode,
+            set_use_agents,
+            get_use_agents,
+            set_execution_mode,
+            get_execution_mode,
             // Debug commands
             get_api_request_stats,
             // Plan management commands
@@ -972,6 +991,13 @@ pub fn run_gui() {
             read_skill_body,
             list_skill_files,
             read_skill_file,
+            save_skill,
+            delete_skill,
+            // Rule commands
+            list_rules,
+            read_rule_body,
+            save_rule,
+            delete_rule,
             // File commands
             list_workspace_files,
             list_directory,
@@ -1268,6 +1294,9 @@ pub fn run_gui() {
             tools::pipeline::pipeline_delete,
             tools::pipeline::pipeline_load,
             tools::pipeline::pipeline_execute,
+            tools::pipeline::pipeline_list_templates,
+            tools::pipeline::pipeline_save_template,
+            tools::pipeline::pipeline_delete_template,
             tools::scan_queue::scan_queue_list,
             tools::scan_queue::scan_queue_upsert,
             tools::scan_queue::scan_queue_save_all,

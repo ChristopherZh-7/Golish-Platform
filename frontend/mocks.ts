@@ -234,8 +234,6 @@ const mockSubAgents = [
   { id: "explorer", name: "Code Explorer", description: "Explores and understands codebases" },
   { id: "debugger", name: "Debug Assistant", description: "Helps debug issues" },
   { id: "documenter", name: "Documentation Writer", description: "Generates documentation" },
-  { id: "js_harvester", name: "JS Harvester", description: "AI-driven comprehensive JavaScript collection from target URLs" },
-  { id: "js_analyzer", name: "JS Analyzer", description: "Read-only security analysis of collected JavaScript assets" },
 ];
 
 // Mock sessions
@@ -862,13 +860,13 @@ export async function simulateAiResponseWithSubAgent(
 }
 
 /**
- * Simulate the JS Harvester + Analyzer sub-agent flow.
+ * Simulate the pentester sub-agent flow for JS collection + analysis.
  * Triggered automatically when user sends a message containing "js" or "analyze".
  */
 export async function simulateJsHarvest(): Promise<void> {
   const turnId = `mock-turn-${Date.now()}`;
-  const harvesterId = `mock-harvester-${Date.now()}`;
-  const analyzerId = `mock-analyzer-${Date.now()}`;
+  const harvesterId = `mock-pentester-js-${Date.now()}`;
+  const analyzerId = `mock-pentester-analysis-${Date.now()}`;
   const harvesterReqId = `mock-sub-req-harvest-${Date.now()}`;
   const analyzerReqId = `mock-sub-req-analyze-${Date.now()}`;
   const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -888,10 +886,10 @@ export async function simulateJsHarvest(): Promise<void> {
   await emitAiEvent({ type: "text_delta", delta: "I'll collect all JavaScript files from example.com and then analyze them for security issues.\n\n", accumulated: "I'll collect all JavaScript files from example.com and then analyze them for security issues.\n\n" });
   await delay(300);
 
-  // === Phase 1: JS Harvester ===
-  await emitAiEvent({ type: "tool_request", tool_name: "sub_agent_js_harvester", args: { task: "Collect ALL JS files from https://example.com" }, request_id: harvesterReqId });
+  // === Phase 1: Pentester — JS Collection ===
+  await emitAiEvent({ type: "tool_request", tool_name: "sub_agent_pentester", args: { task: "Collect ALL JS files from https://example.com" }, request_id: harvesterReqId });
   await delay(200);
-  await emitAiEvent({ type: "sub_agent_started", agent_id: harvesterId, agent_name: "JS Harvester", task: "Collect ALL JS files from https://example.com", depth: 1, parent_request_id: harvesterReqId });
+  await emitAiEvent({ type: "sub_agent_started", agent_id: harvesterId, agent_name: "Pentester", task: "Collect ALL JS files from https://example.com", depth: 1, parent_request_id: harvesterReqId });
   await delay(300);
   await emitAiEvent({ type: "sub_agent_text_delta", agent_id: harvesterId, delta: "Probing target for bundler type...", accumulated: "Probing target for bundler type...", parent_request_id: harvesterReqId });
   await delay(200);
@@ -910,13 +908,13 @@ export async function simulateJsHarvest(): Promise<void> {
   const harvesterResponse = "Collection complete: 58 JS files (2.8MB) + 6 source maps. Strategy: recursive script (no manifest found). 2 files require authentication.";
   await emitAiEvent({ type: "sub_agent_completed", agent_id: harvesterId, response: harvesterResponse, duration_ms: 8500, parent_request_id: harvesterReqId });
   await delay(200);
-  await emitAiEvent({ type: "tool_result", tool_name: "sub_agent_js_harvester", result: harvesterResponse, success: true, request_id: harvesterReqId });
+  await emitAiEvent({ type: "tool_result", tool_name: "sub_agent_pentester", result: harvesterResponse, success: true, request_id: harvesterReqId });
   await delay(400);
 
-  // === Phase 2: JS Analyzer ===
-  await emitAiEvent({ type: "tool_request", tool_name: "sub_agent_js_analyzer", args: { task: "Analyze collected JS in .golish/js-assets/example.com/ for security issues" }, request_id: analyzerReqId });
+  // === Phase 2: Pentester — JS Security Analysis ===
+  await emitAiEvent({ type: "tool_request", tool_name: "sub_agent_pentester", args: { task: "Analyze collected JS in .golish/js-assets/example.com/ for security issues" }, request_id: analyzerReqId });
   await delay(200);
-  await emitAiEvent({ type: "sub_agent_started", agent_id: analyzerId, agent_name: "JS Analyzer", task: "Security analysis of 58 collected JS files", depth: 1, parent_request_id: analyzerReqId });
+  await emitAiEvent({ type: "sub_agent_started", agent_id: analyzerId, agent_name: "Pentester", task: "Security analysis of 58 collected JS files", depth: 1, parent_request_id: analyzerReqId });
   await delay(300);
   await emitAiEvent({ type: "sub_agent_text_delta", agent_id: analyzerId, delta: "Scanning for API endpoints and secrets...", accumulated: "Scanning for API endpoints and secrets...", parent_request_id: analyzerReqId });
   await delay(200);
@@ -935,7 +933,7 @@ export async function simulateJsHarvest(): Promise<void> {
 
   await emitAiEvent({ type: "sub_agent_completed", agent_id: analyzerId, response: analyzerResponse, duration_ms: 6200, parent_request_id: analyzerReqId });
   await delay(200);
-  await emitAiEvent({ type: "tool_result", tool_name: "sub_agent_js_analyzer", result: analyzerResponse, success: true, request_id: analyzerReqId });
+  await emitAiEvent({ type: "tool_result", tool_name: "sub_agent_pentester", result: analyzerResponse, success: true, request_id: analyzerReqId });
   await delay(400);
 
   // === Final summary in main chat ===
@@ -1058,8 +1056,8 @@ export async function mockPipelineProgressBlock(): Promise<void> {
         status: "running", startedAt: now,
         subAgents: [
           {
-            agentId: "js_harvester_001",
-            agentName: "JS Harvester",
+            agentId: "pentester_js_001",
+            agentName: "Pentester",
             parentRequestId: `mock-pipeline-harvester-${Date.now()}`,
             task: "Collect ALL JS files from https://admin.target.example.com",
             depth: 1,
@@ -1082,8 +1080,8 @@ export async function mockPipelineProgressBlock(): Promise<void> {
             durationMs: 8500,
           },
           {
-            agentId: "js_analyzer_001",
-            agentName: "JS Analyzer",
+            agentId: "pentester_analysis_001",
+            agentName: "Pentester",
             parentRequestId: `mock-pipeline-analyzer-${Date.now()}`,
             task: "Security analysis of 42 collected JS files from admin.target.example.com",
             depth: 1,
@@ -1126,15 +1124,15 @@ export async function mockSubAgentBlocks(): Promise<void> {
   useStore.setState((s) => {
     if (!s.timelines[sessionId]) s.timelines[sessionId] = [];
 
-    // Sub-agent 1: JS Harvester (completed)
+    // Sub-agent 1: Pentester JS collection (completed)
     s.timelines[sessionId].push({
       id: `mock-sa-harvester-${Date.now()}`,
       type: "sub_agent_activity",
       timestamp: now,
       batchId,
       data: {
-        agentId: "js_harvester_001",
-        agentName: "JS Harvester",
+        agentId: "pentester_js_001",
+        agentName: "Pentester",
         parentRequestId: `mock-parent-req-${Date.now()}`,
         task: "Collect ALL JS files from https://admin.target.example.com",
         depth: 1,
@@ -1158,15 +1156,15 @@ export async function mockSubAgentBlocks(): Promise<void> {
       },
     });
 
-    // Sub-agent 2: JS Analyzer (running)
+    // Sub-agent 2: Pentester JS analysis (running)
     s.timelines[sessionId].push({
       id: `mock-sa-analyzer-${Date.now() + 1}`,
       type: "sub_agent_activity",
       timestamp: new Date(Date.now() + 10).toISOString(),
       batchId,
       data: {
-        agentId: "js_analyzer_001",
-        agentName: "JS Analyzer",
+        agentId: "pentester_analysis_001",
+        agentName: "Pentester",
         parentRequestId: `mock-parent-req-${Date.now() + 1}`,
         task: "Security analysis of 42 collected JS files from admin.target.example.com",
         depth: 1,

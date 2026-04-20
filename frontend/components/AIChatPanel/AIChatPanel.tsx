@@ -11,12 +11,15 @@ import {
   Cpu,
   Image,
   Loader2,
+  MessageSquare,
   Plus,
   Search,
   Square,
+  Users,
   Wrench,
   X,
   XCircle,
+  Zap,
 } from "lucide-react";
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -42,6 +45,8 @@ import {
   sendPromptSession,
   sendPromptWithAttachments,
   setAgentMode,
+  setExecutionMode as setExecutionModeBackend,
+  setUseAgents as setUseAgentsBackend,
   shutdownAiSession,
 } from "@/lib/ai";
 import { logger } from "@/lib/logger";
@@ -400,13 +405,14 @@ const MessageBlock = memo(function MessageBlock({
               }
 
               // Tool segment
+              const messageComplete = !message.isStreaming;
               if (!planInserted && shouldShowPlan) {
                 planInserted = true;
                 return (
                   <React.Fragment key={`seg-${idx}`}>
                     <TaskPlanCard plan={taskPlan!} />
                     {renderPendingApprovalCards()}
-                    <ToolCallSummary toolCalls={seg.calls} requestIds={seg.requestIds} />
+                    <ToolCallSummary toolCalls={seg.calls} requestIds={seg.requestIds} isMessageComplete={messageComplete} />
                   </React.Fragment>
                 );
               }
@@ -414,11 +420,12 @@ const MessageBlock = memo(function MessageBlock({
               return (
                 <React.Fragment key={`seg-${idx}`}>
                   {renderPendingApprovalCards()}
-                  <ToolCallSummary toolCalls={seg.calls} requestIds={seg.requestIds} />
+                  <ToolCallSummary toolCalls={seg.calls} requestIds={seg.requestIds} isMessageComplete={messageComplete} />
                 </React.Fragment>
               );
             })}
             {shouldShowPlan && !planInserted && <TaskPlanCard plan={taskPlan!} />}
+            {pendingCalls.length > 0 && !segments.some(s => s.kind === "tools") && renderPendingApprovalCards()}
           </div>
         );
       })()}
@@ -464,6 +471,10 @@ export const AIChatPanel = memo(function AIChatPanel() {
   useEffect(() => {
     if (storeApprovalMode) setApprovalMode(storeApprovalMode as ApprovalMode);
   }, [storeApprovalMode]);
+
+  const [chatAgentMode, setChatAgentMode] = useState<AgentMode>("default");
+  const [chatExecutionMode, setChatExecutionMode] = useState<"chat" | "task">("chat");
+  const [chatUseSubAgents, setChatUseSubAgents] = useState(false);
 
   const [contextUsage, setContextUsage] = useState<{
     utilization: number;
@@ -785,6 +796,9 @@ export const AIChatPanel = memo(function AIChatPanel() {
                   ? event.result
                   : JSON.stringify(event.result, null, 2);
               store.updateMessageToolResult(convId, event.tool_name, resultStr, event.success);
+              if (pendingApprovalRef.current?.requestId === event.request_id) {
+                setPendingApproval(null);
+              }
               break;
             }
 
@@ -1731,6 +1745,49 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
     []
   );
 
+  const handleAgentModeChange = useCallback(
+    (mode: AgentMode) => {
+      if (mode === chatAgentMode) return;
+      setChatAgentMode(mode);
+      const conv = useStore.getState().activeConversationId
+        ? useStore.getState().conversations[useStore.getState().activeConversationId!]
+        : null;
+      if (!conv) return;
+      setAgentMode(conv.aiSessionId, mode).catch(console.error);
+      if (mode === "auto-approve") {
+        setApprovalMode("run-all");
+        useStore.getState().setApprovalMode("run-all");
+      } else {
+        setApprovalMode("ask");
+        useStore.getState().setApprovalMode("ask");
+      }
+    },
+    [chatAgentMode]
+  );
+
+  const handleExecutionModeChange = useCallback(
+    (mode: "chat" | "task") => {
+      if (mode === chatExecutionMode) return;
+      setChatExecutionMode(mode);
+      const conv = useStore.getState().activeConversationId
+        ? useStore.getState().conversations[useStore.getState().activeConversationId!]
+        : null;
+      if (!conv) return;
+      setExecutionModeBackend(conv.aiSessionId, mode).catch(console.error);
+    },
+    [chatExecutionMode]
+  );
+
+  const handleToggleSubAgents = useCallback(() => {
+    const newValue = !chatUseSubAgents;
+    setChatUseSubAgents(newValue);
+    const conv = useStore.getState().activeConversationId
+      ? useStore.getState().conversations[useStore.getState().activeConversationId!]
+      : null;
+    if (!conv) return;
+    setUseAgentsBackend(conv.aiSessionId, newValue).catch(console.error);
+  }, [chatUseSubAgents]);
+
   const handleStop = useCallback(() => {
     if (!activeConv) return;
     shutdownAiSession(activeConv.aiSessionId).catch(() => {});
@@ -2059,14 +2116,91 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
           {/* Bottom toolbar */}
           <div className="flex items-center justify-between px-2.5 pb-2">
             <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                className="flex items-center gap-1 px-2 py-1 rounded-md bg-muted text-[11px] text-foreground font-medium hover:bg-[var(--bg-hover)] transition-colors"
-              >
-                <span className="text-accent">∞</span>
-                Agent
-                <ChevronDown className="w-2.5 h-2.5 text-muted-foreground" />
-              </button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className={cn(
+                      "flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors",
+                      chatExecutionMode === "task"
+                        ? "bg-[var(--ansi-magenta)]/10 text-[var(--ansi-magenta)] hover:bg-[var(--ansi-magenta)]/20"
+                        : "bg-muted text-foreground hover:bg-[var(--bg-hover)]"
+                    )}
+                  >
+                    {chatExecutionMode === "task" ? (
+                      <Zap className="w-3 h-3" />
+                    ) : (
+                      <MessageSquare className="w-3 h-3" />
+                    )}
+                    {chatExecutionMode === "task" ? "Task" : "Chat"}
+                    <ChevronDown className="w-2.5 h-2.5 text-muted-foreground" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  align="start"
+                  side="top"
+                  className="bg-card border-[var(--border-medium)] min-w-[220px]"
+                >
+                  <DropdownMenuItem
+                    onClick={() => {
+                      handleExecutionModeChange("chat");
+                      handleAgentModeChange("default");
+                    }}
+                    className={cn(
+                      "text-xs cursor-pointer flex items-start gap-2 py-2.5",
+                      chatExecutionMode === "chat"
+                        ? "text-accent bg-[var(--accent-dim)]"
+                        : "text-foreground hover:text-accent"
+                    )}
+                  >
+                    <MessageSquare className="w-4 h-4 mt-0.5 shrink-0" />
+                    <div className="flex flex-col">
+                      <span className="font-medium">Chat</span>
+                      <span className="text-[10px] text-muted-foreground">Conversational assistant with tools</span>
+                    </div>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => {
+                      handleExecutionModeChange("task");
+                      handleAgentModeChange("auto-approve");
+                    }}
+                    className={cn(
+                      "text-xs cursor-pointer flex items-start gap-2 py-2.5",
+                      chatExecutionMode === "task"
+                        ? "text-[var(--ansi-magenta)] bg-[var(--ansi-magenta)]/10"
+                        : "text-foreground hover:text-accent"
+                    )}
+                  >
+                    <Zap className="w-4 h-4 mt-0.5 shrink-0" />
+                    <div className="flex flex-col">
+                      <span className="font-medium">Task</span>
+                      <span className="text-[10px] text-muted-foreground">Auto: plan → execute → refine → report</span>
+                    </div>
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator className="bg-[var(--border-medium)]" />
+                  <DropdownMenuItem
+                    onClick={handleToggleSubAgents}
+                    className="text-xs cursor-pointer flex items-center gap-2 py-2"
+                  >
+                    <Users className={cn("w-4 h-4 shrink-0", chatUseSubAgents ? "text-[var(--ansi-green)]" : "text-muted-foreground")} />
+                    <div className="flex flex-col flex-1">
+                      <span className="font-medium">Sub-Agents</span>
+                      <span className="text-[10px] text-muted-foreground">
+                        {chatUseSubAgents ? "Enabled" : "Disabled"}
+                      </span>
+                    </div>
+                    <div className={cn(
+                      "w-7 h-4 rounded-full transition-colors duration-200 flex items-center shrink-0",
+                      chatUseSubAgents ? "bg-[var(--ansi-green)]/30 justify-end" : "bg-muted justify-start"
+                    )}>
+                      <div className={cn(
+                        "w-3 h-3 rounded-full mx-0.5 transition-colors duration-200",
+                        chatUseSubAgents ? "bg-[var(--ansi-green)]" : "bg-muted-foreground/50"
+                      )} />
+                    </div>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
 
               {/* Model selector dropdown */}
               <DropdownMenu>

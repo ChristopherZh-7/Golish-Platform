@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use tokio::sync::RwLock;
 
-use super::schema::QbitSettings;
+use super::schema::GolishSettings;
 
 /// Embedded template for first-run generation.
 const TEMPLATE: &str = include_str!("template.toml");
@@ -27,7 +27,7 @@ pub fn settings_path() -> PathBuf {
 /// Manages settings loading, interpolation, and persistence.
 pub struct SettingsManager {
     /// Cached settings (with env vars resolved)
-    settings: RwLock<QbitSettings>,
+    settings: RwLock<GolishSettings>,
 
     /// Path to the settings file
     path: PathBuf,
@@ -54,16 +54,16 @@ impl SettingsManager {
     /// This is useful when you need settings outside of the Tauri app context,
     /// such as in CLI commands or evaluation scenarios.
     #[allow(dead_code)] // Used by evals feature
-    pub async fn load_standalone() -> Result<QbitSettings> {
+    pub async fn load_standalone() -> Result<GolishSettings> {
         let path = settings_path();
         Self::load_from_path(&path).await
     }
 
     /// Load settings from a specific path.
-    async fn load_from_path(path: &PathBuf) -> Result<QbitSettings> {
+    async fn load_from_path(path: &PathBuf) -> Result<GolishSettings> {
         if !path.exists() {
             tracing::debug!("Settings file not found at {:?}, using defaults", path);
-            return Ok(QbitSettings::default());
+            return Ok(GolishSettings::default());
         }
 
         let contents = tokio::fs::read_to_string(path)
@@ -71,7 +71,7 @@ impl SettingsManager {
             .context("Failed to read settings file")?;
 
         // Parse into typed struct
-        let mut settings: QbitSettings =
+        let mut settings: GolishSettings =
             toml::from_str(&contents).context("Failed to deserialize settings")?;
 
         // Resolve environment variable references
@@ -82,7 +82,7 @@ impl SettingsManager {
     }
 
     /// Resolve $ENV_VAR references in string fields.
-    fn resolve_env_vars(settings: &mut QbitSettings) {
+    fn resolve_env_vars(settings: &mut GolishSettings) {
         // Helper to resolve a single optional string
         fn resolve_opt(value: &mut Option<String>) {
             if let Some(v) = value {
@@ -127,12 +127,12 @@ impl SettingsManager {
     }
 
     /// Get the current settings (read-only).
-    pub async fn get(&self) -> QbitSettings {
+    pub async fn get(&self) -> GolishSettings {
         self.settings.read().await.clone()
     }
 
     /// Update settings and persist to disk.
-    pub async fn update(&self, new_settings: QbitSettings) -> Result<()> {
+    pub async fn update(&self, new_settings: GolishSettings) -> Result<()> {
         // Update cached settings (short-lived write lock)
         *self.settings.write().await = new_settings.clone();
 
@@ -191,7 +191,7 @@ impl SettingsManager {
 
     /// Reset to defaults and persist.
     pub async fn reset(&self) -> Result<()> {
-        self.update(QbitSettings::default()).await
+        self.update(GolishSettings::default()).await
     }
 
     /// Check if settings file exists.
@@ -324,7 +324,7 @@ pub fn get_with_env_fallback(
 ///
 /// Should be called early in app startup, after settings are loaded but
 /// before any HTTP clients are created.
-pub fn apply_proxy_env(settings: &QbitSettings) {
+pub fn apply_proxy_env(settings: &GolishSettings) {
     if let Some(ref proxy_url) = settings.network.proxy_url {
         if !proxy_url.is_empty() {
             std::env::set_var("HTTP_PROXY", proxy_url);
@@ -420,7 +420,7 @@ mod tests {
     #[tokio::test]
     async fn test_settings_manager_defaults() {
         let manager = SettingsManager {
-            settings: RwLock::new(QbitSettings::default()),
+            settings: RwLock::new(GolishSettings::default()),
             path: PathBuf::from("/nonexistent/settings.toml"),
             write_mutex: tokio::sync::Mutex::new(()),
         };
@@ -436,7 +436,7 @@ mod tests {
     #[tokio::test]
     async fn test_settings_manager_get_value() {
         let manager = SettingsManager {
-            settings: RwLock::new(QbitSettings::default()),
+            settings: RwLock::new(GolishSettings::default()),
             path: PathBuf::from("/nonexistent/settings.toml"),
             write_mutex: tokio::sync::Mutex::new(()),
         };

@@ -23,8 +23,8 @@ use golish_web::TavilyState;
 /// Configuration options for the ToolRegistry.
 #[derive(Clone)]
 pub struct ToolRegistryConfig {
-    /// QbitSettings instance for configuration.
-    pub settings: golish_settings::QbitSettings,
+    /// GolishSettings instance for configuration.
+    pub settings: golish_settings::GolishSettings,
 }
 
 /// Tool registry that manages and executes tools.
@@ -53,7 +53,7 @@ impl ToolRegistry {
         Self::with_config(
             workspace,
             ToolRegistryConfig {
-                settings: golish_settings::QbitSettings::default(),
+                settings: golish_settings::GolishSettings::default(),
             },
         )
         .await
@@ -231,7 +231,7 @@ mod tests {
     #[tokio::test]
     async fn test_web_search_enabled_registers_tools() {
         let dir = tempdir().unwrap();
-        let mut settings = golish_settings::QbitSettings::default();
+        let mut settings = golish_settings::GolishSettings::default();
         settings.tools.web_search = true;
 
         let config = ToolRegistryConfig { settings };
@@ -246,7 +246,7 @@ mod tests {
     #[tokio::test]
     async fn test_tavily_api_key_registers_tools_without_setting() {
         let dir = tempdir().unwrap();
-        let mut settings = golish_settings::QbitSettings::default();
+        let mut settings = golish_settings::GolishSettings::default();
         // web_search is false (default), but API key is configured
         settings.tools.web_search = false;
         settings.api_keys.tavily = Some("test-api-key".to_string());

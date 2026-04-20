@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use parking_lot::RwLock;
-use golish_core::runtime::{ApprovalResult, QbitRuntime, RuntimeError, RuntimeEvent};
+use golish_core::runtime::{ApprovalResult, GolishRuntime, RuntimeError, RuntimeEvent};
 use std::any::Any;
 use std::io::{self, Write};
 use tokio::sync::mpsc;
@@ -31,7 +31,7 @@ impl CliRuntime {
 }
 
 #[async_trait]
-impl QbitRuntime for CliRuntime {
+impl GolishRuntime for CliRuntime {
     fn emit(&self, event: RuntimeEvent) -> Result<(), RuntimeError> {
         // Send to channel for CLI event handler to process
         self.event_tx

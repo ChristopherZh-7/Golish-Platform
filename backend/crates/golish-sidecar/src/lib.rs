@@ -1,6 +1,6 @@
 //! Sidecar Context Capture System
 //!
-//! A background system that passively captures session context during Qbit agent
+//! A background system that passively captures session context during Golish agent
 //! interactions using a simple markdown-based storage approach.
 //!
 //! # Architecture

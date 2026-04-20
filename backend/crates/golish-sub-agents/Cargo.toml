@@ -42,5 +42,12 @@ golish-llm-providers = { workspace = true }
 # JSON repair for malformed LLM output
 golish-json-repair = { path = "../golish-json-repair" }
 
+# Agent file loading (YAML frontmatter + filesystem)
+serde_yaml = { workspace = true }
+dirs = { workspace = true }
+
+# Skills injection
+golish-skills = { path = "../golish-skills" }
+
 [dev-dependencies]
 tempfile = { workspace = true }

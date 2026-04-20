@@ -11,7 +11,7 @@ use crate::runtime::TauriRuntime;
 use crate::state::AppState;
 use golish_ai::TranscriptWriter;
 use golish_context::ContextManagerConfig;
-use golish_core::runtime::QbitRuntime;
+use golish_core::runtime::GolishRuntime;
 
 /// Initialize the AI agent with the specified configuration.
 ///
@@ -49,7 +49,7 @@ pub async fn init_ai_agent(
     // Phase 5: Use runtime-based constructor
     // TauriRuntime handles event emission via Tauri's event system
     let app_for_tools = app.clone();
-    let runtime: Arc<dyn QbitRuntime> = Arc::new(TauriRuntime::new(app));
+    let runtime: Arc<dyn GolishRuntime> = Arc::new(TauriRuntime::new(app));
 
     // Store runtime in AiState (for potential future use by other components)
     *state.ai_state.runtime.write().await = Some(runtime.clone());
@@ -104,7 +104,7 @@ pub async fn init_ai_agent_unified(
 
     // Create runtime for event emission
     let app_for_tools = app.clone();
-    let runtime: Arc<dyn QbitRuntime> = Arc::new(TauriRuntime::new(app));
+    let runtime: Arc<dyn GolishRuntime> = Arc::new(TauriRuntime::new(app));
     *state.ai_state.runtime.write().await = Some(runtime.clone());
 
     let workspace_path: std::path::PathBuf = config.workspace().into();
@@ -400,7 +400,7 @@ pub async fn init_ai_session(
 
     // Create runtime for event emission
     let app_for_tools = app.clone();
-    let runtime: Arc<dyn QbitRuntime> = Arc::new(TauriRuntime::new(app));
+    let runtime: Arc<dyn GolishRuntime> = Arc::new(TauriRuntime::new(app));
 
     // Load shared components config from application settings
     // This includes context management config and shell override
@@ -763,6 +763,10 @@ pub async fn get_session_ai_config(
 /// This is the session-specific version of send_ai_prompt that routes to
 /// the correct agent bridge based on session_id.
 ///
+/// Execution mode dispatch:
+/// - **Chat**: normal agentic loop (conversational with tools)
+/// - **Task**: PentAGI-style automated orchestration (Generator → Subtasks → Refiner → Reporter)
+///
 /// IMPORTANT: Uses get_session_bridge() to clone the Arc and release the map
 /// lock immediately. This allows other sessions to initialize/shutdown while
 /// this session is executing, enabling true concurrent multi-tab agent execution.
@@ -791,20 +795,61 @@ pub async fn send_ai_prompt_session(
             super::ai_session_not_initialized_error(&session_id)
         })?;
 
+    let mode = bridge.get_execution_mode().await;
+
     tracing::info!(
         message = "[send_ai_prompt_session] Got bridge, executing prompt",
         session_id = %session_id,
+        execution_mode = %mode,
     );
 
-    // Execute without holding the map lock - other sessions can init/shutdown
-    bridge.execute(&prompt).await.map_err(|e| {
-        tracing::error!(
-            message = "[send_ai_prompt_session] Execution error",
-            session_id = %session_id,
-            error = %e,
-        );
-        e.to_string()
-    })
+    match mode {
+        golish_ai::execution_mode::ExecutionMode::Chat => {
+            bridge.execute(&prompt).await.map_err(|e| {
+                tracing::error!(
+                    message = "[send_ai_prompt_session] Chat execution error",
+                    session_id = %session_id,
+                    error = %e,
+                );
+                e.to_string()
+            })
+        }
+        golish_ai::execution_mode::ExecutionMode::Task => {
+            execute_task_mode(bridge, &session_id, &prompt)
+                .await
+                .map_err(|e| {
+                    tracing::error!(
+                        message = "[send_ai_prompt_session] Task execution error",
+                        session_id = %session_id,
+                        error = %e,
+                    );
+                    e.to_string()
+                })
+        }
+    }
+}
+
+/// Run Task mode orchestration (PentAGI-style).
+async fn execute_task_mode(
+    bridge: Arc<AgentBridge>,
+    session_id: &str,
+    prompt: &str,
+) -> anyhow::Result<String> {
+    use golish_ai::task_orchestrator::{bridge_executor::BridgeAgentExecutor, TaskOrchestrator};
+
+    let pool = bridge
+        .db_pool()
+        .ok_or_else(|| anyhow::anyhow!("Database pool not available — Task mode requires a DB connection"))?;
+
+    let uuid_session_id = uuid::Uuid::parse_str(session_id)
+        .unwrap_or_else(|_| uuid::Uuid::new_v4());
+
+    let event_tx = bridge.get_or_create_event_tx();
+
+    let mut orchestrator = TaskOrchestrator::new(pool, uuid_session_id, event_tx);
+    let executor = BridgeAgentExecutor::new(bridge);
+
+    orchestrator.run(prompt, &executor).await
 }
 
 /// Get vision capabilities for the current model in a session.

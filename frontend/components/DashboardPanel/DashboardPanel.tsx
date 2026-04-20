@@ -5,10 +5,15 @@ import {
   Activity,
   AlertTriangle,
   ArrowRight,
+  BarChart3,
+  Bot,
+  Brain,
   Bug,
   CheckCircle2,
   Circle,
   Clock,
+  Cpu,
+  DollarSign,
   Globe,
   KeyRound,
   Layers,
@@ -20,6 +25,8 @@ import {
   ShieldX,
   Target,
   Wifi,
+  Wrench,
+  Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
@@ -94,6 +101,34 @@ interface AuditEntry {
   createdAt: number;
   targetId?: string | null;
   entityType?: string | null;
+}
+
+interface TokenUsageStats {
+  total_tokens_in: number;
+  total_tokens_out: number;
+  total_cost_in: number;
+  total_cost_out: number;
+}
+
+interface AgentUsage {
+  agent: string;
+  total_tokens_in: number;
+  total_tokens_out: number;
+  total_cost: number;
+}
+
+interface ToolCallStat {
+  name: string;
+  total_count: number;
+  total_duration_ms: number;
+  avg_duration_ms: number;
+}
+
+interface AiStats {
+  tokenUsage: TokenUsageStats | null;
+  agentUsage: AgentUsage[];
+  toolCallStats: ToolCallStat[];
+  memoryCount: number;
 }
 
 interface DashboardStats {
@@ -307,6 +342,28 @@ export function DashboardPanel() {
     recentActivity: [],
   });
   const [loading, setLoading] = useState(true);
+  const [aiStats, setAiStats] = useState<AiStats>({
+    tokenUsage: null,
+    agentUsage: [],
+    toolCallStats: [],
+    memoryCount: 0,
+  });
+
+  const loadAiStats = useCallback(async () => {
+    const aiResults = await Promise.allSettled([
+      invoke<TokenUsageStats>("get_db_token_usage_stats"),
+      invoke<AgentUsage[]>("get_usage_by_agent"),
+      invoke<ToolCallStat[]>("get_tool_call_stats", {}),
+      invoke<number>("get_memory_count"),
+    ]);
+
+    setAiStats({
+      tokenUsage: aiResults[0].status === "fulfilled" ? aiResults[0].value : null,
+      agentUsage: aiResults[1].status === "fulfilled" ? aiResults[1].value : [],
+      toolCallStats: aiResults[2].status === "fulfilled" ? aiResults[2].value : [],
+      memoryCount: aiResults[3].status === "fulfilled" ? aiResults[3].value : 0,
+    });
+  }, []);
 
   const loadStats = useCallback(async () => {
     setLoading(true);
@@ -338,13 +395,16 @@ export function DashboardPanel() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { loadStats(); }, [loadStats, currentProjectPath]);
+  useEffect(() => { loadStats(); loadAiStats(); }, [loadStats, loadAiStats, currentProjectPath]);
 
   useEffect(() => {
     const REFRESH = new Set(["manage_targets", "record_finding", "credential_vault"]);
     const unlisten = listen<{ type: string; tool_name?: string }>("ai-event", (event) => {
-      if (event.payload.type === "tool_result" && event.payload.tool_name && REFRESH.has(event.payload.tool_name)) {
-        loadStats();
+      if (event.payload.type === "tool_result") {
+        if (event.payload.tool_name && REFRESH.has(event.payload.tool_name)) {
+          loadStats();
+        }
+        loadAiStats();
       }
     });
     return () => { unlisten.then((fn) => fn()); };
@@ -398,6 +458,20 @@ export function DashboardPanel() {
     stats.vaultEntries.length === 0 &&
     stats.methodProjects.length === 0;
 
+  const hasAiData =
+    (aiStats.tokenUsage != null &&
+      (aiStats.tokenUsage.total_tokens_in > 0 || aiStats.tokenUsage.total_tokens_out > 0)) ||
+    aiStats.agentUsage.length > 0 ||
+    aiStats.toolCallStats.length > 0;
+
+  const totalTokens = aiStats.tokenUsage
+    ? aiStats.tokenUsage.total_tokens_in + aiStats.tokenUsage.total_tokens_out
+    : 0;
+  const totalCost = aiStats.tokenUsage
+    ? aiStats.tokenUsage.total_cost_in + aiStats.tokenUsage.total_cost_out
+    : 0;
+  const totalToolCalls = aiStats.toolCallStats.reduce((s, t) => s + t.total_count, 0);
+
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -424,7 +498,7 @@ export function DashboardPanel() {
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {isEmpty ? (
+        {isEmpty && !hasAiData ? (
           <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-8">
             <div className="p-4 rounded-2xl bg-muted/10 border border-border/10">
               <Layers className="w-8 h-8 text-muted-foreground/15" />
@@ -438,6 +512,7 @@ export function DashboardPanel() {
           </div>
         ) : (
           <div className="p-5 space-y-5">
+            {!isEmpty && (<>
             {/* Key Metrics Row */}
             <div className="grid grid-cols-4 gap-3">
               <MetricCard
@@ -648,6 +723,83 @@ export function DashboardPanel() {
                 </div>
               </div>
             )}
+            </>)}
+
+            {/* ============================================================ */}
+            {/* AI Usage Statistics                                          */}
+            {/* ============================================================ */}
+            {hasAiData && (
+              <>
+                <div className="flex items-center gap-2 pt-2">
+                  <div className="h-px flex-1 bg-border/10" />
+                  <div className="flex items-center gap-1.5 px-2">
+                    <Brain className="w-3.5 h-3.5 text-purple-400/60" />
+                    <span className="text-[11px] font-medium text-foreground/50">AI Usage Statistics</span>
+                  </div>
+                  <div className="h-px flex-1 bg-border/10" />
+                </div>
+
+                <div className="grid grid-cols-4 gap-3">
+                  <MetricCard
+                    icon={Cpu}
+                    value={totalTokens}
+                    label="Total Tokens"
+                    detail={aiStats.tokenUsage ? `${fmtNum(aiStats.tokenUsage.total_tokens_in)} in · ${fmtNum(aiStats.tokenUsage.total_tokens_out)} out` : undefined}
+                    accent="purple"
+                  />
+                  <MetricCard
+                    icon={DollarSign}
+                    value={totalCost}
+                    displayValue={`$${totalCost.toFixed(4)}`}
+                    label="Total Cost"
+                    detail={aiStats.tokenUsage ? `$${aiStats.tokenUsage.total_cost_in.toFixed(4)} in · $${aiStats.tokenUsage.total_cost_out.toFixed(4)} out` : undefined}
+                    accent="green"
+                  />
+                  <MetricCard
+                    icon={Wrench}
+                    value={totalToolCalls}
+                    label="Tool Calls"
+                    detail={aiStats.toolCallStats.length > 0 ? `${aiStats.toolCallStats.length} tools used` : undefined}
+                    accent="blue"
+                  />
+                  <MetricCard
+                    icon={Brain}
+                    value={aiStats.memoryCount}
+                    label="Memories"
+                    detail={aiStats.agentUsage.length > 0 ? `${aiStats.agentUsage.length} agents active` : undefined}
+                    accent="amber"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  {aiStats.agentUsage.length > 0 && (
+                    <div className="rounded-xl bg-muted/8 border border-border/10 p-4 space-y-3">
+                      <div className="flex items-center gap-2">
+                        <Bot className="w-3.5 h-3.5 text-purple-400/60" />
+                        <span className="text-[11px] font-medium text-foreground/60">Usage by Agent</span>
+                        <span className="text-[9px] text-muted-foreground/30 ml-auto">
+                          {aiStats.agentUsage.length} agents
+                        </span>
+                      </div>
+                      <AgentUsageChart agents={aiStats.agentUsage} />
+                    </div>
+                  )}
+
+                  {aiStats.toolCallStats.length > 0 && (
+                    <div className="rounded-xl bg-muted/8 border border-border/10 p-4 space-y-3">
+                      <div className="flex items-center gap-2">
+                        <BarChart3 className="w-3.5 h-3.5 text-blue-400/60" />
+                        <span className="text-[11px] font-medium text-foreground/60">Top Tools</span>
+                        <span className="text-[9px] text-muted-foreground/30 ml-auto">
+                          {totalToolCalls} total calls
+                        </span>
+                      </div>
+                      <ToolCallChart tools={aiStats.toolCallStats.slice(0, 8)} maxCount={aiStats.toolCallStats[0]?.total_count ?? 1} />
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -655,26 +807,109 @@ export function DashboardPanel() {
   );
 }
 
+function fmtNum(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toString();
+}
+
+function AgentUsageChart({ agents }: { agents: AgentUsage[] }) {
+  const maxTokens = Math.max(...agents.map((a) => a.total_tokens_in + a.total_tokens_out), 1);
+
+  return (
+    <div className="space-y-2">
+      {agents.map((a) => {
+        const total = a.total_tokens_in + a.total_tokens_out;
+        const pct = (total / maxTokens) * 100;
+        const inPct = total > 0 ? (a.total_tokens_in / total) * 100 : 0;
+        return (
+          <div key={a.agent} className="space-y-1">
+            <div className="flex items-center justify-between text-[10px]">
+              <span className="text-foreground/60 truncate">{a.agent}</span>
+              <div className="flex items-center gap-2 text-muted-foreground/40 tabular-nums">
+                <span>{fmtNum(total)} tok</span>
+                {a.total_cost > 0 && <span>${a.total_cost.toFixed(4)}</span>}
+              </div>
+            </div>
+            <div className="h-1.5 rounded-full bg-muted/15 overflow-hidden">
+              <div
+                className="h-full rounded-full flex overflow-hidden transition-all duration-500"
+                style={{ width: `${pct}%` }}
+              >
+                <div className="h-full bg-purple-500/50" style={{ width: `${inPct}%` }} />
+                <div className="h-full bg-violet-400/40" style={{ width: `${100 - inPct}%` }} />
+              </div>
+            </div>
+          </div>
+        );
+      })}
+      <div className="flex items-center gap-3 pt-0.5">
+        <div className="flex items-center gap-1 text-[9px]">
+          <div className="w-1.5 h-1.5 rounded-full bg-purple-500/50" />
+          <span className="text-muted-foreground/40">Input</span>
+        </div>
+        <div className="flex items-center gap-1 text-[9px]">
+          <div className="w-1.5 h-1.5 rounded-full bg-violet-400/40" />
+          <span className="text-muted-foreground/40">Output</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ToolCallChart({ tools, maxCount }: { tools: ToolCallStat[]; maxCount: number }) {
+  return (
+    <div className="space-y-1.5">
+      {tools.map((t) => {
+        const pct = (t.total_count / maxCount) * 100;
+        return (
+          <div key={t.name} className="flex items-center gap-2 text-[10px]">
+            <span className="text-foreground/60 w-28 truncate flex-shrink-0" title={t.name}>{t.name}</span>
+            <div className="flex-1 h-1.5 rounded-full bg-muted/15 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-blue-500/40 transition-all duration-500"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+            <div className="flex items-center gap-1.5 text-muted-foreground/40 tabular-nums flex-shrink-0">
+              <span className="font-medium text-foreground/60">{t.total_count}</span>
+              {t.avg_duration_ms > 0 && (
+                <span className="text-[9px]">
+                  <Zap className="w-2 h-2 inline-block mr-0.5 text-amber-400/50" />
+                  {t.avg_duration_ms < 1000 ? `${Math.round(t.avg_duration_ms)}ms` : `${(t.avg_duration_ms / 1000).toFixed(1)}s`}
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function MetricCard({
-  icon: Icon, value, label, detail, accent,
+  icon: Icon, value, label, detail, accent, displayValue,
 }: {
   icon: typeof Activity;
   value: number;
   label: string;
   detail?: string;
-  accent: "blue" | "red" | "amber" | "green";
+  accent: "blue" | "red" | "amber" | "green" | "purple";
+  displayValue?: string;
 }) {
-  const colors = {
+  const colors: Record<string, string> = {
     blue: "bg-blue-500/8 text-blue-400/70 border-blue-500/10",
     red: "bg-red-500/8 text-red-400/70 border-red-500/10",
     amber: "bg-amber-500/8 text-amber-400/70 border-amber-500/10",
     green: "bg-green-500/8 text-green-400/70 border-green-500/10",
+    purple: "bg-purple-500/8 text-purple-400/70 border-purple-500/10",
   };
-  const iconColors = {
+  const iconColors: Record<string, string> = {
     blue: "bg-blue-500/10 text-blue-400/60",
     red: "bg-red-500/10 text-red-400/60",
     amber: "bg-amber-500/10 text-amber-400/60",
     green: "bg-green-500/10 text-green-400/60",
+    purple: "bg-purple-500/10 text-purple-400/60",
   };
 
   return (
@@ -683,7 +918,7 @@ function MetricCard({
         <div className={cn("p-1.5 rounded-lg", iconColors[accent])}>
           <Icon className="w-3.5 h-3.5" />
         </div>
-        <span className="text-2xl font-bold leading-none text-foreground/85 tabular-nums">{value}</span>
+        <span className="text-2xl font-bold leading-none text-foreground/85 tabular-nums">{displayValue ?? fmtNum(value)}</span>
       </div>
       <div>
         <div className="text-[11px] font-medium text-foreground/50">{label}</div>

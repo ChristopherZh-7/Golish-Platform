@@ -77,3 +77,73 @@ pub async fn get_agent_mode(
 
     Ok(bridge.get_agent_mode().await)
 }
+
+/// Set the useAgents flag for a session (controls sub-agent delegation availability).
+///
+/// When enabled, the AI can delegate tasks to specialist sub-agents.
+/// When disabled, the AI uses only direct tools (terminal, file, browser).
+#[tauri::command]
+pub async fn set_use_agents(
+    session_id: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let bridges = state.ai_state.bridges.read().await;
+    let bridge = bridges
+        .get(&session_id)
+        .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
+
+    bridge.set_use_agents(enabled).await;
+    Ok(())
+}
+
+/// Get the current useAgents setting for a session.
+#[tauri::command]
+pub async fn get_use_agents(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let bridges = state.ai_state.bridges.read().await;
+    let bridge = bridges
+        .get(&session_id)
+        .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
+
+    Ok(bridge.get_use_agents().await)
+}
+
+/// Set the execution mode for a session (Chat vs Task).
+///
+/// - **Chat**: conversational assistant with tools and optional sub-agent delegation
+/// - **Task**: PentAGI-style automated orchestration (Generator → Subtasks → Refiner → Reporter)
+#[tauri::command]
+pub async fn set_execution_mode(
+    session_id: String,
+    mode: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let bridges = state.ai_state.bridges.read().await;
+    let bridge = bridges
+        .get(&session_id)
+        .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
+
+    let parsed: golish_ai::execution_mode::ExecutionMode = mode
+        .parse()
+        .map_err(|_| format!("Invalid execution mode: '{}'. Use 'chat' or 'task'.", mode))?;
+
+    bridge.set_execution_mode(parsed).await;
+    Ok(())
+}
+
+/// Get the current execution mode for a session.
+#[tauri::command]
+pub async fn get_execution_mode(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let bridges = state.ai_state.bridges.read().await;
+    let bridge = bridges
+        .get(&session_id)
+        .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
+
+    Ok(bridge.get_execution_mode().await.to_string())
+}

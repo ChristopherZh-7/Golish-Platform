@@ -1,7 +1,7 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! Qbit - AI-powered terminal emulator
+//! Golish - AI-powered terminal emulator
 //!
 //! This is the unified entry point for both GUI and CLI modes:
 //! - `golish` or `golish [path]` - Launches the Tauri GUI application
@@ -231,7 +231,7 @@ async fn run_cli_async(args: Args) -> anyhow::Result<()> {
         .await;
     }
 
-    // Initialize the full Qbit stack
+    // Initialize the full Golish stack
     let mut ctx = initialize(&args).await?;
 
     // Execute based on mode

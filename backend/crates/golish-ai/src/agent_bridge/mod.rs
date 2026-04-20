@@ -47,9 +47,9 @@ use crate::loop_detection::LoopDetector;
 use crate::tool_policy::ToolPolicyManager;
 use golish_context::token_budget::TokenUsage;
 use golish_context::{CompactionState, ContextManager};
-use golish_core::runtime::{QbitRuntime, RuntimeEvent};
+use golish_core::runtime::{GolishRuntime, RuntimeEvent};
 use golish_core::{PromptContext, PromptMatchedSkill, PromptSkillInfo};
-use golish_session::QbitSessionManager;
+use golish_session::GolishSessionManager;
 use golish_sub_agents::SubAgentRegistry;
 
 use crate::indexer::IndexerState;
@@ -84,7 +84,7 @@ fn extract_terminal_error_state(error: &anyhow::Error) -> Option<TerminalErrorSt
     })
 }
 
-/// Bridge between Qbit and LLM providers.
+/// Bridge between Golish and LLM providers.
 /// Handles LLM streaming and tool execution.
 pub struct AgentBridge {
     // Core fields
@@ -98,7 +98,7 @@ pub struct AgentBridge {
     // The event_tx channel is the legacy path, runtime is the new abstraction.
     // During transition, emit_event() sends through BOTH to verify parity.
     pub(crate) event_tx: Option<mpsc::UnboundedSender<AiEvent>>,
-    pub(crate) runtime: Option<Arc<dyn QbitRuntime>>,
+    pub(crate) runtime: Option<Arc<dyn GolishRuntime>>,
     /// Session ID for event routing (set for per-session bridges)
     pub(crate) event_session_id: Option<String>,
 
@@ -124,7 +124,7 @@ pub struct AgentBridge {
     pub(crate) conversation_history: Arc<RwLock<Vec<Message>>>,
 
     // Session persistence
-    pub(crate) session_manager: Arc<RwLock<Option<QbitSessionManager>>>,
+    pub(crate) session_manager: Arc<RwLock<Option<GolishSessionManager>>>,
     pub(crate) session_persistence_enabled: Arc<RwLock<bool>>,
 
     // HITL approval
@@ -224,6 +224,14 @@ pub struct AgentBridge {
     // Event coordinator for message-passing based event management
     // When present, this replaces the atomic-based event_sequence/frontend_ready/event_buffer
     pub(crate) coordinator: Option<CoordinatorHandle>,
+
+    // Whether sub-agent delegation is enabled (PentAGI-style useAgents toggle).
+    // When false, the system prompt excludes the team delegation section,
+    // limiting the AI to direct tools only.
+    pub(crate) use_agents: Arc<RwLock<bool>>,
+
+    // Execution mode: Chat (conversational) or Task (automated PentAGI-style).
+    pub(crate) execution_mode: Arc<RwLock<super::execution_mode::ExecutionMode>>,
 }
 
 impl AgentBridge {
@@ -512,7 +520,7 @@ impl AgentBridge {
             .available_tools()
             .iter()
             .any(|t| t.starts_with("web_"));
-        let has_sub_agents = true; // Main agent always has sub-agents available
+        let has_sub_agents = *self.use_agents.read().await;
 
         // Match skills against user prompt and load their bodies
         let (available_skills, matched_skills) = self.match_and_load_skills(initial_prompt).await;
@@ -646,7 +654,7 @@ impl AgentBridge {
             .available_tools()
             .iter()
             .any(|t| t.starts_with("web_"));
-        let has_sub_agents = true;
+        let has_sub_agents = *self.use_agents.read().await;
 
         // Match skills against user prompt and load their bodies
         let (available_skills, matched_skills) = self.match_and_load_skills(text_for_logging).await;
@@ -821,6 +829,7 @@ impl AgentBridge {
             coordinator: self.coordinator.as_ref(),
             db_tracker: self.db_tracker.as_ref(),
             cancelled: Some(&self.cancelled),
+            execution_monitor: None,
         }
     }
 
@@ -952,6 +961,11 @@ impl AgentBridge {
     // ========================================================================
     // Configuration Methods
     // ========================================================================
+
+    /// Get a clone of the database pool (if available).
+    pub fn db_pool(&self) -> Option<Arc<sqlx::PgPool>> {
+        self.db_pool.clone()
+    }
 
     /// Set the database pool for session persistence dual-write and activity tracking.
     pub fn set_db_pool(
@@ -1221,6 +1235,30 @@ impl AgentBridge {
     /// Get the current agent mode.
     pub async fn get_agent_mode(&self) -> AgentMode {
         *self.agent_mode.read().await
+    }
+
+    /// Set the useAgents flag (controls whether sub-agent delegation is available).
+    pub async fn set_use_agents(&self, enabled: bool) {
+        let mut current = self.use_agents.write().await;
+        tracing::debug!("useAgents changed: {} -> {}", *current, enabled);
+        *current = enabled;
+    }
+
+    /// Get the current useAgents setting.
+    pub async fn get_use_agents(&self) -> bool {
+        *self.use_agents.read().await
+    }
+
+    /// Set the execution mode (Chat vs Task).
+    pub async fn set_execution_mode(&self, mode: super::execution_mode::ExecutionMode) {
+        let mut current = self.execution_mode.write().await;
+        tracing::debug!("Execution mode changed: {} -> {}", *current, mode);
+        *current = mode;
+    }
+
+    /// Get the current execution mode.
+    pub async fn get_execution_mode(&self) -> super::execution_mode::ExecutionMode {
+        *self.execution_mode.read().await
     }
 
     // ========================================================================

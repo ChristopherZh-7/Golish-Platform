@@ -1,4 +1,4 @@
-//! Web search and content fetching for Qbit AI.
+//! Web search and content fetching for Golish AI.
 //!
 //! This crate provides:
 //! - Tavily web search integration

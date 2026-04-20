@@ -31,7 +31,7 @@ async function getThemeNames(page: Page): Promise<string[]> {
   for (let i = 0; i < count; i++) {
     const text = await themeButtons.nth(i).innerText();
     // Extract just the theme name (before any badges like "(Custom)" or "● Active")
-    // The text might be on one line like "Qbit● Active" or "Obsidian Ember(Custom)"
+    // The text might be on one line like "Golish● Active" or "Obsidian Ember(Custom)"
     let name = text.split("\n")[0].trim();
     // Remove the "● Active" marker if present
     name = name.replace(/● Active$/, "").trim();
@@ -98,8 +98,8 @@ test.describe
       const themeNames = await getThemeNames(page);
       expect(themeNames.length).toBeGreaterThan(0);
 
-      // Should have at least Qbit Default theme
-      expect(themeNames.some((name) => name.includes("Qbit"))).toBe(true);
+      // Should have at least Golish Default theme
+      expect(themeNames.some((name) => name.includes("Golish"))).toBe(true);
     });
 
     test("should mark current theme as active", async ({ page }) => {

@@ -60,19 +60,19 @@ The pr-check scenario validates 9 core capabilities in a single multi-turn conve
 
 ```bash
 # Basic usage
-qbit-cli --eval --scenario pr-check
+golish-cli --eval --scenario pr-check
 
 # With specific provider
-qbit-cli --eval --scenario pr-check --eval-provider vertex-claude
+golish-cli --eval --scenario pr-check --eval-provider vertex-claude
 
 # With transcript output (shows full agent conversation with actual prompts)
-qbit-cli --eval --scenario pr-check --transcript
+golish-cli --eval --scenario pr-check --transcript
 
 # With transcript and pretty results
-qbit-cli --eval --scenario pr-check --transcript --pretty
+golish-cli --eval --scenario pr-check --transcript --pretty
 
 # Save results to file
-qbit-cli --eval --scenario pr-check --output results.json --pretty
+golish-cli --eval --scenario pr-check --output results.json --pretty
 ```
 
 ### The --transcript Flag
@@ -80,7 +80,7 @@ qbit-cli --eval --scenario pr-check --output results.json --pretty
 The `--transcript` flag provides visibility into what the agent actually did during evaluation:
 
 ```bash
-qbit-cli --eval --scenario pr-check --transcript
+golish-cli --eval --scenario pr-check --transcript
 ```
 
 This outputs:
@@ -124,7 +124,7 @@ The evaluation workflow automatically runs `pr-check` for pull requests:
 ```yaml
 # For PRs: lightweight pr-check scenario with transcript
 if [ "${{ github.event_name }}" = "pull_request" ]; then
-  ./target/debug/qbit-cli --eval --scenario pr-check --transcript --pretty
+  ./target/debug/golish-cli --eval --scenario pr-check --transcript --pretty
 fi
 ```
 
@@ -161,7 +161,7 @@ This allows GitHub Actions to correctly detect and report failures
 ## Adding New Capabilities to PR Check
 
 If you need to test additional capabilities in PR checks, edit:
-`backend/crates/qbit-evals/src/scenarios/pr_check.rs`
+`backend/crates/golish-evals/src/scenarios/pr_check.rs`
 
 Guidelines:
 1. Keep the total scenario under 90 seconds

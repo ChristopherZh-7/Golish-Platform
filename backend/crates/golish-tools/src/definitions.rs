@@ -376,6 +376,98 @@ pub fn build_function_declarations() -> Vec<FunctionDeclaration> {
             }),
         },
         // ====================================================================
+        // Code Vector Store (PentAGI multi-store pattern)
+        // ====================================================================
+        FunctionDeclaration {
+            name: "search_code".to_string(),
+            description: "Search the code sample store for previously saved code snippets, exploits, and scripts. Filters by programming language when specified. Use this before writing code to check if similar code already exists.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query describing the code you're looking for (e.g. 'python reverse shell', 'nmap XML parser')"
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": "Optional: filter by programming language (e.g. 'python', 'bash', 'rust', 'javascript')"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results to return (default: 5)"
+                    }
+                },
+                "required": ["query"]
+            }),
+        },
+        FunctionDeclaration {
+            name: "save_code".to_string(),
+            description: "Save a useful code snippet, exploit, or script to the code store for future reuse. Include the language and a brief description. Only save code that worked and would be useful again.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "The code content to save"
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": "Programming language (e.g. 'python', 'bash', 'rust')"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Brief description of what the code does"
+                    }
+                },
+                "required": ["content", "language"]
+            }),
+        },
+        // ====================================================================
+        // Guide Vector Store (PentAGI multi-store pattern)
+        // ====================================================================
+        FunctionDeclaration {
+            name: "search_guide".to_string(),
+            description: "Search the guide store for previously saved procedures, how-tos, and operational playbooks. Use this before starting a new procedure to check if a guide already exists.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query describing the guide you're looking for (e.g. 'how to exploit SQL injection', 'nmap service detection guide')"
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": ["procedure", "playbook", "checklist", "reference"],
+                        "description": "Optional: filter by guide type"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results to return (default: 5)"
+                    }
+                },
+                "required": ["query"]
+            }),
+        },
+        FunctionDeclaration {
+            name: "save_guide".to_string(),
+            description: "Save a useful procedure, how-to guide, or operational playbook for future reference. Only save guides that contain actionable steps that worked.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "The guide content to save"
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": ["procedure", "playbook", "checklist", "reference"],
+                        "description": "Type of guide (default: procedure)"
+                    }
+                },
+                "required": ["content"]
+            }),
+        },
+        // ====================================================================
         // Vulnerability Knowledge Base
         // ====================================================================
         FunctionDeclaration {
@@ -624,7 +716,7 @@ pub fn build_function_declarations() -> Vec<FunctionDeclaration> {
         },
         FunctionDeclaration {
             name: "save_js_analysis".to_string(),
-            description: "Save JavaScript file analysis results for a target. Records discovered frameworks, libraries, API endpoints found in JS, potential secrets/tokens, and source map availability. Call after the js_analyzer sub-agent or manual JS analysis completes.".to_string(),
+            description: "Save JavaScript file analysis results for a target. Records discovered frameworks, libraries, API endpoints found in JS, potential secrets/tokens, and source map availability. Call after JS security analysis completes.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {

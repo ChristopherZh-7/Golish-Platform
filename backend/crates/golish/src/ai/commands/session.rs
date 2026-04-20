@@ -4,7 +4,7 @@ use tauri::State;
 
 use crate::ai::agent_mode::AgentMode;
 use crate::state::AppState;
-use golish_session::{self as golish_sess, QbitMessageRole, QbitSessionSnapshot, SessionListingInfo};
+use golish_session::{self as golish_sess, GolishMessageRole, GolishSessionSnapshot, SessionListingInfo};
 
 /// Clear the AI agent's conversation history.
 /// Call this when starting a new conversation or when the user wants to reset context.
@@ -120,7 +120,7 @@ pub async fn find_ai_session(
 pub async fn load_ai_session(
     state: State<'_, AppState>,
     identifier: String,
-) -> Result<Option<QbitSessionSnapshot>, String> {
+) -> Result<Option<GolishSessionSnapshot>, String> {
     match golish_sess::db::load_session_from_db(&state.db_pool, &identifier).await {
         Ok(Some(session)) => Ok(Some(session)),
         _ => golish_sess::load_session(&identifier)
@@ -206,10 +206,10 @@ pub async fn export_ai_session_transcript(
 
     for msg in &session.messages {
         let role_label = match msg.role {
-            QbitMessageRole::User => "**User**",
-            QbitMessageRole::Assistant => "**Assistant**",
-            QbitMessageRole::System => "**System**",
-            QbitMessageRole::Tool => "**Tool**",
+            GolishMessageRole::User => "**User**",
+            GolishMessageRole::Assistant => "**Assistant**",
+            GolishMessageRole::System => "**System**",
+            GolishMessageRole::Tool => "**Tool**",
         };
         transcript.push_str(&format!("{}\n\n{}\n\n---\n\n", role_label, msg.content));
     }
@@ -234,7 +234,7 @@ pub async fn restore_ai_session(
     state: State<'_, AppState>,
     session_id: String,
     identifier: String,
-) -> Result<QbitSessionSnapshot, String> {
+) -> Result<GolishSessionSnapshot, String> {
     // Load from DB first, fall back to file
     let session = match golish_sess::db::load_session_from_db(&state.db_pool, &identifier).await {
         Ok(Some(s)) => s,
@@ -280,7 +280,7 @@ pub async fn restore_ai_session(
     let initial_request = session
         .messages
         .iter()
-        .find(|m| m.role == QbitMessageRole::User)
+        .find(|m| m.role == GolishMessageRole::User)
         .map(|m| m.content.clone())
         .unwrap_or_else(|| format!("Restored session: {}", identifier));
 

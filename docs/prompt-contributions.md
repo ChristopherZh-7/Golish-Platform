@@ -4,7 +4,7 @@ This document explains the dynamic prompt contribution system that allows the sy
 
 ## Overview
 
-The Qbit agent uses a dynamic prompt composition system that builds the system prompt from:
+The Golish agent uses a dynamic prompt composition system that builds the system prompt from:
 
 1. **Base prompt** - Core identity, workflow, tool documentation, and security rules
 2. **Agent mode** - Mode-specific instructions (Default, Planning, AutoApprove)
@@ -39,7 +39,7 @@ This ensures that both the main agent and evaluations use identical system promp
 
 ## Key Components
 
-### PromptContext (`qbit-core/src/prompt.rs`)
+### PromptContext (`golish-core/src/prompt.rs`)
 
 Context passed to prompt contributors for conditional generation:
 
@@ -55,7 +55,7 @@ pub struct PromptContext {
 }
 ```
 
-### PromptContributor Trait (`qbit-core/src/prompt.rs`)
+### PromptContributor Trait (`golish-core/src/prompt.rs`)
 
 Trait for components that contribute to the system prompt:
 
@@ -66,7 +66,7 @@ pub trait PromptContributor: Send + Sync {
 }
 ```
 
-### PromptContributorRegistry (`qbit-ai/src/prompt_registry.rs`)
+### PromptContributorRegistry (`golish-ai/src/prompt_registry.rs`)
 
 Collects and aggregates prompt sections from contributors:
 
@@ -81,7 +81,7 @@ impl PromptContributorRegistry {
 }
 ```
 
-### Default Contributors (`qbit-ai/src/contributors/`)
+### Default Contributors (`golish-ai/src/contributors/`)
 
 Two default contributors are provided:
 
@@ -198,7 +198,7 @@ impl PromptContributor for MyContributor {
 
 ## Testing
 
-The prompt parity between main agent and evals is verified by unit tests in `qbit-evals/src/executor.rs`:
+The prompt parity between main agent and evals is verified by unit tests in `golish-evals/src/executor.rs`:
 
 ```rust
 #[test]
@@ -219,16 +219,16 @@ fn test_eval_prompt_matches_main_agent_prompt_vertex() {
 Run tests with:
 
 ```bash
-cargo test -p qbit-evals -p qbit-ai
+cargo test -p golish-evals -p golish-ai
 ```
 
 ## Related Files
 
-- `qbit-core/src/prompt.rs` - Core types (PromptContext, PromptContributor, PromptSection)
-- `qbit-ai/src/prompt_registry.rs` - PromptContributorRegistry
-- `qbit-ai/src/contributors/mod.rs` - Default contributors factory
-- `qbit-ai/src/contributors/sub_agents.rs` - SubAgentPromptContributor
-- `qbit-ai/src/contributors/provider_tools.rs` - ProviderBuiltinToolsContributor
-- `qbit-ai/src/system_prompt.rs` - System prompt building functions
-- `qbit-ai/src/agent_bridge.rs` - Main agent prompt composition
-- `qbit-evals/src/executor.rs` - Eval prompt composition
+- `golish-core/src/prompt.rs` - Core types (PromptContext, PromptContributor, PromptSection)
+- `golish-ai/src/prompt_registry.rs` - PromptContributorRegistry
+- `golish-ai/src/contributors/mod.rs` - Default contributors factory
+- `golish-ai/src/contributors/sub_agents.rs` - SubAgentPromptContributor
+- `golish-ai/src/contributors/provider_tools.rs` - ProviderBuiltinToolsContributor
+- `golish-ai/src/system_prompt.rs` - System prompt building functions
+- `golish-ai/src/agent_bridge.rs` - Main agent prompt composition
+- `golish-evals/src/executor.rs` - Eval prompt composition

@@ -1,4 +1,4 @@
-//! PTY and terminal management for Qbit.
+//! PTY and terminal management for Golish.
 //!
 //! This crate provides pseudo-terminal (PTY) session management, including:
 //! - Session lifecycle management (create, read, write, resize, terminate)

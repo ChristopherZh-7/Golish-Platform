@@ -16,7 +16,7 @@ pub async fn add_command_history(
     if let Some(history) = history.read().await.as_ref() {
         history
             .add_command(session_id, command, exit_code)
-            .map_err(|e| crate::error::QbitError::Internal(e.to_string()))?;
+            .map_err(|e| crate::error::GolishError::Internal(e.to_string()))?;
     }
     Ok(())
 }
@@ -39,7 +39,7 @@ pub async fn add_prompt_history(
             .add_prompt(
                 session_id, prompt, model, provider, tokens_in, tokens_out, success,
             )
-            .map_err(|e| crate::error::QbitError::Internal(e.to_string()))?;
+            .map_err(|e| crate::error::GolishError::Internal(e.to_string()))?;
     }
     Ok(())
 }

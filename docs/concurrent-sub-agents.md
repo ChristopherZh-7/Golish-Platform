@@ -155,7 +155,7 @@ Return ONLY the system prompt text, no explanation or markdown formatting.
 
 ### Implementation Location
 
-The prompt generation step lives in `execute_sub_agent_inner()` in `backend/crates/qbit-sub-agents/src/executor.rs`, right after extracting args. When `agent_def.prompt_template` is `Some(template)`, it substitutes placeholders, makes an LLM call, and uses the result as the system prompt. The definition's `system_prompt` field is used as a fallback if generation fails.
+The prompt generation step lives in `execute_sub_agent_inner()` in `backend/crates/golish-sub-agents/src/executor.rs`, right after extracting args. When `agent_def.prompt_template` is `Some(template)`, it substitutes placeholders, makes an LLM call, and uses the result as the system prompt. The definition's `system_prompt` field is used as a fallback if generation fails.
 
 The model used for prompt generation is the same model passed to the sub-agent executor (typically the main agent's model). This is a single non-streaming completion call with low `max_tokens` (512) and no tools.
 
@@ -169,13 +169,13 @@ A `summarizer_model` style override could be added later if prompt generation ne
 
 | File | Role |
 |------|------|
-| `qbit-ai/src/agentic_loop.rs` | Concurrent dispatch: `partition_tool_calls`, `execute_single_tool_call`, `join_all` |
-| `qbit-sub-agents/src/executor.rs` | Sub-agent execution, prompt generation step |
-| `qbit-sub-agents/src/definition.rs` | `SubAgentDefinition.prompt_template` field |
-| `qbit-sub-agents/src/defaults.rs` | Worker agent definition with `with_prompt_template()`, `WORKER_PROMPT_TEMPLATE` constant |
-| `qbit-ai/src/tool_definitions.rs` | Sub-agent tool definitions (task + context params) |
-| `qbit-ai/src/system_prompt.rs` | Agent instructions for concurrent dispatch and worker usage |
-| `qbit-tools/src/registry.rs` | `execute_tool(&self)` — `&self` for concurrent read access |
+| `golish-ai/src/agentic_loop.rs` | Concurrent dispatch: `partition_tool_calls`, `execute_single_tool_call`, `join_all` |
+| `golish-sub-agents/src/executor.rs` | Sub-agent execution, prompt generation step |
+| `golish-sub-agents/src/definition.rs` | `SubAgentDefinition.prompt_template` field |
+| `golish-sub-agents/src/defaults.rs` | Worker agent definition with `with_prompt_template()`, `WORKER_PROMPT_TEMPLATE` constant |
+| `golish-ai/src/tool_definitions.rs` | Sub-agent tool definitions (task + context params) |
+| `golish-ai/src/system_prompt.rs` | Agent instructions for concurrent dispatch and worker usage |
+| `golish-tools/src/registry.rs` | `execute_tool(&self)` — `&self` for concurrent read access |
 
 ## Testing
 
@@ -198,8 +198,8 @@ A `summarizer_model` style override could be added later if prompt generation ne
 
 ```bash
 # Headless mode — ask for concurrent workers explicitly
-./target/debug/qbit -e "Run these two tasks in parallel using worker agents: 1) Find all TODO comments in the codebase 2) List all test files" --auto-approve
+./target/debug/golish -e "Run these two tasks in parallel using worker agents: 1) Find all TODO comments in the codebase 2) List all test files" --auto-approve
 
 # Check backend log for concurrent execution
-grep "Executing sub-agent tool calls concurrently" ~/.qbit/backend.log
+grep "Executing sub-agent tool calls concurrently" ~/.golish/backend.log
 ```

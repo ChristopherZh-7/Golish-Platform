@@ -7,7 +7,25 @@
 
 use std::collections::HashMap;
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
+
+/// Where a sub-agent definition was loaded from
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "path")]
+pub enum AgentSource {
+    /// Hardcoded in Rust (system-level agents: worker, memorist, reflector)
+    BuiltIn,
+    /// Loaded from a .md file on disk
+    File(PathBuf),
+}
+
+impl Default for AgentSource {
+    fn default() -> Self {
+        Self::BuiltIn
+    }
+}
 
 /// Context passed to a sub-agent during execution
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -105,6 +123,28 @@ pub struct SubAgentDefinition {
     /// field is used as a fallback if prompt generation fails.
     /// When `None`, the `system_prompt` is used directly (default for specialized agents).
     pub prompt_template: Option<String>,
+
+    /// Per-agent temperature override from settings. None = use default.
+    pub temperature: Option<f32>,
+
+    /// Per-agent max_tokens override from settings. None = use default.
+    pub max_tokens: Option<u32>,
+
+    /// Per-agent top_p override from settings. None = not sent to provider.
+    pub top_p: Option<f32>,
+
+    /// Where this definition was loaded from
+    pub source: AgentSource,
+
+    /// System-level agents cannot be deleted from the UI.
+    /// They are critical for the runtime (worker, memorist, reflector).
+    pub is_system: bool,
+
+    /// If true, runs in read-only mode (no file writes, no state-changing commands)
+    pub readonly: bool,
+
+    /// If true, runs in background without blocking the parent agent
+    pub is_background: bool,
 }
 
 impl SubAgentDefinition {
@@ -126,7 +166,32 @@ impl SubAgentDefinition {
             timeout_secs: Some(600),
             idle_timeout_secs: Some(180),
             prompt_template: None,
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            source: AgentSource::BuiltIn,
+            is_system: false,
+            readonly: false,
+            is_background: false,
         }
+    }
+
+    /// Mark this agent as a system agent (cannot be deleted from UI)
+    pub fn as_system(mut self) -> Self {
+        self.is_system = true;
+        self
+    }
+
+    /// Mark this agent as read-only
+    pub fn with_readonly(mut self, readonly: bool) -> Self {
+        self.readonly = readonly;
+        self
+    }
+
+    /// Mark this agent as background-capable
+    pub fn with_background(mut self, is_background: bool) -> Self {
+        self.is_background = is_background;
+        self
     }
 
     /// Set allowed tools for this sub-agent

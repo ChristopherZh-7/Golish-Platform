@@ -1,6 +1,6 @@
 # Evaluation Methodology
 
-This document provides a detailed, step-by-step breakdown of exactly how Qbit evaluates each SWE-bench instance.
+This document provides a detailed, step-by-step breakdown of exactly how Golish evaluates each SWE-bench instance.
 
 ## Overview
 
@@ -27,7 +27,7 @@ let repo_path = repo_manager.setup_workspace(&self.instance, &workspace)?;
 ```
 
 **Implementation Details:**
-- Bare repository cache at `~/.qbit/benchmarks/swebench/repos/`
+- Bare repository cache at `~/.golish/benchmarks/swebench/repos/`
 - Working copy created at `base_commit` (not HEAD)
 - No access to commits after the issue was filed
 
@@ -254,7 +254,7 @@ The agent's patch is formatted as a prediction:
 ```json
 {
     "instance_id": "django__django-11133",
-    "model_name_or_path": "qbit-agent",
+    "model_name_or_path": "golish-agent",
     "model_patch": "diff --git a/django/http/response.py..."
 }
 ```

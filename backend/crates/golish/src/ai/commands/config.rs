@@ -10,7 +10,7 @@ use super::configure_bridge;
 use crate::runtime::TauriRuntime;
 use crate::settings::get_with_env_fallback;
 use crate::state::AppState;
-use golish_core::runtime::QbitRuntime;
+use golish_core::runtime::GolishRuntime;
 use golish_settings::{schema::AiProvider, ProjectSettingsManager};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,7 +113,7 @@ pub async fn init_ai_agent_openai(
 
     // Create runtime for event emission
     let app_for_tools = app.clone();
-    let runtime: Arc<dyn QbitRuntime> = Arc::new(TauriRuntime::new(app));
+    let runtime: Arc<dyn GolishRuntime> = Arc::new(TauriRuntime::new(app));
     *state.ai_state.runtime.write().await = Some(runtime.clone());
 
     let workspace_path: std::path::PathBuf = workspace.into();
@@ -188,7 +188,7 @@ pub async fn init_ai_agent_vertex(
     // Phase 5: Use runtime-based constructor
     // TauriRuntime handles event emission via Tauri's event system
     let app_for_tools = app.clone();
-    let runtime: Arc<dyn QbitRuntime> = Arc::new(TauriRuntime::new(app));
+    let runtime: Arc<dyn GolishRuntime> = Arc::new(TauriRuntime::new(app));
 
     // Store runtime in AiState (for potential future use by other components)
     *state.ai_state.runtime.write().await = Some(runtime.clone());

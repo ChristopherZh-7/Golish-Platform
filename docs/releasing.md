@@ -1,10 +1,10 @@
-# Releasing Qbit
+# Releasing Golish
 
-This document covers how to release new versions of Qbit.
+This document covers how to release new versions of Golish.
 
 ## Overview
 
-Qbit uses [release-please](https://github.com/googleapis/release-please) for automated releases. When commits are pushed to `main`, release-please creates/updates a PR that bumps versions and updates the changelog. Merging this PR triggers the release workflow.
+Golish uses [release-please](https://github.com/googleapis/release-please) for automated releases. When commits are pushed to `main`, release-please creates/updates a PR that bumps versions and updates the changelog. Merging this PR triggers the release workflow.
 
 ## Quick Commands
 
@@ -69,8 +69,8 @@ git status  # Should be clean
 Edit version in:
 - `package.json`
 - `backend/Cargo.toml` (workspace version)
-- `backend/crates/qbit/Cargo.toml`
-- `backend/crates/qbit/tauri.conf.json`
+- `backend/crates/golish/Cargo.toml`
+- `backend/crates/golish/tauri.conf.json`
 
 Or use cargo-edit:
 ```bash
@@ -118,19 +118,19 @@ gh release view v1.0.0  # View the created release
 
 | Platform | Artifacts |
 |----------|-----------|
-| macOS ARM64 | `qbit_X.Y.Z_aarch64.dmg`, `qbit_aarch64.app.tar.gz` |
-| macOS x64 | `qbit_X.Y.Z_x64.dmg`, `qbit_x64.app.tar.gz` |
-| Linux x64 | `qbit_X.Y.Z_amd64.deb`, `qbit_X.Y.Z_amd64.AppImage`, `qbit-X.Y.Z-1.x86_64.rpm` |
+| macOS ARM64 | `golish_X.Y.Z_aarch64.dmg`, `golish_aarch64.app.tar.gz` |
+| macOS x64 | `golish_X.Y.Z_x64.dmg`, `golish_x64.app.tar.gz` |
+| Linux x64 | `golish_X.Y.Z_amd64.deb`, `golish_X.Y.Z_amd64.AppImage`, `golish-X.Y.Z-1.x86_64.rpm` |
 
 ## Distribution Channels
 
 ### GitHub Releases
-Direct downloads from: https://github.com/qbit-ai/qbit/releases
+Direct downloads from: https://github.com/golish-ai/golish/releases
 
 ### Homebrew (macOS)
 ```bash
-brew tap qbit-ai/tap
-brew install --cask qbit
+brew tap golish-ai/tap
+brew install --cask golish
 ```
 
 The Homebrew cask is automatically updated when a new release is published.

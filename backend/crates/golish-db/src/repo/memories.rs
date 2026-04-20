@@ -14,66 +14,35 @@ pub struct ScoredMemory {
 // Write operations
 // ---------------------------------------------------------------------------
 
-/// Store a memory. Pass `has_pgvector = true` when the vector extension is loaded
-/// to cast embeddings as `vector(1536)`, otherwise stores as BYTEA.
-pub async fn store(pool: &PgPool, m: NewMemory, has_pgvector: bool) -> Result<Memory> {
-    let returning = r#"RETURNING id, session_id, task_id, subtask_id, agent, content,
-                     mem_type, tool_name, doc_type, project_path, metadata, created_at"#;
+/// Store a memory with embedding as pgvector `vector(1536)`.
+pub async fn store(pool: &PgPool, m: NewMemory) -> Result<Memory> {
+    let emb_str: Option<String> = m.embedding.as_ref().map(|v| {
+        let parts: Vec<String> = v.iter().map(|f| f.to_string()).collect();
+        format!("[{}]", parts.join(","))
+    });
 
-    if has_pgvector {
-        let emb_str: Option<String> = m.embedding.as_ref().map(|v| {
-            let parts: Vec<String> = v.iter().map(|f| f.to_string()).collect();
-            format!("[{}]", parts.join(","))
-        });
-
-        let row = sqlx::query_as::<_, Memory>(&format!(
-            r#"INSERT INTO memories
-                   (session_id, task_id, subtask_id, agent, content, mem_type,
-                    tool_name, doc_type, project_path, embedding, metadata)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector, $11)
-               {returning}"#
-        ))
-        .bind(m.session_id)
-        .bind(m.task_id)
-        .bind(m.subtask_id)
-        .bind(m.agent)
-        .bind(&m.content)
-        .bind(m.mem_type)
-        .bind(&m.tool_name)
-        .bind(&m.doc_type)
-        .bind(&m.project_path)
-        .bind(&emb_str)
-        .bind(&m.metadata)
-        .fetch_one(pool)
-        .await?;
-        Ok(row)
-    } else {
-        let emb_bytes: Option<Vec<u8>> = m.embedding.as_ref().map(|v| {
-            v.iter().flat_map(|f| f.to_le_bytes()).collect()
-        });
-
-        let row = sqlx::query_as::<_, Memory>(&format!(
-            r#"INSERT INTO memories
-                   (session_id, task_id, subtask_id, agent, content, mem_type,
-                    tool_name, doc_type, project_path, embedding, metadata)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-               {returning}"#
-        ))
-        .bind(m.session_id)
-        .bind(m.task_id)
-        .bind(m.subtask_id)
-        .bind(m.agent)
-        .bind(&m.content)
-        .bind(m.mem_type)
-        .bind(&m.tool_name)
-        .bind(&m.doc_type)
-        .bind(&m.project_path)
-        .bind(&emb_bytes)
-        .bind(&m.metadata)
-        .fetch_one(pool)
-        .await?;
-        Ok(row)
-    }
+    let row = sqlx::query_as::<_, Memory>(
+        r#"INSERT INTO memories
+               (session_id, task_id, subtask_id, agent, content, mem_type,
+                tool_name, doc_type, project_path, embedding, metadata)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector, $11)
+           RETURNING id, session_id, task_id, subtask_id, agent, content,
+                     mem_type, tool_name, doc_type, project_path, metadata, created_at"#,
+    )
+    .bind(m.session_id)
+    .bind(m.task_id)
+    .bind(m.subtask_id)
+    .bind(m.agent)
+    .bind(&m.content)
+    .bind(m.mem_type)
+    .bind(&m.tool_name)
+    .bind(&m.doc_type)
+    .bind(&m.project_path)
+    .bind(&emb_str)
+    .bind(&m.metadata)
+    .fetch_one(pool)
+    .await?;
+    Ok(row)
 }
 
 // ---------------------------------------------------------------------------

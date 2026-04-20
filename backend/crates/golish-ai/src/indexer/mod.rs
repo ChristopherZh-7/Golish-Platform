@@ -1,4 +1,4 @@
-//! Code indexer state management for Qbit.
+//! Code indexer state management for Golish.
 //!
 //! This crate provides state management for code indexing functionality, including:
 //! - Index path resolution (global vs local storage)

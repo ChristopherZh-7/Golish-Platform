@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use parking_lot::RwLock;
 use golish_core::events::{AiEvent, AiEventEnvelope};
 use golish_core::hitl::RiskLevel;
-use golish_core::runtime::{ApprovalResult, QbitRuntime, RuntimeError, RuntimeEvent};
+use golish_core::runtime::{ApprovalResult, GolishRuntime, RuntimeError, RuntimeEvent};
 use serde::Serialize;
 use std::any::Any;
 use std::collections::HashMap;
@@ -104,7 +104,7 @@ struct AiEnvelopePayload<'a> {
 }
 
 #[async_trait]
-impl QbitRuntime for TauriRuntime {
+impl GolishRuntime for TauriRuntime {
     fn emit(&self, event: RuntimeEvent) -> Result<(), RuntimeError> {
         // Emit with appropriate event name based on the RuntimeEvent variant
         match &event {

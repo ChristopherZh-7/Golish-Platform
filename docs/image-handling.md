@@ -1,6 +1,6 @@
 # Image Handling
 
-Multi-modal image attachment support for Qbit, enabling users to send images alongside text prompts to vision-capable AI models.
+Multi-modal image attachment support for Golish, enabling users to send images alongside text prompts to vision-capable AI models.
 
 ## Overview
 
@@ -57,7 +57,7 @@ LLM Provider (rig-anthropic-vertex, etc.)
 #### Backend (Rust)
 
 ```rust
-// qbit-core/src/message.rs
+// golish-core/src/message.rs
 pub enum PromptPart {
     Text { text: String },
     Image {
@@ -73,7 +73,7 @@ pub struct PromptPayload {
 ```
 
 ```rust
-// qbit-llm-providers/src/model_capabilities.rs
+// golish-llm-providers/src/model_capabilities.rs
 pub struct VisionCapabilities {
     pub supports_vision: bool,
     pub max_image_size_bytes: usize,
@@ -156,7 +156,7 @@ case "warning":
 
 ### Tauri Commands
 
-Location: `backend/crates/qbit/src/ai/commands/core.rs`
+Location: `backend/crates/golish/src/ai/commands/core.rs`
 
 **`get_vision_capabilities`**
 ```rust
@@ -184,7 +184,7 @@ Sends a multi-modal prompt. If the provider doesn't support vision:
 
 ### AgentBridge Methods
 
-Location: `backend/crates/qbit-ai/src/agent_bridge.rs`
+Location: `backend/crates/golish-ai/src/agent_bridge.rs`
 
 **`execute_with_content`**
 ```rust
@@ -318,7 +318,7 @@ if estimated_bytes > max_image_size_bytes {
 
 ### Unit Tests (Rust)
 
-Location: `backend/crates/qbit-core/src/message.rs`
+Location: `backend/crates/golish-core/src/message.rs`
 
 - `test_from_text` - PromptPayload from plain text
 - `test_has_images` - Detect images in payload
@@ -326,7 +326,7 @@ Location: `backend/crates/qbit-core/src/message.rs`
 - `test_serde_roundtrip` - Serialization/deserialization
 - `test_deserialize_from_frontend_format` - Parse exact frontend JSON format
 
-Location: `backend/crates/qbit-llm-providers/src/model_capabilities.rs`
+Location: `backend/crates/golish-llm-providers/src/model_capabilities.rs`
 
 - Vision capability detection for all providers
 - Model name pattern matching
@@ -340,7 +340,7 @@ Location: `backend/crates/qbit-llm-providers/src/model_capabilities.rs`
 
 ## Future Enhancements
 
-1. **Session Persistence** - Save images to `~/.qbit/sessions/<session-id>/assets/` and reference by UUID
+1. **Session Persistence** - Save images to `~/.golish/sessions/<session-id>/assets/` and reference by UUID
 2. **Clipboard Paste** - Support pasting images directly from clipboard
 3. **Drag and Drop** - Drop images onto the input area
 4. **Image Preview Modal** - Click to view full-size image

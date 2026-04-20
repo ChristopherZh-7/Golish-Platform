@@ -1,4 +1,4 @@
-//! Model registry and definitions for Qbit LLM providers.
+//! Model registry and definitions for Golish LLM providers.
 //!
 //! This crate provides a centralized registry of model definitions and capabilities,
 //! replacing string-matching heuristics with explicit model metadata.
