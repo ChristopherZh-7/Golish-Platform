@@ -86,7 +86,9 @@ pub async fn mcp_list_servers(
     // Load merged config
     let config = load_mcp_config(&workspace).map_err(|e| e.to_string())?;
 
-    // Check which servers are from user vs project config
+    // Check which servers are from builtin, user, or project config
+    let builtin_names = golish_mcp::builtin_server_names();
+
     let user_config = dirs::home_dir()
         .map(|h| h.join(".golish/mcp.json"))
         .and_then(|p| std::fs::read_to_string(p).ok())
@@ -113,6 +115,8 @@ pub async fn mcp_list_servers(
 
         let source = if user_config.contains(&name) {
             "user"
+        } else if builtin_names.contains(&name) {
+            "builtin"
         } else {
             "project"
         };

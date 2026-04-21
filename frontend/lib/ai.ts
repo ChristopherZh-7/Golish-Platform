@@ -2121,6 +2121,7 @@ export interface AgentFileInfo {
   description: string;
   path: string;
   source: "built-in" | "file";
+  scope: "global" | "project" | "built-in";
   is_system: boolean;
   model: string | null;
   allowed_tools: string[];
@@ -2162,6 +2163,7 @@ export async function saveAgentDefinition(params: {
   temperature?: number;
   maxTokens?: number;
   topP?: number;
+  scope?: "global" | "project";
   workingDirectory?: string;
 }): Promise<string> {
   return invoke("save_agent_definition", params);
@@ -2183,7 +2185,7 @@ export async function seedAgents(): Promise<number> {
 export interface SkillInfo {
   name: string;
   path: string;
-  source: "global" | "local";
+  source: "global" | "project";
   description: string;
   license: string | null;
   compatibility: string | null;
@@ -2206,7 +2208,7 @@ export async function saveSkill(params: {
   name: string;
   description: string;
   body: string;
-  scope?: "global" | "local";
+  scope?: "global" | "project";
   workingDirectory?: string;
 }): Promise<string> {
   return invoke("save_skill", params);
@@ -2221,7 +2223,7 @@ export async function deleteSkill(skillPath: string): Promise<void> {
 export interface RuleInfo {
   name: string;
   path: string;
-  source: "global" | "local";
+  source: "global" | "project";
   description: string;
   globs: string | null;
   always_apply: boolean;
@@ -2241,7 +2243,7 @@ export async function saveRule(params: {
   body: string;
   globs?: string;
   alwaysApply: boolean;
-  scope?: "global" | "local";
+  scope?: "global" | "project";
   workingDirectory?: string;
 }): Promise<string> {
   return invoke("save_rule", params);

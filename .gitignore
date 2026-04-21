@@ -91,6 +91,9 @@ tmp/
 /vite_manifest.json
 /assets_manifest.json
 
+# Bundled tools (keep source, ignore dependencies)
+tools/*/node_modules/
+
 mistral-testbed/target/
 
 # Test workspace for evals

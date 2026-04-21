@@ -275,6 +275,11 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
                         <Badge variant="outline" className="text-[10px] px-1.5 py-0">
                           {server.transport}
                         </Badge>
+                        {server.source === "builtin" && (
+                          <Badge variant="secondary" className="text-[10px] px-1.5 py-0 bg-blue-500/15 text-blue-400 border-blue-500/30">
+                            built-in
+                          </Badge>
+                        )}
                         {server.source === "project" && (
                           <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
                             project

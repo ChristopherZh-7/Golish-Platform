@@ -1104,6 +1104,12 @@ pub fn run_gui() {
             tools::pentest::pentest_install_runtime,
             tools::pentest::pentest_cancel_runtime_install,
             tools::pentest::pentest_uninstall_runtime,
+            tools::pentest::pentest_check_brew_outdated,
+            tools::pentest::pentest_list_installed_ruby,
+            tools::pentest::pentest_list_available_ruby,
+            tools::pentest::pentest_install_ruby_version,
+            tools::pentest::pentest_uninstall_ruby_version,
+            tools::pentest::pentest_set_default_ruby,
             tools::pentest::pentest_create_file,
             tools::pentest::pentest_open_url,
             // GitHub API commands
@@ -1163,10 +1169,6 @@ pub fn run_gui() {
             tools::pentest::pentest_list_available_python,
             tools::pentest::pentest_create_python_env,
             tools::pentest::pentest_delete_python_env,
-            // Sandboxie commands
-            tools::pentest::pentest_check_sandboxie,
-            tools::pentest::pentest_test_sandboxie,
-            tools::pentest::pentest_download_sandboxie,
             // Detached window commands
             tools::pentest::create_detached_window,
             tools::pentest::close_detached_window,

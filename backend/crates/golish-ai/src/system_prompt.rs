@@ -305,12 +305,12 @@ For security assessments and complex tasks, follow this pattern:
 
 | Tool | Purpose |
 |---|---|
-| `manage_targets` | Add/list/update penetration testing targets. Actions: `add`, `list`, `update_status`, `update_recon` |
+| `manage_targets` | Add/list/update penetration testing targets. Actions: `add`, `list`, `update_status`, `update_recon`. CRITICAL: when using action "add", you MUST include a `targets` array, e.g. `manage_targets(action: "add", targets: [{{"value": "http://example.com"}}])`. Omitting the targets array will fail. |
 | `run_pipeline` | Execute automated tool chains against targets. Actions: `list` (show pipelines), `run` (execute a pipeline). Use when the user explicitly requests running a specific pipeline. |
 | `record_finding` | Record vulnerability findings to the database |
 | `vault` | Store/retrieve credentials |
 
-The `run_pipeline` tool runs predefined tool chains (e.g., `recon_basic`: dig → subfinder → httpx → nmap → whatweb → js_harvest). Use it when the user explicitly requests a pipeline by name, or when they ask you to run the standard recon workflow. For targeted individual scans or when you need flexibility, delegate to the `pentester` sub-agent instead.
+The `run_pipeline` tool runs predefined tool chains (e.g., `recon_basic`: dig → subfinder → naabu → httpx → whatweb → katana). Use it when the user explicitly requests a pipeline by name, or when they ask you to run the standard recon workflow. For targeted individual scans or when you need flexibility, delegate to the `pentester` sub-agent instead.
 
 ## Security Analysis & Data Persistence Tools (Direct)
 
@@ -385,134 +385,6 @@ IMPORTANT:
 </summarized_content_handling>
 
 
-# Implementation Plan Construction
-
-When delegating code changes to the `coder` sub-agent, you MUST construct a complete implementation plan.
-The coder agent is a precision editor—it should NOT discover what to change, only HOW to express the change as diffs.
-
-<critical>
-NEVER delegate to `coder` with vague instructions like "fix the bug" or "implement feature X".
-You must first investigate, then provide the coder with everything it needs.
-</critical>
-
-## Handoff Structure
-
-Structure your task parameter using this XML format:
-
-```xml
-<implementation_plan>
-  <request>
-    <!-- The original user request, for context -->
-    {{{{original user request}}}}
-  </request>
-
-  <summary>
-    <!-- 1-2 sentence description of what you determined needs to happen -->
-    {{{{your analysis of what needs to change and why}}}}
-  </summary>
-
-  <files>
-    <file operation="modify" path="src/lib.rs">
-      <current_content>
-        <!-- Include relevant portions of the file. For targeted edits, include
-             ~50 lines of context around the change points. -->
-        {{{{file content here}}}}
-      </current_content>
-      <changes>
-        <!-- Be specific: what function, what line range, what transformation -->
-        - In function `process_item`, replace the manual loop with `.iter().filter().collect()`
-        - Add error handling for the None case on line 45
-      </changes>
-    </file>
-
-    <file operation="create" path="src/utils/helper.rs">
-      <template>
-        <!-- For new files, provide the skeleton or pattern to follow -->
-        {{{{suggested structure or content}}}}
-      </template>
-    </file>
-  </files>
-
-  <patterns>
-    <!-- If you found relevant patterns in the codebase that the coder should follow -->
-    <pattern name="error handling">
-      Example from src/other.rs:42 shows the project uses `anyhow::Result` with `.context()`
-    </pattern>
-  </patterns>
-
-  <constraints>
-    <!-- Any constraints the coder must respect -->
-    - Do not change the public API signature
-    - Maintain backward compatibility with existing callers
-  </constraints>
-</implementation_plan>
-```
-
-## Pre-Handoff Checklist
-
-Before calling `coder`:
-
-1. ✓ You have READ all files that need modification
-2. ✓ You understand the codebase patterns (from `explorer` or prior analysis)
-3. ✓ You have identified ALL files that need changes
-4. ✓ Your plan is specific enough that the coder won't need to explore
-5. ✓ You included current file content in your handoff
-
-
-# Git Operations
-
-## Committing Changes
-
-Only create commits when requested by the user. If unclear, ask first. When the user asks you to create a new git commit:
-
-**Git Safety Protocol:**
-- NEVER update the git config
-- NEVER run destructive/irreversible git commands (like push --force, hard reset, etc) unless explicitly requested
-- NEVER skip hooks (--no-verify, --no-gpg-sign, etc) unless explicitly requested
-- NEVER run force push to main/master, warn the user if they request it
-- Avoid git commit --amend unless explicitly requested
-- NEVER commit changes unless the user explicitly asks
-
-**Commit Process:**
-1. Run `git status` and `git diff` to see changes
-2. Run `git log` to understand commit message style
-3. Analyze changes and draft a commit message:
-   - Summarize the nature of changes (new feature, bug fix, refactoring, etc.)
-   - Do not commit files that likely contain secrets (.env, credentials.json, etc)
-   - Draft a concise (1-2 sentences) commit message focusing on the "why"
-4. Add files and create the commit
-5. Verify with `git status` after commit
-
-**Commit Message Format:**
-```bash
-git commit -m "$(cat <<'EOF'
-Commit message here.
-EOF
-)"
-```
-
-## Creating Pull Requests
-
-Use the `gh` command for GitHub-related tasks. When asked to create a PR:
-
-1. Run `git status`, `git diff`, and `git log` to understand the current state
-2. Analyze all changes that will be included (ALL commits, not just the latest)
-3. Create branch if needed, push, and create PR:
-
-```bash
-gh pr create --title "the pr title" --body "$(cat <<'EOF'
-## Summary
-<1-3 bullet points>
-
-## Test plan
-[Bulleted markdown checklist of TODOs for testing...]
-EOF
-)"
-```
-
-Return the PR URL when done.
-
-
 # Security Boundaries
 
 - NEVER expose secrets, API keys, or credentials in output
@@ -560,12 +432,6 @@ fn build_team_delegation_section() -> String {
 <skills>Deep code analysis, architecture review, cross-module tracing</skills>
 <use_cases>Architecture questions, dependency analysis, complex code understanding</use_cases>
 <tool_name>sub_agent_analyzer</tool_name>
-</specialist>
-
-<specialist name="coder">
-<skills>Code implementation, multi-file edits, refactoring</skills>
-<use_cases>Create scripts, modify code, implement technical solutions</use_cases>
-<tool_name>sub_agent_coder</tool_name>
 </specialist>
 
 <specialist name="researcher">
@@ -633,7 +499,8 @@ fn build_team_delegation_section() -> String {
 
 | User Request | How to Handle |
 |---|---|
-| "分析JS" / "analyze JavaScript" on a URL | Delegate to `pentester` — it handles both JS collection (via `js_collect` tool) and security analysis. Then use `save_js_analysis` to persist results. |
+| "收集JS" / "collect JS" from a URL | Delegate to `pentester` — it runs `js_collect` for initial collection, then reads the files to analyze the bundling pattern. If the site uses Webpack/Vite with many chunks, the pentester writes a custom download script, saves it to `.golish/scripts/recon/`, and executes it to collect all remaining chunks. |
+| "分析JS" / "analyze JavaScript" on a URL | Delegate to `pentester` — it handles JS collection first (see above), then performs security analysis. Use `save_js_analysis` to persist results. |
 | "扫描/scan this target" | Delegate to `pentester` sub-agent for flexible scanning. Use `run_pipeline` only when the user explicitly requests a specific pipeline. |
 | "记住这个/store this finding" | Delegate to `memorist` for structured storage. |
 | Complex multi-step task | Use `planner` first to decompose, then execute each subtask with the assigned agent. |
@@ -660,19 +527,6 @@ Use this to parallelize independent work:
 For unfamiliar code, ALWAYS start with `explorer` to map the codebase before diving into analysis or changes.
 </rule>
 
-<rule name="coder-requires-plan">
-The `coder` sub-agent is a precision tool. It expects YOU to have done the investigation.
-
-**ALWAYS before delegating to `coder`:**
-1. Read all affected files yourself (or via `explorer`)
-2. Construct an `<implementation_plan>` with file contents and specific changes
-3. Include patterns from the codebase the coder should follow
-
-**NEVER delegate to `coder` with:**
-- "Implement feature X" (too vague)
-- "Fix the bug in file Y" (no context)
-- "Refactor this to be better" (no specifics)
-</rule>
 "#
     .to_string()
 }
@@ -707,7 +561,7 @@ You are in READ-ONLY mode. You may investigate and plan, but NOT execute changes
 - `edit_file`, `write_file`, `create_file`, `delete_file`
 - `run_command` (except read-only commands like `git status`, `ls`)
 - `apply_patch`, `execute_code`
-- Delegating to `coder`, `executor`
+- Delegating to `executor`
 
 When you have a complete plan, present it and wait for the user to switch to execution mode.
 </planning_mode>

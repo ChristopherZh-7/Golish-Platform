@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   BookOpen,
   ChevronDown,
   ChevronRight,
   Edit3,
   FolderOpen,
+  Globe,
   Loader2,
   Plus,
   Save,
@@ -28,16 +29,16 @@ interface EditingSkill {
   name: string;
   description: string;
   body: string;
-  scope: "global" | "local";
+  scope: "global" | "project";
   isNew: boolean;
 }
 
-function emptySkill(): EditingSkill {
+function emptySkill(scope: "global" | "project" = "global"): EditingSkill {
   return {
     name: "",
     description: "",
     body: "",
-    scope: "global",
+    scope,
     isNew: true,
   };
 }
@@ -96,7 +97,7 @@ export function SkillsSettings() {
         name: skill.name,
         description: skill.description,
         body,
-        scope: skill.source as "global" | "local",
+        scope: skill.source === "project" ? "project" : "global",
         isNew: false,
       });
     } catch (err) {
@@ -105,9 +106,12 @@ export function SkillsSettings() {
     }
   };
 
-  const startCreating = () => {
-    setEditingSkill(emptySkill());
+  const startCreating = (scope: "global" | "project" = "global") => {
+    setEditingSkill(emptySkill(scope));
   };
+
+  const globalSkills = useMemo(() => skills.filter((s) => s.source !== "project"), [skills]);
+  const projectSkills = useMemo(() => skills.filter((s) => s.source === "project"), [skills]);
 
   const cancelEditing = () => {
     setEditingSkill(null);
@@ -208,19 +212,24 @@ export function SkillsSettings() {
           </div>
           <div className="space-y-1">
             <label className="text-xs text-muted-foreground">Scope</label>
-            <select
-              value={editingSkill.scope}
-              onChange={(e) =>
-                setEditingSkill({
-                  ...editingSkill,
-                  scope: e.target.value as "global" | "local",
-                })
-              }
-              className="w-full h-9 px-3 rounded-md bg-background border border-border text-foreground text-xs"
-            >
-              <option value="global">Global (~/.golish/skills/)</option>
-              <option value="local">Project (.golish/skills/)</option>
-            </select>
+            <div className="flex gap-1 h-9 items-center">
+              <Button
+                variant={editingSkill.scope === "global" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setEditingSkill({ ...editingSkill, scope: "global" })}
+                className={`h-8 px-3 text-xs gap-1 ${editingSkill.scope === "global" ? "bg-accent text-accent-foreground" : ""}`}
+              >
+                <Globe className="w-3 h-3" /> Global
+              </Button>
+              <Button
+                variant={editingSkill.scope === "project" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setEditingSkill({ ...editingSkill, scope: "project" })}
+                className={`h-8 px-3 text-xs gap-1 ${editingSkill.scope === "project" ? "bg-accent text-accent-foreground" : ""}`}
+              >
+                <FolderOpen className="w-3 h-3" /> Project
+              </Button>
+            </div>
           </div>
         </div>
 
@@ -265,139 +274,142 @@ export function SkillsSettings() {
     );
   }
 
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="space-y-1">
-          <h4 className="text-sm font-medium text-accent">Skills</h4>
-          <p className="text-xs text-muted-foreground">
-            Skills are knowledge files that teach agents specialized tasks. Stored as{" "}
-            <code>SKILL.md</code> in <code>~/.golish/skills/</code>.
-          </p>
-        </div>
-        <Button
-          size="sm"
-          onClick={startCreating}
-          className="bg-accent text-accent-foreground hover:bg-accent/90"
+  const renderSkillCard = (skill: SkillInfo) => {
+    const isExpanded = expandedIds.has(skill.path);
+    const body = loadedBodies[skill.path];
+
+    return (
+      <div
+        key={skill.path}
+        className="rounded-lg bg-muted border border-[var(--border-medium)] overflow-hidden"
+      >
+        <button
+          type="button"
+          onClick={() => toggleExpand(skill)}
+          className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-[var(--bg-hover)] transition-colors"
         >
-          <Plus className="w-4 h-4 mr-1" /> New Skill
-        </Button>
-      </div>
-
-      <div className="space-y-2">
-        {skills.map((skill) => {
-          const isExpanded = expandedIds.has(skill.path);
-          const body = loadedBodies[skill.path];
-
-          return (
-            <div
-              key={skill.path}
-              className="rounded-lg bg-muted border border-[var(--border-medium)] overflow-hidden"
-            >
-              <button
-                type="button"
-                onClick={() => toggleExpand(skill)}
-                className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-[var(--bg-hover)] transition-colors"
-              >
-                {isExpanded ? (
-                  <ChevronDown className="w-4 h-4 text-muted-foreground flex-shrink-0" />
-                ) : (
-                  <ChevronRight className="w-4 h-4 text-muted-foreground flex-shrink-0" />
-                )}
-                <BookOpen className="w-4 h-4 text-accent flex-shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-foreground font-mono">
-                      {skill.name}
-                    </span>
-                    <Badge
-                      variant={skill.source === "local" ? "default" : "secondary"}
-                      className="text-[9px] px-1.5 py-0 h-4"
-                    >
-                      {skill.source}
-                    </Badge>
-                    {skill.has_scripts && (
-                      <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4">
-                        scripts
-                      </Badge>
-                    )}
-                  </div>
-                  <p className="text-xs text-muted-foreground truncate">
-                    {skill.description}
-                  </p>
-                </div>
-              </button>
-
-              {isExpanded && (
-                <div className="px-4 pb-4 pt-1 border-t border-[var(--border-medium)] space-y-3">
-                  {body ? (
-                    <pre className="text-xs text-muted-foreground bg-background rounded p-3 max-h-[200px] overflow-auto whitespace-pre-wrap font-mono">
-                      {body}
-                    </pre>
-                  ) : (
-                    <div className="flex items-center gap-2 py-2">
-                      <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
-                      <span className="text-xs text-muted-foreground">Loading...</span>
-                    </div>
-                  )}
-
-                  {skill.allowed_tools && skill.allowed_tools.length > 0 && (
-                    <div className="flex flex-wrap gap-1">
-                      {skill.allowed_tools.map((tool) => (
-                        <Badge
-                          key={tool}
-                          variant="secondary"
-                          className="text-[10px] font-mono px-1.5 py-0"
-                        >
-                          {tool}
-                        </Badge>
-                      ))}
-                    </div>
-                  )}
-
-                  <p className="text-[10px] text-muted-foreground/50 font-mono truncate flex items-center gap-1">
-                    <FolderOpen className="w-3 h-3" /> {skill.path}
-                  </p>
-
-                  <div className="flex gap-2 pt-1">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => startEditing(skill)}
-                      className="h-7 text-xs"
-                    >
-                      <Edit3 className="w-3 h-3 mr-1" /> Edit
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleDelete(skill)}
-                      className="h-7 text-xs text-muted-foreground hover:text-destructive"
-                    >
-                      <Trash2 className="w-3 h-3 mr-1" /> Delete
-                    </Button>
-                  </div>
-                </div>
+          {isExpanded ? (
+            <ChevronDown className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+          ) : (
+            <ChevronRight className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+          )}
+          <BookOpen className="w-4 h-4 text-accent flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-foreground font-mono">{skill.name}</span>
+              {skill.has_scripts && (
+                <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4">scripts</Badge>
               )}
             </div>
-          );
-        })}
+            <p className="text-xs text-muted-foreground truncate">{skill.description}</p>
+          </div>
+        </button>
+
+        {isExpanded && (
+          <div className="px-4 pb-4 pt-1 border-t border-[var(--border-medium)] space-y-3">
+            {body ? (
+              <pre className="text-xs text-muted-foreground bg-background rounded p-3 max-h-[200px] overflow-auto whitespace-pre-wrap font-mono">
+                {body}
+              </pre>
+            ) : (
+              <div className="flex items-center gap-2 py-2">
+                <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+                <span className="text-xs text-muted-foreground">Loading...</span>
+              </div>
+            )}
+
+            {skill.allowed_tools && skill.allowed_tools.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {skill.allowed_tools.map((tool) => (
+                  <Badge key={tool} variant="secondary" className="text-[10px] font-mono px-1.5 py-0">{tool}</Badge>
+                ))}
+              </div>
+            )}
+
+            <p className="text-[10px] text-muted-foreground/50 font-mono truncate flex items-center gap-1">
+              <FolderOpen className="w-3 h-3" /> {skill.path}
+            </p>
+
+            <div className="flex gap-2 pt-1">
+              <Button variant="outline" size="sm" onClick={() => startEditing(skill)} className="h-7 text-xs">
+                <Edit3 className="w-3 h-3 mr-1" /> Edit
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => handleDelete(skill)}
+                className="h-7 text-xs text-muted-foreground hover:text-destructive"
+              >
+                <Trash2 className="w-3 h-3 mr-1" /> Delete
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Global Skills */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Globe className="w-4 h-4 text-accent" />
+            <h4 className="text-sm font-medium text-accent">Global Skills</h4>
+            <span className="text-[10px] text-muted-foreground">~/.golish/skills/</span>
+          </div>
+          <Button
+            size="sm"
+            onClick={() => startCreating("global")}
+            className="bg-accent text-accent-foreground hover:bg-accent/90 h-7"
+          >
+            <Plus className="w-3.5 h-3.5 mr-1" /> New
+          </Button>
+        </div>
+        <div className="space-y-2">
+          {globalSkills.map(renderSkillCard)}
+          {globalSkills.length === 0 && (
+            <p className="text-xs text-muted-foreground italic py-3 text-center">
+              No global skills. Click &quot;New&quot; to create one.
+            </p>
+          )}
+        </div>
       </div>
 
-      {skills.length === 0 && (
-        <div className="text-center py-8">
-          <BookOpen className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
-          <p className="text-sm text-muted-foreground">No skills found.</p>
-          <p className="text-xs text-muted-foreground mt-1">
-            Create a skill to teach agents specialized tasks.
-          </p>
+      <div className="border-t border-[var(--border-medium)]" />
+
+      {/* Project Skills */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <FolderOpen className="w-4 h-4 text-accent" />
+            <h4 className="text-sm font-medium text-accent">Project Skills</h4>
+            <span className="text-[10px] text-muted-foreground">.golish/skills/</span>
+          </div>
+          <Button
+            size="sm"
+            onClick={() => startCreating("project")}
+            className="bg-accent text-accent-foreground hover:bg-accent/90 h-7"
+          >
+            <Plus className="w-3.5 h-3.5 mr-1" /> New
+          </Button>
         </div>
-      )}
+        <div className="space-y-2">
+          {projectSkills.map(renderSkillCard)}
+          {projectSkills.length === 0 && (
+            <p className="text-xs text-muted-foreground italic py-3 text-center">
+              No project-specific skills. These are stored in your project&apos;s <code>.golish/skills/</code> directory.
+            </p>
+          )}
+        </div>
+      </div>
 
       <div className="text-xs text-muted-foreground border-t border-[var(--border-medium)] pt-4">
         <p>
-          <strong>Tip:</strong> Skills are matched to user prompts by keywords. When a match is
-          found, the skill body is injected into the agent&apos;s system prompt for that session.
+          <strong>Global</strong> skills are available across all projects.{" "}
+          <strong>Project</strong> skills override global ones with the same name.
+          Skills are matched by keywords and injected into agent prompts.
         </p>
       </div>
     </div>

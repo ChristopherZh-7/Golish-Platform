@@ -34,7 +34,7 @@ pub struct SkillInfo {
     pub name: String,
     /// Full path to the skill directory
     pub path: String,
-    /// Source: "global" or "local"
+    /// Source: "global" or "project"
     pub source: String,
     /// Description from frontmatter
     pub description: String,
@@ -66,7 +66,7 @@ pub struct SkillMetadata {
     pub description: String,
     /// Full path to the skill directory
     pub path: String,
-    /// Source: "global" or "local"
+    /// Source: "global" or "project"
     pub source: String,
     /// Allowed tools for this skill
     pub allowed_tools: Option<Vec<String>>,

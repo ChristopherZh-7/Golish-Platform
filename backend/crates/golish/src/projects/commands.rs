@@ -90,6 +90,9 @@ pub async fn delete_project_config(
             "sensitive_scan_history",
             "directory_entries",
             "target_assets",
+            "conversations",
+            "topology_scans",
+            "workspace_preferences",
         ];
         let mut total_deleted = 0u64;
         for table in &tables_with_project_path {

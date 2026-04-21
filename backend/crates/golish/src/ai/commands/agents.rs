@@ -32,8 +32,9 @@ pub async fn read_agent_prompt(agent_id: String, working_directory: Option<Strin
 
 /// Save (create or update) an agent definition to a `.md` file.
 ///
-/// System agents can be edited but not deleted. New agents are saved
-/// to the global `~/.golish/agents/` directory.
+/// When `scope` is `"project"`, saves to `<workspace>/.golish/agents/`.
+/// Otherwise saves to `~/.golish/agents/` (global).
+/// Existing file-based agents keep their current location unless `scope` is explicitly provided.
 #[tauri::command]
 pub async fn save_agent_definition(
     agent_id: String,
@@ -50,6 +51,7 @@ pub async fn save_agent_definition(
     temperature: Option<f32>,
     max_tokens: Option<u32>,
     top_p: Option<f32>,
+    scope: Option<String>,
     working_directory: Option<String>,
 ) -> Result<String, String> {
     let workspace = working_directory.map(PathBuf::from);
@@ -58,23 +60,39 @@ pub async fn save_agent_definition(
     let agents = discover_agents(workspace.as_deref());
     let existing = agents.iter().find(|a| a.id == agent_id);
 
-    let file_path = match existing {
-        Some(agent) => match &agent.source {
-            AgentSource::File(path) => path.clone(),
-            AgentSource::BuiltIn => {
-                // Built-in agent being edited — save to global dir
+    let file_path = if let Some(scope_str) = &scope {
+        // Explicit scope provided — force save location
+        match scope_str.as_str() {
+            "project" => {
+                let ws = workspace.as_ref().ok_or("Working directory required for project agents")?;
+                let agents_dir = ws.join(".golish").join("agents");
+                std::fs::create_dir_all(&agents_dir).map_err(|e| e.to_string())?;
+                agents_dir.join(format!("{agent_id}.md"))
+            }
+            _ => {
                 let home = dirs::home_dir().ok_or("No home directory")?;
                 let agents_dir = home.join(".golish").join("agents");
                 std::fs::create_dir_all(&agents_dir).map_err(|e| e.to_string())?;
                 agents_dir.join(format!("{agent_id}.md"))
             }
-        },
-        None => {
-            // New agent — save to global dir
-            let home = dirs::home_dir().ok_or("No home directory")?;
-            let agents_dir = home.join(".golish").join("agents");
-            std::fs::create_dir_all(&agents_dir).map_err(|e| e.to_string())?;
-            agents_dir.join(format!("{agent_id}.md"))
+        }
+    } else {
+        match existing {
+            Some(agent) => match &agent.source {
+                AgentSource::File(path) => path.clone(),
+                AgentSource::BuiltIn => {
+                    let home = dirs::home_dir().ok_or("No home directory")?;
+                    let agents_dir = home.join(".golish").join("agents");
+                    std::fs::create_dir_all(&agents_dir).map_err(|e| e.to_string())?;
+                    agents_dir.join(format!("{agent_id}.md"))
+                }
+            },
+            None => {
+                let home = dirs::home_dir().ok_or("No home directory")?;
+                let agents_dir = home.join(".golish").join("agents");
+                std::fs::create_dir_all(&agents_dir).map_err(|e| e.to_string())?;
+                agents_dir.join(format!("{agent_id}.md"))
+            }
         }
     };
 
