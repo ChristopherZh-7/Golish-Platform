@@ -832,103 +832,130 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
     return true;
   };
 
+  const configuredProviders = providers.filter((p) => p.getConfigured(settings));
+  const unconfiguredProviders = providers.filter((p) => !p.getConfigured(settings));
+
   return (
-    <div className="flex gap-4" style={{ height: "calc(100vh - 140px)" }}>
-      {/* Left: provider list */}
-      <div className="w-56 flex-shrink-0 overflow-y-auto space-y-0.5 pr-1">
-        {providers.map((provider) => {
-          const isConfigured = provider.getConfigured(settings);
-          const isDefault = settings.default_provider === provider.id;
-          const isSelected = selectedId === provider.id;
+    <div className="overflow-y-auto space-y-6 pb-8" style={{ height: "calc(100vh - 140px)" }}>
+      {/* Default Model */}
+      <div>
+        <div className="text-[12px] font-medium text-foreground/80 mb-1.5">{t("provider.defaultModel")}</div>
+        <p className="text-[10px] text-muted-foreground/35 mb-2.5">{t("provider.defaultModelDesc")}</p>
+        <div className="max-w-md">
+          <ModelSelector
+            provider={settings.default_provider}
+            model={settings.default_model}
+            reasoningEffort={settings.default_reasoning_effort}
+            settings={settings}
+            onChange={(provider, model, reasoningEffort) =>
+              onChange({
+                ...settings,
+                default_provider: provider,
+                default_model: model,
+                default_reasoning_effort: reasoningEffort,
+              })
+            }
+          />
+        </div>
+      </div>
 
-          return (
-            <button key={provider.id} type="button"
-              onClick={() => setSelectedId(isSelected ? null : provider.id)}
-              className={cn(
-                "w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-colors",
-                isSelected ? "bg-accent/10 text-foreground" : "hover:bg-[var(--bg-hover)] text-foreground/70"
-              )}
-            >
-              <span className="text-sm w-6 h-6 flex items-center justify-center flex-shrink-0">{provider.icon}</span>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[12px] font-medium truncate">{provider.name}</span>
-                  {isDefault && <Star className="w-2.5 h-2.5 text-accent fill-current flex-shrink-0" />}
+      {/* Active Providers */}
+      {configuredProviders.length > 0 && (
+        <div>
+          <div className="text-[11px] font-medium text-emerald-400/70 uppercase tracking-wider mb-2">
+            {t("provider.active", "Active")} · {configuredProviders.length}
+          </div>
+          <div className="space-y-1.5">
+            {configuredProviders.map((provider) => {
+              const isDefault = settings.default_provider === provider.id;
+              const isOpen = selectedId === provider.id;
+              return (
+                <div key={provider.id} className={cn(
+                  "rounded-lg border transition-colors",
+                  isOpen ? "border-accent/20 bg-accent/3" : "border-border/8 hover:border-border/20"
+                )}>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedId(isOpen ? null : provider.id)}
+                    className="w-full flex items-center gap-3 px-3.5 py-2.5 text-left"
+                  >
+                    <span className="text-[14px]">{provider.icon}</span>
+                    <span className="text-[12px] font-medium text-foreground flex-1">{provider.name}</span>
+                    {isDefault && (
+                      <Star className="w-3 h-3 text-accent fill-accent/60 flex-shrink-0" />
+                    )}
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0" />
+                    <ChevronDown className={cn(
+                      "w-3 h-3 text-muted-foreground/25 transition-transform",
+                      isOpen && "rotate-180"
+                    )} />
+                  </button>
+                  {isOpen && (
+                    <div className="px-3.5 pb-3.5 pt-0.5 border-t border-border/8 space-y-3">
+                      <div className="flex items-center justify-between py-1.5">
+                        <span className="text-[10px] text-muted-foreground/40">{t("provider.showInSelector")}</span>
+                        <Switch
+                          checked={getShowInSelector(provider.id)}
+                          onCheckedChange={(checked) => updateProvider(provider.id, "show_in_selector", checked)}
+                        />
+                      </div>
+                      {renderProviderFields(provider)}
+                    </div>
+                  )}
                 </div>
-              </div>
-              <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", isConfigured ? "bg-emerald-400" : "bg-muted-foreground/20")} />
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Right: config panel or model assignments */}
-      <div className="flex-1 border-l border-border/15 pl-4 overflow-y-auto">
-        {selectedProvider ? (
-          <div className="space-y-5">
-            <div className="flex items-center gap-3">
-              <span className="text-xl">{selectedProvider.icon}</span>
-              <div>
-                <div className="text-[14px] font-medium text-foreground">{selectedProvider.name}</div>
-                <div className="text-[11px] text-muted-foreground/50">{selectedProvider.description}</div>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between py-2.5 border-y border-border/15">
-              <div>
-                <div className="text-[12px] font-medium text-foreground/80">{t("provider.showInSelector")}</div>
-                <div className="text-[11px] text-muted-foreground/40">{t("provider.showInSelectorDesc")}</div>
-              </div>
-              <Switch
-                checked={getShowInSelector(selectedProvider.id)}
-                onCheckedChange={(checked) => updateProvider(selectedProvider.id, "show_in_selector", checked)}
-              />
-            </div>
-
-            {renderProviderFields(selectedProvider)}
+              );
+            })}
           </div>
-        ) : (
-          <div className="space-y-6 max-w-lg">
-            <div>
-              <div className="text-[13px] font-medium text-foreground/80 mb-1">{t("provider.defaultModel")}</div>
-              <p className="text-[11px] text-muted-foreground/40 mb-3">{t("provider.defaultModelDesc")}</p>
-              <ModelSelector
-                provider={settings.default_provider}
-                model={settings.default_model}
-                reasoningEffort={settings.default_reasoning_effort}
-                settings={settings}
-                onChange={(provider, model, reasoningEffort) =>
-                  onChange({
-                    ...settings,
-                    default_provider: provider,
-                    default_model: model,
-                    default_reasoning_effort: reasoningEffort,
-                  })
-                }
-              />
-            </div>
+        </div>
+      )}
 
-            <div className="border-t border-border/10 pt-5">
-              <div className="text-[13px] font-medium text-foreground/80 mb-1">KB Research Model</div>
-              <p className="text-[11px] text-muted-foreground/40 mb-3">Model used by AI Research for vulnerability knowledge base. Inherits default if unchanged.</p>
-              <ModelSelector
-                provider={settings.research_provider ?? settings.default_provider}
-                model={settings.research_model ?? settings.default_model}
-                settings={settings}
-                onChange={(provider, model) =>
-                  onChange({
-                    ...settings,
-                    research_provider: provider,
-                    research_model: model,
-                  })
-                }
-              />
-            </div>
-
-            <div className="text-[10px] text-muted-foreground/20 pt-4">← Select a provider on the left to configure API keys</div>
+      {/* Available Providers */}
+      {unconfiguredProviders.length > 0 && (
+        <div>
+          <div className="text-[11px] font-medium text-muted-foreground/30 uppercase tracking-wider mb-2">
+            {t("provider.available", "Available")} · {unconfiguredProviders.length}
           </div>
-        )}
-      </div>
+          <div className="space-y-1.5">
+            {unconfiguredProviders.map((provider) => {
+              const isOpen = selectedId === provider.id;
+              return (
+                <div key={provider.id} className={cn(
+                  "rounded-lg border transition-colors",
+                  isOpen ? "border-accent/20 bg-accent/3" : "border-border/5 hover:border-border/15"
+                )}>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedId(isOpen ? null : provider.id)}
+                    className="w-full flex items-center gap-3 px-3.5 py-2.5 text-left"
+                  >
+                    <span className="text-[14px] opacity-50">{provider.icon}</span>
+                    <div className="flex-1 min-w-0">
+                      <span className="text-[12px] font-medium text-foreground/50">{provider.name}</span>
+                      <span className="text-[10px] text-muted-foreground/25 ml-2">{provider.description}</span>
+                    </div>
+                    <ChevronDown className={cn(
+                      "w-3 h-3 text-muted-foreground/15 transition-transform",
+                      isOpen && "rotate-180"
+                    )} />
+                  </button>
+                  {isOpen && (
+                    <div className="px-3.5 pb-3.5 pt-0.5 border-t border-border/8 space-y-3">
+                      <div className="flex items-center justify-between py-1.5">
+                        <span className="text-[10px] text-muted-foreground/40">{t("provider.showInSelector")}</span>
+                        <Switch
+                          checked={getShowInSelector(provider.id)}
+                          onCheckedChange={(checked) => updateProvider(provider.id, "show_in_selector", checked)}
+                        />
+                      </div>
+                      {renderProviderFields(provider)}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
