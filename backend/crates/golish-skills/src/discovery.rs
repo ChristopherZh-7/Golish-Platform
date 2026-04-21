@@ -108,7 +108,7 @@ pub fn discover_skills(working_directory: Option<&str>) -> Vec<SkillInfo> {
                 for entry in entries.filter_map(|e| e.ok()) {
                     let path = entry.path();
                     if path.is_dir() {
-                        if let Some(skill) = load_skill(path, "local") {
+                        if let Some(skill) = load_skill(path, "project") {
                             skills.insert(skill.name.clone(), skill);
                         }
                     }
@@ -241,8 +241,8 @@ Test instructions for {}.
         // Use temp dir as working directory
         let skills = discover_skills(Some(temp_dir.path().to_str().unwrap()));
 
-        // Filter to only local skills (temp dir) to avoid interference from global skills
-        let local_skills: Vec<_> = skills.iter().filter(|s| s.source == "local").collect();
+        // Filter to only project skills (temp dir) to avoid interference from global skills
+        let local_skills: Vec<_> = skills.iter().filter(|s| s.source == "project").collect();
 
         assert_eq!(local_skills.len(), 2);
         assert_eq!(local_skills[0].name, "skill-a");

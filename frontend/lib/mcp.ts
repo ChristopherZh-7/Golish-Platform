@@ -35,8 +35,8 @@ export interface McpServerInfo {
   toolCount: number | null;
   /** Error message (if status is "error") */
   error: string | null;
-  /** Source: "user" for ~/.golish/mcp.json, "project" for <project>/.golish/mcp.json */
-  source: "user" | "project";
+  /** Source: "builtin" for built-in servers, "user" for ~/.golish/mcp.json, "project" for <project>/.golish/mcp.json */
+  source: "builtin" | "user" | "project";
 }
 
 /**

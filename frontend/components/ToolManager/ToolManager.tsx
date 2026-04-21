@@ -1,386 +1,22 @@
 import { useCallback, useEffect, useState, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
-  ArrowLeft, ArrowUpDown, ArrowUpCircle, BookOpen, Check, ChevronDown, Code2, Copy, Download, ExternalLink, FileText,
+  ArrowLeft, ArrowUpDown, ArrowUpCircle, BookOpen, Check, Code2, Copy, Download, ExternalLink, FileText,
   FolderOpen, Github, Grid3X3, Loader2, List, Pencil, Plus, RefreshCw, Save, Search, Trash2, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { scanTools, deleteTool, getCategories, fetchGitHubRelease, downloadAndExtract, cancelDownload, installRuntime, createPythonEnv, listPythonEnvs, listInstalledJava, listAvailableJava, installJavaVersion, listSkills, readSkill, writeSkill, deleteSkill, type SkillFileInfo } from "@/lib/pentest/api";
+import { scanTools, getCategories, fetchGitHubRelease, downloadAndExtract, cancelDownload, installRuntime, createPythonEnv, listPythonEnvs, listInstalledJava, listAvailableJava, installJavaVersion, listSkills, readSkill, writeSkill, deleteSkill, type SkillFileInfo } from "@/lib/pentest/api";
 import type { ToolConfig, ToolCategory } from "@/lib/pentest/types";
 import { getSettings } from "@/lib/settings";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useTranslation } from "react-i18next";
 
-type ToolWithMeta = ToolConfig & { categoryName?: string; subcategoryName?: string };
-type ViewMode = "grid" | "list";
-type SortKey = "name" | "status" | "category" | "runtime";
-
-interface OutputPattern {
-  type: string;
-  regex: string;
-  fields: Record<string, string>;
-}
-
-interface OutputConfigData {
-  format: string;
-  produces: string[];
-  detect?: string;
-  patterns: OutputPattern[];
-  fields: Record<string, string>;
-  db_action?: string;
-  transform?: string;
-}
-
-const PRODUCE_TYPES = ["host", "port", "vulnerability", "url", "credential"];
-const OUTPUT_FORMATS = [
-  { value: "text", label: "Text (Regex)" },
-  { value: "json_lines", label: "JSON Lines" },
-  { value: "json", label: "JSON" },
-];
-const DB_ACTIONS = [
-  { value: "", label: "None (don't store)" },
-  { value: "target_add", label: "Add Target" },
-  { value: "target_update_recon", label: "Update Target Recon" },
-  { value: "directory_entry_add", label: "Add Directory Entry" },
-  { value: "finding_add", label: "Add Finding" },
-];
-
-function OutputMiniDropdown({
-  value,
-  onChange,
-  options,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  options: { value: string; label: string }[];
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const selected = options.find((o) => o.value === value);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        type="button"
-        className={cn(
-          "flex items-center gap-1.5 px-2 py-1 text-[10px] rounded-md border transition-colors",
-          "bg-[var(--bg-hover)]/30 border-border/30 text-foreground",
-          "hover:bg-[var(--bg-hover)]/60 hover:border-border/50",
-          open && "border-accent/40 bg-[var(--bg-hover)]/50",
-        )}
-        onClick={() => setOpen(!open)}
-      >
-        <span className="truncate max-w-[100px]">{selected?.label ?? value}</span>
-        <ChevronDown className={cn("w-3 h-3 text-muted-foreground transition-transform", open && "rotate-180")} />
-      </button>
-      {open && (
-        <div className="absolute top-full left-0 mt-1 min-w-[120px] max-h-48 overflow-y-auto rounded-lg border border-border/30 bg-card shadow-lg z-50 py-1">
-          {options.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              className={cn(
-                "w-full text-left px-3 py-1.5 text-[10px] transition-colors",
-                "hover:bg-[var(--bg-hover)]/60",
-                opt.value === value && "text-accent bg-accent/5 font-medium",
-              )}
-              onClick={() => { onChange(opt.value); setOpen(false); }}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function OutputParserEditor({
-  formData,
-  onChange,
-}: {
-  formData: Record<string, unknown>;
-  onChange: (output: OutputConfigData) => void;
-}) {
-  const existing = (formData.output as OutputConfigData | undefined) || {
-    format: "text",
-    produces: [],
-    detect: "",
-    patterns: [],
-    fields: {},
-    db_action: undefined,
-    transform: undefined,
-  };
-
-  const [config, setConfig] = useState<OutputConfigData>(existing);
-  const [testInput, setTestInput] = useState("");
-  const [testResult, setTestResult] = useState<string | null>(null);
-
-  const update = useCallback((patch: Partial<OutputConfigData>) => {
-    const next = { ...config, ...patch };
-    setConfig(next);
-    onChange(next);
-  }, [config, onChange]);
-
-  const toggleProduce = useCallback((type: string) => {
-    const produces = config.produces.includes(type)
-      ? config.produces.filter((t) => t !== type)
-      : [...config.produces, type];
-    update({ produces });
-  }, [config.produces, update]);
-
-  const addPattern = useCallback(() => {
-    update({
-      patterns: [...config.patterns, { type: "host", regex: "", fields: {} }],
-    });
-  }, [config.patterns, update]);
-
-  const removePattern = useCallback((idx: number) => {
-    update({ patterns: config.patterns.filter((_, i) => i !== idx) });
-  }, [config.patterns, update]);
-
-  const updatePattern = useCallback((idx: number, patch: Partial<OutputPattern>) => {
-    const patterns = config.patterns.map((p, i) =>
-      i === idx ? { ...p, ...patch } : p
-    );
-    update({ patterns });
-  }, [config.patterns, update]);
-
-  const addField = useCallback(() => {
-    const fields = { ...config.fields, "": "" };
-    update({ fields });
-  }, [config.fields, update]);
-
-  const handleTestParse = useCallback(async () => {
-    if (!testInput.trim()) return;
-    try {
-      const result = await invoke<{ items: { data_type: string; fields: Record<string, string> }[] }>("output_parse", {
-        rawOutput: testInput,
-        config,
-        toolId: formData.id || null,
-        toolName: formData.name || null,
-      });
-      setTestResult(JSON.stringify(result.items, null, 2));
-    } catch (e) {
-      setTestResult(`Error: ${e}`);
-    }
-  }, [testInput, config, formData]);
-
-  return (
-    <div className="flex gap-4 h-full min-h-[400px]">
-      <div className="flex-1 min-w-0 space-y-4 overflow-y-auto">
-        {/* Format & Detection */}
-        <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
-          <div className="px-3 py-2 border-b border-border/8">
-            <span className="text-[11px] font-medium text-muted-foreground/40">Output Format</span>
-          </div>
-          <div className="p-3 space-y-3">
-            <div className="flex items-center gap-3">
-              <label className="text-[11px] text-muted-foreground/50 w-20 flex-shrink-0">Format</label>
-              <OutputMiniDropdown
-                value={config.format}
-                onChange={(v) => update({ format: v })}
-                options={OUTPUT_FORMATS}
-              />
-            </div>
-            <div className="flex items-center gap-3">
-              <label className="text-[11px] text-muted-foreground/50 w-20 flex-shrink-0">Detect</label>
-              <input
-                value={config.detect || ""}
-                onChange={(e) => update({ detect: e.target.value })}
-                placeholder="Regex to match command or output"
-                className="flex-1 px-2 py-1 text-[11px] font-mono rounded-md bg-transparent border border-border/20 text-foreground placeholder:text-muted-foreground/20 outline-none"
-              />
-            </div>
-            <div className="flex items-center gap-3">
-              <label className="text-[11px] text-muted-foreground/50 w-20 flex-shrink-0">DB Action</label>
-              <OutputMiniDropdown
-                value={config.db_action || ""}
-                onChange={(v) => update({ db_action: v || undefined })}
-                options={DB_ACTIONS}
-              />
-            </div>
-            <div className="flex items-center gap-3">
-              <label className="text-[11px] text-muted-foreground/50 w-20 flex-shrink-0">Transform</label>
-              <input
-                value={config.transform || ""}
-                onChange={(e) => update({ transform: e.target.value || undefined })}
-                placeholder="jq expression to pre-process output (e.g. '.[] | .plugins | to_entries[]')"
-                className="flex-1 px-2 py-1 text-[11px] font-mono rounded-md bg-transparent border border-border/20 text-foreground placeholder:text-muted-foreground/20 outline-none"
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Produces */}
-        <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
-          <div className="px-3 py-2 border-b border-border/8">
-            <span className="text-[11px] font-medium text-muted-foreground/40">Produces</span>
-          </div>
-          <div className="p-3 flex flex-wrap gap-2">
-            {PRODUCE_TYPES.map((type) => (
-              <button
-                key={type}
-                type="button"
-                onClick={() => toggleProduce(type)}
-                className={cn(
-                  "px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors",
-                  config.produces.includes(type)
-                    ? "bg-accent/15 text-accent border border-accent/30"
-                    : "bg-muted/10 text-muted-foreground/40 border border-border/10 hover:border-border/30"
-                )}
-              >
-                {type}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Patterns (for text format) */}
-        {config.format === "text" && (
-          <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
-            <div className="px-3 py-2 border-b border-border/8 flex items-center justify-between">
-              <span className="text-[11px] font-medium text-muted-foreground/40">Regex Patterns</span>
-              <button type="button" onClick={addPattern}
-                className="text-[10px] text-accent/70 hover:text-accent transition-colors">
-                + Add Pattern
-              </button>
-            </div>
-            <div className="p-3 space-y-3">
-              {config.patterns.map((pattern, idx) => (
-                <div key={idx} className="rounded-lg border border-border/10 p-2.5 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <OutputMiniDropdown
-                        value={pattern.type}
-                        onChange={(v) => updatePattern(idx, { type: v })}
-                        options={PRODUCE_TYPES.map((t) => ({ value: t, label: t }))}
-                      />
-                    </div>
-                    <button type="button" onClick={() => removePattern(idx)}
-                      className="p-0.5 text-muted-foreground/30 hover:text-red-400 transition-colors">
-                      <Trash2 className="w-3 h-3" />
-                    </button>
-                  </div>
-                  <input
-                    value={pattern.regex}
-                    onChange={(e) => updatePattern(idx, { regex: e.target.value })}
-                    placeholder="Regular expression with capture groups"
-                    className="w-full px-2 py-1 text-[11px] font-mono rounded-md bg-transparent border border-border/20 text-foreground placeholder:text-muted-foreground/20 outline-none"
-                  />
-                  <div className="text-[9px] text-muted-foreground/30 px-1">
-                    Fields: {Object.entries(pattern.fields).map(([k, v]) => `${k}=${v}`).join(", ") || "none"}
-                  </div>
-                  <input
-                    value={Object.entries(pattern.fields).map(([k, v]) => `${k}=${v}`).join(", ")}
-                    onChange={(e) => {
-                      const fields: Record<string, string> = {};
-                      for (const pair of e.target.value.split(",")) {
-                        const [k, v] = pair.split("=").map((s) => s.trim());
-                        if (k && v) fields[k] = v;
-                      }
-                      updatePattern(idx, { fields });
-                    }}
-                    placeholder='field=$1, field2=$2'
-                    className="w-full px-2 py-1 text-[10px] font-mono rounded-md bg-transparent border border-border/15 text-foreground placeholder:text-muted-foreground/20 outline-none"
-                  />
-                </div>
-              ))}
-              {config.patterns.length === 0 && (
-                <div className="text-center text-[10px] text-muted-foreground/30 py-2">
-                  No patterns defined. Click &quot;+ Add Pattern&quot; to create one.
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Fields (for JSON format) */}
-        {(config.format === "json" || config.format === "json_lines") && (
-          <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
-            <div className="px-3 py-2 border-b border-border/8 flex items-center justify-between">
-              <span className="text-[11px] font-medium text-muted-foreground/40">JSON Field Mappings</span>
-              <button type="button" onClick={addField}
-                className="text-[10px] text-accent/70 hover:text-accent transition-colors">
-                + Add Field
-              </button>
-            </div>
-            <div className="p-3 space-y-2">
-              {Object.entries(config.fields).map(([key, path], idx) => (
-                <div key={idx} className="flex items-center gap-2">
-                  <input
-                    value={key}
-                    onChange={(e) => {
-                      const newFields = { ...config.fields };
-                      delete newFields[key];
-                      newFields[e.target.value] = path;
-                      update({ fields: newFields });
-                    }}
-                    placeholder="field_name"
-                    className="w-28 px-2 py-1 text-[10px] font-mono rounded-md bg-transparent border border-border/20 text-foreground outline-none"
-                  />
-                  <span className="text-[10px] text-muted-foreground/30">→</span>
-                  <input
-                    value={path}
-                    onChange={(e) => {
-                      const newFields = { ...config.fields };
-                      newFields[key] = e.target.value;
-                      update({ fields: newFields });
-                    }}
-                    placeholder="$.json.path"
-                    className="flex-1 px-2 py-1 text-[10px] font-mono rounded-md bg-transparent border border-border/20 text-foreground outline-none"
-                  />
-                  <button type="button" onClick={() => {
-                    const newFields = { ...config.fields };
-                    delete newFields[key];
-                    update({ fields: newFields });
-                  }}
-                    className="p-0.5 text-muted-foreground/30 hover:text-red-400">
-                    <X className="w-3 h-3" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Test panel */}
-      <div className="w-[300px] flex-shrink-0 flex flex-col rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
-        <div className="px-3 py-2 border-b border-border/8 flex items-center justify-between">
-          <span className="text-[11px] font-medium text-muted-foreground/40">Test Parser</span>
-          <button type="button" onClick={handleTestParse}
-            className="text-[10px] px-2 py-0.5 rounded bg-accent/15 text-accent hover:bg-accent/25 transition-colors">
-            Parse
-          </button>
-        </div>
-        <textarea
-          value={testInput}
-          onChange={(e) => setTestInput(e.target.value)}
-          placeholder="Paste tool output here to test parsing..."
-          className="flex-1 px-3 py-2 text-[10px] font-mono leading-[1.6] bg-transparent text-foreground outline-none resize-none border-b border-border/8"
-          style={{ tabSize: 2 }}
-        />
-        {testResult && (
-          <div className="max-h-[200px] overflow-y-auto px-3 py-2">
-            <pre className="text-[9px] font-mono text-emerald-400/70 whitespace-pre-wrap">{testResult}</pre>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
+import {
+  type ToolWithMeta, type ViewMode, type SortKey,
+  OutputParserEditor,
+} from "./OutputParserEditor";
 
 export function ToolManager() {
   const { t } = useTranslation();
@@ -737,7 +373,7 @@ export function ToolManager() {
           const toolDir = tool.executable?.split("/")[0] || tool.name;
           const cloneUrl = `https://github.com/${source}.git`;
           console.log(`[Install] ${tool.name}: git clone ${cloneUrl} → ${toolDir}`);
-          await invoke("pentest_git_clone_tool", { source: cloneUrl, toolDir, proxyUrl: proxyUrl || null });
+          await invoke("pentest_git_clone_tool", { source: cloneUrl, toolDir, proxyUrl: proxyUrl || null, runtime: tool.runtime || null });
           console.log(`[Install] ${tool.name}: git clone 完成`);
         }
       } else if (method === "homebrew") {
@@ -1778,46 +1414,30 @@ export function ToolManager() {
                 className="w-full h-8 pl-8 pr-3 text-[12px] bg-[var(--bg-hover)]/30 rounded-lg border border-border/15 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40 transition-colors" />
             </div>
 
-            <div className="flex items-center gap-1">
-              <button type="button" onClick={() => setSelectedCategory(null)}
-                className={cn("text-[11px] px-2.5 py-1 rounded-md transition-colors",
-                  !selectedCategory ? "bg-accent/15 text-accent" : "text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)]")}>
-                {t("common.all")}
-              </button>
-              {allCategories.map((catId) => (
-                <button key={catId} type="button" onClick={() => setSelectedCategory(selectedCategory === catId ? null : catId)}
-                  className={cn("text-[11px] px-2.5 py-1 rounded-md transition-colors",
-                    selectedCategory === catId ? "bg-accent/15 text-accent" : "text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)]")}>
-                  {categoryDisplayName(catId)}
-                </button>
-              ))}
-            </div>
+            <Select value={selectedCategory ?? "_all"} onValueChange={(v) => setSelectedCategory(v === "_all" ? null : v)}>
+              <SelectTrigger size="sm" className="h-7 w-auto min-w-[120px] border-border/15 bg-[var(--bg-hover)]/30 text-[11px] shadow-none px-2.5 gap-1.5">
+                <FolderOpen className="w-3 h-3 text-muted-foreground/40" />
+                <SelectValue placeholder={t("common.all")} />
+              </SelectTrigger>
+              <SelectContent position="popper" className="min-w-[140px]">
+                <SelectItem value="_all" className="text-[12px]">{t("common.all")}</SelectItem>
+                {allCategories.map((catId) => (
+                  <SelectItem key={catId} value={catId} className="text-[12px]">{categoryDisplayName(catId)}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
 
-            <div className="h-4 w-px bg-border/20 mx-1" />
-
-            <div className="flex items-center gap-1">
-              {(["essential", "recommended", "optional"] as const).map((tier) => {
-                const count = tools.filter((t) => (t.tier || "optional") === tier).length;
-                if (count === 0) return null;
-                const colors: Record<string, string> = {
-                  essential: "text-red-400 bg-red-500/15",
-                  recommended: "text-amber-400 bg-amber-500/15",
-                  optional: "text-muted-foreground/60 bg-muted/30",
-                };
-                const labels: Record<string, string> = {
-                  essential: t("toolManager.tierEssential"),
-                  recommended: t("toolManager.tierRecommended"),
-                  optional: t("toolManager.tierOptional"),
-                };
-                return (
-                  <button key={tier} type="button" onClick={() => setSelectedTier(selectedTier === tier ? null : tier)}
-                    className={cn("text-[11px] px-2 py-1 rounded-md transition-colors",
-                      selectedTier === tier ? colors[tier] : "text-muted-foreground/40 hover:text-foreground hover:bg-[var(--bg-hover)]")}>
-                    {labels[tier] || tier} <span className="text-[9px] opacity-60">{count}</span>
-                  </button>
-                );
-              })}
-            </div>
+            <Select value={selectedTier ?? "_all"} onValueChange={(v) => setSelectedTier(v === "_all" ? null : v)}>
+              <SelectTrigger size="sm" className="h-7 w-auto min-w-[110px] border-border/15 bg-[var(--bg-hover)]/30 text-[11px] shadow-none px-2.5 gap-1.5">
+                <SelectValue placeholder={t("common.all")} />
+              </SelectTrigger>
+              <SelectContent position="popper" className="min-w-[130px]">
+                <SelectItem value="_all" className="text-[12px]">{t("common.all")}</SelectItem>
+                <SelectItem value="essential" className="text-[12px] text-red-400">{t("toolManager.tierEssential")}</SelectItem>
+                <SelectItem value="recommended" className="text-[12px] text-amber-400">{t("toolManager.tierRecommended")}</SelectItem>
+                <SelectItem value="optional" className="text-[12px]">{t("toolManager.tierOptional")}</SelectItem>
+              </SelectContent>
+            </Select>
 
             <div className="ml-auto flex items-center gap-1">
               {/* Sort */}
@@ -1866,15 +1486,65 @@ export function ToolManager() {
                   </button>
                 )}
               </div>
-            ) : viewMode === "grid" ? (
-              <div key="tm-grid" className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                {filteredTools.map((tool) => <GridCard key={tool.id} tool={tool} />)}
-              </div>
-            ) : (
-              <div key="tm-list" className="space-y-1">
-                {filteredTools.map((tool) => <ListRow key={tool.id} tool={tool} />)}
-              </div>
-            )}
+            ) : (() => {
+              const shouldGroup = !selectedTier && !search.trim();
+              const requiredTools = filteredTools.filter((t) => t.tier === "essential" || t.tier === "recommended");
+              const optionalTools = filteredTools.filter((t) => !t.tier || t.tier === "optional");
+
+              const renderToolList = (items: ToolWithMeta[]) =>
+                viewMode === "grid" ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                    {items.map((tool) => <GridCard key={tool.id} tool={tool} />)}
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    {items.map((tool) => <ListRow key={tool.id} tool={tool} />)}
+                  </div>
+                );
+
+              if (!shouldGroup) {
+                return renderToolList(filteredTools);
+              }
+
+              return (
+                <div className="space-y-6">
+                  {requiredTools.length > 0 && (
+                    <div>
+                      <div className="flex items-center gap-2 mb-3">
+                        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-red-500/10 border border-red-500/20">
+                          <div className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                          <span className="text-[11px] font-medium text-red-400">
+                            {t("toolManager.requiredSection", "Required")}
+                          </span>
+                          <span className="text-[10px] text-red-400/50">{requiredTools.length}</span>
+                        </div>
+                        <span className="text-[10px] text-muted-foreground/40">
+                          {t("toolManager.requiredHint", "Core tools needed for full functionality")}
+                        </span>
+                      </div>
+                      {renderToolList(requiredTools)}
+                    </div>
+                  )}
+                  {optionalTools.length > 0 && (
+                    <div>
+                      <div className="flex items-center gap-2 mb-3">
+                        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-muted/40 border border-border/30">
+                          <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40" />
+                          <span className="text-[11px] font-medium text-muted-foreground/70">
+                            {t("toolManager.optionalSection", "Optional")}
+                          </span>
+                          <span className="text-[10px] text-muted-foreground/30">{optionalTools.length}</span>
+                        </div>
+                        <span className="text-[10px] text-muted-foreground/40">
+                          {t("toolManager.optionalHint", "Install as needed for specific tasks")}
+                        </span>
+                      </div>
+                      {renderToolList(optionalTools)}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         </>
       )}

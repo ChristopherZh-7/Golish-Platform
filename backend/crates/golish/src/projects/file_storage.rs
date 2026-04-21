@@ -306,15 +306,37 @@ fn url_path_slug(url_path: &str) -> String {
         .collect()
 }
 
-/// Save a captured JS file. Returns the relative path from project root.
+/// Save a captured JS file. Preserves original URL path structure.
+/// Returns the relative path from project root.
 pub async fn save_js_capture(
     project_root: &Path,
     host: &str,
     port: u16,
     filename: &str,
     content: &[u8],
+    url_path: Option<&str>,
 ) -> Result<String> {
-    let dir = captures_dir(project_root, host, port).join("js");
+    let base = captures_dir(project_root, host, port).join("js");
+
+    let dir = if let Some(url_p) = url_path {
+        let trimmed = url_p.trim_start_matches('/');
+        if let Some(parent) = std::path::Path::new(trimmed).parent() {
+            if !parent.as_os_str().is_empty() {
+                let safe_parent = parent
+                    .to_string_lossy()
+                    .replace("..", "_")
+                    .replace(':', "_");
+                base.join(safe_parent)
+            } else {
+                base
+            }
+        } else {
+            base
+        }
+    } else {
+        base
+    };
+
     tokio::fs::create_dir_all(&dir).await?;
 
     let safe_name = hashed_filename(filename, content);

@@ -1,11 +1,11 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::config::McpConfigFile;
+use crate::config::{McpConfigFile, McpServerConfig};
 
 const TRUSTED_CONFIGS_FILENAME: &str = "trusted-mcp-configs.json";
 
@@ -15,7 +15,83 @@ pub struct TrustedMcpConfigs {
     pub trusted_paths: HashSet<String>,
 }
 
-/// Load and merge MCP configs from user-global and project locations.
+/// Return the set of built-in MCP server names.
+pub fn builtin_server_names() -> HashSet<String> {
+    builtin_configs()
+        .into_keys()
+        .collect()
+}
+
+/// Built-in MCP servers that ship with Golish.
+///
+/// These are always available and cannot be removed by the user.
+/// User/project configs with the same name will override them.
+fn builtin_configs() -> HashMap<String, McpServerConfig> {
+    let mut servers = HashMap::new();
+
+    let js_reverse_path = resolve_builtin_tool_path("js-reverse-mcp/src/index.js");
+    if let Some(entry_point) = js_reverse_path {
+        servers.insert(
+            "js-reverse".to_string(),
+            McpServerConfig {
+                transport: None,
+                command: Some("node".to_string()),
+                args: vec![entry_point],
+                env: Default::default(),
+                url: None,
+                headers: Default::default(),
+                enabled: true,
+                timeout: 60,
+                oauth: None,
+            },
+        );
+    }
+
+    servers
+}
+
+/// Resolve the absolute path to a built-in tool's entry point.
+///
+/// Searches candidate directories for `tools/{rel_path}`. Candidates (in order):
+/// 1. QBIT_WORKSPACE env var (explicit workspace override)
+/// 2. Relative to the executable (production bundles)
+/// 3. Current working directory and its ancestors (dev mode: cwd may be `backend/`)
+fn resolve_builtin_tool_path(rel_path: &str) -> Option<String> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Ok(ws) = std::env::var("QBIT_WORKSPACE") {
+        candidates.push(PathBuf::from(ws));
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            candidates.push(exe_dir.join(".."));
+            candidates.push(exe_dir.join("../.."));
+            candidates.push(exe_dir.join("../../.."));
+        }
+    }
+
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.clone());
+        if let Some(parent) = cwd.parent() {
+            candidates.push(parent.to_path_buf());
+            if let Some(grandparent) = parent.parent() {
+                candidates.push(grandparent.to_path_buf());
+            }
+        }
+    }
+
+    for base in candidates {
+        let full = base.join("tools").join(rel_path);
+        if full.exists() {
+            return full.canonicalize().ok().map(|p| p.to_string_lossy().to_string());
+        }
+    }
+
+    None
+}
+
+/// Load and merge MCP configs from builtin, user-global, and project locations.
 pub fn load_mcp_config(project_dir: &Path) -> Result<McpConfigFile> {
     load_mcp_config_inner(user_config_path(), project_dir)
 }
@@ -25,6 +101,9 @@ fn load_mcp_config_inner(
     project_dir: &Path,
 ) -> Result<McpConfigFile> {
     let mut merged = McpConfigFile::default();
+
+    // 0. Load built-in configs (lowest priority)
+    merged.mcp_servers.extend(builtin_configs());
 
     // 1. Load user-global config (~/.golish/mcp.json)
     if let Some(path) = user_config {

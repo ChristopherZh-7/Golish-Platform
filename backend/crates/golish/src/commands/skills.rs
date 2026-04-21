@@ -56,10 +56,10 @@ pub async fn save_skill(
     working_directory: Option<String>,
 ) -> Result<String> {
     let base_dir = match scope.as_deref() {
-        Some("local") => {
+        Some("project") | Some("local") => {
             let wd = working_directory.ok_or_else(|| {
                 crate::error::GolishError::Internal(
-                    "Working directory required for local skills".into(),
+                    "Working directory required for project skills".into(),
                 )
             })?;
             std::path::PathBuf::from(wd)
@@ -138,8 +138,8 @@ Test instructions for {}.
             .await
             .unwrap();
 
-        // Filter to only local skills to avoid interference from global skills
-        let local_skills: Vec<_> = skills.iter().filter(|s| s.source == "local").collect();
+        // Filter to only project skills to avoid interference from global skills
+        let local_skills: Vec<_> = skills.iter().filter(|s| s.source == "project").collect();
 
         assert_eq!(local_skills.len(), 1);
         assert_eq!(local_skills[0].name, "test-skill");

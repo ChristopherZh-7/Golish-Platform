@@ -1,30 +1,20 @@
 import {
-  AlertCircle,
-  ArrowRight,
   ArrowUp,
-  Bot,
-  CheckCircle2,
   ChevronDown,
-  ChevronUp,
   Clock,
-  Code2,
   Cpu,
   Image,
-  Loader2,
   MessageSquare,
   Plus,
-  Search,
   Square,
   Users,
   Wrench,
   X,
-  XCircle,
   Zap,
 } from "lucide-react";
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
-import { Markdown } from "@/components/Markdown";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -60,384 +50,22 @@ import { convDelete } from "@/lib/conversation-db";
 import { restoreBatchTerminals } from "@/lib/terminal-restore";
 import { getAllLeafPanes } from "@/lib/pane-utils";
 import { type ChatMessage, useStore } from "@/store";
-import type { ChatToolCall } from "@/store/slices/conversation";
 import { createNewConversation } from "@/store/slices/conversation";
 import {
   AskHumanInline,
   type AskHumanState,
-  CollapsibleToolCall,
   CompactionNotice,
-  TaskPlanCard,
   type TaskPlanState,
-  ThinkingBlock,
-  ToolCallSummary,
   WorkflowProgress,
   type WorkflowState,
 } from "./ChatSubComponents";
+import { AgentSummaryBar } from "./AgentSummaryBar";
+import { MessageBlock } from "./MessageBlock";
 
 
 const EMPTY_MESSAGES: ChatMessage[] = [];
 
-const EMPTY_SUB_AGENTS: never[] = [];
 
-const AGENT_ICON_MAP: Record<string, typeof Bot> = {
-  coder: Code2,
-  researcher: Search,
-  explorer: Search,
-};
-
-function getAgentIcon(name: string): typeof Bot {
-  const lower = name.toLowerCase();
-  for (const [key, icon] of Object.entries(AGENT_ICON_MAP)) {
-    if (lower.includes(key)) return icon;
-  }
-  return Bot;
-}
-
-function AgentSummaryBar() {
-  const [isExpanded, setIsExpanded] = useState(false);
-  const wasRunningRef = useRef(false);
-  const activeSessionId = useStore((s) => s.activeSessionId);
-  const subAgents = useStore((s) =>
-    activeSessionId ? (s.activeSubAgents[activeSessionId] ?? EMPTY_SUB_AGENTS) : EMPTY_SUB_AGENTS
-  );
-
-  const running = subAgents.filter((a) => a.status === "running").length;
-  const allDone = running === 0 && subAgents.length > 0;
-
-  useEffect(() => {
-    if (running > 0) {
-      wasRunningRef.current = true;
-    } else if (wasRunningRef.current && allDone) {
-      const timer = setTimeout(() => setIsExpanded(false), 800);
-      return () => clearTimeout(timer);
-    }
-  }, [running, allDone]);
-
-  if (subAgents.length === 0) return null;
-
-  const completed = subAgents.filter((a) => a.status === "completed").length;
-  const errored = subAgents.filter((a) => a.status === "error").length;
-  const totalDurationMs = subAgents.reduce((sum, a) => sum + (a.durationMs ?? 0), 0);
-
-  const scrollToAgent = (parentRequestId: string) => {
-    const el = document.querySelector(`[data-agent-block="sub-agent-${parentRequestId}"]`) as HTMLElement | null;
-    if (!el) return;
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
-    el.style.transition = "box-shadow 0.3s ease, background-color 0.3s ease";
-    el.style.boxShadow = "0 0 0 2px var(--accent), 0 0 16px 2px rgba(var(--accent-rgb, 80 200 180), 0.3)";
-    el.style.backgroundColor = "rgba(var(--accent-rgb, 80 200 180), 0.08)";
-    setTimeout(() => {
-      el.style.boxShadow = "";
-      el.style.backgroundColor = "";
-      setTimeout(() => { el.style.transition = ""; }, 300);
-    }, 2000);
-  };
-
-  return (
-    <div className="mx-4 my-1.5 rounded-md bg-muted/20 text-[11px] text-muted-foreground overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setIsExpanded((v) => !v)}
-        className="w-full flex items-center gap-3 px-3 py-1.5 hover:bg-muted/30 transition-colors"
-      >
-        <div className="flex items-center gap-1">
-          <Bot className="w-3 h-3" />
-          <span className="font-medium">
-            {subAgents.length} agent{subAgents.length > 1 ? "s" : ""}
-          </span>
-        </div>
-        {running > 0 && (
-          <div className="flex items-center gap-1">
-            <Loader2 className="w-2.5 h-2.5 animate-spin text-accent" />
-            <span>{running} active</span>
-          </div>
-        )}
-        {completed > 0 && (
-          <div className="flex items-center gap-1">
-            <CheckCircle2 className="w-2.5 h-2.5 text-green-500" />
-            <span>{completed} done</span>
-          </div>
-        )}
-        {errored > 0 && (
-          <div className="flex items-center gap-1">
-            <XCircle className="w-2.5 h-2.5 text-destructive" />
-            <span>{errored} failed</span>
-          </div>
-        )}
-        <div className="ml-auto flex items-center gap-1.5">
-          {totalDurationMs > 0 && (
-            <span className="text-[10px] text-muted-foreground/60">
-              {(totalDurationMs / 1000).toFixed(1)}s total
-            </span>
-          )}
-          {isExpanded ? (
-            <ChevronUp className="w-3 h-3 text-muted-foreground/40" />
-          ) : (
-            <ChevronDown className="w-3 h-3 text-muted-foreground/40" />
-          )}
-        </div>
-      </button>
-
-      <div
-        className="grid transition-[grid-template-rows] duration-300 ease-in-out"
-        style={{ gridTemplateRows: isExpanded ? "1fr" : "0fr" }}
-      >
-        <div className="overflow-hidden border-t border-border/30 px-3 py-1">
-          {subAgents.map((agent) => {
-            const AgentIcon = getAgentIcon(agent.agentName);
-            return (
-              <div
-                key={agent.parentRequestId}
-                className="flex items-center gap-2 py-1 text-[10px]"
-              >
-                <AgentIcon className="w-3 h-3 flex-shrink-0 text-muted-foreground/60" />
-                <span className="flex-1 truncate">
-                  {agent.agentName || agent.agentId}
-                </span>
-                {agent.status === "running" && (
-                  <Loader2 className="w-2.5 h-2.5 animate-spin text-accent" />
-                )}
-                {agent.status === "completed" && (
-                  <CheckCircle2 className="w-2.5 h-2.5 text-green-500" />
-                )}
-                {agent.status === "error" && (
-                  <XCircle className="w-2.5 h-2.5 text-destructive" />
-                )}
-                {agent.durationMs !== undefined && (
-                  <span className="text-muted-foreground/40">
-                    {(agent.durationMs / 1000).toFixed(1)}s
-                  </span>
-                )}
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); scrollToAgent(agent.parentRequestId); }}
-                  className="p-0.5 hover:bg-accent/30 rounded transition-colors"
-                  title="Scroll to agent card"
-                >
-                  <ArrowRight className="w-2.5 h-2.5 text-muted-foreground/40 hover:text-accent" />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const MessageBlock = memo(function MessageBlock({
-  message,
-  pendingApproval,
-  onApprove,
-  onDeny,
-  approvalMode,
-  onApprovalModeChange,
-  taskPlan,
-  planTextOffset,
-}: {
-  message: ChatMessage;
-  pendingApproval?: { requestId: string; toolName: string } | null;
-  onApprove?: (requestId: string) => void;
-  onDeny?: (requestId: string) => void;
-  approvalMode?: string;
-  onApprovalModeChange?: (mode: "ask" | "allowlist" | "run-all") => void;
-  taskPlan?: TaskPlanState | null;
-  planTextOffset?: number | null;
-}) {
-  const isUser = message.role === "user";
-
-  return (
-    <div className={cn("px-4 py-3", !isUser && "bg-[var(--bg-hover)]")}>
-      <div className="text-[11px] text-muted-foreground mb-1.5 font-medium">
-        {isUser ? "You" : "Golish AI"}
-      </div>
-
-      {!isUser && message.thinking && (
-        <ThinkingBlock
-          content={message.thinking}
-          isActive={!!message.isStreaming && !message.content}
-        />
-      )}
-
-      {(() => {
-        if (message.error) {
-          return (
-            <div className="flex items-start gap-2 text-[13px] text-destructive">
-              <AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
-              <span>{message.error}</span>
-            </div>
-          );
-        }
-
-        const hasToolCalls = !isUser && message.toolCalls && message.toolCalls.length > 0;
-
-        const isVisibleCall = (tc: ChatToolCall) =>
-          tc.name !== "update_plan" &&
-          (tc.success !== undefined ||
-            (pendingApproval == null && tc.success === undefined));
-
-        const pendingCalls = hasToolCalls && pendingApproval
-          ? message.toolCalls!.filter(
-              (tc) => tc.name === pendingApproval.toolName && tc.success === undefined
-            )
-          : [];
-
-        const renderPendingApprovalCards = () =>
-          pendingCalls.length > 0 ? (
-            <div className="mt-2 space-y-1.5">
-              {pendingCalls.map((tc, i) => (
-                <CollapsibleToolCall
-                  key={`${tc.name}-${i}`}
-                  tc={tc}
-                  approval={pendingApproval}
-                  onApprove={onApprove}
-                  onDeny={onDeny}
-                  approvalMode={approvalMode}
-                  onApprovalModeChange={onApprovalModeChange}
-                />
-              ))}
-            </div>
-          ) : null;
-
-        // Build interleaved segments: text chunks and tool-call groups in order.
-        type Segment =
-          | { kind: "text"; content: string }
-          | { kind: "tools"; calls: ChatToolCall[]; requestIds: string[] };
-
-        const segments: Segment[] = [];
-
-        if (hasToolCalls && message.toolCallOffsets && message.toolCallOffsets.length > 0) {
-          const offsets = message.toolCallOffsets;
-          const allCalls = message.toolCalls!;
-          let textCursor = 0;
-
-          let toolBatch: ChatToolCall[] = [];
-          let toolBatchIds: string[] = [];
-
-          for (let i = 0; i < allCalls.length; i++) {
-            const offset = offsets[i] ?? message.content.length;
-
-            if (offset > textCursor) {
-              if (toolBatch.length > 0) {
-                segments.push({ kind: "tools", calls: toolBatch, requestIds: toolBatchIds });
-                toolBatch = [];
-                toolBatchIds = [];
-              }
-              segments.push({ kind: "text", content: message.content.slice(textCursor, offset) });
-              textCursor = offset;
-            }
-
-            if (isVisibleCall(allCalls[i])) {
-              toolBatch.push(allCalls[i]);
-              if (allCalls[i].requestId) toolBatchIds.push(allCalls[i].requestId!);
-            }
-          }
-
-          if (toolBatch.length > 0) {
-            segments.push({ kind: "tools", calls: toolBatch, requestIds: toolBatchIds });
-          }
-          if (textCursor < message.content.length) {
-            segments.push({ kind: "text", content: message.content.slice(textCursor) });
-          }
-        } else if (hasToolCalls) {
-          // Legacy path: no per-call offsets, use single toolCallsContentOffset
-          const tcOffset = message.toolCallsContentOffset ?? 0;
-          if (tcOffset > 0) {
-            segments.push({ kind: "text", content: message.content.slice(0, tcOffset) });
-          }
-          const visibleCalls = message.toolCalls!.filter(isVisibleCall);
-          const ids = visibleCalls.map((tc) => tc.requestId).filter((id): id is string => !!id);
-          if (visibleCalls.length > 0) {
-            segments.push({ kind: "tools", calls: visibleCalls, requestIds: ids });
-          }
-          if (tcOffset < message.content.length) {
-            segments.push({ kind: "text", content: message.content.slice(tcOffset) });
-          }
-        } else {
-          segments.push({ kind: "text", content: message.content || (message.isStreaming ? "..." : "") });
-        }
-
-        // Determine where to insert the task plan card
-        let planInserted = false;
-        const shouldShowPlan = !isUser && taskPlan;
-
-        return (
-          <div className="flex flex-col gap-2">
-            {segments.map((seg, idx) => {
-              if (seg.kind === "text") {
-                const text = seg.content.trim();
-                if (!text && segments.length > 1) return null;
-
-                const showPlanBefore =
-                  shouldShowPlan &&
-                  !planInserted &&
-                  planTextOffset != null &&
-                  planTextOffset > 0 &&
-                  idx === 0;
-
-                if (showPlanBefore) {
-                  const before = seg.content.slice(0, planTextOffset);
-                  const after = seg.content.slice(planTextOffset);
-                  planInserted = true;
-                  return (
-                    <React.Fragment key={`seg-${idx}`}>
-                      {before && (
-                        <div className="text-[12px] text-foreground leading-[1.55]">
-                          <Markdown content={before} />
-                        </div>
-                      )}
-                      <TaskPlanCard plan={taskPlan!} />
-                      {after.trim() && (
-                        <div className="text-[12px] text-foreground leading-[1.55]">
-                          <Markdown content={after} />
-                        </div>
-                      )}
-                    </React.Fragment>
-                  );
-                }
-
-                return (
-                  <div key={`seg-${idx}`} className="text-[12px] text-foreground leading-[1.55]">
-                    <Markdown content={seg.content || (message.isStreaming ? "..." : "")} />
-                  </div>
-                );
-              }
-
-              // Tool segment
-              const messageComplete = !message.isStreaming;
-              if (!planInserted && shouldShowPlan) {
-                planInserted = true;
-                return (
-                  <React.Fragment key={`seg-${idx}`}>
-                    <TaskPlanCard plan={taskPlan!} />
-                    {renderPendingApprovalCards()}
-                    <ToolCallSummary toolCalls={seg.calls} requestIds={seg.requestIds} isMessageComplete={messageComplete} />
-                  </React.Fragment>
-                );
-              }
-
-              return (
-                <React.Fragment key={`seg-${idx}`}>
-                  {renderPendingApprovalCards()}
-                  <ToolCallSummary toolCalls={seg.calls} requestIds={seg.requestIds} isMessageComplete={messageComplete} />
-                </React.Fragment>
-              );
-            })}
-            {shouldShowPlan && !planInserted && <TaskPlanCard plan={taskPlan!} />}
-            {pendingCalls.length > 0 && !segments.some(s => s.kind === "tools") && renderPendingApprovalCards()}
-          </div>
-        );
-      })()}
-
-      {message.isStreaming && (
-        <div className="flex items-center gap-1 mt-1">
-          <Loader2 className="w-3 h-3 animate-spin text-accent" />
-        </div>
-      )}
-    </div>
-  );
-});
 
 export const AIChatPanel = memo(function AIChatPanel() {
   const { t } = useTranslation();
@@ -1318,6 +946,27 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
     - target: Single target (domain/IP/URL)
     - targets: Array of targets for batch scanning (e.g. ["a.com", "b.com"])${toolContext}
 
+### JavaScript Collection & Analysis
+- js_collect: Initial JS collection — fetches page HTML, extracts <script> tags, and downloads JS files with recursive discovery of referenced chunks.
+  - "target_url" (required): The URL to collect JS from (e.g. "http://8.138.179.62:8080")
+  - "js_urls" (optional): Explicit list of JS URLs. If omitted, auto-discovers from page HTML.
+  - "target_id" (optional): Target UUID. Auto-resolved from DB if omitted.
+  - Files are saved to .golish/captures/<host>/<port>/js/ and added to SiteMap.
+- save_js_analysis: Persist AI-analyzed JS data (routes, endpoints, secrets) to the database.
+
+#### JS Collection Workflow (Follow This Order)
+When the user asks to collect JS from a target:
+1. Call js_collect(target_url: "...") for initial automated collection
+2. Read the saved JS files (use read_file on the paths returned by js_collect) to understand the bundling pattern (Webpack, Vite, custom, etc.)
+3. If many chunks are expected but js_collect only found a few, write a custom download script:
+   - Analyze the JS content to find chunk loading patterns (e.g., webpack's __webpack_require__.e(), Vite's import(), path concatenation patterns)
+   - Write a Node.js or Python script to discover and download ALL remaining chunks
+   - Save the script to .golish/scripts/recon/ using write_file
+   - Execute it via run_pty_cmd
+   - The script should save files to .golish/captures/<host>/<port>/js/
+4. Report the total count of collected JS files
+NEVER use curl/wget directly for JS collection. Use js_collect first, then scripts if needed.
+
 ### Data Management (PostgreSQL Database)
 - manage_targets: Manage penetration testing targets in the database
   - action "add": Register a new host, subdomain, IP, or URL as a target
@@ -1347,12 +996,13 @@ Use run_pty_cmd for all command execution needs: running tools, checking system 
 ## Critical Rules
 
 ### Target Verification (MANDATORY)
-Before performing ANY security testing on a target (scanning, exploitation, fuzzing, etc.):
-1. Call manage_targets(action: "list") to check if the target exists in the database
-2. If the target is NOT in the database, you MUST use ask_human to ask the user: "Target [X] is not registered. Do you want to add it before proceeding?"
-3. If the user confirms, call manage_targets(action: "add", ...) to register it
-4. Only THEN proceed with the security testing
-Never skip this verification — all targets must be tracked in the database.
+Before performing ANY operation on a target (scanning, recon, JS collection, exploitation, fuzzing, or any other action):
+1. ALWAYS call manage_targets(action: "list") FIRST to check if the target exists in the database
+2. If the target ALREADY EXISTS → proceed directly with the operation. Do NOT call manage_targets(action: "add") again.
+3. If the target is NOT in the database → use ask_human to ask: "Target [X] is not registered. Do you want to add it before proceeding?" → on confirm, call manage_targets(action: "add", targets: [{"value": "the-target-url-or-host"}])
+4. Only THEN proceed with the operation
+Never skip this verification. Never call manage_targets(action: "add") without first checking via "list".
+CRITICAL: When calling manage_targets(action: "add"), you MUST include the "targets" array with the actual target value. Example: manage_targets(action: "add", targets: [{"value": "http://example.com"}]). Calling add without a targets array WILL fail.
 
 ### Tool Selection Rules
 - When asked about targets/目标 → use manage_targets (NOT file browsing)
@@ -1360,12 +1010,14 @@ Never skip this verification — all targets must be tracked in the database.
 - When asked about credentials/密码/凭证 → use credential_vault
 - When asked about past findings/history → use search_memories first
 - When asked to scan/recon/enumerate a target → use run_pipeline first (after target verification). Only fall back to pentest_run for individual tool runs when a pipeline is not suitable.
+- When asked to collect/download JS files → use js_collect (NOT the js-reverse MCP tools). js_collect downloads all JS files from a target URL to local disk and stores them in the SiteMap.
+- Only use js-reverse MCP tools (mcp__js_reverse__*) for dynamic JS debugging and reverse engineering tasks (e.g., intercepting network requests, hooking JS functions, decrypting/signing analysis). Do NOT use them for simple JS file collection.
 - NEVER browse the filesystem (.golish/ directory, session files, etc.) to look up target/finding/credential data. Always use the database tools above.
 
 ### Scanning Workflow (Follow This Order)
 When the user asks to scan, recon, or enumerate a target:
 1. **Check targets**: Call manage_targets(action: "list") to see if target is registered
-2. **Add if missing**: If not found, use ask_human to ask "Target [X] is not registered. Add it?" → on confirm, call manage_targets(action: "add")
+2. **Add if missing**: If not found, use ask_human to ask "Target [X] is not registered. Add it?" → on confirm, call manage_targets(action: "add", targets: [{"value": "the-target"}])
 3. **Run pipeline**: Call run_pipeline(action: "run", pipeline_id: "recon_basic", target: "the-target") to execute the full recon chain
 4. **Report results**: Summarize what was discovered (subdomains, ports, technologies, directories, etc.)
 Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeline automatically parses output and stores data to the database.
@@ -1378,7 +1030,8 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
 - For long-running commands, set an appropriate timeout.
 - Always report command output and exit codes to the user.
 - After completing a scan or finding something notable, use store_memory to save it for future sessions.
-- Complete the full task without asking intermediate questions. Only ask the user when target verification requires confirmation or when critical decisions are needed.`;
+- Perform ONLY what the user explicitly requests. If the user asks to "collect JS", just collect the JS files and report back — do NOT automatically chain additional operations like analysis, fingerprinting, or saving. Only extend the scope if the user says so.
+- Only ask the user when target verification requires confirmation or when critical decisions are needed.`;
   }, [pentestTools]);
 
   const initializeSession = useCallback(
@@ -1632,10 +1285,10 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
       } else {
         await sendPromptSession(conv.aiSessionId, prompt);
       }
-      // Safety timeout: if streaming is still active after 30s with no new content, reset.
-      // Some models don't send a proper stop signal.
+      // Safety timeout: if streaming is idle (no text AND no tool running) for 60s, reset.
       const convId = conv.id;
       let lastMsgLength = 0;
+      let lastToolCount = 0;
       let idleChecks = 0;
       const checkInterval = setInterval(() => {
         const s = useStore.getState();
@@ -1644,16 +1297,25 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
           clearInterval(checkInterval);
           return;
         }
-        const currentLength = c.messages[c.messages.length - 1]?.content?.length ?? 0;
-        if (currentLength === lastMsgLength) {
+        const lastMsg = c.messages[c.messages.length - 1];
+        const currentLength = lastMsg?.content?.length ?? 0;
+        const currentToolCount = lastMsg?.toolCalls?.length ?? 0;
+        const hasPendingTools = lastMsg?.toolCalls?.some(
+          (tc) => tc.success === undefined
+        ) ?? false;
+
+        if (hasPendingTools) {
+          idleChecks = 0;
+        } else if (currentLength === lastMsgLength && currentToolCount === lastToolCount) {
           idleChecks++;
-          if (idleChecks >= 3) {
+          if (idleChecks >= 12) {
             console.warn("[AIChatPanel] Idle timeout: resetting stuck streaming for", convId);
             s.finalizeStreamingMessage(convId);
             clearInterval(checkInterval);
           }
         } else {
           lastMsgLength = currentLength;
+          lastToolCount = currentToolCount;
           idleChecks = 0;
         }
       }, 5_000);

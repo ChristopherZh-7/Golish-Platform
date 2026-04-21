@@ -90,7 +90,7 @@ fn discover_rules(working_directory: Option<&str>) -> Vec<RuleInfo> {
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) == Some("md") {
                     if let Some(mut rule) = parse_rule_file(&path) {
-                        rule.source = "local".to_string();
+                        rule.source = "project".to_string();
                         rules.push(rule);
                     }
                 }
@@ -133,10 +133,10 @@ pub async fn save_rule(
     working_directory: Option<String>,
 ) -> Result<String> {
     let base_dir = match scope.as_deref() {
-        Some("local") => {
+        Some("project") | Some("local") => {
             let wd = working_directory.ok_or_else(|| {
                 crate::error::GolishError::Internal(
-                    "Working directory required for local rules".into(),
+                    "Working directory required for project rules".into(),
                 )
             })?;
             PathBuf::from(wd).join(".golish").join("rules")

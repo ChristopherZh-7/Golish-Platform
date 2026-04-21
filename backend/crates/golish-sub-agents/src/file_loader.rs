@@ -63,7 +63,10 @@ pub struct AgentFileInfo {
     pub name: String,
     pub description: String,
     pub path: String,
+    /// "built-in", "file"
     pub source: String,
+    /// "global", "project", or "built-in"
+    pub scope: String,
     pub is_system: bool,
     pub model: Option<String>,
     pub allowed_tools: Vec<String>,
@@ -79,6 +82,21 @@ pub struct AgentFileInfo {
 
 impl From<&SubAgentDefinition> for AgentFileInfo {
     fn from(def: &SubAgentDefinition) -> Self {
+        let scope = match &def.source {
+            AgentSource::BuiltIn => "built-in",
+            AgentSource::File(p) => {
+                let is_global = dirs::home_dir()
+                    .map(|h| p.starts_with(h.join(".golish")))
+                    .unwrap_or(false);
+                if is_global { "global" } else { "project" }
+            }
+        };
+        Self::build(def, scope)
+    }
+}
+
+impl AgentFileInfo {
+    fn build(def: &SubAgentDefinition, scope: &str) -> Self {
         Self {
             id: def.id.clone(),
             name: def.name.clone(),
@@ -91,6 +109,7 @@ impl From<&SubAgentDefinition> for AgentFileInfo {
                 AgentSource::BuiltIn => "built-in".to_string(),
                 AgentSource::File(_) => "file".to_string(),
             },
+            scope: scope.to_string(),
             is_system: def.is_system,
             model: def.model_override.as_ref().map(|(_, m)| m.clone()),
             allowed_tools: def.allowed_tools.clone(),

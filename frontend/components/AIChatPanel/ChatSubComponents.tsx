@@ -90,6 +90,33 @@ export function CollapsibleToolCall({
         )}
       </button>
 
+      {expanded && (tc.args || tc.result) && (
+        <div className="px-2 pb-1.5 space-y-1.5">
+          {tc.args && (
+            <div>
+              <div className="text-[10px] text-muted-foreground/50 mb-0.5">Arguments</div>
+              <pre className="text-[11px] text-muted-foreground/70 font-mono whitespace-pre-wrap max-h-[150px] overflow-auto bg-muted/20 rounded px-2 py-1">
+                {(() => {
+                  try {
+                    return JSON.stringify(JSON.parse(tc.args), null, 2);
+                  } catch {
+                    return tc.args.length > 1500 ? `${tc.args.slice(0, 1500)}...` : tc.args;
+                  }
+                })()}
+              </pre>
+            </div>
+          )}
+          {tc.result && (
+            <div>
+              <div className="text-[10px] text-muted-foreground/50 mb-0.5">Result</div>
+              <pre className="text-[11px] text-muted-foreground/80 font-mono whitespace-pre-wrap max-h-[200px] overflow-auto">
+                {tc.result.length > 2000 ? `${tc.result.slice(0, 2000)}...` : tc.result}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+
       {isPending && approval && (
         <div className="px-2 pb-1.5 flex items-center gap-2">
           <button
@@ -115,7 +142,6 @@ export function CollapsibleToolCall({
         </div>
       )}
 
-      {/* Approval mode dropdown - second row */}
       <div className="px-2 pb-1.5">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -156,14 +182,6 @@ export function CollapsibleToolCall({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-
-      {expanded && tc.result && (
-        <div className="px-2 pb-2">
-          <pre className="text-[11px] text-muted-foreground/80 font-mono whitespace-pre-wrap max-h-[200px] overflow-auto">
-            {tc.result.length > 2000 ? `${tc.result.slice(0, 2000)}...` : tc.result}
-          </pre>
-        </div>
-      )}
     </div>
   );
 }
@@ -215,10 +233,12 @@ function ToolCallCard({
   tc,
   onClick,
   isMessageComplete,
+  isSelected,
 }: {
   tc: { name: string; args?: string; result?: string; success?: boolean };
   onClick: () => void;
   isMessageComplete?: boolean;
+  isSelected?: boolean;
 }) {
   let label = TOOL_LABEL[tc.name] || tc.name.replace(/_/g, " ");
   if (tc.name === "run_pipeline" && tc.args) {
@@ -247,6 +267,7 @@ function ToolCallCard({
       onClick={onClick}
       className={cn(
         "w-full rounded-lg border bg-background/50 px-3 py-2 text-left transition-colors cursor-pointer group",
+        isSelected && "ring-1 ring-accent/50 border-accent/40 bg-accent/5",
         isExpired
           ? "border-[#565f89]/30 opacity-60"
           : isRunning
@@ -305,18 +326,11 @@ export function ToolCallSummary({
   requestIds?: string[];
   isMessageComplete?: boolean;
 }) {
+  const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+
   if (toolCalls.length === 0) return null;
 
-  const handleShowDetail = () => {
-    const state = useStore.getState();
-    const sessionId = state.activeSessionId;
-    if (!sessionId) return;
-
-    state.setToolDetailRequestIds(sessionId, requestIds ?? null);
-    state.setDetailViewMode(sessionId, "tool-detail");
-
-    // Backfill: if timeline doesn't have tool execution blocks for these calls,
-    // create them from chat message data so ToolDetailView has something to show.
+  const backfillTimeline = (state: ReturnType<typeof useStore.getState>, sessionId: string, calls: typeof toolCalls) => {
     const timeline = state.timelines[sessionId] ?? [];
     const existingIds = new Set(
       timeline
@@ -326,7 +340,7 @@ export function ToolCallSummary({
         .map((b) => b.data.requestId)
     );
 
-    for (const tc of toolCalls) {
+    for (const tc of calls) {
       if (!tc.requestId || existingIds.has(tc.requestId)) continue;
       if (tc.name.startsWith("sub_agent_")) continue;
       if (tc.name === "run_pipeline") continue;
@@ -348,14 +362,29 @@ export function ToolCallSummary({
     }
   };
 
+  const handleCardClick = (idx: number) => {
+    const state = useStore.getState();
+    const sessionId = state.activeSessionId;
+    if (!sessionId) return;
+
+    setSelectedIdx(idx);
+
+    const tc = toolCalls[idx];
+    const ids = tc.requestId ? [tc.requestId] : (requestIds ?? null);
+    state.setToolDetailRequestIds(sessionId, ids);
+    state.setDetailViewMode(sessionId, "tool-detail");
+    backfillTimeline(state, sessionId, toolCalls);
+  };
+
   return (
     <div className="mt-2 space-y-1.5">
       {toolCalls.map((tc, i) => (
         <ToolCallCard
           key={`${tc.name}-${i}`}
           tc={tc}
-          onClick={handleShowDetail}
+          onClick={() => handleCardClick(i)}
           isMessageComplete={isMessageComplete}
+          isSelected={selectedIdx === i}
         />
       ))}
     </div>

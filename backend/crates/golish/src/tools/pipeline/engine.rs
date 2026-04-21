@@ -1,719 +1,15 @@
-use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
+use super::*;
+use crate::state::AppState;
+use std::sync::atomic::Ordering;
 use tauri::Emitter;
 use uuid::Uuid;
 
-use crate::state::AppState;
-
-static PIPELINE_CANCELLED: AtomicBool = AtomicBool::new(false);
-
-#[tauri::command]
-pub async fn pipeline_cancel() -> Result<(), String> {
-    PIPELINE_CANCELLED.store(true, Ordering::SeqCst);
-    Ok(())
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PipelineStep {
-    pub id: String,
-    #[serde(default = "default_step_type")]
-    pub step_type: String,
-    pub tool_name: String,
-    #[serde(default)]
-    pub tool_id: String,
-    #[serde(default)]
-    pub command_template: String,
-    #[serde(default)]
-    pub args: Vec<String>,
-    #[serde(default)]
-    pub params: serde_json::Value,
-    /// Which step's output to use as input (by step id). None = previous step.
-    #[serde(default)]
-    pub input_from: Option<String>,
-    #[serde(default = "default_exec_mode")]
-    pub exec_mode: String,
-    /// Target type required for this step to run: "domain", "ip", "url", or null (always run)
-    #[serde(default)]
-    pub requires: Option<String>,
-    /// Iterate this step over a target attribute. "ports" = run once per HTTP port.
-    #[serde(default)]
-    pub iterate_over: Option<String>,
-    /// Override the tool's default db_action for this step.
-    #[serde(default)]
-    pub db_action: Option<String>,
-    /// What to do when this step fails: "abort" (default), "skip", "continue"
-    #[serde(default = "default_on_failure")]
-    pub on_failure: String,
-    /// Timeout for this step in seconds. None = no timeout.
-    #[serde(default)]
-    pub timeout_secs: Option<u64>,
-    /// Template ID to execute as a nested sub-pipeline (step_type = "sub_pipeline").
-    #[serde(default)]
-    pub sub_pipeline: Option<String>,
-    /// Inline pipeline definition for nesting (alternative to sub_pipeline ID reference).
-    #[serde(default)]
-    pub inline_pipeline: Option<Box<Pipeline>>,
-    /// Step ID whose output lines become iteration targets (step_type = "foreach").
-    #[serde(default)]
-    pub foreach_source: Option<String>,
-    /// Max concurrent iterations for foreach steps. Defaults to 5.
-    #[serde(default)]
-    pub max_parallel: Option<usize>,
-    #[serde(default)]
-    pub x: f64,
-    #[serde(default)]
-    pub y: f64,
-}
-
-fn default_step_type() -> String { "shell_command".to_string() }
-fn default_exec_mode() -> String { "pipe".to_string() }
-fn default_on_failure() -> String { "abort".to_string() }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PipelineConnection {
-    pub from_step: String,
-    pub to_step: String,
-    /// Condition expression evaluated against the upstream step's result.
-    /// None = always pass. Examples: "exit_ok", "output_contains:80", "output_not_empty".
-    #[serde(default)]
-    pub condition: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Pipeline {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub is_template: bool,
-    #[serde(default)]
-    pub workflow_id: Option<String>,
-    pub steps: Vec<PipelineStep>,
-    pub connections: Vec<PipelineConnection>,
-    #[serde(default)]
-    pub created_at: u64,
-    #[serde(default)]
-    pub updated_at: u64,
-}
-
-fn now_ts() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
-}
-
-/// Deserialize a Pipeline from JSON, filling in missing defaults (x/y layout, timestamps).
-fn pipeline_from_json(json: &str) -> Option<Pipeline> {
-    let mut p: Pipeline = serde_json::from_str(json).ok()?;
-    for (i, step) in p.steps.iter_mut().enumerate() {
-        if step.x == 0.0 && step.y == 0.0 {
-            step.x = (i as f64) * 220.0 + 40.0;
-            step.y = 80.0;
-        }
-    }
-    Some(p)
-}
-
-/// Embedded built-in templates (compiled into the binary).
-fn embedded_templates() -> Vec<Pipeline> {
-    const RECON_BASIC: &str = include_str!("templates/recon_basic.json");
-    [RECON_BASIC]
-        .iter()
-        .filter_map(|json| pipeline_from_json(json))
-        .collect()
-}
-
-/// Load user-created templates from the `flow-templates/` directory in app data.
-fn user_templates() -> Vec<Pipeline> {
-    let Some(dir) = templates_dir() else {
-        return vec![];
-    };
-    if !dir.exists() {
-        return vec![];
-    }
-    let mut templates = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "json") {
-                if let Ok(data) = std::fs::read_to_string(&path) {
-                    if let Some(mut p) = pipeline_from_json(&data) {
-                        p.is_template = true;
-                        templates.push(p);
-                    }
-                }
-            }
-        }
-    }
-    templates
-}
-
-fn builtin_templates() -> Vec<Pipeline> {
-    let mut all = embedded_templates();
-    let user = user_templates();
-    let user_ids: std::collections::HashSet<&str> =
-        user.iter().map(|p| p.id.as_str()).collect();
-    all.retain(|p| !user_ids.contains(p.id.as_str()));
-    all.extend(user);
-    all
-}
-
-pub fn get_builtin_recon_basic() -> Pipeline {
-    embedded_templates()
-        .into_iter()
-        .find(|p| p.id == "recon_basic")
-        .unwrap_or_else(recon_basic_template)
-}
-
-/// Detect target type: "domain", "ip", or "url"
-pub fn detect_target_type(target: &str) -> &'static str {
-    if target.starts_with("http://") || target.starts_with("https://") {
-        return "url";
-    }
-    // Check if it looks like an IP (v4 only for simplicity)
-    if target.split('.').count() == 4
-        && target.split('.').all(|s| s.parse::<u8>().is_ok())
-    {
-        return "ip";
-    }
-    "domain"
-}
-
-/// Topological sort of pipeline steps into execution layers.
-/// Steps in the same layer have no dependencies between each other and can run concurrently.
-/// Falls back to sequential execution (one step per layer) when connections are empty.
-fn topo_layers<'a>(
-    steps: &'a [PipelineStep],
-    connections: &[PipelineConnection],
-) -> Vec<Vec<&'a PipelineStep>> {
-    if connections.is_empty() {
-        return steps.iter().map(|s| vec![s]).collect();
-    }
-
-    let step_ids: std::collections::HashSet<&str> =
-        steps.iter().map(|s| s.id.as_str()).collect();
-
-    let mut in_degree: std::collections::HashMap<&str, usize> =
-        steps.iter().map(|s| (s.id.as_str(), 0)).collect();
-
-    let mut adj: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
-
-    for conn in connections {
-        if step_ids.contains(conn.from_step.as_str())
-            && step_ids.contains(conn.to_step.as_str())
-        {
-            *in_degree.entry(conn.to_step.as_str()).or_insert(0) += 1;
-            adj.entry(conn.from_step.as_str())
-                .or_default()
-                .push(conn.to_step.as_str());
-        }
-    }
-
-    let step_map: std::collections::HashMap<&str, &PipelineStep> =
-        steps.iter().map(|s| (s.id.as_str(), s)).collect();
-
-    let mut layers: Vec<Vec<&PipelineStep>> = Vec::new();
-    let mut visited = std::collections::HashSet::new();
-
-    let mut current: Vec<&str> = in_degree
-        .iter()
-        .filter(|(_, &deg)| deg == 0)
-        .map(|(&id, _)| id)
-        .collect();
-    current.sort();
-
-    while !current.is_empty() {
-        let layer: Vec<&PipelineStep> = current
-            .iter()
-            .filter_map(|id| step_map.get(id).copied())
-            .collect();
-
-        for &id in &current {
-            visited.insert(id);
-        }
-
-        if !layer.is_empty() {
-            layers.push(layer);
-        }
-
-        let mut next = Vec::new();
-        for &id in &current {
-            if let Some(neighbors) = adj.get(id) {
-                for &nid in neighbors {
-                    if let Some(deg) = in_degree.get_mut(nid) {
-                        *deg = deg.saturating_sub(1);
-                        if *deg == 0 && !visited.contains(nid) {
-                            next.push(nid);
-                        }
-                    }
-                }
-            }
-        }
-        next.sort();
-        next.dedup();
-        current = next;
-    }
-
-    let remaining: Vec<&PipelineStep> = steps
-        .iter()
-        .filter(|s| !visited.contains(s.id.as_str()))
-        .collect();
-    if !remaining.is_empty() {
-        layers.push(remaining);
-    }
-
-    layers
-}
-
-/// Resolve the input file for a step, using explicit `input_from`, upstream connections,
-/// or falling back to the target seed when the command uses `{prev_output}`.
-fn resolve_step_input(
-    step: &PipelineStep,
-    step_outputs: &std::collections::HashMap<String, std::path::PathBuf>,
-    connections: &[PipelineConnection],
-    tmp_dir: &std::path::Path,
-    target: &str,
-) -> Option<std::path::PathBuf> {
-    if let Some(ref from_id) = step.input_from {
-        if let Some(path) = step_outputs.get(from_id) {
-            return Some(path.clone());
-        }
-    }
-
-    let upstream: Vec<&str> = connections
-        .iter()
-        .filter(|c| c.to_step == step.id)
-        .map(|c| c.from_step.as_str())
-        .collect();
-    for uid in &upstream {
-        if let Some(path) = step_outputs.get(*uid) {
-            return Some(path.clone());
-        }
-    }
-
-    let full_cmd_preview = format!("{} {}", step.command_template, step.args.join(" "));
-    if full_cmd_preview.contains("{prev_output}") {
-        let seed = tmp_dir.join(format!("seed-{}.txt", step.id));
-        let _ = std::fs::write(&seed, target);
-        return Some(seed);
-    }
-
-    None
-}
-
-/// Evaluate a condition expression against an upstream step's result and output file.
-/// Returns `true` if the condition passes (step should run), `false` to skip.
-fn evaluate_condition(
-    condition: &str,
-    result: &StepResult,
-    output_path: &std::path::Path,
-) -> bool {
-    match condition {
-        "exit_ok" => result.exit_code == Some(0),
-        "exit_fail" => result.exit_code.is_some() && result.exit_code != Some(0),
-        "output_not_empty" => result.stdout_lines > 0,
-        _ if condition.starts_with("output_contains:") => {
-            let pattern = &condition["output_contains:".len()..];
-            std::fs::read_to_string(output_path)
-                .map(|s| s.contains(pattern))
-                .unwrap_or(false)
-        }
-        _ if condition.starts_with("output_lines_gt:") => {
-            let n: usize = condition["output_lines_gt:".len()..].parse().unwrap_or(0);
-            result.stdout_lines > n
-        }
-        _ if condition.starts_with("stored_gt:") => {
-            let n: usize = condition["stored_gt:".len()..].parse().unwrap_or(0);
-            result
-                .store_stats
-                .as_ref()
-                .map(|s| s.stored_count > n)
-                .unwrap_or(false)
-        }
-        other => {
-            tracing::warn!("[pipeline] Unknown condition '{}', treating as pass", other);
-            true
-        }
-    }
-}
-
-/// Resolve per-port target URLs from the `targets.ports` JSONB column.
-/// Returns a vec of URLs like `http://8.138.179.62:8080`, `https://8.138.179.62:443`.
-async fn resolve_port_targets(
-    pool: &sqlx::PgPool,
-    target: &str,
-    project_path: Option<&str>,
-) -> Vec<String> {
-    let ports_json: Option<serde_json::Value> = sqlx::query_scalar(
-        r#"SELECT ports FROM targets
-           WHERE value = $1 AND project_path = $2
-           LIMIT 1"#,
-    )
-    .bind(target)
-    .bind(project_path)
-    .fetch_optional(pool)
-    .await
-    .ok()
-    .flatten();
-
-    let Some(serde_json::Value::Array(ports)) = ports_json else {
-        tracing::info!(target = %target, "[resolve_port_targets] No ports column or not an array, falling back to default");
-        return vec![format!("http://{}", target)];
-    };
-
-    if ports.is_empty() {
-        tracing::info!(target = %target, "[resolve_port_targets] Empty ports array, falling back to default");
-        return vec![format!("http://{}", target)];
-    }
-
-    tracing::info!(target = %target, port_count = ports.len(), "[resolve_port_targets] Found ports in DB");
-
-    let urls: Vec<String> = ports
-        .iter()
-        .filter_map(|entry| {
-            let port = entry.get("port")?.as_u64()? as u16;
-            let service = entry
-                .get("service")
-                .and_then(|s| s.as_str())
-                .unwrap_or("http");
-            let scheme = if service == "https" || port == 443 {
-                "https"
-            } else {
-                "http"
-            };
-            let url = if (scheme == "http" && port == 80) || (scheme == "https" && port == 443) {
-                format!("{}://{}", scheme, target)
-            } else {
-                format!("{}://{}:{}", scheme, target, port)
-            };
-            Some(url)
-        })
-        .collect();
-
-    tracing::info!(
-        target = %target,
-        resolved_count = urls.len(),
-        urls = ?urls,
-        "[resolve_port_targets] Resolved URLs for iteration"
-    );
-    urls
-}
-
-fn recon_basic_template() -> Pipeline {
-    // step: (id, name, step_type, cmd, args, input_from, requires)
-    struct StepDef {
-        id: &'static str,
-        name: &'static str,
-        step_type: &'static str,
-        cmd: &'static str,
-        args: Vec<&'static str>,
-        input_from: Option<&'static str>,
-        requires: Option<&'static str>,
-        iterate_over: Option<&'static str>,
-        db_action: Option<&'static str>,
-    }
-
-    let steps = vec![
-        StepDef {
-            id: "dns_lookup", name: "dig", step_type: "dns_lookup",
-            cmd: "dig", args: vec!["+short", "{target}"],
-            input_from: None, requires: Some("domain"),
-            iterate_over: None, db_action: None,
-        },
-        StepDef {
-            id: "subdomain_enum", name: "subfinder", step_type: "subdomain_enum",
-            cmd: "subfinder", args: vec!["-d", "{target}", "-silent"],
-            input_from: None, requires: Some("domain"),
-            iterate_over: None, db_action: None,
-        },
-        StepDef {
-            id: "port_scan", name: "naabu", step_type: "port_scan",
-            cmd: "naabu", args: vec!["-host", "{target}", "-top-ports", "1000", "-json", "-silent"],
-            input_from: None, requires: None,
-            iterate_over: None, db_action: None,
-        },
-        StepDef {
-            id: "http_probe", name: "httpx", step_type: "http_probe",
-            cmd: "httpx", args: vec!["-u", "{target}", "-sc", "-title", "-tech-detect", "-json", "-silent"],
-            input_from: None, requires: None,
-            iterate_over: Some("ports"), db_action: None,
-        },
-        StepDef {
-            id: "tech_fingerprint", name: "whatweb", step_type: "tech_fingerprint",
-            cmd: "whatweb", args: vec!["{target}", "--color=never"],
-            input_from: None, requires: None,
-            iterate_over: Some("ports"), db_action: None,
-        },
-        StepDef {
-            id: "web_crawl", name: "katana", step_type: "web_crawl",
-            cmd: "katana", args: vec!["-u", "{target}", "-d", "3", "-js-crawl", "-silent"],
-            input_from: None, requires: None,
-            iterate_over: Some("ports"), db_action: Some("target_add"),
-        },
-    ];
-
-    let pipeline_steps: Vec<PipelineStep> = steps
-        .iter()
-        .enumerate()
-        .map(|(i, s)| PipelineStep {
-            id: s.id.to_string(),
-            step_type: s.step_type.to_string(),
-            tool_name: s.name.to_string(),
-            tool_id: String::new(),
-            command_template: s.cmd.to_string(),
-            args: s.args.iter().map(|a| a.to_string()).collect(),
-            params: serde_json::json!({}),
-            input_from: s.input_from.map(|v| v.to_string()),
-            exec_mode: "sequential".to_string(),
-            requires: s.requires.map(|v| v.to_string()),
-            iterate_over: s.iterate_over.map(|v| v.to_string()),
-            db_action: s.db_action.map(|v| v.to_string()),
-            on_failure: "continue".to_string(),
-            timeout_secs: None,
-            sub_pipeline: None,
-            inline_pipeline: None,
-            foreach_source: None,
-            max_parallel: None,
-            x: (i as f64) * 220.0 + 40.0,
-            y: 80.0,
-        })
-        .collect();
-
-    // DAG connections: Layer 0 (dig, subfinder, naabu) → Layer 1 (httpx, whatweb) → Layer 2 (katana)
-    let connections: Vec<PipelineConnection> = vec![
-        // port_scan feeds into http_probe and tech_fingerprint
-        PipelineConnection { from_step: "port_scan".into(), to_step: "http_probe".into(), condition: None },
-        PipelineConnection { from_step: "port_scan".into(), to_step: "tech_fingerprint".into(), condition: None },
-        PipelineConnection { from_step: "http_probe".into(), to_step: "web_crawl".into(), condition: None },
-        PipelineConnection { from_step: "tech_fingerprint".into(), to_step: "web_crawl".into(), condition: None },
-    ];
-
-    Pipeline {
-        id: "recon_basic".to_string(),
-        name: "Basic Reconnaissance".to_string(),
-        description: "DNS, subdomains, port scan, HTTP probe, tech fingerprint, web crawl (katana). Use {target} as placeholder.".to_string(),
-        is_template: false,
-        workflow_id: Some("recon_basic".to_string()),
-        steps: pipeline_steps,
-        connections,
-        created_at: 0,
-        updated_at: 0,
-    }
-}
-
-#[tauri::command]
-pub async fn pipeline_list(
-    state: tauri::State<'_, AppState>,
-    project_path: Option<String>,
-) -> Result<Vec<Pipeline>, String> {
-    let pool = state.db_pool_ready().await?;
-    let rows: Vec<serde_json::Value> = sqlx::query_scalar(
-        "SELECT data FROM pipelines WHERE project_path = $1 ORDER BY updated_at DESC",
-    )
-    .bind(project_path.as_deref())
-    .fetch_all(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    let items: Vec<Pipeline> = rows
-        .into_iter()
-        .filter_map(|j| serde_json::from_value(j).ok())
-        .collect();
-
-    // Only include built-in defaults that haven't been saved/customized by the user yet
-    let saved_workflow_ids: std::collections::HashSet<&str> = items
-        .iter()
-        .filter_map(|p| p.workflow_id.as_deref())
-        .collect();
-
-    let mut result: Vec<Pipeline> = builtin_templates()
-        .into_iter()
-        .filter(|t| {
-            t.workflow_id.as_deref().map_or(true, |wid| !saved_workflow_ids.contains(wid))
-        })
-        .collect();
-    result.extend(items);
-    Ok(result)
-}
-
-#[tauri::command]
-pub async fn pipeline_save(
-    state: tauri::State<'_, AppState>,
-    pipeline: Pipeline,
-    project_path: Option<String>,
-) -> Result<String, String> {
-    let pool = state.db_pool_ready().await?;
-    // Generate a new UUID for empty ids or non-UUID ids (built-in defaults)
-    let id = if pipeline.id.is_empty() || pipeline.id.parse::<Uuid>().is_err() {
-        Uuid::new_v4().to_string()
-    } else {
-        pipeline.id.clone()
-    };
-    let ts = now_ts();
-    let entry = Pipeline {
-        id: id.clone(),
-        updated_at: ts,
-        created_at: if pipeline.created_at == 0 { ts } else { pipeline.created_at },
-        ..pipeline
-    };
-    let json = serde_json::to_value(&entry).map_err(|e| e.to_string())?;
-    let uid: Uuid = id.parse().unwrap();
-    sqlx::query(
-        r#"INSERT INTO pipelines (id, data, project_path)
-           VALUES ($1, $2, $3)
-           ON CONFLICT (id) DO UPDATE SET data = $2, updated_at = NOW()"#,
-    )
-    .bind(uid)
-    .bind(&json)
-    .bind(project_path.as_deref())
-    .execute(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(id)
-}
-
-#[tauri::command]
-pub async fn pipeline_delete(
-    state: tauri::State<'_, AppState>,
-    id: String,
-    project_path: Option<String>,
-) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
-    let _ = project_path;
-    let Ok(uid) = id.parse::<Uuid>() else {
-        // Non-UUID ids are built-in defaults (not stored in DB), nothing to delete
-        return Ok(());
-    };
-    sqlx::query("DELETE FROM pipelines WHERE id=$1")
-        .bind(uid)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn pipeline_load(
-    state: tauri::State<'_, AppState>,
-    id: String,
-    project_path: Option<String>,
-) -> Result<Pipeline, String> {
-    let pool = state.db_pool_ready().await?;
-    let _ = project_path;
-    let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    let data: serde_json::Value = sqlx::query_scalar("SELECT data FROM pipelines WHERE id=$1")
-        .bind(uid)
-        .fetch_one(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-    serde_json::from_value(data).map_err(|e| e.to_string())
-}
-
-// ============================================================================
-// Template management: save/list/delete user flow templates (JSON files)
-// ============================================================================
-
-fn templates_dir() -> Option<std::path::PathBuf> {
-    let home = dirs::home_dir()?;
-    #[cfg(target_os = "macos")]
-    let base = home.join("Library").join("Application Support").join("golish-platform");
-    #[cfg(target_os = "windows")]
-    let base = home.join("AppData").join("Local").join("golish-platform");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let base = home.join(".golish-platform");
-    Some(base.join("flow-templates"))
-}
-
-#[tauri::command]
-pub async fn pipeline_list_templates() -> Result<Vec<Pipeline>, String> {
-    let mut all = builtin_templates();
-    for p in &mut all {
-        p.is_template = true;
-    }
-    Ok(all)
-}
-
-/// Save a pipeline as a JSON template file (non-async, for use from AI tools).
-pub fn pipeline_save_template_inner(pipeline: &Pipeline) -> Result<String, String> {
-    let dir = templates_dir().ok_or("Cannot determine app data directory")?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let id = if pipeline.id.is_empty() {
-        Uuid::new_v4().to_string()
-    } else {
-        pipeline.id.clone()
-    };
-    let ts = now_ts();
-    let entry = Pipeline {
-        id: id.clone(),
-        is_template: true,
-        updated_at: ts,
-        created_at: if pipeline.created_at == 0 { ts } else { pipeline.created_at },
-        ..pipeline.clone()
-    };
-    let filename = format!("{}.json", entry.name.to_lowercase().replace(' ', "_"));
-    let path = dir.join(&filename);
-    let json = serde_json::to_string_pretty(&entry).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
-    tracing::info!("[pipeline] Saved template '{}' to {}", entry.name, path.display());
-    Ok(id)
-}
-
-#[tauri::command]
-pub async fn pipeline_save_template(pipeline: Pipeline) -> Result<String, String> {
-    let dir = templates_dir().ok_or("Cannot determine app data directory")?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-
-    let id = if pipeline.id.is_empty() {
-        Uuid::new_v4().to_string()
-    } else {
-        pipeline.id.clone()
-    };
-    let ts = now_ts();
-    let entry = Pipeline {
-        id: id.clone(),
-        is_template: true,
-        updated_at: ts,
-        created_at: if pipeline.created_at == 0 { ts } else { pipeline.created_at },
-        ..pipeline
-    };
-
-    let filename = format!("{}.json", entry.name.to_lowercase().replace(' ', "_"));
-    let path = dir.join(&filename);
-    let json = serde_json::to_string_pretty(&entry).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
-    tracing::info!("[pipeline] Saved template '{}' to {}", entry.name, path.display());
-    Ok(id)
-}
-
-#[tauri::command]
-pub async fn pipeline_delete_template(id: String) -> Result<(), String> {
-    let dir = templates_dir().ok_or("Cannot determine app data directory")?;
-    if !dir.exists() {
-        return Ok(());
-    }
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "json") {
-                if let Ok(data) = std::fs::read_to_string(&path) {
-                    if let Ok(p) = serde_json::from_str::<Pipeline>(&data) {
-                        if p.id == id {
-                            std::fs::remove_file(&path).map_err(|e| e.to_string())?;
-                            tracing::info!("[pipeline] Deleted template '{}' at {}", id, path.display());
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
 
 // ============================================================================
 // Pipeline executor: run steps with DAG-parallel execution and DB storage
 // ============================================================================
 
-use super::output_parser::{OutputParserConfig, PatternConfig, StoreStats};
+use crate::tools::output_parser::{OutputParserConfig, PatternConfig, StoreStats};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StepResult {
@@ -867,7 +163,7 @@ pub async fn pipeline_execute(
 }
 
 // Helper DB storage functions for pipeline executor
-use super::output_parser::ParsedItem;
+use crate::tools::output_parser::ParsedItem;
 
 /// Returns `Ok(true)` when a brand-new target was created, `Ok(false)` when it already existed.
 async fn store_target_from_item(
@@ -896,7 +192,7 @@ async fn store_target_from_item(
     .await
     .unwrap_or(false);
 
-    super::targets::db_target_add(pool, &hostname, &hostname, None, project_path, "discovered", parent_id)
+    crate::tools::targets::db_target_add(pool, &hostname, &hostname, None, project_path, "discovered", parent_id)
         .await?;
     Ok(!existed)
 }
@@ -917,11 +213,11 @@ async fn store_recon_from_item(
     // Find or create target
     let hostname = extract_hostname(host_val);
     let target =
-        super::targets::db_target_add(pool, &hostname, &hostname, None, project_path, "discovered", None)
+        crate::tools::targets::db_target_add(pool, &hostname, &hostname, None, project_path, "discovered", None)
             .await?;
     let target_uuid: Uuid = target.id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
-    let mut update = super::targets::ReconUpdate::new();
+    let mut update = crate::tools::targets::ReconUpdate::new();
     if let Some(ip) = item.fields.get("ip") {
         update.real_ip = ip.clone();
     }
@@ -998,10 +294,10 @@ async fn store_recon_from_item(
         update.webserver = ws.clone();
     }
 
-    super::targets::db_target_update_recon_extended(pool, target_uuid, &update).await?;
+    crate::tools::targets::db_target_update_recon_extended(pool, target_uuid, &update).await?;
 
     let tool_source = item.fields.get("_tool").map(|s| s.as_str()).unwrap_or("httpx");
-    super::output_parser::store_recon_fingerprints(pool, target_uuid, project_path, item, tool_source).await;
+    crate::tools::output_parser::store_recon_fingerprints(pool, target_uuid, project_path, item, tool_source).await;
 
     Ok(is_new_port)
 }
@@ -1033,7 +329,7 @@ async fn store_dirent_from_item(
     let lines: Option<i32> = item.fields.get("lines").and_then(|s| s.parse().ok());
     let words: Option<i32> = item.fields.get("words").and_then(|s| s.parse().ok());
 
-    super::targets::db_directory_entry_add(
+    crate::tools::targets::db_directory_entry_add(
         pool,
         None,
         url,
@@ -1634,7 +930,7 @@ async fn run_single_step<'a>(
             "[pipeline-store] Found output config"
         );
         let parse_input = if let Some(ref jq_expr) = output_config.transform {
-            super::output_parser::transform_with_jq(&stdout, jq_expr).await
+            crate::tools::output_parser::transform_with_jq(&stdout, jq_expr).await
         } else {
             stdout.clone()
         };
@@ -1650,10 +946,10 @@ async fn run_single_step<'a>(
                         fields: p.fields.clone(),
                     })
                     .collect();
-                super::output_parser::parse_text_standalone(&parse_input, &patterns)
+                crate::tools::output_parser::parse_text_standalone(&parse_input, &patterns)
             }
             "json_lines" | "json" => {
-                super::output_parser::parse_json_standalone(
+                crate::tools::output_parser::parse_json_standalone(
                     &parse_input,
                     &output_config.fields,
                     output_config.format == "json_lines",
@@ -2735,3 +2031,4 @@ mod tests {
         assert!(layers.len() >= 2);
     }
 }
+
