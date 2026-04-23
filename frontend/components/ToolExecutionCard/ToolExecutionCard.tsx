@@ -22,6 +22,7 @@ import type { AiToolExecution } from "@/store";
 
 interface ToolExecutionCardProps {
   execution: AiToolExecution;
+  compact?: boolean;
 }
 
 const TOOL_COLORS: Record<string, string> = {
@@ -219,6 +220,7 @@ function OutputBlock({ text, isShellCommand }: { text: string; isShellCommand: b
 
 export const ToolExecutionCard = memo(function ToolExecutionCard({
   execution,
+  compact = false,
 }: ToolExecutionCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -254,13 +256,18 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
   return (
     <div
       className={cn(
-        "mt-1 mb-1.5 rounded-lg border bg-card overflow-hidden transition-all",
-        execution.status === "running"
-          ? "border-l-2 animate-[pulse-border_2s_ease-in-out_infinite]"
-          : "border border-border",
+        "overflow-hidden transition-all",
+        compact
+          ? "rounded border-0 bg-transparent"
+          : cn(
+              "mt-1 mb-1.5 rounded-lg border bg-card",
+              execution.status === "running"
+                ? "border-l-2 animate-[pulse-border_2s_ease-in-out_infinite]"
+                : "border border-border",
+            ),
       )}
       style={
-        execution.status === "running"
+        !compact && execution.status === "running"
           ? {
               borderLeftColor: toolColor,
               boxShadow: `inset 2px 0 8px -4px ${toolColor}40`,
@@ -269,20 +276,20 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
       }
     >
       <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
-        <div className="flex items-center gap-2 px-3 py-2">
+        <div className={cn("flex items-center gap-2", compact ? "px-1 py-1" : "px-3 py-2")}>
           <CollapsibleTrigger className="flex flex-1 items-center gap-2 hover:bg-accent/30 rounded -ml-1 pl-1 py-0.5 min-w-0">
             {isExpanded ? (
-              <ChevronDown className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+              <ChevronDown className={cn("text-muted-foreground flex-shrink-0", compact ? "h-3 w-3" : "h-3.5 w-3.5")} />
             ) : (
-              <ChevronRight className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+              <ChevronRight className={cn("text-muted-foreground flex-shrink-0", compact ? "h-3 w-3" : "h-3.5 w-3.5")} />
             )}
             <ToolIcon
-              className="h-4 w-4 flex-shrink-0"
+              className={cn("flex-shrink-0", compact ? "h-3.5 w-3.5" : "h-4 w-4")}
               style={{ color: toolColor }}
             />
-            <span className="font-medium text-sm truncate">{toolLabel}</span>
+            <span className={cn("font-medium truncate", compact ? "text-xs" : "text-sm")}>{toolLabel}</span>
 
-            {execution.status === "running" && (
+            {execution.status === "running" && !compact && (
               <Badge
                 variant="outline"
                 className="ml-auto gap-1 flex items-center text-[10px] px-2 py-0.5 rounded-full bg-[var(--accent-dim)] text-accent"
@@ -291,11 +298,14 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
                 Running
               </Badge>
             )}
+            {execution.status === "running" && compact && (
+              <Loader2 className="w-3 h-3 animate-spin text-accent ml-auto flex-shrink-0" />
+            )}
           </CollapsibleTrigger>
           <div className="flex items-center gap-2 flex-shrink-0">
             <StatusIcon status={execution.status} />
             {execution.durationMs !== undefined && (
-              <span className="text-xs text-muted-foreground">
+              <span className={cn("text-muted-foreground", compact ? "text-[10px]" : "text-xs")}>
                 {formatDuration(execution.durationMs)}
               </span>
             )}

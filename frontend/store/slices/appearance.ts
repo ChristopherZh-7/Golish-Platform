@@ -38,8 +38,6 @@ export interface DisplaySettings {
   showInputModeToggle: boolean;
   /** Show the connection status and model name badge. */
   showStatusBadge: boolean;
-  /** Show the agent mode selector dropdown. */
-  showAgentModeSelector: boolean;
   /** Show the context / token usage percentage badge. */
   showContextUsage: boolean;
   /** Show the MCP servers indicator badge. */
@@ -63,7 +61,6 @@ export const defaultDisplaySettings: DisplaySettings = {
   showStatusBar: true,
   showInputModeToggle: true,
   showStatusBadge: true,
-  showAgentModeSelector: true,
   showContextUsage: true,
   showMcpBadge: true,
   hideAiSettingsInShellMode: false,

@@ -86,8 +86,11 @@ export async function restoreTerminalForConv(
     }
     if (termInfo.customName)
       useStore.getState().setCustomTabName(existingTermId, termInfo.customName);
-    if (termInfo.planJson)
+    if (termInfo.planJson) {
       useStore.getState().setPlan(existingTermId, termInfo.planJson as any);
+      useStore.getState().setExecutionMode(existingTermId, "task");
+      useStore.getState().setUseAgents(existingTermId, true);
+    }
     restoreTimelineBlocks(termInfo.timelineBlocks, existingTermId);
     return;
   }
@@ -103,8 +106,11 @@ export async function restoreTerminalForConv(
   if (isActiveConv) useStore.getState().setActiveSession(termId);
   if (termInfo.customName)
     useStore.getState().setCustomTabName(termId, termInfo.customName);
-  if (termInfo.planJson)
+  if (termInfo.planJson) {
     useStore.getState().setPlan(termId, termInfo.planJson as any);
+    useStore.getState().setExecutionMode(termId, "task");
+    useStore.getState().setUseAgents(termId, true);
+  }
   restoreTimelineBlocks(termInfo.timelineBlocks, termId);
 }
 

@@ -169,6 +169,8 @@ impl PlanManager {
                 StepStatus::Completed => "✓",
                 StepStatus::InProgress => "→",
                 StepStatus::Pending => "○",
+                StepStatus::Cancelled => "✗",
+                StepStatus::Failed => "✗",
             };
             lines.push(format!("{} {}. {}", icon, i + 1, step.step));
         }

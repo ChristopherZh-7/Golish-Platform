@@ -173,7 +173,8 @@ impl AiState {
 ///
 /// IMPORTANT: Each session gets its own SidecarState instance to enable
 /// per-session isolation and avoid blocking between tabs when agents run concurrently.
-pub async fn configure_bridge(bridge: &mut AgentBridge, state: &AppState, _session_id: &str, app_handle: Option<tauri::AppHandle>) {
+pub async fn configure_bridge(bridge: &mut AgentBridge, state: &AppState, session_id: &str, app_handle: Option<tauri::AppHandle>) {
+    let is_title_gen = session_id.starts_with("title-gen-");
     bridge.set_pty_manager(state.pty_manager.clone());
     bridge.set_indexer_state(state.indexer_state.clone());
     // NOTE: Workflow state is no longer part of golish-ai's AgentBridge
@@ -215,46 +216,50 @@ pub async fn configure_bridge(bridge: &mut AgentBridge, state: &AppState, _sessi
     // Apply sub-agent model overrides from settings
     apply_sub_agent_model_settings(bridge, &settings.ai).await;
 
-    // Set up MCP tools from the global manager (if initialized)
-    setup_bridge_mcp_tools(bridge, state).await;
+    if !is_title_gen {
+        // Set up MCP tools from the global manager (if initialized)
+        setup_bridge_mcp_tools(bridge, state).await;
+    }
 
-    // Register pentest AI tools so the agent can list and execute pentest tools.
-    // PentestRunTool routes through PTY so output appears in the visible terminal.
-    // When the active terminal is busy, a new session is auto-created.
-    {
-        let pentest_tools = crate::tools::pentest_ai::create_pentest_ai_tools(
-            state.pentest_config_manager.clone(),
-            state.pty_manager.clone(),
-            state.pty_output_tap.clone(),
-            state.active_terminal_session.clone(),
-            state.pentest_busy_sessions.clone(),
-            state.ai_state.runtime.clone(),
-        );
-        let mut registry = bridge.tool_registry().write().await;
-        for tool in pentest_tools {
-            tracing::info!("[pentest-ai] Registered tool: {}", tool.name());
-            registry.register_tool(tool);
+    if !is_title_gen {
+        // Register pentest AI tools so the agent can list and execute pentest tools.
+        // PentestRunTool routes through PTY so output appears in the visible terminal.
+        // When the active terminal is busy, a new session is auto-created.
+        {
+            let pentest_tools = crate::tools::pentest_ai::create_pentest_ai_tools(
+                state.pentest_config_manager.clone(),
+                state.pty_manager.clone(),
+                state.pty_output_tap.clone(),
+                state.active_terminal_session.clone(),
+                state.pentest_busy_sessions.clone(),
+                state.ai_state.runtime.clone(),
+            );
+            let mut registry = bridge.tool_registry().write().await;
+            for tool in pentest_tools {
+                tracing::info!("[pentest-ai] Registered tool: {}", tool.name());
+                registry.register_tool(tool);
+            }
+        }
+
+        // Register pentest bridge tools (targets, findings, vault) so the AI agent
+        // can record recon data and vulnerability findings directly into the database.
+        {
+            let bridge_tools = crate::tools::pentest_bridge::create_pentest_bridge_tools(
+                state.db_pool.clone(),
+                state.pentest_config_manager.clone(),
+                app_handle.clone(),
+            );
+            let mut registry = bridge.tool_registry().write().await;
+            for tool in bridge_tools {
+                tracing::info!("[pentest-bridge] Registered tool: {}", tool.name());
+                registry.register_tool(tool);
+            }
         }
     }
 
-    // Register pentest bridge tools (targets, findings, vault) so the AI agent
-    // can record recon data and vulnerability findings directly into the database.
-    {
-        let bridge_tools = crate::tools::pentest_bridge::create_pentest_bridge_tools(
-            state.db_pool.clone(),
-            state.pentest_config_manager.clone(),
-            app_handle.clone(),
-        );
-        let mut registry = bridge.tool_registry().write().await;
-        for tool in bridge_tools {
-            tracing::info!("[pentest-bridge] Registered tool: {}", tool.name());
-            registry.register_tool(tool);
-        }
-    }
-
-    // Replace the default background run_pty_cmd with one that routes through
-    // the user's visible terminal so commands appear on the left side.
-    {
+    if !is_title_gen {
+        // Replace the default background run_pty_cmd with one that routes through
+        // the user's visible terminal so commands appear on the left side.
         let visible_cmd_tool = crate::tools::pty_interactive::VisibleRunPtyCmdTool::new(
             state.pty_manager.clone(),
             state.pty_output_tap.clone(),

@@ -1,9 +1,14 @@
-//! Memory gatekeeper: uses a small model to decide if memory search is warranted.
+//! Memory gatekeeper: classifies whether memory search is warranted.
 //!
 //! Before the main agent starts processing, the gatekeeper classifies the user's
 //! message to determine whether calling `search_memories` would be useful.
 //! This avoids injecting unnecessary tool calls for simple greetings or
 //! meta-questions, while ensuring continuity for security-related work.
+//!
+//! TODO: Use a cheaper/smaller model for classification instead of the main agent's
+//! model. Currently this wastes tokens on an expensive model (Claude Sonnet/Opus)
+//! for a simple YES/NO classification. Consider using a dedicated fast model
+//! (e.g., Claude Haiku, GPT-4o-mini) or a local classifier.
 
 use anyhow::Result;
 use golish_llm_providers::LlmClient;

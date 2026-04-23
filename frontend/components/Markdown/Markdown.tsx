@@ -337,7 +337,7 @@ export const Markdown = memo(function Markdown({
           href={href}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-accent hover:text-[var(--success)] hover:underline transition-colors"
+          className="text-primary underline decoration-primary/30 hover:decoration-primary/70 transition-colors"
         >
           {children}
         </a>

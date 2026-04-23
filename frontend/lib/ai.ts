@@ -1591,15 +1591,6 @@ export async function setAgentMode(
 }
 
 /**
- * Get the current agent mode for a session.
- *
- * @param sessionId - The session ID to get the mode for
- */
-export async function getAgentMode(sessionId: string): Promise<AgentMode> {
-  return invoke("get_agent_mode", { sessionId });
-}
-
-/**
  * Set the useAgents flag for a session.
  * Controls whether the AI can delegate tasks to specialist sub-agents.
  */
@@ -1608,13 +1599,6 @@ export async function setUseAgents(
   enabled: boolean
 ): Promise<void> {
   return invoke("set_use_agents", { sessionId, enabled });
-}
-
-/**
- * Get the current useAgents setting for a session.
- */
-export async function getUseAgents(sessionId: string): Promise<boolean> {
-  return invoke("get_use_agents", { sessionId });
 }
 
 /**
@@ -1680,7 +1664,7 @@ export interface TaskPlan {
   explanation: string | null;
   steps: Array<{
     step: string;
-    status: "pending" | "in_progress" | "completed";
+    status: "pending" | "in_progress" | "completed" | "cancelled" | "failed";
   }>;
   summary: {
     total: number;

@@ -6,11 +6,32 @@ import type { ChatMessage } from "@/store";
 import type { ChatToolCall } from "@/store/slices/conversation";
 import {
   CollapsibleToolCall,
+  PlanUpdatedNotice,
   TaskPlanCard,
   type TaskPlanState,
   ThinkingBlock,
   ToolCallSummary,
+  usePlanNestedRequestIds,
 } from "./ChatSubComponents";
+
+/**
+ * Strip XML-formatted tool call tags that some models (e.g. Mistral)
+ * emit as raw text instead of structured tool_calls.
+ * Handles both complete and incomplete (streaming) XML fragments.
+ */
+function stripToolCallXml(text: string): string {
+  let cleaned = text
+    .replace(/<execute>[\s\S]*?<\/execute>/g, "")
+    .replace(/<function=[^>]*>[\s\S]*?<\/function>/g, "")
+    .replace(/<\/function>/g, "");
+
+  const incompleteIdx = cleaned.search(/<(?:execute|function[=\s]|parameter[=\s])/);
+  if (incompleteIdx !== -1) {
+    cleaned = cleaned.slice(0, incompleteIdx);
+  }
+
+  return cleaned;
+}
 
 export const MessageBlock = memo(function MessageBlock({
   message,
@@ -21,6 +42,7 @@ export const MessageBlock = memo(function MessageBlock({
   onApprovalModeChange,
   taskPlan,
   planTextOffset,
+  terminalId,
 }: {
   message: ChatMessage;
   pendingApproval?: { requestId: string; toolName: string } | null;
@@ -30,8 +52,10 @@ export const MessageBlock = memo(function MessageBlock({
   onApprovalModeChange?: (mode: "ask" | "allowlist" | "run-all") => void;
   taskPlan?: TaskPlanState | null;
   planTextOffset?: number | null;
+  terminalId?: string | null;
 }) {
   const isUser = message.role === "user";
+  const nestedIds = usePlanNestedRequestIds(taskPlan ? (terminalId ?? null) : null);
 
   return (
     <div className={cn("px-4 py-3", !isUser && "bg-[var(--bg-hover)]")}>
@@ -60,6 +84,7 @@ export const MessageBlock = memo(function MessageBlock({
 
         const isVisibleCall = (tc: ChatToolCall) =>
           tc.name !== "update_plan" &&
+          !nestedIds.has(tc.requestId ?? "") &&
           (tc.success !== undefined ||
             (pendingApproval == null && tc.success === undefined));
 
@@ -152,7 +177,8 @@ export const MessageBlock = memo(function MessageBlock({
           <div className="flex flex-col gap-2">
             {segments.map((seg, idx) => {
               if (seg.kind === "text") {
-                const text = seg.content.trim();
+                const displayContent = stripToolCallXml(seg.content);
+                const text = displayContent.trim();
                 if (!text && segments.length > 1) return null;
 
                 const showPlanBefore =
@@ -163,17 +189,17 @@ export const MessageBlock = memo(function MessageBlock({
                   idx === 0;
 
                 if (showPlanBefore) {
-                  const before = seg.content.slice(0, planTextOffset);
-                  const after = seg.content.slice(planTextOffset);
+                  const before = stripToolCallXml(seg.content.slice(0, planTextOffset));
+                  const after = stripToolCallXml(seg.content.slice(planTextOffset));
                   planInserted = true;
                   return (
                     <React.Fragment key={`seg-${idx}`}>
-                      {before && (
+                      {before.trim() && (
                         <div className="text-[12px] text-foreground leading-[1.55]">
                           <Markdown content={before} />
                         </div>
                       )}
-                      <TaskPlanCard plan={taskPlan!} />
+                      <TaskPlanCard plan={taskPlan!} terminalId={terminalId} />
                       {after.trim() && (
                         <div className="text-[12px] text-foreground leading-[1.55]">
                           <Markdown content={after} />
@@ -185,7 +211,7 @@ export const MessageBlock = memo(function MessageBlock({
 
                 return (
                   <div key={`seg-${idx}`} className="text-[12px] text-foreground leading-[1.55]">
-                    <Markdown content={seg.content || (message.isStreaming ? "..." : "")} />
+                    <Markdown content={displayContent || (message.isStreaming ? "..." : "")} />
                   </div>
                 );
               }
@@ -196,7 +222,7 @@ export const MessageBlock = memo(function MessageBlock({
                 planInserted = true;
                 return (
                   <React.Fragment key={`seg-${idx}`}>
-                    <TaskPlanCard plan={taskPlan!} />
+                    <TaskPlanCard plan={taskPlan!} terminalId={terminalId} />
                     <ToolCallSummary toolCalls={seg.calls} requestIds={seg.requestIds} isMessageComplete={messageComplete} />
                   </React.Fragment>
                 );
@@ -206,7 +232,8 @@ export const MessageBlock = memo(function MessageBlock({
                 <ToolCallSummary key={`seg-${idx}`} toolCalls={seg.calls} requestIds={seg.requestIds} isMessageComplete={messageComplete} />
               );
             })}
-            {shouldShowPlan && !planInserted && <TaskPlanCard plan={taskPlan!} />}
+            {shouldShowPlan && !planInserted && <TaskPlanCard plan={taskPlan!} terminalId={terminalId} />}
+            {!taskPlan && !isUser && message.toolCalls?.some((tc) => tc.name === "update_plan") && <PlanUpdatedNotice />}
             {pendingCalls.length > 0 && renderPendingApprovalCards()}
           </div>
         );

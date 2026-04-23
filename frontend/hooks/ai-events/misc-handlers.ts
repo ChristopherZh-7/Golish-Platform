@@ -15,7 +15,7 @@ export const handlePlanUpdated: EventHandler<{
   type: "plan_updated";
   version: number;
   summary: { total: number; completed: number; in_progress: number; pending: number };
-  steps: Array<{ step: string; status: "pending" | "in_progress" | "completed" }>;
+  steps: Array<{ step: string; status: "pending" | "in_progress" | "completed" | "cancelled" | "failed" }>;
   explanation: string | null;
   session_id: string;
   seq?: number;

@@ -32,6 +32,29 @@ impl AgentBridge {
             .await
     }
 
+    /// Execute a prompt in an isolated conversation context.
+    ///
+    /// Saves the current conversation history, runs the prompt with a
+    /// fresh (empty) history, then restores the original history afterward.
+    /// This prevents context leakage between Task-mode subtasks.
+    pub async fn execute_isolated(&self, prompt: &str) -> Result<String> {
+        let saved_history = {
+            let mut guard = self.conversation_history.write().await;
+            std::mem::take(&mut *guard)
+        };
+
+        let result = self
+            .execute_with_context(prompt, SubAgentContext::default())
+            .await;
+
+        {
+            let mut guard = self.conversation_history.write().await;
+            *guard = saved_history;
+        }
+
+        result
+    }
+
     /// Execute with rich content (text + images).
     ///
     /// This method accepts multiple content parts, enabling multi-modal prompts

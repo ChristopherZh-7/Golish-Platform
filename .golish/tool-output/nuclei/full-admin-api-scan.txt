@@ -1,0 +1,22 @@
+[waf-detect:nginxgeneric] [http] [info] http://8.138.179.62:8080/admin-api
+[ssh-auth-methods] [javascript] [info] 8.138.179.62:22 ["["publickey","password"]"]
+[ssh-password-auth] [javascript] [info] 8.138.179.62:22
+[ssh-server-enumeration] [javascript] [info] 8.138.179.62:22 ["SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.15"]
+[ssh-sha1-hmac-algo] [javascript] [info] 8.138.179.62:22
+[openssh-detect] [tcp] [info] 8.138.179.62:22 ["SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.15"]
+[http-missing-security-headers:referrer-policy] [http] [info] http://8.138.179.62:8080/admin-api
+[http-missing-security-headers:clear-site-data] [http] [info] http://8.138.179.62:8080/admin-api
+[http-missing-security-headers:cross-origin-resource-policy] [http] [info] http://8.138.179.62:8080/admin-api
+[http-missing-security-headers:content-security-policy] [http] [info] http://8.138.179.62:8080/admin-api
+[http-missing-security-headers:permissions-policy] [http] [info] http://8.138.179.62:8080/admin-api
+[http-missing-security-headers:x-content-type-options] [http] [info] http://8.138.179.62:8080/admin-api
+[http-missing-security-headers:x-permitted-cross-domain-policies] [http] [info] http://8.138.179.62:8080/admin-api
+[http-missing-security-headers:strict-transport-security] [http] [info] http://8.138.179.62:8080/admin-api
+[http-missing-security-headers:x-frame-options] [http] [info] http://8.138.179.62:8080/admin-api
+[http-missing-security-headers:cross-origin-embedder-policy] [http] [info] http://8.138.179.62:8080/admin-api
+[http-missing-security-headers:cross-origin-opener-policy] [http] [info] http://8.138.179.62:8080/admin-api
+[nginx-eol:version] [http] [info] http://8.138.179.62:8080/admin-api ["1.24.0"]
+[wordpress-eol] [http] [info] http://8.138.179.62:8080/admin-api
+[eol-magento] [http] [info] http://8.138.179.62:8080/admin-api
+[tech-detect:nginx] [http] [info] http://8.138.179.62:8080/admin-api
+[apache-answer-detect] [http] [info] http://8.138.179.62:8080/admin-api/answer/api/v1/siteinfo

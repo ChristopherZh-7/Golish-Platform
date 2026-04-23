@@ -492,7 +492,8 @@ interface GolishState
   getSessionAiConfig: (sessionId: string) => AiConfig | undefined;
 
   // Plan actions
-  setPlan: (sessionId: string, plan: TaskPlan) => void;
+  setPlan: (sessionId: string, plan: TaskPlan, currentMessageId?: string | null) => void;
+  retirePlan: (sessionId: string, messageId: string) => void;
   /** Bridge plan_updated events into a pipeline_progress timeline block */
   syncPlanToPipeline: (sessionId: string, plan: TaskPlan) => void;
 
@@ -1172,11 +1173,18 @@ export const useStore = create<GolishState>()(
       startPipelineExecution: (sessionId, execution, blockId) =>
         set((state) => {
           if (!state.timelines[sessionId]) state.timelines[sessionId] = [];
+          let planStepIndex: number | undefined;
+          const plan = state.sessions[sessionId]?.plan;
+          if (plan) {
+            const idx = plan.steps.findIndex((s) => s.status === "in_progress");
+            if (idx >= 0) planStepIndex = idx;
+          }
           state.timelines[sessionId].push({
             id: blockId ?? `pipeline-${execution.pipelineId}-${Date.now()}`,
             type: "pipeline_progress",
             timestamp: new Date().toISOString(),
             data: execution,
+            planStepIndex,
           });
         }),
 
@@ -1731,11 +1739,18 @@ export const useStore = create<GolishState>()(
           if (existingBlock && existingBlock.type === "sub_agent_activity") {
             existingBlock.data = { ...agentData };
           } else if (!existingBlock) {
+            let stepIdx: number | undefined;
+            const planObj = state.sessions[sessionId]?.plan;
+            if (planObj) {
+              const si = planObj.steps.findIndex((s) => s.status === "in_progress");
+              if (si >= 0) stepIdx = si;
+            }
             timeline.push({
               id: blockId,
               type: "sub_agent_activity" as const,
               timestamp: now,
               data: { ...agentData },
+              planStepIndex: stepIdx,
             });
           }
         }),
@@ -1845,12 +1860,19 @@ export const useStore = create<GolishState>()(
               state.subAgentBatchCounter[sessionId] = (state.subAgentBatchCounter[sessionId] ?? 0) + 1;
             }
             const batchId = `batch-${state.subAgentBatchCounter[sessionId] ?? 1}`;
+            let planStepIdx: number | undefined;
+            const planData = state.sessions[sessionId]?.plan;
+            if (planData) {
+              const idx = planData.steps.findIndex((s) => s.status === "in_progress");
+              if (idx >= 0) planStepIdx = idx;
+            }
             timeline.push({
               id: blockId,
               type: "sub_agent_activity" as const,
               timestamp: now,
               data: { ...agentData },
               batchId,
+              planStepIndex: planStepIdx,
             });
           }
         }),
@@ -2043,12 +2065,37 @@ export const useStore = create<GolishState>()(
       },
 
       // Plan actions
-      setPlan: (sessionId, plan) =>
+      setPlan: (sessionId, plan, currentMessageId) =>
         set((state) => {
-          if (state.sessions[sessionId]) {
-            state.sessions[sessionId].plan = plan;
+          if (!state.sessions[sessionId]) {
+            state.sessions[sessionId] = {
+              id: sessionId,
+              tabType: "terminal" as const,
+              inputMode: "terminal" as const,
+              logicalTerminalId: sessionId,
+            } as any;
           }
+          const prev = state.sessions[sessionId].plan;
+          if (prev && currentMessageId) {
+            const prevNames = new Set(prev.steps.map((s) => s.step));
+            const newNames = new Set(plan.steps.map((s) => s.step));
+            const stepsChanged = prevNames.size !== newNames.size ||
+              [...prevNames].some((n) => !newNames.has(n));
+            if (stepsChanged) {
+              if (!state.sessions[sessionId].retiredPlans) {
+                state.sessions[sessionId].retiredPlans = [];
+              }
+              state.sessions[sessionId].retiredPlans!.push({
+                plan: { ...prev },
+                messageId: currentMessageId,
+                retiredAt: new Date().toISOString(),
+              });
+            }
+          }
+          state.sessions[sessionId].plan = plan;
         }),
+
+      retirePlan: () => {},
 
       syncPlanToPipeline: (sessionId, plan) =>
         set((state) => {
@@ -2059,6 +2106,8 @@ export const useStore = create<GolishState>()(
             pending: "pending",
             in_progress: "running",
             completed: "success",
+            cancelled: "skipped",
+            failed: "failed",
           };
 
           const blockId = `plan-pipeline-${sessionId}`;

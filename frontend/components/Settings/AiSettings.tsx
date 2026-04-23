@@ -88,7 +88,7 @@ export function AiSettings({
           />
           <p className="text-xs text-muted-foreground">
             Get your API key from{" "}
-            <a href="https://brave.com/search/api/" target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">
+            <a href="https://brave.com/search/api/" target="_blank" rel="noopener noreferrer" className="text-primary underline decoration-primary/30 hover:decoration-primary/70">
               brave.com/search/api
             </a>
           </p>

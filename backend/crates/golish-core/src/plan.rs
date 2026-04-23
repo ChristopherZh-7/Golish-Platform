@@ -29,6 +29,10 @@ pub enum StepStatus {
     InProgress,
     /// Step has been completed.
     Completed,
+    /// Step was cancelled (e.g., task interrupted or plan refined away).
+    Cancelled,
+    /// Step failed during execution.
+    Failed,
 }
 
 impl std::fmt::Display for StepStatus {
@@ -37,6 +41,8 @@ impl std::fmt::Display for StepStatus {
             StepStatus::Pending => write!(f, "pending"),
             StepStatus::InProgress => write!(f, "in_progress"),
             StepStatus::Completed => write!(f, "completed"),
+            StepStatus::Cancelled => write!(f, "cancelled"),
+            StepStatus::Failed => write!(f, "failed"),
         }
     }
 }
@@ -76,6 +82,10 @@ impl PlanSummary {
                 StepStatus::Pending => summary.pending += 1,
                 StepStatus::InProgress => summary.in_progress += 1,
                 StepStatus::Completed => summary.completed += 1,
+                StepStatus::Cancelled | StepStatus::Failed => {
+                    // Count towards completed for progress tracking
+                    summary.completed += 1;
+                }
             }
         }
 

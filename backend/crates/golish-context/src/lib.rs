@@ -18,4 +18,5 @@ pub use token_budget::{
 };
 pub use token_trunc::{
     aggregate_tool_output, truncate_by_chars, truncate_by_tokens, ContentType, TruncationResult,
+    BYTE_FUSE_LIMIT, DEFAULT_MAX_TOOL_RESPONSE_TOKENS,
 };

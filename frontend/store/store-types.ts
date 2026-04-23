@@ -11,7 +11,7 @@ import type { RiskLevel } from "@/lib/tools";
 export type { ApprovalPattern, ReasoningEffort, RiskLevel };
 
 // Plan types
-export type StepStatus = "pending" | "in_progress" | "completed";
+export type StepStatus = "pending" | "in_progress" | "completed" | "cancelled" | "failed";
 
 export interface PlanStep {
   step: string;
@@ -31,6 +31,12 @@ export interface TaskPlan {
   summary: PlanSummary;
   version: number;
   updated_at: string;
+}
+
+export interface RetiredPlan {
+  plan: TaskPlan;
+  messageId: string;
+  retiredAt: string;
 }
 
 // Session types
@@ -83,6 +89,7 @@ export interface Session {
   gitBranch?: string | null;
   aiConfig?: AiConfig;
   plan?: TaskPlan;
+  retiredPlans?: RetiredPlan[];
   detailViewMode?: DetailViewMode;
   toolDetailRequestIds?: string[] | null;
 }
@@ -303,12 +310,14 @@ export type UnifiedBlock =
       type: "pipeline_progress";
       timestamp: string;
       data: PipelineExecution;
+      planStepIndex?: number;
     }
   | {
       id: string;
       type: "sub_agent_activity";
       timestamp: string;
       data: ActiveSubAgent;
+      planStepIndex?: number;
       batchId?: string;
     }
   | {

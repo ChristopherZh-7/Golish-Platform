@@ -152,15 +152,17 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
                     <UnifiedTimeline sessionId={sessionId} />
                   )}
                 </div>
-                <div
-                  className={`pane-bottom-terminal origin-bottom transition-[transform,opacity] duration-200 ease-in-out ${
-                    isCommandRunning
-                      ? "translate-y-full opacity-0 scale-y-0 h-0 pointer-events-none"
-                      : "translate-y-0 opacity-100 scale-y-100"
-                  }`}
-                >
-                  <UnifiedInput sessionId={sessionId} />
-                </div>
+                {detailViewMode !== "tool-detail" && (
+                  <div
+                    className={`pane-bottom-terminal origin-bottom transition-[transform,opacity] duration-200 ease-in-out ${
+                      isCommandRunning
+                        ? "translate-y-full opacity-0 scale-y-0 h-0 pointer-events-none"
+                        : "translate-y-0 opacity-100 scale-y-100"
+                    }`}
+                  >
+                    <UnifiedInput sessionId={sessionId} />
+                  </div>
+                )}
               </>
             )}
           </>

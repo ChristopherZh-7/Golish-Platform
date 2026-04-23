@@ -55,6 +55,8 @@ import {
   AskHumanInline,
   type AskHumanState,
   CompactionNotice,
+  StickyPlanProgress,
+  TaskPlanCard,
   type TaskPlanState,
   WorkflowProgress,
   type WorkflowState,
@@ -64,6 +66,7 @@ import { MessageBlock } from "./MessageBlock";
 
 
 const EMPTY_MESSAGES: ChatMessage[] = [];
+const EMPTY_RETIRED: any[] = [];
 
 
 
@@ -104,6 +107,11 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const [chatExecutionMode, setChatExecutionMode] = useState<"chat" | "task">("chat");
   const [chatUseSubAgents, setChatUseSubAgents] = useState(false);
 
+  const chatExecutionModeRef = useRef(chatExecutionMode);
+  chatExecutionModeRef.current = chatExecutionMode;
+  const chatUseSubAgentsRef = useRef(chatUseSubAgents);
+  chatUseSubAgentsRef.current = chatUseSubAgents;
+
   const [contextUsage, setContextUsage] = useState<{
     utilization: number;
     totalTokens: number;
@@ -116,20 +124,44 @@ export const AIChatPanel = memo(function AIChatPanel() {
   // Workflow state
   const [activeWorkflow, setActiveWorkflow] = useState<WorkflowState | null>(null);
 
-  // Task plan: read from store session so it survives tab switches
+  // Task plan: read from store session keyed by AI session ID, fallback to terminal UUID
+  const activeAiSessionId = useStore((s) => {
+    if (!s.activeConversationId) return null;
+    return s.conversations[s.activeConversationId]?.aiSessionId ?? null;
+  });
   const storePlan = useStore((s) => {
     if (!s.activeConversationId) return null;
+    const sid = s.conversations[s.activeConversationId]?.aiSessionId;
+    if (sid) {
+      const plan = s.sessions[sid]?.plan;
+      if (plan) return plan;
+    }
     const termIds = s.conversationTerminals[s.activeConversationId];
     const termId = termIds?.[0];
-    const p = termId ? (s.sessions[termId]?.plan ?? null) : null;
-    return p;
+    if (termId) return s.sessions[termId]?.plan ?? null;
+    return null;
   });
   const taskPlan = useMemo<TaskPlanState | null>(
-    () => storePlan ? { version: storePlan.version, steps: storePlan.steps, summary: storePlan.summary } : null,
+    () => storePlan ? {
+      version: storePlan.version,
+      steps: storePlan.steps,
+      summary: storePlan.summary,
+    } : null,
     [storePlan]
   );
-  // Text offset at which the plan card was first created (for inline positioning)
+
+  const retiredPlans = useStore(useCallback((s: any) => {
+    if (!s.activeConversationId) return EMPTY_RETIRED;
+    const sid = s.conversations[s.activeConversationId]?.aiSessionId;
+    if (sid && s.sessions[sid]?.retiredPlans?.length) return s.sessions[sid].retiredPlans;
+    const termIds = s.conversationTerminals[s.activeConversationId];
+    const termId = termIds?.[0];
+    if (termId && s.sessions[termId]?.retiredPlans?.length) return s.sessions[termId].retiredPlans;
+    return EMPTY_RETIRED;
+  }, []));
   const planTextOffsetRef = useRef<number | null>(null);
+  const planMessageIdRef = useRef<string | null>(null);
+  const retiredCountRef = useRef<number>(0);
 
   // Context compaction state
   const [compactionState, setCompactionState] = useState<{
@@ -549,12 +581,12 @@ export const AIChatPanel = memo(function AIChatPanel() {
 
             // Plan events
             case "plan_updated": {
-              if (planTextOffsetRef.current === null) {
-                const currentConv = useStore.getState().conversations[convId];
-                const lastMsg = currentConv?.messages?.[currentConv.messages.length - 1];
-                if (lastMsg?.role === "assistant") {
-                  planTextOffsetRef.current = (lastMsg.content || "").length;
-                }
+              const currentConv = useStore.getState().conversations[convId];
+              const lastMsg = currentConv?.messages?.[currentConv.messages.length - 1];
+              const prevPlanMsgId = planMessageIdRef.current;
+              if (planMessageIdRef.current === null && lastMsg?.role === "assistant") {
+                planMessageIdRef.current = lastMsg.id;
+                planTextOffsetRef.current = (lastMsg.content || "").length;
               }
               const termIds = useStore.getState().conversationTerminals[convId];
               const termId = termIds?.[0];
@@ -565,7 +597,18 @@ export const AIChatPanel = memo(function AIChatPanel() {
                   summary: event.summary,
                   explanation: event.explanation ?? null,
                   updated_at: new Date().toISOString(),
-                });
+                }, prevPlanMsgId);
+                // If plan structure changed, move the plan card to the latest message
+                const sess = useStore.getState().sessions[termId];
+                if (sess?.retiredPlans?.length && lastMsg?.role === "assistant") {
+                  const latestRetired = sess.retiredPlans[sess.retiredPlans.length - 1];
+                  if (latestRetired.retiredAt === sess.plan?.updated_at || 
+                      sess.retiredPlans.length > (retiredCountRef.current ?? 0)) {
+                    planMessageIdRef.current = lastMsg.id;
+                    planTextOffsetRef.current = (lastMsg.content || "").length;
+                    retiredCountRef.current = sess.retiredPlans.length;
+                  }
+                }
               }
               break;
             }
@@ -610,6 +653,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
   // Auto-scroll tabs to show the active tab
   useEffect(() => {
     planTextOffsetRef.current = null;
+    planMessageIdRef.current = null;
     if (tabsRef.current) {
       const activeTab = tabsRef.current.querySelector(`[data-conv-id="${activeConvId}"]`);
       activeTab?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
@@ -1163,10 +1207,40 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
           }
         }
 
-        // Sync the stored approval/agent mode to the backend
+        // Sync the stored approval/agent/execution mode to the backend
         const savedMode = useStore.getState().approvalMode || "ask";
         const backendMode: AgentMode = savedMode === "run-all" ? "auto-approve" : "default";
         await setAgentMode(conv.aiSessionId, backendMode).catch(console.warn);
+
+        // Sync execution mode (Chat vs Task).
+        // First check the persisted session store (survives restarts), then
+        // fall back to local component state (covers pre-init changes).
+        const storeState = useStore.getState();
+        const termIds = storeState.conversationTerminals[conv.id] ?? [];
+        let restoredExecMode: "chat" | "task" = chatExecutionModeRef.current;
+        let restoredUseAgents = chatUseSubAgentsRef.current;
+        for (const tid of termIds) {
+          const sess = storeState.sessions[tid];
+          if (sess?.executionMode === "task") {
+            restoredExecMode = "task";
+          }
+          if (sess?.useAgents) {
+            restoredUseAgents = true;
+          }
+        }
+
+        if (restoredExecMode !== "chat") {
+          await setExecutionModeBackend(conv.aiSessionId, restoredExecMode).catch(console.warn);
+          setChatExecutionMode(restoredExecMode);
+          console.debug("[AIChatPanel] Synced execution mode to backend:", restoredExecMode);
+        }
+
+        // Sync sub-agents toggle
+        if (restoredUseAgents) {
+          await setUseAgentsBackend(conv.aiSessionId, true).catch(console.warn);
+          setChatUseSubAgents(true);
+          console.debug("[AIChatPanel] Synced useAgents to backend:", true);
+        }
 
         updateConv(conv.id, { aiInitialized: true });
         return true;
@@ -1435,7 +1509,11 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
         ? useStore.getState().conversations[useStore.getState().activeConversationId!]
         : null;
       if (!conv) return;
-      setExecutionModeBackend(conv.aiSessionId, mode).catch(console.error);
+      if (conv.aiInitialized) {
+        setExecutionModeBackend(conv.aiSessionId, mode).catch(console.error);
+      } else {
+        console.debug("[AIChatPanel] Session not yet initialized, execution mode will be synced on init:", mode);
+      }
     },
     [chatExecutionMode]
   );
@@ -1447,7 +1525,11 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
       ? useStore.getState().conversations[useStore.getState().activeConversationId!]
       : null;
     if (!conv) return;
-    setUseAgentsBackend(conv.aiSessionId, newValue).catch(console.error);
+    if (conv.aiInitialized) {
+      setUseAgentsBackend(conv.aiSessionId, newValue).catch(console.error);
+    } else {
+      console.debug("[AIChatPanel] Session not yet initialized, useAgents will be synced on init:", newValue);
+    }
   }, [chatUseSubAgents]);
 
   const handleStop = useCallback(() => {
@@ -1478,22 +1560,38 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
   const currentModel = selectedModel?.model ?? "";
   const currentProvider = selectedModel?.provider ?? "";
 
-  const lastAssistantIdx = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "assistant") return i;
-    }
-    return -1;
-  }, [messages]);
-
   const planTargetIdx = useMemo(() => {
+    if (planMessageIdRef.current) {
+      const idx = messages.findIndex((m) => m.id === planMessageIdRef.current);
+      if (idx >= 0) return idx;
+    }
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
       if (msg.role === "assistant" && msg.toolCalls?.some((tc) => tc.name === "update_plan")) {
+        planMessageIdRef.current = msg.id;
         return i;
       }
     }
-    return lastAssistantIdx;
-  }, [messages, lastAssistantIdx]);
+    if (taskPlan) {
+      const firstAssistant = messages.findIndex((m) => m.role === "assistant");
+      if (firstAssistant >= 0) return firstAssistant;
+    }
+    return -1;
+  }, [messages, taskPlan]);
+
+  const retiredPlansByMsg = useMemo(() => {
+    const map = new Map<string, TaskPlanState[]>();
+    for (const rp of retiredPlans) {
+      const list = map.get(rp.messageId) ?? [];
+      list.push({
+        version: rp.plan.version,
+        steps: rp.plan.steps,
+        summary: rp.plan.summary,
+      });
+      map.set(rp.messageId, list);
+    }
+    return map;
+  }, [retiredPlans]);
 
   const stablePendingApproval = useMemo(
     () =>
@@ -1690,20 +1788,27 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
             </div>
           ) : (
             <div>
+              {taskPlan && <StickyPlanProgress plan={taskPlan} />}
               {messages.map((msg, msgIdx) => {
                 const isPlanTarget = msgIdx === planTargetIdx;
+                const retiredHere = retiredPlansByMsg.get(msg.id);
                 return (
-                  <MessageBlock
-                    key={msg.id}
-                    message={msg}
-                    taskPlan={isPlanTarget ? taskPlan : null}
-                    planTextOffset={isPlanTarget ? planTextOffsetRef.current : null}
-                    pendingApproval={stablePendingApproval}
-                    approvalMode={approvalMode}
-                    onApprovalModeChange={handleApprovalModeChange}
-                    onApprove={handleToolApprove}
-                    onDeny={handleToolDeny}
-                  />
+                  <React.Fragment key={msg.id}>
+                    {retiredHere && retiredHere.length > 0 && retiredHere.map((rp, ri) => (
+                      <TaskPlanCard key={`retired-v${rp.version}-${ri}`} plan={rp} retired />
+                    ))}
+                    <MessageBlock
+                      message={msg}
+                      taskPlan={isPlanTarget ? taskPlan : null}
+                      planTextOffset={isPlanTarget ? planTextOffsetRef.current : null}
+                      terminalId={taskPlan ? activeAiSessionId : null}
+                      pendingApproval={stablePendingApproval}
+                      approvalMode={approvalMode}
+                      onApprovalModeChange={handleApprovalModeChange}
+                      onApprove={handleToolApprove}
+                      onDeny={handleToolDeny}
+                    />
+                  </React.Fragment>
                 );
               })}
 
@@ -1841,7 +1946,10 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
                   </DropdownMenuItem>
                   <DropdownMenuSeparator className="bg-[var(--border-medium)]" />
                   <DropdownMenuItem
-                    onClick={handleToggleSubAgents}
+                    onSelect={(e) => {
+                      e.preventDefault();
+                      handleToggleSubAgents();
+                    }}
                     className="text-xs cursor-pointer flex items-center gap-2 py-2"
                   >
                     <Users className={cn("w-4 h-4 shrink-0", chatUseSubAgents ? "text-[var(--ansi-green)]" : "text-muted-foreground")} />

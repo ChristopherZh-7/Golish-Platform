@@ -212,17 +212,34 @@ impl EmbeddedPg {
     /// pg-embed cache. Runs between `setup()` and `start_db()`.
     async fn try_install_pgvector(pg: &PgEmbed) {
         let cache_dir = Self::cache_dir();
-        let lib_marker = if cfg!(target_os = "macos") {
-            cache_dir.join("lib").join("vector.dylib")
+        let ext_name = if cfg!(target_os = "macos") {
+            "vector.dylib"
         } else if cfg!(target_os = "windows") {
-            cache_dir.join("lib").join("vector.dll")
+            "vector.dll"
         } else {
-            cache_dir.join("lib").join("vector.so")
+            "vector.so"
         };
 
-        if lib_marker.exists() {
+        // PostgreSQL loads extension libraries from lib/postgresql/ ($libdir),
+        // NOT from lib/. Check the correct directory.
+        let pkglib_dir = cache_dir.join("lib").join("postgresql");
+        let pkglib_marker = pkglib_dir.join(ext_name);
+
+        if pkglib_marker.exists() {
             info!("pgvector already installed in pg-embed cache");
             return;
+        }
+
+        // Fix up: pg.install_extension() may have placed the .dylib in lib/
+        // instead of lib/postgresql/. Relocate it.
+        let misplaced = cache_dir.join("lib").join(ext_name);
+        if misplaced.exists() {
+            info!("pgvector .dylib found in lib/ but not lib/postgresql/, relocating");
+            let _ = std::fs::create_dir_all(&pkglib_dir);
+            if copy_binary(&misplaced, &pkglib_marker).is_ok() {
+                info!("pgvector .dylib relocated to lib/postgresql/ successfully");
+                return;
+            }
         }
 
         let found = find_system_pgvector();
@@ -248,7 +265,7 @@ impl EmbeddedPg {
                 Some(n) => n,
                 None => continue,
             };
-            if let Err(e) = std::fs::copy(src, staging.join(name)) {
+            if let Err(e) = copy_binary(src, &staging.join(name)) {
                 warn!(src = %src.display(), error = %e, "Failed to copy pgvector file");
                 let _ = std::fs::remove_dir_all(&staging);
                 return;
@@ -261,8 +278,29 @@ impl EmbeddedPg {
         );
 
         match pg.install_extension(&staging).await {
-            Ok(()) => info!("pgvector extension installed successfully"),
-            Err(e) => warn!(error = ?e, "Failed to install pgvector extension"),
+            Ok(()) => info!("pgvector extension installed successfully via pg-embed"),
+            Err(e) => warn!(error = ?e, "Failed to install pgvector extension via pg-embed"),
+        }
+
+        // pg-embed's install_extension() puts .dylib in lib/ but PostgreSQL
+        // loads from lib/postgresql/. Ensure it's in the right place.
+        let _ = std::fs::create_dir_all(&pkglib_dir);
+        if !pkglib_marker.exists() {
+            // Try from the misplaced lib/ location
+            let misplaced = cache_dir.join("lib").join(ext_name);
+            let src = if misplaced.exists() {
+                Some(misplaced)
+            } else {
+                // Last resort: from staging
+                let s = staging.join(ext_name);
+                s.exists().then_some(s)
+            };
+            if let Some(src) = src {
+                match copy_binary(&src, &pkglib_marker) {
+                    Ok(()) => info!("pgvector .dylib installed to lib/postgresql/"),
+                    Err(e) => warn!(error = %e, "Failed to install pgvector .dylib to lib/postgresql/"),
+                }
+            }
         }
 
         let _ = std::fs::remove_dir_all(&staging);
@@ -487,6 +525,19 @@ fn find_system_pgvector() -> Vec<PathBuf> {
     }
 
     files
+}
+
+/// Copy a binary file using read+write instead of fs::copy to avoid macOS
+/// quarantine (`com.apple.provenance`) attributes blocking the operation.
+fn copy_binary(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let data = std::fs::read(src)?;
+    std::fs::write(dst, &data)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dst, std::fs::Permissions::from_mode(0o755))?;
+    }
+    Ok(())
 }
 
 fn platform_strings() -> (&'static str, &'static str) {
