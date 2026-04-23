@@ -733,7 +733,7 @@ export const GitPanel = memo(function GitPanel({ open, onOpenChange, onOpenFile 
         <ResizablePanelGroup direction="horizontal" className="flex-1 min-h-0">
           {/* Left panel: Diff preview */}
           <ResizablePanel defaultSize={75} minSize={30}>
-            <div className="h-full flex flex-col min-h-0 bg-background">
+            <div className="h-full flex flex-col min-h-0">
               {diffFile && diffContent ? (
                 <>
                   <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--border-subtle)] shrink-0">

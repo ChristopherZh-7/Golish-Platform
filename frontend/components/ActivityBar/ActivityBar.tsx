@@ -406,8 +406,8 @@ export const ActivityBar = memo(function ActivityBar({
               className="fixed z-[9999] animate-in fade-in-0 slide-in-from-left-2 duration-150"
               style={{ top: pos.top - 8, left: pos.left }}
             >
-              <div className="rounded-xl border border-border/20 bg-[#1a1a2e] shadow-2xl py-1.5 px-1 min-w-[160px]">
-                <div className="px-2 py-1 text-[9px] text-muted-foreground/40 font-medium uppercase tracking-wide">
+              <div className="rounded-xl border border-border/20 bg-popover shadow-2xl py-1.5 px-1 min-w-[160px]">
+                <div className="px-2 py-1 text-[9px] text-muted-foreground/60 font-medium uppercase tracking-wide">
                   {t(group.label)}
                 </div>
                 {group.items.map((item) => {

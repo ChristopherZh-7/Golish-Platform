@@ -683,6 +683,7 @@ impl AgentBridge {
             frontend_ready: AtomicBool::new(false),
             event_buffer: RwLock::new(Vec::new()),
             sub_agent_registry,
+            prompt_registry: golish_sub_agents::PromptRegistry::new(),
             api_request_stats: Arc::new(ApiRequestStats::new()),
             pty_manager: None,
             current_session_id: Default::default(),

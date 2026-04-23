@@ -709,7 +709,7 @@ export function AuditLogPanel() {
       return (
         <div key={gk} className="mb-2">
           <div
-            className="flex items-center gap-2 px-2 py-2 rounded-lg cursor-pointer hover:bg-muted/10 transition-colors sticky top-0 bg-background/95 backdrop-blur-sm z-10 border-b border-border/10"
+            className="flex items-center gap-2 px-2 py-2 rounded-lg cursor-pointer hover:bg-muted/10 transition-colors sticky top-0 bg-card z-10 border-b border-border/10"
             onClick={() => toggleGroup(gk)}
           >
             {isCollapsed ? (
@@ -783,7 +783,7 @@ export function AuditLogPanel() {
   };
 
   return (
-    <div className="h-full flex flex-col bg-background/95">
+    <div className="h-full flex flex-col">
       {/* Header */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border/20">
         <ClipboardList className="w-3.5 h-3.5 text-accent/70" />
@@ -822,7 +822,7 @@ export function AuditLogPanel() {
                 <Filter className="w-3 h-3" />
               </button>
               {showFilter && (
-                <div className="absolute right-0 top-full mt-1 z-50 w-36 rounded-lg border border-border/30 bg-[#1e1e2e] shadow-xl py-1">
+                <div className="absolute right-0 top-full mt-1 z-50 w-36 rounded-lg border border-border/30 bg-popover shadow-xl py-1">
                   {CATEGORY_OPTIONS.map((c) => (
                     <button
                       key={c}

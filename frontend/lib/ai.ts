@@ -333,8 +333,9 @@ export type AiEvent = AiEventBase &
           pending: number;
         };
         steps: Array<{
+          id?: string;
           step: string;
-          status: "pending" | "in_progress" | "completed";
+          status: "pending" | "in_progress" | "completed" | "cancelled" | "failed";
         }>;
         explanation: string | null;
       }

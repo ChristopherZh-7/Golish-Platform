@@ -156,6 +156,9 @@ tracing-opentelemetry = "0.32"
 opentelemetry-langfuse = "0.6"
 similar = "2"
 
+# Template engine for prompt templates
+tera = "1"
+
 # File indexing
 vtcode-indexer = "0.47"
 futures = "0.3"

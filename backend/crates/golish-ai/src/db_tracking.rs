@@ -22,6 +22,8 @@ pub struct DbTracker {
     session_uuid: Uuid,
     ready_gate: DbReadyGate,
     project_path: Option<String>,
+    task_id: Option<Uuid>,
+    subtask_id: Option<Uuid>,
 }
 
 impl DbTracker {
@@ -31,6 +33,8 @@ impl DbTracker {
             session_uuid,
             ready_gate,
             project_path: None,
+            task_id: None,
+            subtask_id: None,
         }
     }
 
@@ -39,11 +43,28 @@ impl DbTracker {
         self
     }
 
+    /// Set the current task scope for subsequent log writes.
+    pub fn set_task_context(&mut self, task_id: Option<Uuid>, subtask_id: Option<Uuid>) {
+        self.task_id = task_id;
+        self.subtask_id = subtask_id;
+    }
+
+    /// Create a scoped clone with task context set.
+    pub fn with_task_context(mut self, task_id: Option<Uuid>, subtask_id: Option<Uuid>) -> Self {
+        self.task_id = task_id;
+        self.subtask_id = subtask_id;
+        self
+    }
+
     pub fn session_uuid(&self) -> Uuid {
         self.session_uuid
     }
 
     pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    pub fn pool_arc(&self) -> &Arc<PgPool> {
         &self.pool
     }
 
@@ -179,6 +200,8 @@ impl DbTracker {
     pub fn record_terminal_output(&self, stream: &str, content: &str) {
         let pool = self.pool.clone();
         let session_uuid = self.session_uuid;
+        let task_id = self.task_id;
+        let subtask_id = self.subtask_id;
         let stream = stream.to_string();
         let content = truncate_for_db(content, 100_000);
         let pp = self.project_path.clone().unwrap_or_default();
@@ -189,10 +212,12 @@ impl DbTracker {
                 return;
             }
             let res = sqlx::query(
-                r#"INSERT INTO terminal_logs (session_id, stream, content, project_path)
-                   VALUES ($1, $2::stream_type, $3, $4)"#,
+                r#"INSERT INTO terminal_logs (session_id, task_id, subtask_id, stream, content, project_path)
+                   VALUES ($1, $2, $3, $4::stream_type, $5, $6)"#,
             )
             .bind(session_uuid)
+            .bind(task_id)
+            .bind(subtask_id)
             .bind(&stream)
             .bind(&content)
             .bind(&pp)
@@ -211,6 +236,8 @@ impl DbTracker {
     pub fn record_search(&self, engine: &str, query: &str, result: Option<&str>) {
         let pool = self.pool.clone();
         let session_uuid = self.session_uuid;
+        let task_id = self.task_id;
+        let subtask_id = self.subtask_id;
         let engine = engine.to_string();
         let query = query.to_string();
         let result = result.map(|r| truncate_for_db(r, 50_000));
@@ -222,10 +249,12 @@ impl DbTracker {
                 return;
             }
             let res = sqlx::query(
-                r#"INSERT INTO search_logs (session_id, initiator, engine, query, result, project_path)
-                   VALUES ($1, 'primary'::agent_type, $2, $3, $4, $5)"#,
+                r#"INSERT INTO search_logs (session_id, task_id, subtask_id, initiator, engine, query, result, project_path)
+                   VALUES ($1, $2, $3, 'primary'::agent_type, $4, $5, $6, $7)"#,
             )
             .bind(session_uuid)
+            .bind(task_id)
+            .bind(subtask_id)
             .bind(&engine)
             .bind(&query)
             .bind(&result)
@@ -249,6 +278,8 @@ impl DbTracker {
     /// Record an audit log entry with explicit source.
     pub fn audit_with_source(&self, action: &str, category: &str, details: &str, source: &str) {
         let pool = self.pool.clone();
+        let session_id = self.session_uuid.to_string();
+        let pp = self.project_path.clone();
         let action = action.to_string();
         let category = category.to_string();
         let details = details.to_string();
@@ -260,13 +291,15 @@ impl DbTracker {
                 return;
             }
             let res = sqlx::query(
-                r#"INSERT INTO audit_log (action, category, details, source)
-                   VALUES ($1, $2, $3, $4)"#,
+                r#"INSERT INTO audit_log (action, category, details, source, session_id, project_path)
+                   VALUES ($1, $2, $3, $4, $5, $6)"#,
             )
             .bind(&action)
             .bind(&category)
             .bind(&details)
             .bind(&source)
+            .bind(&session_id)
+            .bind(&pp)
             .execute(pool.as_ref())
             .await;
 
@@ -446,6 +479,13 @@ impl DbTracker {
         tool_name: Option<&str>,
         metadata: Option<serde_json::Value>,
     ) {
+        self.record_vecstore_op(
+            "store",
+            &format!("{}:{}", mem_type, tool_name.unwrap_or("unknown")),
+            1,
+            &content[..content.len().min(200)],
+        );
+
         let pool = self.pool.clone();
         let session_uuid = self.session_uuid;
         let content = content.to_string();
@@ -643,6 +683,94 @@ impl DbTracker {
         });
     }
 
+    /// Record an LLM conversation message (PentAGI-style msg_log).
+    /// Fire-and-forget — does not block the caller.
+    pub fn record_msg_log(
+        &self,
+        msg_type: &str,
+        agent: &str,
+        message: &str,
+        thinking: Option<&str>,
+    ) {
+        let pool = self.pool.clone();
+        let session_uuid = self.session_uuid;
+        let task_id = self.task_id;
+        let subtask_id = self.subtask_id;
+        let msg_type = msg_type.to_string();
+        let agent = agent.to_string();
+        let message = message.to_string();
+        let thinking = thinking.map(|t| t.to_string());
+        let pp = self.project_path.clone();
+        let mut gate = self.ready_gate.clone();
+
+        tokio::spawn(async move {
+            if !await_db_ready(&mut gate).await {
+                return;
+            }
+            let res = sqlx::query(
+                r#"INSERT INTO msg_logs (session_id, task_id, subtask_id, agent, msg_type, message, thinking, project_path)
+                   VALUES ($1, $2, $3, $4::agent_type, $5::msglog_type, $6, $7, $8)"#,
+            )
+            .bind(session_uuid)
+            .bind(task_id)
+            .bind(subtask_id)
+            .bind(&agent)
+            .bind(&msg_type)
+            .bind(&message)
+            .bind(&thinking)
+            .bind(&pp)
+            .execute(pool.as_ref())
+            .await;
+
+            if let Err(e) = res {
+                tracing::warn!("[db-track] Failed to record msg_log: {e}");
+            }
+        });
+    }
+
+    /// Record a vector store operation (store/search/delete) for audit trail.
+    pub fn record_vecstore_op(
+        &self,
+        action: &str,
+        query: &str,
+        result_count: i32,
+        result_preview: &str,
+    ) {
+        let pool = self.pool.clone();
+        let session_uuid = self.session_uuid;
+        let task_id = self.task_id;
+        let subtask_id = self.subtask_id;
+        let action = action.to_string();
+        let query = query.to_string();
+        let result_preview = result_preview.to_string();
+        let pp = self.project_path.clone();
+        let mut gate = self.ready_gate.clone();
+
+        tokio::spawn(async move {
+            if !await_db_ready(&mut gate).await {
+                return;
+            }
+            let res = sqlx::query(
+                r#"INSERT INTO vector_store_logs (session_id, task_id, subtask_id, action, query, result, result_count, project_path)
+                   VALUES ($1, $2, $3, $4::vecstore_action, $5, $6, $7, $8)"#,
+            )
+            .bind(session_uuid)
+            .bind(task_id)
+            .bind(subtask_id)
+            .bind(&action)
+            .bind(&query)
+            .bind(&result_preview)
+            .bind(result_count)
+            .bind(&pp)
+            .execute(pool.as_ref())
+            .await;
+
+            if let Err(e) = res {
+                tracing::warn!("[db-track] Failed to record vecstore log: {e}");
+            }
+        });
+    }
+
     /// Search memories by text content with optional category filter.
     /// Used by the `search_memories` AI tool. Scoped to current project + global.
     pub async fn search_memories_by_text(
@@ -651,6 +779,13 @@ impl DbTracker {
         category: Option<&str>,
         limit: i64,
     ) -> Result<Vec<MemoryHit>, sqlx::Error> {
+        self.record_vecstore_op(
+            "search",
+            query,
+            0,
+            &format!("category={}", category.unwrap_or("all")),
+        );
+
         let mut gate = self.ready_gate.clone();
         if !gate.is_ready() && !gate.wait().await {
             return Ok(Vec::new());

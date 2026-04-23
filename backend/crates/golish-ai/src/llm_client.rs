@@ -24,7 +24,7 @@ use crate::hitl::ApprovalRecorder;
 use crate::loop_detection::LoopDetector;
 use crate::tool_policy::ToolPolicyManager;
 use golish_context::ContextManager;
-use golish_sub_agents::{create_default_sub_agents, SubAgentRegistry};
+use golish_sub_agents::SubAgentRegistry;
 
 // Re-export types from golish-llm-providers for backward compatibility
 pub use golish_llm_providers::{
@@ -87,9 +87,12 @@ async fn create_shared_components(
     model: &str,
     config: SharedComponentsConfig,
 ) -> SharedComponents {
-    // Create and populate the sub-agent registry
+    // Create prompt registry (embedded templates) and populate sub-agent registry
+    let prompt_registry = golish_sub_agents::PromptRegistry::new();
     let mut sub_agent_registry = SubAgentRegistry::new();
-    sub_agent_registry.register_multiple(create_default_sub_agents());
+    sub_agent_registry.register_multiple(
+        golish_sub_agents::defaults::create_default_sub_agents_from_registry(&prompt_registry).await,
+    );
 
     // Create context manager with config if provided, otherwise use model defaults
     let context_manager = match config.context_config {

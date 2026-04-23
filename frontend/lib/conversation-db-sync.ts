@@ -67,6 +67,7 @@ function buildChangeFingerprint(state: {
   conversationOrder: string[];
   activeConversationId: string | null;
   conversationTerminals: Record<string, string[]>;
+  sessions: Record<string, Session>;
   timelines: Record<string, UnifiedBlock[]>;
   selectedAiModel: { model: string; provider: string } | null;
   approvalMode: string;
@@ -89,7 +90,6 @@ function buildChangeFingerprint(state: {
     if (!conv) continue;
     feed(conv.title);
     feed(String(conv.messages.length));
-    // Hash last few messages' content + streaming state to detect content changes
     const msgs = conv.messages;
     const start = Math.max(0, msgs.length - 5);
     for (let i = start; i < msgs.length; i++) {
@@ -112,7 +112,16 @@ function buildChangeFingerprint(state: {
 
     const terms = state.conversationTerminals[id];
     if (terms) {
-      for (const t of terms) feed(t);
+      for (const t of terms) {
+        feed(t);
+        const sess = state.sessions[t];
+        if (sess) {
+          feed(sess.executionMode ?? "");
+          feed(sess.useAgents ? "a" : "");
+          feed(String(sess.retiredPlans?.length ?? 0));
+          feed(sess.planMessageId ?? "");
+        }
+      }
     }
   }
 
@@ -147,6 +156,10 @@ export interface LoadedTerminalData {
   customName: string | null;
   timelineBlocks: UnifiedBlock[];
   planJson: unknown | null;
+  executionMode: string | null;
+  useAgents: boolean | null;
+  retiredPlansJson: unknown | null;
+  planMessageId: string | null;
 }
 
 function dbMsgToChatMessage(row: ChatMessageRow): ChatMessage {
@@ -197,6 +210,23 @@ function dbBlockToUnifiedBlock(row: TimelineBlockRow): UnifiedBlock {
     timestamp: row.timestamp ?? new Date().toISOString(),
     data,
   };
+
+  // Restore planStepIndex from data where it was embedded during save
+  if (
+    (row.blockType === "pipeline_progress" || row.blockType === "sub_agent_activity") &&
+    data && typeof data === "object"
+  ) {
+    const d = data as Record<string, unknown>;
+    const stored = d.__planStepIndex as number | undefined;
+    if (stored != null) {
+      delete d.__planStepIndex;
+      const block = { ...base, planStepIndex: stored } as Record<string, unknown>;
+      if (row.blockType === "sub_agent_activity" && row.batchId) {
+        block.batchId = row.batchId;
+      }
+      return block as UnifiedBlock;
+    }
+  }
 
   if (row.blockType === "sub_agent_activity" && row.batchId) {
     return { ...base, batchId: row.batchId } as UnifiedBlock;
@@ -266,6 +296,10 @@ export async function loadFromDb(
                 customName: ts.customName ?? null,
                 timelineBlocks: blocks,
                 planJson: ts.planJson ?? null,
+                executionMode: ts.executionMode ?? null,
+                useAgents: ts.useAgents ?? null,
+                retiredPlansJson: ts.retiredPlansJson ?? null,
+                planMessageId: ts.planMessageId ?? null,
               } satisfies LoadedTerminalData;
             }),
           );
@@ -328,6 +362,7 @@ function convFingerprint(
   conv: ChatConversation,
   termIds: string[],
   timelines: Record<string, UnifiedBlock[]>,
+  sessions: Record<string, Session>,
   sortOrder: number,
 ): string {
   let h = 5381;
@@ -359,6 +394,13 @@ function convFingerprint(
       const last = blocks[blocks.length - 1];
       feed(last.id);
       feed(last.type);
+    }
+    const sess = sessions[tid];
+    if (sess) {
+      feed(sess.executionMode ?? "");
+      feed(sess.useAgents ? "a" : "");
+      feed(String(sess.retiredPlans?.length ?? 0));
+      feed(sess.planMessageId ?? "");
     }
   }
   return String(h);
@@ -392,6 +434,15 @@ function buildTimelineDbBlocks(
         streamingText = streamingText.slice(-MAX_BLOCK_OUTPUT);
       }
       data = { ...d, streamingText };
+    }
+
+    // Embed block-level planStepIndex into data for types that store it outside data
+    const anyBlock = block as { planStepIndex?: number };
+    if (
+      (block.type === "pipeline_progress" || block.type === "sub_agent_activity") &&
+      anyBlock.planStepIndex != null
+    ) {
+      data = { ...data, __planStepIndex: anyBlock.planStepIndex };
     }
 
     return {
@@ -437,7 +488,7 @@ async function saveConversationsToDb(
     if (!conv) continue;
 
     const termIds = conversationTerminals[conv.id] ?? [];
-    const fp = convFingerprint(conv, termIds, timelines, i);
+    const fp = convFingerprint(conv, termIds, timelines, sessions, i);
     if (_convSaveFingerprints.get(conv.id) === fp) continue;
 
     console.log("[ConvDbSync] Saving conv:", conv.id, {
@@ -472,6 +523,10 @@ async function saveConversationsToDb(
         scrollback,
         customName: sess.customName ?? null,
         planJson: sess.plan ?? null,
+        executionMode: sess.executionMode ?? null,
+        useAgents: sess.useAgents ?? null,
+        retiredPlansJson: sess.retiredPlans?.length ? sess.retiredPlans : null,
+        planMessageId: sess.planMessageId ?? null,
       });
 
       const timeline = timelines[tid];
@@ -523,7 +578,7 @@ async function saveConversationsToDb(
     if (!conv) continue;
     const termIds = conversationTerminals[convId] ?? [];
     const idx = convIds.indexOf(convId);
-    _convSaveFingerprints.set(convId, convFingerprint(conv, termIds, timelines, idx));
+    _convSaveFingerprints.set(convId, convFingerprint(conv, termIds, timelines, sessions, idx));
   }
 }
 

@@ -386,7 +386,7 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
             Scan {scanSelection.size} selected
           </button>
         )}
-        <span className="text-[10px] text-muted-foreground/30">
+        <span className="text-[10px] text-muted-foreground/50">
           {hostCount} {t("security.hosts", "hosts")} · {endpointCount} {t("security.endpoints", "endpoints")}{capturedCount > 0 && <> · <span className="text-blue-400">{capturedCount} saved</span></>}
         </span>
         <button
@@ -415,7 +415,7 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
       <div ref={siteContainerRef} className="flex-1 flex min-h-0">
         <div ref={treeScrollRef} className="flex-1 overflow-y-auto min-w-0">
           {deduped.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground/20">
+            <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground/40">
               <Globe className="w-8 h-8" />
               <p className="text-[11px]">{t("security.noSiteData", "No site data yet")}</p>
             </div>
@@ -467,7 +467,7 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
                 <button
                   type="button"
                   onClick={() => onSendToRepeater(buildRawRequest(detail))}
-                  className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium text-muted-foreground/40 hover:text-accent hover:bg-accent/10 transition-colors"
+                  className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium text-muted-foreground/60 hover:text-accent hover:bg-accent/10 transition-colors"
                 >
                   <Send className="w-3 h-3" />
                   {t("security.sendToRepeater")}
@@ -484,10 +484,10 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
             </div>
           ) : detailLoading ? (
             <div className="flex-1 flex items-center justify-center">
-              <Loader2 className="w-4 h-4 animate-spin text-muted-foreground/30" />
+              <Loader2 className="w-4 h-4 animate-spin text-muted-foreground/50" />
             </div>
           ) : (
-            <div className="flex-1 flex items-center justify-center text-muted-foreground/20">
+            <div className="flex-1 flex items-center justify-center text-muted-foreground/40">
               <div className="flex flex-col items-center gap-2">
                 <Search className="w-8 h-8" />
                 <p className="text-[12px]">{t("security.selectEndpoint", "Select an endpoint to view details")}</p>
@@ -612,7 +612,7 @@ function SiteTreeNodeView({
             </span>
           ))}
         </span>
-        <span className="text-[9px] text-muted-foreground/30 ml-1 flex-shrink-0">
+        <span className="text-[9px] text-muted-foreground/50 ml-1 flex-shrink-0">
           {node.entries.length > 1 ? `${node.entries.length}` : ""}
         </span>
       </div>

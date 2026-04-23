@@ -7,18 +7,22 @@ expression: json
   "explanation": "Updated plan based on code analysis results",
   "steps": [
     {
+      "id": "step-1",
       "status": "completed",
       "step": "Analyze the codebase"
     },
     {
+      "id": "step-2",
       "status": "in_progress",
       "step": "Implement the feature"
     },
     {
+      "id": "step-3",
       "status": "pending",
       "step": "Write tests"
     },
     {
+      "id": "step-4",
       "status": "pending",
       "step": "Update documentation"
     }

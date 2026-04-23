@@ -305,7 +305,7 @@ export function FindingsPanel() {
   }, [load]);
 
   return (
-    <div className="flex flex-col h-full bg-background">
+    <div className="flex flex-col h-full">
       {/* Header */}
       <div className="flex-shrink-0 px-4 py-3 border-b border-border/30">
         <div className="flex items-center justify-between mb-3">
@@ -336,7 +336,7 @@ export function FindingsPanel() {
                 Export
               </button>
               {showExportMenu && (
-                <div className="absolute right-0 top-full mt-1 bg-[#1e1e2e] border border-border/20 rounded-lg shadow-xl z-50 min-w-[100px] overflow-hidden">
+                <div className="absolute right-0 top-full mt-1 bg-popover border border-border/20 rounded-lg shadow-xl z-50 min-w-[100px] overflow-hidden">
                   <button onClick={() => { exportFindings("json"); setShowExportMenu(false); }}
                     className="w-full px-3 py-1.5 text-[10px] text-left text-foreground/80 hover:bg-accent/10 transition-colors">
                     JSON
@@ -368,7 +368,7 @@ export function FindingsPanel() {
                 onClick={() => setSeverityFilter(severityFilter === sev ? "all" : sev)}
                 className={cn(
                   "flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-medium border transition-colors",
-                  severityFilter === sev ? cfg.bg : "border-transparent text-muted-foreground/40 hover:text-muted-foreground/60"
+                  severityFilter === sev ? cfg.bg : "border-transparent text-muted-foreground/60 hover:text-muted-foreground/80"
                 )}
               >
                 <span className={cfg.color}>{stats[sev]}</span>
@@ -450,10 +450,10 @@ export function FindingsPanel() {
       <div className="flex-1 overflow-y-auto">
         {loading ? (
           <div className="flex items-center justify-center h-32">
-            <Loader2 className="w-5 h-5 animate-spin text-muted-foreground/30" />
+            <Loader2 className="w-5 h-5 animate-spin text-muted-foreground/50" />
           </div>
         ) : filtered.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-32 gap-2 text-muted-foreground/30">
+          <div className="flex flex-col items-center justify-center h-32 gap-2 text-muted-foreground/50">
             <Bug className="w-8 h-8" />
             <p className="text-[11px]">{search || severityFilter !== "all" || statusFilter !== "all" ? "No matching findings" : "No findings yet"}</p>
           </div>
@@ -469,13 +469,13 @@ export function FindingsPanel() {
                     onClick={() => setExpanded(isExpanded ? null : finding.id)}
                     className="w-full flex items-center gap-2 px-4 py-2.5 text-left hover:bg-muted/10 transition-colors"
                   >
-                    {isExpanded ? <ChevronDown className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" /> : <ChevronRight className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />}
+                    {isExpanded ? <ChevronDown className="w-3 h-3 text-muted-foreground/60 flex-shrink-0" /> : <ChevronRight className="w-3 h-3 text-muted-foreground/60 flex-shrink-0" />}
                     <span className={cn("flex-shrink-0", cfg.color)}>
                       <SevIcon className="w-3.5 h-3.5" />
                     </span>
                     <span className="flex-1 text-[11px] font-medium truncate">{finding.title}</span>
                     {finding.tool && (
-                      <span className="text-[9px] text-muted-foreground/30 bg-muted/15 px-1.5 py-0.5 rounded flex-shrink-0">
+                      <span className="text-[9px] text-muted-foreground/50 bg-muted/15 px-1.5 py-0.5 rounded flex-shrink-0">
                         {finding.tool}
                       </span>
                     )}
@@ -484,7 +484,7 @@ export function FindingsPanel() {
                       finding.status === "open" ? "text-yellow-400 bg-yellow-500/10" :
                       finding.status === "confirmed" ? "text-red-400 bg-red-500/10" :
                       finding.status === "resolved" ? "text-emerald-400 bg-emerald-500/10" :
-                      "text-muted-foreground/40 bg-muted/10"
+                      "text-muted-foreground/60 bg-muted/10"
                     )}>
                       {STATUS_LABELS[finding.status]}
                     </span>
@@ -493,7 +493,7 @@ export function FindingsPanel() {
                     <div className="px-4 pb-3 pl-10 space-y-2 animate-in fade-in slide-in-from-top-1 duration-200">
                       {finding.url && (
                         <div className="flex items-center gap-1.5">
-                          <ExternalLink className="w-3 h-3 text-muted-foreground/30" />
+                          <ExternalLink className="w-3 h-3 text-muted-foreground/50" />
                           <span className="text-[10px] font-mono text-accent/70 truncate">{finding.url}</span>
                         </div>
                       )}
@@ -501,12 +501,12 @@ export function FindingsPanel() {
                         <p className="text-[10px] text-muted-foreground/60 leading-relaxed">{finding.description}</p>
                       )}
                       {finding.template && (
-                        <div className="text-[9px] text-muted-foreground/40">
+                        <div className="text-[9px] text-muted-foreground/60">
                           Template: <span className="font-mono">{finding.template}</span>
                         </div>
                       )}
                       {finding.references.length > 0 && (
-                        <div className="text-[9px] text-muted-foreground/40">
+                        <div className="text-[9px] text-muted-foreground/60">
                           Refs: {finding.references.map((r, i) => (
                             <a key={i} href={r} target="_blank" rel="noopener" className="text-primary/70 hover:text-primary underline decoration-primary/30 mr-1.5">{r}</a>
                           ))}
@@ -515,8 +515,8 @@ export function FindingsPanel() {
                       {/* Evidence */}
                       <div className="space-y-1.5">
                         <div className="flex items-center gap-1.5">
-                          <Paperclip className="w-3 h-3 text-muted-foreground/30" />
-                          <span className="text-[9px] text-muted-foreground/40">
+                          <Paperclip className="w-3 h-3 text-muted-foreground/50" />
+                          <span className="text-[9px] text-muted-foreground/60">
                             Evidence ({finding.evidence?.length || 0})
                           </span>
                           <button
@@ -580,7 +580,7 @@ export function FindingsPanel() {
                               "text-[9px] px-2 py-0.5 rounded transition-colors",
                               finding.status === s
                                 ? "bg-accent/15 text-accent"
-                                : "text-muted-foreground/30 hover:text-muted-foreground/60 hover:bg-muted/10"
+                                : "text-muted-foreground/50 hover:text-muted-foreground/70 hover:bg-muted/10"
                             )}
                           >
                             {s === "resolved" && <Check className="w-2.5 h-2.5 inline mr-0.5" />}

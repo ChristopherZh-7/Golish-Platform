@@ -31,6 +31,11 @@ use golish_core::utils::truncate_str;
 use golish_core::{ApiRequestStats, Tool as GolishTool};
 use golish_llm_providers::ModelCapabilities;
 
+/// Barrier tool name used by all sub-agents to submit structured results.
+/// When a sub-agent calls this tool, the executor terminates the loop and
+/// returns the structured result to the parent agent (PentAGI barrier pattern).
+pub const BARRIER_TOOL_NAME: &str = "submit_result";
+
 /// Trait for providing tool definitions to the sub-agent executor.
 /// This allows the executor to be decoupled from the tool definition source.
 #[async_trait::async_trait]
@@ -82,6 +87,12 @@ pub struct SubAgentExecutorContext<'a> {
     pub max_tokens_override: Option<u32>,
     /// Per-agent top_p override from settings (None = not sent to provider).
     pub top_p_override: Option<f32>,
+    /// Database pool for persisting sub-agent conversation chains (PentAGI-style).
+    /// When set, the executor saves/restores chat history across invocations.
+    pub db_pool: Option<&'a Arc<sqlx::PgPool>>,
+    /// Sub-agent registry for nested delegation (PentAGI hierarchical pattern).
+    /// When set, agents with `delegatable_agents` can invoke other sub-agents.
+    pub sub_agent_registry: Option<&'a Arc<RwLock<crate::definition::SubAgentRegistry>>>,
 }
 
 /// Execute a sub-agent with the given task and context.
@@ -403,6 +414,17 @@ where
         }
     }
 
+    // Inject barrier tool instruction into the system prompt
+    effective_system_prompt.push_str(&format!(
+        "\n\n## COMPLETION REQUIREMENT\n\n\
+         When your task is complete, you MUST call the `{}` tool to submit your result. \
+         Do NOT end with a plain text message — always use `{}` with:\n\
+         - `result`: your full findings, outputs, or deliverables\n\
+         - `success`: true if the task was completed, false if it failed\n\
+         - `summary`: a one-line summary of what was accomplished",
+        BARRIER_TOOL_NAME, BARRIER_TOOL_NAME
+    ));
+
     // Build the sub-agent context with incremented depth
     let sub_context = SubAgentContext {
         original_request: parent_context.original_request.clone(),
@@ -439,9 +461,120 @@ where
         parent_request_id: parent_request_id.to_string(),
     });
 
-    // Build filtered tools based on agent's allowed tools
+    // Build filtered tools based on agent's allowed tools, plus the barrier tool.
     let all_tools = tool_provider.get_all_tool_definitions();
-    let tools = tool_provider.filter_tools_by_allowed(all_tools, &agent_def.allowed_tools);
+    let mut tools = tool_provider.filter_tools_by_allowed(all_tools, &agent_def.allowed_tools);
+
+    // Inject the barrier tool (`submit_result`) — forces structured output from specialists.
+    // Matches PentAGI's hack_result/code_result/search_result barrier pattern.
+    tools.push(rig::completion::ToolDefinition {
+        name: BARRIER_TOOL_NAME.to_string(),
+        description: "Submit your final structured result and complete this task. You MUST call this \
+            tool when your work is done — do NOT end with a plain text message. Include your key \
+            findings, outputs, and whether the task succeeded."
+            .to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "result": {
+                    "type": "string",
+                    "description": "Your complete result: findings, outputs, code, data, or error details"
+                },
+                "success": {
+                    "type": "boolean",
+                    "description": "Whether the task was completed successfully"
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "A one-line summary of what was accomplished"
+                }
+            },
+            "required": ["result", "success", "summary"],
+            "additionalProperties": false
+        }),
+    });
+
+    // Inject nested delegation tools if this agent can delegate to other sub-agents.
+    // Matches PentAGI's hierarchical pattern (e.g., pentester delegates to coder/searcher).
+    if !agent_def.delegatable_agents.is_empty() && sub_context.depth < crate::MAX_AGENT_DEPTH - 1 {
+        if let Some(registry) = ctx.sub_agent_registry {
+            let reg = registry.read().await;
+            for delegate_id in &agent_def.delegatable_agents {
+                if let Some(delegate_def) = reg.get(delegate_id) {
+                    tools.push(rig::completion::ToolDefinition {
+                        name: format!("sub_agent_{}", delegate_id),
+                        description: format!(
+                            "[{}] {}",
+                            delegate_def.name, delegate_def.description
+                        ),
+                        parameters: serde_json::json!({
+                            "type": "object",
+                            "properties": {
+                                "task": {
+                                    "type": "string",
+                                    "description": "The specific task for this sub-agent"
+                                },
+                                "context": {
+                                    "type": "string",
+                                    "description": "Additional context to help the sub-agent"
+                                }
+                            },
+                            "required": ["task"],
+                            "additionalProperties": false
+                        }),
+                    });
+                    tracing::debug!(
+                        "[sub-agent:{}] Added nested delegation tool: sub_agent_{}",
+                        agent_id,
+                        delegate_id
+                    );
+                }
+            }
+        }
+    }
+
+    // Restore conversation chain from DB if available (PentAGI-style persistent chains).
+    // This allows sub-agents to retain context across multiple invocations within a task.
+    let chain_id: Option<uuid::Uuid> = if let Some(pool) = ctx.db_pool {
+        let session_uuid = ctx
+            .session_id
+            .and_then(|s| uuid::Uuid::parse_str(s).ok());
+        let task_uuid = parent_context
+            .task_id
+            .as_deref()
+            .and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+        if let Some(sid) = session_uuid {
+            match restore_or_create_chain(pool, sid, task_uuid, agent_id).await {
+                Ok((cid, restored_history)) => {
+                    if !restored_history.is_empty() {
+                        tracing::info!(
+                            "[sub-agent:{}] Restored {} messages from persistent chain {}",
+                            agent_id,
+                            restored_history.len(),
+                            cid
+                        );
+                    }
+                    // We don't pre-populate history from old chain — the new task
+                    // prompt is fresh each invocation. The chain is stored for future
+                    // cross-invocation context injection via the briefing system.
+                    Some(cid)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[sub-agent:{}] Failed to restore chain: {}",
+                        agent_id,
+                        e
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // Build chat history for sub-agent
     let mut chat_history: Vec<Message> = vec![Message::User {
@@ -926,11 +1059,139 @@ where
             }),
         });
 
-        // Execute tool calls
+        // Execute tool calls — check for barrier tool first.
         let mut tool_results: Vec<UserContent> = vec![];
+        let mut barrier_hit = false;
 
         for tool_call in tool_calls_to_execute {
             let tool_name = &tool_call.function.name;
+
+            // Barrier tool: capture structured result and terminate the loop.
+            if tool_name == BARRIER_TOOL_NAME {
+                let args = &tool_call.function.arguments;
+                let result_text = args
+                    .get("result")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let summary = args
+                    .get("summary")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                tracing::info!(
+                    "[sub-agent] Barrier tool '{}' called: summary='{}', result_len={}",
+                    BARRIER_TOOL_NAME,
+                    summary,
+                    result_text.len()
+                );
+
+                // Use the barrier result as the accumulated response
+                accumulated_response = if result_text.is_empty() {
+                    summary.to_string()
+                } else {
+                    result_text
+                };
+
+                let _ = ctx.event_tx.send(AiEvent::SubAgentToolResult {
+                    agent_id: agent_id.to_string(),
+                    tool_name: BARRIER_TOOL_NAME.to_string(),
+                    success: true,
+                    result: serde_json::json!({ "status": "result submitted" }),
+                    request_id: Uuid::new_v4().to_string(),
+                    parent_request_id: parent_request_id.to_string(),
+                });
+
+                barrier_hit = true;
+                break;
+            }
+
+            // Nested delegation: dispatch sub_agent_* calls to child sub-agents.
+            if tool_name.starts_with("sub_agent_") {
+                let delegate_id = &tool_name["sub_agent_".len()..];
+                let delegate_task = tool_call
+                    .function
+                    .arguments
+                    .get("task")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                tracing::info!(
+                    "[sub-agent:{}] Nested delegation to '{}': {}",
+                    agent_id,
+                    delegate_id,
+                    truncate_str(&delegate_task, 100)
+                );
+
+                let delegate_result = if let Some(registry) = ctx.sub_agent_registry {
+                    let reg = registry.read().await;
+                    if let Some(delegate_def) = reg.get(delegate_id) {
+                        let delegate_def = delegate_def.clone();
+                        drop(reg);
+                        let nested_ctx = SubAgentExecutorContext {
+                            event_tx: ctx.event_tx,
+                            tool_registry: ctx.tool_registry,
+                            workspace: ctx.workspace,
+                            provider_name: ctx.provider_name,
+                            model_name: ctx.model_name,
+                            session_id: ctx.session_id,
+                            transcript_base_dir: ctx.transcript_base_dir,
+                            api_request_stats: ctx.api_request_stats,
+                            briefing: None,
+                            temperature_override: delegate_def.temperature,
+                            max_tokens_override: delegate_def.max_tokens,
+                            top_p_override: delegate_def.top_p,
+                            db_pool: ctx.db_pool,
+                            sub_agent_registry: ctx.sub_agent_registry,
+                        };
+                        match Box::pin(execute_sub_agent(
+                            &delegate_def,
+                            &tool_call.function.arguments,
+                            &sub_context,
+                            model,
+                            nested_ctx,
+                            tool_provider,
+                            parent_request_id,
+                        ))
+                        .await
+                        {
+                            Ok(result) => serde_json::json!({
+                                "success": result.success,
+                                "response": result.response,
+                            }),
+                            Err(e) => serde_json::json!({
+                                "success": false,
+                                "error": e.to_string(),
+                            }),
+                        }
+                    } else {
+                        serde_json::json!({
+                            "error": format!("Unknown delegate agent: {}", delegate_id),
+                        })
+                    }
+                } else {
+                    serde_json::json!({
+                        "error": "Sub-agent registry not available for nested delegation",
+                    })
+                };
+
+                let tool_id = tool_call.id.clone();
+                let tool_call_id = tool_call
+                    .call_id
+                    .clone()
+                    .unwrap_or_else(|| tool_call.id.clone());
+                let result_text = serde_json::to_string(&delegate_result).unwrap_or_default();
+                tool_results.push(UserContent::ToolResult(ToolResult {
+                    id: tool_id,
+                    call_id: Some(tool_call_id),
+                    content: OneOrMany::one(ToolResultContent::Text(Text { text: result_text })),
+                }));
+
+                last_activity.store(epoch_secs(), Ordering::Relaxed);
+                continue;
+            }
+
             let tool_args = if tool_name == "run_pty_cmd" {
                 tool_provider.normalize_run_pty_cmd_args(tool_call.function.arguments.clone())
             } else {
@@ -1099,6 +1360,11 @@ where
             }));
         }
 
+        // If the barrier tool was hit, break out of the loop immediately
+        if barrier_hit {
+            break;
+        }
+
         chat_history.push(Message::User {
             content: OneOrMany::many(tool_results).unwrap_or_else(|_| {
                 OneOrMany::one(UserContent::Text(Text {
@@ -1109,6 +1375,34 @@ where
     }
 
     let duration_ms = start_time.elapsed().as_millis() as u64;
+
+    // Persist conversation chain to DB for cross-invocation context retention
+    if let (Some(pool), Some(cid)) = (ctx.db_pool, chain_id) {
+        let chain_json = serialize_chat_history(&chat_history);
+        if let Err(e) = sqlx::query(
+            "UPDATE message_chains SET chain = $1, duration_ms = duration_ms + $2, updated_at = NOW() WHERE id = $3",
+        )
+        .bind(&chain_json)
+        .bind(duration_ms as i32)
+        .bind(cid)
+        .execute(pool.as_ref())
+        .await
+        {
+            tracing::warn!(
+                "[sub-agent:{}] Failed to persist chain {}: {}",
+                agent_id,
+                cid,
+                e
+            );
+        } else {
+            tracing::info!(
+                "[sub-agent:{}] Persisted {} messages to chain {}",
+                agent_id,
+                chat_history.len(),
+                cid
+            );
+        }
+    }
 
     // Process udiff output if this is the coder sub-agent
     let mut final_response = accumulated_response.clone();
@@ -1417,6 +1711,134 @@ pub fn build_assistant_content(
     }
 
     content
+}
+
+/// Map agent_id to the DB AgentType enum for message_chains storage.
+fn agent_id_to_db_type(agent_id: &str) -> &'static str {
+    match agent_id {
+        "pentester" => "pentester",
+        "coder" => "coder",
+        "explorer" | "searcher" | "researcher" => "searcher",
+        "memorist" => "memorist",
+        "reporter" => "reporter",
+        "adviser" | "analyzer" => "adviser",
+        _ => "primary",
+    }
+}
+
+/// Restore an existing conversation chain from DB, or create a new one.
+/// Returns (chain_id, restored_messages) where restored_messages is empty for new chains.
+async fn restore_or_create_chain(
+    pool: &sqlx::PgPool,
+    session_id: uuid::Uuid,
+    task_id: Option<uuid::Uuid>,
+    agent_id: &str,
+) -> anyhow::Result<(uuid::Uuid, Vec<Message>)> {
+    let agent_type = agent_id_to_db_type(agent_id);
+
+    // Look for existing chain for this agent + session + task
+    let existing: Option<(uuid::Uuid, Option<serde_json::Value>)> = sqlx::query_as(
+        r#"SELECT id, chain FROM message_chains
+           WHERE session_id = $1 AND agent::text = $2
+             AND ($3::uuid IS NULL AND task_id IS NULL OR task_id = $3)
+           ORDER BY updated_at DESC LIMIT 1"#,
+    )
+    .bind(session_id)
+    .bind(agent_type)
+    .bind(task_id)
+    .fetch_optional(pool)
+    .await?;
+
+    if let Some((chain_id, chain_data)) = existing {
+        let messages = chain_data
+            .and_then(|v| deserialize_chat_history(&v))
+            .unwrap_or_default();
+        return Ok((chain_id, messages));
+    }
+
+    // Create new chain
+    let (chain_id,): (uuid::Uuid,) = sqlx::query_as(
+        r#"INSERT INTO message_chains (session_id, task_id, agent)
+           VALUES ($1, $2, $3::agent_type)
+           RETURNING id"#,
+    )
+    .bind(session_id)
+    .bind(task_id)
+    .bind(agent_type)
+    .fetch_one(pool)
+    .await?;
+
+    Ok((chain_id, Vec::new()))
+}
+
+/// Serialize rig Message history to JSON for DB storage.
+fn serialize_chat_history(messages: &[Message]) -> serde_json::Value {
+    let entries: Vec<serde_json::Value> = messages
+        .iter()
+        .filter_map(|msg| {
+            match msg {
+                Message::User { content } => {
+                    let texts: Vec<String> = content
+                        .iter()
+                        .filter_map(|c| match c {
+                            UserContent::Text(t) => Some(t.text.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    if texts.is_empty() {
+                        None
+                    } else {
+                        Some(serde_json::json!({
+                            "role": "user",
+                            "content": texts.join("\n"),
+                        }))
+                    }
+                }
+                Message::Assistant { content, .. } => {
+                    let texts: Vec<String> = content
+                        .iter()
+                        .filter_map(|c| match c {
+                            AssistantContent::Text(t) => Some(t.text.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    if texts.is_empty() {
+                        None
+                    } else {
+                        Some(serde_json::json!({
+                            "role": "assistant",
+                            "content": texts.join("\n"),
+                        }))
+                    }
+                }
+            }
+        })
+        .collect();
+    serde_json::json!(entries)
+}
+
+/// Deserialize stored JSON back into rig Messages (simplified text-only restoration).
+fn deserialize_chat_history(value: &serde_json::Value) -> Option<Vec<Message>> {
+    let arr = value.as_array()?;
+    let mut messages = Vec::new();
+    for entry in arr {
+        let role = entry.get("role")?.as_str()?;
+        let content = entry.get("content")?.as_str()?.to_string();
+        if content.is_empty() {
+            continue;
+        }
+        match role {
+            "user" => messages.push(Message::User {
+                content: OneOrMany::one(UserContent::Text(Text { text: content })),
+            }),
+            "assistant" => messages.push(Message::Assistant {
+                id: None,
+                content: OneOrMany::one(AssistantContent::Text(Text { text: content })),
+            }),
+            _ => {}
+        }
+    }
+    Some(messages)
 }
 
 #[cfg(test)]

@@ -234,6 +234,8 @@ where
                 temperature_override: agent_def.temperature,
                 max_tokens_override: agent_def.max_tokens,
                 top_p_override: agent_def.top_p,
+                db_pool: ctx.db_tracker.map(|t| t.pool_arc()),
+                sub_agent_registry: Some(ctx.sub_agent_registry),
             };
             execute_sub_agent_with_client(
                 &agent_def,
@@ -265,6 +267,8 @@ where
                 temperature_override: agent_def.temperature,
                 max_tokens_override: agent_def.max_tokens,
                 top_p_override: agent_def.top_p,
+                db_pool: ctx.db_tracker.map(|t| t.pool_arc()),
+                sub_agent_registry: Some(ctx.sub_agent_registry),
             };
             execute_sub_agent(
                 &agent_def,
@@ -297,6 +301,8 @@ where
             temperature_override: agent_def.temperature,
             max_tokens_override: agent_def.max_tokens,
             top_p_override: agent_def.top_p,
+            db_pool: ctx.db_tracker.map(|t| t.pool_arc()),
+            sub_agent_registry: Some(ctx.sub_agent_registry),
         };
         execute_sub_agent(
             &agent_def,

@@ -139,17 +139,18 @@ export const InlineTaskPlan = memo(function InlineTaskPlan({
   }, [isPlanComplete]);
 
   const toolsByStep = useMemo(() => {
-    if (!timeline) return new Map<number, AiToolExecution[]>();
-    const map = new Map<number, AiToolExecution[]>();
+    if (!timeline) return new Map<string, AiToolExecution[]>();
+    const map = new Map<string, AiToolExecution[]>();
     for (const block of timeline) {
       if (block.type !== "ai_tool_execution") continue;
       const exec = block.data as AiToolExecution;
-      const idx = exec.planStepIndex;
-      if (idx == null) continue;
-      let list = map.get(idx);
+      // Prefer step ID, fall back to index-based key
+      const key = exec.planStepId ?? (exec.planStepIndex != null ? `idx-${exec.planStepIndex}` : null);
+      if (key == null) continue;
+      let list = map.get(key);
       if (!list) {
         list = [];
-        map.set(idx, list);
+        map.set(key, list);
       }
       list.push(exec);
     }
@@ -215,7 +216,8 @@ export const InlineTaskPlan = memo(function InlineTaskPlan({
                 const isInProgress = step.status === "in_progress";
                 const isPending = step.status === "pending";
                 const isCancelled = step.status === "cancelled" || step.status === "failed";
-                const stepTools = toolsByStep.get(index) ?? [];
+                const stepKey = step.id ?? `idx-${index}`;
+                const stepTools = toolsByStep.get(stepKey) ?? [];
                 const hasTools = stepTools.length > 0;
                 const showTools = (isCompleted || isInProgress) && hasTools;
 
@@ -272,7 +274,7 @@ const StepRow = memo(function StepRow({
         "flex items-start gap-2 px-2 py-1 rounded text-xs transition-colors",
         isInProgress && "bg-accent/30",
         isCompleted && "opacity-70",
-        isCancelled && "opacity-40",
+        isCancelled && "opacity-60",
         hasTools && "cursor-pointer hover:bg-accent/20"
       )}
       onClick={hasTools ? () => setOpen((prev) => !prev) : undefined}
@@ -295,7 +297,7 @@ const StepRow = memo(function StepRow({
           "flex-1 leading-relaxed",
           isCompleted && "line-through text-muted-foreground",
           isInProgress && "font-medium text-foreground",
-          isCancelled && "line-through text-red-400/60",
+          isCancelled && "line-through text-red-400/70",
           isPending && "text-muted-foreground"
         )}
       >

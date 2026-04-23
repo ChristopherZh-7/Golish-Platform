@@ -484,6 +484,7 @@ interface GolishState
     requestId: string,
     chunk: string
   ) => void;
+  finalizeRunningToolExecutions: (sessionId: string) => void;
 
   // AI config actions
   setAiConfig: (config: Partial<AiConfig>) => void;
@@ -492,7 +493,7 @@ interface GolishState
   getSessionAiConfig: (sessionId: string) => AiConfig | undefined;
 
   // Plan actions
-  setPlan: (sessionId: string, plan: TaskPlan, currentMessageId?: string | null) => void;
+  setPlan: (sessionId: string, plan: TaskPlan, currentMessageId?: string | null, newMessageId?: string | null) => void;
   retirePlan: (sessionId: string, messageId: string) => void;
   /** Bridge plan_updated events into a pipeline_progress timeline block */
   syncPlanToPipeline: (sessionId: string, plan: TaskPlan) => void;
@@ -1989,10 +1990,14 @@ export const useStore = create<GolishState>()(
           if (exists) return;
 
           let planStepIndex: number | undefined;
+          let planStepId: string | undefined;
           const plan = state.sessions[sessionId]?.plan;
           if (plan) {
             const idx = plan.steps.findIndex((s) => s.status === "in_progress");
-            if (idx >= 0) planStepIndex = idx;
+            if (idx >= 0) {
+              planStepIndex = idx;
+              planStepId = plan.steps[idx].id;
+            }
           }
           state.timelines[sessionId].push({
             id: `tool-exec-${execution.requestId}`,
@@ -2008,6 +2013,7 @@ export const useStore = create<GolishState>()(
               riskLevel: execution.riskLevel,
               source: execution.source,
               planStepIndex,
+              planStepId,
             },
           });
         }),
@@ -2040,6 +2046,23 @@ export const useStore = create<GolishState>()(
           }
         }),
 
+      finalizeRunningToolExecutions: (sessionId) =>
+        set((state) => {
+          const timeline = state.timelines[sessionId];
+          if (!timeline) return;
+          for (const block of timeline) {
+            if (
+              block.type === "ai_tool_execution" &&
+              block.data.status === "running"
+            ) {
+              block.data.status = "completed";
+              block.data.completedAt = new Date().toISOString();
+              const start = new Date(block.data.startedAt).getTime();
+              block.data.durationMs = Date.now() - start;
+            }
+          }
+        }),
+
       // AI config actions
       setAiConfig: (config) =>
         set((state) => {
@@ -2065,7 +2088,7 @@ export const useStore = create<GolishState>()(
       },
 
       // Plan actions
-      setPlan: (sessionId, plan, currentMessageId) =>
+      setPlan: (sessionId, plan, currentMessageId, newMessageId) =>
         set((state) => {
           if (!state.sessions[sessionId]) {
             state.sessions[sessionId] = {
@@ -2093,6 +2116,29 @@ export const useStore = create<GolishState>()(
             }
           }
           state.sessions[sessionId].plan = plan;
+          if (newMessageId !== undefined) {
+            state.sessions[sessionId].planMessageId = newMessageId;
+          }
+
+          // Backfill planStepIndex/planStepId for tool blocks created before the plan arrived.
+          // This handles the race where tool_request events are processed before plan_updated.
+          const timeline = state.timelines[sessionId];
+          if (timeline) {
+            const firstInProgress = plan.steps.findIndex((s) => s.status === "in_progress");
+            if (firstInProgress >= 0) {
+              const stepId = plan.steps[firstInProgress].id;
+              for (const block of timeline) {
+                if (
+                  block.type === "ai_tool_execution" &&
+                  block.data.planStepIndex == null &&
+                  block.data.status === "running"
+                ) {
+                  block.data.planStepIndex = firstInProgress;
+                  block.data.planStepId = stepId;
+                }
+              }
+            }
+          }
         }),
 
       retirePlan: () => {},
@@ -2114,7 +2160,7 @@ export const useStore = create<GolishState>()(
           const now = new Date().toISOString();
 
           const steps: PipelineStepExecution[] = plan.steps.map((s, i) => ({
-            stepId: `plan-step-${i}`,
+            stepId: s.id ?? `plan-step-${i}`,
             name: s.step,
             command: "",
             status: STATUS_MAP[s.status] ?? "pending",

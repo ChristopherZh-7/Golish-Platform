@@ -15,7 +15,7 @@ export const handlePlanUpdated: EventHandler<{
   type: "plan_updated";
   version: number;
   summary: { total: number; completed: number; in_progress: number; pending: number };
-  steps: Array<{ step: string; status: "pending" | "in_progress" | "completed" | "cancelled" | "failed" }>;
+  steps: Array<{ id?: string; step: string; status: "pending" | "in_progress" | "completed" | "cancelled" | "failed" }>;
   explanation: string | null;
   session_id: string;
   seq?: number;
@@ -23,7 +23,11 @@ export const handlePlanUpdated: EventHandler<{
   const plan = {
     version: event.version,
     summary: event.summary,
-    steps: event.steps,
+    steps: event.steps.map((s) => ({
+      id: s.id,
+      step: s.step,
+      status: s.status,
+    })),
     explanation: event.explanation,
     updated_at: new Date().toISOString(),
   };

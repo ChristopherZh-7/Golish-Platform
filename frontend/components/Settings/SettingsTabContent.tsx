@@ -307,7 +307,7 @@ export function SettingsTabContent() {
   }
 
   return (
-    <div className="h-full w-full flex flex-col overflow-hidden bg-background">
+    <div className="h-full w-full flex flex-col overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border-medium)] flex-shrink-0">
         <h2 className="text-lg font-semibold text-foreground">{t("settings.title")}</h2>

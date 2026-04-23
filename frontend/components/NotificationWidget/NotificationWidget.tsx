@@ -323,7 +323,7 @@ export const NotificationWidget = React.memo(function NotificationWidget() {
             onMouseDown={(e) => e.stopPropagation()}
             className={cn(
               "fixed w-80 z-[9999]",
-              "bg-background/95 backdrop-blur-xl",
+              "bg-card backdrop-blur-xl",
               "border border-border/60 rounded-lg shadow-2xl",
               "animate-in fade-in-0 slide-in-from-top-2 zoom-in-95 duration-200",
               "origin-top-right"

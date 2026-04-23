@@ -57,6 +57,70 @@ impl BridgeAgentExecutor {
         }
     }
 
+    /// Dispatch a subtask to a specific sub-agent (PentAGI-style specialist routing).
+    async fn execute_via_sub_agent(
+        &self,
+        agent_def: &golish_sub_agents::SubAgentDefinition,
+        subtask_title: &str,
+        subtask_description: &str,
+        execution_context: &super::ExecutionContext,
+    ) -> Result<String> {
+        use golish_sub_agents::{SubAgentContext, SubAgentExecutorContext};
+
+        let event_tx = self.bridge.get_or_create_event_tx();
+        let parent_request_id = uuid::Uuid::new_v4().to_string();
+
+        let context = SubAgentContext {
+            original_request: subtask_description.to_string(),
+            conversation_summary: Some(execution_context.summary()),
+            depth: 0,
+            ..Default::default()
+        };
+
+        let args = serde_json::json!({
+            "task": format!("{}\n\n{}", subtask_title, subtask_description),
+        });
+
+        let tool_provider = crate::tool_provider_impl::DefaultToolProvider::new();
+        let db_pool_arc = self.bridge.db_pool();
+
+        let sub_ctx = SubAgentExecutorContext {
+            event_tx: &event_tx,
+            tool_registry: self.bridge.tool_registry(),
+            workspace: self.bridge.workspace(),
+            provider_name: self.bridge.provider_name(),
+            model_name: self.bridge.model_name(),
+            session_id: None,
+            transcript_base_dir: None,
+            api_request_stats: Some(self.bridge.api_request_stats()),
+            briefing: None,
+            temperature_override: agent_def.temperature,
+            max_tokens_override: agent_def.max_tokens,
+            top_p_override: agent_def.top_p,
+            db_pool: db_pool_arc.as_ref(),
+            sub_agent_registry: Some(self.bridge.sub_agent_registry()),
+        };
+
+        let client = self.bridge.client().read().await;
+        let result =
+            crate::agentic_loop::sub_agent_dispatch::execute_sub_agent_with_client(
+                agent_def,
+                &args,
+                &context,
+                &*client,
+                sub_ctx,
+                &tool_provider,
+                &parent_request_id,
+            )
+            .await
+            .context(format!(
+                "Sub-agent '{}' failed for subtask '{}'",
+                agent_def.id, subtask_title
+            ))?;
+
+        Ok(result.response)
+    }
+
     /// Load LLM parameter overrides (temperature, max_tokens, top_p) for a phase.
     async fn phase_params(&self, phase_key: &str) -> LlmParamOverrides {
         let Some(settings_mgr) = self.bridge.settings_manager.as_ref() else {
@@ -212,28 +276,67 @@ impl AgentExecutor for BridgeAgentExecutor {
         execution_context: &ExecutionContext,
         agent_type: Option<&str>,
     ) -> Result<AgentResult> {
+        let agent_label = agent_type.unwrap_or("primary");
         tracing::info!(
-            "[TaskMode/PrimaryAgent] Executing subtask: {} (agent: {})",
+            "[TaskMode] Executing subtask: {} (agent: {})",
             subtask_title,
-            agent_type.unwrap_or("primary"),
+            agent_label,
         );
         let start = std::time::Instant::now();
-        let prompt = prompts::primary_agent_subtask_prompt_with_agent(
-            subtask_title,
-            subtask_description,
-            &execution_context.summary(),
-            agent_type,
-        );
-        let content = self.bridge.execute_isolated(&prompt).await?;
+
+        // Try to route to the appropriate sub-agent for specialist work.
+        // This matches PentAGI's pattern where subtasks are dispatched to
+        // pentester, coder, searcher, etc. instead of the primary agent.
+        let content = if let Some(at) = agent_type {
+            let registry = self.bridge.sub_agent_registry().read().await;
+            let agent_def = registry.get(at).cloned();
+            drop(registry);
+
+            if let Some(agent_def) = agent_def {
+                tracing::info!(
+                    "[TaskMode] Dispatching subtask '{}' to sub-agent '{}'",
+                    subtask_title,
+                    at,
+                );
+                self.execute_via_sub_agent(
+                    &agent_def,
+                    subtask_title,
+                    subtask_description,
+                    execution_context,
+                )
+                .await?
+            } else {
+                tracing::info!(
+                    "[TaskMode] No sub-agent '{}' found, falling back to primary agent",
+                    at,
+                );
+                let prompt = prompts::primary_agent_subtask_prompt_with_agent(
+                    subtask_title,
+                    subtask_description,
+                    &execution_context.summary(),
+                    agent_type,
+                );
+                self.bridge.execute_isolated(&prompt).await?
+            }
+        } else {
+            let prompt = prompts::primary_agent_subtask_prompt_with_agent(
+                subtask_title,
+                subtask_description,
+                &execution_context.summary(),
+                agent_type,
+            );
+            self.bridge.execute_isolated(&prompt).await?
+        };
+
         let duration_ms = start.elapsed().as_millis() as u64;
 
         Ok(AgentResult::with_usage(
             content,
             AgentTokenUsage {
-                input_tokens: 0,  // TODO: extract from agentic loop when available
+                input_tokens: 0,
                 output_tokens: 0,
                 duration_ms,
-                phase: "primary_agent".to_string(),
+                phase: agent_label.to_string(),
             },
         ))
     }

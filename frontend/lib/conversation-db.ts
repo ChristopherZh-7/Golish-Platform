@@ -48,6 +48,10 @@ export interface TerminalStateRow {
   scrollback: string;
   customName: string | null;
   planJson: unknown | null;
+  executionMode: string | null;
+  useAgents: boolean | null;
+  retiredPlansJson: unknown | null;
+  planMessageId: string | null;
 }
 
 export interface WorkspacePreferences {

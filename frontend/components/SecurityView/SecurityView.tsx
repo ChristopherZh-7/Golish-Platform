@@ -185,7 +185,7 @@ export function SecurityView({
   const renderContent = (tab: SecurityTab) => {
     if (tab === "vault") {
       return (
-        <Suspense fallback={<div className="h-full flex items-center justify-center"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground/20" /></div>}>
+        <Suspense fallback={<div className="h-full flex items-center justify-center"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground/40" /></div>}>
           <VaultSettings />
         </Suspense>
       );
@@ -199,7 +199,7 @@ export function SecurityView({
     if (checkingInstall) {
       return (
         <div className="h-full flex items-center justify-center">
-          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground/20" />
+          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground/40" />
         </div>
       );
     }

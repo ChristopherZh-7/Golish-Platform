@@ -20,7 +20,7 @@ import {
   XCircle,
   Zap,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -30,6 +30,17 @@ import {
 import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
 import type { ActiveSubAgent } from "@/store/store-types";
+
+export function PlanStepIcon({ status, size = "sm" }: { status: string; size?: "sm" | "md" }) {
+  const s = size === "sm" ? "w-2.5 h-2.5" : "w-3.5 h-3.5";
+  switch (status) {
+    case "completed": return <CheckCircle2 className={cn(s, "text-green-500/70 flex-shrink-0")} />;
+    case "in_progress": return <Loader2 className={cn(s, "text-accent animate-spin flex-shrink-0")} />;
+    case "failed":
+    case "cancelled": return <XCircle className={cn(s, "text-red-400/60 flex-shrink-0")} />;
+    default: return <div className={cn(s, "rounded-full border border-muted-foreground/30 flex-shrink-0")} />;
+  }
+}
 
 export function ThinkingBlock({ content, isActive }: { content: string; isActive: boolean }) {
   const [expanded, setExpanded] = useState(false);
@@ -50,7 +61,7 @@ export function ThinkingBlock({ content, isActive }: { content: string; isActive
         <span className="italic">{expanded ? "Thinking" : preview}</span>
       </button>
       {expanded && (
-        <div className="mt-1.5 pl-4.5 text-[12px] text-muted-foreground/40 leading-[1.6] whitespace-pre-wrap border-l-2 border-muted-foreground/10 ml-1.5 pl-3">
+        <div className="mt-1.5 pl-4.5 text-[12px] text-muted-foreground/60 leading-[1.6] whitespace-pre-wrap border-l-2 border-muted-foreground/15 ml-1.5 pl-3">
           {content}
         </div>
       )}
@@ -302,7 +313,7 @@ function ToolCallCard({
           {isExpired ? (
             <span className="text-[10px] text-[#565f89]">Expired</span>
           ) : (
-            <span className="text-[10px] text-muted-foreground/40 group-hover:text-accent/60 transition-colors">
+            <span className="text-[10px] text-muted-foreground/60 group-hover:text-accent/60 transition-colors">
               Details →
             </span>
           )}
@@ -317,7 +328,7 @@ function ToolCallCard({
               : "bg-muted/30 text-muted-foreground/70",
           )}
         >
-          {isShell && <span className="text-muted-foreground/40 mr-1">$</span>}
+          {isShell && <span className="text-muted-foreground/60 mr-1">$</span>}
           {primary}
         </div>
       )}
@@ -390,43 +401,38 @@ function SubAgentInlineCard({
       type="button"
       onClick={onClick}
       className={cn(
-        "w-full rounded-lg border bg-background/50 px-3 py-2.5 text-left transition-colors cursor-pointer group",
-        isRunning
-          ? "border-l-[3px]"
-          : isError
-            ? "border-red-500/30 hover:border-red-500/50"
-            : "border-border/30 hover:border-accent/40",
+        "w-full rounded-lg border border-border/30 bg-card px-3 py-2 text-left transition-colors cursor-pointer",
+        "hover:bg-muted/20",
+        isError && "border-red-500/20",
+        !isRunning && !isError && tc.success && "opacity-70",
       )}
-      style={isRunning ? { borderLeftColor: color, boxShadow: `inset 3px 0 12px -4px ${color}30` } : { borderLeftColor: color, borderLeftWidth: "3px" }}
+      style={{ borderLeftWidth: 2, borderLeftColor: isError ? "rgb(239 68 68 / 0.4)" : isRunning ? color : "var(--border)" }}
     >
       <div className="flex items-center gap-2">
-        <AgentIcon className="w-4 h-4 flex-shrink-0" style={{ color }} />
-        <span className="text-[11px] font-semibold" style={{ color }}>
+        <AgentIcon className="w-3.5 h-3.5 flex-shrink-0 text-muted-foreground/60" />
+        <span className="text-xs font-medium text-foreground/80">
           {agentName}
-        </span>
-        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-muted/50 text-muted-foreground/60 font-medium">
-          Sub-Agent
         </span>
         <div className="ml-auto flex items-center gap-1.5">
           {toolCount > 0 && (
-            <span className="text-[10px] text-muted-foreground/50">{toolCount} tool{toolCount > 1 ? "s" : ""}</span>
+            <span className="text-[10px] text-muted-foreground/40">{toolCount} tool{toolCount > 1 ? "s" : ""}</span>
           )}
           {durationMs != null && (
-            <span className="text-[10px] text-muted-foreground/50">
+            <span className="text-[10px] text-muted-foreground/30 tabular-nums">
               {durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`}
             </span>
           )}
           {isRunning ? (
-            <Loader2 className="w-3 h-3 animate-spin" style={{ color }} />
+            <Loader2 className="w-3 h-3 animate-spin text-muted-foreground/40" />
           ) : isError ? (
-            <XCircle className="w-3 h-3 text-red-400" />
+            <XCircle className="w-3 h-3 text-red-400/60" />
           ) : (
-            <CheckCircle2 className="w-3 h-3 text-[var(--ansi-green)]" />
+            <CheckCircle2 className="w-3 h-3 text-green-500/60" />
           )}
         </div>
       </div>
       {task && (
-        <div className="mt-1.5 text-[10px] text-muted-foreground/60 truncate pl-6">
+        <div className="mt-1 text-[10px] text-muted-foreground/40 truncate pl-5.5">
           {task}
         </div>
       )}
@@ -444,6 +450,24 @@ export function ToolCallSummary({
   isMessageComplete?: boolean;
 }) {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+
+  // Clear selection ring when another detail view opens or view mode changes away
+  const activeDetailIds = useStore((s) => {
+    const sid = s.activeSessionId;
+    if (!sid) return null;
+    return s.sessions[sid]?.detailViewMode === "tool-detail"
+      ? s.sessions[sid]?.toolDetailRequestIds
+      : null;
+  });
+  useEffect(() => {
+    if (selectedIdx == null) return;
+    const tc = toolCalls[selectedIdx];
+    if (!activeDetailIds) {
+      setSelectedIdx(null);
+    } else if (tc?.requestId && !activeDetailIds.includes(tc.requestId)) {
+      setSelectedIdx(null);
+    }
+  }, [activeDetailIds, selectedIdx, toolCalls]);
 
   if (toolCalls.length === 0) return null;
 
@@ -484,6 +508,13 @@ export function ToolCallSummary({
     const sessionId = state.activeSessionId;
     if (!sessionId) return;
 
+    // Toggle: clicking the same card again closes the detail view
+    if (selectedIdx === idx && state.sessions[sessionId]?.detailViewMode === "tool-detail") {
+      setSelectedIdx(null);
+      state.setDetailViewMode(sessionId, "timeline");
+      return;
+    }
+
     setSelectedIdx(idx);
 
     const tc = toolCalls[idx];
@@ -493,29 +524,11 @@ export function ToolCallSummary({
     backfillTimeline(state, sessionId, toolCalls);
   };
 
-  const getSubAgent = (requestId?: string): ActiveSubAgent | undefined => {
-    if (!requestId) return undefined;
-    const state = useStore.getState();
-    const convId = state.activeConversationId;
-    const aiSessionId = convId ? state.conversations[convId]?.aiSessionId : null;
-    if (!aiSessionId) return undefined;
-    return state.activeSubAgents[aiSessionId]?.find((a) => a.parentRequestId === requestId);
-  };
 
   return (
     <div className="mt-2 space-y-1.5">
       {toolCalls.map((tc, i) => {
-        if (tc.name.startsWith("sub_agent_")) {
-          return (
-            <SubAgentInlineCard
-              key={`${tc.name}-${i}`}
-              tc={tc}
-              agent={getSubAgent(tc.requestId)}
-              onClick={() => handleCardClick(i)}
-              isMessageComplete={isMessageComplete}
-            />
-          );
-        }
+        if (tc.name.startsWith("sub_agent_")) return null;
         return (
           <ToolCallCard
             key={`${tc.name}-${i}`}
@@ -736,7 +749,7 @@ export function WorkflowProgress({ workflow }: { workflow: WorkflowState }) {
             >
               <CheckCircle2 className="w-2.5 h-2.5 text-green-500 flex-shrink-0" />
               <span>{step.name}</span>
-              <span className="ml-auto text-[10px] text-muted-foreground/40">
+              <span className="ml-auto text-[10px] text-muted-foreground/60">
                 {(step.durationMs / 1000).toFixed(1)}s
               </span>
             </div>
@@ -785,6 +798,7 @@ export interface TaskPlanState {
   version: number;
   steps: Array<{ step: string; status: "pending" | "in_progress" | "completed" | "cancelled" | "failed" }>;
   summary: { total: number; completed: number; in_progress: number; pending: number };
+  retiredAt?: string;
 }
 
 interface NestedToolInfo {
@@ -868,12 +882,27 @@ export function usePlanNestedRequestIds(terminalId: string | null): Set<string> 
   return useMemo(() => new Set(raw ? raw.split("\n") : []), [raw]);
 }
 
+function formatRelativeTime(isoString: string | undefined): string | null {
+  if (!isoString) return null;
+  const diff = Date.now() - new Date(isoString).getTime();
+  if (diff < 0) return null;
+  const secs = Math.floor(diff / 1000);
+  if (secs < 60) return "just now";
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
+
 export function TaskPlanCard({ plan, terminalId, retired }: { plan: TaskPlanState; terminalId?: string | null; retired?: boolean }) {
   const [expanded, setExpanded] = useState(!retired);
   const [collapsedSteps, setCollapsedSteps] = useState<Set<number>>(new Set());
   const stepTools = useStepTools(terminalId ?? null);
   const progress = plan.summary.total > 0 ? (plan.summary.completed / plan.summary.total) * 100 : 0;
   const isAllDone = plan.summary.total > 0 && plan.summary.completed === plan.summary.total;
+  const relativeTime = retired ? formatRelativeTime(plan.retiredAt) : null;
 
   const handleShowDetail = () => {
     const state = useStore.getState();
@@ -896,7 +925,7 @@ export function TaskPlanCard({ plan, terminalId, retired }: { plan: TaskPlanStat
     <div className={cn(
       "mx-4 my-2 rounded-lg border p-3 w-[calc(100%-2rem)] text-left transition-colors group",
       retired
-        ? "border-border/20 bg-muted/10 opacity-50"
+        ? "border-border/20 bg-muted/5 opacity-80"
         : "border-border/30 bg-background/50 hover:border-accent/40 hover:bg-accent/5"
     )}>
       <button
@@ -904,46 +933,68 @@ export function TaskPlanCard({ plan, terminalId, retired }: { plan: TaskPlanStat
         onClick={() => setExpanded((v) => !v)}
         className="w-full flex items-center gap-2 cursor-pointer"
       >
-        <List className={cn("w-3.5 h-3.5 flex-shrink-0", retired ? "text-muted-foreground/40" : "text-accent")} />
-        <span className={cn("text-[12px] font-medium", retired ? "text-muted-foreground/50 line-through" : "text-foreground")}>
-          Task Plan v{plan.version} ({plan.summary.completed}/{plan.summary.total})
+        <List className={cn("w-3.5 h-3.5 flex-shrink-0", retired ? "text-muted-foreground/60" : "text-accent")} />
+        <span className={cn("text-[12px] font-medium", retired ? "text-muted-foreground" : "text-foreground")}>
+          Task Plan
         </span>
-        {isAllDone && (
-          <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 font-medium">
+        <span className={cn(
+          "text-[9px] px-1.5 py-0.5 rounded font-medium",
+          retired
+            ? "bg-muted/30 text-muted-foreground/70"
+            : "bg-accent/10 text-accent"
+        )}>
+          v{plan.version}
+        </span>
+        {retired && (
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-muted/20 text-muted-foreground/60 font-medium">
+            Superseded
+          </span>
+        )}
+        {!retired && isAllDone && (
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-green-500/10 text-green-500/70 font-medium">
             Done
           </span>
         )}
-        <span
-          role="link"
-          tabIndex={0}
-          className="ml-auto text-[10px] text-muted-foreground/50 hover:text-accent/70 transition-colors cursor-pointer"
-          onClick={(e) => { e.stopPropagation(); handleShowDetail(); }}
-          onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); handleShowDetail(); } }}
-        >
-          View details &rarr;
-        </span>
+        {relativeTime && (
+          <span className="text-[9px] text-muted-foreground/50 ml-auto">
+            {relativeTime}
+          </span>
+        )}
+        {!retired && (
+          <span
+            role="link"
+            tabIndex={0}
+            className="ml-auto text-[10px] text-muted-foreground/70 hover:text-accent/70 transition-colors cursor-pointer"
+            onClick={(e) => { e.stopPropagation(); handleShowDetail(); }}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); handleShowDetail(); } }}
+          >
+            View details &rarr;
+          </span>
+        )}
         {expanded ? (
-          <ChevronUp className="w-3 h-3 text-muted-foreground/50 group-hover:text-accent/70 transition-colors flex-shrink-0" />
+          <ChevronUp className="w-3 h-3 text-muted-foreground/70 group-hover:text-accent/70 transition-colors flex-shrink-0" />
         ) : (
-          <ChevronDown className="w-3 h-3 text-muted-foreground/50 group-hover:text-accent/70 transition-colors flex-shrink-0" />
+          <ChevronDown className="w-3 h-3 text-muted-foreground/70 group-hover:text-accent/70 transition-colors flex-shrink-0" />
         )}
       </button>
-
-      {retired && (
-        <div className="mt-1.5 flex items-center gap-1.5 text-[10px] text-muted-foreground/40 bg-muted/20 rounded px-2 py-0.5">
-          <span className="line-through">Superseded by newer plan</span>
-        </div>
-      )}
 
       <div className="mt-2 h-1 rounded-full bg-muted/50 overflow-hidden">
         <div
           className={cn(
             "h-full rounded-full transition-all duration-300",
-            isAllDone ? "bg-emerald-400" : "bg-accent",
+            retired
+              ? "bg-muted-foreground/30"
+              : "bg-accent",
           )}
           style={{ width: `${progress}%` }}
         />
       </div>
+
+      {!expanded && retired && (
+        <div className="mt-1.5 text-[10px] text-muted-foreground/50">
+          {plan.summary.completed}/{plan.summary.total} steps completed
+        </div>
+      )}
 
       {expanded && (
         <div className="mt-2 space-y-0.5">
@@ -964,27 +1015,20 @@ export function TaskPlanCard({ plan, terminalId, retired }: { plan: TaskPlanStat
                     hasTools && "cursor-pointer hover:text-foreground/90",
                   )}
                 >
-                  {isDone && <CheckCircle2 className="w-2.5 h-2.5 text-green-500 flex-shrink-0" />}
-                  {isActive && <Loader2 className="w-2.5 h-2.5 animate-spin text-accent flex-shrink-0" />}
-                  {(step.status === "cancelled" || step.status === "failed") && (
-                    <XCircle className="w-2.5 h-2.5 text-red-400/70 flex-shrink-0" />
-                  )}
-                  {step.status === "pending" && (
-                    <div className="w-2.5 h-2.5 rounded-full border border-muted-foreground/30 flex-shrink-0" />
-                  )}
+                  <PlanStepIcon status={step.status} />
                   <span
                     className={cn(
                       "text-left truncate",
-                      isDone ? "text-muted-foreground/60 line-through"
+                      isDone ? "text-muted-foreground/60"
                         : isActive ? "text-accent"
-                        : (step.status === "cancelled" || step.status === "failed") ? "text-red-400/60 line-through"
+                        : (step.status === "cancelled" || step.status === "failed") ? "text-red-400/60"
                         : "text-muted-foreground",
                     )}
                   >
                     {step.step}
                   </span>
                   {hasTools && (
-                    <span className="ml-auto flex items-center gap-0.5 text-[9px] text-muted-foreground/40">
+                    <span className="ml-auto flex items-center gap-0.5 text-[9px] text-muted-foreground/60">
                       {tools.length}
                       <ChevronDown className={cn("w-2 h-2 transition-transform", isStepCollapsed && "-rotate-90")} />
                     </span>
@@ -1006,7 +1050,7 @@ export function TaskPlanCard({ plan, terminalId, retired }: { plan: TaskPlanStat
 
 export function PlanUpdatedNotice() {
   return (
-    <div className="flex items-center gap-1.5 px-3 py-1 text-[10px] text-muted-foreground/50">
+    <div className="flex items-center gap-1.5 px-3 py-1 text-[10px] text-muted-foreground/70">
       <List className="w-2.5 h-2.5" />
       <span>Plan updated</span>
     </div>
@@ -1028,16 +1072,6 @@ export function StickyPlanProgress({ plan }: { plan: TaskPlanState }) {
     }
   };
 
-  const stepIcon = (status: string) => {
-    switch (status) {
-      case "completed": return <CheckCircle2 className="w-3 h-3 text-green-500 flex-shrink-0" />;
-      case "in_progress": return <Loader2 className="w-3 h-3 text-primary animate-spin flex-shrink-0" />;
-      case "failed": return <XCircle className="w-3 h-3 text-red-400 flex-shrink-0" />;
-      case "cancelled": return <XCircle className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />;
-      default: return <Clock className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />;
-    }
-  };
-
   return (
     <div className="sticky top-0 z-20 mx-0 border-b border-border/30 bg-[var(--background)]/90 backdrop-blur-sm">
       <button
@@ -1045,7 +1079,7 @@ export function StickyPlanProgress({ plan }: { plan: TaskPlanState }) {
         onClick={() => setExpanded(!expanded)}
         className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-muted/20 transition-colors"
       >
-        <List className="w-3 h-3 text-primary flex-shrink-0" />
+        <List className="w-3 h-3 text-accent flex-shrink-0" />
         <span className="text-[11px] font-medium text-foreground/80 truncate flex-1 text-left">
           {isAllDone
             ? "All steps complete"
@@ -1073,14 +1107,14 @@ export function StickyPlanProgress({ plan }: { plan: TaskPlanState }) {
             return (
               <div key={idx} className={cn(
                 "flex items-center gap-2 py-1 px-2 rounded text-[11px]",
-                isActive && "bg-primary/10",
+                isActive && "bg-accent/8",
               )}>
-                {stepIcon(step.status)}
+                <PlanStepIcon status={step.status} />
                 <span className={cn(
                   "flex-1 truncate",
                   isDone && "text-muted-foreground/60",
-                  isActive && "text-foreground font-medium",
-                  isFailed && "text-red-400/60 line-through",
+                  isActive && "text-accent font-medium",
+                  isFailed && "text-red-400/60",
                   !isDone && !isActive && !isFailed && "text-muted-foreground/70",
                 )}>
                   {idx + 1}. {step.step}
@@ -1092,7 +1126,7 @@ export function StickyPlanProgress({ plan }: { plan: TaskPlanState }) {
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); handleViewDetail(); }}
-            className="flex items-center gap-1.5 mt-1.5 px-2 py-1 rounded text-[10px] text-primary/70 hover:text-primary hover:bg-primary/10 transition-colors"
+            className="flex items-center gap-1.5 mt-1.5 px-2 py-1 rounded text-[10px] text-accent/70 hover:text-accent hover:bg-accent/10 transition-colors"
           >
             <Eye className="w-3 h-3" />
             <span>View Detail</span>
@@ -1102,7 +1136,7 @@ export function StickyPlanProgress({ plan }: { plan: TaskPlanState }) {
 
       <div className="h-[2px] bg-muted/30">
         <div
-          className="h-full bg-primary transition-all duration-500 ease-out"
+          className="h-full bg-accent transition-all duration-500 ease-out"
           style={{ width: `${progress}%` }}
         />
       </div>

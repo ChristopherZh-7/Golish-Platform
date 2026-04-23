@@ -50,7 +50,7 @@ use golish_sub_agents::{SubAgentContext, SubAgentRegistry, MAX_AGENT_DEPTH};
 use crate::event_coordinator::CoordinatorHandle;
 
 mod helpers;
-mod sub_agent_dispatch;
+pub(crate) mod sub_agent_dispatch;
 mod tool_execution;
 pub mod toolcall_fixer;
 
@@ -199,6 +199,10 @@ pub struct AgenticLoopContext<'a> {
     /// When present, tracks tool call patterns and the agentic loop can
     /// inject mentor advice into tool results when the monitor triggers.
     pub execution_monitor: Option<Arc<RwLock<crate::loop_detection::ExecutionMonitor>>>,
+    /// Execution mode: Chat (all tools) vs Task (delegation-only).
+    /// In Task mode the primary agent loses direct environment access (shell, file, web)
+    /// and must delegate to sub-agents, matching PentAGI's primary agent pattern.
+    pub execution_mode: super::execution_mode::ExecutionMode,
 }
 
 /// Result of a single tool execution.
@@ -568,28 +572,36 @@ where
     // Create hook registry for system hooks
     let hook_registry = HookRegistry::new();
 
-    // Get all available tools (filtered by config + web search)
-    let mut tools = get_all_tool_definitions_with_config(ctx.tool_config);
+    // Build the tool list based on execution mode.
+    // Task mode: delegation-only (sub-agents + planning + ask_human) — matches PentAGI primary agent.
+    // Chat mode: full tool set (file, shell, web, sub-agents, etc.)
+    let is_task_primary = ctx.execution_mode.is_task() && sub_agent_context.depth == 0;
 
-    // Add run_command (wrapper for run_pty_cmd with better naming)
-    tools.push(get_run_command_tool_definition());
+    let mut tools: Vec<rig::completion::ToolDefinition> = if is_task_primary {
+        tracing::info!("[Task mode] Primary agent: delegation-only tools (no direct environment access)");
+        // Only planning tool from the static catalog
+        let plan_tool = get_all_tool_definitions_with_config(ctx.tool_config)
+            .into_iter()
+            .filter(|t| t.name == "update_plan")
+            .collect::<Vec<_>>();
+        plan_tool
+    } else {
+        // Chat mode or sub-agent execution: full tool set
+        let mut t = get_all_tool_definitions_with_config(ctx.tool_config);
+        t.push(get_run_command_tool_definition());
+        t
+    };
 
-    // Add ask_human barrier tool (HITL: AI asks user for input)
+    // Always add ask_human barrier tool (HITL: AI asks user for input)
     tools.push(get_ask_human_tool_definition());
 
-    // Add any additional tools (e.g., SWE-bench test tool)
-    tools.extend(ctx.additional_tool_definitions.iter().cloned());
+    if !is_task_primary {
+        // Add any additional tools (e.g., SWE-bench test tool, MCP tools)
+        tools.extend(ctx.additional_tool_definitions.iter().cloned());
+    }
 
-    tracing::debug!(
-        "Available tools (unified loop): {:?}",
-        tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>()
-    );
-
-    // Add dynamically registered tools from the registry (Tavily, PTY interactive, pentest, etc.)
-    // Dynamic tools are registered at runtime by configure_bridge and should always be included.
-    // Tavily tools still respect tool_config since they can be disabled in settings.
-    // Apply sanitize_schema for OpenAI strict mode compatibility.
-    {
+    if !is_task_primary {
+        // Add dynamically registered tools from the registry (Tavily, PTY interactive, pentest, etc.)
         let registry = ctx.tool_registry.read().await;
         let registry_tools = registry.get_tool_definitions();
         drop(registry);
@@ -613,6 +625,25 @@ where
                 });
             }
         }
+    } else {
+        // Task-mode primary: add knowledge/memory tools for context retrieval
+        let registry = ctx.tool_registry.read().await;
+        let registry_tools = registry.get_tool_definitions();
+        drop(registry);
+
+        for tool in registry_tools {
+            let is_knowledge = tool.name == "search_knowledge_base"
+                || tool.name == "read_knowledge"
+                || tool.name == "search_memories"
+                || tool.name == "query_target_data";
+            if is_knowledge {
+                tools.push(rig::completion::ToolDefinition {
+                    name: tool.name,
+                    description: tool.description,
+                    parameters: sanitize_schema(tool.parameters),
+                });
+            }
+        }
     }
 
     // Only add sub-agent tools if we're not at max depth
@@ -621,6 +652,13 @@ where
         let registry = ctx.sub_agent_registry.read().await;
         tools.extend(get_sub_agent_tool_definitions(&registry).await);
     }
+
+    tracing::debug!(
+        "Available tools (unified loop, mode={}, depth={}): {:?}",
+        ctx.execution_mode,
+        sub_agent_context.depth,
+        tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>()
+    );
 
     let mut chat_history = initial_history;
 
@@ -632,13 +670,30 @@ where
     // Note: Context compaction is now handled by the summarizer agent
     // which is triggered via should_compact() in the agentic loop
 
-    // Audit: record agent turn start
+    // Audit: record agent turn start + msg_log for user message
     if let Some(tracker) = ctx.db_tracker {
         tracker.audit(
             "agent_turn_start",
             "ai",
             &format!("model={} provider={}", ctx.model_name, ctx.provider_name),
         );
+        let user_msg_preview = chat_history
+            .last()
+            .map(|m| match m {
+                rig::message::Message::User { content } => content
+                    .iter()
+                    .filter_map(|c| match c {
+                        rig::message::UserContent::Text(t) => Some(t.text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                _ => String::new(),
+            })
+            .unwrap_or_default();
+        if !user_msg_preview.is_empty() {
+            tracker.record_msg_log("user_message", "primary", &user_msg_preview, None);
+        }
     }
 
     let mut accumulated_response = String::new();
@@ -1864,26 +1919,103 @@ where
 
             if should_reflect {
                 let registry = ctx.sub_agent_registry.read().await;
-                if registry.get("reflector").is_some() {
-                    drop(registry);
+                let reflector_def = registry.get("reflector").cloned();
+                drop(registry);
 
+                if reflector_def.is_some() {
                     total_reflector_nudges += 1;
                     tracing::info!(
                         attempt = consecutive_no_tool_turns,
                         total_nudges = total_reflector_nudges,
                         text_len = text_content.len(),
-                        "[reflector] Agent produced text without tool calls, generating correction"
+                        "[reflector] Agent produced text without tool calls, invoking reflector chain"
                     );
 
-                    let correction = format!(
-                        "[System: You responded with text but did not use any tools. \
-                         If you have completed the task, that's fine. \
-                         Otherwise, please execute the next step using the appropriate tool. \
-                         Available tools include: run_pty_cmd, read_file, write_file, \
-                         web_search, web_fetch, search_memories, store_memory. \
-                         Attempt {}/3]",
-                        total_reflector_nudges
+                    // Build a diagnostic prompt for the reflector with the agent's response
+                    // and available tool names so it can suggest specific tools.
+                    let tool_list = config
+                        .tool_names_for_reflector
+                        .as_ref()
+                        .map(|names| names.join(", "))
+                        .unwrap_or_else(|| {
+                            tools
+                                .iter()
+                                .map(|t| t.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        });
+
+                    let reflector_prompt = format!(
+                        "The agent was given a task and responded with text instead of using tools.\n\n\
+                         ## Agent's text response (attempt {}/3):\n```\n{}\n```\n\n\
+                         ## Available tools:\n{}\n\n\
+                         Diagnose why the agent didn't use tools and write a corrective instruction \
+                         that will get it to take action. Be specific about which tool to use and with what arguments.",
+                        total_reflector_nudges,
+                        truncate_str(&text_content, 2000),
+                        tool_list
                     );
+
+                    // Run the reflector as a proper sub-agent chain (PentAGI-style).
+                    let reflector_args = serde_json::json!({
+                        "task": reflector_prompt,
+                    });
+
+                    let correction = if let Some(ref reflector) = reflector_def {
+                        use crate::tool_provider_impl::DefaultToolProvider;
+                        let tool_provider = DefaultToolProvider::new();
+                        let sub_ctx = golish_sub_agents::SubAgentExecutorContext {
+                            event_tx: ctx.event_tx,
+                            tool_registry: ctx.tool_registry,
+                            workspace: ctx.workspace,
+                            provider_name: ctx.provider_name,
+                            model_name: ctx.model_name,
+                            session_id: ctx.session_id,
+                            transcript_base_dir: ctx.transcript_base_dir,
+                            api_request_stats: Some(ctx.api_request_stats),
+                            briefing: None,
+                            temperature_override: reflector.temperature,
+                            max_tokens_override: reflector.max_tokens,
+                            top_p_override: reflector.top_p,
+                            db_pool: ctx.db_tracker.map(|t| t.pool_arc()),
+                            sub_agent_registry: Some(ctx.sub_agent_registry),
+                        };
+
+                        match crate::agentic_loop::sub_agent_dispatch::execute_sub_agent_with_client(
+                            reflector,
+                            &reflector_args,
+                            &sub_agent_context,
+                            &*ctx.client.read().await,
+                            sub_ctx,
+                            &tool_provider,
+                            "reflector",
+                        )
+                        .await
+                        {
+                            Ok(result) => {
+                                tracing::info!(
+                                    "[reflector] Chain returned {} chars of correction",
+                                    result.response.len()
+                                );
+                                result.response
+                            }
+                            Err(e) => {
+                                tracing::warn!("[reflector] Chain failed, using fallback nudge: {}", e);
+                                format!(
+                                    "[System: You responded with text but did not use any tools. \
+                                     Please execute the next step using the appropriate tool. \
+                                     Available tools: {}. Attempt {}/3]",
+                                    tool_list, total_reflector_nudges
+                                )
+                            }
+                        }
+                    } else {
+                        format!(
+                            "[System: You responded with text but did not use any tools. \
+                             Please execute the next step using the appropriate tool. Attempt {}/3]",
+                            total_reflector_nudges
+                        )
+                    };
 
                     chat_history.push(Message::User {
                         content: OneOrMany::one(UserContent::Text(rig::message::Text {

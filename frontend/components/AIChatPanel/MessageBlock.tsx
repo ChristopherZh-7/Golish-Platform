@@ -2,8 +2,10 @@ import React, { memo } from "react";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { Markdown } from "@/components/Markdown";
 import { cn } from "@/lib/utils";
+import { useStore } from "@/store";
 import type { ChatMessage } from "@/store";
 import type { ChatToolCall } from "@/store/slices/conversation";
+
 import {
   CollapsibleToolCall,
   PlanUpdatedNotice,
@@ -82,8 +84,11 @@ export const MessageBlock = memo(function MessageBlock({
 
         const hasToolCalls = !isUser && message.toolCalls && message.toolCalls.length > 0;
 
+        const isSubAgentCall = (tc: ChatToolCall) => tc.name.startsWith("sub_agent_");
+
         const isVisibleCall = (tc: ChatToolCall) =>
           tc.name !== "update_plan" &&
+          !isSubAgentCall(tc) &&
           !nestedIds.has(tc.requestId ?? "") &&
           (tc.success !== undefined ||
             (pendingApproval == null && tc.success === undefined));
@@ -111,12 +116,22 @@ export const MessageBlock = memo(function MessageBlock({
             </div>
           ) : null;
 
-        // Build interleaved segments: text chunks and tool-call groups in order.
+        // Build interleaved segments: text chunks, tool-call groups, and sub-agent cards in order.
         type Segment =
           | { kind: "text"; content: string }
-          | { kind: "tools"; calls: ChatToolCall[]; requestIds: string[] };
+          | { kind: "tools"; calls: ChatToolCall[]; requestIds: string[] }
+          | { kind: "sub_agent"; requestId: string; toolCall: ChatToolCall };
 
         const segments: Segment[] = [];
+
+        const flushToolBatch = (
+          toolBatch: ChatToolCall[],
+          toolBatchIds: string[],
+        ) => {
+          if (toolBatch.length > 0) {
+            segments.push({ kind: "tools", calls: [...toolBatch], requestIds: [...toolBatchIds] });
+          }
+        };
 
         if (hasToolCalls && message.toolCallOffsets && message.toolCallOffsets.length > 0) {
           const offsets = message.toolCallOffsets;
@@ -130,38 +145,59 @@ export const MessageBlock = memo(function MessageBlock({
             const offset = offsets[i] ?? message.content.length;
 
             if (offset > textCursor) {
-              if (toolBatch.length > 0) {
-                segments.push({ kind: "tools", calls: toolBatch, requestIds: toolBatchIds });
-                toolBatch = [];
-                toolBatchIds = [];
-              }
+              flushToolBatch(toolBatch, toolBatchIds);
+              toolBatch = [];
+              toolBatchIds = [];
               segments.push({ kind: "text", content: message.content.slice(textCursor, offset) });
               textCursor = offset;
             }
 
-            if (isVisibleCall(allCalls[i])) {
+            if (isSubAgentCall(allCalls[i])) {
+              flushToolBatch(toolBatch, toolBatchIds);
+              toolBatch = [];
+              toolBatchIds = [];
+              segments.push({
+                kind: "sub_agent",
+                requestId: allCalls[i].requestId ?? allCalls[i].name,
+                toolCall: allCalls[i],
+              });
+            } else if (isVisibleCall(allCalls[i])) {
               toolBatch.push(allCalls[i]);
               if (allCalls[i].requestId) toolBatchIds.push(allCalls[i].requestId!);
             }
           }
 
-          if (toolBatch.length > 0) {
-            segments.push({ kind: "tools", calls: toolBatch, requestIds: toolBatchIds });
-          }
+          flushToolBatch(toolBatch, toolBatchIds);
           if (textCursor < message.content.length) {
             segments.push({ kind: "text", content: message.content.slice(textCursor) });
           }
         } else if (hasToolCalls) {
-          // Legacy path: no per-call offsets, use single toolCallsContentOffset
           const tcOffset = message.toolCallsContentOffset ?? 0;
           if (tcOffset > 0) {
             segments.push({ kind: "text", content: message.content.slice(0, tcOffset) });
           }
-          const visibleCalls = message.toolCalls!.filter(isVisibleCall);
-          const ids = visibleCalls.map((tc) => tc.requestId).filter((id): id is string => !!id);
-          if (visibleCalls.length > 0) {
-            segments.push({ kind: "tools", calls: visibleCalls, requestIds: ids });
+
+          const allCalls = message.toolCalls!;
+          let toolBatch: ChatToolCall[] = [];
+          let toolBatchIds: string[] = [];
+
+          for (const tc of allCalls) {
+            if (isSubAgentCall(tc)) {
+              flushToolBatch(toolBatch, toolBatchIds);
+              toolBatch = [];
+              toolBatchIds = [];
+              segments.push({
+                kind: "sub_agent",
+                requestId: tc.requestId ?? tc.name,
+                toolCall: tc,
+              });
+            } else if (isVisibleCall(tc)) {
+              toolBatch.push(tc);
+              if (tc.requestId) toolBatchIds.push(tc.requestId);
+            }
           }
+          flushToolBatch(toolBatch, toolBatchIds);
+
           if (tcOffset < message.content.length) {
             segments.push({ kind: "text", content: message.content.slice(tcOffset) });
           }
@@ -214,6 +250,10 @@ export const MessageBlock = memo(function MessageBlock({
                     <Markdown content={displayContent || (message.isStreaming ? "..." : "")} />
                   </div>
                 );
+              }
+
+              if (seg.kind === "sub_agent") {
+                return null;
               }
 
               // Tool segment

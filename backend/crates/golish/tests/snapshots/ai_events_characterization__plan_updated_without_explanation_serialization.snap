@@ -7,10 +7,12 @@ expression: json
   "explanation": null,
   "steps": [
     {
+      "id": "step-a",
       "status": "pending",
       "step": "Research the problem"
     },
     {
+      "id": "step-b",
       "status": "pending",
       "step": "Implement solution"
     }

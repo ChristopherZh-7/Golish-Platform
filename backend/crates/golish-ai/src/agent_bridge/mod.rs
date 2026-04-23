@@ -112,6 +112,7 @@ pub struct AgentBridge {
 
     // Sub-agents
     pub(crate) sub_agent_registry: Arc<RwLock<SubAgentRegistry>>,
+    pub(crate) prompt_registry: golish_sub_agents::PromptRegistry,
 
     // Debug: per-session API request stats (main + sub-agents)
     pub(crate) api_request_stats: Arc<ApiRequestStats>,
@@ -830,6 +831,7 @@ impl AgentBridge {
             db_tracker: self.db_tracker.as_ref(),
             cancelled: Some(&self.cancelled),
             execution_monitor: None,
+            execution_mode: *self.execution_mode.read().await,
         }
     }
 
@@ -984,6 +986,22 @@ impl AgentBridge {
                 .with_project_path(project_path),
         );
         self.db_pool = Some(pool.clone());
+
+        // Load prompt template overrides from DB (non-blocking)
+        let prompt_reg = self.prompt_registry.clone();
+        let pool_for_prompts = pool.clone();
+        let sub_reg = self.sub_agent_registry.clone();
+        tokio::spawn(async move {
+            if let Err(e) = prompt_reg.load_db_overrides(&pool_for_prompts).await {
+                tracing::warn!("[prompt-registry] Failed to load DB overrides: {e}");
+            } else {
+                // Re-create sub-agents with updated templates
+                let new_agents = golish_sub_agents::defaults::create_default_sub_agents_from_registry(&prompt_reg).await;
+                let mut reg = sub_reg.write().await;
+                reg.register_multiple(new_agents);
+                tracing::info!("[prompt-registry] Reloaded sub-agents with DB template overrides");
+            }
+        });
 
         // Wire up PlanManager with DB persistence
         let ws = self.workspace.try_read().ok();
@@ -1294,6 +1312,11 @@ impl AgentBridge {
         &self.sub_agent_registry
     }
 
+    /// Get the prompt template registry.
+    pub fn prompt_registry(&self) -> &golish_sub_agents::PromptRegistry {
+        &self.prompt_registry
+    }
+
     /// Get the provider name.
     pub fn provider_name(&self) -> &str {
         &self.provider_name
@@ -1337,6 +1360,18 @@ impl AgentBridge {
     /// Set the model factory for sub-agent model overrides.
     pub fn set_model_factory(&mut self, factory: Arc<super::llm_client::LlmClientFactory>) {
         self.model_factory = Some(factory);
+    }
+
+    pub fn event_session_id(&self) -> Option<&str> {
+        self.event_session_id.as_deref()
+    }
+
+    pub fn transcript_base_dir(&self) -> Option<&std::path::Path> {
+        self.transcript_base_dir.as_deref()
+    }
+
+    pub fn api_request_stats(&self) -> &Arc<ApiRequestStats> {
+        &self.api_request_stats
     }
 
     /// Get the current MCP tool definitions.

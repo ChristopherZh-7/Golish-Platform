@@ -81,16 +81,16 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
       {/* biome-ignore lint/a11y/noStaticElementInteractions: backdrop dismiss */}
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
 
-      <div className="relative bg-[#161b22] border border-[#30363d] rounded-lg shadow-2xl w-full max-w-md overflow-hidden">
+      <div className="relative bg-card border border-border rounded-lg shadow-2xl w-full max-w-md overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-[#30363d]">
-          <h2 className="text-lg font-semibold text-white">New Project</h2>
+        <div className="flex items-center justify-between p-4 border-b border-border">
+          <h2 className="text-lg font-semibold text-foreground">New Project</h2>
           <button
             type="button"
             onClick={onClose}
-            className="p-1 hover:bg-[#30363d] rounded transition-colors"
+            className="p-1 hover:bg-muted rounded transition-colors"
           >
-            <X size={20} className="text-gray-400" />
+            <X size={20} className="text-muted-foreground" />
           </button>
         </div>
 
@@ -98,7 +98,7 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
           {/* Parent directory - project will be created as a subdirectory */}
           <div>
-            <span className="block text-xs text-gray-400 mb-1.5">Parent Directory</span>
+            <span className="block text-xs text-muted-foreground mb-1.5">Parent Directory</span>
             <div className="flex items-center space-x-2">
               <label className="flex-1">
                 <input
@@ -106,15 +106,15 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
                   value={formData.rootPath}
                   onChange={(e) => handleChange("rootPath", e.target.value)}
                   placeholder="/path/to/project"
-                  className="w-full bg-[#0d1117] border border-[#30363d] rounded-md px-3 py-2 text-sm text-gray-200 placeholder-gray-600 font-mono focus:outline-none focus:border-[#58a6ff] focus:ring-1 focus:ring-[#58a6ff] transition-colors"
+                  className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm text-foreground/90 placeholder-muted-foreground/50 font-mono focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
                 />
               </label>
               <button
                 type="button"
                 onClick={handlePickFolder}
-                className="h-[38px] px-3 bg-[#21262d] border border-[#30363d] rounded-md hover:bg-[#30363d] transition-colors"
+                className="h-[38px] px-3 bg-secondary border border-border rounded-md hover:bg-muted transition-colors"
               >
-                <FolderOpen size={16} className="text-gray-400" />
+                <FolderOpen size={16} className="text-muted-foreground" />
               </button>
             </div>
           </div>
@@ -122,13 +122,13 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
           {/* Project Name */}
           <div>
             <label className="block">
-              <span className="block text-xs text-gray-400 mb-1.5">Project Name</span>
+              <span className="block text-xs text-muted-foreground mb-1.5">Project Name</span>
               <input
                 type="text"
                 value={formData.name}
                 onChange={(e) => handleChange("name", e.target.value)}
                 placeholder="my-project"
-                className="w-full bg-[#0d1117] border border-[#30363d] rounded-md px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-[#58a6ff] focus:ring-1 focus:ring-[#58a6ff] transition-colors"
+                className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm text-foreground/90 placeholder-muted-foreground/50 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
               />
             </label>
           </div>
@@ -136,35 +136,35 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
           {/* Targets (optional) */}
           <div>
             <label className="block">
-              <span className="block text-xs text-gray-400 mb-1.5">
-                Targets <span className="text-gray-600">(optional)</span>
+              <span className="block text-xs text-muted-foreground mb-1.5">
+                Targets <span className="text-muted-foreground/50">(optional)</span>
               </span>
               <textarea
                 value={targetsText}
                 onChange={(e) => setTargetsText(e.target.value)}
                 placeholder={"example.com\n192.168.1.0/24\nhttps://app.example.com"}
                 rows={3}
-                className="w-full bg-[#0d1117] border border-[#30363d] rounded-md px-3 py-2 text-sm text-gray-200 placeholder-gray-600 font-mono focus:outline-none focus:border-[#58a6ff] focus:ring-1 focus:ring-[#58a6ff] transition-colors resize-none"
+                className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm text-foreground/90 placeholder-muted-foreground/50 font-mono focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors resize-none"
               />
-              <span className="block text-[11px] text-gray-600 mt-1">
+              <span className="block text-[11px] text-muted-foreground/60 mt-1">
                 One per line or comma-separated. AI will auto-start reconnaissance.
               </span>
             </label>
           </div>
 
           {formData.rootPath && formData.name.trim() && (
-            <div className="text-xs text-gray-500 font-mono bg-[#0d1117] rounded-md px-3 py-2 border border-[#21262d]">
+            <div className="text-xs text-muted-foreground font-mono bg-background rounded-md px-3 py-2 border border-secondary">
               Project path: {formData.rootPath.replace(/\/$/, "")}/{formData.name.trim()}
             </div>
           )}
         </form>
 
         {/* Footer */}
-        <div className="flex items-center justify-end space-x-3 p-4 border-t border-[#30363d] bg-[#161b22]">
+        <div className="flex items-center justify-end space-x-3 p-4 border-t border-border bg-card">
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 text-sm font-medium text-gray-300 bg-[#21262d] border border-[#30363d] rounded-md hover:bg-[#30363d] transition-colors"
+            className="px-4 py-2 text-sm font-medium text-foreground/80 bg-secondary border border-border rounded-md hover:bg-muted transition-colors"
           >
             Cancel
           </button>
@@ -172,7 +172,7 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
             type="submit"
             onClick={handleSubmit}
             disabled={!formData.name.trim() || !formData.rootPath.trim()}
-            className="px-4 py-2 text-sm font-medium text-white bg-[#238636] rounded-md hover:bg-[#2ea043] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-4 py-2 text-sm font-medium text-primary-foreground bg-primary rounded-md hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Create Project
           </button>

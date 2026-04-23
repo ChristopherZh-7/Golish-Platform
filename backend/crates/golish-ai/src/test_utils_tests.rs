@@ -2299,6 +2299,8 @@ async fn test_sub_agent_context_inheritance() {
         temperature_override: None,
         max_tokens_override: None,
         top_p_override: None,
+        db_pool: None,
+        sub_agent_registry: None,
     };
 
     let agent_def = test_sub_agent_definition_for_executor("analyzer");
@@ -2402,6 +2404,8 @@ async fn test_sub_agent_result_propagation() {
         temperature_override: None,
         max_tokens_override: None,
         top_p_override: None,
+        db_pool: None,
+        sub_agent_registry: None,
     };
 
     let agent_def = test_sub_agent_definition_for_executor("executor");
@@ -2467,6 +2471,8 @@ async fn test_sub_agent_events_emitted() {
         temperature_override: None,
         max_tokens_override: None,
         top_p_override: None,
+        db_pool: None,
+        sub_agent_registry: None,
     };
 
     let agent_def = test_sub_agent_definition_for_executor("event_tester");
@@ -2570,6 +2576,8 @@ async fn test_sub_agent_error_handling() {
         temperature_override: None,
         max_tokens_override: None,
         top_p_override: None,
+        db_pool: None,
+        sub_agent_registry: None,
     };
 
     // Create agent with very low max_iterations to trigger the error path
@@ -2652,6 +2660,8 @@ async fn test_sub_agent_tool_restrictions() {
         temperature_override: None,
         max_tokens_override: None,
         top_p_override: None,
+        db_pool: None,
+        sub_agent_registry: None,
     };
 
     // Create agent with restricted tools (only read_file allowed)
@@ -2743,6 +2753,8 @@ async fn test_sub_agent_timeout_behavior() {
         temperature_override: None,
         max_tokens_override: None,
         top_p_override: None,
+        db_pool: None,
+        sub_agent_registry: None,
     };
 
     // Create agent with very low max_iterations to simulate timeout

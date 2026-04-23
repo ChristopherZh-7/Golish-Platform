@@ -664,7 +664,9 @@ impl TaskOrchestrator {
         // Emit final plan update — all steps completed
         let final_steps: Vec<PlanStep> = queue
             .iter()
-            .map(|s| PlanStep {
+            .enumerate()
+            .map(|(i, s)| PlanStep {
+                id: Some(format!("task-step-{}", i + 1)),
                 step: s.title.clone(),
                 status: StepStatus::Completed,
             })
@@ -1048,6 +1050,7 @@ impl TaskOrchestrator {
                     StepStatus::Pending
                 };
                 PlanStep {
+                    id: Some(format!("task-step-{}", i + 1)),
                     step: s.title.clone(),
                     status,
                 }
