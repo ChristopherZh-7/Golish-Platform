@@ -791,7 +791,13 @@ Be concise and focused. Complete the task as efficiently as possible."#,
         ])
         .with_max_iterations(50)
         .with_timeout(900)
-        .with_idle_timeout(300),
+        .with_idle_timeout(300)
+        .with_delegatable_agents(vec![
+            "coder".to_string(),
+            "researcher".to_string(),
+            "memorist".to_string(),
+            "explorer".to_string(),
+        ]),
         SubAgentDefinition::new(
             "memorist",
             "Memorist",
@@ -859,6 +865,186 @@ Be concise and focused. Complete the task as efficiently as possible."#,
         .with_timeout(600)
         .with_idle_timeout(180),
     ]
+}
+
+/// Create default sub-agents with prompts loaded from the template registry.
+///
+/// This is the preferred constructor — it uses templates from `prompts/*.tera`
+/// (or DB overrides loaded into the registry) instead of hardcoded strings.
+/// Falls back to hardcoded prompts if template rendering fails.
+pub async fn create_default_sub_agents_from_registry(
+    registry: &crate::prompt_registry::PromptRegistry,
+) -> Vec<SubAgentDefinition> {
+    let ctx = crate::prompt_registry::PromptContext::new()
+        .set("implementation_plan_example", IMPLEMENTATION_PLAN_FULL_EXAMPLE);
+
+    let mut agents = Vec::new();
+
+    // Helper: render template or fall back to hardcoded
+    macro_rules! tmpl_or_fallback {
+        ($name:expr, $fallback:expr) => {
+            match registry.render($name, &ctx).await {
+                Ok(rendered) => rendered,
+                Err(e) => {
+                    tracing::warn!(
+                        "[defaults] Template '{}' render failed, using hardcoded: {e}",
+                        $name
+                    );
+                    $fallback
+                }
+            }
+        };
+    }
+
+    agents.push(
+        SubAgentDefinition::new(
+            "coder", "Coder",
+            "Applies surgical code edits using unified diff format. Use for precise multi-hunk edits. Outputs standard git-style diffs that are parsed and applied automatically.",
+            tmpl_or_fallback!("coder", build_coder_prompt()),
+        )
+        .with_tools(vec!["read_file".into(), "list_files".into(), "grep_file".into(), "ast_grep".into(), "ast_grep_replace".into()])
+        .with_max_iterations(20).with_timeout(600).with_idle_timeout(180),
+    );
+
+    agents.push(
+        SubAgentDefinition::new(
+            "analyzer", "Analyzer",
+            "Performs deep semantic analysis of code: traces data flow, identifies dependencies, and explains complex logic. Returns structured analysis for implementation planning.",
+            tmpl_or_fallback!("analyzer", build_analyzer_prompt()),
+        )
+        .with_tools(vec!["read_file".into(), "grep_file".into(), "ast_grep".into(), "list_directory".into(), "find_files".into(), "indexer_search_code".into(), "indexer_search_files".into(), "indexer_analyze_file".into(), "indexer_extract_symbols".into(), "indexer_get_metrics".into(), "indexer_detect_language".into()])
+        .with_max_iterations(30).with_timeout(300).with_idle_timeout(120),
+    );
+
+    agents.push(
+        SubAgentDefinition::new(
+            "explorer", "Explorer",
+            "Fast, read-only file search agent. Delegates to find relevant file paths — does not analyze or explain code.",
+            tmpl_or_fallback!("explorer", build_explorer_prompt()),
+        )
+        .with_tools(vec!["read_file".into(), "list_files".into(), "list_directory".into(), "grep_file".into(), "ast_grep".into(), "find_files".into()])
+        .with_max_iterations(15).with_timeout(180).with_idle_timeout(90),
+    );
+
+    agents.push(
+        SubAgentDefinition::new(
+            "researcher", "Research Agent",
+            "Researches topics by reading documentation, searching the web, and gathering information.",
+            tmpl_or_fallback!("researcher", build_researcher_prompt_fallback()),
+        )
+        .with_tools(vec!["web_search".into(), "web_fetch".into(), "read_file".into()])
+        .with_max_iterations(25).with_timeout(600).with_idle_timeout(180),
+    );
+
+    agents.push(
+        SubAgentDefinition::new(
+            "worker", "Worker",
+            "A general-purpose agent that can handle any task with access to all standard tools.",
+            tmpl_or_fallback!("worker", build_worker_prompt_fallback()),
+        )
+        .with_tools(vec!["read_file".into(), "write_file".into(), "create_file".into(), "edit_file".into(), "delete_file".into(), "list_files".into(), "list_directory".into(), "grep_file".into(), "ast_grep".into(), "ast_grep_replace".into(), "run_pty_cmd".into(), "web_search".into(), "web_fetch".into()])
+        .with_max_iterations(30).with_timeout(600).with_idle_timeout(180)
+        .with_prompt_template(WORKER_PROMPT_TEMPLATE),
+    );
+
+    agents.push(
+        SubAgentDefinition::new(
+            "pentester", "Pentester",
+            "Penetration testing specialist for security assessments.",
+            tmpl_or_fallback!("pentester", build_pentester_prompt()),
+        )
+        .with_tools(vec!["run_pty_cmd".into(), "read_file".into(), "write_file".into(), "web_fetch".into(), "web_search".into(), "list_directory".into(), "list_files".into(), "grep_file".into(), "search_memories".into(), "run_pipeline".into(), "flow_compose".into(), "manage_targets".into(), "record_finding".into(), "vault".into(), "js_collect".into()])
+        .with_max_iterations(50).with_timeout(900).with_idle_timeout(300)
+        .with_delegatable_agents(vec!["coder".into(), "researcher".into(), "memorist".into(), "explorer".into()]),
+    );
+
+    agents.push(
+        SubAgentDefinition::new(
+            "memorist", "Memorist",
+            "Memory management agent for long-term knowledge persistence.",
+            tmpl_or_fallback!("memorist", build_memorist_prompt()),
+        )
+        .with_tools(vec!["search_memories".into(), "store_memory".into(), "list_memories".into()])
+        .with_max_iterations(10).with_timeout(120).with_idle_timeout(60),
+    );
+
+    agents.push(
+        SubAgentDefinition::new(
+            "planner", "Planner",
+            "Task decomposition agent. Given a complex request, produces 3-7 ordered subtasks with agent assignments and dependencies.",
+            tmpl_or_fallback!("planner", build_planner_prompt()),
+        )
+        .with_tools(vec!["search_memories".into()])
+        .with_max_iterations(5).with_timeout(120).with_idle_timeout(60),
+    );
+
+    agents.push(
+        SubAgentDefinition::new(
+            "reflector", "Reflector",
+            "Correction agent invoked automatically when another agent fails to produce tool calls.",
+            tmpl_or_fallback!("reflector", build_reflector_prompt()),
+        )
+        .with_tools(vec![])
+        .with_max_iterations(3).with_timeout(60).with_idle_timeout(30),
+    );
+
+    agents.push(
+        SubAgentDefinition::new(
+            "adviser", "Adviser",
+            "Security expert consultant for complex findings.",
+            tmpl_or_fallback!("adviser", build_adviser_prompt()),
+        )
+        .with_tools(vec!["web_search".into(), "web_fetch".into(), "read_file".into(), "search_memories".into()])
+        .with_max_iterations(15).with_timeout(300).with_idle_timeout(120),
+    );
+
+    agents.push(
+        SubAgentDefinition::new(
+            "reporter", "Reporter",
+            "Generates structured security assessment reports.",
+            tmpl_or_fallback!("reporter", build_reporter_prompt()),
+        )
+        .with_tools(vec!["read_file".into(), "search_memories".into(), "list_memories".into(), "write_file".into()])
+        .with_max_iterations(20).with_timeout(600).with_idle_timeout(180),
+    );
+
+    agents
+}
+
+fn build_researcher_prompt_fallback() -> String {
+    r#"<identity>
+You are a technical researcher specializing in finding and synthesizing information from documentation, APIs, and web sources.
+</identity>
+
+<workflow>
+1. Formulate specific search queries
+2. Use `web_search` to find relevant sources
+3. Use `web_fetch` to retrieve full content
+4. Cross-reference multiple sources for accuracy
+5. Synthesize into actionable guidance
+</workflow>
+
+<constraints>
+- Always cite sources
+- Prefer official documentation over blog posts
+- If sources conflict, note the discrepancy
+- Use `read_file` to check existing project code for context
+</constraints>"#.to_string()
+}
+
+fn build_worker_prompt_fallback() -> String {
+    r#"You are a general-purpose assistant that completes tasks independently.
+
+You have access to file operations, code search, shell commands, and web tools.
+
+Work through the task step by step:
+1. Understand what's being asked
+2. Gather any needed context (read files, search code)
+3. Take action (edit files, run commands, etc.)
+4. Verify the result
+5. Report what you did
+
+Be concise and focused. Complete the task as efficiently as possible."#.to_string()
 }
 
 #[cfg(test)]

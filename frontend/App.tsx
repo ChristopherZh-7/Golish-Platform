@@ -379,6 +379,9 @@ function App() {
                     scrollback: t.scrollback,
                     customName: t.customName ?? undefined,
                     planJson: t.planJson ?? undefined,
+                    executionMode: t.executionMode ?? undefined,
+                    useAgents: t.useAgents ?? undefined,
+                    retiredPlansJson: t.retiredPlansJson ?? undefined,
                     timelineBlocks: t.timelineBlocks.map((b) => ({
                       id: b.id,
                       type: b.type as any,
@@ -1037,7 +1040,7 @@ function App() {
 
   if (error) {
     return (
-      <div className="flex items-center justify-center h-screen bg-[#1a1b26]">
+      <div className="flex items-center justify-center h-screen bg-background">
         <div className="text-[#f7768e] text-lg">Error: {error}</div>
       </div>
     );

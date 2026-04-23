@@ -43,8 +43,13 @@ impl AgentBridge {
             std::mem::take(&mut *guard)
         };
 
+        // Depth=1 so that Task-mode tool isolation (which only restricts depth==0)
+        // does NOT apply to subtask execution. Subtasks need full tools to do work.
+        let mut subtask_ctx = SubAgentContext::default();
+        subtask_ctx.depth = 1;
+
         let result = self
-            .execute_with_context(prompt, SubAgentContext::default())
+            .execute_with_context(prompt, subtask_ctx)
             .await;
 
         {

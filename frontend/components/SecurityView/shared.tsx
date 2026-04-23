@@ -33,7 +33,7 @@ export function StyledSelect({ value, onChange, options, className }: {
         <ChevronDown className={cn("w-2.5 h-2.5 text-muted-foreground/30 transition-transform flex-shrink-0", open && "rotate-180")} />
       </button>
       {open && (
-        <div className="absolute z-50 mt-0.5 w-full min-w-[100px] rounded-lg border border-white/[0.08] bg-[#1a1a1f] shadow-xl py-0.5 max-h-[200px] overflow-y-auto">
+        <div className="absolute z-50 mt-0.5 w-full min-w-[100px] rounded-lg border border-border/20 bg-popover shadow-xl py-0.5 max-h-[200px] overflow-y-auto">
           {options.map((o) => (
             <button key={o.value} type="button" onClick={() => { onChange(o.value); setOpen(false); }}
               className={cn("w-full text-left px-2.5 py-1.5 text-[10px] transition-colors", o.value === value ? "bg-accent/15 text-accent" : "text-foreground/60 hover:bg-white/[0.05] hover:text-foreground")}

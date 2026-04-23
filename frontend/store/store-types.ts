@@ -14,6 +14,7 @@ export type { ApprovalPattern, ReasoningEffort, RiskLevel };
 export type StepStatus = "pending" | "in_progress" | "completed" | "cancelled" | "failed";
 
 export interface PlanStep {
+  id?: string;
   step: string;
   status: StepStatus;
 }
@@ -89,6 +90,7 @@ export interface Session {
   gitBranch?: string | null;
   aiConfig?: AiConfig;
   plan?: TaskPlan;
+  planMessageId?: string | null;
   retiredPlans?: RetiredPlan[];
   detailViewMode?: DetailViewMode;
   toolDetailRequestIds?: string[] | null;
@@ -277,6 +279,7 @@ export interface AiToolExecution {
   streamingOutput?: string;
   source?: ToolCallSource;
   planStepIndex?: number;
+  planStepId?: string;
 }
 
 // Unified timeline block

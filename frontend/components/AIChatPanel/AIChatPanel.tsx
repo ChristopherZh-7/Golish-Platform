@@ -55,13 +55,12 @@ import {
   AskHumanInline,
   type AskHumanState,
   CompactionNotice,
-  StickyPlanProgress,
   TaskPlanCard,
   type TaskPlanState,
   WorkflowProgress,
   type WorkflowState,
 } from "./ChatSubComponents";
-import { AgentSummaryBar } from "./AgentSummaryBar";
+import { SubAgentSummaryBar } from "./SubAgentSummaryBar";
 import { MessageBlock } from "./MessageBlock";
 
 
@@ -149,6 +148,16 @@ export const AIChatPanel = memo(function AIChatPanel() {
     } : null,
     [storePlan]
   );
+
+  const storePlanMessageId = useStore((s) => {
+    if (!s.activeConversationId) return null;
+    const sid = s.conversations[s.activeConversationId]?.aiSessionId;
+    if (sid && s.sessions[sid]?.planMessageId) return s.sessions[sid].planMessageId;
+    const termIds = s.conversationTerminals[s.activeConversationId];
+    const termId = termIds?.[0];
+    if (termId) return s.sessions[termId]?.planMessageId ?? null;
+    return null;
+  });
 
   const retiredPlans = useStore(useCallback((s: any) => {
     if (!s.activeConversationId) return EMPTY_RETIRED;
@@ -583,30 +592,30 @@ export const AIChatPanel = memo(function AIChatPanel() {
             case "plan_updated": {
               const currentConv = useStore.getState().conversations[convId];
               const lastMsg = currentConv?.messages?.[currentConv.messages.length - 1];
-              const prevPlanMsgId = planMessageIdRef.current;
-              if (planMessageIdRef.current === null && lastMsg?.role === "assistant") {
-                planMessageIdRef.current = lastMsg.id;
-                planTextOffsetRef.current = (lastMsg.content || "").length;
-              }
               const termIds = useStore.getState().conversationTerminals[convId];
               const termId = termIds?.[0];
               if (termId) {
+                const sess = useStore.getState().sessions[termId];
+                const prevMsgId = sess?.planMessageId ?? planMessageIdRef.current;
+                const newMsgId = lastMsg?.role === "assistant" ? lastMsg.id : prevMsgId;
+                if (planMessageIdRef.current === null && newMsgId) {
+                  planMessageIdRef.current = newMsgId;
+                  planTextOffsetRef.current = (lastMsg?.content || "").length;
+                }
                 useStore.getState().setPlan(termId, {
                   version: event.version,
                   steps: event.steps,
                   summary: event.summary,
                   explanation: event.explanation ?? null,
                   updated_at: new Date().toISOString(),
-                }, prevPlanMsgId);
-                // If plan structure changed, move the plan card to the latest message
-                const sess = useStore.getState().sessions[termId];
-                if (sess?.retiredPlans?.length && lastMsg?.role === "assistant") {
-                  const latestRetired = sess.retiredPlans[sess.retiredPlans.length - 1];
-                  if (latestRetired.retiredAt === sess.plan?.updated_at || 
-                      sess.retiredPlans.length > (retiredCountRef.current ?? 0)) {
+                }, prevMsgId, newMsgId);
+
+                const sessAfter = useStore.getState().sessions[termId];
+                if (sessAfter?.retiredPlans?.length && lastMsg?.role === "assistant") {
+                  if (sessAfter.retiredPlans.length > (retiredCountRef.current ?? 0)) {
                     planMessageIdRef.current = lastMsg.id;
                     planTextOffsetRef.current = (lastMsg.content || "").length;
-                    retiredCountRef.current = sess.retiredPlans.length;
+                    retiredCountRef.current = sessAfter.retiredPlans.length;
                   }
                 }
               }
@@ -660,7 +669,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
     }
   }, [activeConvId]);
 
-  // When switching conversations, activate its terminal
+  // When switching conversations, activate its terminal and restore execution mode
   useEffect(() => {
     if (!activeConvId) return;
     const store = useStore.getState();
@@ -670,8 +679,20 @@ export const AIChatPanel = memo(function AIChatPanel() {
       if (store.sessions[firstTerminal] && store.activeSessionId !== firstTerminal) {
         store.setActiveSession(firstTerminal);
       }
+      // Restore execution mode and sub-agents toggle from terminal session
+      for (const tid of terminals) {
+        const sess = store.sessions[tid];
+        if (sess?.executionMode === "task") {
+          setChatExecutionMode("task");
+          break;
+        }
+      }
+      const hasAgents = terminals.some((tid) => store.sessions[tid]?.useAgents);
+      if (hasAgents !== chatUseSubAgents) setChatUseSubAgents(hasAgents);
+    } else {
+      setChatExecutionMode("chat");
     }
-  }, [activeConvId]);
+  }, [activeConvId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Custom scrollbar state
   const [tabsHovered, setTabsHovered] = useState(false);
@@ -1505,8 +1526,19 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
     (mode: "chat" | "task") => {
       if (mode === chatExecutionMode) return;
       setChatExecutionMode(mode);
-      const conv = useStore.getState().activeConversationId
-        ? useStore.getState().conversations[useStore.getState().activeConversationId!]
+
+      // Persist to terminal session store so it survives re-renders and restarts
+      const storeState = useStore.getState();
+      const activeConvId2 = storeState.activeConversationId;
+      if (activeConvId2) {
+        const termIds = storeState.conversationTerminals[activeConvId2] ?? [];
+        for (const tid of termIds) {
+          storeState.setExecutionMode(tid, mode);
+        }
+      }
+
+      const conv = activeConvId2
+        ? storeState.conversations[activeConvId2]
         : null;
       if (!conv) return;
       if (conv.aiInitialized) {
@@ -1561,14 +1593,14 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
   const currentProvider = selectedModel?.provider ?? "";
 
   const planTargetIdx = useMemo(() => {
-    if (planMessageIdRef.current) {
-      const idx = messages.findIndex((m) => m.id === planMessageIdRef.current);
+    const msgId = storePlanMessageId ?? planMessageIdRef.current;
+    if (msgId) {
+      const idx = messages.findIndex((m) => m.id === msgId);
       if (idx >= 0) return idx;
     }
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
       if (msg.role === "assistant" && msg.toolCalls?.some((tc) => tc.name === "update_plan")) {
-        planMessageIdRef.current = msg.id;
         return i;
       }
     }
@@ -1577,7 +1609,7 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
       if (firstAssistant >= 0) return firstAssistant;
     }
     return -1;
-  }, [messages, taskPlan]);
+  }, [messages, taskPlan, storePlanMessageId]);
 
   const retiredPlansByMsg = useMemo(() => {
     const map = new Map<string, TaskPlanState[]>();
@@ -1587,6 +1619,7 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
         version: rp.plan.version,
         steps: rp.plan.steps,
         summary: rp.plan.summary,
+        retiredAt: rp.retiredAt,
       });
       map.set(rp.messageId, list);
     }
@@ -1776,9 +1809,9 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
                   />
                 ))}
               </div>
-              <p className="text-[13px] text-muted-foreground/50">{t("ai.placeholder")}</p>
+              <p className="text-[13px] text-muted-foreground/70">{t("ai.placeholder")}</p>
               {pentestTools.length > 0 && (
-                <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/30">
+                <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/50">
                   <Wrench className="w-3 h-3" />
                   <span>
                     {pentestTools.length} {t("ai.toolsAvailable", "tools available")}
@@ -1788,7 +1821,6 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
             </div>
           ) : (
             <div>
-              {taskPlan && <StickyPlanProgress plan={taskPlan} />}
               {messages.map((msg, msgIdx) => {
                 const isPlanTarget = msgIdx === planTargetIdx;
                 const retiredHere = retiredPlansByMsg.get(msg.id);
@@ -1816,7 +1848,7 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
               {activeWorkflow && <WorkflowProgress workflow={activeWorkflow} />}
 
               {/* Agent Summary */}
-              <AgentSummaryBar />
+              <SubAgentSummaryBar />
 
               {/* Context Compaction */}
               {compactionState && (
@@ -2081,7 +2113,7 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
                     stroke="currentColor"
                   />
                 </svg>
-                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 rounded bg-[#1a1b26] border border-[#27293d] text-[10px] text-[#c0caf5] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
+                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 rounded bg-popover border border-border/30 text-[10px] text-popover-foreground whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
                   {contextUsage
                     ? `${(contextUsage.utilization * 100).toFixed(1)}% · ${(contextUsage.totalTokens / 1000).toFixed(1)}K / ${(contextUsage.maxTokens / 1000).toFixed(0)}K context used`
                     : "Context usage unavailable"}

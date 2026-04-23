@@ -17,18 +17,35 @@ import {
   Wand2,
   XCircle,
 } from "lucide-react";
-import { memo, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
+import { Markdown } from "@/components/Markdown";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { stripAllAnsi } from "@/lib/ansi";
 import { cn } from "@/lib/utils";
 import type { ActiveSubAgent, SubAgentEntry, SubAgentToolCall } from "@/store";
 import { SubAgentDetailsModal } from "./SubAgentDetailsModal";
+
+/**
+ * Strip XML wrapper tags, raw function-call XML, and ANSI escape codes
+ * from sub-agent text output.
+ */
+function cleanSubAgentText(text: string): string {
+  return stripAllAnsi(
+    text
+      .replace(/<\/?(task_assignment|original_request|execution_plan|execution_context|prior_knowledge)>/gi, "")
+      .replace(/<function=[^>]*>[\s\S]*?(?:<\/function>|$)/g, "")
+      .replace(/<parameter=[^>]*>[\s\S]*?<\/parameter>/g, "")
+      .replace(/<\/?(?:function|parameter)[^>]*>/g, "")
+  ).trim();
+}
 
 interface SubAgentCardProps {
   subAgent: ActiveSubAgent;
   autoCollapse?: boolean;
   /** Compact inline style for nesting inside pipeline steps */
   compact?: boolean;
+  highlighted?: boolean;
 }
 
 const AGENT_COLORS: Record<string, string> = {
@@ -89,9 +106,9 @@ function StatusIcon({
     case "error":
       return <XCircle className={cn(sizeClass, "text-[var(--ansi-red)]")} />;
     case "interrupted":
-      return <AlertTriangle className={cn(sizeClass, "text-amber-400/60")} />;
+      return <AlertTriangle className={cn(sizeClass, "text-amber-400")} />;
     default:
-      return <Circle className={cn(sizeClass, "text-muted-foreground/40")} />;
+      return <Circle className={cn(sizeClass, "text-muted-foreground/60")} />;
   }
 }
 
@@ -225,12 +242,13 @@ const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall
 /** Number of entries to show by default (from the end) */
 const VISIBLE_TAIL_ENTRIES = 8;
 
-/** Render a text entry inline */
+/** Render a text entry inline with markdown parsing */
 function TextEntryRow({ text }: { text: string }) {
-  if (!text.trim()) return null;
+  const cleaned = cleanSubAgentText(text);
+  if (!cleaned) return null;
   return (
-    <div className="text-xs text-muted-foreground/80 px-1.5 border-l-2 border-accent/30 ml-1 my-1">
-      <span className="whitespace-pre-wrap line-clamp-6">{text}</span>
+    <div className="text-xs text-muted-foreground px-1.5 border-l-2 border-accent/40 ml-1 my-1 line-clamp-6 overflow-hidden">
+      <Markdown content={cleaned} className="text-xs [&_p]:mb-1 [&_p]:last:mb-0" />
     </div>
   );
 }
@@ -291,35 +309,47 @@ const CompactSubAgentCard = memo(function CompactSubAgentCard({
 }: { subAgent: ActiveSubAgent }) {
   const [isExpanded, setIsExpanded] = useState(subAgent.status === "running");
   const [showAll, setShowAll] = useState(false);
+  const [showDetailsModal, setShowDetailsModal] = useState(false);
   const agentColor = getAgentColor(subAgent.agentName);
   const AgentIcon = getAgentIcon(subAgent.agentName);
   const totalToolCalls = subAgent.toolCalls.length;
   const hasEntries = subAgent.entries.length > 0;
 
   return (
+    <>
     <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
-      <CollapsibleTrigger className="group flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-xs hover:bg-accent/50">
-        {isExpanded ? (
-          <ChevronDown className="h-3 w-3 text-muted-foreground flex-shrink-0" />
-        ) : (
-          <ChevronRight className="h-3 w-3 text-muted-foreground flex-shrink-0" />
-        )}
-        <StatusIcon status={subAgent.status} size="sm" />
-        <AgentIcon className="h-3 w-3 flex-shrink-0" style={{ color: agentColor }} />
-        <span className="font-mono text-[var(--ansi-cyan)] truncate">
-          {subAgent.agentName || subAgent.agentId}
-        </span>
-        {totalToolCalls > 0 && (
-          <span className="text-[10px] text-muted-foreground flex-shrink-0">
-            {totalToolCalls} tool{totalToolCalls > 1 ? "s" : ""}
+      <div className="flex items-center gap-0.5">
+        <CollapsibleTrigger className="group flex flex-1 items-center gap-1.5 rounded px-1 py-0.5 text-xs hover:bg-accent/50 min-w-0">
+          {isExpanded ? (
+            <ChevronDown className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+          ) : (
+            <ChevronRight className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+          )}
+          <StatusIcon status={subAgent.status} size="sm" />
+          <AgentIcon className="h-3 w-3 flex-shrink-0" style={{ color: agentColor }} />
+          <span className="font-mono text-[var(--ansi-cyan)] truncate">
+            {subAgent.agentName || subAgent.agentId}
           </span>
-        )}
-        {subAgent.durationMs !== undefined && (
-          <span className="ml-auto text-[10px] text-muted-foreground flex-shrink-0">
-            {formatDuration(subAgent.durationMs)}
-          </span>
-        )}
-      </CollapsibleTrigger>
+          {totalToolCalls > 0 && (
+            <span className="text-[10px] text-muted-foreground flex-shrink-0">
+              {totalToolCalls} tool{totalToolCalls > 1 ? "s" : ""}
+            </span>
+          )}
+          {subAgent.durationMs !== undefined && (
+            <span className="ml-auto text-[10px] text-muted-foreground flex-shrink-0">
+              {formatDuration(subAgent.durationMs)}
+            </span>
+          )}
+        </CollapsibleTrigger>
+        <button
+          type="button"
+          onClick={() => setShowDetailsModal(true)}
+          className="p-0.5 hover:bg-accent/50 rounded transition-colors flex-shrink-0"
+          title="View details"
+        >
+          <Maximize2 className="w-3 h-3 text-muted-foreground hover:text-foreground" />
+        </button>
+      </div>
 
       <CollapsibleContent className="pl-5 pr-1 pb-0.5">
         {hasEntries ? (
@@ -334,18 +364,27 @@ const CompactSubAgentCard = memo(function CompactSubAgentCard({
             <ToolCallRow key={tool.id} tool={tool} />
           ))
         )}
-        {subAgent.status === "completed" && subAgent.response && (
-          <div className="text-[10px] text-muted-foreground/60 line-clamp-2 border-t border-border/20 pt-0.5 mt-0.5">
-            {subAgent.response.length > 200
-              ? `${subAgent.response.slice(0, 200)}...`
-              : subAgent.response}
-          </div>
-        )}
+              {subAgent.status === "completed" && subAgent.response && (
+                <div className="text-[10px] text-muted-foreground line-clamp-2 border-t border-border/30 pt-0.5 mt-0.5">
+                  <Markdown
+                    content={cleanSubAgentText(
+                      subAgent.response.length > 200
+                        ? `${subAgent.response.slice(0, 200)}...`
+                        : subAgent.response
+                    )}
+                    className="text-[10px] [&_p]:mb-0"
+                  />
+                </div>
+              )}
         {subAgent.error && (
           <div className="text-[10px] text-[var(--ansi-red)] mt-0.5">Error: {subAgent.error}</div>
         )}
       </CollapsibleContent>
     </Collapsible>
+    {showDetailsModal && (
+      <SubAgentDetailsModal subAgent={subAgent} onClose={() => setShowDetailsModal(false)} />
+    )}
+    </>
   );
 });
 
@@ -354,13 +393,22 @@ export const SubAgentCard = memo(function SubAgentCard({
   subAgent,
   autoCollapse,
   compact,
+  highlighted = false,
 }: SubAgentCardProps) {
   if (compact) {
     return <CompactSubAgentCard subAgent={subAgent} />;
   }
 
-  const defaultExpanded = autoCollapse ? false : true;
+  const defaultExpanded = autoCollapse ? false : highlighted ? true : true;
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (highlighted) {
+      setIsExpanded(true);
+      cardRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [highlighted]);
   const [showAllEntries, setShowAllEntries] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
 
@@ -372,42 +420,51 @@ export const SubAgentCard = memo(function SubAgentCard({
 
   const agentColor = getAgentColor(subAgent.agentName);
   const AgentIcon = getAgentIcon(subAgent.agentName);
+  const isInterrupted = subAgent.status === "interrupted";
+  const isRunning = subAgent.status === "running";
+  const isError = subAgent.status === "error";
+  const isDone = subAgent.status === "completed";
+  const nestingDepth = Math.max(0, (subAgent.depth ?? 1) - 1);
 
   return (
     <>
       <div
+        ref={cardRef}
         data-agent-block={`sub-agent-${subAgent.parentRequestId}`}
         className={cn(
-          "mt-1 mb-1.5 rounded-lg border bg-card overflow-hidden transition-all scroll-mt-4",
-          subAgent.status === "running"
-            ? "border-l-2 animate-[pulse-border_2s_ease-in-out_infinite]"
-            : "border border-border",
-          "target:ring-2 target:ring-accent/40 target:ring-offset-1 target:ring-offset-background"
+          "mt-1 mb-1.5 rounded-lg overflow-hidden transition-all scroll-mt-4 bg-card",
+          isRunning ? "border-l-2 border border-border" : "border border-border",
+          highlighted && "ring-1 ring-accent/50 bg-accent/5",
+          "target:ring-1 target:ring-accent/40"
         )}
-        style={subAgent.status === "running" ? {
-          borderLeftColor: agentColor,
-          boxShadow: `inset 2px 0 8px -4px ${agentColor}40`,
-        } : undefined}
+        style={{
+          marginLeft: nestingDepth > 0 ? nestingDepth * 16 : undefined,
+          ...(isRunning
+            ? { borderLeftColor: agentColor, boxShadow: `inset 2px 0 8px -4px ${agentColor}40` }
+            : isError
+              ? { borderLeftWidth: 2, borderLeftColor: "rgb(239 68 68 / 0.7)" }
+              : isInterrupted
+                ? { borderLeftWidth: 2, borderLeftColor: "rgb(245 158 11 / 0.6)" }
+                : undefined),
+        }}
       >
         {hasExpandableContent ? (
           <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
             <div className="flex items-center gap-2 px-3 py-2">
               <CollapsibleTrigger className="flex flex-1 items-center gap-2 hover:bg-accent/30 rounded -ml-1 pl-1 py-0.5 min-w-0">
                 {isExpanded ? (
-                  <ChevronDown className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                  <ChevronDown className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
                 ) : (
-                  <ChevronRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                  <ChevronRight className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
                 )}
-                <AgentIcon className="h-4 w-4 flex-shrink-0" style={{ color: agentColor }} />
+                <AgentIcon
+                  className="h-4 w-4 flex-shrink-0"
+                  style={{ color: agentColor }}
+                />
                 <span className="font-medium text-sm truncate">
                   {subAgent.agentName || subAgent.agentId}
                 </span>
                 <StatusBadge status={subAgent.status} />
-                {subAgent.depth > 1 && (
-                  <Badge variant="outline" className="text-[10px] px-1.5 py-0 flex-shrink-0">
-                    depth {subAgent.depth}
-                  </Badge>
-                )}
                 {totalToolCalls > 0 && (
                   <span className="text-[10px] text-muted-foreground flex-shrink-0">
                     {totalToolCalls} tool{totalToolCalls > 1 ? "s" : ""}
@@ -435,7 +492,7 @@ export const SubAgentCard = memo(function SubAgentCard({
               {/* Task description */}
               {subAgent.task && (
                 <div className="mb-1.5 text-xs text-muted-foreground line-clamp-2 px-1.5">
-                  {subAgent.task}
+                  <Markdown content={cleanSubAgentText(subAgent.task)} className="text-xs [&_p]:mb-0" />
                 </div>
               )}
 
@@ -518,10 +575,15 @@ export const SubAgentCard = memo(function SubAgentCard({
 
               {/* Response preview (completed agents) */}
               {subAgent.status === "completed" && subAgent.response && (
-                <div className="mt-1.5 text-xs text-muted-foreground/80 line-clamp-3 px-1.5 border-t border-border/30 pt-1.5">
-                  {subAgent.response.length > 300
-                    ? `${subAgent.response.slice(0, 300)}...`
-                    : subAgent.response}
+                <div className="mt-1.5 text-xs text-muted-foreground line-clamp-3 px-1.5 border-t border-border/40 pt-1.5">
+                  <Markdown
+                    content={cleanSubAgentText(
+                      subAgent.response.length > 300
+                        ? `${subAgent.response.slice(0, 300)}...`
+                        : subAgent.response
+                    )}
+                    className="text-xs [&_p]:mb-0"
+                  />
                 </div>
               )}
 
@@ -537,16 +599,14 @@ export const SubAgentCard = memo(function SubAgentCard({
         ) : (
           <div className="flex items-center gap-2 px-3 py-2">
             <div className="flex flex-1 items-center gap-2 -ml-1 pl-1 py-0.5 min-w-0">
-              <AgentIcon className="h-4 w-4 flex-shrink-0" style={{ color: agentColor }} />
+              <AgentIcon
+                className="h-4 w-4 flex-shrink-0"
+                style={{ color: agentColor }}
+              />
               <span className="font-medium text-sm truncate">
                 {subAgent.agentName || subAgent.agentId}
               </span>
               <StatusBadge status={subAgent.status} />
-              {subAgent.depth > 1 && (
-                <Badge variant="outline" className="text-[10px] px-1.5 py-0 flex-shrink-0">
-                  depth {subAgent.depth}
-                </Badge>
-              )}
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
               {subAgent.durationMs !== undefined && (

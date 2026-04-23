@@ -25,6 +25,7 @@ export interface PersistedPipelineBlock {
   type: "pipeline_progress";
   timestamp: string;
   data: import("@/store").PipelineExecution;
+  planStepIndex?: number;
 }
 
 export interface PersistedToolExecBlock {
@@ -40,6 +41,7 @@ export interface PersistedSubAgentBlock {
   timestamp: string;
   data: import("@/store").ActiveSubAgent;
   batchId?: string;
+  planStepIndex?: number;
 }
 
 export type PersistedTimelineBlock =
@@ -55,6 +57,10 @@ export interface PersistedTerminalData {
   scrollback: string;
   customName?: string;
   planJson?: unknown;
+  executionMode?: string;
+  useAgents?: boolean;
+  retiredPlansJson?: unknown;
+  planMessageId?: string | null;
   timelineBlocks?: PersistedTimelineBlock[];
 }
 

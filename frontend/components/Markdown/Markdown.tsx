@@ -29,10 +29,12 @@ const getCodeTheme = async () => {
     'code[class*="language-"]': {
       ...oneDark['code[class*="language-"]'],
       background: "transparent",
+      textShadow: "none",
     },
     'pre[class*="language-"]': {
       ...oneDark['pre[class*="language-"]'],
       background: "transparent",
+      textShadow: "none",
     },
   };
 };
@@ -195,7 +197,7 @@ function CodeBlock({
             <FileCode className="w-3 h-3 text-muted-foreground/60" />
             <span className="text-[10px] font-medium text-muted-foreground/70">{langLabel}</span>
             {isLong && (
-              <span className="text-[9px] text-muted-foreground/40 ml-1">{lineCount} lines</span>
+              <span className="text-[9px] text-muted-foreground/60 ml-1">{lineCount} lines</span>
             )}
           </div>
           <div className="flex items-center gap-1">
@@ -278,7 +280,8 @@ export const Markdown = memo(function Markdown({
   // During streaming, defer markdown parsing so React can skip intermediate
   // renders and keep the UI responsive even on long responses.
   const deferredContent = useDeferredValue(content);
-  const renderedContent = streaming ? deferredContent : content;
+  const rawContent = streaming ? deferredContent : content;
+  const renderedContent = useMemo(() => stripAllAnsi(rawContent), [rawContent]);
 
   const contextValue = useMemo(
     () => ({ sessionId, workingDirectory, fileIndex: fileIndex ?? undefined }),

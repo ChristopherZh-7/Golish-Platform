@@ -102,45 +102,45 @@ export function NewWorktreeModal({
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
 
       {/* Modal */}
-      <div className="relative bg-[#161b22] border border-[#30363d] rounded-lg shadow-xl w-full max-w-md mx-4">
+      <div className="relative bg-card border border-border rounded-lg shadow-xl w-full max-w-md mx-4">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-[#30363d]">
-          <h2 className="text-lg font-semibold text-gray-200">New Worktree</h2>
+        <div className="flex items-center justify-between p-4 border-b border-border">
+          <h2 className="text-lg font-semibold text-foreground/90">New Worktree</h2>
           <button
             type="button"
             onClick={onClose}
-            className="p-1 hover:bg-[#30363d] rounded transition-colors"
+            className="p-1 hover:bg-muted rounded transition-colors"
             aria-label="Close"
           >
-            <X size={18} className="text-gray-400" />
+            <X size={18} className="text-muted-foreground" />
           </button>
         </div>
 
         {/* Body */}
         <form onSubmit={handleSubmit} className="p-4 space-y-4">
-          <div className="text-sm text-gray-400 mb-4">
+          <div className="text-sm text-muted-foreground mb-4">
             Create a new worktree for{" "}
-            <span className="text-gray-200 font-medium">{projectName}</span>
+            <span className="text-foreground/90 font-medium">{projectName}</span>
           </div>
 
           {/* Branch name */}
           <label className="block">
-            <span className="block text-sm font-medium text-gray-300 mb-1">Branch Name</span>
+            <span className="block text-sm font-medium text-foreground/80 mb-1">Branch Name</span>
             <input
               type="text"
               value={branchName}
               onChange={(e) => setBranchName(e.target.value)}
               placeholder="feature/my-new-feature"
-              className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-md text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#58a6ff] focus:border-transparent"
+              className="w-full px-3 py-2 bg-background border border-border rounded-md text-foreground/90 placeholder-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent"
               disabled={isCreating}
             />
           </label>
 
           {/* Base branch */}
           <div className="block">
-            <span className="block text-sm font-medium text-gray-300 mb-1">Base Branch</span>
+            <span className="block text-sm font-medium text-foreground/80 mb-1">Base Branch</span>
             {isLoadingBranches ? (
-              <div className="flex items-center text-gray-500 text-sm py-2">
+              <div className="flex items-center text-muted-foreground text-sm py-2">
                 <Loader2 size={14} className="animate-spin mr-2" />
                 Loading branches...
               </div>
@@ -158,7 +158,7 @@ export function NewWorktreeModal({
 
           {/* Error */}
           {error && (
-            <div className="text-sm text-[#f85149] bg-[#f8514922] border border-[#f8514966] rounded-md p-3">
+            <div className="text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-md p-3">
               {error}
             </div>
           )}
@@ -169,14 +169,14 @@ export function NewWorktreeModal({
               type="button"
               onClick={onClose}
               disabled={isCreating}
-              className="px-4 py-2 text-sm text-gray-300 hover:text-white hover:bg-[#30363d] rounded-md transition-colors disabled:opacity-50"
+              className="px-4 py-2 text-sm text-foreground/80 hover:text-foreground hover:bg-muted rounded-md transition-colors disabled:opacity-50"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={isCreating || isLoadingBranches || !branchName.trim() || !baseBranch}
-              className="px-4 py-2 text-sm bg-[#238636] text-white rounded-md hover:bg-[#2ea043] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
+              className="px-4 py-2 text-sm bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
             >
               {isCreating ? (
                 <>

@@ -294,7 +294,7 @@ export function VulnIntelPanel() {
   if (!visitedTabs.has(topTab)) visitedTabs.add(topTab);
 
   return (
-    <div className="h-full flex flex-col bg-background/95">
+    <div className="h-full flex flex-col">
       <VulnKbTopBar activeTab={topTab} onTabChange={setTopTab} />
 
       {/* Wiki view - lazy mounted, hidden when not active */}

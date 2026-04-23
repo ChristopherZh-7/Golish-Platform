@@ -42,6 +42,7 @@ pub mod definition;
 pub mod discovery;
 pub mod executor;
 pub mod file_loader;
+pub mod prompt_registry;
 pub mod schemas;
 pub mod transcript;
 
@@ -62,3 +63,6 @@ pub use file_loader::AgentFileInfo;
 
 // Re-export executor types
 pub use executor::{execute_sub_agent, SubAgentExecutorContext, ToolProvider};
+
+// Re-export prompt registry
+pub use prompt_registry::{PromptContext, PromptRegistry};

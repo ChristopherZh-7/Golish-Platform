@@ -250,6 +250,9 @@ class ThemeManagerImpl {
     cssVars.push(`--input: ${ui.input};`);
     cssVars.push(`--ring: ${ui.ring};`);
 
+    // Derive --bg-hover from muted for theme consistency
+    cssVars.push(`--bg-hover: ${ui.muted};`);
+
     // Chart colors
     if (ui.chart) {
       cssVars.push(`--chart-1: ${ui.chart.c1};`);

@@ -110,7 +110,7 @@ function ReconAssetsTable({ data }: { data: TargetAsset[] }) {
   }
   return (
     <table className="w-full text-[10px]">
-      <thead className="sticky top-0 bg-background/95 z-10">
+      <thead className="sticky top-0 bg-card z-10">
         <tr className="text-muted-foreground/30 text-left border-b border-border/10">
           <th className="px-4 py-2 font-medium">Type</th>
           <th className="px-2 py-2 font-medium">Value</th>
@@ -156,7 +156,7 @@ function ReconEndpointsTable({ data }: { data: ApiEndpoint[] }) {
   };
   return (
     <table className="w-full text-[10px]">
-      <thead className="sticky top-0 bg-background/95 z-10">
+      <thead className="sticky top-0 bg-card z-10">
         <tr className="text-muted-foreground/30 text-left border-b border-border/10">
           <th className="px-4 py-2 font-medium w-[60px]">Method</th>
           <th className="px-2 py-2 font-medium">Path</th>
@@ -194,7 +194,7 @@ function ReconFingerprintsTable({ data }: { data: Fingerprint[] }) {
   }
   return (
     <table className="w-full text-[10px]">
-      <thead className="sticky top-0 bg-background/95 z-10">
+      <thead className="sticky top-0 bg-card z-10">
         <tr className="text-muted-foreground/30 text-left border-b border-border/10">
           <th className="px-4 py-2 font-medium">Category</th>
           <th className="px-2 py-2 font-medium">Name</th>

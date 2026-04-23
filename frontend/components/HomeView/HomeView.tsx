@@ -99,22 +99,22 @@ const StatsBadge = memo(function StatsBadge({
   }
 
   return (
-    <div className="flex items-center bg-[#0d1117] px-2 py-1 rounded-full border border-[#30363d] space-x-2 text-xs text-gray-500">
+    <div className="flex items-center bg-background px-2 py-1 rounded-full border border-border space-x-2 text-xs text-muted-foreground">
       {fileCount > 0 && (
         <div className="flex items-center">
-          <File size={12} className="mr-0.5 text-gray-500" />
+          <File size={12} className="mr-0.5 text-muted-foreground" />
           <span>{fileCount}</span>
         </div>
       )}
       {insertions > 0 && (
         <div className="flex items-center">
-          <Plus size={12} className="mr-0.5 text-[#3fb950]" />
+          <Plus size={12} className="mr-0.5 text-[var(--ansi-green)]" />
           <span>{insertions}</span>
         </div>
       )}
       {deletions > 0 && (
         <div className="flex items-center">
-          <Minus size={12} className="mr-0.5 text-[#f85149]" />
+          <Minus size={12} className="mr-0.5 text-[var(--ansi-red)]" />
           <span>{deletions}</span>
         </div>
       )}
@@ -125,8 +125,8 @@ const StatsBadge = memo(function StatsBadge({
 /** Worktree count badge */
 const WorktreeBadge = memo(function WorktreeBadge({ count }: { count: number }) {
   return (
-    <div className="flex items-center bg-[#0d1117] px-2 py-1 rounded-full border border-[#30363d] text-xs text-gray-500">
-      <TreePine size={14} className="mr-1 text-[#238636]" />
+    <div className="flex items-center bg-background px-2 py-1 rounded-full border border-border text-xs text-muted-foreground">
+      <TreePine size={14} className="mr-1 text-primary" />
       {count}
     </div>
   );
@@ -174,13 +174,13 @@ function WorktreeContextMenu({
   return (
     <div
       ref={menuRef}
-      className="fixed z-50 bg-[#1c2128] border border-[#30363d] rounded-md shadow-xl py-1 min-w-[160px]"
+      className="fixed z-50 bg-popover border border-border rounded-md shadow-xl py-1 min-w-[160px]"
       style={{ left: x, top: y }}
     >
       <button
         type="button"
         onClick={handleDeleteClick}
-        className="w-full flex items-center px-3 py-2 text-sm text-red-400 hover:bg-[#30363d] hover:text-red-300 transition-colors text-left"
+        className="w-full flex items-center px-3 py-2 text-sm text-destructive hover:bg-muted hover:text-destructive/80 transition-colors text-left"
       >
         <Trash2 size={14} className="mr-2" />
         Delete Worktree
@@ -208,7 +208,7 @@ export const ProjectRow = memo(function ProjectRow({
   onDelete: () => void;
 }) {
   return (
-    <div className="border-b border-[#30363d]/50 last:border-0">
+    <div className="border-b border-border/50 last:border-0">
       {/* Project header */}
       <div
         role="button"
@@ -216,28 +216,28 @@ export const ProjectRow = memo(function ProjectRow({
         onClick={onToggle}
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); } }}
         onContextMenu={onContextMenu}
-        className="w-full flex items-center justify-between p-3 hover:bg-[#1c2128] transition-colors group text-left cursor-pointer"
+        className="w-full flex items-center justify-between p-3 hover:bg-muted transition-colors group text-left cursor-pointer"
       >
         <div className="flex items-center min-w-0 mr-4">
-          <div className="mr-2 flex-shrink-0 hover:bg-[#30363d] rounded p-0.5 transition-colors">
+          <div className="mr-2 flex-shrink-0 hover:bg-border rounded p-0.5 transition-colors">
             {isExpanded ? (
-              <ChevronDown size={14} className="text-gray-500" />
+              <ChevronDown size={14} className="text-muted-foreground" />
             ) : (
-              <ChevronRight size={14} className="text-gray-500" />
+              <ChevronRight size={14} className="text-muted-foreground" />
             )}
           </div>
           <FolderGit2
             size={16}
-            className="text-gray-500 mr-3 flex-shrink-0 group-hover:text-[#58a6ff] transition-colors"
+            className="text-muted-foreground mr-3 flex-shrink-0 group-hover:text-primary transition-colors"
           />
           <div className="min-w-0">
-            <div className="text-sm font-medium text-gray-300 truncate group-hover:text-white transition-colors">
+            <div className="text-sm font-medium text-foreground/80 truncate group-hover:text-foreground transition-colors">
               {project.name}
             </div>
           </div>
         </div>
 
-        <div className="flex items-center text-xs text-gray-500 flex-shrink-0 space-x-3">
+        <div className="flex items-center text-xs text-muted-foreground flex-shrink-0 space-x-3">
           <WorktreeBadge count={project.branches.length} />
           <span>{project.last_activity}</span>
           <button
@@ -246,7 +246,7 @@ export const ProjectRow = memo(function ProjectRow({
               e.stopPropagation();
               onDelete();
             }}
-            className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-red-900/30 text-gray-500 hover:text-red-400 flex-shrink-0"
+            className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive flex-shrink-0"
             title="Delete project"
           >
             <X size={14} />
@@ -256,22 +256,22 @@ export const ProjectRow = memo(function ProjectRow({
 
       {/* Expanded branches */}
       {isExpanded && project.branches.length > 0 && (
-        <div className="bg-[#0d1117] border-t border-[#30363d]/50 max-h-[420px] overflow-y-auto custom-scrollbar">
+        <div className="bg-background border-t border-border/50 max-h-[420px] overflow-y-auto custom-scrollbar">
           {project.branches.map((branch) => (
             <button
               type="button"
               key={branch.name}
               onClick={() => onOpenDirectory(branch.path)}
               onContextMenu={(e) => onWorktreeContextMenu(e, branch.path, branch.name)}
-              className="w-full flex items-center p-3 pl-12 hover:bg-[#161b22] transition-colors text-left border-b border-[#30363d]/30 last:border-0 group"
+              className="w-full flex items-center p-3 pl-12 hover:bg-card transition-colors text-left border-b border-border/30 last:border-0 group"
             >
               <div className="flex items-center min-w-0 w-[450px] mr-4">
                 <div className="min-w-0">
-                  <div className="flex items-center text-xs text-gray-500">
-                    <GitBranch size={12} className="mr-1 text-[#58a6ff] flex-shrink-0" />
-                    <span className="text-gray-300 truncate">{branch.name}</span>
+                  <div className="flex items-center text-xs text-muted-foreground">
+                    <GitBranch size={12} className="mr-1 text-primary flex-shrink-0" />
+                    <span className="text-foreground/80 truncate">{branch.name}</span>
                   </div>
-                  <div className="text-xs text-gray-600 truncate font-mono mt-0.5">
+                  <div className="text-xs text-muted-foreground/60 truncate font-mono mt-0.5">
                     {branch.path}
                   </div>
                 </div>
@@ -283,11 +283,11 @@ export const ProjectRow = memo(function ProjectRow({
                 deletions={branch.deletions}
               />
 
-              <div className="flex items-center text-xs text-gray-500 flex-shrink-0 ml-auto space-x-2">
+              <div className="flex items-center text-xs text-muted-foreground flex-shrink-0 ml-auto space-x-2">
                 <span>{branch.last_activity}</span>
                 <ChevronRight
                   size={14}
-                  className="opacity-0 group-hover:opacity-100 transition-opacity text-[#58a6ff]"
+                  className="opacity-0 group-hover:opacity-100 transition-opacity text-primary"
                 />
               </div>
             </button>
@@ -312,21 +312,21 @@ export const RecentDirectoryRow = memo(function RecentDirectoryRow({
     <button
       type="button"
       onClick={onOpen}
-      className="w-full flex items-center p-3 hover:bg-[#1c2128] transition-colors group text-left border-b border-[#30363d]/50 last:border-0"
+      className="w-full flex items-center p-3 hover:bg-muted transition-colors group text-left border-b border-border/50 last:border-0"
     >
       <div className="flex items-center min-w-0 w-[500px] mr-4">
         <FolderOpen
           size={16}
-          className="text-gray-500 mr-3 flex-shrink-0 group-hover:text-[#58a6ff] transition-colors"
+          className="text-muted-foreground mr-3 flex-shrink-0 group-hover:text-primary transition-colors"
         />
         <div className="min-w-0">
-          <div className="text-sm font-medium text-gray-300 truncate group-hover:text-white transition-colors">
+          <div className="text-sm font-medium text-foreground/80 truncate group-hover:text-foreground transition-colors">
             {directory.name}
           </div>
           {directory.branch && (
-            <div className="flex items-center text-xs text-gray-500 opacity-60">
-              <GitBranch size={12} className="mr-1 text-[#58a6ff]" />
-              <span className="text-gray-300">{directory.branch}</span>
+            <div className="flex items-center text-xs text-muted-foreground opacity-60">
+              <GitBranch size={12} className="mr-1 text-primary" />
+              <span className="text-foreground/80">{directory.branch}</span>
             </div>
           )}
         </div>
@@ -338,7 +338,7 @@ export const RecentDirectoryRow = memo(function RecentDirectoryRow({
         deletions={directory.deletions}
       />
 
-      <div className="flex items-center text-xs text-gray-500 flex-shrink-0 ml-auto space-x-2">
+      <div className="flex items-center text-xs text-muted-foreground flex-shrink-0 ml-auto space-x-2">
         <span>{directory.last_accessed}</span>
         <button
           type="button"
@@ -346,7 +346,7 @@ export const RecentDirectoryRow = memo(function RecentDirectoryRow({
             e.stopPropagation();
             onRemove();
           }}
-          className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-red-900/30 text-gray-500 hover:text-red-400 flex-shrink-0"
+          className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive flex-shrink-0"
           title="Remove from recent"
         >
           <X size={14} />
@@ -398,15 +398,15 @@ function ProjectContextMenu({
   return (
     <div
       ref={menuRef}
-      className="fixed z-50 bg-[#1c2128] border border-[#30363d] rounded-md shadow-xl py-1 min-w-[160px]"
+      className="fixed z-50 bg-popover border border-border rounded-md shadow-xl py-1 min-w-[160px]"
       style={{ left: x, top: y }}
     >
       <button
         type="button"
         onClick={handleNewWorktreeClick}
-        className="w-full flex items-center px-3 py-2 text-sm text-gray-300 hover:bg-[#30363d] hover:text-white transition-colors text-left"
+        className="w-full flex items-center px-3 py-2 text-sm text-foreground/80 hover:bg-muted hover:text-foreground transition-colors text-left"
       >
-        <TreePine size={14} className="mr-2 text-[#238636]" />
+        <TreePine size={14} className="mr-2 text-primary" />
         New Worktree
       </button>
     </div>
@@ -735,7 +735,7 @@ export const HomeView = memo(function HomeView() {
   );
 
   if (isLoading) {
-    return <div className="h-full flex items-center justify-center text-gray-500">Loading...</div>;
+    return <div className="h-full flex items-center justify-center text-muted-foreground">Loading...</div>;
   }
 
   return (
@@ -748,11 +748,11 @@ export const HomeView = memo(function HomeView() {
 
       {/* Delete Project Confirmation Dialog */}
       <Dialog open={!!deleteConfirm} onOpenChange={() => setDeleteConfirm(null)}>
-        <DialogContent className="bg-[#1c2128] border-[#30363d] text-gray-300 max-w-sm">
+        <DialogContent className="bg-card border-border text-foreground/80 max-w-sm">
           <DialogHeader>
             <DialogTitle>Delete Project</DialogTitle>
             <DialogDescription>
-              Remove <span className="text-white font-medium">{deleteConfirm?.name}</span> from
+              Remove <span className="text-foreground font-medium">{deleteConfirm?.name}</span> from
               Golish? This deletes the project configuration but won't delete any files.
             </DialogDescription>
           </DialogHeader>
@@ -815,12 +815,12 @@ export const HomeView = memo(function HomeView() {
           document.body
         )}
 
-      <div className="h-full overflow-auto bg-[#0d1117]">
+      <div className="h-full overflow-auto bg-background">
         <div className="flex flex-col items-center justify-center min-h-full py-16 px-8">
           {/* Logo / Title */}
           <div className="text-center mb-10">
-            <h1 className="text-3xl font-bold text-white tracking-tight mb-1">Golish</h1>
-            <p className="text-sm text-gray-500">Penetration Testing Platform</p>
+            <h1 className="text-3xl font-bold text-foreground tracking-tight mb-1">Golish</h1>
+            <p className="text-sm text-muted-foreground">Penetration Testing Platform</p>
           </div>
 
           {/* Action Buttons */}
@@ -828,17 +828,17 @@ export const HomeView = memo(function HomeView() {
             <button
               type="button"
               onClick={handleOpenExistingProject}
-              className="flex items-center gap-2 px-5 py-2.5 bg-[#161b22] border border-[#30363d] rounded-lg hover:bg-[#1c2128] hover:border-[#484f58] transition-colors text-sm text-gray-200"
+              className="flex items-center gap-2 px-5 py-2.5 bg-card border border-border rounded-lg hover:bg-muted hover:border-border/70 transition-colors text-sm text-foreground/90"
             >
-              <FolderOpen size={16} className="text-gray-400" />
+              <FolderOpen size={16} className="text-muted-foreground" />
               Open Project
             </button>
             <button
               type="button"
               onClick={handleSetupNewProject}
-              className="flex items-center gap-2 px-5 py-2.5 bg-[#161b22] border border-[#30363d] rounded-lg hover:bg-[#1c2128] hover:border-[#484f58] transition-colors text-sm text-gray-200"
+              className="flex items-center gap-2 px-5 py-2.5 bg-card border border-border rounded-lg hover:bg-muted hover:border-border/70 transition-colors text-sm text-foreground/90"
             >
-              <Plus size={16} className="text-gray-400" />
+              <Plus size={16} className="text-muted-foreground" />
               New Project
             </button>
           </div>
@@ -848,7 +848,7 @@ export const HomeView = memo(function HomeView() {
             {savedProjects.length > 0 && (
               <div className="mb-8">
                 <div className="flex items-center justify-between mb-3">
-                  <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
                     Recent projects
                   </h2>
                 </div>
@@ -863,18 +863,18 @@ export const HomeView = memo(function HomeView() {
                       onClick={() => { if (!openingProject) handleOpenProject(proj.name, proj.rootPath); }}
                       onKeyDown={(e) => { if (!openingProject && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); handleOpenProject(proj.name, proj.rootPath); } }}
                       className={`w-full flex items-center justify-between px-3 py-2.5 rounded-md transition-colors text-left group ${
-                        openingProject ? "cursor-wait" : "cursor-pointer hover:bg-[#161b22]"
-                      } ${proj.name === currentProjectName ? "bg-[#161b22]" : ""} ${
-                        isOpening ? "bg-[#161b22] ring-1 ring-accent/30" : ""
+                        openingProject ? "cursor-wait" : "cursor-pointer hover:bg-card"
+                      } ${proj.name === currentProjectName ? "bg-card" : ""} ${
+                        isOpening ? "bg-card ring-1 ring-accent/30" : ""
                       }`}
                     >
                       <div className="flex items-center gap-2.5 min-w-0">
                         {isOpening ? (
                           <Loader2 size={14} className="text-accent animate-spin flex-shrink-0" />
                         ) : null}
-                        <span className="text-sm text-gray-200">{proj.name}</span>
+                        <span className="text-sm text-foreground/90">{proj.name}</span>
                         {proj.name === currentProjectName && !isOpening && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#238636]/20 text-[#238636]">
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/20 text-primary">
                             Active
                           </span>
                         )}
@@ -885,7 +885,7 @@ export const HomeView = memo(function HomeView() {
                         )}
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className="text-xs text-gray-600 font-mono truncate max-w-[200px]">
+                        <span className="text-xs text-muted-foreground/60 font-mono truncate max-w-[200px]">
                           {proj.rootPath.replace(/^\/Users\/[^/]+/, "~")}
                         </span>
                         {!isOpening && (
@@ -895,10 +895,10 @@ export const HomeView = memo(function HomeView() {
                             e.stopPropagation();
                             setDeleteConfirm({ name: proj.name, path: proj.rootPath });
                           }}
-                          className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-[#30363d] transition-all"
+                          className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-muted transition-all"
                           title="Delete project"
                         >
-                          <X size={12} className="text-gray-500" />
+                          <X size={12} className="text-muted-foreground" />
                         </button>
                         )}
                       </div>
@@ -910,7 +910,7 @@ export const HomeView = memo(function HomeView() {
             )}
 
             {savedProjects.length === 0 && (
-              <div className="text-center text-gray-500 text-sm">
+              <div className="text-center text-muted-foreground text-sm">
                 No projects yet. Create one to get started.
               </div>
             )}

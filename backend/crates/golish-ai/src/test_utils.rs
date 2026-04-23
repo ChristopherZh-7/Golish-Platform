@@ -629,6 +629,7 @@ impl TestContext {
             db_tracker: None,
             cancelled: None,
             execution_monitor: None,
+            execution_mode: crate::execution_mode::ExecutionMode::Chat,
         }
     }
 

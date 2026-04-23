@@ -1,11 +1,5 @@
 ---
-description: 
-alwaysApply: true
----
-
----
 description: Dialogue protocol - mandatory confirmation via popup after task completion
-globs: 
 alwaysApply: true
 ---
 

@@ -1292,12 +1292,12 @@ export async function mockPlanPipeline(): Promise<void> {
     explanation: "Recon Pipeline — target.example.com",
     summary: { total: 6, completed: 3, in_progress: 1, pending: 2 },
     steps: [
-      { step: "DNS Lookup — dig +short target.example.com", status: "completed" },
-      { step: "Subdomain Enum — subfinder -d target.example.com", status: "completed" },
-      { step: "HTTP Probe — httpx -l subdomains.txt -sc -title", status: "completed" },
-      { step: "Port Scan — nmap -sV --top-ports 1000", status: "in_progress" },
-      { step: "Tech Fingerprint — whatweb", status: "pending" },
-      { step: "JS Harvest (AI) — js_harvest {target}", status: "pending" },
+      { id: "step-dns", step: "DNS Lookup — dig +short target.example.com", status: "completed" },
+      { id: "step-sub", step: "Subdomain Enum — subfinder -d target.example.com", status: "completed" },
+      { id: "step-http", step: "HTTP Probe — httpx -l subdomains.txt -sc -title", status: "completed" },
+      { id: "step-port", step: "Port Scan — nmap -sV --top-ports 1000", status: "in_progress" },
+      { id: "step-tech", step: "Tech Fingerprint — whatweb", status: "pending" },
+      { id: "step-js", step: "JS Harvest (AI) — js_harvest {target}", status: "pending" },
     ],
     updated_at: new Date().toISOString(),
   });
@@ -1365,7 +1365,7 @@ export async function mockFullPlanExecution(): Promise<void> {
   await delay(200);
 
   // plan_updated event (emitted by the backend when update_plan runs)
-  dispatchMockEvent("ai-event", { type: "plan_updated", session_id: aiSessionId, version: 1, explanation: "System reconnaissance", steps: [{ step: "Check system information", status: "in_progress" }, { step: "List files in workspace", status: "pending" }, { step: "Show network configuration", status: "pending" }], summary: { total: 3, completed: 0, in_progress: 1, pending: 2 } });
+  dispatchMockEvent("ai-event", { type: "plan_updated", session_id: aiSessionId, version: 1, explanation: "System reconnaissance", steps: [{ id: "step-sysinfo", step: "Check system information", status: "in_progress" }, { id: "step-listfiles", step: "List files in workspace", status: "pending" }, { id: "step-network", step: "Show network configuration", status: "pending" }], summary: { total: 3, completed: 0, in_progress: 1, pending: 2 } });
   await delay(100);
 
   await emit({ type: "tool_result", tool_name: "update_plan", result: "Plan created with 3 steps", success: true, request_id: planReqId1 });
@@ -1390,7 +1390,7 @@ export async function mockFullPlanExecution(): Promise<void> {
   await emit({ type: "tool_request", tool_name: "update_plan", args: {}, request_id: planReqId2 });
   await delay(100);
 
-  dispatchMockEvent("ai-event", { type: "plan_updated", session_id: aiSessionId, version: 2, explanation: "System reconnaissance", steps: [{ step: "Check system information", status: "completed" }, { step: "List files in workspace", status: "in_progress" }, { step: "Show network configuration", status: "pending" }], summary: { total: 3, completed: 1, in_progress: 1, pending: 1 } });
+  dispatchMockEvent("ai-event", { type: "plan_updated", session_id: aiSessionId, version: 2, explanation: "System reconnaissance", steps: [{ id: "step-sysinfo", step: "Check system information", status: "completed" }, { id: "step-listfiles", step: "List files in workspace", status: "in_progress" }, { id: "step-network", step: "Show network configuration", status: "pending" }], summary: { total: 3, completed: 1, in_progress: 1, pending: 1 } });
   await delay(100);
 
   await emit({ type: "tool_result", tool_name: "update_plan", result: "Plan updated", success: true, request_id: planReqId2 });
@@ -1409,7 +1409,7 @@ export async function mockFullPlanExecution(): Promise<void> {
   await emit({ type: "tool_request", tool_name: "update_plan", args: {}, request_id: planReqId3 });
   await delay(100);
 
-  dispatchMockEvent("ai-event", { type: "plan_updated", session_id: aiSessionId, version: 3, explanation: "System reconnaissance", steps: [{ step: "Check system information", status: "completed" }, { step: "List files in workspace", status: "completed" }, { step: "Show network configuration", status: "in_progress" }], summary: { total: 3, completed: 2, in_progress: 1, pending: 0 } });
+  dispatchMockEvent("ai-event", { type: "plan_updated", session_id: aiSessionId, version: 3, explanation: "System reconnaissance", steps: [{ id: "step-sysinfo", step: "Check system information", status: "completed" }, { id: "step-listfiles", step: "List files in workspace", status: "completed" }, { id: "step-network", step: "Show network configuration", status: "in_progress" }], summary: { total: 3, completed: 2, in_progress: 1, pending: 0 } });
   await delay(100);
 
   await emit({ type: "tool_result", tool_name: "update_plan", result: "Plan updated", success: true, request_id: planReqId3 });
@@ -1431,7 +1431,7 @@ export async function mockFullPlanExecution(): Promise<void> {
   await emit({ type: "tool_request", tool_name: "update_plan", args: {}, request_id: planReqId4 });
   await delay(100);
 
-  dispatchMockEvent("ai-event", { type: "plan_updated", session_id: aiSessionId, version: 4, explanation: "System reconnaissance", steps: [{ step: "Check system information", status: "completed" }, { step: "List files in workspace", status: "completed" }, { step: "Show network configuration", status: "completed" }], summary: { total: 3, completed: 3, in_progress: 0, pending: 0 } });
+  dispatchMockEvent("ai-event", { type: "plan_updated", session_id: aiSessionId, version: 4, explanation: "System reconnaissance", steps: [{ id: "step-sysinfo", step: "Check system information", status: "completed" }, { id: "step-listfiles", step: "List files in workspace", status: "completed" }, { id: "step-network", step: "Show network configuration", status: "completed" }], summary: { total: 3, completed: 3, in_progress: 0, pending: 0 } });
   await delay(100);
 
   await emit({ type: "tool_result", tool_name: "update_plan", result: "All steps completed", success: true, request_id: planReqId4 });
@@ -1776,6 +1776,356 @@ export function cleanupMocks(): void {
   console.log("[Mocks] Tauri mocks cleared");
 }
 
+/**
+ * All-in-one showcase: triggers EVERY visual component inside AIChatPanel.
+ * Call from console: __demoAllChatStyles()
+ *
+ * Components triggered:
+ *  1. MessageBlock (user + assistant with markdown + thinking)
+ *  2. TaskPlanCard (active + retired iterations)
+ *  3. StickyPlanProgress
+ *  4. ToolCallSummary / ToolCallCard (completed tools in message)
+ *  5. SubAgentInlineCard (sub_agent_* tool in message)
+ *  6. SubAgentSummaryBar (from activeSubAgents)
+ *  7. WorkflowProgress
+ *  8. CompactionNotice
+ *  9. AskHumanInline
+ * 10. CollapsibleToolCall (pending approval)
+ * 11. PlanUpdatedNotice
+ */
+export async function demoAllChatStyles(): Promise<void> {
+  const { useStore } = await import("@/store/index");
+  const state = useStore.getState();
+  const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  const convId = state.activeConversationId;
+  const conv = convId ? state.conversations[convId] : null;
+  const aiSessionId = conv?.aiSessionId;
+  const sessionId = state.activeSessionId ?? Object.keys(state.sessions)[0];
+
+  if (!aiSessionId || !sessionId) {
+    console.error("[demoAllChatStyles] No active conversation. Send a message first.");
+    return;
+  }
+
+  const emit = (event: Record<string, unknown>) =>
+    dispatchMockEvent("ai-event", { ...event, session_id: aiSessionId });
+  const reqId = () => `mock-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+  console.log("[demoAllChatStyles] Starting comprehensive style showcase...");
+
+  // === 1. AI turn with thinking + plan v1 + tools ===
+  const turnId1 = `turn-${Date.now()}`;
+  await emit({ type: "started", turn_id: turnId1 });
+  await delay(200);
+
+  // Thinking/reasoning
+  await emit({ type: "reasoning", content: "Let me analyze the codebase structure first. I need to understand the authentication patterns before making changes. The current implementation uses session-based auth, but the user wants JWT..." });
+  await delay(200);
+
+  // Text
+  const text1 = "I'll create a plan and start working on it.\n\n";
+  await emit({ type: "text_delta", delta: text1, accumulated: text1 });
+  await delay(200);
+
+  // Plan v1
+  const planReq1 = reqId();
+  await emit({ type: "tool_request", tool_name: "update_plan", args: { explanation: "JWT migration" }, request_id: planReq1 });
+  await emit({ type: "tool_result", tool_name: "update_plan", result: "ok", success: true, request_id: planReq1 });
+  await emit({
+    type: "plan_updated", version: 1, explanation: "JWT migration plan",
+    steps: [
+      { id: "step-auth-analyze", step: "Analyze current auth patterns", status: "completed" },
+      { id: "step-jwt-middleware", step: "Create JWT middleware", status: "completed" },
+      { id: "step-api-routes", step: "Update API routes", status: "completed" },
+    ],
+    summary: { total: 3, completed: 3, in_progress: 0, pending: 0 },
+  });
+  await delay(300);
+
+  // Tool calls (read_file + run_command)
+  const toolReq1 = reqId();
+  await emit({ type: "tool_request", tool_name: "read_file", args: { path: "src/middleware/session.ts" }, request_id: toolReq1 });
+  await delay(100);
+  await emit({ type: "tool_result", tool_name: "read_file", result: "export function sessionAuth() { ... }", success: true, request_id: toolReq1 });
+
+  const toolReq2 = reqId();
+  await emit({ type: "tool_request", tool_name: "run_command", args: { command: "npm test -- auth" }, request_id: toolReq2 });
+  await delay(100);
+  await emit({ type: "tool_result", tool_name: "run_command", result: { stdout: "12 tests passed", exit_code: 0 }, success: true, request_id: toolReq2 });
+
+  // More text
+  const text2 = "\n\nAll auth tests pass. Now updating the plan with additional steps.\n\n";
+  await emit({ type: "text_delta", delta: text2, accumulated: text1 + text2 });
+  await delay(200);
+
+  // Plan v2 (triggers v1 retirement)
+  const planReq2 = reqId();
+  await emit({ type: "tool_request", tool_name: "update_plan", args: { explanation: "Extended plan" }, request_id: planReq2 });
+  await emit({ type: "tool_result", tool_name: "update_plan", result: "ok", success: true, request_id: planReq2 });
+  await emit({
+    type: "plan_updated", version: 2, explanation: "Extended JWT plan",
+    steps: [
+      { id: "step-auth-analyze", step: "Analyze current auth patterns", status: "completed" },
+      { id: "step-jwt-middleware", step: "Create JWT middleware", status: "completed" },
+      { id: "step-api-routes", step: "Update API routes", status: "in_progress" },
+      { id: "step-refresh-token", step: "Add refresh token logic", status: "pending" },
+      { id: "step-security-audit", step: "Security audit", status: "pending" },
+    ],
+    summary: { total: 5, completed: 2, in_progress: 1, pending: 2 },
+  });
+  await delay(200);
+
+  // Sub-agent tool call (shows SubAgentInlineCard in message)
+  const subReq = reqId();
+  await emit({ type: "tool_request", tool_name: "sub_agent_researcher", args: { task: "Search for JWT best practices" }, request_id: subReq });
+
+  // Sub-agent started (shows in SubAgentSummaryBar)
+  await emit({ type: "sub_agent_started", agent_id: "researcher-demo", agent_name: "Researcher", task: "Search for JWT best practices", depth: 1, parent_request_id: subReq });
+  await delay(300);
+  await emit({ type: "sub_agent_completed", agent_id: "researcher-demo", response: "Found 3 relevant patterns for JWT refresh.", duration_ms: 2400, parent_request_id: subReq });
+  await emit({ type: "tool_result", tool_name: "sub_agent_researcher", result: "Found patterns", success: true, request_id: subReq });
+
+  // Complete turn 1
+  await emit({
+    type: "completed",
+    response: text1 + text2 + "Research complete. Starting implementation phase.",
+    input_tokens: 4200, output_tokens: 1800, duration_ms: 12000,
+  });
+  await delay(500);
+
+  // === 2. Workflow ===
+  const wfId = `wf-${Date.now()}`;
+  await emit({ type: "workflow_started", workflow_id: wfId, workflow_name: "JWT Migration Pipeline" });
+  await delay(300);
+  await emit({ type: "workflow_step_started", workflow_id: wfId, step_name: "Generate middleware", step_index: 0, total_steps: 3 });
+  await delay(200);
+  await emit({ type: "workflow_step_completed", workflow_id: wfId, step_name: "Generate middleware", output: "Created auth.ts", duration_ms: 1200 });
+  await emit({ type: "workflow_step_started", workflow_id: wfId, step_name: "Run tests", step_index: 1, total_steps: 3 });
+  await delay(200);
+
+  // === 3. Compaction notice ===
+  await emit({ type: "compaction_started", tokens_before: 128000, messages_before: 42 });
+  await delay(500);
+  await emit({ type: "compaction_completed", tokens_before: 128000, messages_before: 42, messages_after: 8, summary_length: 2400 });
+
+  // === 4. Ask Human ===
+  await delay(300);
+  await emit({
+    type: "ask_human_request",
+    request_id: `ask-${Date.now()}`,
+    question: "The target https://api.example.com is not registered. Do you want to add it before scanning?",
+    input_type: "confirmation",
+    options: [],
+    context: "Required before running vulnerability scan on unregistered targets.",
+  });
+
+  // === 5. Second turn with pending tool approval ===
+  await delay(500);
+  const turnId2 = `turn2-${Date.now()}`;
+  await emit({ type: "started", turn_id: turnId2 });
+  await delay(200);
+
+  const approvalReq = reqId();
+  await emit({
+    type: "tool_approval_request",
+    request_id: approvalReq,
+    tool_name: "run_command",
+    args: { command: "rm -rf /tmp/old-auth-cache && npm run build" },
+    risk_level: "high",
+    stats: null,
+    can_learn: true,
+    suggestion: null,
+  });
+
+  console.log("[demoAllChatStyles] Done! Components shown:\n" +
+    "  1. MessageBlock (user+assistant)\n" +
+    "  2. ThinkingBlock (reasoning)\n" +
+    "  3. TaskPlanCard (active v2 + retired v1)\n" +
+    "  4. StickyPlanProgress\n" +
+    "  5. ToolCallCard (read_file, run_command)\n" +
+    "  6. SubAgentInlineCard (sub_agent_researcher)\n" +
+    "  7. SubAgentSummaryBar\n" +
+    "  8. WorkflowProgress (running)\n" +
+    "  9. CompactionNotice\n" +
+    " 10. AskHumanInline (confirmation)\n" +
+    " 11. CollapsibleToolCall (pending approval)\n"
+  );
+}
+
+/**
+ * Showcase SubAgent styling: nested depth, interrupted state, various statuses.
+ * Call from console: __demoSubAgentStyles()
+ */
+export async function demoSubAgentStyleShowcase(): Promise<void> {
+  const { useStore } = await import("@/store/index");
+  const state = useStore.getState();
+  const sessionId = state.activeSessionId ?? Object.keys(state.sessions)[0];
+  if (!sessionId) { console.error("[demoSubAgentStyles] No active session"); return; }
+  const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  const _now = new Date().toISOString(); void _now;
+
+  useStore.getState().setAgentResponding(sessionId, true);
+  useStore.getState().updateAgentStreaming(sessionId, "Coordinating multiple agents with nesting...\n\n");
+
+  // Agent 1: Researcher (depth 1, completed)
+  useStore.getState().startSubAgent(sessionId, {
+    agentId: "researcher-001", agentName: "Researcher",
+    parentRequestId: "demo-style-researcher", task: "Analyze authentication patterns across the codebase", depth: 1,
+  });
+  await delay(300);
+  useStore.getState().addSubAgentToolCall(sessionId, "demo-style-researcher", {
+    id: "t-r-1", name: "semantic_search", args: { query: "JWT auth middleware" },
+  });
+  await delay(500);
+  useStore.getState().completeSubAgentToolCall(sessionId, "demo-style-researcher", "t-r-1", true, "Found 5 relevant files");
+  useStore.getState().completeSubAgent(sessionId, "demo-style-researcher", {
+    response: "Found JWT patterns in 5 files. Recommending middleware refactor.",
+    durationMs: 3200,
+  });
+
+  // Agent 2: Coder (depth 1, running with nested child)
+  useStore.getState().startSubAgent(sessionId, {
+    agentId: "coder-001", agentName: "Coder",
+    parentRequestId: "demo-style-coder", task: "Implement JWT middleware with refresh token logic", depth: 1,
+  });
+  await delay(300);
+  useStore.getState().addSubAgentToolCall(sessionId, "demo-style-coder", {
+    id: "t-c-1", name: "write_file", args: { path: "src/middleware/auth.ts", content: "..." },
+  });
+
+  // Agent 2a: Sub-coder (depth 2, completed — nested under Coder)
+  useStore.getState().startSubAgent(sessionId, {
+    agentId: "coder-sub-001", agentName: "Coder",
+    parentRequestId: "demo-style-coder-sub", task: "Generate unit tests for auth middleware", depth: 2,
+  });
+  await delay(400);
+  useStore.getState().addSubAgentToolCall(sessionId, "demo-style-coder-sub", {
+    id: "t-cs-1", name: "write_file", args: { path: "src/middleware/__tests__/auth.test.ts" },
+  });
+  useStore.getState().completeSubAgentToolCall(sessionId, "demo-style-coder-sub", "t-cs-1", true, "12 tests created");
+  useStore.getState().completeSubAgent(sessionId, "demo-style-coder-sub", {
+    response: "Created 12 unit tests. All passing.",
+    durationMs: 2100,
+  });
+
+  // Agent 2b: Deep nested (depth 3, running)
+  await delay(200);
+  useStore.getState().startSubAgent(sessionId, {
+    agentId: "explorer-deep-001", agentName: "Explorer",
+    parentRequestId: "demo-style-explorer-deep", task: "Scan integration test coverage for auth module", depth: 3,
+  });
+  useStore.getState().addSubAgentToolCall(sessionId, "demo-style-explorer-deep", {
+    id: "t-ed-1", name: "list_files", args: { pattern: "**/*.integration.test.ts" },
+  });
+
+  // Agent 3: Reviewer (depth 1, interrupted)
+  useStore.getState().startSubAgent(sessionId, {
+    agentId: "reviewer-001", agentName: "Reviewer",
+    parentRequestId: "demo-style-reviewer", task: "Security review of auth implementation", depth: 1,
+  });
+  await delay(300);
+  useStore.getState().addSubAgentToolCall(sessionId, "demo-style-reviewer", {
+    id: "t-rv-1", name: "read_file", args: { path: "src/middleware/auth.ts" },
+  });
+  // Mark as interrupted via direct state mutation
+  useStore.setState((s) => {
+    const agents = s.activeSubAgents[sessionId];
+    if (agents) {
+      const reviewer = agents.find((a) => a.parentRequestId === "demo-style-reviewer");
+      if (reviewer) {
+        reviewer.status = "interrupted";
+        reviewer.toolCalls.forEach((tc) => {
+          if (tc.status === "running") tc.status = "error";
+        });
+      }
+    }
+    const timeline = s.timelines[sessionId];
+    if (timeline) {
+      const block = timeline.find(
+        (b) => b.type === "sub_agent_activity" && b.data.parentRequestId === "demo-style-reviewer"
+      );
+      if (block && block.type === "sub_agent_activity") {
+        (block.data as { status: string }).status = "interrupted";
+      }
+    }
+  });
+
+  // Agent 4: Pentester (depth 1, error)
+  useStore.getState().startSubAgent(sessionId, {
+    agentId: "pentester-001", agentName: "Pentester",
+    parentRequestId: "demo-style-pentester", task: "Scan for OWASP vulnerabilities in auth endpoints", depth: 1,
+  });
+  await delay(200);
+  useStore.getState().addSubAgentToolCall(sessionId, "demo-style-pentester", {
+    id: "t-p-1", name: "run_pty_cmd", args: { command: "nuclei -t cves/ -u https://api.example.com/auth" },
+  });
+  useStore.getState().failSubAgent(sessionId, "demo-style-pentester", "ETIMEDOUT: Target unreachable after 5 retries");
+
+  console.log("[demoSubAgentStyles] Injected 6 agents: completed(d1), running(d1)+completed(d2)+running(d3), interrupted(d1), error(d1)");
+}
+
+/**
+ * Showcase TaskPlan styling with retired plan iterations.
+ * Call from console: __demoTaskPlanStyles()
+ */
+export async function demoTaskPlanStyleShowcase(): Promise<void> {
+  const { useStore } = await import("@/store/index");
+  const state = useStore.getState();
+  const sessionId = state.activeSessionId ?? Object.keys(state.sessions)[0];
+  if (!sessionId) { console.error("[demoTaskPlanStyles] No active session"); return; }
+  const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  useStore.getState().setExecutionMode(sessionId, "task");
+
+  // Version 1 plan (will become retired)
+  useStore.getState().setPlan(sessionId, {
+    version: 1,
+    explanation: "Initial reconnaissance plan",
+    summary: { total: 3, completed: 3, in_progress: 0, pending: 0 },
+    steps: [
+      { id: "step-dns", step: "DNS lookup and subdomain enumeration", status: "completed" },
+      { id: "step-http", step: "HTTP probing on discovered hosts", status: "completed" },
+      { id: "step-tech", step: "Technology fingerprinting", status: "completed" },
+    ],
+    updated_at: new Date(Date.now() - 480000).toISOString(),
+  }, "msg-plan-v1");
+  await delay(600);
+
+  // Version 2 (triggers retire of v1, then this becomes retired)
+  useStore.getState().setPlan(sessionId, {
+    version: 2,
+    explanation: "Extended plan: adding port scan and JS harvest",
+    summary: { total: 5, completed: 2, in_progress: 0, pending: 3 },
+    steps: [
+      { id: "step-dns", step: "DNS lookup and subdomain enumeration", status: "completed" },
+      { id: "step-http", step: "HTTP probing on discovered hosts", status: "completed" },
+      { id: "step-port", step: "Port scan top-1000 ports", status: "cancelled" },
+      { id: "step-js", step: "JavaScript file harvest", status: "pending" },
+      { id: "step-api", step: "API endpoint extraction", status: "pending" },
+    ],
+    updated_at: new Date(Date.now() - 180000).toISOString(),
+  }, "msg-plan-v2");
+  await delay(600);
+
+  // Version 3 (current active) — triggers retire of v2
+  useStore.getState().setPlan(sessionId, {
+    version: 3,
+    explanation: "Final plan: focused JS analysis + vulnerability scan",
+    summary: { total: 4, completed: 1, in_progress: 1, pending: 2 },
+    steps: [
+      { id: "step-harvest", step: "Harvest all JS assets from target", status: "completed" },
+      { id: "step-analyze", step: "Analyze JS for API keys and secrets", status: "in_progress" },
+      { id: "step-map", step: "Map API endpoints from JS routes", status: "pending" },
+      { id: "step-vuln", step: "Automated vulnerability scan", status: "pending" },
+    ],
+    updated_at: new Date().toISOString(),
+  }, "msg-plan-v3");
+
+  console.log("[demoTaskPlanStyles] Injected 3 plan versions (2 retired + 1 active)");
+}
+
 export function setupMocks(): void {
   console.log("[Mocks] Setting up Tauri IPC mocks for browser development");
 
@@ -1883,6 +2233,9 @@ export function setupMocks(): void {
     (window as unknown as { __mockToolExecutionBlocks?: typeof mockToolExecutionBlocks }).__mockToolExecutionBlocks = mockToolExecutionBlocks;
     (window as unknown as { __mockFullPlan?: typeof mockFullPlanExecution }).__mockFullPlan = mockFullPlanExecution;
     (window as unknown as { __mockRunCommand?: typeof mockRunCommandApproval }).__mockRunCommand = mockRunCommandApproval;
+    (window as unknown as { __demoSubAgentStyles?: typeof demoSubAgentStyleShowcase }).__demoSubAgentStyles = demoSubAgentStyleShowcase;
+    (window as unknown as { __demoTaskPlanStyles?: typeof demoTaskPlanStyleShowcase }).__demoTaskPlanStyles = demoTaskPlanStyleShowcase;
+    (window as unknown as { __demoAllChatStyles?: typeof demoAllChatStyles }).__demoAllChatStyles = demoAllChatStyles;
 
     // Expose command simulation functions for e2e testing
     (

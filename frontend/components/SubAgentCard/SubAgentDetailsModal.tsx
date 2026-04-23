@@ -23,9 +23,20 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { stripAllAnsi } from "@/lib/ansi";
 import { logger } from "@/lib/logger";
 import { cn } from "@/lib/utils";
 import type { ActiveSubAgent, SubAgentToolCall } from "@/store";
+
+function cleanSubAgentText(text: string): string {
+  return stripAllAnsi(
+    text
+      .replace(/<\/?(task_assignment|original_request|execution_plan|execution_context|prior_knowledge)>/gi, "")
+      .replace(/<function=[^>]*>[\s\S]*?(?:<\/function>|$)/g, "")
+      .replace(/<parameter=[^>]*>[\s\S]*?<\/parameter>/g, "")
+      .replace(/<\/?(?:function|parameter)[^>]*>/g, "")
+  ).trim();
+}
 
 /** Status icon component */
 function StatusIcon({
@@ -225,9 +236,10 @@ export function SubAgentDetailsModal({ subAgent, onClose }: SubAgentDetailsModal
                 </Button>
               </div>
               <div className="bg-muted/50 rounded-lg border border-border p-4 overflow-hidden">
-                <p className="text-sm text-foreground/90 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-                  {subAgent.task}
-                </p>
+                <Markdown
+                  content={cleanSubAgentText(subAgent.task)}
+                  className="text-sm text-foreground/90 [overflow-wrap:anywhere]"
+                />
               </div>
             </div>
 
@@ -293,7 +305,7 @@ export function SubAgentDetailsModal({ subAgent, onClose }: SubAgentDetailsModal
                 </div>
                 <div className="bg-muted/50 rounded-lg border border-border p-4 overflow-hidden">
                   <Markdown
-                    content={subAgent.response}
+                    content={cleanSubAgentText(subAgent.response)}
                     className="[overflow-wrap:anywhere] [&_*]:![overflow-wrap:anywhere] [&_pre]:whitespace-pre-wrap"
                   />
                 </div>

@@ -204,7 +204,7 @@ export function PassiveScanPanel() {
   if (loading) {
     return (
       <div className="h-full flex items-center justify-center">
-        <Loader2 className="w-5 h-5 animate-spin text-muted-foreground/30" />
+        <Loader2 className="w-5 h-5 animate-spin text-muted-foreground/50" />
       </div>
     );
   }
@@ -241,7 +241,7 @@ export function PassiveScanPanel() {
             className={cn("px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors", tab === "custom" ? "bg-accent/15 text-accent" : "text-muted-foreground/40 hover:text-foreground")}
           >
             {t("security.customRules")}
-            {customRules.length > 0 && <span className="ml-1 text-[8px] text-muted-foreground/30">({customRules.length})</span>}
+            {customRules.length > 0 && <span className="ml-1 text-[8px] text-muted-foreground/50">({customRules.length})</span>}
           </button>
         </div>
       </div>
@@ -274,13 +274,13 @@ export function PassiveScanPanel() {
                 className="w-full h-7 pl-8 pr-3 text-[11px] bg-[var(--bg-hover)]/30 rounded-lg border border-border/15 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40 transition-colors"
               />
             </div>
-            <span className="text-[10px] text-muted-foreground/30">
+            <span className="text-[10px] text-muted-foreground/50">
               {filtered.length} / {rules.length}
             </span>
           </div>
           <div className="flex-1 overflow-y-auto">
             {filtered.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground/20">
+              <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground/40">
                 <Eye className="w-12 h-12" />
                 <p className="text-[13px] font-medium">{t("security.noPassiveRules")}</p>
               </div>
@@ -456,10 +456,10 @@ function CustomRulesView({
 
       <div className="flex-1 overflow-y-auto">
         {rules.length === 0 && matches.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground/20">
+          <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground/40">
             <Eye className="w-12 h-12" />
             <p className="text-[13px] font-medium">{t("security.noCustomRules")}</p>
-            <p className="text-[11px] text-muted-foreground/30 max-w-sm text-center">{t("security.customRulesHint")}</p>
+            <p className="text-[11px] text-muted-foreground/50 max-w-sm text-center">{t("security.customRulesHint")}</p>
           </div>
         ) : (
           <div className="divide-y divide-border/5">
@@ -480,7 +480,7 @@ function CustomRulesView({
                     <span className="text-[11px] text-foreground/70 truncate">{rule.name}</span>
                     <span className={cn("text-[9px] font-medium", sevColor(rule.severity))}>{rule.severity.toUpperCase()}</span>
                   </div>
-                  <span className="text-[10px] font-mono text-muted-foreground/30 truncate block">{rule.pattern}</span>
+                  <span className="text-[10px] font-mono text-muted-foreground/50 truncate block">{rule.pattern}</span>
                 </div>
                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
                   <button type="button" onClick={() => onEdit(rule)} className="px-1.5 py-0.5 rounded text-[9px] text-muted-foreground/40 hover:text-foreground transition-colors">Edit</button>
@@ -496,7 +496,7 @@ function CustomRulesView({
                     <div key={`${m.ruleId}-${m.msgId}-${i}`} className="flex items-start gap-2 text-[10px] py-1">
                       <span className={cn("flex-shrink-0 font-medium", sevColor(m.severity))}>{m.severity.toUpperCase()}</span>
                       <span className="text-foreground/60 truncate flex-1">{m.url}</span>
-                      <span className="text-muted-foreground/30 font-mono text-[9px] max-w-[200px] truncate flex-shrink-0">{m.matchSnippet}</span>
+                      <span className="text-muted-foreground/50 font-mono text-[9px] max-w-[200px] truncate flex-shrink-0">{m.matchSnippet}</span>
                     </div>
                   ))}
                 </div>

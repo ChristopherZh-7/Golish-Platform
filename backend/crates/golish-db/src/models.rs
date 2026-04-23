@@ -752,3 +752,97 @@ pub struct NewMemory {
     pub embedding: Option<Vec<f32>>,
     pub metadata: Option<serde_json::Value>,
 }
+
+// ============================================================================
+// Observability: msg_logs, screenshots, vector_store_logs
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "msglog_type", rename_all = "snake_case")]
+pub enum MsgLogType {
+    UserMessage,
+    AssistantMessage,
+    ToolCall,
+    ToolResult,
+    SystemHook,
+    PlanUpdate,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "msglog_result_format", rename_all = "lowercase")]
+pub enum MsgLogResultFormat {
+    Text,
+    Json,
+    Markdown,
+    Html,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct MsgLog {
+    pub id: Uuid,
+    pub session_id: Uuid,
+    pub task_id: Option<Uuid>,
+    pub subtask_id: Option<Uuid>,
+    pub agent: Option<AgentType>,
+    pub msg_type: MsgLogType,
+    pub message: String,
+    pub result: String,
+    pub result_format: MsgLogResultFormat,
+    pub thinking: Option<String>,
+    pub project_path: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "vecstore_action", rename_all = "lowercase")]
+pub enum VecStoreAction {
+    Store,
+    Search,
+    Delete,
+    Update,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct Screenshot {
+    pub id: Uuid,
+    pub session_id: Uuid,
+    pub task_id: Option<Uuid>,
+    pub subtask_id: Option<Uuid>,
+    pub name: String,
+    pub url: String,
+    pub file_path: Option<String>,
+    pub content_type: String,
+    pub size_bytes: Option<i32>,
+    pub project_path: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct VectorStoreLog {
+    pub id: Uuid,
+    pub session_id: Uuid,
+    pub task_id: Option<Uuid>,
+    pub subtask_id: Option<Uuid>,
+    pub initiator: Option<AgentType>,
+    pub executor: Option<AgentType>,
+    pub action: VecStoreAction,
+    pub query: String,
+    pub filter: serde_json::Value,
+    pub result: String,
+    pub result_count: i32,
+    pub project_path: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct PromptTemplate {
+    pub id: Uuid,
+    pub template_name: String,
+    pub content: String,
+    pub description: String,
+    pub is_active: bool,
+    pub project_path: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}

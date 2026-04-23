@@ -50,6 +50,10 @@ impl std::fmt::Display for StepStatus {
 /// A single step in the plan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanStep {
+    /// Stable unique identifier for this step (UUID).
+    /// Persists across plan updates so tool executions remain linked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     /// Description of what this step accomplishes.
     pub step: String,
     /// Current status of this step.

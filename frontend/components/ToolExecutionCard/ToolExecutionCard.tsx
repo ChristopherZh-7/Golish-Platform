@@ -13,7 +13,7 @@ import {
   Wrench,
   XCircle,
 } from "lucide-react";
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { stripAllAnsi } from "@/lib/ansi";
@@ -23,6 +23,11 @@ import type { AiToolExecution } from "@/store";
 interface ToolExecutionCardProps {
   execution: AiToolExecution;
   compact?: boolean;
+  highlighted?: boolean;
+  /** Controlled open state (accordion mode). When provided, overrides internal state. */
+  isOpen?: boolean;
+  /** Called when the card's expand/collapse toggle is clicked (accordion mode). */
+  onToggle?: () => void;
 }
 
 const TOOL_COLORS: Record<string, string> = {
@@ -221,8 +226,24 @@ function OutputBlock({ text, isShellCommand }: { text: string; isShellCommand: b
 export const ToolExecutionCard = memo(function ToolExecutionCard({
   execution,
   compact = false,
+  highlighted = false,
+  isOpen: controlledOpen,
+  onToggle,
 }: ToolExecutionCardProps) {
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(highlighted);
+  const isExpanded = controlledOpen !== undefined ? controlledOpen : internalOpen;
+  const handleOpenChange = (open: boolean) => {
+    if (onToggle) onToggle();
+    else setInternalOpen(open);
+  };
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (highlighted) {
+      if (controlledOpen === undefined) setInternalOpen(true);
+      cardRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [highlighted, controlledOpen]);
 
   const toolColor = getToolColor(execution.toolName);
   const ToolIcon = getToolIcon(execution.toolName);
@@ -255,6 +276,7 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
 
   return (
     <div
+      ref={cardRef}
       className={cn(
         "overflow-hidden transition-all",
         compact
@@ -265,6 +287,7 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
                 ? "border-l-2 animate-[pulse-border_2s_ease-in-out_infinite]"
                 : "border border-border",
             ),
+        highlighted && "ring-1 ring-accent/50 bg-accent/5",
       )}
       style={
         !compact && execution.status === "running"
@@ -275,7 +298,7 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
           : undefined
       }
     >
-      <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
+      <Collapsible open={isExpanded} onOpenChange={handleOpenChange}>
         <div className={cn("flex items-center gap-2", compact ? "px-1 py-1" : "px-3 py-2")}>
           <CollapsibleTrigger className="flex flex-1 items-center gap-2 hover:bg-accent/30 rounded -ml-1 pl-1 py-0.5 min-w-0">
             {isExpanded ? (

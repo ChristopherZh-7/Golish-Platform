@@ -145,6 +145,12 @@ pub struct SubAgentDefinition {
 
     /// If true, runs in background without blocking the parent agent
     pub is_background: bool,
+
+    /// IDs of other sub-agents this agent can delegate to (nested delegation).
+    /// When non-empty, the executor injects `sub_agent_{id}` tools for each listed agent
+    /// and handles recursive dispatch. Matches PentAGI's hierarchical pattern
+    /// (e.g., pentester can delegate to coder, searcher).
+    pub delegatable_agents: Vec<String>,
 }
 
 impl SubAgentDefinition {
@@ -173,7 +179,14 @@ impl SubAgentDefinition {
             is_system: false,
             readonly: false,
             is_background: false,
+            delegatable_agents: Vec::new(),
         }
+    }
+
+    /// Set which sub-agents this agent can delegate to (nested delegation).
+    pub fn with_delegatable_agents(mut self, agents: Vec<String>) -> Self {
+        self.delegatable_agents = agents;
+        self
     }
 
     /// Mark this agent as a system agent (cannot be deleted from UI)

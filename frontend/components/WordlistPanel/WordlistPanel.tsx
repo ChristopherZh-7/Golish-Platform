@@ -185,11 +185,11 @@ export function WordlistPanel() {
   const filtered = filterCat === "all" ? safeWordlists : safeWordlists.filter((w) => w.category === filterCat);
 
   return (
-    <div className="h-full flex flex-col bg-background/95">
+    <div className="h-full flex flex-col">
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border/20">
         <BookText className="w-3.5 h-3.5 text-accent/70" />
         <span className="text-[11px] font-medium flex-1">Wordlists</span>
-        <span className="text-[9px] text-muted-foreground/40">{safeWordlists.length} lists</span>
+        <span className="text-[9px] text-muted-foreground/60">{safeWordlists.length} lists</span>
         {mergeIds.size >= 2 && (
           <div className="flex items-center gap-1">
             <input

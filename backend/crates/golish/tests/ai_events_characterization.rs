@@ -457,18 +457,22 @@ fn test_plan_updated_with_explanation_serialization() {
         },
         steps: vec![
             PlanStep {
+                id: Some("step-1".into()),
                 step: "Analyze the codebase".to_string(),
                 status: StepStatus::Completed,
             },
             PlanStep {
+                id: Some("step-2".into()),
                 step: "Implement the feature".to_string(),
                 status: StepStatus::InProgress,
             },
             PlanStep {
+                id: Some("step-3".into()),
                 step: "Write tests".to_string(),
                 status: StepStatus::Pending,
             },
             PlanStep {
+                id: Some("step-4".into()),
                 step: "Update documentation".to_string(),
                 status: StepStatus::Pending,
             },
@@ -492,10 +496,12 @@ fn test_plan_updated_without_explanation_serialization() {
         },
         steps: vec![
             PlanStep {
+                id: Some("step-a".into()),
                 step: "Research the problem".to_string(),
                 status: StepStatus::Pending,
             },
             PlanStep {
+                id: Some("step-b".into()),
                 step: "Implement solution".to_string(),
                 status: StepStatus::Pending,
             },
@@ -718,10 +724,12 @@ fn test_all_events_roundtrip() {
             },
             steps: vec![
                 PlanStep {
+                    id: Some("step-x".into()),
                     step: "Step 1".to_string(),
                     status: StepStatus::InProgress,
                 },
                 PlanStep {
+                    id: Some("step-y".into()),
                     step: "Step 2".to_string(),
                     status: StepStatus::Pending,
                 },

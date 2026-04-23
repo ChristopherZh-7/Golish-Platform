@@ -304,10 +304,9 @@ export const handleCompleted: EventHandler<{
   state.clearStreamingBlocks(ctx.sessionId);
   state.clearThinkingContent(ctx.sessionId);
   state.clearActiveToolCalls(ctx.sessionId);
+  state.finalizeRunningToolExecutions(ctx.sessionId);
   // Clear the active workflow since it's now stored in the message
   state.clearActiveWorkflow(ctx.sessionId);
-  // Clear active sub-agents since they're now stored in the message
-  state.clearActiveSubAgents(ctx.sessionId);
   state.setAgentThinking(ctx.sessionId, false);
   state.setAgentResponding(ctx.sessionId, false);
   state.markTabNewActivityBySession(ctx.sessionId);
@@ -379,8 +378,8 @@ export const handleError: EventHandler<{
   state.clearAgentStreaming(ctx.sessionId);
   state.clearThinkingContent(ctx.sessionId);
   state.clearActiveToolCalls(ctx.sessionId);
+  state.finalizeRunningToolExecutions(ctx.sessionId);
   state.clearActiveWorkflow(ctx.sessionId);
-  state.clearActiveSubAgents(ctx.sessionId);
   state.setAgentThinking(ctx.sessionId, false);
   state.setAgentResponding(ctx.sessionId, false);
   state.markTabNewActivityBySession(ctx.sessionId);

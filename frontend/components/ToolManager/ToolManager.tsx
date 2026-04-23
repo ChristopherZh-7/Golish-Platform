@@ -948,7 +948,7 @@ export function ToolManager() {
     return (
       <div className="px-3">
         {params.length === 0 ? (
-          <p className="text-[12px] text-muted-foreground/25 py-3 text-center">{t("toolManager.noParams")}</p>
+          <p className="text-[12px] text-muted-foreground/50 py-3 text-center">{t("toolManager.noParams")}</p>
         ) : (
           <div className="space-y-1">
             {params.map((p, i) => (
@@ -1091,7 +1091,7 @@ export function ToolManager() {
             )}
           </div>
           <p className={cn("text-[11px] mt-1 line-clamp-2",
-            tool.installed ? "text-muted-foreground/50" : "text-muted-foreground/35"
+            tool.installed ? "text-muted-foreground/60" : "text-muted-foreground/50"
           )}>{tool.description}</p>
         </div>
         <ActionButton tool={tool} />
@@ -1120,7 +1120,7 @@ export function ToolManager() {
           </span>
         )}
       </div>
-      <p className="flex-1 min-w-0 text-[11px] text-muted-foreground/40 truncate px-4">{tool.description}</p>
+      <p className="flex-1 min-w-0 text-[11px] text-muted-foreground/60 truncate px-4">{tool.description}</p>
       <div className="flex-shrink-0 mr-3">
         <TagBadges tool={tool} compact />
       </div>
@@ -1244,7 +1244,7 @@ export function ToolManager() {
               {/* Skills list */}
               <div className="w-[220px] flex-shrink-0 rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden flex flex-col">
                 <div className="px-3 py-2 border-b border-border/8 flex items-center justify-between">
-                  <span className="text-[11px] font-medium text-muted-foreground/40">Skills</span>
+                  <span className="text-[11px] font-medium text-muted-foreground/60">Skills</span>
                   <button type="button" onClick={() => setShowNewSkill(true)}
                     className="p-1 rounded text-muted-foreground/40 hover:text-accent hover:bg-[var(--bg-hover)] transition-colors">
                     <Plus className="w-3 h-3" />
@@ -1270,8 +1270,8 @@ export function ToolManager() {
                 <div className="flex-1 overflow-y-auto">
                   {skillsList.length === 0 ? (
                     <div className="flex flex-col items-center justify-center h-24 gap-2">
-                      <BookOpen className="w-4 h-4 text-muted-foreground/20" />
-                      <span className="text-[11px] text-muted-foreground/30">{t("toolManager.noSkills", "No skills yet")}</span>
+                      <BookOpen className="w-4 h-4 text-muted-foreground/40" />
+                      <span className="text-[11px] text-muted-foreground/50">{t("toolManager.noSkills", "No skills yet")}</span>
                     </div>
                   ) : (
                     skillsList.map((skill) => (
@@ -1297,8 +1297,8 @@ export function ToolManager() {
                   <>
                     <div className="px-3 py-2 border-b border-border/8 flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <Pencil className="w-3 h-3 text-muted-foreground/30" />
-                        <span className="text-[11px] font-medium text-muted-foreground/40">{activeSkillId}.md</span>
+                        <Pencil className="w-3 h-3 text-muted-foreground/50" />
+                        <span className="text-[11px] font-medium text-muted-foreground/60">{activeSkillId}.md</span>
                         {skillDirty && <span className="w-1.5 h-1.5 rounded-full bg-accent/60" />}
                       </div>
                       <button type="button" onClick={handleSaveSkill} disabled={!skillDirty || skillSaving}
@@ -1316,8 +1316,8 @@ export function ToolManager() {
                   </>
                 ) : (
                   <div className="flex-1 flex flex-col items-center justify-center gap-3">
-                    <BookOpen className="w-8 h-8 text-muted-foreground/10" />
-                    <p className="text-[12px] text-muted-foreground/30">{t("toolManager.selectSkill", "Select a skill to edit or create a new one")}</p>
+                    <BookOpen className="w-8 h-8 text-muted-foreground/30" />
+                    <p className="text-[12px] text-muted-foreground/50">{t("toolManager.selectSkill", "Select a skill to edit or create a new one")}</p>
                   </div>
                 )}
               </div>
@@ -1333,7 +1333,7 @@ export function ToolManager() {
             <div className="flex gap-4 h-full">
               <div className="flex-1 min-w-0 space-y-4 overflow-y-auto">
                 <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
-                  <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/40">{t("toolManager.basicInfo")}</span></div>
+                  <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/60">{t("toolManager.basicInfo")}</span></div>
                   <FieldRow label={t("toolManager.name")} field="name" placeholder="dirsearch" />
                   <FieldRow label={t("toolManager.icon")} field="icon" placeholder="📂" />
                   <div className="flex items-start gap-3 py-2 px-3 rounded-lg hover:bg-[var(--bg-hover)]/30 transition-colors">
@@ -1347,7 +1347,7 @@ export function ToolManager() {
                   <FieldRow label={t("toolManager.executable")} field="executable" mono placeholder="tool/main.py" />
                 </div>
                 <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
-                  <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/40">{t("toolManager.runtime")}</span></div>
+                  <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/60">{t("toolManager.runtime")}</span></div>
                   <FieldRow label={t("toolManager.runtimeLabel")} field="runtime" type="select" options={[
                     { value: "python", label: "Python" }, { value: "java", label: "Java" },
                     { value: "node", label: "Node.js" }, { value: "native", label: "Native" },
@@ -1362,7 +1362,7 @@ export function ToolManager() {
                   ]} />
                 </div>
                 <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
-                  <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/40">{t("toolManager.installMethod")}</span></div>
+                  <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/60">{t("toolManager.installMethod")}</span></div>
                   <InstallFieldRow label={t("toolManager.installMethodLabel")} subField="method" type="select" options={[
                     { value: "", label: t("common.none") }, { value: "github", label: "GitHub" },
                     { value: "homebrew", label: "Homebrew" }, { value: "manual", label: t("toolManager.manual") },
@@ -1375,11 +1375,11 @@ export function ToolManager() {
                     } mono />
                 </div>
                 <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
-                  <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/40">{t("toolManager.paramConfig")}</span></div>
+                  <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/60">{t("toolManager.paramConfig")}</span></div>
                   <div className="py-2"><ParamsEditor /></div>
                 </div>
                 <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
-                  <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/40">{t("toolManager.category")}</span></div>
+                  <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/60">{t("toolManager.category")}</span></div>
                   <FieldRow label={t("toolManager.category")} field="category" type="select" options={
                     (categories ?? []).length > 0
                       ? (categories ?? []).map((c) => ({ value: c.id, label: c.name }))
@@ -1395,7 +1395,7 @@ export function ToolManager() {
               <div className="w-[380px] flex-shrink-0 rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden flex flex-col">
                 <div className="px-3 py-2 border-b border-border/8 flex items-center gap-2">
                   <Code2 className="w-3 h-3 text-muted-foreground/30" />
-                  <span className="text-[11px] font-medium text-muted-foreground/40">{t("toolManager.jsonPreview")}</span>
+                  <span className="text-[11px] font-medium text-muted-foreground/60">{t("toolManager.jsonPreview")}</span>
                 </div>
                 <pre className="flex-1 overflow-auto px-4 py-3 text-[10px] font-mono leading-[1.6] text-muted-foreground/60 select-all whitespace-pre">
                   {JSON.stringify({ tool: formData }, null, 2)}
@@ -1457,11 +1457,11 @@ export function ToolManager() {
               {/* View toggle */}
               <div className="flex items-center rounded-md border border-border/10 overflow-hidden">
                 <button type="button" onClick={() => setViewMode("grid")} title={t("toolManager.gridView")}
-                  className={cn("p-1.5 transition-colors", viewMode === "grid" ? "bg-accent/15 text-accent" : "text-muted-foreground/30 hover:text-foreground")}>
+                  className={cn("p-1.5 transition-colors", viewMode === "grid" ? "bg-accent/15 text-accent" : "text-muted-foreground/50 hover:text-foreground")}>
                   <Grid3X3 className="w-3.5 h-3.5" />
                 </button>
                 <button type="button" onClick={() => setViewMode("list")} title={t("toolManager.listView")}
-                  className={cn("p-1.5 transition-colors", viewMode === "list" ? "bg-accent/15 text-accent" : "text-muted-foreground/30 hover:text-foreground")}>
+                  className={cn("p-1.5 transition-colors", viewMode === "list" ? "bg-accent/15 text-accent" : "text-muted-foreground/50 hover:text-foreground")}>
                   <List className="w-3.5 h-3.5" />
                 </button>
               </div>
@@ -1472,11 +1472,11 @@ export function ToolManager() {
           <div className="flex-1 overflow-y-auto px-6 py-4">
             {loading ? (
               <div key="tm-loading" className="flex items-center justify-center h-32">
-                <Loader2 className="w-5 h-5 animate-spin text-muted-foreground/30" />
+                <Loader2 className="w-5 h-5 animate-spin text-muted-foreground/50" />
               </div>
             ) : filteredTools.length === 0 ? (
               <div key="tm-empty" className="flex flex-col items-center justify-center h-32 gap-2 overflow-hidden">
-                <span className="text-[12px] text-muted-foreground/40">
+                <span className="text-[12px] text-muted-foreground/60">
                   {search.trim() ? t("toolManager.noMatch") : t("toolManager.noTools")}
                 </span>
                 {!search.trim() && (
@@ -1518,7 +1518,7 @@ export function ToolManager() {
                           </span>
                           <span className="text-[10px] text-red-400/50">{requiredTools.length}</span>
                         </div>
-                        <span className="text-[10px] text-muted-foreground/40">
+                        <span className="text-[10px] text-muted-foreground/60">
                           {t("toolManager.requiredHint", "Core tools needed for full functionality")}
                         </span>
                       </div>
@@ -1533,9 +1533,9 @@ export function ToolManager() {
                           <span className="text-[11px] font-medium text-muted-foreground/70">
                             {t("toolManager.optionalSection", "Optional")}
                           </span>
-                          <span className="text-[10px] text-muted-foreground/30">{optionalTools.length}</span>
+                          <span className="text-[10px] text-muted-foreground/50">{optionalTools.length}</span>
                         </div>
-                        <span className="text-[10px] text-muted-foreground/40">
+                        <span className="text-[10px] text-muted-foreground/60">
                           {t("toolManager.optionalHint", "Install as needed for specific tasks")}
                         </span>
                       </div>
@@ -1737,7 +1737,7 @@ export function ToolManager() {
                     <span className="text-muted-foreground/50 font-mono">{u.current_version || "?"}</span>
                     {u.has_update && (
                       <>
-                        <span className="text-muted-foreground/30">→</span>
+                        <span className="text-muted-foreground/50">→</span>
                         <span className="text-amber-400 font-mono font-medium">{u.latest_version}</span>
                         {u.release_url && (
                           <a href={u.release_url} target="_blank" rel="noopener noreferrer"

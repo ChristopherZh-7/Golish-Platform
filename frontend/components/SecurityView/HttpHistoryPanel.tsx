@@ -131,7 +131,7 @@ export function HttpHistoryPanel({ onSendToRepeater, onSendToIntruder, onActiveS
             className="w-full h-7 pl-8 pr-3 text-[11px] bg-[var(--bg-hover)]/30 rounded-lg border border-border/15 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40 transition-colors"
           />
         </div>
-        <span className="text-[10px] text-muted-foreground/30">
+        <span className="text-[10px] text-muted-foreground/50">
           {filtered.length} / {totalCount} {t("security.requests")}
         </span>
         <button
@@ -276,7 +276,7 @@ function HistoryBodyPanel({
                   selectedId === entry.id ? "bg-accent/10" : "hover:bg-[var(--bg-hover)]/40"
                 )}
               >
-                <td className="px-3 py-1.5 text-muted-foreground/30 font-mono">{entry.id}</td>
+                <td className="px-3 py-1.5 text-muted-foreground/50 font-mono">{entry.id}</td>
                 <td className={cn("px-3 py-1.5 font-mono font-medium", methodColor(entry.method))}>{entry.method}</td>
                 <td className="px-3 py-1.5 text-foreground/80 truncate max-w-[400px] font-mono">
                   {entry.host}<span className="text-muted-foreground/40">{entry.path}</span>
@@ -295,7 +295,7 @@ function HistoryBodyPanel({
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-3 py-8 text-center text-muted-foreground/30">
+                <td colSpan={7} className="px-3 py-8 text-center text-muted-foreground/50">
                   {entries.length === 0 ? t("security.noHistory") : t("common.noResults")}
                 </td>
               </tr>
@@ -309,13 +309,13 @@ function HistoryBodyPanel({
           <ResizeHandle onResize={handleResize} />
           <div ref={detailRef} className="flex-shrink-0 flex flex-col overflow-hidden" style={{ width: detailWidth ?? 480 }}>
             <div className="flex items-center justify-between px-3 py-2 border-b border-border/10">
-              <span className="text-[11px] font-medium text-muted-foreground/40">
+              <span className="text-[11px] font-medium text-muted-foreground/60">
                 #{selectedId} {t("security.detail")}
               </span>
               <div className="flex items-center gap-1">
                 {detail && (
                   <button type="button" onClick={() => onSendDetailToRepeater(detail)}
-                    className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium text-muted-foreground/40 hover:text-accent hover:bg-accent/10 transition-colors">
+                    className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium text-muted-foreground/60 hover:text-accent hover:bg-accent/10 transition-colors">
                     <Send className="w-3 h-3" />{t("security.sendToRepeater")}
                   </button>
                 )}
@@ -327,12 +327,12 @@ function HistoryBodyPanel({
             </div>
             {loading ? (
               <div className="flex-1 flex items-center justify-center">
-                <Loader2 className="w-4 h-4 animate-spin text-muted-foreground/30" />
+                <Loader2 className="w-4 h-4 animate-spin text-muted-foreground/50" />
               </div>
             ) : detail ? (
               <DetailTabs detail={detail} />
             ) : (
-              <div className="flex-1 flex items-center justify-center text-muted-foreground/20 text-[12px]">
+              <div className="flex-1 flex items-center justify-center text-muted-foreground/40 text-[12px]">
                 {t("security.noDetail")}
               </div>
             )}
@@ -429,7 +429,7 @@ function syntaxHighlightJson(json: string): React.ReactNode[] {
 
 function HeaderTable({ raw }: { raw: string }) {
   const { firstLine, headers } = useMemo(() => parseHeaders(raw), [raw]);
-  if (!raw.trim()) return <div className="px-3 py-2 text-[10px] text-muted-foreground/30">(empty)</div>;
+  if (!raw.trim()) return <div className="px-3 py-2 text-[10px] text-muted-foreground/50">(empty)</div>;
 
   return (
     <div className="text-[10px]">
@@ -456,7 +456,7 @@ function BodyView({ content, headers }: { content: string; headers?: string }) {
     try { JSON.parse(content); return true; } catch { return false; }
   }, [content]);
 
-  if (!content || !content.trim()) return <div className="px-3 py-4 text-[10px] text-muted-foreground/30 text-center">(empty)</div>;
+  if (!content || !content.trim()) return <div className="px-3 py-4 text-[10px] text-muted-foreground/50 text-center">(empty)</div>;
 
   return (
     <div className="relative group">
@@ -509,7 +509,7 @@ export function DetailTabs({ detail }: { detail: HttpMessageDetail }) {
             <HeaderTable raw={detail.request_headers} />
             {detail.request_body && (
               <>
-                <div className="px-3 py-1 text-[9px] font-medium text-muted-foreground/30 bg-[var(--bg-hover)]/10 border-y border-border/5">
+                <div className="px-3 py-1 text-[9px] font-medium text-muted-foreground/50 bg-[var(--bg-hover)]/10 border-y border-border/5">
                   {t("security.requestBody", "Request Body")}
                 </div>
                 <BodyView content={detail.request_body} headers={detail.request_headers} />
@@ -519,7 +519,7 @@ export function DetailTabs({ detail }: { detail: HttpMessageDetail }) {
         ) : (
           <>
             <HeaderTable raw={detail.response_headers} />
-            <div className="px-3 py-1 text-[9px] font-medium text-muted-foreground/30 bg-[var(--bg-hover)]/10 border-y border-border/5">
+            <div className="px-3 py-1 text-[9px] font-medium text-muted-foreground/50 bg-[var(--bg-hover)]/10 border-y border-border/5">
               {t("security.responseBody", "Response Body")}
             </div>
             <BodyView content={detail.response_body} headers={detail.response_headers} />

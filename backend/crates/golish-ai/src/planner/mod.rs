@@ -104,6 +104,7 @@ impl PlanManager {
                 let plan_steps: Vec<PlanStep> = steps
                     .iter()
                     .map(|s| PlanStep {
+                        id: Some(s.id.clone()),
                         step: s.title.clone(),
                         status: match s.status.as_str() {
                             "completed" => StepStatus::Completed,
@@ -209,13 +210,30 @@ impl PlanManager {
             return Err(PlanError::MultipleInProgress(in_progress_count));
         }
 
-        // Convert input to plan steps
+        // Build a lookup of existing step descriptions → IDs for stable matching
+        let existing_plan = self.plan.read().await;
+        let existing_id_map: std::collections::HashMap<String, String> = existing_plan
+            .steps
+            .iter()
+            .filter_map(|s| s.id.as_ref().map(|id| (s.step.clone(), id.clone())))
+            .collect();
+        drop(existing_plan);
+
+        // Convert input to plan steps, reusing IDs for matching descriptions
         let steps: Vec<PlanStep> = args
             .plan
             .into_iter()
-            .map(|input| PlanStep {
-                step: input.step.trim().to_string(),
-                status: input.status,
+            .map(|input| {
+                let trimmed = input.step.trim().to_string();
+                let id = existing_id_map
+                    .get(&trimmed)
+                    .cloned()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                PlanStep {
+                    id: Some(id),
+                    step: trimmed,
+                    status: input.status,
+                }
             })
             .collect();
 
@@ -250,10 +268,9 @@ impl PlanManager {
             let db_steps: Vec<serde_json::Value> = result
                 .steps
                 .iter()
-                .enumerate()
-                .map(|(i, s)| {
+                .map(|s| {
                     serde_json::json!({
-                        "id": format!("step-{}", i + 1),
+                        "id": s.id.as_deref().unwrap_or("unknown"),
                         "title": s.step,
                         "description": "",
                         "status": format!("{}", s.status),
@@ -395,22 +412,27 @@ mod tests {
     fn test_plan_summary_from_mixed_steps() {
         let steps = vec![
             PlanStep {
+                id: None,
                 step: "Step 1".to_string(),
                 status: StepStatus::Completed,
             },
             PlanStep {
+                id: None,
                 step: "Step 2".to_string(),
                 status: StepStatus::Completed,
             },
             PlanStep {
+                id: None,
                 step: "Step 3".to_string(),
                 status: StepStatus::InProgress,
             },
             PlanStep {
+                id: None,
                 step: "Step 4".to_string(),
                 status: StepStatus::Pending,
             },
             PlanStep {
+                id: None,
                 step: "Step 5".to_string(),
                 status: StepStatus::Pending,
             },
@@ -427,10 +449,12 @@ mod tests {
     fn test_plan_summary_all_completed() {
         let steps = vec![
             PlanStep {
+                id: None,
                 step: "Done 1".to_string(),
                 status: StepStatus::Completed,
             },
             PlanStep {
+                id: None,
                 step: "Done 2".to_string(),
                 status: StepStatus::Completed,
             },
@@ -462,6 +486,7 @@ mod tests {
         assert!(plan.is_empty());
 
         plan.steps.push(PlanStep {
+            id: None,
             step: "Test".to_string(),
             status: StepStatus::Pending,
         });
@@ -475,6 +500,7 @@ mod tests {
     #[test]
     fn test_plan_step_serialization() {
         let step = PlanStep {
+            id: Some("abc-123".into()),
             step: "Read the file".to_string(),
             status: StepStatus::InProgress,
         };
@@ -482,6 +508,7 @@ mod tests {
         let json = serde_json::to_string(&step).unwrap();
         assert!(json.contains("\"step\":\"Read the file\""));
         assert!(json.contains("\"status\":\"in_progress\""));
+        assert!(json.contains("\"id\":\"abc-123\""));
     }
 
     #[test]
@@ -928,6 +955,7 @@ mod tests {
                 let plan_steps: Vec<PlanStep> = steps
                     .into_iter()
                     .map(|input| PlanStep {
+                        id: None,
                         step: input.step,
                         status: input.status,
                     })
@@ -948,6 +976,7 @@ mod tests {
                 let plan_steps: Vec<PlanStep> = steps
                     .into_iter()
                     .map(|input| PlanStep {
+                        id: None,
                         step: input.step,
                         status: input.status,
                     })
@@ -977,6 +1006,7 @@ mod tests {
                 status in status_strategy()
             ) {
                 let step = PlanStep {
+                    id: None,
                     step: description,
                     status,
                 };
@@ -986,6 +1016,7 @@ mod tests {
 
                 prop_assert_eq!(step.step, parsed.step);
                 prop_assert_eq!(step.status, parsed.status);
+                prop_assert_eq!(step.id, parsed.id);
             }
 
             /// Property: Valid plans always succeed

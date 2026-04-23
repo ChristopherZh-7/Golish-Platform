@@ -271,7 +271,7 @@ export function OutputParserEditor({
                     placeholder="Regular expression with capture groups"
                     className="w-full px-2 py-1 text-[11px] font-mono rounded-md bg-transparent border border-border/20 text-foreground placeholder:text-muted-foreground/20 outline-none"
                   />
-                  <div className="text-[9px] text-muted-foreground/30 px-1">
+                  <div className="text-[9px] text-muted-foreground/50 px-1">
                     Fields: {Object.entries(pattern.fields).map(([k, v]) => `${k}=${v}`).join(", ") || "none"}
                   </div>
                   <input
@@ -290,7 +290,7 @@ export function OutputParserEditor({
                 </div>
               ))}
               {config.patterns.length === 0 && (
-                <div className="text-center text-[10px] text-muted-foreground/30 py-2">
+                <div className="text-center text-[10px] text-muted-foreground/50 py-2">
                   No patterns defined. Click &quot;+ Add Pattern&quot; to create one.
                 </div>
               )}
@@ -302,7 +302,7 @@ export function OutputParserEditor({
         {(config.format === "json" || config.format === "json_lines") && (
           <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
             <div className="px-3 py-2 border-b border-border/8 flex items-center justify-between">
-              <span className="text-[11px] font-medium text-muted-foreground/40">JSON Field Mappings</span>
+              <span className="text-[11px] font-medium text-muted-foreground/60">JSON Field Mappings</span>
               <button type="button" onClick={addField}
                 className="text-[10px] text-accent/70 hover:text-accent transition-colors">
                 + Add Field
@@ -322,7 +322,7 @@ export function OutputParserEditor({
                     placeholder="field_name"
                     className="w-28 px-2 py-1 text-[10px] font-mono rounded-md bg-transparent border border-border/20 text-foreground outline-none"
                   />
-                  <span className="text-[10px] text-muted-foreground/30">→</span>
+                  <span className="text-[10px] text-muted-foreground/50">→</span>
                   <input
                     value={path}
                     onChange={(e) => {

@@ -49,5 +49,11 @@ dirs = { workspace = true }
 # Skills injection
 golish-skills = { path = "../golish-skills" }
 
+# Database (for persistent conversation chains)
+sqlx = { workspace = true }
+
+# Template engine for prompt templates
+tera = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
