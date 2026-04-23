@@ -210,18 +210,21 @@ impl AgentExecutor for BridgeAgentExecutor {
         subtask_title: &str,
         subtask_description: &str,
         execution_context: &ExecutionContext,
+        agent_type: Option<&str>,
     ) -> Result<AgentResult> {
         tracing::info!(
-            "[TaskMode/PrimaryAgent] Executing subtask: {}",
-            subtask_title
+            "[TaskMode/PrimaryAgent] Executing subtask: {} (agent: {})",
+            subtask_title,
+            agent_type.unwrap_or("primary"),
         );
         let start = std::time::Instant::now();
-        let prompt = prompts::primary_agent_subtask_prompt(
+        let prompt = prompts::primary_agent_subtask_prompt_with_agent(
             subtask_title,
             subtask_description,
             &execution_context.summary(),
+            agent_type,
         );
-        let content = self.bridge.execute(&prompt).await?;
+        let content = self.bridge.execute_isolated(&prompt).await?;
         let duration_ms = start.elapsed().as_millis() as u64;
 
         Ok(AgentResult::with_usage(
@@ -313,7 +316,7 @@ impl AgentExecutor for BridgeAgentExecutor {
             subtask_description,
             &execution_context.summary(),
         );
-        match self.simple_completion_for_phase(system, &user, Some("pipeline_reflector")).await {
+        match self.simple_completion_for_phase(system, &user, Some("pipeline_planner")).await {
             Ok(plan) if !plan.trim().is_empty() => Ok(Some(plan)),
             Ok(_) => Ok(None),
             Err(e) => {
@@ -358,7 +361,11 @@ impl AgentExecutor for BridgeAgentExecutor {
         );
         for mem in &memories {
             let preview = if mem.content.len() > 200 {
-                format!("{}...", &mem.content[..200])
+                let mut end = 200;
+                while !mem.content.is_char_boundary(end) && end > 0 {
+                    end -= 1;
+                }
+                format!("{}...", &mem.content[..end])
             } else {
                 mem.content.clone()
             };

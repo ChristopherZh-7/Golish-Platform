@@ -348,7 +348,6 @@ describe("AppearanceSettings", () => {
       expect(state.showStatusBar).toBe(false);
       expect(state.showInputModeToggle).toBe(false);
       expect(state.showStatusBadge).toBe(false);
-      expect(state.showAgentModeSelector).toBe(false);
       expect(state.showContextUsage).toBe(false);
       expect(state.showMcpBadge).toBe(false);
     });
@@ -447,7 +446,6 @@ describe("AppearanceSettings", () => {
         showStatusBar: false,
         showInputModeToggle: false,
         showStatusBadge: false,
-        showAgentModeSelector: false,
         showContextUsage: false,
         showMcpBadge: false,
       });

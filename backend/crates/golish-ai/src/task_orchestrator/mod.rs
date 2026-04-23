@@ -11,7 +11,7 @@
 //! task lifecycle and DB persistence.
 
 pub mod bridge_executor;
-mod prompts;
+pub(crate) mod prompts;
 
 use std::sync::Arc;
 
@@ -21,6 +21,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use golish_core::events::AiEvent;
+use golish_core::plan::{PlanStep, PlanSummary, StepStatus};
 use golish_db::models::{SubtaskStatus, TaskStatus};
 use golish_db::repo::{subtasks, tasks};
 
@@ -205,11 +206,13 @@ pub trait AgentExecutor: Send + Sync {
 
     /// Execute a single subtask as the primary agent.
     /// Returns the result text and optional token usage.
+    /// `agent_type` is the specialist type assigned by the Generator (e.g., "pentester", "coder").
     async fn execute_subtask(
         &self,
         subtask_title: &str,
         subtask_description: &str,
         execution_context: &ExecutionContext,
+        agent_type: Option<&str>,
     ) -> Result<AgentResult>;
 
     /// Run the refiner to adjust the remaining plan.
@@ -398,6 +401,9 @@ impl TaskOrchestrator {
             message: format!("Generated {} subtasks, starting execution...", queue.len()),
         });
 
+        // Emit initial plan with all steps pending
+        self.emit_plan_update(&queue, usize::MAX, StepStatus::Pending, 1);
+
         self.execute_subtask_loop(task.id, &mut queue, 0, executor)
             .await
     }
@@ -494,6 +500,14 @@ impl TaskOrchestrator {
                 ),
             });
 
+            // Mark current subtask as in_progress in the plan UI
+            self.emit_plan_update(
+                queue,
+                subtask_index,
+                StepStatus::InProgress,
+                subtask_index as u32 + 2,
+            );
+
             // Create message chain record for this subtask
             let chain_id = if let Some(ref st) = db_subtask {
                 let agent_type = parse_agent_type(&planned.agent)
@@ -572,6 +586,14 @@ impl TaskOrchestrator {
                 result: truncate(&result_text, 500),
             });
 
+            // Mark subtask as completed in the plan UI
+            self.emit_plan_update(
+                queue,
+                subtask_index,
+                StepStatus::Completed,
+                subtask_index as u32 + 2,
+            );
+
             // Enricher: search for additional context after subtask completion
             match executor
                 .enrich(&planned.title, &result_text, &exec_ctx)
@@ -639,6 +661,22 @@ impl TaskOrchestrator {
             cost_tracker.total_duration_ms() as f64 / 1000.0,
         );
 
+        // Emit final plan update — all steps completed
+        let final_steps: Vec<PlanStep> = queue
+            .iter()
+            .map(|s| PlanStep {
+                step: s.title.clone(),
+                status: StepStatus::Completed,
+            })
+            .collect();
+        let final_summary = PlanSummary::from_steps(&final_steps);
+        self.emit(AiEvent::PlanUpdated {
+            version: (queue.len() as u32 + 10),
+            summary: final_summary,
+            steps: final_steps,
+            explanation: Some("Task completed".to_string()),
+        });
+
         self.emit(AiEvent::TaskProgress {
             task_id: task_id.to_string(),
             status: "finished".to_string(),
@@ -662,10 +700,41 @@ impl TaskOrchestrator {
         db_subtask: &Option<golish_db::models::Subtask>,
         task_id: Uuid,
     ) -> (String, Option<AgentTokenUsage>) {
+        // Pre-fetch: search knowledge base for relevant guides/memories BEFORE execution.
+        // PentAGI's agents always search their guide store before acting.
+        let pre_knowledge = match executor
+            .enrich(&planned.title, &planned.description, exec_ctx)
+            .await
+        {
+            Ok(Some(knowledge)) => {
+                tracing::info!(
+                    "[PreFetch] Found {} chars of prior knowledge for '{}'",
+                    knowledge.len(),
+                    planned.title
+                );
+                Some(knowledge)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                tracing::debug!("[PreFetch] Knowledge search failed for '{}': {}", planned.title, e);
+                None
+            }
+        };
+
         // Task Planner: generate an execution plan before the agent starts.
         let agent_type = planned.agent.as_deref().unwrap_or("primary");
+        let description_with_knowledge = if let Some(ref knowledge) = pre_knowledge {
+            format!(
+                "{}\n\n## PRIOR KNOWLEDGE\n\n\
+                 The following relevant information was found in the knowledge base:\n\n{}",
+                planned.description, knowledge
+            )
+        } else {
+            planned.description.clone()
+        };
+
         let effective_description = match executor
-            .plan_subtask(&planned.title, &planned.description, agent_type, exec_ctx)
+            .plan_subtask(&planned.title, &description_with_knowledge, agent_type, exec_ctx)
             .await
         {
             Ok(Some(plan)) => {
@@ -684,13 +753,13 @@ impl TaskOrchestrator {
                      Use this plan as guidance, but adapt to actual circumstances.\n\
                      </hint>\n\
                      </task_assignment>",
-                    planned.description, plan
+                    description_with_knowledge, plan
                 )
             }
-            Ok(None) => planned.description.clone(),
+            Ok(None) => description_with_knowledge,
             Err(e) => {
                 tracing::warn!("[TaskPlanner] Plan generation failed: {}", e);
-                planned.description.clone()
+                description_with_knowledge
             }
         };
 
@@ -699,7 +768,7 @@ impl TaskOrchestrator {
         for reflector_attempt in 0..=MAX_REFLECTOR_RETRIES {
             let exec_result = if reflector_attempt == 0 {
                 executor
-                    .execute_subtask(&planned.title, &effective_description, exec_ctx)
+                    .execute_subtask(&planned.title, &effective_description, exec_ctx, Some(agent_type))
                     .await
             } else {
                 let prev_response = last_result
@@ -720,7 +789,7 @@ impl TaskOrchestrator {
                             planned.description, correction
                         );
                         executor
-                            .execute_subtask(&planned.title, &augmented_desc, exec_ctx)
+                            .execute_subtask(&planned.title, &augmented_desc, exec_ctx, Some(agent_type))
                             .await
                     }
                     Err(e) => {
@@ -732,6 +801,23 @@ impl TaskOrchestrator {
 
             match exec_result {
                 Ok(agent_result) => {
+                    // Detect text-only responses that lack evidence of real tool usage.
+                    // If the agent just described what it would do instead of doing it,
+                    // treat it like a soft failure and invoke the reflector.
+                    if reflector_attempt < MAX_REFLECTOR_RETRIES
+                        && looks_like_text_only_response(&agent_result.content)
+                    {
+                        tracing::info!(
+                            "[TaskMode/Reflector] Subtask '{}' returned text-only response ({} chars), \
+                             triggering reflector (attempt {})",
+                            planned.title,
+                            agent_result.content.len(),
+                            reflector_attempt + 1,
+                        );
+                        last_result = Some(agent_result);
+                        continue;
+                    }
+
                     // Check if the agent is requesting user input
                     if agent_result.content.contains("[NEEDS_USER_INPUT]") {
                         let prompt = agent_result
@@ -793,6 +879,7 @@ impl TaskOrchestrator {
                                         &planned.title,
                                         &augmented_desc,
                                         exec_ctx,
+                                        Some(agent_type),
                                     )
                                     .await
                                 {
@@ -940,6 +1027,40 @@ impl TaskOrchestrator {
     fn emit(&self, event: AiEvent) {
         let _ = self.event_tx.send(event);
     }
+
+    /// Emit a PlanUpdated event to synchronize the frontend Task Plan UI.
+    fn emit_plan_update(
+        &self,
+        queue: &[PlannedSubtask],
+        current_index: usize,
+        current_status: StepStatus,
+        version: u32,
+    ) {
+        let steps: Vec<PlanStep> = queue
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let status = if i < current_index {
+                    StepStatus::Completed
+                } else if i == current_index {
+                    current_status.clone()
+                } else {
+                    StepStatus::Pending
+                };
+                PlanStep {
+                    step: s.title.clone(),
+                    status,
+                }
+            })
+            .collect();
+        let summary = PlanSummary::from_steps(&steps);
+        self.emit(AiEvent::PlanUpdated {
+            version,
+            summary,
+            steps,
+            explanation: None,
+        });
+    }
 }
 
 fn parse_agent_type(agent: &Option<String>) -> Option<golish_db::models::AgentType> {
@@ -958,6 +1079,66 @@ fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}...", &s[..max])
+        let mut end = max;
+        while !s.is_char_boundary(end) && end > 0 {
+            end -= 1;
+        }
+        format!("{}...", &s[..end])
     }
+}
+
+/// Heuristic to detect responses that are purely descriptive text without
+/// evidence of actual tool execution. PentAGI uses barrier functions to
+/// enforce structured output; this is a lighter alternative.
+fn looks_like_text_only_response(response: &str) -> bool {
+    let trimmed = response.trim();
+    if trimmed.len() < 50 {
+        return false;
+    }
+
+    // Markers that indicate real tool work was performed
+    let tool_evidence = [
+        "```",           // code blocks from tool output
+        "scan result",
+        "output:",
+        "found ",
+        "discovered ",
+        "vulnerable",
+        "port ",
+        "service ",
+        "HTTP/",
+        "200 OK",
+        "404",
+        "nmap",
+        "subfinder",
+        "httpx",
+        "nuclei",
+        ".golish/",
+        "successfully",
+        "executed",
+        "Error:",
+    ];
+
+    let lower = trimmed.to_lowercase();
+    let has_evidence = tool_evidence
+        .iter()
+        .any(|marker| lower.contains(&marker.to_lowercase()));
+
+    // Phrases that indicate the agent is describing rather than doing
+    let description_phrases = [
+        "i would",
+        "i will",
+        "i can",
+        "let me",
+        "we should",
+        "we could",
+        "the next step",
+        "here's my plan",
+        "i recommend",
+    ];
+    let has_description = description_phrases
+        .iter()
+        .any(|phrase| lower.contains(phrase));
+
+    !has_evidence && has_description
 }

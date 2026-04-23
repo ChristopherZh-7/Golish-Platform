@@ -7,7 +7,6 @@
 import { Bot, Bug, Cpu, Gauge, Server, Terminal } from "lucide-react";
 import { type JSX, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SiOpentelemetry } from "react-icons/si";
-import { AgentModeSelector } from "@/components/AgentModeSelector";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -92,9 +91,6 @@ function formatRelativeTime(timestampMs: number): string {
   if (diffHour < 24) return `${diffHour}h ago`;
   return new Date(timestampMs).toLocaleDateString();
 }
-
-// How long to show labels before hiding them (in ms)
-const LABEL_HIDE_DELAY = 3000;
 
 type ModelProvider =
   | "vertex"
@@ -243,43 +239,6 @@ export const InputStatusRow = memo(function InputStatusRow({ sessionId }: InputS
     (display.hideAiSettingsInShellMode && inputMode === "terminal") ||
     status === "disconnected";
 
-  // Auto-hide labels after a delay in agent mode
-  const [showLabels, setShowLabels] = useState(true);
-  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  // Reset timer when model changes
-  // biome-ignore lint/correctness/useExhaustiveDependencies: We want to show labels when model changes
-  useEffect(() => {
-    setShowLabels(true);
-    if (hideTimerRef.current) {
-      clearTimeout(hideTimerRef.current);
-    }
-    hideTimerRef.current = setTimeout(() => {
-      setShowLabels(false);
-    }, LABEL_HIDE_DELAY);
-
-    return () => {
-      if (hideTimerRef.current) {
-        clearTimeout(hideTimerRef.current);
-      }
-    };
-  }, [model]);
-
-  // Show labels on hover, hide after delay when mouse leaves
-  const handleMouseEnter = useCallback(() => {
-    setShowLabels(true);
-    if (hideTimerRef.current) {
-      clearTimeout(hideTimerRef.current);
-      hideTimerRef.current = null;
-    }
-  }, []);
-
-  const handleMouseLeave = useCallback(() => {
-    hideTimerRef.current = setTimeout(() => {
-      setShowLabels(false);
-    }, LABEL_HIDE_DELAY);
-  }, []);
   const sessionWorkingDirectory = useStore((state) => state.sessions[sessionId]?.workingDirectory);
   const contextMetrics = useContextMetrics(sessionId);
 
@@ -672,13 +631,8 @@ export const InputStatusRow = memo(function InputStatusRow({ sessionId }: InputS
   }, [providerVisibility, providerEnabled]);
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: Used for hover interactions to show/hide labels
     <div
-      ref={containerRef}
-      role="presentation"
       className="flex items-center justify-between px-3 py-1 text-xs text-muted-foreground"
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
     >
       {/* Left side */}
       <div className="flex items-center">
@@ -1087,16 +1041,6 @@ export const InputStatusRow = memo(function InputStatusRow({ sessionId }: InputS
           </div>
         )}
 
-        {/* Agent Mode Selector */}
-        {display.showAgentModeSelector && (
-          <div className="ui-fade-width ml-2" data-visible={String(!hideAiItems)}>
-            <div className="shrink-0">
-              {status === "ready" && (
-                <AgentModeSelector sessionId={sessionId} showLabel={showLabels} />
-              )}
-            </div>
-          </div>
-        )}
 
         {/* Context utilization indicator */}
         {display.showContextUsage && (

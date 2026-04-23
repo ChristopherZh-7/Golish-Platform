@@ -1,12 +1,19 @@
-import { ArrowLeft, CheckCircle2, Circle, List, Loader2 } from "lucide-react";
-import { memo, useMemo } from "react";
+import {
+  ArrowLeft,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Circle,
+  Loader2,
+  XCircle,
+} from "lucide-react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { PipelineProgressBlock } from "@/components/PipelineProgressBlock";
 import { SubAgentCard } from "@/components/SubAgentCard";
-import { TaskGroupShell } from "@/components/TaskGroupShell";
 import { ToolExecutionCard } from "@/components/ToolExecutionCard";
 import { cn } from "@/lib/utils";
 import type { ActiveSubAgent, AiToolExecution, PipelineExecution } from "@/store";
-import type { TaskPlan } from "@/store/store-types";
+import type { PlanStep } from "@/store/store-types";
 import { useStore } from "@/store";
 
 type DetailItem =
@@ -14,58 +21,100 @@ type DetailItem =
   | { kind: "sub_agent"; data: ActiveSubAgent }
   | { kind: "pipeline"; data: PipelineExecution; id: string };
 
-function PlanBlock({ plan }: { plan: TaskPlan }) {
-  const inProgress = plan.steps.filter((s) => s.status === "in_progress").length;
+/** A single plan step row with its nested tool/pipeline/subagent cards. */
+const PlanStepGroup = memo(function PlanStepGroup({
+  step,
+  items,
+}: {
+  step: PlanStep;
+  items: DetailItem[];
+}) {
+  const isCompleted = step.status === "completed";
+  const isInProgress = step.status === "in_progress";
+  const isFailed = step.status === "cancelled" || step.status === "failed";
+  const isPending = step.status === "pending";
+  const hasItems = items.length > 0;
+
+  const [open, setOpen] = useState(isInProgress || (!isCompleted && hasItems));
+
+  useEffect(() => {
+    if (isInProgress) setOpen(true);
+  }, [isInProgress]);
+
+  const toggle = useCallback(() => setOpen((v) => !v), []);
 
   return (
-    <TaskGroupShell
-      title="Task Plan"
-      titleExtra={
-        <span className="flex items-center gap-1 text-muted-foreground/40">
-          <List className="w-3 h-3" />
-          <span className="text-[10px]">v{plan.version}</span>
+    <div className="mb-0.5">
+      {/* Step header */}
+      <button
+        type="button"
+        onClick={hasItems ? toggle : undefined}
+        className={cn(
+          "w-full flex items-center gap-2 px-3 py-2 text-[11px] rounded transition-colors text-left",
+          isInProgress && "bg-blue-500/8",
+          isCompleted && "opacity-75",
+          isFailed && "opacity-50",
+          hasItems && "hover:bg-accent/30 cursor-pointer",
+          !hasItems && "cursor-default",
+        )}
+      >
+        {/* Status icon */}
+        {isCompleted && (
+          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+        )}
+        {isInProgress && (
+          <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin flex-shrink-0" />
+        )}
+        {isFailed && (
+          <XCircle className="w-3.5 h-3.5 text-red-400/70 flex-shrink-0" />
+        )}
+        {isPending && (
+          <Circle className="w-3.5 h-3.5 text-muted-foreground/50 flex-shrink-0" />
+        )}
+
+        {/* Step label */}
+        <span
+          className={cn(
+            "flex-1 font-medium",
+            isCompleted && "text-foreground/70",
+            isInProgress && "text-blue-300",
+            isPending && "text-muted-foreground/50",
+            isFailed && "text-red-400/60 line-through",
+          )}
+        >
+          {step.step}
         </span>
-      }
-      running={inProgress}
-      completed={plan.summary.completed}
-      failed={0}
-      total={plan.summary.total}
-      totalDurationMs={0}
-    >
-      <div className="divide-y divide-border/10">
-        {plan.steps.map((step, i) => (
-          <div
-            key={`${step.step}-${i}`}
-            className={cn(
-              "flex items-center gap-2 px-3 py-1.5 text-[11px]",
-              step.status === "in_progress" && "bg-blue-500/5",
+
+        {/* Tool count + chevron */}
+        {hasItems && (
+          <span className="flex items-center gap-1 flex-shrink-0 text-muted-foreground/40">
+            <span className="text-[10px]">{items.length}</span>
+            {open ? (
+              <ChevronDown className="w-3 h-3" />
+            ) : (
+              <ChevronRight className="w-3 h-3" />
             )}
-          >
-            {step.status === "completed" && (
-              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
-            )}
-            {step.status === "in_progress" && (
-              <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin flex-shrink-0" />
-            )}
-            {step.status === "pending" && (
-              <Circle className="w-3.5 h-3.5 text-muted-foreground/50 flex-shrink-0" />
-            )}
-            <span
-              className={cn(
-                "font-medium",
-                step.status === "completed" && "text-foreground/70",
-                step.status === "in_progress" && "text-blue-300",
-                step.status === "pending" && "text-muted-foreground/50",
-              )}
-            >
-              {step.step}
-            </span>
-          </div>
-        ))}
-      </div>
-    </TaskGroupShell>
+          </span>
+        )}
+      </button>
+
+      {/* Nested items */}
+      {hasItems && open && (
+        <div className="ml-5 pl-3 border-l-2 border-[var(--border-subtle)] space-y-0.5 pb-1">
+          {items.map((item) =>
+            item.kind === "tool" ? (
+              <ToolExecutionCard key={item.data.requestId} execution={item.data} compact />
+            ) : item.kind === "pipeline" ? (
+              <PipelineProgressBlock key={item.id} execution={item.data} />
+            ) : (
+              <SubAgentCard key={item.data.parentRequestId} subAgent={item.data} />
+            ),
+          )}
+        </div>
+      )}
+    </div>
   );
-}
+});
 
 interface ToolDetailViewProps {
   sessionId: string;
@@ -78,15 +127,15 @@ export const ToolDetailView = memo(function ToolDetailView({
   const timeline = useStore((s) => s.timelines[sessionId] ?? []);
   const plan = useStore((s) => s.sessions[sessionId]?.plan ?? null);
   const filterIds = useStore(
-    (s) => s.sessions[sessionId]?.toolDetailRequestIds ?? null
+    (s) => s.sessions[sessionId]?.toolDetailRequestIds ?? null,
   );
 
-  const items = useMemo(() => {
+  const allItems = useMemo(() => {
     const result: DetailItem[] = [];
     const idSet = filterIds ? new Set(filterIds) : null;
     for (const block of timeline) {
       if (block.type === "ai_tool_execution") {
-        if (block.data.toolName === "update_plan") continue;
+        if (block.data.toolName === "update_plan" || block.data.toolName === "run_pipeline") continue;
         if (!idSet || idSet.has(block.data.requestId)) {
           result.push({ kind: "tool", data: block.data });
         }
@@ -99,21 +148,63 @@ export const ToolDetailView = memo(function ToolDetailView({
     return result;
   }, [timeline, filterIds]);
 
-  const runningCount = items.filter((item) => {
+  const planStepIndexMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const block of timeline) {
+      if (block.type === "ai_tool_execution" && block.data.planStepIndex != null) {
+        map.set(block.data.requestId, block.data.planStepIndex);
+      } else if (block.type === "pipeline_progress" && block.planStepIndex != null) {
+        map.set(block.id, block.planStepIndex);
+      } else if (block.type === "sub_agent_activity" && block.planStepIndex != null) {
+        map.set(block.data.parentRequestId, block.planStepIndex);
+      }
+    }
+    return map;
+  }, [timeline]);
+
+  const { stepItems, ungrouped } = useMemo(() => {
+    if (!plan) return { stepItems: new Map<number, DetailItem[]>(), ungrouped: allItems };
+
+    const grouped = new Map<number, DetailItem[]>();
+    const rest: DetailItem[] = [];
+    for (const item of allItems) {
+      let idx: number | undefined;
+      if (item.kind === "tool") {
+        idx = item.data.planStepIndex ?? planStepIndexMap.get(item.data.requestId);
+      } else if (item.kind === "pipeline") {
+        idx = planStepIndexMap.get(item.id);
+      } else if (item.kind === "sub_agent") {
+        idx = planStepIndexMap.get(item.data.parentRequestId);
+      }
+      if (idx != null && idx < plan.steps.length) {
+        let list = grouped.get(idx);
+        if (!list) {
+          list = [];
+          grouped.set(idx, list);
+        }
+        list.push(item);
+      } else {
+        rest.push(item);
+      }
+    }
+    return { stepItems: grouped, ungrouped: rest };
+  }, [plan, allItems, planStepIndexMap]);
+
+  const runningCount = allItems.filter((item) => {
     if (item.kind === "pipeline") return item.data.status === "running";
     if (item.kind === "tool") return item.data.status === "running";
     return item.data.status === "running";
   }).length;
 
-  const totalCount = items.length + (plan ? 1 : 0);
-  const doneCount = items.filter((item) => {
-    const s = item.data.status as string;
-    if (item.kind === "pipeline") return s === "completed" || s === "failed" || s === "interrupted";
-    if (item.kind === "tool") return s === "completed" || s === "error" || s === "interrupted";
-    return s === "completed" || s === "error" || s === "interrupted";
-  }).length + (plan && plan.summary.completed === plan.summary.total ? 1 : 0);
+  const totalCount = plan ? plan.summary.total : allItems.length;
+  const doneCount = plan
+    ? plan.summary.completed
+    : allItems.filter((item) => {
+        const s = item.data.status as string;
+        return s === "completed" || s === "error" || s === "interrupted" || s === "failed";
+      }).length;
 
-  const hasContent = items.length > 0 || plan;
+  const hasContent = allItems.length > 0 || plan;
 
   return (
     <div className="h-full flex flex-col bg-background">
@@ -140,16 +231,30 @@ export const ToolDetailView = memo(function ToolDetailView({
             No tool executions yet
           </div>
         ) : (
-          <div className="space-y-1">
-            {plan && <PlanBlock plan={plan} />}
-            {items.map((item) =>
-              item.kind === "tool" ? (
-                <ToolExecutionCard key={item.data.requestId} execution={item.data} />
-              ) : item.kind === "pipeline" ? (
-                <PipelineProgressBlock key={item.id} execution={item.data} />
-              ) : (
-                <SubAgentCard key={item.data.parentRequestId} subAgent={item.data} />
-              )
+          <div className="space-y-0.5">
+            {/* Integrated plan + grouped tools */}
+            {plan &&
+              plan.steps.map((step, i) => (
+                <PlanStepGroup
+                  key={`step-${i}-${step.step}`}
+                  step={step}
+                  items={stepItems.get(i) ?? []}
+                />
+              ))}
+
+            {/* Ungrouped items (no planStepIndex or no plan) */}
+            {ungrouped.length > 0 && (
+              <div className={cn(plan && "mt-2 pt-2 border-t border-[var(--border-subtle)]")}>
+                {ungrouped.map((item) =>
+                  item.kind === "tool" ? (
+                    <ToolExecutionCard key={item.data.requestId} execution={item.data} />
+                  ) : item.kind === "pipeline" ? (
+                    <PipelineProgressBlock key={item.id} execution={item.data} />
+                  ) : (
+                    <SubAgentCard key={item.data.parentRequestId} subAgent={item.data} />
+                  ),
+                )}
+              </div>
             )}
           </div>
         )}

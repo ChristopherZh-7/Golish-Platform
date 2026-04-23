@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     token_budget::{TokenAlertLevel, TokenBudgetConfig, TokenBudgetManager, TokenUsageStats},
-    token_trunc::{aggregate_tool_output, TruncationResult},
+    token_trunc::{aggregate_tool_output, TruncationResult, DEFAULT_MAX_TOOL_RESPONSE_TOKENS},
 };
 
 /// State tracking for context compaction.
@@ -106,7 +106,7 @@ impl Default for ContextTrimConfig {
             enabled: false, // Disabled by default
             target_utilization: 0.7,
             aggressive_on_critical: true,
-            max_tool_response_tokens: 25_000,
+            max_tool_response_tokens: DEFAULT_MAX_TOOL_RESPONSE_TOKENS,
         }
     }
 }
@@ -250,7 +250,7 @@ impl ContextManager {
             enabled: config.enabled,
             target_utilization: config.compaction_threshold - 0.10, // Target 10% below threshold
             aggressive_on_critical: true,
-            max_tool_response_tokens: 25_000,
+            max_tool_response_tokens: DEFAULT_MAX_TOOL_RESPONSE_TOKENS,
         };
 
         Self {
@@ -793,7 +793,7 @@ mod compaction_tests {
             enabled,
             target_utilization: alert_threshold - 0.10,
             aggressive_on_critical: true,
-            max_tool_response_tokens: 25_000,
+            max_tool_response_tokens: DEFAULT_MAX_TOOL_RESPONSE_TOKENS,
         };
 
         ContextManager {

@@ -508,7 +508,7 @@ export function FindingsPanel() {
                       {finding.references.length > 0 && (
                         <div className="text-[9px] text-muted-foreground/40">
                           Refs: {finding.references.map((r, i) => (
-                            <a key={i} href={r} target="_blank" rel="noopener" className="text-accent/50 hover:text-accent mr-1.5">{r}</a>
+                            <a key={i} href={r} target="_blank" rel="noopener" className="text-primary/70 hover:text-primary underline decoration-primary/30 mr-1.5">{r}</a>
                           ))}
                         </div>
                       )}

@@ -3,6 +3,19 @@
 //! Each agent in the Task mode pipeline has a specialized prompt
 //! that matches PentAGI's template structure.
 
+/// Truncate a string slice to at most `max` bytes without splitting a multi-byte char.
+fn safe_truncate(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        s
+    } else {
+        let mut end = max;
+        while !s.is_char_boundary(end) && end > 0 {
+            end -= 1;
+        }
+        &s[..end]
+    }
+}
+
 /// Generator prompt — decomposes a user task into ordered subtasks.
 ///
 /// Equivalent to PentAGI's `generator.tmpl`.
@@ -29,6 +42,37 @@ Each subtask should be independently executable by a specialist agent.
 4. Be specific in descriptions. Include expected inputs and outputs.
 5. Consider the full workflow: reconnaissance → analysis → testing → reporting.
 
+## PENETRATION TESTING METHODOLOGY
+
+When the task involves testing a target, follow this standard methodology:
+
+### Phase 1: Information Gathering
+- DNS resolution (dig) and subdomain enumeration (subfinder) — ONLY for domain targets
+- For IP targets, skip DNS/subdomain steps entirely
+- Port scanning (naabu/nmap) to identify open services
+- **CRITICAL**: Always verify what service is actually running on each port using service fingerprinting (httpx, nmap -sV). NEVER assume a service based on port number alone (e.g., port 8080 is NOT necessarily Tomcat).
+
+### Phase 2: Service Enumeration
+- HTTP service probing (httpx) for web services
+- Technology fingerprinting (whatweb, wappalyzer) to identify frameworks, CMS, WAF
+- Web crawling (katana) for content discovery
+- JavaScript collection and analysis for SPAs
+
+### Phase 3: Vulnerability Assessment
+- Based on identified technologies, select appropriate test vectors
+- Automated scanning (nuclei) with relevant templates
+- Manual testing for logic vulnerabilities
+
+### Phase 4: Reporting
+- Summarize all findings with severity ratings
+- Provide remediation recommendations
+
+## IMPORTANT CONSTRAINTS
+
+- Each subtask description MUST specify what tools to use and what NOT to assume
+- Subtask descriptions should include verification steps (e.g., "verify the service type before proceeding")
+- If a previous subtask found no results (e.g., no open ports), subsequent subtasks should handle that case
+
 ## OUTPUT FORMAT
 
 Respond with ONLY a JSON object (no markdown fences, no explanation):
@@ -49,39 +93,61 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
 ///
 /// This wraps the subtask context around the main agent's capabilities.
 /// Equivalent to PentAGI's `primary_agent.tmpl`.
+#[allow(dead_code)]
 pub fn primary_agent_subtask_prompt(
     subtask_title: &str,
     subtask_description: &str,
     execution_context: &str,
 ) -> String {
+    primary_agent_subtask_prompt_with_agent(subtask_title, subtask_description, execution_context, None)
+}
+
+/// Primary agent prompt with optional agent-type specialization.
+pub fn primary_agent_subtask_prompt_with_agent(
+    subtask_title: &str,
+    subtask_description: &str,
+    execution_context: &str,
+    agent_type: Option<&str>,
+) -> String {
+    let role_guidance = agent_type_guidance(agent_type.unwrap_or("primary"));
+
     format!(
         r#"## CURRENT SUBTASK
 
 You are executing a specific subtask as part of a larger automated task.
-
+{role_guidance}
 ### Subtask: {title}
 {description}
 
 ### Previous Results
 {context}
 
-## INSTRUCTIONS
+## MANDATORY EXECUTION RULES
 
-1. Focus ONLY on completing this specific subtask
-2. Use the tools and sub-agents available to you
-3. Be thorough but stay within the scope of this subtask
-4. Report your findings clearly — your output will be passed to the next subtask
-5. If you encounter blockers, document them clearly in your response
-6. Do NOT attempt to complete the entire parent task — only this subtask
+1. You MUST use tools to execute this subtask. Describing what you would do is NOT acceptable.
+2. Focus ONLY on completing this specific subtask — do not attempt the entire parent task.
+3. After executing tools, provide a structured report of actual results.
+4. If a tool fails, try an alternative approach before giving up.
+5. If you encounter blockers, document them with specific error messages.
 
-## OUTPUT
+## EXECUTION CHECKLIST
 
-Provide a clear summary of:
-- What you did
-- What you found
-- Any artifacts created (files, scan results, etc.)
-- Any issues or blockers encountered
+Before finishing, verify:
+- [ ] You executed at least one tool (run_pty_cmd, web_fetch, etc.)
+- [ ] You have concrete results (scan output, HTTP responses, file contents, etc.)
+- [ ] Your findings are based on actual evidence, not assumptions
+
+## OUTPUT FORMAT
+
+After completing tool execution, provide a structured summary:
+
+**Actions Taken**: List each tool you called and why
+**Findings**: Concrete results with evidence (IP addresses, open ports, service versions, etc.)
+**Artifacts**: Any files created or saved (paths)
+**Blockers**: Any issues that prevented progress (with error details)
+**Next Steps**: Recommendations for subsequent subtasks based on your findings
 "#,
+        role_guidance = role_guidance,
         title = subtask_title,
         description = subtask_description,
         context = if execution_context.is_empty() {
@@ -90,6 +156,43 @@ Provide a clear summary of:
             execution_context.to_string()
         },
     )
+}
+
+/// Return agent-type-specific role guidance for the subtask prompt.
+fn agent_type_guidance(agent_type: &str) -> &'static str {
+    match agent_type {
+        "pentester" => r#"
+### YOUR ROLE: Penetration Tester
+You are a specialist in security scanning, vulnerability discovery, and exploitation.
+- Use tools like nmap, naabu, httpx, nuclei, subfinder, katana for reconnaissance
+- Always verify service types before assuming (use fingerprinting)
+- Store successful methodologies using save_guide for future reuse
+- Log all findings using record_finding and log_scan_result
+"#,
+        "coder" => r#"
+### YOUR ROLE: Security Coder
+You are a specialist in writing security tools, exploits, and automation scripts.
+- Write clean, functional code that handles errors gracefully
+- Save scripts to .golish/scripts/ directory
+- Test scripts after writing them
+- Save reusable code snippets using save_code
+"#,
+        "researcher" | "searcher" => r#"
+### YOUR ROLE: Security Researcher
+You are a specialist in information gathering, OSINT, and documentation lookup.
+- Use web_search and web_fetch for external research
+- Search for CVEs, exploits, and vulnerability databases relevant to discovered services
+- Provide detailed technical references for findings
+"#,
+        "analyzer" => r#"
+### YOUR ROLE: Code/Architecture Analyzer
+You are a specialist in reviewing code, analyzing architecture, and identifying security patterns.
+- Use read_file, grep_file, ast_grep for thorough code analysis
+- Focus on security-relevant patterns: input validation, authentication, authorization
+- Document findings with specific file paths and line numbers
+"#,
+        _ => "",
+    }
 }
 
 /// Refiner prompt — evaluates progress and adjusts the remaining plan.
@@ -226,9 +329,6 @@ If the agent is confused, clarify the objective and suggest the first concrete a
 
 /// Execution Mentor system prompt — monitors agent progress and provides corrective advice.
 ///
-/// Reserved for LLM-based mentor (currently static advice is used in agentic_loop).
-#[allow(dead_code)]
-///
 /// Mirrors PentAGI's `performMentor()` pattern: when the execution monitor
 /// detects repetitive tool usage, the mentor analyzes the situation and
 /// provides strategic advice that is injected into the tool response.
@@ -256,9 +356,6 @@ clear, actionable guidance on what to do differently.
 }
 
 /// Execution Mentor user prompt — provides context about the stuck agent.
-///
-/// Reserved for LLM-based mentor (currently static advice is used in agentic_loop).
-#[allow(dead_code)]
 pub fn mentor_user_prompt(
     subtask_description: &str,
     repeated_tool: &str,
@@ -277,11 +374,7 @@ What should the agent do differently?"#,
         description = subtask_description,
         tool = repeated_tool,
         count = repeat_count,
-        recent = if recent_tool_calls.len() > 3000 {
-            &recent_tool_calls[..3000]
-        } else {
-            recent_tool_calls
-        },
+        recent = safe_truncate(recent_tool_calls, 3000),
     )
 }
 
@@ -332,11 +425,7 @@ Description: {description}
     if !execution_context_summary.is_empty() {
         prompt.push_str(&format!(
             "\n\n<completed_work>\n{}\n</completed_work>",
-            if execution_context_summary.len() > 3000 {
-                &execution_context_summary[..3000]
-            } else {
-                execution_context_summary
-            }
+            safe_truncate(execution_context_summary, 3000)
         ));
     }
 
@@ -358,10 +447,6 @@ pub fn reflector_user_prompt(
 
 Redirect it to take concrete action. What specific tool should it use first?"#,
         title = subtask_title,
-        response = if agent_response.len() > 2000 {
-            &agent_response[..2000]
-        } else {
-            agent_response
-        },
+        response = safe_truncate(agent_response, 2000),
     )
 }

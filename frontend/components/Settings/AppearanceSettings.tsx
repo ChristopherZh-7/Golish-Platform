@@ -105,7 +105,6 @@ export function AppearanceSettings({
     "showStatusBar",
     "showInputModeToggle",
     "showStatusBadge",
-    "showAgentModeSelector",
     "showContextUsage",
     "showMcpBadge",
   ];
@@ -128,7 +127,6 @@ export function AppearanceSettings({
   const statusBarSubOptions: Array<keyof DisplaySettings> = [
     "showInputModeToggle",
     "showStatusBadge",
-    "showAgentModeSelector",
     "showContextUsage",
     "showMcpBadge",
   ];
@@ -509,13 +507,6 @@ export function AppearanceSettings({
             onCheckedChange={(checked) => update({ showStatusBadge: checked })}
           />
           <ToggleRow
-            id="show-agent-mode-selector"
-            label="Agent Mode Selector"
-            description="Show the agent mode (Auto / Plan / etc.) dropdown"
-            checked={displaySettings.showAgentModeSelector}
-            onCheckedChange={(checked) => update({ showAgentModeSelector: checked })}
-          />
-          <ToggleRow
             id="show-context-usage"
             label="Token Usage"
             description="Show the context window / token usage percentage badge"
@@ -552,7 +543,6 @@ export function AppearanceSettings({
               showStatusBar: true,
               showInputModeToggle: true,
               showStatusBadge: true,
-              showAgentModeSelector: true,
               showContextUsage: true,
               showMcpBadge: true,
               hideAiSettingsInShellMode: displaySettings.hideAiSettingsInShellMode,
@@ -581,7 +571,6 @@ export function AppearanceSettings({
               showStatusBar: false,
               showInputModeToggle: false,
               showStatusBadge: false,
-              showAgentModeSelector: false,
               showContextUsage: false,
               showMcpBadge: false,
               hideAiSettingsInShellMode: displaySettings.hideAiSettingsInShellMode,

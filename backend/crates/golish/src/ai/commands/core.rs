@@ -830,26 +830,101 @@ pub async fn send_ai_prompt_session(
 }
 
 /// Run Task mode orchestration (PentAGI-style).
+///
+/// Emits a short initial Started→TextDelta→Completed cycle so the frontend
+/// immediately shows a response while the Generator LLM call runs.
+/// Each subtask then manages its own Started/Completed lifecycle via
+/// `execute_isolated` → `execute_with_context`.
 async fn execute_task_mode(
     bridge: Arc<AgentBridge>,
-    session_id: &str,
+    _session_id: &str,
     prompt: &str,
 ) -> anyhow::Result<String> {
     use golish_ai::task_orchestrator::{bridge_executor::BridgeAgentExecutor, TaskOrchestrator};
+    use golish_core::events::AiEvent;
 
     let pool = bridge
         .db_pool()
         .ok_or_else(|| anyhow::anyhow!("Database pool not available — Task mode requires a DB connection"))?;
 
-    let uuid_session_id = uuid::Uuid::parse_str(session_id)
-        .unwrap_or_else(|_| uuid::Uuid::new_v4());
+    let db_session = golish_db::repo::sessions::create(
+        &pool,
+        golish_db::models::NewSession {
+            title: Some(format!("Task: {}", &prompt[..prompt.len().min(50)])),
+            workspace_path: None,
+            workspace_label: None,
+            model: Some(bridge.model_name().to_string()),
+            provider: Some(bridge.provider_name().to_string()),
+            project_path: None,
+        },
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to create DB session for task mode: {}", e))?;
+    let uuid_session_id = db_session.id;
 
     let event_tx = bridge.get_or_create_event_tx();
 
-    let mut orchestrator = TaskOrchestrator::new(pool, uuid_session_id, event_tx);
-    let executor = BridgeAgentExecutor::new(bridge);
+    // Emit a short initial message so the user sees immediate feedback.
+    // This cycle completes before the Generator call so it won't collide
+    // with per-subtask Started/Completed events from execute_isolated.
+    let init_turn = uuid::Uuid::new_v4().to_string();
+    let init_msg = format!(
+        "I'm analyzing your request and generating a task plan. \
+         This may take a moment while I decompose the task into subtasks..."
+    );
+    bridge.emit_event(AiEvent::Started { turn_id: init_turn });
+    bridge.emit_event(AiEvent::UserMessage { content: prompt.to_string() });
+    bridge.emit_event(AiEvent::TextDelta {
+        delta: init_msg.clone(),
+        accumulated: init_msg.clone(),
+    });
+    bridge.emit_event(AiEvent::Completed {
+        response: init_msg,
+        reasoning: None,
+        input_tokens: None,
+        output_tokens: None,
+        duration_ms: Some(0),
+    });
 
-    orchestrator.run(prompt, &executor).await
+    let start_time = std::time::Instant::now();
+    let mut orchestrator = TaskOrchestrator::new(pool, uuid_session_id, event_tx);
+    let executor = BridgeAgentExecutor::new(bridge.clone());
+
+    let result = orchestrator.run(prompt, &executor).await;
+
+    let duration_ms = start_time.elapsed().as_millis() as u64;
+
+    match &result {
+        Ok(response) => {
+            tracing::info!(
+                "[TaskMode] Completed in {:.1}s, report length: {} chars",
+                duration_ms as f64 / 1000.0,
+                response.len(),
+            );
+            // Emit the final report as a separate completed message
+            let report_turn = uuid::Uuid::new_v4().to_string();
+            bridge.emit_event(AiEvent::Started { turn_id: report_turn });
+            bridge.emit_event(AiEvent::TextDelta {
+                delta: response.clone(),
+                accumulated: response.clone(),
+            });
+            bridge.emit_event(AiEvent::Completed {
+                response: response.clone(),
+                reasoning: None,
+                input_tokens: None,
+                output_tokens: None,
+                duration_ms: Some(duration_ms),
+            });
+        }
+        Err(e) => {
+            bridge.emit_event(AiEvent::Error {
+                message: e.to_string(),
+                error_type: "task_orchestrator".to_string(),
+            });
+        }
+    }
+
+    result
 }
 
 /// Get vision capabilities for the current model in a session.

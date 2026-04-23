@@ -171,7 +171,10 @@ async fn repair_migrations(
     Ok(())
 }
 
-/// Check whether the pgvector extension was successfully loaded.
+/// Check whether the pgvector extension is loaded, attempting to create it if
+/// the library files are available but the extension wasn't loaded yet (e.g.
+/// the migration's `CREATE EXTENSION` failed on a previous run before the
+/// library was correctly placed).
 async fn detect_pgvector(pool: &PgPool) -> bool {
     let row: Option<(bool,)> = sqlx::query_as(
         "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'vector')",
@@ -181,5 +184,24 @@ async fn detect_pgvector(pool: &PgPool) -> bool {
     .ok()
     .flatten();
 
-    row.map_or(false, |(exists,)| exists)
+    if row.map_or(false, |(exists,)| exists) {
+        return true;
+    }
+
+    // Extension not loaded yet — try creating it now (the .dylib may have
+    // been placed after the migration already ran and fell back to BYTEA).
+    tracing::info!("pgvector extension not found, attempting CREATE EXTENSION vector");
+    match sqlx::query("CREATE EXTENSION IF NOT EXISTS vector")
+        .execute(pool)
+        .await
+    {
+        Ok(_) => {
+            tracing::info!("pgvector extension created successfully");
+            true
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "CREATE EXTENSION vector failed — pgvector unavailable");
+            false
+        }
+    }
 }

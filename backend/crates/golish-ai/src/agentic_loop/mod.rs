@@ -69,6 +69,10 @@ pub const APPROVAL_TIMEOUT_SECS: u64 = 1800;
 /// Maximum tokens for a single completion request
 pub const MAX_COMPLETION_TOKENS: u32 = 10_000;
 
+/// Token threshold above which truncated tool output is further summarized by the LLM.
+/// Outputs shorter than this after truncation are passed through as-is.
+const SUMMARIZE_THRESHOLD_TOKENS: usize = 2000;
+
 mod stream_retry;
 use stream_retry::*;
 
@@ -644,9 +648,12 @@ where
     let mut iteration = 0;
     let mut consecutive_no_tool_turns: u32 = 0;
     let mut total_reflector_nudges: u32 = 0;
-    // Tracks whether the memory gatekeeper decided this message warrants tool usage.
-    // When false (simple chat), the reflector won't nudge the agent to use tools.
-    let mut gatekeeper_wants_tools = false;
+    // Whether the gatekeeper decided memory search is warranted (controls memory-first hook).
+    let mut _gatekeeper_wants_memory = false;
+    // Whether the reflector should nudge the agent when it produces text without tool calls.
+    // Defaults to true — decoupled from gatekeeper so pentest/task prompts always get
+    // reflector coverage. Only set to false for trivial messages (greetings, acks).
+    let mut reflector_active = true;
 
     loop {
         iteration += 1;
@@ -839,12 +846,12 @@ where
                 );
                 let mut hook_messages = hook_registry.run_message_hooks(&msg_ctx);
 
-                // Run async memory gatekeeper: small model classifies whether
-                // memory search is warranted for this message.
+                // Run async memory gatekeeper: classifies whether memory search
+                // is warranted for this message.
                 {
                     let client = ctx.client.read().await;
                     let wants_memory = crate::memory_gatekeeper::should_search_memory(&client, user_text).await;
-                    gatekeeper_wants_tools = wants_memory;
+                    _gatekeeper_wants_memory = wants_memory;
                     if wants_memory {
                         hook_messages.push(
                             "[Memory-First] The gatekeeper determined this message may benefit \
@@ -853,6 +860,15 @@ where
                                 .to_string(),
                         );
                     }
+
+                    // Reflector should be active for any substantive request.
+                    // Only disable it for trivial messages that clearly don't need tools.
+                    let trimmed = user_text.trim();
+                    let is_trivial = trimmed.len() < 20
+                        && !trimmed.contains("scan")
+                        && !trimmed.contains("test")
+                        && !trimmed.contains("exploit");
+                    reflector_active = !is_trivial || wants_memory;
                 }
 
                 if !hook_messages.is_empty() {
@@ -1838,13 +1854,13 @@ where
 
             // Reflector: if the agent produced text but no tool calls, and we haven't
             // exhausted reflector attempts, invoke the reflector to diagnose and correct.
-            // Skip reflector when the gatekeeper classified the message as simple chat
-            // (no memory/tool usage warranted) — the text-only response is expected.
+            // Skip reflector only for trivial messages (greetings, acks) where a
+            // text-only response is expected.
             let should_reflect = consecutive_no_tool_turns <= 3
                 && total_reflector_nudges < 3
                 && !text_content.trim().is_empty()
                 && config.enable_reflector
-                && gatekeeper_wants_tools;
+                && reflector_active;
 
             if should_reflect {
                 let registry = ctx.sub_agent_registry.read().await;
@@ -2293,22 +2309,41 @@ where
                 )
             };
             tracing::info!(
-                "[ExecutionMentor] Monitor triggered: '{}' called {} times, invoking mentor",
+                "[ExecutionMentor] Monitor triggered: '{}' called {} times, invoking LLM mentor",
                 repeated_tool,
                 repeat_count,
             );
-            // For now, provide a static corrective message.
-            // TODO: Use LLM-based mentor when simple_completion is accessible here.
-            let advice = format!(
-                "\n\n--- EXECUTION ADVISOR ---\n\
-                 You have called '{}' {} times. Consider a different approach:\n\
-                 - Try a different tool to make progress\n\
-                 - Check if previous results already contain the information you need\n\
-                 - If stuck, use a different strategy entirely\n\
-                 Recent calls: {}\n\
-                 -------------------------",
-                repeated_tool, repeat_count, recent_summary,
-            );
+            let advice = {
+                let mentor_system = crate::task_orchestrator::prompts::mentor_system_prompt();
+                let mentor_user = crate::task_orchestrator::prompts::mentor_user_prompt(
+                    tool_name,
+                    &repeated_tool,
+                    repeat_count,
+                    &recent_summary,
+                );
+                match mentor_one_shot(ctx.client, mentor_system, &mentor_user).await {
+                    Ok(llm_advice) => {
+                        tracing::info!(
+                            "[ExecutionMentor] LLM mentor produced {} chars of advice",
+                            llm_advice.len()
+                        );
+                        format!("\n\n--- EXECUTION ADVISOR ---\n{}\n-------------------------", llm_advice)
+                    }
+                    Err(e) => {
+                        tracing::warn!("[ExecutionMentor] LLM mentor failed, using static fallback: {}", e);
+                        format!(
+                            "\n\n--- EXECUTION ADVISOR ---\n\
+                             You have called '{}' {} times. Consider a different approach:\n\
+                             - Try a different tool to make progress\n\
+                             - Check if previous results already contain the information you need\n\
+                             - If stuck, use a different strategy entirely\n\
+                             Recent calls: {}\n\
+                             -------------------------",
+                            repeated_tool, repeat_count, recent_summary,
+                        )
+                    }
+                }
+            };
             {
                 let mut mon = monitor.write().await;
                 mon.reset_after_mentor();
@@ -2331,7 +2366,7 @@ where
         .truncate_tool_response(&raw_result_text, tool_name)
         .await;
 
-    if truncation_result.truncated {
+    let final_content = if truncation_result.truncated {
         let original_tokens = golish_context::TokenBudgetManager::estimate_tokens(&raw_result_text);
         let truncated_tokens =
             golish_context::TokenBudgetManager::estimate_tokens(&truncation_result.content);
@@ -2340,13 +2375,40 @@ where
             original_tokens,
             truncated_tokens,
         });
-    }
+
+        // If truncated output is still large, attempt LLM summarization
+        if truncated_tokens > SUMMARIZE_THRESHOLD_TOKENS {
+            match summarize_tool_output(ctx.client, tool_name, &truncation_result.content).await {
+                Ok(summary) => {
+                    tracing::info!(
+                        "[ToolSummarizer] Summarized '{}' output: {} -> {} tokens",
+                        tool_name,
+                        truncated_tokens,
+                        golish_context::TokenBudgetManager::estimate_tokens(&summary),
+                    );
+                    summary
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[ToolSummarizer] Failed for '{}', using truncated: {}",
+                        tool_name,
+                        e
+                    );
+                    truncation_result.content
+                }
+            }
+        } else {
+            truncation_result.content
+        }
+    } else {
+        truncation_result.content
+    };
 
     let user_content = UserContent::ToolResult(ToolResult {
         id: tool_id.clone(),
         call_id: Some(tool_call_id),
         content: OneOrMany::one(ToolResultContent::Text(Text {
-            text: truncation_result.content,
+            text: final_content,
         })),
     });
 
@@ -2362,6 +2424,112 @@ where
     let hooks = hook_registry.run_post_tool_hooks(&post_ctx);
 
     (user_content, hooks)
+}
+
+/// Summarize large tool output using a one-shot LLM call.
+///
+/// Preserves key data (IPs, ports, versions, URLs, errors) while removing noise.
+/// Falls back to truncated content on failure.
+async fn summarize_tool_output(
+    client: &Arc<RwLock<golish_llm_providers::LlmClient>>,
+    tool_name: &str,
+    content: &str,
+) -> anyhow::Result<String> {
+    let system = r#"You are a technical output summarizer for a penetration testing agent.
+Summarize the tool output below, preserving ALL:
+- IP addresses, hostnames, domain names
+- Port numbers and service versions
+- HTTP status codes and response headers
+- Error messages and warnings
+- Vulnerability identifiers (CVE, CWE)
+- Credentials, tokens, or sensitive data found
+- File paths and URLs
+
+Remove: redundant lines, progress bars, banner art, duplicate entries, verbose formatting.
+Output a clean, structured summary. Keep it under 800 tokens."#;
+
+    let user_msg = format!(
+        "Tool: {}\n\nOutput to summarize:\n{}",
+        tool_name, content
+    );
+
+    let summary = mentor_one_shot(client, system, &user_msg).await?;
+    if summary.trim().is_empty() {
+        return Err(anyhow::anyhow!("LLM returned empty summary"));
+    }
+    Ok(format!(
+        "[LLM-summarized output from '{}']\n\n{}\n\n[End of summary — original output was {} chars]",
+        tool_name,
+        summary.trim(),
+        content.len()
+    ))
+}
+
+/// One-shot LLM completion for the Execution Mentor.
+///
+/// Uses the session's model to generate strategic advice when the agent is stuck.
+async fn mentor_one_shot(
+    client: &Arc<RwLock<golish_llm_providers::LlmClient>>,
+    system_prompt: &str,
+    user_message: &str,
+) -> anyhow::Result<String> {
+    use rig::completion::{AssistantContent, CompletionModel as _, CompletionRequest};
+    use rig::message::{Text as RigText, UserContent};
+
+    let request = CompletionRequest {
+        preamble: Some(system_prompt.to_string()),
+        chat_history: OneOrMany::one(Message::User {
+            content: OneOrMany::one(UserContent::Text(RigText {
+                text: user_message.to_string(),
+            })),
+        }),
+        documents: vec![],
+        tools: vec![],
+        temperature: Some(0.4),
+        max_tokens: Some(500),
+        tool_choice: None,
+        additional_params: None,
+        model: None,
+        output_schema: None,
+    };
+
+    let client_guard = client.read().await;
+
+    macro_rules! complete {
+        ($model:expr) => {{
+            let response = $model
+                .completion(request)
+                .await
+                .map_err(|e| anyhow::anyhow!("Mentor LLM call failed: {}", e))?;
+            let text = response
+                .choice
+                .iter()
+                .filter_map(|c| match c {
+                    AssistantContent::Text(t) => Some(t.text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            Ok(text)
+        }};
+    }
+
+    match &*client_guard {
+        golish_llm_providers::LlmClient::VertexAnthropic(m) => complete!(m),
+        golish_llm_providers::LlmClient::VertexGemini(m) => complete!(m),
+        golish_llm_providers::LlmClient::RigOpenRouter(m) => complete!(m),
+        golish_llm_providers::LlmClient::RigOpenAi(m) => complete!(m),
+        golish_llm_providers::LlmClient::RigOpenAiResponses(m) => complete!(m),
+        golish_llm_providers::LlmClient::OpenAiReasoning(m) => complete!(m),
+        golish_llm_providers::LlmClient::RigAnthropic(m) => complete!(m),
+        golish_llm_providers::LlmClient::RigOllama(m) => complete!(m),
+        golish_llm_providers::LlmClient::RigGemini(m) => complete!(m),
+        golish_llm_providers::LlmClient::RigGroq(m) => complete!(m),
+        golish_llm_providers::LlmClient::RigXai(m) => complete!(m),
+        golish_llm_providers::LlmClient::RigZaiSdk(m) => complete!(m),
+        golish_llm_providers::LlmClient::RigNvidia(m) => complete!(m),
+        golish_llm_providers::LlmClient::Mock => Err(anyhow::anyhow!("Mock client")),
+    }
 }
 
 #[cfg(test)]

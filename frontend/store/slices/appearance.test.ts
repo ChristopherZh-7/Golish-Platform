@@ -50,7 +50,6 @@ describe("Appearance Slice", () => {
         showStatusBar: false,
         showInputModeToggle: false,
         showStatusBadge: false,
-        showAgentModeSelector: false,
         showContextUsage: false,
         showMcpBadge: false,
         hideAiSettingsInShellMode: false,

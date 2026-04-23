@@ -12,8 +12,13 @@ const CODE_HEAD_RATIO: f64 = 0.7;
 const LOG_HEAD_RATIO: f64 = 0.4;
 /// Minimum content length before truncation kicks in
 const MIN_TRUNCATION_LENGTH: usize = 100;
-/// Byte fuse limit for safety truncation
-const BYTE_FUSE_LIMIT: usize = 100_000;
+/// Byte fuse limit for safety truncation (raw bytes, not tokens).
+/// Any tool output exceeding this is hard-truncated regardless of token budget.
+pub const BYTE_FUSE_LIMIT: usize = 100_000;
+
+/// Default maximum tokens to keep from a single tool response.
+/// Used when no per-session override is provided.
+pub const DEFAULT_MAX_TOOL_RESPONSE_TOKENS: usize = 25_000;
 
 /// Type of content for truncation strategy
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
