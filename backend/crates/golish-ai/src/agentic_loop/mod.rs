@@ -577,6 +577,8 @@ where
     // Chat mode: full tool set (file, shell, web, sub-agents, etc.)
     let is_task_primary = ctx.execution_mode.is_task() && sub_agent_context.depth == 0;
 
+    let is_task_subtask = ctx.execution_mode.is_task() && sub_agent_context.depth > 0;
+
     let mut tools: Vec<rig::completion::ToolDefinition> = if is_task_primary {
         tracing::info!("[Task mode] Primary agent: delegation-only tools (no direct environment access)");
         // Only planning tool from the static catalog
@@ -589,6 +591,11 @@ where
         // Chat mode or sub-agent execution: full tool set
         let mut t = get_all_tool_definitions_with_config(ctx.tool_config);
         t.push(get_run_command_tool_definition());
+        // Subtask agents in Task mode must not call update_plan — only the
+        // orchestrator's refiner phase manages plan modifications.
+        if is_task_subtask {
+            t.retain(|tool| tool.name != "update_plan");
+        }
         t
     };
 

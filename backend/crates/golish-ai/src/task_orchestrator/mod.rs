@@ -11,7 +11,7 @@
 //! task lifecycle and DB persistence.
 
 pub mod bridge_executor;
-pub(crate) mod prompts;
+pub mod prompts;
 
 use std::sync::Arc;
 

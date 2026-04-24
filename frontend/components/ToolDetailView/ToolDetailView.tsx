@@ -20,6 +20,9 @@ type DetailItem =
   | { kind: "sub_agent"; data: ActiveSubAgent }
   | { kind: "pipeline"; data: PipelineExecution; id: string };
 
+const EMPTY_RETIRED_PLANS: RetiredPlan[] = [];
+const EMPTY_TIMELINE: never[] = [];
+
 /** A single plan step row with its nested tool/pipeline/subagent cards. */
 const PlanStepGroup = memo(function PlanStepGroup({
   step,
@@ -76,14 +79,15 @@ const PlanStepGroup = memo(function PlanStepGroup({
 
         <span
           className={cn(
-            "flex-1 font-medium",
+            "flex-1 font-medium truncate",
             isCompleted && "text-muted-foreground/60",
             isInProgress && "text-accent",
             isPending && "text-muted-foreground/50",
             isFailed && "text-red-400/60",
           )}
+          title={step.step}
         >
-          {step.step}
+          {step.step.length > 120 ? `${step.step.slice(0, 120)}…` : step.step}
         </span>
 
         {versionLabel && (
@@ -151,14 +155,13 @@ const RetiredPlanSection = memo(function RetiredPlanSection({
   const [open, setOpen] = useState(false);
   const toggle = useCallback(() => setOpen((v) => !v), []);
 
-  // Collect retired steps that actually have items
+  // Collect all retired steps (with or without tool executions)
   const stepsWithItems = useMemo(() => {
-    const result: { step: PlanStep; items: DetailItem[]; version: number }[] = [];
+    const result: { step: PlanStep; items: DetailItem[]; retiredAt: string }[] = [];
     for (const rp of retiredPlans) {
       for (const step of rp.plan.steps) {
-        if (step.id && retiredStepItems.has(step.id)) {
-          result.push({ step, items: retiredStepItems.get(step.id)!, version: rp.plan.version });
-        }
+        const items = (step.id && retiredStepItems.get(step.id)) || [];
+        result.push({ step, items, retiredAt: rp.retiredAt });
       }
     }
     return result;
@@ -177,14 +180,14 @@ const RetiredPlanSection = memo(function RetiredPlanSection({
       >
         <History className="w-3.5 h-3.5" />
         <span className="font-medium">Previous Plan Steps</span>
-        <span className="text-[10px] opacity-60">{totalItems} executions</span>
+        <span className="text-[10px] opacity-60">{stepsWithItems.length} steps{totalItems > 0 ? `, ${totalItems} executions` : ""}</span>
         <span className="ml-auto">
           {open ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
         </span>
       </button>
       {open && (
         <div className="mt-1 opacity-80">
-          {stepsWithItems.map(({ step, items, version }) => (
+          {stepsWithItems.map(({ step, items }) => (
             <PlanStepGroup
               key={step.id}
               step={step}
@@ -192,7 +195,7 @@ const RetiredPlanSection = memo(function RetiredPlanSection({
               highlightSet={highlightSet}
               expandedCardId={expandedCardId}
               onExpandCard={onExpandCard}
-              versionLabel={`v${version}`}
+              versionLabel="Previous"
             />
           ))}
         </div>
@@ -209,9 +212,9 @@ export const ToolDetailView = memo(function ToolDetailView({
   sessionId,
 }: ToolDetailViewProps) {
   const setDetailViewMode = useStore((s) => s.setDetailViewMode);
-  const timeline = useStore((s) => s.timelines[sessionId] ?? []);
+  const timeline = useStore((s) => s.timelines[sessionId] ?? EMPTY_TIMELINE);
   const plan = useStore((s) => s.sessions[sessionId]?.plan ?? null);
-  const retiredPlans = useStore((s) => s.sessions[sessionId]?.retiredPlans ?? []);
+  const retiredPlans = useStore((s) => s.sessions[sessionId]?.retiredPlans ?? EMPTY_RETIRED_PLANS);
   const highlightIds = useStore(
     (s) => s.sessions[sessionId]?.toolDetailRequestIds ?? null,
   );
@@ -388,8 +391,8 @@ export const ToolDetailView = memo(function ToolDetailView({
                 );
               })}
 
-            {/* Retired plan steps that have associated tool executions */}
-            {retiredPlans.length > 0 && retiredStepItems.size > 0 && (
+            {/* Retired plan steps (with or without associated tool executions) */}
+            {retiredPlans.length > 0 && (
               <RetiredPlanSection
                 retiredPlans={retiredPlans}
                 retiredStepItems={retiredStepItems}

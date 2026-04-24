@@ -234,6 +234,60 @@ fn extract_text(choice: &OneOrMany<AssistantContent>) -> String {
         .join("")
 }
 
+/// Whether the user's message is an actionable task or casual conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserIntent {
+    Task,
+    Conversation,
+}
+
+/// Quick LLM classification: is this message an actionable task or just conversation?
+///
+/// Uses a minimal one-shot call with low max_tokens so it completes fast.
+/// Falls back to `Task` if anything goes wrong (conservative — don't silently ignore tasks).
+pub async fn classify_user_intent(bridge: &AgentBridge, prompt: &str) -> UserIntent {
+    let request = CompletionRequest {
+        model: None,
+        preamble: Some(prompts::intent_classifier_prompt().to_string()),
+        chat_history: OneOrMany::one(Message::User {
+            content: OneOrMany::one(UserContent::Text(Text {
+                text: prompt.to_string(),
+            })),
+        }),
+        documents: vec![],
+        tools: vec![],
+        temperature: Some(0.0),
+        max_tokens: Some(8),
+        tool_choice: None,
+        additional_params: None,
+        output_schema: None,
+    };
+
+    let client = bridge.client.read().await;
+    match complete_with_client(&client, request).await {
+        Ok(response) => {
+            let word = response.trim().to_uppercase();
+            tracing::info!(
+                classification = %word,
+                prompt_preview = %&prompt[..prompt.len().min(80)],
+                "[IntentClassifier] Result"
+            );
+            if word.contains("CHAT") {
+                UserIntent::Conversation
+            } else {
+                UserIntent::Task
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "[IntentClassifier] Classification failed, defaulting to Task"
+            );
+            UserIntent::Task
+        }
+    }
+}
+
 /// Try to extract JSON from a response that may contain markdown fences.
 fn extract_json_from_response(response: &str) -> &str {
     let trimmed = response.trim();

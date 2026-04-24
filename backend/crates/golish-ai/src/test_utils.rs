@@ -686,4 +686,5 @@ impl TestContext {
 }
 
 #[cfg(test)]
+#[path = "test_utils_tests.rs"]
 mod test_utils_tests;

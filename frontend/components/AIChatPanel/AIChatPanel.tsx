@@ -111,6 +111,10 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const chatUseSubAgentsRef = useRef(chatUseSubAgents);
   chatUseSubAgentsRef.current = chatUseSubAgents;
 
+  // Tracks whether a task-mode prompt is still executing (Tauri call hasn't returned).
+  // Used to keep the stop button visible across intermediate completed events.
+  const taskInProgressRef = useRef(false);
+
   const [contextUsage, setContextUsage] = useState<{
     utilization: number;
     totalTokens: number;
@@ -479,6 +483,12 @@ export const AIChatPanel = memo(function AIChatPanel() {
             case "completed": {
               store.finalizeStreamingMessage(convId, event.response, event.reasoning);
               streamingMsgRef.current = null;
+              // Keep the stop button visible during task-mode execution:
+              // finalizeStreamingMessage clears isStreaming, but the Tauri call
+              // is still pending so re-assert streaming until it returns.
+              if (taskInProgressRef.current) {
+                store.setConversationStreaming(convId, true);
+              }
               // Auto-generate title after first exchange
               const freshConv = store.conversations[convId];
               if (freshConv) {
@@ -505,6 +515,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
             }
 
             case "error": {
+              taskInProgressRef.current = false;
               store.setMessageError(convId, event.message);
               streamingMsgRef.current = null;
               break;
@@ -1364,7 +1375,9 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
 
     try {
       setConversationStreaming(conv.id, true);
-      console.debug("[AIChatPanel] Sending prompt to session:", conv.aiSessionId);
+      const isTaskMode = chatExecutionModeRef.current === "task";
+      if (isTaskMode) taskInProgressRef.current = true;
+      console.debug("[AIChatPanel] Sending prompt to session:", conv.aiSessionId, "task:", isTaskMode);
 
       if (imageAttachments.length > 0) {
         const payload = createTextPayload(prompt);
@@ -1379,6 +1392,12 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
         setImageAttachments([]);
       } else {
         await sendPromptSession(conv.aiSessionId, prompt);
+      }
+      // Task-mode Tauri call has returned — clear the in-progress flag
+      // and finalize streaming so the stop button disappears.
+      if (isTaskMode) {
+        taskInProgressRef.current = false;
+        finalizeStreamingMessage(conv.id);
       }
       // Safety timeout: if streaming is idle (no text AND no tool running) for 60s, reset.
       const convId = conv.id;
@@ -1415,6 +1434,7 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
         }
       }, 5_000);
     } catch (err) {
+      taskInProgressRef.current = false;
       const errMsg = err instanceof Error ? err.message : String(err);
       setMessageError(conv.id, errMsg);
     }
@@ -1427,6 +1447,7 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
     updateConv,
     addConversationMessage,
     setConversationStreaming,
+    finalizeStreamingMessage,
     setMessageError,
     t,
   ]);
@@ -1566,6 +1587,7 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
 
   const handleStop = useCallback(() => {
     if (!activeConv) return;
+    taskInProgressRef.current = false;
     shutdownAiSession(activeConv.aiSessionId).catch(() => {});
     streamingMsgRef.current = null;
     finalizeStreamingMessage(activeConv.id);
@@ -1827,7 +1849,7 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
                 return (
                   <React.Fragment key={msg.id}>
                     {retiredHere && retiredHere.length > 0 && retiredHere.map((rp, ri) => (
-                      <TaskPlanCard key={`retired-v${rp.version}-${ri}`} plan={rp} retired />
+                      <TaskPlanCard key={`retired-${rp.retiredAt ?? ri}`} plan={rp} retired />
                     ))}
                     <MessageBlock
                       message={msg}

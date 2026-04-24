@@ -399,6 +399,20 @@ export const SubAgentCard = memo(function SubAgentCard({
     return <CompactSubAgentCard subAgent={subAgent} />;
   }
 
+  return (
+    <FullSubAgentCard
+      subAgent={subAgent}
+      autoCollapse={autoCollapse}
+      highlighted={highlighted}
+    />
+  );
+});
+
+const FullSubAgentCard = memo(function FullSubAgentCard({
+  subAgent,
+  autoCollapse,
+  highlighted = false,
+}: Omit<SubAgentCardProps, "compact">) {
   const defaultExpanded = autoCollapse ? false : highlighted ? true : true;
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const cardRef = useRef<HTMLDivElement>(null);

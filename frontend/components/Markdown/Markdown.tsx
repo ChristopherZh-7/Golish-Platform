@@ -295,18 +295,18 @@ export const Markdown = memo(function Markdown({
       code: CodeBlock,
       // Headings
       h1: ({ children }: { children?: ReactNode }) => (
-        <h1 className="text-base font-bold text-foreground mt-4 mb-2 first:mt-0 pb-1.5 border-b border-[var(--border-medium)]">
+        <h1 className="text-base font-bold text-foreground mt-4 mb-2 first:mt-0 pb-1.5 border-b border-[var(--border-medium)] truncate max-w-full" title={typeof children === "string" ? children : undefined}>
           {children}
         </h1>
       ),
       h2: ({ children }: { children?: ReactNode }) => (
-        <h2 className="text-[13px] font-bold text-accent mt-3 mb-2 first:mt-0 pb-1.5 border-b border-[var(--border-subtle)] flex items-center gap-1.5">
-          <span className="w-0.5 h-4 bg-accent rounded-full" />
-          {children}
+        <h2 className="text-[13px] font-bold text-accent mt-3 mb-2 first:mt-0 pb-1.5 border-b border-[var(--border-subtle)] flex items-center gap-1.5 overflow-hidden max-h-8" title={typeof children === "string" ? children : undefined}>
+          <span className="w-0.5 h-4 bg-accent rounded-full flex-shrink-0" />
+          <span className="truncate">{children}</span>
         </h2>
       ),
       h3: ({ children }: { children?: ReactNode }) => (
-        <h3 className="text-[12.5px] font-semibold text-muted-foreground mt-3 mb-1.5 first:mt-0 pl-2.5 border-l-2 border-accent">
+        <h3 className="text-[12.5px] font-semibold text-muted-foreground mt-3 mb-1.5 first:mt-0 pl-2.5 border-l-2 border-accent truncate max-w-full" title={typeof children === "string" ? children : undefined}>
           {children}
         </h3>
       ),
