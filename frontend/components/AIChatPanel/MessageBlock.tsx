@@ -2,7 +2,6 @@ import React, { memo } from "react";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { Markdown } from "@/components/Markdown";
 import { cn } from "@/lib/utils";
-import { useStore } from "@/store";
 import type { ChatMessage } from "@/store";
 import type { ChatToolCall } from "@/store/slices/conversation";
 

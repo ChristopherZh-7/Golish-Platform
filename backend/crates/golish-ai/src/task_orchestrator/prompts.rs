@@ -3,6 +3,25 @@
 //! Each agent in the Task mode pipeline has a specialized prompt
 //! that matches PentAGI's template structure.
 
+/// Intent classifier prompt — determines whether a user message in Task mode
+/// is an actionable task or just casual conversation (greeting, question, etc.).
+///
+/// The LLM responds with a single word: "TASK" or "CHAT".
+pub fn intent_classifier_prompt() -> &'static str {
+    r#"You are an intent classifier. Given a user message, determine whether it is:
+
+- **TASK**: An actionable request that requires planning, tool execution, or multi-step work.
+  Examples: "Scan example.com for vulnerabilities", "Write a script to enumerate subdomains",
+  "Analyze the auth module for security issues", "Set up a reverse proxy"
+
+- **CHAT**: A greeting, casual remark, simple question, or anything that does NOT require
+  planning or tool execution.
+  Examples: "Hello", "你好", "What can you do?", "How are you?", "Thanks",
+  "What is SQL injection?", "Explain XSS to me"
+
+Respond with ONLY one word: TASK or CHAT. Nothing else."#
+}
+
 /// Truncate a string slice to at most `max` bytes without splitting a multi-byte char.
 fn safe_truncate(s: &str, max: usize) -> &str {
     if s.len() <= max {

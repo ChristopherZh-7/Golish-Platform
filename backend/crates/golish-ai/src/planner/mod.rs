@@ -217,14 +217,38 @@ impl PlanManager {
             .iter()
             .filter_map(|s| s.id.as_ref().map(|id| (s.step.clone(), id.clone())))
             .collect();
+        // Collect completed/failed steps that must be preserved (PentAGI-style:
+        // refine only replaces pending work, never removes finished work).
+        let preserved_steps: Vec<PlanStep> = existing_plan
+            .steps
+            .iter()
+            .filter(|s| matches!(s.status, StepStatus::Completed | StepStatus::Failed))
+            .cloned()
+            .collect();
         drop(existing_plan);
 
-        // Convert input to plan steps, reusing IDs for matching descriptions
-        let steps: Vec<PlanStep> = args
+        // Convert incoming steps, reusing IDs for matching descriptions.
+        // Truncate step text to prevent bloated plan entries (defense-in-depth).
+        const MAX_STEP_LEN: usize = 200;
+        let incoming_steps: Vec<PlanStep> = args
             .plan
             .into_iter()
             .map(|input| {
-                let trimmed = input.step.trim().to_string();
+                let mut trimmed = input.step.trim().to_string();
+                if trimmed.len() > MAX_STEP_LEN {
+                    // Truncate at a char boundary
+                    let mut end = MAX_STEP_LEN;
+                    while !trimmed.is_char_boundary(end) && end > 0 {
+                        end -= 1;
+                    }
+                    trimmed.truncate(end);
+                    trimmed.push('…');
+                    tracing::warn!(
+                        original_len = input.step.len(),
+                        "[PlanManager] Step text too long, truncated to {}",
+                        MAX_STEP_LEN,
+                    );
+                }
                 let id = existing_id_map
                     .get(&trimmed)
                     .cloned()
@@ -236,6 +260,24 @@ impl PlanManager {
                 }
             })
             .collect();
+
+        // Track which preserved steps the AI already included
+        let incoming_ids: std::collections::HashSet<String> = incoming_steps
+            .iter()
+            .filter_map(|s| s.id.clone())
+            .collect();
+
+        // Re-inject completed/failed steps that the AI omitted (plan refine
+        // dropped them, but we must keep finished work visible).
+        let mut steps = Vec::with_capacity(preserved_steps.len() + incoming_steps.len());
+        for ps in &preserved_steps {
+            if let Some(ref id) = ps.id {
+                if !incoming_ids.contains(id) {
+                    steps.push(ps.clone());
+                }
+            }
+        }
+        steps.extend(incoming_steps);
 
         // Calculate summary
         let summary = PlanSummary::from_steps(&steps);

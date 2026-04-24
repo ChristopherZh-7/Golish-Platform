@@ -2029,7 +2029,10 @@ mod should_transcript_tests {
                 | AiEvent::SubtaskWaitingForInput { .. }
                 | AiEvent::SubtaskUserInput { .. }
                 | AiEvent::TaskResumed { .. }
-                | AiEvent::EnricherResult { .. } => {}
+                | AiEvent::EnricherResult { .. }
+                | AiEvent::TaskProgress { .. }
+                | AiEvent::SubtaskCreated { .. }
+                | AiEvent::SubtaskCompleted { .. } => {}
             }
         }
 

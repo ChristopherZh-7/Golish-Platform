@@ -4,8 +4,6 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
-import type { ActiveSubAgent } from "@/store";
-import { SubAgentDetailsModal } from "@/components/SubAgentCard/SubAgentDetailsModal";
 
 const EMPTY_SUB_AGENTS: never[] = [];
 
@@ -30,7 +28,6 @@ function formatDuration(ms: number): string {
 
 export function SubAgentSummaryBar() {
   const [isExpanded, setIsExpanded] = useState(false);
-  const [detailAgent, setDetailAgent] = useState<ActiveSubAgent | null>(null);
   const wasRunningRef = useRef(false);
   const barRef = useRef<HTMLDivElement>(null);
   const activeSessionId = useStore((s) => s.activeSessionId);
@@ -117,7 +114,13 @@ export function SubAgentSummaryBar() {
               <button
                 key={agent.parentRequestId}
                 type="button"
-                onClick={() => setDetailAgent(agent)}
+                onClick={() => {
+                  if (activeSessionId) {
+                    const store = useStore.getState();
+                    store.setToolDetailRequestIds(activeSessionId, [agent.parentRequestId]);
+                    store.setDetailViewMode(activeSessionId, "tool-detail");
+                  }
+                }}
                 className={cn(
                   "w-full flex items-center gap-2 py-1.5 text-left rounded px-1.5 transition-colors",
                   "hover:bg-accent/10 cursor-pointer group",
@@ -156,9 +159,6 @@ export function SubAgentSummaryBar() {
         </div>
       )}
 
-      {detailAgent && (
-        <SubAgentDetailsModal subAgent={detailAgent} onClose={() => setDetailAgent(null)} />
-      )}
     </div>
   );
 }

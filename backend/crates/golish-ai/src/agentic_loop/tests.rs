@@ -2,6 +2,7 @@ use super::*;
 
 mod concurrent_dispatch_tests {
     use super::*;
+    use crate::agentic_loop::sub_agent_dispatch::is_sub_agent_tool;
 
     fn make_tool_call(name: &str, id: &str) -> ToolCall {
         ToolCall {

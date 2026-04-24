@@ -815,16 +815,35 @@ pub async fn send_ai_prompt_session(
             })
         }
         golish_ai::execution_mode::ExecutionMode::Task => {
-            execute_task_mode(bridge, &session_id, &prompt)
-                .await
-                .map_err(|e| {
+            use golish_ai::task_orchestrator::bridge_executor::{classify_user_intent, UserIntent};
+
+            let intent = classify_user_intent(&bridge, &prompt).await;
+
+            if intent == UserIntent::Conversation {
+                tracing::info!(
+                    message = "[send_ai_prompt_session] Task mode but conversational intent — using Chat path",
+                    session_id = %session_id,
+                );
+                bridge.execute(&prompt).await.map_err(|e| {
                     tracing::error!(
-                        message = "[send_ai_prompt_session] Task execution error",
+                        message = "[send_ai_prompt_session] Chat-fallback execution error",
                         session_id = %session_id,
                         error = %e,
                     );
                     e.to_string()
                 })
+            } else {
+                execute_task_mode(bridge, &session_id, &prompt)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(
+                            message = "[send_ai_prompt_session] Task execution error",
+                            session_id = %session_id,
+                            error = %e,
+                        );
+                        e.to_string()
+                    })
+            }
         }
     }
 }

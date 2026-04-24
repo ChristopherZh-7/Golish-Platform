@@ -1,21 +1,15 @@
 import {
-  Bot,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
   Clock,
-  Code2,
   Eye,
-  FileText,
   GitBranch,
   KeyRound,
   List,
   Loader2,
   MessageSquare,
-  Search,
-  Shield,
   ShieldQuestion,
-  Terminal,
   Wrench,
   XCircle,
   Zap,
@@ -29,7 +23,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
-import type { ActiveSubAgent } from "@/store/store-types";
 
 export function PlanStepIcon({ status, size = "sm" }: { status: string; size?: "sm" | "md" }) {
   const s = size === "sm" ? "w-2.5 h-2.5" : "w-3.5 h-3.5";
@@ -330,110 +323,6 @@ function ToolCallCard({
         >
           {isShell && <span className="text-muted-foreground/60 mr-1">$</span>}
           {primary}
-        </div>
-      )}
-    </button>
-  );
-}
-
-const SUB_AGENT_COLORS: Record<string, string> = {
-  planner: "var(--ansi-blue)",
-  coder: "var(--ansi-green)",
-  researcher: "var(--ansi-yellow)",
-  reviewer: "var(--ansi-cyan)",
-  explorer: "var(--ansi-yellow)",
-  analyst: "var(--ansi-cyan)",
-  adviser: "var(--ansi-cyan)",
-  reporter: "#10b981",
-  pentester: "var(--ansi-red)",
-  memorist: "var(--ansi-blue)",
-  reflector: "var(--ansi-magenta)",
-};
-
-const SUB_AGENT_ICONS: Record<string, typeof Bot> = {
-  coder: Code2,
-  researcher: Search,
-  explorer: Search,
-  adviser: Shield,
-  reporter: FileText,
-  pentester: Terminal,
-};
-
-function getSubAgentColor(name: string): string {
-  const lower = name.toLowerCase();
-  for (const [key, color] of Object.entries(SUB_AGENT_COLORS)) {
-    if (lower.includes(key)) return color;
-  }
-  return "var(--ansi-magenta)";
-}
-
-function getSubAgentIcon(name: string): typeof Bot {
-  const lower = name.toLowerCase();
-  for (const [key, icon] of Object.entries(SUB_AGENT_ICONS)) {
-    if (lower.includes(key)) return icon;
-  }
-  return Bot;
-}
-
-function SubAgentInlineCard({
-  tc,
-  agent,
-  onClick,
-  isMessageComplete,
-}: {
-  tc: { name: string; args?: string; result?: string; success?: boolean };
-  agent?: ActiveSubAgent;
-  onClick: () => void;
-  isMessageComplete?: boolean;
-}) {
-  const agentName = agent?.agentName || tc.name.replace(/^sub_agent_/, "").replace(/_/g, " ");
-  const color = getSubAgentColor(agentName);
-  const AgentIcon = getSubAgentIcon(agentName);
-  const isNoResult = tc.success === undefined;
-  const isRunning = isNoResult && !isMessageComplete;
-  const isError = tc.success === false;
-  const task = agent?.task;
-  const toolCount = agent?.toolCalls.length ?? 0;
-  const durationMs = agent?.durationMs;
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "w-full rounded-lg border border-border/30 bg-card px-3 py-2 text-left transition-colors cursor-pointer",
-        "hover:bg-muted/20",
-        isError && "border-red-500/20",
-        !isRunning && !isError && tc.success && "opacity-70",
-      )}
-      style={{ borderLeftWidth: 2, borderLeftColor: isError ? "rgb(239 68 68 / 0.4)" : isRunning ? color : "var(--border)" }}
-    >
-      <div className="flex items-center gap-2">
-        <AgentIcon className="w-3.5 h-3.5 flex-shrink-0 text-muted-foreground/60" />
-        <span className="text-xs font-medium text-foreground/80">
-          {agentName}
-        </span>
-        <div className="ml-auto flex items-center gap-1.5">
-          {toolCount > 0 && (
-            <span className="text-[10px] text-muted-foreground/40">{toolCount} tool{toolCount > 1 ? "s" : ""}</span>
-          )}
-          {durationMs != null && (
-            <span className="text-[10px] text-muted-foreground/30 tabular-nums">
-              {durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`}
-            </span>
-          )}
-          {isRunning ? (
-            <Loader2 className="w-3 h-3 animate-spin text-muted-foreground/40" />
-          ) : isError ? (
-            <XCircle className="w-3 h-3 text-red-400/60" />
-          ) : (
-            <CheckCircle2 className="w-3 h-3 text-green-500/60" />
-          )}
-        </div>
-      </div>
-      {task && (
-        <div className="mt-1 text-[10px] text-muted-foreground/40 truncate pl-5.5">
-          {task}
         </div>
       )}
     </button>
@@ -937,17 +826,9 @@ export function TaskPlanCard({ plan, terminalId, retired }: { plan: TaskPlanStat
         <span className={cn("text-[12px] font-medium", retired ? "text-muted-foreground" : "text-foreground")}>
           Task Plan
         </span>
-        <span className={cn(
-          "text-[9px] px-1.5 py-0.5 rounded font-medium",
-          retired
-            ? "bg-muted/30 text-muted-foreground/70"
-            : "bg-accent/10 text-accent"
-        )}>
-          v{plan.version}
-        </span>
         {retired && (
           <span className="text-[9px] px-1.5 py-0.5 rounded bg-muted/20 text-muted-foreground/60 font-medium">
-            Superseded
+            Previous
           </span>
         )}
         {!retired && isAllDone && (
@@ -1024,8 +905,9 @@ export function TaskPlanCard({ plan, terminalId, retired }: { plan: TaskPlanStat
                         : (step.status === "cancelled" || step.status === "failed") ? "text-red-400/60"
                         : "text-muted-foreground",
                     )}
+                    title={step.step}
                   >
-                    {step.step}
+                    {step.step.length > 100 ? `${step.step.slice(0, 100)}…` : step.step}
                   </span>
                   {hasTools && (
                     <span className="ml-auto flex items-center gap-0.5 text-[9px] text-muted-foreground/60">
@@ -1084,12 +966,12 @@ export function StickyPlanProgress({ plan }: { plan: TaskPlanState }) {
           {isAllDone
             ? "All steps complete"
             : current
-              ? `Step ${currentIdx + 1}/${plan.summary.total}: ${current.step}`
+              ? `Step ${currentIdx + 1}/${plan.summary.total}: ${current.step.length > 80 ? `${current.step.slice(0, 80)}…` : current.step}`
               : `${plan.summary.completed}/${plan.summary.total} steps`}
         </span>
-        {plan.version > 1 && (
+        {plan.summary.total > 0 && (
           <span className="text-[9px] px-1 py-0.5 rounded bg-accent/10 text-accent/60 flex-shrink-0">
-            v{plan.version}
+            {plan.summary.completed}/{plan.summary.total}
           </span>
         )}
         <span className="text-[10px] text-muted-foreground/60 flex-shrink-0">
