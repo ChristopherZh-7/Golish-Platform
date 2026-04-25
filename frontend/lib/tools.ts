@@ -2,6 +2,47 @@
  * Shared utilities for tool call display components.
  */
 
+import type { LucideIcon } from "lucide-react";
+import { FileCode, FileSearch, FolderOpen, Globe, Network, Pencil, Search, Terminal, Wrench } from "lucide-react";
+
+const TOOL_COLORS: Record<string, string> = {
+  run_command: "var(--ansi-green)",
+  run_pty_cmd: "var(--ansi-green)",
+  read_file: "var(--ansi-cyan)",
+  write_file: "var(--ansi-yellow)",
+  edit_file: "var(--ansi-yellow)",
+  search_files: "var(--ansi-blue)",
+  web_search: "var(--ansi-magenta)",
+  web_fetch: "var(--ansi-magenta)",
+  manage_targets: "var(--ansi-cyan)",
+  record_finding: "#f59e0b",
+};
+
+const TOOL_ICONS: Record<string, LucideIcon> = {
+  run_command: Terminal,
+  run_pty_cmd: Terminal,
+  shell: Terminal,
+  read_file: FileSearch,
+  write_file: Pencil,
+  edit_file: Pencil,
+  apply_patch: FileCode,
+  list_files: FolderOpen,
+  search_files: Search,
+  grep_file: Search,
+  web_search: Globe,
+  web_search_answer: Globe,
+  web_fetch: Globe,
+  manage_targets: Network,
+};
+
+export function getToolColor(name: string): string {
+  return TOOL_COLORS[name] || "var(--ansi-blue)";
+}
+
+export function getToolIcon(name: string): LucideIcon {
+  return TOOL_ICONS[name] || Wrench;
+}
+
 /** Base properties shared by all tool call types */
 export interface BaseToolCall {
   name: string;
@@ -27,6 +68,55 @@ export function formatToolName(name: string): string {
     .split("_")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
+}
+
+const TOOL_LABELS_SHORT: Record<string, string> = {
+  run_command: "Shell",
+  run_pty_cmd: "Shell",
+  read_file: "Read",
+  write_file: "Write",
+  edit_file: "Edit",
+  search_files: "Search",
+  web_search: "Web",
+  web_fetch: "Fetch",
+  manage_targets: "Targets",
+  record_finding: "Finding",
+};
+
+const TOOL_LABELS_STANDARD: Record<string, string> = {
+  run_command: "Shell Command",
+  run_pty_cmd: "Shell Command",
+  read_file: "Read File",
+  write_file: "Write File",
+  edit_file: "Edit File",
+  search_files: "Search Files",
+  web_search: "Web Search",
+  web_fetch: "Fetch URL",
+  manage_targets: "Manage Targets",
+  record_finding: "Record Finding",
+  credential_vault: "Credential Vault",
+  js_collect: "JS Collect",
+  run_pipeline: "Run Pipeline",
+  flow_compose: "Flow Compose",
+  pentest_run: "Pentest Run",
+  pentest_list_tools: "List Tools",
+  pentest_read_skill: "Read Skill",
+};
+
+export function getToolLabel(name: string, variant: "short" | "standard" = "standard"): string {
+  const map = variant === "short" ? TOOL_LABELS_SHORT : TOOL_LABELS_STANDARD;
+  return map[name] || formatToolName(name);
+}
+
+export function getToolPrimaryArg(name: string, args: Record<string, unknown>): string | null {
+  if ((name === "run_command" || name === "run_pty_cmd") && args.command)
+    return String(args.command);
+  if (args.path) return String(args.path);
+  if (args.file_path) return String(args.file_path);
+  if (args.url) return String(args.url);
+  if (args.query) return String(args.query);
+  if (args.pattern) return String(args.pattern);
+  return null;
 }
 
 /** Format result for display */

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState, useRef } from "react";
+import { useCallback, useState } from "react";
 import {
-  ChevronDown, Trash2, X,
+  Trash2, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
@@ -39,64 +39,10 @@ export const DB_ACTIONS = [
   { value: "finding_add", label: "Add Finding" },
 ];
 
-export function OutputMiniDropdown({
-  value,
-  onChange,
-  options,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  options: { value: string; label: string }[];
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const selected = options.find((o) => o.value === value);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        type="button"
-        className={cn(
-          "flex items-center gap-1.5 px-2 py-1 text-[10px] rounded-md border transition-colors",
-          "bg-[var(--bg-hover)]/30 border-border/30 text-foreground",
-          "hover:bg-[var(--bg-hover)]/60 hover:border-border/50",
-          open && "border-accent/40 bg-[var(--bg-hover)]/50",
-        )}
-        onClick={() => setOpen(!open)}
-      >
-        <span className="truncate max-w-[100px]">{selected?.label ?? value}</span>
-        <ChevronDown className={cn("w-3 h-3 text-muted-foreground transition-transform", open && "rotate-180")} />
-      </button>
-      {open && (
-        <div className="absolute top-full left-0 mt-1 min-w-[120px] max-h-48 overflow-y-auto rounded-lg border border-border/30 bg-card shadow-lg z-50 py-1">
-          {options.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              className={cn(
-                "w-full text-left px-3 py-1.5 text-[10px] transition-colors",
-                "hover:bg-[var(--bg-hover)]/60",
-                opt.value === value && "text-accent bg-accent/5 font-medium",
-              )}
-              onClick={() => { onChange(opt.value); setOpen(false); }}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+import { MiniDropdown } from "@/components/ui/MiniDropdown";
+export const OutputMiniDropdown = (props: { value: string; onChange: (v: string) => void; options: { value: string; label: string }[] }) => (
+  <MiniDropdown variant="standard" {...props} />
+);
 
 export function OutputParserEditor({
   formData,

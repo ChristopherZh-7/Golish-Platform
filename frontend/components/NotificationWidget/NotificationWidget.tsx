@@ -2,6 +2,7 @@ import { AlertTriangle, Bell, Check, CheckCircle2, Info, Trash2, X, XCircle } fr
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useShallow } from "zustand/react/shallow";
+import { formatRelativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { type Notification, type NotificationType, useStore } from "@/store";
 import {
@@ -41,20 +42,6 @@ const NOTIFICATION_COLORS: Record<NotificationType, string> = {
   warning: "var(--ansi-yellow)",
   error: "var(--ansi-red)",
 };
-
-function formatRelativeTime(timestamp: string): string {
-  const now = new Date();
-  const then = new Date(timestamp);
-  const diffMs = now.getTime() - then.getTime();
-  const diffSec = Math.floor(diffMs / 1000);
-  const diffMin = Math.floor(diffSec / 60);
-  const diffHour = Math.floor(diffMin / 60);
-
-  if (diffSec < 60) return "just now";
-  if (diffMin < 60) return `${diffMin}m ago`;
-  if (diffHour < 24) return `${diffHour}h ago`;
-  return then.toLocaleDateString();
-}
 
 function NotificationItem({ notification }: { notification: Notification }) {
   const Icon = NOTIFICATION_ICONS[notification.type];
@@ -130,7 +117,7 @@ function NotificationItem({ notification }: { notification: Notification }) {
           </p>
         )}
         <p className="text-[10px] text-muted-foreground/50 mt-1 font-mono">
-          {formatRelativeTime(notification.timestamp)}
+          {formatRelativeTime(notification.timestamp, "localeDate")}
         </p>
       </div>
 

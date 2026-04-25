@@ -31,6 +31,7 @@ pub use commands::{
     send_ai_prompt_session, send_ai_prompt_with_attachments, set_agent_mode,
     set_ai_session_persistence, set_hitl_config, set_loop_protection_config, set_sub_agent_model,
     set_tool_policy, set_tool_policy_config, shutdown_ai_agent, shutdown_ai_session,
+    cancel_ai_generation,
     check_recon_tools_cmd, run_recon_pipeline, signal_frontend_ready,
     set_use_agents, get_use_agents,
     set_execution_mode, get_execution_mode,

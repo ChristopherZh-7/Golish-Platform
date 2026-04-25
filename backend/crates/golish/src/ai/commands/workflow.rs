@@ -34,14 +34,7 @@ pub async fn check_recon_tools_cmd() -> Result<serde_json::Value, String> {
     ];
 
     // Build the app's tools directory path
-    let app_tools_dir = dirs::home_dir().map(|h| {
-        #[cfg(target_os = "macos")]
-        { h.join("Library").join("Application Support").join("golish-platform").join("tools") }
-        #[cfg(target_os = "windows")]
-        { h.join("AppData").join("Local").join("golish-platform").join("tools") }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        { h.join(".golish-platform").join("tools") }
-    });
+    let app_tools_dir = golish_core::paths::tools_dir();
 
     let mut results = Vec::new();
     let mut missing = Vec::new();

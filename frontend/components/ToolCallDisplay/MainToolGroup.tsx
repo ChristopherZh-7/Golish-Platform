@@ -1,13 +1,7 @@
 import {
   CheckCircle,
-  Edit,
-  FileCode,
-  FileText,
-  FolderOpen,
-  Globe,
   Loader2,
   Maximize2,
-  Search,
   Terminal,
   XCircle,
 } from "lucide-react";
@@ -21,23 +15,9 @@ import {
   getGroupStatus,
   sortToolsByStartedAtDesc,
 } from "@/lib/toolGrouping";
+import { getToolIcon } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 
-/** Tool name to icon mapping */
-const toolIcons: Record<string, typeof FileText> = {
-  read_file: FileText,
-  write_file: Edit,
-  edit_file: Edit,
-  list_files: FolderOpen,
-  grep_file: Search,
-  run_pty_cmd: Terminal,
-  run_command: Terminal,
-  shell: Terminal,
-  web_fetch: Globe,
-  web_search: Globe,
-  web_search_answer: Globe,
-  apply_patch: FileCode,
-};
 
 /** Status configuration for badges and icons */
 const statusConfig: Record<
@@ -167,7 +147,7 @@ interface ToolPreviewRowProps {
 
 /** Individual tool preview row */
 const ToolPreviewRow = memo(function ToolPreviewRow({ tool, onViewDetails }: ToolPreviewRowProps) {
-  const Icon = toolIcons[tool.name] || Terminal;
+  const Icon = getToolIcon(tool.name);
   const status = statusConfig[tool.status];
   const StatusIcon = status.icon;
   const primaryArg = formatPrimaryArg(tool);

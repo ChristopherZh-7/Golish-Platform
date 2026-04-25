@@ -1,16 +1,15 @@
 import {
-  CheckCircle2,
   ChevronDown,
   ChevronRight,
-  Circle,
   Loader2,
   Terminal,
   Workflow,
-  XCircle,
 } from "lucide-react";
 import { memo, useMemo, useState } from "react";
+import { StatusIcon } from "@/components/ui/StatusIcon";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { formatDurationShort } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { type ActiveToolCall, useStore, type WorkflowStep } from "@/store";
 
@@ -20,27 +19,6 @@ interface WorkflowTreeProps {
   sessionId: string;
 }
 
-/** Status icon component */
-function StatusIcon({
-  status,
-  size = "md",
-}: {
-  status: "pending" | "running" | "completed" | "error";
-  size?: "sm" | "md";
-}) {
-  const sizeClass = size === "sm" ? "w-3 h-3" : "w-4 h-4";
-
-  switch (status) {
-    case "completed":
-      return <CheckCircle2 className={cn(sizeClass, "text-[var(--ansi-green)]")} />;
-    case "running":
-      return <Loader2 className={cn(sizeClass, "text-[var(--ansi-blue)] animate-spin")} />;
-    case "error":
-      return <XCircle className={cn(sizeClass, "text-[var(--ansi-red)]")} />;
-    default:
-      return <Circle className={cn(sizeClass, "text-muted-foreground")} />;
-  }
-}
 
 /** Status badge component */
 function StatusBadge({ status }: { status: "idle" | "running" | "completed" | "error" }) {
@@ -60,13 +38,6 @@ function StatusBadge({ status }: { status: "idle" | "running" | "completed" | "e
       {config.label}
     </Badge>
   );
-}
-
-/** Format duration in ms to human readable */
-function formatDuration(ms?: number): string {
-  if (!ms) return "";
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 /** Group tool calls by step index */
@@ -262,7 +233,7 @@ const StepNode = memo(function StepNode({
               Step {step.index + 1}: {step.name}
             </span>
             {step.durationMs !== undefined && (
-              <span className="text-[10px] text-[#565f89]">{formatDuration(step.durationMs)}</span>
+              <span className="text-[10px] text-[#565f89]">{formatDurationShort(step.durationMs)}</span>
             )}
           </button>
         </CollapsibleTrigger>
@@ -359,7 +330,7 @@ export const WorkflowTree = memo(function WorkflowTree({ sessionId }: WorkflowTr
             {/* Duration */}
             {activeWorkflow.totalDurationMs !== undefined && (
               <div className="mt-2 text-xs text-[#565f89] text-right">
-                Total: {formatDuration(activeWorkflow.totalDurationMs)}
+                Total: {formatDurationShort(activeWorkflow.totalDurationMs)}
               </div>
             )}
           </div>

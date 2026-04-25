@@ -13,6 +13,8 @@ import {
   Wifi,
   X,
 } from "lucide-react";
+import { getRootDomain } from "@/lib/domain";
+import { SEV_BADGE, SEV_SHORT_LABELS } from "@/lib/severity";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
@@ -53,43 +55,6 @@ interface Target {
   created_at: number;
   updated_at: number;
 }
-
-const MULTI_PART_TLDS = new Set([
-  "co.uk", "co.jp", "co.kr", "co.nz", "co.za", "co.in", "co.id",
-  "com.au", "com.br", "com.cn", "com.hk", "com.mx", "com.sg", "com.tw",
-  "net.au", "net.cn", "org.au", "org.uk", "org.cn",
-  "ac.uk", "gov.uk", "gov.cn", "edu.cn", "edu.au",
-]);
-
-function getRootDomain(value: string): string {
-  let host: string;
-  try {
-    const u = new URL(value.includes("://") ? value : `https://${value}`);
-    host = u.hostname;
-  } catch {
-    host = value.replace(/\/.*$/, "");
-  }
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(":")) return host;
-  const parts = host.split(".");
-  if (parts.length <= 2) return host;
-  const last2 = parts.slice(-2).join(".");
-  if (MULTI_PART_TLDS.has(last2) && parts.length > 2) {
-    return parts.slice(-3).join(".");
-  }
-  return last2;
-}
-
-const FINDING_SEV_BADGE: Record<string, string> = {
-  critical: "bg-red-500/15 text-red-400 border-red-500/25",
-  high: "bg-orange-500/15 text-orange-400 border-orange-500/25",
-  medium: "bg-yellow-500/15 text-yellow-400 border-yellow-500/25",
-  low: "bg-blue-500/15 text-blue-400 border-blue-500/25",
-  info: "bg-slate-500/15 text-slate-400 border-slate-500/25",
-};
-
-const FINDING_SEV_LABEL: Record<string, string> = {
-  critical: "Crit", high: "High", medium: "Med", low: "Low", info: "Info",
-};
 
 function buildGraphElements(targets: Target[]): cytoscape.ElementDefinition[] {
   const elements: cytoscape.ElementDefinition[] = [];
@@ -742,9 +707,9 @@ export function TargetGraphView({ targets }: { targets: Target[] }) {
                     <li key={f.id} className="flex items-start gap-2 rounded-lg border border-border/40 bg-muted/10 px-2 py-1.5">
                       <span className={cn(
                         "mt-0.5 shrink-0 rounded border px-1 py-px text-[9px] font-semibold uppercase leading-none",
-                        FINDING_SEV_BADGE[f.severity] || FINDING_SEV_BADGE.info,
+                        SEV_BADGE[f.severity] || SEV_BADGE.info,
                       )}>
-                        {FINDING_SEV_LABEL[f.severity] || FINDING_SEV_LABEL.info}
+                        {SEV_SHORT_LABELS[f.severity] || SEV_SHORT_LABELS.info}
                       </span>
                       <span className="min-w-0 flex-1 text-[11px] leading-snug text-foreground">{f.title}</span>
                     </li>

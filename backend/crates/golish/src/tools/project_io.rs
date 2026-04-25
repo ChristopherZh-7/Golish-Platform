@@ -7,21 +7,11 @@ use zip::write::SimpleFileOptions;
 use crate::state::AppState;
 
 fn app_data_dir() -> PathBuf {
-    let home = dirs::home_dir().expect("cannot resolve home directory");
-    #[cfg(target_os = "macos")]
-    let base = home
-        .join("Library")
-        .join("Application Support")
-        .join("golish-platform");
-    #[cfg(target_os = "windows")]
-    let base = home.join("AppData").join("Local").join("golish-platform");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let base = home.join(".golish-platform");
-    base
+    golish_core::paths::app_data_base().expect("cannot resolve home directory")
 }
 
 fn resolve_project_golish_dir(project_path: Option<&str>) -> Option<PathBuf> {
-    project_path.map(|p| PathBuf::from(p).join(".golish"))
+    project_path.map(|p| golish_core::paths::golish_dir_for_workspace(std::path::Path::new(p)))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

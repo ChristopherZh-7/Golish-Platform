@@ -8,50 +8,8 @@ use ignore::WalkBuilder;
 use golish_core::Tool;
 use serde_json::{json, Value};
 
-/// Get a string argument from JSON, returning an error if missing.
-fn get_required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, Value> {
-    args.get(key)
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| json!({"error": format!("Missing required argument: {}", key)}))
-}
-
-/// Get an optional string argument from JSON.
-fn get_optional_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
-    args.get(key).and_then(|v| v.as_str())
-}
-
-/// Get an optional boolean argument from JSON.
-fn get_optional_bool(args: &Value, key: &str) -> Option<bool> {
-    args.get(key).and_then(|v| v.as_bool())
-}
-
-/// Resolve a path relative to workspace.
-fn resolve_path(path_str: &str, workspace: &Path) -> std::path::PathBuf {
-    let path = Path::new(path_str);
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        workspace.join(path)
-    }
-}
-
-/// Check if a resolved path is within the workspace or an allowed temp directory.
-fn is_within_workspace(resolved: &Path, workspace: &Path) -> bool {
-    if resolved.starts_with("/tmp") || resolved.starts_with("/var/folders") {
-        return true;
-    }
-    if let Ok(tmp) = std::env::temp_dir().canonicalize() {
-        if let Ok(r) = resolved.canonicalize() {
-            if r.starts_with(&tmp) {
-                return true;
-            }
-        }
-    }
-    match (resolved.canonicalize(), workspace.canonicalize()) {
-        (Ok(r), Ok(w)) => r.starts_with(w),
-        _ => false,
-    }
-}
+use golish_core::utils::{get_required_str, get_optional_str, get_optional_bool};
+use crate::path_policy::{join_workspace as resolve_path, is_within_workspace};
 
 // ============================================================================
 // list_files

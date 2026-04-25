@@ -17,6 +17,7 @@ import {
   Terminal,
   Wrench,
 } from "lucide-react";
+import { formatDurationLong } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { triggerAutoRecon } from "@/lib/ai";
 import { logger } from "@/lib/logger";
@@ -142,11 +143,7 @@ function friendly(raw: string): string {
   return TOOL_DISPLAY[raw] ?? raw.replace(/_/g, " ");
 }
 
-function fmtDur(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
-}
+const fmtDur = (ms: number) => formatDurationLong(ms) || "0ms";
 
 function fmtTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });

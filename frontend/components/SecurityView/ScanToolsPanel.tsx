@@ -4,6 +4,7 @@ import {
   Loader2, Play, Shield,
   ShieldAlert, ShieldCheck, ShieldX, XCircle,
 } from "lucide-react";
+import { formatDurationShort } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -20,21 +21,12 @@ import {
 import { PipelineLauncher } from "@/components/TargetPanel/PipelineLauncher";
 import { StyledSelect } from "./shared";
 
+import { SEV_BADGE, SEV_DOT as _SEV_DOT } from "@/lib/severity";
 const SEV_COLORS: Record<string, string> = {
-  critical: "bg-red-500/15 text-red-400 border-red-500/20",
-  high: "bg-orange-500/15 text-orange-400 border-orange-500/20",
-  medium: "bg-yellow-500/15 text-yellow-400 border-yellow-500/20",
-  low: "bg-blue-500/15 text-blue-400 border-blue-500/20",
+  ...SEV_BADGE,
   info: "bg-zinc-500/10 text-zinc-400 border-zinc-500/20",
 };
-
-const SEV_DOT: Record<string, string> = {
-  critical: "bg-red-500",
-  high: "bg-orange-500",
-  medium: "bg-yellow-500",
-  low: "bg-blue-500",
-  info: "bg-zinc-500",
-};
+const SEV_DOT: Record<string, string> = { ..._SEV_DOT, info: "bg-zinc-500" };
 
 function NucleiSection({ targetId, targetUrl }: { targetId: string; targetUrl: string }) {
   const [expanded, setExpanded] = useState(false);
@@ -662,7 +654,7 @@ function ScanTimeline({ targetId, targetValue }: { targetId: string; targetValue
                   </div>
                   <div className="flex items-center gap-2 mt-0.5 text-[9px] text-muted-foreground/30">
                     <span>{completedSteps}/{totalSteps} steps</span>
-                    {durationMs > 0 && <span>{durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`}</span>}
+                    {durationMs > 0 && <span>{formatDurationShort(durationMs)}</span>}
                     {steps.filter((s) => s.stored > 0).map((s) => (
                       <span key={s.tool} className="text-[8px] px-1 py-0.5 rounded bg-white/[0.03]">
                         {s.tool}: {s.new != null ? s.new : s.stored}
@@ -702,7 +694,7 @@ function ScanTimeline({ targetId, targetValue }: { targetId: string; targetValue
                       )}
                       {step.ms > 0 && (
                         <span className="text-muted-foreground/20 ml-auto">
-                          {step.ms < 1000 ? `${step.ms}ms` : `${(step.ms / 1000).toFixed(1)}s`}
+                          {formatDurationShort(step.ms)}
                         </span>
                       )}
                     </div>

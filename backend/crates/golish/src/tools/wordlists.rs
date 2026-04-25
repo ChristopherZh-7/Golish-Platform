@@ -4,22 +4,7 @@ use std::path::PathBuf;
 use tokio::fs;
 
 fn wordlists_base() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_default();
-    #[cfg(target_os = "macos")]
-    let base = home
-        .join("Library")
-        .join("Application Support")
-        .join("golish-platform")
-        .join("wordlists");
-    #[cfg(target_os = "windows")]
-    let base = home
-        .join("AppData")
-        .join("Local")
-        .join("golish-platform")
-        .join("wordlists");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let base = home.join(".golish-platform").join("wordlists");
-    base
+    golish_core::paths::wordlists_dir().unwrap_or_else(|| PathBuf::from("wordlists"))
 }
 
 fn meta_path() -> PathBuf {

@@ -38,6 +38,7 @@ import {
   setExecutionMode as setExecutionModeBackend,
   setUseAgents as setUseAgentsBackend,
   shutdownAiSession,
+  cancelAiGeneration,
 } from "@/lib/ai";
 import { logger } from "@/lib/logger";
 import { formatModelName, PROVIDER_GROUPS } from "@/lib/models";
@@ -47,6 +48,7 @@ import { getSettings } from "@/lib/settings";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import { cn } from "@/lib/utils";
 import { convDelete } from "@/lib/conversation-db";
+import { flushDbSave } from "@/lib/conversation-db-sync";
 import { restoreBatchTerminals } from "@/lib/terminal-restore";
 import { getAllLeafPanes } from "@/lib/pane-utils";
 import { type ChatMessage, useStore } from "@/store";
@@ -216,6 +218,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const generateTitleRef = useRef<((convId: string, firstMsg: string) => void) | null>(null);
   const workspaceDataReady = useStore((s) => s.workspaceDataReady);
   const pendingTermData = useStore((s) => s.pendingTerminalRestoreData);
+  const terminalRestoreInProgress = useStore((s) => s.terminalRestoreInProgress);
 
   // Unified terminal restore: fires on both initial boot (App.tsx sets data)
   // and project switch (HomeView sets data).  Clearing the store value
@@ -680,9 +683,12 @@ export const AIChatPanel = memo(function AIChatPanel() {
     }
   }, [activeConvId]);
 
-  // When switching conversations, activate its terminal and restore execution mode
+  // When switching conversations, activate its terminal and restore execution mode.
+  // Also re-runs when terminalRestoreInProgress transitions to false so we pick up
+  // the execution mode that was just restored from the DB.
   useEffect(() => {
     if (!activeConvId) return;
+    if (terminalRestoreInProgress || useStore.getState().terminalRestoreInProgress) return;
     const store = useStore.getState();
     const terminals = store.conversationTerminals[activeConvId];
     if (terminals && terminals.length > 0) {
@@ -703,7 +709,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
     } else {
       setChatExecutionMode("chat");
     }
-  }, [activeConvId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeConvId, terminalRestoreInProgress]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Custom scrollbar state
   const [tabsHovered, setTabsHovered] = useState(false);
@@ -859,7 +865,10 @@ export const AIChatPanel = memo(function AIChatPanel() {
         }
       }
 
-      // Side effects outside Immer: dispose xterm instances + AI event tracking.
+      // Side effects outside Immer: destroy backend PTY processes + dispose xterm instances + AI event tracking.
+      import("@/lib/tauri").then(({ ptyDestroy }) => {
+        for (const sid of allSessionIds) ptyDestroy(sid).catch(() => {});
+      });
       for (const sid of allSessionIds) {
         TerminalInstanceManager.dispose(sid);
       }
@@ -1558,6 +1567,9 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
         }
       }
 
+      // Flush to DB immediately so the mode survives page reloads / sudden close
+      flushDbSave().catch(console.warn);
+
       const conv = activeConvId2
         ? storeState.conversations[activeConvId2]
         : null;
@@ -1574,8 +1586,20 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
   const handleToggleSubAgents = useCallback(() => {
     const newValue = !chatUseSubAgents;
     setChatUseSubAgents(newValue);
-    const conv = useStore.getState().activeConversationId
-      ? useStore.getState().conversations[useStore.getState().activeConversationId!]
+
+    const storeState = useStore.getState();
+    const activeConvId2 = storeState.activeConversationId;
+    if (activeConvId2) {
+      const termIds = storeState.conversationTerminals[activeConvId2] ?? [];
+      for (const tid of termIds) {
+        storeState.setUseAgents(tid, newValue);
+      }
+    }
+
+    flushDbSave().catch(console.warn);
+
+    const conv = activeConvId2
+      ? storeState.conversations[activeConvId2]
       : null;
     if (!conv) return;
     if (conv.aiInitialized) {
@@ -1588,11 +1612,10 @@ Do NOT run individual tools one-by-one when a pipeline can handle it. The pipeli
   const handleStop = useCallback(() => {
     if (!activeConv) return;
     taskInProgressRef.current = false;
-    shutdownAiSession(activeConv.aiSessionId).catch(() => {});
+    cancelAiGeneration(activeConv.aiSessionId).catch(() => {});
     streamingMsgRef.current = null;
     finalizeStreamingMessage(activeConv.id);
-    updateConv(activeConv.id, { aiInitialized: false });
-  }, [activeConv, finalizeStreamingMessage, updateConv]);
+  }, [activeConv, finalizeStreamingMessage]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

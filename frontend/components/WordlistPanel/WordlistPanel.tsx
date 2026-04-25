@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { logAudit } from "@/lib/audit";
 import {
   BookText,
   Copy,
@@ -11,6 +12,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { copyToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 import { CustomSelect } from "@/components/ui/custom-select";
 
@@ -43,11 +45,7 @@ const CAT_COLORS: Record<string, string> = {
   merged: "text-pink-400 bg-pink-500/10",
 };
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
+import { formatBytes as formatSize } from "@/lib/format";
 
 export function WordlistPanel() {
   const [wordlists, setWordlists] = useState<WordlistMeta[]>([]);
@@ -104,12 +102,7 @@ export function WordlistPanel() {
           setImportForm({ name: "", category: "custom", description: "", tags: "" });
           setShowImport(false);
           load();
-          invoke("audit_log", {
-            action: "wordlist_imported",
-            category: "tools",
-            details: importForm.name.trim(),
-            projectPath: null,
-          }).catch(() => {});
+          logAudit({ action: "wordlist_imported", category: "tools", details: importForm.name.trim() });
         } catch (e) {
           console.error("Import failed:", e);
         }
@@ -150,7 +143,7 @@ export function WordlistPanel() {
   const handleCopyPath = useCallback(async (id: string) => {
     try {
       const path = await invoke<string>("wordlist_path", { id });
-      await navigator.clipboard.writeText(path);
+      await copyToClipboard(path);
     } catch { /* ignore */ }
   }, []);
 

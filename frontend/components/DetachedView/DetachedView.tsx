@@ -83,6 +83,12 @@ const startWindowDrag = async (e: React.MouseEvent) => {
 };
 const stopPropagation = (e: React.MouseEvent) => { e.stopPropagation(); };
 
+async function closeDetachedWindow(sessionId: string) {
+  try { await emit("detached-window-closed", { session_id: sessionId }); } catch { /* ignore */ }
+  try { await invoke("close_detached_window", { sessionId }); } catch { /* ignore */ }
+  try { await getCurrentWindow().destroy(); } catch { /* ignore */ }
+}
+
 function DetachedTerminal({ sessionId, title }: { sessionId: string; title: string }) {
   const themeInit = useRef(false);
   const [ready, setReady] = useState(false);
@@ -93,11 +99,7 @@ function DetachedTerminal({ sessionId, title }: { sessionId: string; title: stri
     ThemeManager.initialize().then(() => ThemeManager.tryLoadPersistedTheme()).catch(() => {}).finally(() => setReady(true));
   }, []);
 
-  const handleClose = useCallback(async () => {
-    try { await emit("detached-window-closed", { session_id: sessionId }); } catch { /* ignore */ }
-    try { await invoke("close_detached_window", { sessionId }); } catch { /* ignore */ }
-    try { await getCurrentWindow().destroy(); } catch { /* ignore */ }
-  }, [sessionId]);
+  const handleClose = useCallback(() => closeDetachedWindow(sessionId), [sessionId]);
 
   if (!ready) {
     return <div style={{ width: "100vw", height: "100vh", background: "#1a1b26" }} />;
@@ -150,11 +152,7 @@ function DetachedSecurity({ sessionId, title, securitySubTab }: { sessionId: str
     })();
   }, []);
 
-  const handleClose = useCallback(async () => {
-    try { await emit("detached-window-closed", { session_id: sessionId }); } catch { /* ignore */ }
-    try { await invoke("close_detached_window", { sessionId }); } catch { /* ignore */ }
-    try { await getCurrentWindow().destroy(); } catch { /* ignore */ }
-  }, [sessionId]);
+  const handleClose = useCallback(() => closeDetachedWindow(sessionId), [sessionId]);
 
   if (!ready) {
     return (

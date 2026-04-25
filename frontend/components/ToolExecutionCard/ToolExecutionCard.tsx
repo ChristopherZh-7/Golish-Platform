@@ -1,22 +1,16 @@
 import {
-  CheckCircle2,
   ChevronDown,
   ChevronRight,
   ChevronsUpDown,
-  FileSearch,
-  Globe,
   Loader2,
-  Network,
-  Pencil,
-  Search,
-  Terminal,
-  Wrench,
-  XCircle,
 } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { StatusIcon } from "@/components/ui/StatusIcon";
 import { stripAllAnsi } from "@/lib/ansi";
+import { formatDurationShort } from "@/lib/time";
+import { getToolColor, getToolIcon, getToolLabel, getToolPrimaryArg } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import type { AiToolExecution } from "@/store";
 
@@ -28,73 +22,6 @@ interface ToolExecutionCardProps {
   isOpen?: boolean;
   /** Called when the card's expand/collapse toggle is clicked (accordion mode). */
   onToggle?: () => void;
-}
-
-const TOOL_COLORS: Record<string, string> = {
-  run_command: "var(--ansi-green)",
-  run_pty_cmd: "var(--ansi-green)",
-  read_file: "var(--ansi-cyan)",
-  write_file: "var(--ansi-yellow)",
-  edit_file: "var(--ansi-yellow)",
-  search_files: "var(--ansi-blue)",
-  web_search: "var(--ansi-magenta)",
-  web_fetch: "var(--ansi-magenta)",
-  manage_targets: "var(--ansi-cyan)",
-  record_finding: "#f59e0b",
-};
-
-const TOOL_ICONS: Record<string, typeof Terminal> = {
-  run_command: Terminal,
-  run_pty_cmd: Terminal,
-  read_file: FileSearch,
-  write_file: Pencil,
-  edit_file: Pencil,
-  search_files: Search,
-  web_search: Globe,
-  web_fetch: Globe,
-  manage_targets: Network,
-};
-
-function getToolColor(name: string): string {
-  return TOOL_COLORS[name] || "var(--ansi-blue)";
-}
-
-function getToolIcon(name: string): typeof Terminal {
-  return TOOL_ICONS[name] || Wrench;
-}
-
-function getToolLabel(name: string): string {
-  const labels: Record<string, string> = {
-    run_command: "Shell Command",
-    run_pty_cmd: "Shell Command",
-    read_file: "Read File",
-    write_file: "Write File",
-    edit_file: "Edit File",
-    search_files: "Search Files",
-    web_search: "Web Search",
-    web_fetch: "Fetch URL",
-    manage_targets: "Manage Targets",
-    record_finding: "Record Finding",
-  };
-  return labels[name] || name.replace(/_/g, " ");
-}
-
-function getPrimaryDisplay(name: string, args: Record<string, unknown>): string | null {
-  if ((name === "run_command" || name === "run_pty_cmd") && args.command) {
-    return String(args.command);
-  }
-  if (args.path) return String(args.path);
-  if (args.file_path) return String(args.file_path);
-  if (args.pattern) return String(args.pattern);
-  if (args.query) return String(args.query);
-  if (args.url) return String(args.url);
-  return null;
-}
-
-function formatDuration(ms?: number): string {
-  if (!ms) return "";
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 function cleanTerminalOutput(raw: string): string {
@@ -177,16 +104,6 @@ function parseShellResult(result: unknown): ShellResult | null {
   return null;
 }
 
-function StatusIcon({ status }: { status: "running" | "completed" | "error" }) {
-  switch (status) {
-    case "completed":
-      return <CheckCircle2 className="w-4 h-4 text-[var(--ansi-green)]" />;
-    case "running":
-      return <Loader2 className="w-4 h-4 text-[var(--ansi-blue)] animate-spin" />;
-    case "error":
-      return <XCircle className="w-4 h-4 text-[var(--ansi-red)]" />;
-  }
-}
 
 const PREVIEW_LIMIT = 2000;
 
@@ -248,7 +165,7 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
   const toolColor = getToolColor(execution.toolName);
   const ToolIcon = getToolIcon(execution.toolName);
   const toolLabel = getToolLabel(execution.toolName);
-  const primary = getPrimaryDisplay(execution.toolName, execution.args);
+  const primary = getToolPrimaryArg(execution.toolName, execution.args);
 
   const isShellCommand =
     execution.toolName === "run_command" || execution.toolName === "run_pty_cmd";
@@ -329,7 +246,7 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
             <StatusIcon status={execution.status} />
             {execution.durationMs !== undefined && (
               <span className={cn("text-muted-foreground", compact ? "text-[10px]" : "text-xs")}>
-                {formatDuration(execution.durationMs)}
+                {formatDurationShort(execution.durationMs)}
               </span>
             )}
           </div>

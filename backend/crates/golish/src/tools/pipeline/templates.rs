@@ -21,14 +21,7 @@ fn embedded_templates() -> Vec<Pipeline> {
 }
 
 pub(crate) fn templates_dir() -> Option<std::path::PathBuf> {
-    let home = dirs::home_dir()?;
-    #[cfg(target_os = "macos")]
-    let base = home.join("Library").join("Application Support").join("golish-platform");
-    #[cfg(target_os = "windows")]
-    let base = home.join("AppData").join("Local").join("golish-platform");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let base = home.join(".golish-platform");
-    Some(base.join("flow-templates"))
+    golish_core::paths::flow_templates_dir()
 }
 
 fn user_templates() -> Vec<Pipeline> {
@@ -306,7 +299,7 @@ pub(crate) async fn resolve_port_targets(
     urls
 }
 
-fn recon_basic_template() -> Pipeline {
+pub(crate) fn recon_basic_template() -> Pipeline {
     // step: (id, name, step_type, cmd, args, input_from, requires)
     struct StepDef {
         id: &'static str,

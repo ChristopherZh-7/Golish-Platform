@@ -24,7 +24,8 @@ import {
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { stripAllAnsi } from "@/lib/ansi";
-import { logger } from "@/lib/logger";
+import { copyToClipboard } from "@/lib/clipboard";
+import { formatDurationShort } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import type { ActiveSubAgent, SubAgentToolCall } from "@/store";
 
@@ -56,13 +57,6 @@ function StatusIcon({
     case "error":
       return <XCircle className={cn(sizeClass, "text-[var(--ansi-red)]")} />;
   }
-}
-
-/** Format duration in ms to human readable */
-function formatDuration(ms?: number): string {
-  if (!ms) return "";
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 /** Individual tool call row with expandable details */
@@ -100,7 +94,7 @@ function ToolCallRow({ tool }: { tool: SubAgentToolCall }) {
         )}
         {tool.completedAt && (
           <span className="ml-auto text-[10px] text-muted-foreground">
-            {formatDuration(
+            {formatDurationShort(
               new Date(tool.completedAt).getTime() - new Date(tool.startedAt).getTime()
             )}
           </span>
@@ -165,12 +159,9 @@ export function SubAgentDetailsModal({ subAgent, onClose }: SubAgentDetailsModal
   const status = statusStyles[subAgent.status];
 
   const handleCopy = async (content: string, section: string) => {
-    try {
-      await navigator.clipboard.writeText(content);
+    if (await copyToClipboard(content)) {
       setCopiedSection(section);
       setTimeout(() => setCopiedSection(null), 2000);
-    } catch (error) {
-      logger.error("Failed to copy:", error);
     }
   };
 
@@ -190,7 +181,7 @@ export function SubAgentDetailsModal({ subAgent, onClose }: SubAgentDetailsModal
                 </DialogTitle>
                 <DialogDescription className="text-sm text-muted-foreground mt-1">
                   {subAgent.toolCalls.length} tool call{subAgent.toolCalls.length !== 1 ? "s" : ""}
-                  {subAgent.durationMs !== undefined && ` • ${formatDuration(subAgent.durationMs)}`}
+                  {subAgent.durationMs !== undefined && ` • ${formatDurationShort(subAgent.durationMs)}`}
                 </DialogDescription>
               </div>
             </div>
@@ -259,7 +250,7 @@ export function SubAgentDetailsModal({ subAgent, onClose }: SubAgentDetailsModal
                     <Clock className="w-4 h-4 text-muted-foreground" />
                     <span className="text-muted-foreground">Duration:</span>
                     <span className="font-mono text-foreground/90">
-                      {formatDuration(subAgent.durationMs)}
+                      {formatDurationShort(subAgent.durationMs)}
                     </span>
                   </div>
                 )}

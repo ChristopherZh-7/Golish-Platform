@@ -35,6 +35,7 @@ const getCodeTheme = async () => {
       ...oneDark['pre[class*="language-"]'],
       background: "transparent",
       textShadow: "none",
+      overflow: "visible",
     },
   };
 };
@@ -158,10 +159,11 @@ function SyntaxHighlightedCode({ code, language, ...props }: { code: string; lan
       PreTag="div"
       customStyle={{
         margin: 0,
-        padding: "0.625rem 0.75rem",
+        padding: "0.625rem 0.75rem 1.5rem 0.75rem",
         background: "transparent",
         fontSize: "12px",
         lineHeight: "1.55",
+        overflow: "visible",
       }}
       {...props}
     >
@@ -222,25 +224,23 @@ function CodeBlock({
         </div>
         {/* Code body */}
         <div className={cn(
-          "overflow-x-auto relative",
-          isLong && !expanded && "max-h-[180px] overflow-hidden",
+          "overflow-x-auto overflow-y-auto [&>div]:!overflow-visible [&>div]:!pb-6",
+          isLong && !expanded && "max-h-[180px]",
+          isLong && expanded && "max-h-[500px]",
         )}>
           <Suspense fallback={<CodeBlockFallback code={codeString} language={language} />}>
             <SyntaxHighlightedCode code={codeString} language={language} {...props} />
           </Suspense>
-          {isLong && !expanded && (
-            <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-[var(--background)] to-transparent pointer-events-none" />
-          )}
         </div>
-        {/* Expand footer */}
-        {isLong && !expanded && (
+        {/* Expand/Collapse footer */}
+        {isLong && (
           <button
             type="button"
             className="w-full flex items-center justify-center gap-1 py-1 text-[10px] text-muted-foreground/50 hover:text-muted-foreground/70 hover:bg-muted/20 transition-colors border-t border-border/20"
-            onClick={() => setExpanded(true)}
+            onClick={() => setExpanded(!expanded)}
           >
-            <ChevronDown className="w-3 h-3" />
-            Show all {lineCount} lines
+            <ChevronDown className={cn("w-3 h-3 transition-transform", expanded && "rotate-180")} />
+            {expanded ? `Collapse to ${COLLAPSED_LINE_LIMIT} lines` : `Show all ${lineCount} lines`}
           </button>
         )}
       </div>

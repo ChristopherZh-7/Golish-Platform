@@ -1,14 +1,8 @@
 import {
   Bot,
   CheckCircle,
-  Edit,
-  FileCode,
-  FileText,
-  FolderOpen,
-  Globe,
   Loader2,
   Maximize2,
-  Search,
   Terminal,
   XCircle,
 } from "lucide-react";
@@ -17,7 +11,7 @@ import { StreamingOutput } from "@/components/StreamingOutput";
 import { TruncatedOutput } from "@/components/TruncatedOutput";
 import { Badge } from "@/components/ui/badge";
 import { formatPrimaryArg } from "@/lib/toolGrouping";
-import { formatShellCommandResult, isAgentTerminalCommand } from "@/lib/tools";
+import { formatShellCommandResult, getToolIcon, isAgentTerminalCommand } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import type { ActiveToolCall, ToolCall } from "@/store";
 
@@ -35,21 +29,6 @@ interface ToolItemProps {
   onViewDetails?: (tool: AnyToolCall) => void;
 }
 
-/** Tool name to icon mapping */
-const toolIcons: Record<string, typeof FileText> = {
-  read_file: FileText,
-  write_file: Edit,
-  edit_file: Edit,
-  list_files: FolderOpen,
-  grep_file: Search,
-  run_pty_cmd: Terminal,
-  run_command: Terminal,
-  shell: Terminal,
-  web_fetch: Globe,
-  web_search: Globe,
-  web_search_answer: Globe,
-  apply_patch: FileCode,
-};
 
 /** Status configuration for badges and icons */
 const statusConfig: Record<
@@ -108,7 +87,7 @@ export const ToolItem = memo(function ToolItem({
   showInlineName = false,
   onViewDetails,
 }: ToolItemProps) {
-  const Icon = toolIcons[tool.name] || Terminal;
+  const Icon = getToolIcon(tool.name);
   const status = statusConfig[tool.status];
   const StatusIcon = status.icon;
   const isTerminalCmd = isAgentTerminalCommand(tool);

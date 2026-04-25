@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { logAudit } from "@/lib/audit";
 import {
   AlertTriangle, Bug, Check, ChevronDown, ChevronRight, Download, ExternalLink,
-  Filter, Image, Info, Loader2, Merge, Paperclip, Plus, Search, Shield, ShieldAlert, Trash2, X,
+  Image, Info, Loader2, Merge, Paperclip, Plus, Search, Shield, ShieldAlert, Trash2, X,
 } from "lucide-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { QuickNotes } from "@/components/QuickNotes/QuickNotes";
@@ -47,12 +48,14 @@ interface FindingsStore {
   findings: Finding[];
 }
 
+import { SEV_TEXT, SEV_BADGE, SEV_LABELS } from "@/lib/severity";
+
 const SEVERITY_CONFIG: Record<Severity, { color: string; bg: string; icon: typeof ShieldAlert; label: string }> = {
-  critical: { color: "text-red-400", bg: "bg-red-500/10 border-red-500/20", icon: ShieldAlert, label: "Critical" },
-  high:     { color: "text-orange-400", bg: "bg-orange-500/10 border-orange-500/20", icon: AlertTriangle, label: "High" },
-  medium:   { color: "text-yellow-400", bg: "bg-yellow-500/10 border-yellow-500/20", icon: Shield, label: "Medium" },
-  low:      { color: "text-blue-400", bg: "bg-blue-500/10 border-blue-500/20", icon: Info, label: "Low" },
-  info:     { color: "text-slate-400", bg: "bg-slate-500/10 border-slate-500/20", icon: Info, label: "Info" },
+  critical: { color: SEV_TEXT.critical, bg: SEV_BADGE.critical, icon: ShieldAlert, label: SEV_LABELS.critical },
+  high:     { color: SEV_TEXT.high, bg: SEV_BADGE.high, icon: AlertTriangle, label: SEV_LABELS.high },
+  medium:   { color: SEV_TEXT.medium, bg: SEV_BADGE.medium, icon: Shield, label: SEV_LABELS.medium },
+  low:      { color: SEV_TEXT.low, bg: SEV_BADGE.low, icon: Info, label: SEV_LABELS.low },
+  info:     { color: SEV_TEXT.info, bg: SEV_BADGE.info, icon: Info, label: SEV_LABELS.info },
 };
 
 const STATUS_LABELS: Record<FindingStatus, string> = {
@@ -62,64 +65,7 @@ const STATUS_LABELS: Record<FindingStatus, string> = {
   resolved: "Resolved",
 };
 
-function MiniDropdown({
-  value,
-  onChange,
-  options,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  options: { value: string; label: string }[];
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const selected = options.find((o) => o.value === value);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        type="button"
-        className={cn(
-          "flex items-center gap-1.5 px-2 py-1 text-[10px] rounded-md border transition-colors",
-          "bg-[var(--bg-hover)]/30 border-border/30 text-foreground",
-          "hover:bg-[var(--bg-hover)]/60 hover:border-border/50",
-          open && "border-accent/40 bg-[var(--bg-hover)]/50",
-        )}
-        onClick={() => setOpen(!open)}
-      >
-        <span className="truncate max-w-[90px]">{selected?.label ?? value}</span>
-        <ChevronDown className={cn("w-3 h-3 text-muted-foreground transition-transform", open && "rotate-180")} />
-      </button>
-      {open && (
-        <div className="absolute top-full left-0 mt-1 min-w-[120px] max-h-48 overflow-y-auto rounded-lg border border-border/30 bg-card shadow-lg z-50 py-1">
-          {options.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              className={cn(
-                "w-full text-left px-3 py-1.5 text-[10px] transition-colors",
-                "hover:bg-[var(--bg-hover)]/60",
-                opt.value === value && "text-accent bg-accent/5 font-medium",
-              )}
-              onClick={() => { onChange(opt.value); setOpen(false); }}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+import { MiniDropdown } from "@/components/ui/MiniDropdown";
 
 export function FindingsPanel() {
   const { t } = useTranslation();
@@ -201,7 +147,7 @@ export function FindingsPanel() {
   const handleDelete = useCallback(async (id: string) => {
     await invoke("findings_delete", { id, projectPath: getProjectPath() });
     load();
-    invoke("audit_log", { action: "finding_deleted", category: "findings", details: id, entityType: "finding", entityId: id, projectPath: getProjectPath() }).catch(() => {});
+    logAudit({ action: "finding_deleted", category: "findings", details: id, entityType: "finding", entityId: id });
   }, [load]);
 
   const handleStatusChange = useCallback(async (finding: Finding, status: FindingStatus) => {
@@ -210,7 +156,7 @@ export function FindingsPanel() {
       projectPath: getProjectPath(),
     });
     load();
-    invoke("audit_log", { action: "finding_status_changed", category: "findings", details: `${finding.title} → ${status}`, entityType: "finding", entityId: finding.id, projectPath: getProjectPath() }).catch(() => {});
+    logAudit({ action: "finding_status_changed", category: "findings", details: `${finding.title} → ${status}`, entityType: "finding", entityId: finding.id });
   }, [load]);
 
   const handleAddEvidence = useCallback(async (findingId: string) => {
@@ -390,6 +336,7 @@ export function FindingsPanel() {
             />
           </div>
           <MiniDropdown
+            variant="standard"
             value={statusFilter}
             onChange={(v) => setStatusFilter(v as FindingStatus | "all")}
             options={[
@@ -412,6 +359,7 @@ export function FindingsPanel() {
           />
           <div className="flex gap-2">
             <MiniDropdown
+              variant="standard"
               value={addForm.severity}
               onChange={(v) => setAddForm((p) => ({ ...p, severity: v as Severity }))}
               options={(["critical", "high", "medium", "low", "info"] as Severity[]).map((s) => ({

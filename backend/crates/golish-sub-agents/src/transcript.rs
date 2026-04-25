@@ -6,43 +6,21 @@
 
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
 use golish_core::events::AiEvent;
-use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
-
-/// A wrapper struct for sub-agent transcript entries that includes a timestamp.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SubAgentTranscriptEntry {
-    /// ISO 8601 timestamp when the event was recorded
-    _timestamp: DateTime<Utc>,
-    /// The AI event (flattened into the same JSON object)
-    #[serde(flatten)]
-    event: AiEvent,
-}
+use golish_core::jsonl::EventTranscriptWriter;
 
 /// Thread-safe writer for sub-agent transcript files.
 ///
 /// Events are stored in JSONL format (one JSON object per line) with timestamps.
 #[derive(Debug)]
 pub struct SubAgentTranscriptWriter {
-    /// Path to the transcript file
-    path: PathBuf,
-    /// Write lock to ensure atomic appends
-    write_lock: Mutex<()>,
+    inner: EventTranscriptWriter,
 }
 
 impl SubAgentTranscriptWriter {
     /// Creates a new `SubAgentTranscriptWriter` for a specific sub-agent execution.
     ///
     /// Path format: `{base_dir}/{session_id}/subagents/{agent_id}-{request_id}/transcript.json`
-    ///
-    /// # Arguments
-    ///
-    /// * `base_dir` - The base directory for transcripts (e.g., `~/.golish/transcripts`)
-    /// * `session_id` - The main session ID
-    /// * `agent_id` - The sub-agent identifier
-    /// * `parent_request_id` - The request ID that triggered this sub-agent
     pub async fn new(
         base_dir: &Path,
         session_id: &str,
@@ -50,43 +28,19 @@ impl SubAgentTranscriptWriter {
         parent_request_id: &str,
     ) -> anyhow::Result<Self> {
         let path = sub_agent_transcript_path(base_dir, session_id, agent_id, parent_request_id);
-
-        // Ensure the parent directory exists
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-
         Ok(Self {
-            path,
-            write_lock: Mutex::new(()),
+            inner: EventTranscriptWriter::new(path).await?,
         })
     }
 
     /// Appends an AI event to the sub-agent transcript.
     pub async fn append(&self, event: &AiEvent) -> anyhow::Result<()> {
-        let entry = SubAgentTranscriptEntry {
-            _timestamp: Utc::now(),
-            event: event.clone(),
-        };
-
-        let mut line = serde_json::to_string(&entry)?;
-        line.push('\n');
-
-        let _guard = self.write_lock.lock().await;
-        use tokio::io::AsyncWriteExt;
-        let mut file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .await?;
-        file.write_all(line.as_bytes()).await?;
-
-        Ok(())
+        self.inner.append(event).await
     }
 
     /// Returns the path to the transcript file.
     pub fn path(&self) -> &Path {
-        &self.path
+        self.inner.path()
     }
 }
 

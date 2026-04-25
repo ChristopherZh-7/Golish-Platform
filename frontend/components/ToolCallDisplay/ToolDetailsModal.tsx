@@ -25,15 +25,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { logger } from "@/lib/logger";
+import { copyToClipboard } from "@/lib/clipboard";
 import { type AnyToolCall, formatPrimaryArg } from "@/lib/toolGrouping";
 import {
   formatToolName,
   formatToolResult,
   getRiskLevel,
   isAgentTerminalCommand,
+  getToolIcon,
   isEditFileResult,
 } from "@/lib/tools";
+import { formatDurationShort } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import type { RiskLevel } from "@/store";
 
@@ -152,20 +154,6 @@ interface ToolDetailsModalProps {
   onClose: () => void;
 }
 
-// Tool icons mapping
-const toolIcons: Record<string, typeof Terminal> = {
-  read_file: Terminal,
-  write_file: Terminal,
-  edit_file: Terminal,
-  list_files: Terminal,
-  grep_file: Terminal,
-  run_pty_cmd: Terminal,
-  shell: Terminal,
-  web_fetch: Terminal,
-  web_search: Terminal,
-  web_search_answer: Terminal,
-  apply_patch: Terminal,
-};
 
 // Risk level styling
 const RISK_STYLES: Record<RiskLevel, { color: string; bg: string; icon: typeof Shield }> = {
@@ -223,7 +211,7 @@ export function ToolDetailsModal({ tool, onClose }: ToolDetailsModalProps) {
 
   if (!tool) return null;
 
-  const Icon = toolIcons[tool.name] || Terminal;
+  const Icon = getToolIcon(tool.name);
   const riskLevel =
     "riskLevel" in tool && tool.riskLevel ? tool.riskLevel : getRiskLevel(tool.name);
   const { color: riskColor, bg: riskBg, icon: RiskIcon } = RISK_STYLES[riskLevel];
@@ -239,12 +227,9 @@ export function ToolDetailsModal({ tool, onClose }: ToolDetailsModalProps) {
       : null;
 
   const handleCopy = async (content: string, section: string) => {
-    try {
-      await navigator.clipboard.writeText(content);
+    if (await copyToClipboard(content)) {
       setCopiedSection(section);
       setTimeout(() => setCopiedSection(null), 2000);
-    } catch (error) {
-      logger.error("Failed to copy:", error);
     }
   };
 
@@ -333,7 +318,7 @@ export function ToolDetailsModal({ tool, onClose }: ToolDetailsModalProps) {
                     <Clock className="w-4 h-4 text-muted-foreground" />
                     <span className="text-muted-foreground">Duration:</span>
                     <span className="font-mono text-foreground/90">
-                      {duration < 1000 ? `${duration}ms` : `${(duration / 1000).toFixed(2)}s`}
+                      {formatDurationShort(duration)}
                     </span>
                   </div>
                 )}

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Eye, Loader2, Play, Search,
 } from "lucide-react";
+import { SEV_TEXT } from "@/lib/severity";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -389,7 +390,7 @@ function CustomRulesView({
     onEdit({ id: "", name: "", pattern: "", scope: "all", severity: "medium", enabled: true });
   };
 
-  const sevColor = (s: string) => s === "high" ? "text-red-400" : s === "medium" ? "text-yellow-400" : "text-blue-400";
+  const sevColor = (s: string) => SEV_TEXT[s] || "text-blue-400";
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">

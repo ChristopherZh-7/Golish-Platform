@@ -9,91 +9,24 @@ use std::time::Duration;
 
 use anyhow::Result;
 use futures::StreamExt;
-use rig::completion::request::ToolDefinition;
 use rig::completion::{AssistantContent, CompletionModel as RigCompletionModel, Message};
-use rig::message::{
-    Reasoning, Text, ToolCall, ToolFunction, ToolResult, ToolResultContent, UserContent,
-};
+use rig::message::{Text, ToolCall, ToolFunction, ToolResult, ToolResultContent, UserContent};
 use rig::one_or_many::OneOrMany;
 use rig::streaming::StreamedAssistantContent;
-use tokio::sync::mpsc;
-use tokio::sync::RwLock;
 use tracing::Instrument;
 use uuid::Uuid;
 
-use golish_tools::ToolRegistry;
-use golish_udiff::{ApplyResult, UdiffApplier, UdiffParser};
-
 use crate::definition::{SubAgentContext, SubAgentDefinition, SubAgentResult};
+use crate::executor_helpers::{
+    build_assistant_content, epoch_secs, extract_file_path, is_write_tool,
+    restore_or_create_chain, serialize_chat_history,
+};
+pub use crate::executor_types::{SubAgentExecutorContext, ToolProvider, BARRIER_TOOL_NAME};
+use crate::executor_udiff::process_coder_udiff;
 use crate::transcript::SubAgentTranscriptWriter;
-use golish_core::events::AiEvent;
+use golish_core::events::{AiEvent, ToolSource};
 use golish_core::utils::truncate_str;
-use golish_core::{ApiRequestStats, Tool as GolishTool};
 use golish_llm_providers::ModelCapabilities;
-
-/// Barrier tool name used by all sub-agents to submit structured results.
-/// When a sub-agent calls this tool, the executor terminates the loop and
-/// returns the structured result to the parent agent (PentAGI barrier pattern).
-pub const BARRIER_TOOL_NAME: &str = "submit_result";
-
-/// Trait for providing tool definitions to the sub-agent executor.
-/// This allows the executor to be decoupled from the tool definition source.
-#[async_trait::async_trait]
-pub trait ToolProvider: Send + Sync {
-    /// Get all available tool definitions
-    fn get_all_tool_definitions(&self) -> Vec<ToolDefinition>;
-
-    /// Filter tools to only those allowed by the sub-agent
-    fn filter_tools_by_allowed(
-        &self,
-        tools: Vec<ToolDefinition>,
-        allowed: &[String],
-    ) -> Vec<ToolDefinition>;
-
-    /// Execute a web fetch tool
-    async fn execute_web_fetch_tool(
-        &self,
-        tool_name: &str,
-        args: &serde_json::Value,
-    ) -> (serde_json::Value, bool);
-
-    /// Normalize run_pty_cmd arguments
-    fn normalize_run_pty_cmd_args(&self, args: serde_json::Value) -> serde_json::Value;
-}
-
-/// Context needed for sub-agent execution.
-pub struct SubAgentExecutorContext<'a> {
-    pub event_tx: &'a mpsc::UnboundedSender<AiEvent>,
-    pub tool_registry: &'a Arc<RwLock<ToolRegistry>>,
-    pub workspace: &'a Arc<RwLock<std::path::PathBuf>>,
-    /// Provider name (e.g., "openai", "anthropic_vertex") for model capability checks
-    pub provider_name: &'a str,
-    /// Model name for model capability checks
-    pub model_name: &'a str,
-    /// Session ID for Langfuse tracing (propagated from parent agent)
-    pub session_id: Option<&'a str>,
-    /// Base directory for transcript files (e.g., `~/.golish/transcripts`)
-    /// If set, sub-agent internal events will be written to separate transcript files.
-    pub transcript_base_dir: Option<&'a std::path::Path>,
-    /// API request stats collector (per session, optional)
-    pub api_request_stats: Option<&'a Arc<ApiRequestStats>>,
-    /// Orchestrator briefing injected before execution. Contains relevant memories,
-    /// execution plan context, and findings from other agents. Appended to the
-    /// effective system prompt as a `## Briefing from Orchestrator` section.
-    pub briefing: Option<String>,
-    /// Per-agent temperature override from settings (None = use default 0.3).
-    pub temperature_override: Option<f32>,
-    /// Per-agent max_tokens override from settings (None = use default 8192).
-    pub max_tokens_override: Option<u32>,
-    /// Per-agent top_p override from settings (None = not sent to provider).
-    pub top_p_override: Option<f32>,
-    /// Database pool for persisting sub-agent conversation chains (PentAGI-style).
-    /// When set, the executor saves/restores chat history across invocations.
-    pub db_pool: Option<&'a Arc<sqlx::PgPool>>,
-    /// Sub-agent registry for nested delegation (PentAGI hierarchical pattern).
-    /// When set, agents with `delegatable_agents` can invoke other sub-agents.
-    pub sub_agent_registry: Option<&'a Arc<RwLock<crate::definition::SubAgentRegistry>>>,
-}
 
 /// Execute a sub-agent with the given task and context.
 ///
@@ -464,6 +397,21 @@ where
     // Build filtered tools based on agent's allowed tools, plus the barrier tool.
     let all_tools = tool_provider.get_all_tool_definitions();
     let mut tools = tool_provider.filter_tools_by_allowed(all_tools, &agent_def.allowed_tools);
+
+    // Include dynamically registered tools (pentest_list_tools, pentest_run, etc.)
+    // that are in the agent's allowed_tools but not in the static definitions.
+    {
+        let existing_names: std::collections::HashSet<String> =
+            tools.iter().map(|t| t.name.clone()).collect();
+        let allowed_set: std::collections::HashSet<&str> =
+            agent_def.allowed_tools.iter().map(|s| s.as_str()).collect();
+        let registry = ctx.tool_registry.read().await;
+        for td in registry.get_tool_definitions() {
+            if allowed_set.contains(td.name.as_str()) && !existing_names.contains(&td.name) {
+                tools.push(td);
+            }
+        }
+    }
 
     // Inject the barrier tool (`submit_result`) — forces structured output from specialists.
     // Matches PentAGI's hack_result/code_result/search_result barrier pattern.
@@ -1252,8 +1200,7 @@ where
             let _tool_guard = tool_span.enter();
 
             // Execute the tool with a timeout guard.
-            // Sub-agents use background shell execution for run_pty_cmd/run_command
-            // instead of the visible terminal, so output is captured inline.
+            // Shell commands use streaming execution for real-time output visibility.
             let tool_timeout = idle_timeout.unwrap_or(timeout_duration);
             let tool_result = tokio::time::timeout(tool_timeout, async {
                 if tool_name == "web_fetch" {
@@ -1261,14 +1208,56 @@ where
                         .execute_web_fetch_tool(tool_name, &tool_args)
                         .await
                 } else if tool_name == "run_pty_cmd" || tool_name == "run_command" {
-                    let bg_tool = golish_shell_exec::RunPtyCmdTool::new();
+                    let command = tool_args.get("command").and_then(|c| c.as_str()).unwrap_or("");
+                    let cwd = tool_args.get("cwd").and_then(|c| c.as_str());
+                    let timeout_secs = tool_args.get("timeout").and_then(|t| t.as_u64()).unwrap_or(120);
                     let workspace = ctx.workspace.read().await;
-                    match bg_tool.execute(tool_args.clone(), &workspace).await {
-                        Ok(v) => {
-                            let ok = v
-                                .get("exit_code")
-                                .and_then(|c| c.as_i64())
-                                .map_or(true, |c| c == 0);
+
+                    let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel::<golish_shell_exec::OutputChunk>(64);
+
+                    let event_tx = ctx.event_tx.clone();
+                    let chunk_request_id = request_id.clone();
+                    let chunk_tool_name = tool_name.to_string();
+                    let chunk_agent_id = agent_id.to_string();
+                    let chunk_agent_name = agent_def.name.clone();
+                    tokio::spawn(async move {
+                        while let Some(chunk) = chunk_rx.recv().await {
+                            let _ = event_tx.send(AiEvent::ToolOutputChunk {
+                                request_id: chunk_request_id.clone(),
+                                tool_name: chunk_tool_name.clone(),
+                                chunk: chunk.data,
+                                stream: chunk.stream.as_str().to_string(),
+                                source: ToolSource::SubAgent {
+                                    agent_id: chunk_agent_id.clone(),
+                                    agent_name: chunk_agent_name.clone(),
+                                },
+                            });
+                        }
+                    });
+
+                    match golish_shell_exec::execute_streaming(
+                        command, cwd, timeout_secs, &workspace, None, chunk_tx,
+                    ).await {
+                        Ok(r) => {
+                            let ok = r.exit_code == 0;
+                            let mut v = serde_json::json!({
+                                "stdout": r.stdout,
+                                "stderr": r.stderr,
+                                "exit_code": r.exit_code,
+                                "command": command,
+                            });
+                            if let Some(c) = cwd {
+                                v["cwd"] = serde_json::json!(c);
+                            }
+                            if !ok {
+                                let err_detail = if r.stderr.is_empty() { &r.stdout } else { &r.stderr };
+                                v["error"] = serde_json::json!(format!(
+                                    "Command exited with code {}: {}", r.exit_code, err_detail
+                                ));
+                            }
+                            if r.timed_out {
+                                v["timeout"] = serde_json::json!(true);
+                            }
                             (v, ok)
                         }
                         Err(e) => (serde_json::json!({ "error": e.to_string() }), false),
@@ -1302,6 +1291,34 @@ where
                     (serde_json::json!({ "error": error_msg }), false)
                 }
             };
+
+            if success
+                && (tool_name == "run_pty_cmd" || tool_name == "run_command")
+            {
+                if let Some(db_pool) = ctx.db_pool {
+                    let pool = Arc::clone(db_pool);
+                    let cmd = result_value
+                        .get("command")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let stdout = result_value
+                        .get("stdout")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let pp = {
+                        let ws = ctx.workspace.read().await;
+                        ws.to_string_lossy().to_string()
+                    };
+                    tokio::spawn(async move {
+                        let _ = golish_pentest::output_store::maybe_detect_and_store(
+                            &pool, &cmd, &stdout, Some(&pp),
+                        )
+                        .await;
+                    });
+                }
+            }
 
             // Record tool result on span
             let result_str = serde_json::to_string(&result_value).unwrap_or_default();
@@ -1404,162 +1421,12 @@ where
         }
     }
 
-    // Process udiff output if this is the coder sub-agent
-    let mut final_response = accumulated_response.clone();
-    if agent_def.id == "coder" {
+    let final_response = if agent_def.id == "coder" {
         let workspace = ctx.workspace.read().await;
-        let diffs = UdiffParser::parse(&accumulated_response);
-
-        if !diffs.is_empty() {
-            let mut applied_files = Vec::new();
-            let mut errors = Vec::new();
-
-            for diff in diffs {
-                let file_path = workspace.join(&diff.file_path);
-
-                // Handle new file creation
-                if diff.is_new_file {
-                    // Create parent directories if needed
-                    if let Some(parent) = file_path.parent() {
-                        if let Err(e) = std::fs::create_dir_all(parent) {
-                            errors.push(format!(
-                                "Failed to create directories for {}: {}",
-                                diff.file_path.display(),
-                                e
-                            ));
-                            continue;
-                        }
-                    }
-
-                    // Collect all new_lines from hunks to form the file content
-                    let new_content: String = diff
-                        .hunks
-                        .iter()
-                        .flat_map(|h| h.new_lines.iter())
-                        .map(|s| s.as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n");
-
-                    if let Err(e) = std::fs::write(&file_path, &new_content) {
-                        errors.push(format!(
-                            "Failed to create {}: {}",
-                            diff.file_path.display(),
-                            e
-                        ));
-                    } else {
-                        let path_str = diff.file_path.display().to_string();
-                        applied_files.push(path_str.clone());
-                        if !files_modified.contains(&path_str) {
-                            files_modified.push(path_str);
-                        }
-                        tracing::info!("[coder] Created new file: {}", diff.file_path.display());
-                    }
-                    continue;
-                }
-
-                // Handle existing file modification
-                match std::fs::read_to_string(&file_path) {
-                    Ok(content) => {
-                        match UdiffApplier::apply_hunks(&content, &diff.hunks) {
-                            ApplyResult::Success { new_content } => {
-                                if let Err(e) = std::fs::write(&file_path, new_content) {
-                                    errors.push(format!(
-                                        "Failed to write {}: {}",
-                                        diff.file_path.display(),
-                                        e
-                                    ));
-                                } else {
-                                    let path_str = diff.file_path.display().to_string();
-                                    applied_files.push(path_str.clone());
-                                    if !files_modified.contains(&path_str) {
-                                        files_modified.push(path_str);
-                                    }
-                                }
-                            }
-                            ApplyResult::PartialSuccess {
-                                new_content,
-                                applied,
-                                failed,
-                            } => {
-                                // Clone failed before it's moved
-                                let failed_hunks = failed.clone();
-                                if let Err(e) = std::fs::write(&file_path, new_content) {
-                                    errors.push(format!(
-                                        "Failed to write {}: {}",
-                                        diff.file_path.display(),
-                                        e
-                                    ));
-                                } else {
-                                    let path_str = diff.file_path.display().to_string();
-                                    applied_files.push(path_str.clone());
-                                    if !files_modified.contains(&path_str) {
-                                        files_modified.push(path_str);
-                                    }
-                                    for (idx, reason) in failed {
-                                        errors.push(format!(
-                                            "Hunk {} in {}: {}",
-                                            idx,
-                                            diff.file_path.display(),
-                                            reason
-                                        ));
-                                    }
-                                }
-                                tracing::info!(
-                                    "[coder] Partial success: applied hunks {:?}, failed: {:?}",
-                                    applied,
-                                    failed_hunks
-                                );
-                            }
-                            ApplyResult::NoMatch {
-                                hunk_idx,
-                                suggestion,
-                            } => {
-                                errors.push(format!(
-                                    "{} (hunk {}): {}",
-                                    diff.file_path.display(),
-                                    hunk_idx,
-                                    suggestion
-                                ));
-                            }
-                            ApplyResult::MultipleMatches { hunk_idx, count } => {
-                                errors.push(format!(
-                                    "{} (hunk {}): Found {} matches, add more context",
-                                    diff.file_path.display(),
-                                    hunk_idx,
-                                    count
-                                ));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        errors.push(format!("Cannot read {}: {}", diff.file_path.display(), e));
-                    }
-                }
-            }
-
-            // Append result summary to response
-            if !applied_files.is_empty() || !errors.is_empty() {
-                final_response.push_str("\n\n---\n**Applied Changes:**\n");
-
-                if !applied_files.is_empty() {
-                    final_response.push_str(&format!(
-                        "\nSuccessfully modified {} file(s):\n",
-                        applied_files.len()
-                    ));
-                    for file in &applied_files {
-                        final_response.push_str(&format!("- {}\n", file));
-                    }
-                }
-
-                if !errors.is_empty() {
-                    final_response.push_str(&format!("\n{} error(s) occurred:\n", errors.len()));
-                    for error in &errors {
-                        final_response.push_str(&format!("- {}\n", error));
-                    }
-                }
-            }
-        }
-    }
+        process_coder_udiff(&accumulated_response, &workspace, &mut files_modified)
+    } else {
+        accumulated_response.clone()
+    };
 
     let _ = ctx.event_tx.send(AiEvent::SubAgentCompleted {
         agent_id: agent_id.to_string(),
@@ -1593,252 +1460,6 @@ where
         duration_ms,
         files_modified,
     })
-}
-
-/// Get current time as epoch seconds (for idle timeout tracking).
-fn epoch_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-/// Check if a tool modifies files
-fn is_write_tool(tool_name: &str) -> bool {
-    matches!(
-        tool_name,
-        "write_file"
-            | "create_file"
-            | "edit_file"
-            | "delete_file"
-            | "delete_path"
-            | "rename_file"
-            | "move_file"
-            | "move_path"
-            | "copy_path"
-            | "create_directory"
-            | "apply_patch"
-            | "ast_grep_replace"
-    )
-}
-
-/// Extract file path from tool arguments
-fn extract_file_path(tool_name: &str, args: &serde_json::Value) -> Option<String> {
-    match tool_name {
-        "write_file" | "create_file" | "edit_file" | "read_file" | "delete_file" => args
-            .get("path")
-            .or_else(|| args.get("file_path"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()),
-        "apply_patch" => {
-            // Extract file paths from patch content
-            args.get("patch")
-                .and_then(|v| v.as_str())
-                .and_then(|patch| {
-                    // Look for "*** Update File:" or "*** Add File:" lines
-                    for line in patch.lines() {
-                        if let Some(path) = line.strip_prefix("*** Update File:") {
-                            return Some(path.trim().to_string());
-                        }
-                        if let Some(path) = line.strip_prefix("*** Add File:") {
-                            return Some(path.trim().to_string());
-                        }
-                    }
-                    None
-                })
-        }
-        "rename_file" | "move_file" | "move_path" | "copy_path" => args
-            .get("destination")
-            .or_else(|| args.get("to"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()),
-        "delete_path" => args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()),
-        "create_directory" => args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()),
-        _ => None,
-    }
-}
-
-/// Build assistant content for chat history with proper ordering.
-///
-/// When thinking is enabled, thinking blocks MUST come first (required by Anthropic API).
-/// This function ensures the correct order: Reasoning -> Text -> ToolCalls
-///
-/// # Arguments
-/// * `supports_thinking_history` - Whether the model supports thinking history
-/// * `thinking_text` - The accumulated thinking/reasoning text
-/// * `thinking_id` - Optional reasoning ID (used by OpenAI Responses API)
-/// * `thinking_signature` - Optional thinking signature (used by Anthropic)
-/// * `text_content` - The text response content
-/// * `tool_calls` - List of tool calls to include
-///
-/// # Returns
-/// A vector of AssistantContent in the correct order for the API
-pub fn build_assistant_content(
-    supports_thinking_history: bool,
-    thinking_text: &str,
-    thinking_id: Option<String>,
-    thinking_signature: Option<String>,
-    text_content: &str,
-    tool_calls: &[ToolCall],
-) -> Vec<AssistantContent> {
-    let mut content: Vec<AssistantContent> = vec![];
-
-    // Add thinking content FIRST (required by Anthropic API when thinking is enabled)
-    let has_reasoning = !thinking_text.is_empty() || thinking_id.is_some();
-    if supports_thinking_history && has_reasoning {
-        content.push(AssistantContent::Reasoning(
-            Reasoning::new_with_signature(thinking_text, thinking_signature)
-                .optional_id(thinking_id),
-        ));
-    }
-
-    // Add text content
-    if !text_content.is_empty() {
-        content.push(AssistantContent::Text(Text {
-            text: text_content.to_string(),
-        }));
-    }
-
-    // Add tool calls
-    for tc in tool_calls {
-        content.push(AssistantContent::ToolCall(tc.clone()));
-    }
-
-    content
-}
-
-/// Map agent_id to the DB AgentType enum for message_chains storage.
-fn agent_id_to_db_type(agent_id: &str) -> &'static str {
-    match agent_id {
-        "pentester" => "pentester",
-        "coder" => "coder",
-        "explorer" | "searcher" | "researcher" => "searcher",
-        "memorist" => "memorist",
-        "reporter" => "reporter",
-        "adviser" | "analyzer" => "adviser",
-        _ => "primary",
-    }
-}
-
-/// Restore an existing conversation chain from DB, or create a new one.
-/// Returns (chain_id, restored_messages) where restored_messages is empty for new chains.
-async fn restore_or_create_chain(
-    pool: &sqlx::PgPool,
-    session_id: uuid::Uuid,
-    task_id: Option<uuid::Uuid>,
-    agent_id: &str,
-) -> anyhow::Result<(uuid::Uuid, Vec<Message>)> {
-    let agent_type = agent_id_to_db_type(agent_id);
-
-    // Look for existing chain for this agent + session + task
-    let existing: Option<(uuid::Uuid, Option<serde_json::Value>)> = sqlx::query_as(
-        r#"SELECT id, chain FROM message_chains
-           WHERE session_id = $1 AND agent::text = $2
-             AND ($3::uuid IS NULL AND task_id IS NULL OR task_id = $3)
-           ORDER BY updated_at DESC LIMIT 1"#,
-    )
-    .bind(session_id)
-    .bind(agent_type)
-    .bind(task_id)
-    .fetch_optional(pool)
-    .await?;
-
-    if let Some((chain_id, chain_data)) = existing {
-        let messages = chain_data
-            .and_then(|v| deserialize_chat_history(&v))
-            .unwrap_or_default();
-        return Ok((chain_id, messages));
-    }
-
-    // Create new chain
-    let (chain_id,): (uuid::Uuid,) = sqlx::query_as(
-        r#"INSERT INTO message_chains (session_id, task_id, agent)
-           VALUES ($1, $2, $3::agent_type)
-           RETURNING id"#,
-    )
-    .bind(session_id)
-    .bind(task_id)
-    .bind(agent_type)
-    .fetch_one(pool)
-    .await?;
-
-    Ok((chain_id, Vec::new()))
-}
-
-/// Serialize rig Message history to JSON for DB storage.
-fn serialize_chat_history(messages: &[Message]) -> serde_json::Value {
-    let entries: Vec<serde_json::Value> = messages
-        .iter()
-        .filter_map(|msg| {
-            match msg {
-                Message::User { content } => {
-                    let texts: Vec<String> = content
-                        .iter()
-                        .filter_map(|c| match c {
-                            UserContent::Text(t) => Some(t.text.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    if texts.is_empty() {
-                        None
-                    } else {
-                        Some(serde_json::json!({
-                            "role": "user",
-                            "content": texts.join("\n"),
-                        }))
-                    }
-                }
-                Message::Assistant { content, .. } => {
-                    let texts: Vec<String> = content
-                        .iter()
-                        .filter_map(|c| match c {
-                            AssistantContent::Text(t) => Some(t.text.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    if texts.is_empty() {
-                        None
-                    } else {
-                        Some(serde_json::json!({
-                            "role": "assistant",
-                            "content": texts.join("\n"),
-                        }))
-                    }
-                }
-            }
-        })
-        .collect();
-    serde_json::json!(entries)
-}
-
-/// Deserialize stored JSON back into rig Messages (simplified text-only restoration).
-fn deserialize_chat_history(value: &serde_json::Value) -> Option<Vec<Message>> {
-    let arr = value.as_array()?;
-    let mut messages = Vec::new();
-    for entry in arr {
-        let role = entry.get("role")?.as_str()?;
-        let content = entry.get("content")?.as_str()?.to_string();
-        if content.is_empty() {
-            continue;
-        }
-        match role {
-            "user" => messages.push(Message::User {
-                content: OneOrMany::one(UserContent::Text(Text { text: content })),
-            }),
-            "assistant" => messages.push(Message::Assistant {
-                id: None,
-                content: OneOrMany::one(AssistantContent::Text(Text { text: content })),
-            }),
-            _ => {}
-        }
-    }
-    Some(messages)
 }
 
 #[cfg(test)]

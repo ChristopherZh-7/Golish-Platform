@@ -1,27 +1,20 @@
 import {
-  Bot,
-  CheckCircle2,
   ChevronDown,
   ChevronRight,
   Clock,
-  Code2,
-  FileText,
   Loader2,
   Maximize2,
-  Search,
-  Settings2,
-  Shield,
   Terminal,
-  AlertTriangle,
-  Circle,
   Wand2,
-  XCircle,
 } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import { Markdown } from "@/components/Markdown";
+import { StatusIcon } from "@/components/ui/StatusIcon";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { stripAllAnsi } from "@/lib/ansi";
+import { getAgentColor, getAgentIcon } from "@/lib/sub-agent-theme";
+import { formatDurationShort } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import type { ActiveSubAgent, SubAgentEntry, SubAgentToolCall } from "@/store";
 import { SubAgentDetailsModal } from "./SubAgentDetailsModal";
@@ -48,69 +41,7 @@ interface SubAgentCardProps {
   highlighted?: boolean;
 }
 
-const AGENT_COLORS: Record<string, string> = {
-  planner: "var(--ansi-blue)",
-  coder: "var(--ansi-green)",
-  researcher: "var(--ansi-yellow)",
-  reviewer: "var(--ansi-cyan)",
-  explorer: "var(--ansi-yellow)",
-  analyst: "var(--ansi-cyan)",
-  adviser: "var(--ansi-cyan)",
-  reporter: "#10b981",
-  pentester: "var(--ansi-red)",
-  memorist: "var(--ansi-blue)",
-  reflector: "var(--ansi-magenta)",
-};
-
-const AGENT_ICONS: Record<string, typeof Bot> = {
-  coder: Code2,
-  researcher: Search,
-  explorer: Search,
-  planner: Settings2,
-  adviser: Shield,
-  reporter: FileText,
-  pentester: Terminal,
-};
-
-function getAgentColor(agentName: string): string {
-  const lower = agentName.toLowerCase();
-  for (const [key, color] of Object.entries(AGENT_COLORS)) {
-    if (lower.includes(key)) return color;
-  }
-  return "var(--ansi-magenta)";
-}
-
-function getAgentIcon(agentName: string): typeof Bot {
-  const lower = agentName.toLowerCase();
-  for (const [key, icon] of Object.entries(AGENT_ICONS)) {
-    if (lower.includes(key)) return icon;
-  }
-  return Bot;
-}
-
 /** Status icon component */
-function StatusIcon({
-  status,
-  size = "md",
-}: {
-  status: string;
-  size?: "sm" | "md";
-}) {
-  const sizeClass = size === "sm" ? "w-3 h-3" : "w-4 h-4";
-
-  switch (status) {
-    case "completed":
-      return <CheckCircle2 className={cn(sizeClass, "text-[var(--ansi-green)]")} />;
-    case "running":
-      return <Loader2 className={cn(sizeClass, "text-[var(--ansi-blue)] animate-spin")} />;
-    case "error":
-      return <XCircle className={cn(sizeClass, "text-[var(--ansi-red)]")} />;
-    case "interrupted":
-      return <AlertTriangle className={cn(sizeClass, "text-amber-400")} />;
-    default:
-      return <Circle className={cn(sizeClass, "text-muted-foreground/60")} />;
-  }
-}
 
 /** Status badge component - styled like ToolGroup's running indicator */
 function StatusBadge({ status }: { status: string }) {
@@ -127,19 +58,20 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-/** Format duration in ms to human readable */
-function formatDuration(ms?: number): string {
-  if (!ms) return "";
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
-}
-
 /** Individual tool call row */
 const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall }) {
   const isShellCmd = tool.name === "run_pty_cmd" || tool.name === "run_command";
   const [isExpanded, setIsExpanded] = useState(isShellCmd);
+  const preRef = useRef<HTMLPreElement>(null);
   const status =
     tool.status === "completed" ? "completed" : tool.status === "error" ? "error" : tool.status === "interrupted" ? "interrupted" : "running";
+  const isStreaming = isShellCmd && tool.status === "running" && !!tool.streamingOutput;
+
+  useEffect(() => {
+    if (isStreaming && preRef.current) {
+      preRef.current.scrollTop = preRef.current.scrollHeight;
+    }
+  }, [isStreaming, tool.streamingOutput]);
 
   const primaryArg = (() => {
     const args = tool.args;
@@ -154,7 +86,9 @@ const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall
   })();
 
   const shellOutput = (() => {
-    if (!isShellCmd || !tool.result || typeof tool.result !== "object") return null;
+    if (!isShellCmd) return null;
+    if (tool.streamingOutput) return tool.streamingOutput;
+    if (!tool.result || typeof tool.result !== "object") return null;
     const r = tool.result as Record<string, unknown>;
     return (r.stdout as string) || (r.output as string) || null;
   })();
@@ -188,7 +122,7 @@ const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall
         )}
         {tool.completedAt && (
           <span className="ml-auto text-[10px] text-muted-foreground">
-            {formatDuration(
+            {formatDurationShort(
               new Date(tool.completedAt).getTime() - new Date(tool.startedAt).getTime()
             )}
           </span>
@@ -198,7 +132,13 @@ const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall
         <div className="space-y-1 text-xs">
           {/* Shell command output */}
           {isShellCmd && shellOutput && (
-            <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-[var(--ansi-black)]/20 px-2 py-1.5 text-[10px] font-mono text-foreground/80">
+            <pre
+              ref={preRef}
+              className={cn(
+                "max-h-48 overflow-auto whitespace-pre-wrap rounded bg-[var(--ansi-black)]/20 px-2 py-1.5 text-[10px] font-mono text-foreground/80",
+                isStreaming && "border-l-2 border-[var(--ansi-blue)]",
+              )}
+            >
               {shellOutput.length > 3000
                 ? `${shellOutput.slice(0, 3000)}\n... (truncated)`
                 : shellOutput}
@@ -337,7 +277,7 @@ const CompactSubAgentCard = memo(function CompactSubAgentCard({
           )}
           {subAgent.durationMs !== undefined && (
             <span className="ml-auto text-[10px] text-muted-foreground flex-shrink-0">
-              {formatDuration(subAgent.durationMs)}
+              {formatDurationShort(subAgent.durationMs)}
             </span>
           )}
         </CollapsibleTrigger>
@@ -415,6 +355,7 @@ const FullSubAgentCard = memo(function FullSubAgentCard({
 }: Omit<SubAgentCardProps, "compact">) {
   const defaultExpanded = autoCollapse ? false : highlighted ? true : true;
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+  const prevStatusRef = useRef(subAgent.status);
   const cardRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -423,6 +364,14 @@ const FullSubAgentCard = memo(function FullSubAgentCard({
       cardRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
   }, [highlighted]);
+
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = subAgent.status;
+    if (prev === "running" && subAgent.status !== "running") {
+      setIsExpanded(false);
+    }
+  }, [subAgent.status]);
   const [showAllEntries, setShowAllEntries] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
 
@@ -488,7 +437,7 @@ const FullSubAgentCard = memo(function FullSubAgentCard({
               <div className="flex items-center gap-2 flex-shrink-0">
                 {subAgent.durationMs !== undefined && (
                   <span className="text-xs text-muted-foreground">
-                    {formatDuration(subAgent.durationMs)}
+                    {formatDurationShort(subAgent.durationMs)}
                   </span>
                 )}
                 <button
@@ -533,7 +482,7 @@ const FullSubAgentCard = memo(function FullSubAgentCard({
                       {subAgent.promptGeneration.durationMs !== undefined && (
                         <span className="ml-auto text-[10px] text-muted-foreground flex items-center gap-0.5">
                           <Clock className="h-2.5 w-2.5" />
-                          {formatDuration(subAgent.promptGeneration.durationMs)}
+                          {formatDurationShort(subAgent.promptGeneration.durationMs)}
                         </span>
                       )}
                     </CollapsibleTrigger>
@@ -625,7 +574,7 @@ const FullSubAgentCard = memo(function FullSubAgentCard({
             <div className="flex items-center gap-2 flex-shrink-0">
               {subAgent.durationMs !== undefined && (
                 <span className="text-xs text-muted-foreground">
-                  {formatDuration(subAgent.durationMs)}
+                  {formatDurationShort(subAgent.durationMs)}
                 </span>
               )}
               <button

@@ -2,10 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import "./index.css";
 import "./lib/i18n";
-
-function isTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-}
+import { isTauri } from "@/lib/env";
 
 function getDetachedParams(): { sessionId: string; tabType: string } | null {
   const params = new URLSearchParams(window.location.search);

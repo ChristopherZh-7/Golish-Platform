@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { logAudit } from "@/lib/audit";
 import { MessageSquare, Plus, Trash2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getProjectPath } from "@/lib/projects";
@@ -67,14 +68,7 @@ export function QuickNotes({
       setShowAdd(false);
       load();
 
-      await invoke("audit_log", {
-        action: "note_added",
-        category: "notes",
-        details: `Added note to ${entityType}:${entityId}`,
-        entityType,
-        entityId,
-        projectPath: getProjectPath(),
-      }).catch(() => {});
+      logAudit({ action: "note_added", category: "notes", details: `Added note to ${entityType}:${entityId}`, entityType, entityId });
     } catch { /* ignore */ }
   }, [newContent, newColor, entityType, entityId, load]);
 

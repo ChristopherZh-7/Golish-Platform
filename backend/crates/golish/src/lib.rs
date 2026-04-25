@@ -49,6 +49,7 @@ use ai::{
     send_ai_prompt_session, send_ai_prompt_with_attachments, set_agent_mode,
     set_ai_session_persistence, set_hitl_config, set_loop_protection_config, set_sub_agent_model,
     set_tool_policy, set_tool_policy_config, shutdown_ai_agent, shutdown_ai_session,
+    cancel_ai_generation,
     check_recon_tools_cmd, run_recon_pipeline, signal_frontend_ready,
     set_use_agents, get_use_agents,
     set_execution_mode, get_execution_mode,
@@ -511,7 +512,7 @@ pub fn run_gui() {
                             tracing::info!("[AppClose] Stopping ZAP before exit");
                             let _ = pentest.zap_manager.stop().await;
                         }
-                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
                         persist_window_state_from_window(&w).await;
                         w.destroy().ok();
                     });
@@ -851,6 +852,7 @@ pub fn run_gui() {
             // Session-specific AI commands
             init_ai_session,
             shutdown_ai_session,
+            cancel_ai_generation,
             is_ai_session_initialized,
             get_session_ai_config,
             send_ai_prompt_session,

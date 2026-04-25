@@ -8,7 +8,8 @@ import {
   type TargetAsset, type ApiEndpoint,
   type Fingerprint, type JsAnalysisResult,
 } from "@/lib/security-analysis";
-import { methodColor, formatSize } from "./shared";
+import { formatBytes as formatSize } from "@/lib/format";
+import { methodColor } from "./shared";
 
 export function ReconDataPanel() {
   const [subTab, setSubTab] = useState<"assets" | "endpoints" | "fingerprints">("assets");

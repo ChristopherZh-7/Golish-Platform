@@ -27,14 +27,7 @@ pub struct CompactionResult {
 }
 
 fn resolve_golish_base(workspace: &std::path::Path) -> PathBuf {
-    let ws_str = workspace.to_string_lossy();
-    if ws_str != "." && !ws_str.is_empty() {
-        workspace.join(".golish")
-    } else {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".golish")
-    }
+    golish_core::paths::golish_dir_for_workspace(workspace)
 }
 
 pub fn get_transcript_dir() -> PathBuf {

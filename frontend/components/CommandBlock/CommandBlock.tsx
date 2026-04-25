@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import { CopyButton } from "@/components/Markdown/CopyButton";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { stripOscSequences } from "@/lib/ansi";
+import { formatDurationLong } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import type { CommandBlock as CommandBlockType } from "@/store";
 import { StaticTerminalOutput } from "./StaticTerminalOutput";
@@ -19,15 +20,6 @@ interface CommandBlockProps {
   sessionId?: string;
   onToggleCollapse: (blockId: string) => void;
   source?: "manual" | "pipeline";
-}
-
-function formatDuration(ms: number | null): string {
-  if (ms === null) return "";
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  const minutes = Math.floor(ms / 60000);
-  const seconds = ((ms % 60000) / 1000).toFixed(0);
-  return `${minutes}m ${seconds}s`;
 }
 
 const OUTPUT_COLLAPSED_HEIGHT = 120;
@@ -79,7 +71,7 @@ export function CommandBlock({ block, sessionId, onToggleCollapse, source }: Com
             {block.durationMs !== null && (
               <span className="flex items-center gap-1">
                 <Clock className="w-3 h-3" />
-                {formatDuration(block.durationMs)}
+                {formatDurationLong(block.durationMs)}
               </span>
             )}
             {/* Show exit code only on failure */}

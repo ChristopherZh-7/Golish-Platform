@@ -725,6 +725,26 @@ pub async fn shutdown_ai_session(
     }
 }
 
+/// Cancel the current AI generation for a session without tearing down the bridge.
+///
+/// Unlike `shutdown_ai_session`, this keeps the session alive so the user can
+/// immediately send a new prompt without re-initialization (Cursor-like stop).
+/// The cancelled flag is automatically cleared when the next execution starts.
+#[tauri::command]
+pub async fn cancel_ai_generation(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    if let Some(bridge) = state.ai_state.get_session_bridge(&session_id).await {
+        bridge.cancel();
+        tracing::info!("Generation cancelled (session kept alive) for {}", session_id);
+        Ok(())
+    } else {
+        tracing::debug!("No AI agent found for session {} to cancel", session_id);
+        Ok(())
+    }
+}
+
 /// Check if AI agent is initialized for a specific session.
 #[tauri::command]
 pub async fn is_ai_session_initialized(

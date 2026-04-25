@@ -1,4 +1,5 @@
 import { CheckCircle2, Circle, Loader2, Workflow, XCircle } from "lucide-react";
+import { formatDurationShort } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { type ActiveWorkflow, useStore, type WorkflowStep } from "@/store";
 
@@ -22,12 +23,6 @@ function StepIcon({ status }: { status: WorkflowStep["status"] }) {
   }
 }
 
-function formatDuration(ms?: number): string {
-  if (!ms) return "";
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
-}
-
 function WorkflowStepItem({ step }: { step: WorkflowStep }) {
   return (
     <div className="flex items-center gap-2 py-1.5">
@@ -44,7 +39,7 @@ function WorkflowStepItem({ step }: { step: WorkflowStep }) {
         {step.name}
       </span>
       {step.durationMs !== undefined && (
-        <span className="text-xs text-muted-foreground">{formatDuration(step.durationMs)}</span>
+        <span className="text-xs text-muted-foreground">{formatDurationShort(step.durationMs)}</span>
       )}
     </div>
   );
@@ -118,7 +113,7 @@ function WorkflowCard({ workflow }: { workflow: ActiveWorkflow }) {
       {/* Duration */}
       {workflow.totalDurationMs !== undefined && (
         <div className="text-[10px] text-muted-foreground text-right">
-          Total: {formatDuration(workflow.totalDurationMs)}
+          Total: {formatDurationShort(workflow.totalDurationMs)}
         </div>
       )}
     </div>

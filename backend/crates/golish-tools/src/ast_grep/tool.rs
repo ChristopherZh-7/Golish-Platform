@@ -11,17 +11,7 @@ use serde_json::{json, Value};
 
 use super::{replace, search};
 
-/// Get a required string argument from JSON.
-fn get_required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, Value> {
-    args.get(key)
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| json!({"error": format!("Missing required argument: {}", key)}))
-}
-
-/// Get an optional string argument from JSON.
-fn get_optional_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
-    args.get(key).and_then(|v| v.as_str())
-}
+use golish_core::utils::{get_required_str, get_optional_str};
 
 // ============================================================================
 // ast_grep (search)

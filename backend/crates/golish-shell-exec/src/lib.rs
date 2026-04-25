@@ -197,22 +197,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 120;
 /// Maximum output size in bytes (10MB).
 const MAX_OUTPUT_SIZE: usize = 10 * 1024 * 1024;
 
-/// Get a string argument from JSON, returning an error if missing.
-fn get_required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, Value> {
-    args.get(key)
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| json!({"error": format!("Missing required argument: {}", key)}))
-}
-
-/// Get an optional string argument from JSON.
-fn get_optional_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
-    args.get(key).and_then(|v| v.as_str())
-}
-
-/// Get an optional integer argument from JSON.
-fn get_optional_u64(args: &Value, key: &str) -> Option<u64> {
-    args.get(key).and_then(|v| v.as_u64())
-}
+use golish_core::utils::{get_required_str, get_optional_str, get_optional_u64};
 
 /// Resolve working directory relative to workspace.
 fn resolve_cwd(cwd: Option<&str>, workspace: &Path) -> std::path::PathBuf {

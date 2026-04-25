@@ -28,6 +28,7 @@ import {
   Wrench,
   Zap,
 } from "lucide-react";
+import { formatDurationShort, formatRelativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import { useStore } from "@/store";
@@ -139,13 +140,7 @@ interface DashboardStats {
   recentActivity: AuditEntry[];
 }
 
-const SEV_COLORS: Record<string, string> = {
-  critical: "#ef4444",
-  high: "#f97316",
-  medium: "#eab308",
-  low: "#3b82f6",
-  info: "#64748b",
-};
+import { SEV_HEX as SEV_COLORS } from "@/lib/severity";
 
 const SEV_ORDER = ["critical", "high", "medium", "low", "info"];
 
@@ -306,16 +301,6 @@ const TYPE_ICON: Record<string, typeof Globe> = {
   url: ArrowRight,
   wildcard: Radio,
 };
-
-function formatTimeAgo(ts: string | number): string {
-  const d = typeof ts === "string" ? new Date(ts) : new Date(ts);
-  const now = Date.now();
-  const diff = now - d.getTime();
-  if (diff < 60_000) return "just now";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-  return `${Math.floor(diff / 86_400_000)}d ago`;
-}
 
 function eventLabel(type: string): string {
   const map: Record<string, string> = {
@@ -673,7 +658,7 @@ export function DashboardPanel() {
                           )}
                         </div>
                         <span className="text-[9px] text-muted-foreground/25 flex-shrink-0 whitespace-nowrap">
-                          {formatTimeAgo(entry.createdAt)}
+                          {formatRelativeTime(entry.createdAt)}
                         </span>
                       </div>
                     ))}
@@ -876,7 +861,7 @@ function ToolCallChart({ tools, maxCount }: { tools: ToolCallStat[]; maxCount: n
               {t.avg_duration_ms > 0 && (
                 <span className="text-[9px]">
                   <Zap className="w-2 h-2 inline-block mr-0.5 text-amber-400/50" />
-                  {t.avg_duration_ms < 1000 ? `${Math.round(t.avg_duration_ms)}ms` : `${(t.avg_duration_ms / 1000).toFixed(1)}s`}
+                  {formatDurationShort(Math.round(t.avg_duration_ms))}
                 </span>
               )}
             </div>
