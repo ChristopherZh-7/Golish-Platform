@@ -16,6 +16,9 @@ import {
   Shield,
   BookOpen,
 } from "lucide-react";
+import { stripAllAnsi } from "@/lib/ansi";
+import { SEV_BADGE } from "@/lib/severity";
+import { formatLogDate } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { getProjectPath } from "@/lib/projects";
 import { useStore } from "@/store";
@@ -201,7 +204,7 @@ function AgentLogsView() {
             onClick={() => toggle(e.id)}
           >
             {expanded.has(e.id) ? <ChevronDown className="w-2.5 h-2.5 text-muted-foreground/30 mt-0.5 flex-shrink-0" /> : <ChevronRight className="w-2.5 h-2.5 text-muted-foreground/20 mt-0.5 flex-shrink-0" />}
-            <span className="text-[9px] text-muted-foreground/30 whitespace-nowrap w-28 flex-shrink-0">{new Date(e.createdAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+            <span className="text-[9px] text-muted-foreground/30 whitespace-nowrap w-28 flex-shrink-0">{formatLogDate(e.createdAt)}</span>
             <span className="text-[8px] text-violet-400 bg-violet-500/10 px-1.5 py-0.5 rounded flex-shrink-0">{e.initiator}</span>
             <span className="text-[8px] text-muted-foreground/40 flex-shrink-0">&rarr;</span>
             <span className="text-[8px] text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded flex-shrink-0">{e.executor}</span>
@@ -221,20 +224,6 @@ function AgentLogsView() {
   );
 }
 
-// eslint-disable-next-line no-control-regex
-const ANSI_RE = /[\x1b\x9b][\[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><~]|\x1b\].*?(?:\x07|\x1b\\)/g;
-const LITERAL_ESC_RE = /\\(?:\[|\(|\))[0-9;]*[A-Za-z]|\\x1[bB]\[[0-9;]*[A-Za-z]|\\033\[[0-9;]*[A-Za-z]/g;
-function stripAnsi(s: string): string {
-  return s
-    .replace(ANSI_RE, "")
-    .replace(LITERAL_ESC_RE, "")
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
-    .replace(/^\\+/gm, "")
-    .replace(/\\{2,}/g, "")
-    .replace(/%\s*$/gm, "")
-    .replace(/^\s*%\s*/gm, "")
-    .trim();
-}
 
 function TerminalLogsView() {
   const [entries, setEntries] = useState<TerminalLogEntry[]>([]);
@@ -263,7 +252,7 @@ function TerminalLogsView() {
   return (
     <div className="space-y-0.5">
       {entries.map(e => {
-        const clean = stripAnsi(e.content);
+        const clean = stripAllAnsi(e.content);
         return (
           <div key={e.id}>
             <div
@@ -271,7 +260,7 @@ function TerminalLogsView() {
               onClick={() => toggle(e.id)}
             >
               {expanded.has(e.id) ? <ChevronDown className="w-2.5 h-2.5 text-muted-foreground/30 mt-0.5 flex-shrink-0" /> : <ChevronRight className="w-2.5 h-2.5 text-muted-foreground/20 mt-0.5 flex-shrink-0" />}
-              <span className="text-[9px] text-muted-foreground/30 whitespace-nowrap w-28 flex-shrink-0">{new Date(e.createdAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+              <span className="text-[9px] text-muted-foreground/30 whitespace-nowrap w-28 flex-shrink-0">{formatLogDate(e.createdAt)}</span>
               <span className={cn("text-[8px] px-1.5 py-0.5 rounded flex-shrink-0", e.stream === "stdout" ? "text-green-400 bg-green-500/10" : "text-red-400 bg-red-500/10")}>{e.stream}</span>
               <span className="text-[10px] text-foreground/70 flex-1 truncate font-mono">{clean.slice(0, 120)}</span>
             </div>
@@ -321,7 +310,7 @@ function SearchLogsView() {
             onClick={() => toggle(e.id)}
           >
             {expanded.has(e.id) ? <ChevronDown className="w-2.5 h-2.5 text-muted-foreground/30 mt-0.5 flex-shrink-0" /> : <ChevronRight className="w-2.5 h-2.5 text-muted-foreground/20 mt-0.5 flex-shrink-0" />}
-            <span className="text-[9px] text-muted-foreground/30 whitespace-nowrap w-28 flex-shrink-0">{new Date(e.createdAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+            <span className="text-[9px] text-muted-foreground/30 whitespace-nowrap w-28 flex-shrink-0">{formatLogDate(e.createdAt)}</span>
             <span className="text-[8px] text-cyan-400 bg-cyan-500/10 px-1.5 py-0.5 rounded flex-shrink-0">{e.engine}</span>
             {e.initiator && <span className="text-[8px] text-violet-400 bg-violet-500/10 px-1.5 py-0.5 rounded flex-shrink-0">{e.initiator}</span>}
             <span className="text-[10px] text-foreground/70 flex-1 truncate">{e.query}</span>
@@ -358,12 +347,7 @@ function PassiveScanLogsView() {
     const n = new Set(p); if (n.has(id)) n.delete(id); else n.add(id); return n;
   });
 
-  const sevColor = (s: string) => {
-    if (s === "critical" || s === "high") return "text-red-400 bg-red-500/10";
-    if (s === "medium") return "text-orange-400 bg-orange-500/10";
-    if (s === "low") return "text-yellow-400 bg-yellow-500/10";
-    return "text-muted-foreground/50 bg-muted/5";
-  };
+  const sevColor = (s: string) => SEV_BADGE[s] || "text-muted-foreground/50 bg-muted/5";
 
   if (loading) return <div className="flex items-center justify-center py-12"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground/30" /></div>;
   if (!entries.length) return <div className="text-center text-[11px] text-muted-foreground/30 py-12">No passive scan logs</div>;
@@ -377,7 +361,7 @@ function PassiveScanLogsView() {
             onClick={() => toggle(e.id)}
           >
             {expanded.has(e.id) ? <ChevronDown className="w-2.5 h-2.5 text-muted-foreground/30 mt-0.5 flex-shrink-0" /> : <ChevronRight className="w-2.5 h-2.5 text-muted-foreground/20 mt-0.5 flex-shrink-0" />}
-            <span className="text-[9px] text-muted-foreground/30 whitespace-nowrap w-28 flex-shrink-0">{new Date(e.testedAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+            <span className="text-[9px] text-muted-foreground/30 whitespace-nowrap w-28 flex-shrink-0">{formatLogDate(e.testedAt)}</span>
             <span className={cn("text-[8px] px-1.5 py-0.5 rounded flex-shrink-0", sevColor(e.severity))}>{e.severity}</span>
             <span className="text-[8px] text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded flex-shrink-0">{e.testType}</span>
             <span className="text-[10px] text-foreground/70 flex-1 truncate">{e.url || e.result}</span>
@@ -420,7 +404,7 @@ function WikiChangelogsView() {
     <div className="space-y-0.5">
       {entries.map(e => (
         <div key={e.id} className="flex items-start gap-2 py-1.5 px-2 rounded hover:bg-muted/5 transition-colors">
-          <span className="text-[9px] text-muted-foreground/30 whitespace-nowrap w-28 flex-shrink-0">{new Date(e.createdAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+          <span className="text-[9px] text-muted-foreground/30 whitespace-nowrap w-28 flex-shrink-0">{formatLogDate(e.createdAt)}</span>
           <span className={cn("text-[8px] px-1.5 py-0.5 rounded flex-shrink-0", e.action === "create" ? "text-green-400 bg-green-500/10" : e.action === "delete" ? "text-red-400 bg-red-500/10" : "text-yellow-400 bg-yellow-500/10")}>{e.action}</span>
           {e.category && <span className="text-[8px] text-muted-foreground/40 bg-muted/5 px-1.5 py-0.5 rounded flex-shrink-0">{e.category}</span>}
           <span className="text-[10px] text-foreground/70 flex-1 truncate">{e.title || e.pagePath}</span>
@@ -561,25 +545,8 @@ export function AuditLogPanel() {
     });
   };
 
-  const formatTime = (ts: number) => {
-    const d = new Date(ts);
-    return d.toLocaleString(undefined, {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-  };
-
-  const formatTimeShort = (ts: number) => {
-    const d = new Date(ts);
-    return d.toLocaleString(undefined, {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-  };
+  const formatTimeShort = (ts: number) =>
+    new Date(ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
   const hasDetail = (detail: Record<string, unknown>) =>
     detail && Object.keys(detail).length > 0;
@@ -621,7 +588,7 @@ export function AuditLogPanel() {
           </span>
 
           <span className="text-[9px] text-muted-foreground/30 whitespace-nowrap pt-0.5 w-28 flex-shrink-0">
-            {compact ? formatTimeShort(entry.createdAt) : formatTime(entry.createdAt)}
+            {compact ? formatTimeShort(entry.createdAt) : formatLogDate(entry.createdAt)}
           </span>
 
           <span

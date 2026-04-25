@@ -11,17 +11,9 @@ fn evidence_dir(project_path: Option<&str>) -> PathBuf {
             return PathBuf::from(pp).join(".golish").join("evidence");
         }
     }
-    let home = dirs::home_dir().expect("cannot resolve home directory");
-    #[cfg(target_os = "macos")]
-    let base = home
-        .join("Library")
-        .join("Application Support")
-        .join("golish-platform");
-    #[cfg(target_os = "windows")]
-    let base = home.join("AppData").join("Local").join("golish-platform");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let base = home.join(".golish-platform");
-    base.join("evidence")
+    golish_core::paths::app_data_base()
+        .expect("cannot resolve home directory")
+        .join("evidence")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

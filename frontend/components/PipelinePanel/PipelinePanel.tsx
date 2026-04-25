@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   Code2, Database, Download, GitBranch, Loader2, Plus, Save, Trash2, X,
-  Shield, Globe, Server, Cpu, Wrench, ChevronDown,
+  Shield, Globe, Server, Cpu, Wrench,
   AlertTriangle, CheckCircle2, Repeat, Layers,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -12,6 +12,7 @@ import { scanTools } from "@/lib/pentest/api";
 import type { ToolConfig } from "@/lib/pentest/types";
 import { checkReconTools, type ReconToolCheck } from "@/lib/ai";
 import { useStore } from "@/store";
+import { MiniDropdown } from "@/components/ui/MiniDropdown";
 
 type ExecMode = "pipe" | "sequential" | "parallel" | "on_success" | "on_failure";
 
@@ -82,41 +83,6 @@ interface Pipeline {
 type ToolWithMeta = ToolConfig & { categoryName?: string; subcategoryName?: string };
 
 function uuid() { return Math.random().toString(36).slice(2, 10); }
-
-/* ── Mini Dropdown ── */
-
-function MiniDropdown({ value, onChange, options }: {
-  value: string; onChange: (v: string) => void; options: { value: string; label: string }[];
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const selected = options.find((o) => o.value === value) ?? options[0];
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
-
-  return (
-    <div ref={ref} className="relative">
-      <button type="button" onClick={() => setOpen(!open)} className="flex items-center gap-1 w-full px-1.5 py-[3px] text-[10px] rounded-md bg-white/[0.03] border border-white/[0.06] hover:border-white/[0.12] text-foreground/70 transition-colors">
-        <span className="flex-1 text-left truncate">{selected.label}</span>
-        <ChevronDown className={cn("w-2.5 h-2.5 text-muted-foreground/30 transition-transform", open && "rotate-180")} />
-      </button>
-      {open && (
-        <div className="absolute z-50 mt-0.5 w-full min-w-[90px] rounded-md border border-border/20 bg-popover shadow-xl py-0.5 max-h-[180px] overflow-y-auto">
-          {options.map((o) => (
-            <button key={o.value} type="button" onClick={() => { onChange(o.value); setOpen(false); }} className={cn("w-full text-left px-2 py-1 text-[10px] transition-colors", o.value === value ? "bg-accent/15 text-accent" : "text-foreground/60 hover:bg-white/[0.05] hover:text-foreground")}>
-              {o.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 /* ── Requires Input ── */
 

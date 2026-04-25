@@ -240,6 +240,10 @@ impl AgentBridge {
         self.cancelled.store(true, Ordering::SeqCst);
     }
 
+    pub fn reset_cancelled(&self) {
+        self.cancelled.store(false, Ordering::SeqCst);
+    }
+
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
     }
@@ -1075,6 +1079,13 @@ impl AgentBridge {
         self.settings_manager = Some(settings_manager);
     }
 
+    /// Attach an embedder to the DB tracker for semantic memory operations.
+    pub fn set_embedder(&mut self, embedder: Arc<dyn golish_db::embeddings::Embedder>) {
+        if let Some(ref mut tracker) = self.db_tracker {
+            tracker.set_embedder(embedder);
+        }
+    }
+
     /// Get the memory file path dynamically from current settings.
     /// This ensures we always use the latest settings, even if they changed
     /// after the AI session was initialized.
@@ -1360,6 +1371,11 @@ impl AgentBridge {
     /// Set the model factory for sub-agent model overrides.
     pub fn set_model_factory(&mut self, factory: Arc<super::llm_client::LlmClientFactory>) {
         self.model_factory = Some(factory);
+    }
+
+    /// Override the tool configuration (e.g. to disable all tools for title-gen sessions).
+    pub fn set_tool_config(&mut self, config: crate::tool_definitions::ToolConfig) {
+        self.tool_config = config;
     }
 
     pub fn event_session_id(&self) -> Option<&str> {

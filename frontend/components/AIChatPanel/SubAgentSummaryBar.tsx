@@ -1,30 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  Bot, CheckCircle2, ChevronDown, Code2, Loader2, Search, XCircle,
+  Bot, CheckCircle2, ChevronDown, Loader2, XCircle,
 } from "lucide-react";
+import { getAgentIcon } from "@/lib/sub-agent-theme";
+import { formatDurationShort } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
 
 const EMPTY_SUB_AGENTS: never[] = [];
-
-const AGENT_ICON_MAP: Record<string, typeof Bot> = {
-  coder: Code2,
-  researcher: Search,
-  explorer: Search,
-};
-
-function getAgentIcon(name: string): typeof Bot {
-  const lower = name.toLowerCase();
-  for (const [key, icon] of Object.entries(AGENT_ICON_MAP)) {
-    if (lower.includes(key)) return icon;
-  }
-  return Bot;
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
-}
 
 export function SubAgentSummaryBar() {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -147,7 +130,7 @@ export function SubAgentSummaryBar() {
                 )}
                 {agent.durationMs != null && (
                   <span className="text-[10px] text-muted-foreground/60 tabular-nums flex-shrink-0">
-                    {formatDuration(agent.durationMs)}
+                    {formatDurationShort(agent.durationMs)}
                   </span>
                 )}
                 <span className="text-[10px] text-muted-foreground/60 group-hover:text-accent/60 transition-colors flex-shrink-0">

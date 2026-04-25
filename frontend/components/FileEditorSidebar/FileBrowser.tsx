@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { type DirEntry, listDirectory } from "@/lib/file-editor";
 import { type EntryType, getEntryIcon } from "@/lib/file-icons";
+import { formatBytes } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 interface FileBrowserProps {
@@ -12,12 +13,6 @@ interface FileBrowserProps {
   onOpenFile: (path: string) => void;
   showHiddenFiles: boolean;
   onToggleHiddenFiles: () => void;
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function getParentPath(path: string): string {
@@ -206,7 +201,7 @@ export function FileBrowser({
                 <span className="flex-1 truncate text-xs">{entry.name}</span>
                 {entry.entryType === "file" && entry.size !== undefined && (
                   <span className="text-xs text-muted-foreground shrink-0">
-                    {formatFileSize(entry.size)}
+                    {formatBytes(entry.size, { compact: false, zeroLabel: "0 B" })}
                   </span>
                 )}
               </button>

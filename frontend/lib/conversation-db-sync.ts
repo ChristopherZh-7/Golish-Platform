@@ -38,6 +38,18 @@ const MAX_BLOCK_OUTPUT = 50_000;
 const SAVE_MAX_RETRIES = 2;
 const SAVE_RETRY_BASE_MS = 300;
 
+/**
+ * Module-level handle to the current auto-saver's immediate-save function.
+ * Set by `createDbAutoSaver`; callable from anywhere to bypass the debounce
+ * (e.g. after execution-mode or sub-agents toggle changes).
+ */
+let _flushSaveFn: (() => Promise<void>) | null = null;
+
+/** Trigger an immediate DB save, bypassing the 2 s debounce. No-op if the auto-saver isn't active. */
+export function flushDbSave(): Promise<void> {
+  return _flushSaveFn ? _flushSaveFn() : Promise.resolve();
+}
+
 let _dbLoadOk = false;
 export function markDbLoadSucceeded() { _dbLoadOk = true; }
 export function isDbLoadOk() { return _dbLoadOk; }
@@ -605,17 +617,16 @@ export function createDbAutoSaver(
 ): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let saving = false;
+  let savePromise: Promise<void> | null = null;
   let lastSnapshot: string | null = null;
 
-    const save = async () => {
+  const save = async () => {
     const projectPath = getProjectPath();
     if (!projectPath) return;
     if (saving) return;
     if (!_dbLoadOk) return;
 
     const state = getState();
-    // Skip save while terminals are being restored (or pending) to avoid
-    // overwriting DB data with empty terminal mappings (race condition).
     if (state.terminalRestoreInProgress || state.pendingTerminalRestoreData) return;
 
     const snapshot = buildChangeFingerprint(state);
@@ -640,8 +651,22 @@ export function createDbAutoSaver(
       lastSnapshot = null;
     } finally {
       saving = false;
+      savePromise = null;
     }
   };
+
+  const immediateFlush = async () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    lastSnapshot = null;
+    if (savePromise) return savePromise;
+    savePromise = save();
+    return savePromise;
+  };
+
+  _flushSaveFn = immediateFlush;
 
   const debouncedSave = () => {
     if (timer) clearTimeout(timer);
@@ -657,9 +682,7 @@ export function createDbAutoSaver(
       timer = null;
     }
     lastSnapshot = null;
-    // Trigger save immediately. For beforeunload, we also set returnValue
-    // to hint the browser/WebView to delay teardown while the async save runs.
-    void save();
+    savePromise = save();
     if (event) {
       event.returnValue = "";
     }
@@ -672,6 +695,7 @@ export function createDbAutoSaver(
   window.addEventListener("beforeunload", flushNow as EventListener);
 
   return () => {
+    _flushSaveFn = null;
     unsubscribe();
     window.removeEventListener("beforeunload", flushNow as EventListener);
     if (unlistenFlush) unlistenFlush();

@@ -175,6 +175,17 @@ impl AiState {
 /// per-session isolation and avoid blocking between tabs when agents run concurrently.
 pub async fn configure_bridge(bridge: &mut AgentBridge, state: &AppState, session_id: &str, app_handle: Option<tauri::AppHandle>) {
     let is_title_gen = session_id.starts_with("title-gen-");
+
+    if is_title_gen {
+        bridge.set_tool_config(golish_ai::tool_definitions::ToolConfig::with_preset(
+            golish_ai::tool_definitions::ToolPreset::None,
+        ));
+        let mut registry = bridge.tool_registry().write().await;
+        registry.clear();
+        drop(registry);
+        tracing::info!("[configure_bridge] Title-gen session: disabled all tools");
+    }
+
     bridge.set_pty_manager(state.pty_manager.clone());
     bridge.set_indexer_state(state.indexer_state.clone());
     // NOTE: Workflow state is no longer part of golish-ai's AgentBridge
@@ -196,6 +207,17 @@ pub async fn configure_bridge(bridge: &mut AgentBridge, state: &AppState, sessio
     bridge.set_settings_manager(state.settings_manager.clone());
     bridge.set_db_pool(state.db_pool.clone(), state.db_ready.clone());
     let settings = state.settings_manager.get().await;
+
+    if let Some(ref key) = settings.ai.openai.api_key {
+        if !key.is_empty() {
+            let base = settings.ai.openai.base_url.as_deref().unwrap_or("https://api.openai.com/v1");
+            let embedder = golish_db::embeddings::HttpEmbedder::new(
+                base, key, "text-embedding-3-small", 1536,
+            );
+            bridge.set_embedder(std::sync::Arc::new(embedder));
+            tracing::info!("[agent] Semantic memory enabled (text-embedding-3-small)");
+        }
+    }
 
     // Find matching codebase and get memory file
     let memory_file_path = find_memory_file_for_workspace(&workspace_path, &settings.codebases);

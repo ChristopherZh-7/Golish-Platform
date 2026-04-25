@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState, useRef } from "react";
-import { createPortal } from "react-dom";
 import {
-  ArrowLeft, ArrowUpDown, ArrowUpCircle, BookOpen, Check, Code2, Copy, Download, ExternalLink, FileText,
-  FolderOpen, Github, Grid3X3, Loader2, List, Pencil, Plus, RefreshCw, Save, Search, Trash2, X,
+  ArrowLeft, ArrowUpCircle, ArrowUpDown, BookOpen, Check, Code2,
+  FileText, Github, Grid3X3, Loader2, List, Pencil, Plus, RefreshCw,
+  Save, Search, Trash2, X, FolderOpen,
 } from "lucide-react";
+import { copyToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -13,10 +14,15 @@ import { getSettings } from "@/lib/settings";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useTranslation } from "react-i18next";
 
+import { type ToolWithMeta, type ViewMode, type SortKey, OutputParserEditor } from "./OutputParserEditor";
+import { GridCard, ListRow, type ActionButtonProps } from "./ToolCards";
+import { FieldRow, InstallFieldRow, ParamsEditor, type EditorFieldsContext } from "./EditorFields";
 import {
-  type ToolWithMeta, type ViewMode, type SortKey,
-  OutputParserEditor,
-} from "./OutputParserEditor";
+  ContextMenu, UninstallConfirmDialog, DepPickerDialog,
+  ExecPickerDialog, DeleteConfirmDialog, CloseConfirmDialog,
+  UpdatesDialog, GitHubImportDialog,
+  type CtxMenuState, type ExecPickerState, type ToolUpdateInfo,
+} from "./Dialogs";
 
 export function ToolManager() {
   const { t } = useTranslation();
@@ -60,7 +66,7 @@ export function ToolManager() {
   const [githubAnalyzing, setGithubAnalyzing] = useState(false);
 
   // Context menu
-  const [ctxMenu, setCtxMenu] = useState<{ tool: ToolWithMeta; x: number; y: number } | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null);
   const [uninstallTarget, setUninstallTarget] = useState<ToolWithMeta | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ToolWithMeta | null>(null);
 
@@ -69,7 +75,7 @@ export function ToolManager() {
   const [dlProgress, setDlProgress] = useState<{ downloaded: number; total: number } | null>(null);
 
   // Tool update check
-  const [toolUpdates, setToolUpdates] = useState<{ tool_id: string; tool_name: string; current_version: string; latest_version: string; has_update: boolean; release_url: string }[]>([]);
+  const [toolUpdates, setToolUpdates] = useState<ToolUpdateInfo[]>([]);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [showUpdates, setShowUpdates] = useState(false);
 
@@ -170,18 +176,14 @@ export function ToolManager() {
     if (tool.runtime === "python" && tool.runtimeVersion) {
       const ver = tool.runtimeVersion;
       const envName = `python${ver}_env`;
-      console.log(`[Install] ${tool.name}: 检查 Python 环境 ${envName}...`);
-
       let envExists = false;
       try {
         const envsResult = await listPythonEnvs();
         if (envsResult.success) {
           envExists = envsResult.versions.some((v) => v.vendor === envName);
-          console.log(`[Install] 已有环境:`, envsResult.versions.map((v) => v.vendor));
         }
       } catch { /* assume not exists */ }
 
-      console.log(`[Install] ${envName} 存在: ${envExists}`);
       if (!envExists) {
         setError(null);
         setBusy(tool.id);
@@ -205,17 +207,14 @@ export function ToolManager() {
 
     if (tool.runtime === "java") {
       const requiredMajor = tool.runtimeVersion || "17";
-      console.log(`[Install] ${tool.name}: 检查 Java ${requiredMajor} 环境...`);
       let javaReady = false;
       try {
         const javaResult = await listInstalledJava();
         if (javaResult.success && javaResult.versions.length > 0) {
-          console.log(`[Install] 已安装 Java 版本:`, javaResult.versions.map((v) => v.version));
           javaReady = javaResult.versions.some((v) => v.version.startsWith(`${requiredMajor}.`) || v.version === requiredMajor);
         }
       } catch { /* assume not installed */ }
 
-      console.log(`[Install] Java ${requiredMajor} 已安装: ${javaReady}`);
       if (!javaReady) {
         setError(null);
         setBusy(tool.id);
@@ -231,7 +230,6 @@ export function ToolManager() {
             const temMatch = majorMatches.find((v) => v.version.endsWith("-tem"));
             const match = fxMatch || temMatch || majorMatches[0];
             if (match) identifier = match.version;
-            console.log(`[Install] Java ${requiredMajor} 可选版本: ${majorMatches.map(v => v.version).join(", ")}, 选择: ${identifier}`);
           }
           if (!identifier) {
             setError(t("install.javaNotFound", { ver: requiredMajor }));
@@ -239,7 +237,6 @@ export function ToolManager() {
             setInstallProgress((p) => { const n = { ...p }; delete n[tool.id]; return n; });
             return;
           }
-          console.log(`[Install] 自动安装 Java: ${identifier}`);
           setInstallProgress((p) => ({ ...p, [tool.id]: t("install.installingJava", { id: identifier }) }));
           const javaInstall = await installJavaVersion(identifier, proxyUrl);
           if (!javaInstall.success) {
@@ -272,10 +269,8 @@ export function ToolManager() {
         let binaryAsset: { browser_download_url: string; name: string } | null = null;
         let releaseVersion: string | null = null;
         try {
-          console.log(`[Install] ${tool.name}: 获取 GitHub release from ${owner}/${repo}`);
           const release = await fetchGitHubRelease(owner, repo);
           releaseVersion = release.tag_name;
-          console.log(`[Install] ${tool.name}: Release tag=${release.tag_name}, assets=[${release.assets.map((a) => a.name).join(", ")}]`);
           const platform = navigator.platform.toLowerCase();
           const isMac = platform.includes("mac") || platform.includes("darwin");
           binaryAsset = release.assets.find((a) => {
@@ -286,95 +281,65 @@ export function ToolManager() {
             const n = a.name.toLowerCase();
             return n.endsWith(".zip") || n.endsWith(".tar.gz") || n.endsWith(".tgz") || n.endsWith(".jar");
           }) || null;
-          console.log(`[Install] ${tool.name}: 选中的 asset = ${binaryAsset?.name || "null"}`);
         } catch (releaseErr) {
           const errStr = String(releaseErr);
-          console.error(`[Install] ${tool.name}: Release 获取失败:`, errStr);
           if (errStr.includes("403")) {
             throw new Error(t("install.githubRateLimit"));
           }
-          console.warn(`[Install] ${tool.name}: 非限流错误, 将尝试 git clone:`, errStr);
         }
 
         if (binaryAsset) {
-          console.log(`[Install] ${tool.name}: 开始下载 ${binaryAsset.name} from ${binaryAsset.browser_download_url}`);
           setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.downloadRelease") }));
           const result = await downloadAndExtract({ url: binaryAsset.browser_download_url, fileName: binaryAsset.name, useProxy: !!proxyUrl });
           if (cancelRef.current) return;
-          console.log(`[Install] ${tool.name}: 下载结果:`, JSON.stringify(result));
           if (!result.success) throw new Error(result.error || t("install.downloadFailed"));
           setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.installing") }));
 
           const stableDirName = tool.name;
-          console.log(`[Install] ${tool.name}: 稳定目录名 = ${stableDirName}, extract_path = ${result.extract_path}`);
           if (result.extract_path) {
             const actualDir = result.extract_path.split("/").pop() || "";
-            console.log(`[Install] ${tool.name}: 实际目录 = ${actualDir}, 目标 = ${stableDirName}`);
             if (actualDir && actualDir !== stableDirName) {
               try {
                 await invoke("pentest_rename_tool_dir", { fromPath: result.extract_path, toName: stableDirName });
-                console.log(`[Install] ${tool.name}: 重命名成功 ${actualDir} → ${stableDirName}`);
-              } catch (renameErr) {
-                console.error(`[Install] ${tool.name}: 重命名失败:`, renameErr);
-              }
+              } catch { /* rename failed, non-critical */ }
             }
           }
 
           setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.detectExecutable") }));
           try {
             const execs: string[] = await invoke("pentest_find_tool_executables", {
-              toolDir: stableDirName,
-              runtime: tool.runtime || null,
+              toolDir: stableDirName, runtime: tool.runtime || null,
             });
-            console.log(`[Install] ${tool.name}: 扫描到可执行文件:`, execs);
 
             let selectedExec: string | null = null;
             if (execs.length === 1) {
               selectedExec = execs[0];
-              console.log(`[Install] ${tool.name}: 自动选择: ${selectedExec}`);
             } else if (execs.length > 1) {
-              console.log(`[Install] ${tool.name}: 多个可执行文件，弹出选择器`);
               selectedExec = await new Promise<string | null>((resolve) => {
                 setExecPicker({ tool, dirName: stableDirName, candidates: execs, resolve });
               });
-              console.log(`[Install] ${tool.name}: 用户选择: ${selectedExec}`);
-            } else {
-              console.warn(`[Install] ${tool.name}: 未找到可执行文件！`);
             }
 
             if (selectedExec) {
               const newExecutable = `${stableDirName}/${selectedExec}`;
-              console.log(`[Install] ${tool.name}: 当前 executable = ${tool.executable}, 新 = ${newExecutable}`);
               await invoke("pentest_update_tool_executable", {
-                toolId: tool.id,
-                category: tool.category,
-                subcategory: tool.subcategory,
-                newExecutable,
-                version: releaseVersion || undefined,
+                toolId: tool.id, category: tool.category, subcategory: tool.subcategory,
+                newExecutable, version: releaseVersion || undefined,
                 lastUpdated: new Date().toISOString().slice(0, 10),
               });
-              console.log(`[Install] ${tool.name}: executable 已更新, version=${releaseVersion}`);
             } else if (releaseVersion) {
               await invoke("pentest_update_tool_executable", {
-                toolId: tool.id,
-                category: tool.category,
-                subcategory: tool.subcategory,
-                newExecutable: tool.executable,
-                version: releaseVersion,
+                toolId: tool.id, category: tool.category, subcategory: tool.subcategory,
+                newExecutable: tool.executable, version: releaseVersion,
                 lastUpdated: new Date().toISOString().slice(0, 10),
               });
             }
-          } catch (scanErr) {
-            console.error(`[Install] ${tool.name}: 扫描/更新失败:`, scanErr);
-          }
+          } catch { /* scan/update failed, non-critical */ }
         } else {
-          console.log(`[Install] ${tool.name}: 无 binary asset，使用 git clone`);
           setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.gitCloning") }));
           const toolDir = tool.executable?.split("/")[0] || tool.name;
           const cloneUrl = `https://github.com/${source}.git`;
-          console.log(`[Install] ${tool.name}: git clone ${cloneUrl} → ${toolDir}`);
           await invoke("pentest_git_clone_tool", { source: cloneUrl, toolDir, proxyUrl: proxyUrl || null, runtime: tool.runtime || null });
-          console.log(`[Install] ${tool.name}: git clone 完成`);
         }
       } else if (method === "homebrew") {
         setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.brewInstalling") }));
@@ -383,11 +348,8 @@ export function ToolManager() {
         const brewVerMatch = brewResult.message?.match(/BREW_VERSION=(.+)/);
         if (brewVerMatch) {
           await invoke("pentest_update_tool_executable", {
-            toolId: tool.id,
-            category: tool.category,
-            subcategory: tool.subcategory,
-            newExecutable: tool.executable,
-            version: brewVerMatch[1],
+            toolId: tool.id, category: tool.category, subcategory: tool.subcategory,
+            newExecutable: tool.executable, version: brewVerMatch[1],
             lastUpdated: new Date().toISOString().slice(0, 10),
           });
         }
@@ -404,22 +366,15 @@ export function ToolManager() {
         const toolDir = tool.executable?.split("/")[0] || tool.name;
         try {
           const hasReqs = await invoke<boolean>("pentest_check_requirements", { toolDir });
-          console.log(`[Install] ${tool.name}: requirements.txt exists = ${hasReqs}`);
           if (hasReqs) {
             setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.installingPythonDeps") }));
             await invoke("pentest_install_requirements", {
-              toolDir,
-              pythonVersion: tool.runtimeVersion,
-              proxyUrl: proxyUrl || null,
+              toolDir, pythonVersion: tool.runtimeVersion, proxyUrl: proxyUrl || null,
             });
-            console.log(`[Install] ${tool.name}: requirements.txt 依赖安装完成`);
           }
-        } catch (e) {
-          console.warn(`[Install] ${tool.name}: requirements.txt 安装失败:`, e);
-        }
+        } catch { /* requirements install failed, non-critical */ }
       }
 
-      console.log(`[Install] ${tool.name}: 安装流程完成`);
       await loadData();
     } catch (e) {
       setError(t("toolManager.installFailed", { error: e }));
@@ -445,12 +400,7 @@ export function ToolManager() {
   }, [busy, loadData]);
 
   const [depPicker, setDepPicker] = useState<{ tool: ToolWithMeta; files: string[] } | null>(null);
-  const [execPicker, setExecPicker] = useState<{
-    tool: ToolWithMeta;
-    dirName: string;
-    candidates: string[];
-    resolve: (v: string | null) => void;
-  } | null>(null);
+  const [execPicker, setExecPicker] = useState<ExecPickerState | null>(null);
 
   const handleInstallDeps = useCallback(async (tool: ToolWithMeta) => {
     if (tool.runtime !== "python" || !tool.runtimeVersion) return;
@@ -481,10 +431,7 @@ export function ToolManager() {
     try {
       const proxyUrl = await getProxy();
       await invoke("pentest_install_dep_file", {
-        toolDir,
-        fileName,
-        pythonVersion: tool.runtimeVersion || "",
-        proxyUrl: proxyUrl || null,
+        toolDir, fileName, pythonVersion: tool.runtimeVersion || "", proxyUrl: proxyUrl || null,
       });
       setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.depInstallDone") }));
       await new Promise((r) => setTimeout(r, 1500));
@@ -509,7 +456,7 @@ export function ToolManager() {
   const checkForUpdates = useCallback(async () => {
     setCheckingUpdates(true);
     try {
-      const updates = await invoke<typeof toolUpdates>("pentest_check_tool_updates");
+      const updates = await invoke<ToolUpdateInfo[]>("pentest_check_tool_updates");
       setToolUpdates(updates);
       setShowUpdates(true);
     } catch {
@@ -518,7 +465,8 @@ export function ToolManager() {
     setCheckingUpdates(false);
   }, []);
 
-  // Editor functions (must be defined before handleAddTool and ctxAction which reference them)
+  // ── Editor functions ──
+
   const openEditor = useCallback(async (tool: ToolWithMeta) => {
     setEditingTool(tool);
     setEditorMode("form");
@@ -594,12 +542,10 @@ export function ToolManager() {
       if (editorMode === "raw") { JSON.parse(rawJson); content = rawJson; }
       else { content = JSON.stringify({ tool: formData }, null, 2); }
 
-      // Use category/subcategory from form data (user may have changed them)
       const category = (formData.category as string) || editingTool.category || "misc";
       const subcategory = (formData.subcategory as string) || editingTool.subcategory || "other";
       const toolId = (formData.id as string) || editingTool.id;
 
-      // If category changed, delete old config first
       if (editingTool.category && editingTool.subcategory &&
           (editingTool.category !== category || editingTool.subcategory !== subcategory)) {
         await invoke("pentest_delete_tool", {
@@ -638,6 +584,8 @@ export function ToolManager() {
     else syncRawToForm(rawJson);
     setEditorMode(mode);
   }, [editorMode, formData, rawJson, syncFormToRaw, syncRawToForm, editingTool]);
+
+  // ── Skills ──
 
   const loadSkillContent = useCallback(async (skillId: string) => {
     if (!editingTool) return;
@@ -701,30 +649,20 @@ export function ToolManager() {
     }
   }, [editingTool, activeSkillId]);
 
-  // Add new tool — open editor directly without creating a file
+  // ── Add / Import ──
+
   const handleAddTool = useCallback(() => {
     const id = Math.random().toString(36).substring(2, 10);
     const defaults: Record<string, unknown> = {
-      id,
-      name: "",
-      description: "",
-      icon: "🔧",
-      executable: "",
-      runtime: "native",
-      runtimeVersion: "",
-      ui: "cli",
-      params: [],
+      id, name: "", description: "", icon: "🔧", executable: "",
+      runtime: "native", runtimeVersion: "", ui: "cli", params: [],
       install: { method: "", source: "" },
     };
     const json = JSON.stringify({ tool: defaults }, null, 2);
     const placeholder: ToolWithMeta = {
-      ...defaults,
-      name: t("toolManager.newTool"),
-      category: "misc",
-      subcategory: "other",
-      installed: false,
-      categoryName: "misc",
-      subcategoryName: "other",
+      ...defaults, name: t("toolManager.newTool"),
+      category: "misc", subcategory: "other", installed: false,
+      categoryName: "misc", subcategoryName: "other",
     } as unknown as ToolWithMeta;
 
     setEditingTool(placeholder);
@@ -737,11 +675,9 @@ export function ToolManager() {
     requestAnimationFrame(() => setEditorVisible(true));
   }, []);
 
-  // Import tool from GitHub URL
   const handleGithubImport = useCallback(async () => {
     const url = githubUrl.trim();
     if (!url) return;
-    // Parse owner/repo from various formats
     let owner = "", repo = "";
     const ghMatch = url.match(/github\.com\/([^/]+)\/([^/\s#?]+)/);
     if (ghMatch) {
@@ -769,25 +705,16 @@ export function ToolManager() {
 
       const id = Math.random().toString(36).substring(2, 10);
       const toolData: Record<string, unknown> = {
-        id,
-        name: suggestion.name,
-        description: suggestion.description,
-        icon: suggestion.icon,
-        executable: suggestion.executable,
-        runtime: suggestion.runtime,
-        runtimeVersion: suggestion.runtime_version,
-        ui: suggestion.ui,
-        params: [],
+        id, name: suggestion.name, description: suggestion.description,
+        icon: suggestion.icon, executable: suggestion.executable,
+        runtime: suggestion.runtime, runtimeVersion: suggestion.runtime_version,
+        ui: suggestion.ui, params: [],
         install: { method: suggestion.install_method, source: suggestion.install_source },
       };
       const json = JSON.stringify({ tool: toolData }, null, 2);
       const placeholder: ToolWithMeta = {
-        ...toolData,
-        category: suggestion.category,
-        subcategory: suggestion.subcategory,
-        installed: false,
-        categoryName: suggestion.category,
-        subcategoryName: suggestion.subcategory,
+        ...toolData, category: suggestion.category, subcategory: suggestion.subcategory,
+        installed: false, categoryName: suggestion.category, subcategoryName: suggestion.subcategory,
       } as unknown as ToolWithMeta;
 
       setShowGithubImport(false);
@@ -807,7 +734,8 @@ export function ToolManager() {
     }
   }, [githubUrl]);
 
-  // Context menu
+  // ── Context menu ──
+
   const handleContextMenu = useCallback((e: React.MouseEvent, tool: ToolWithMeta) => {
     e.preventDefault();
     e.stopPropagation();
@@ -823,17 +751,28 @@ export function ToolManager() {
       case "uninstall": handleUninstall(tool); break;
       case "install": handleInstall(tool); break;
       case "install-deps": handleInstallDeps(tool); break;
-      case "copy-id": navigator.clipboard.writeText(tool.id); break;
+      case "copy-id": copyToClipboard(tool.id); break;
       case "open-dir":
         invoke("pentest_open_directory", { executable: tool.executable || tool.name }).catch(() => {});
         break;
-      case "delete":
-        setDeleteTarget(tool);
-        break;
+      case "delete": setDeleteTarget(tool); break;
     }
   }, [ctxMenu, openEditor, handleUninstall, handleInstall, handleInstallDeps, loadData]);
 
-  // Filtering and sorting
+  const handleDeleteTool = useCallback(async (tool: ToolWithMeta) => {
+    setDeleteTarget(null);
+    try {
+      await invoke("pentest_delete_tool", {
+        toolId: tool.id, category: tool.category, subcategory: tool.subcategory, toolFolder: null,
+      });
+      await loadData();
+    } catch (e) {
+      setError(t("toolManager.deleteFailed", { error: e }));
+    }
+  }, [loadData]);
+
+  // ── Filtering and sorting ──
+
   const installedCount = tools.filter((t) => t.installed).length;
   const allCategories = Array.from(new Set(tools.map((t) => t.category)));
 
@@ -856,279 +795,22 @@ export function ToolManager() {
 
   const categoryDisplayName = (catId: string) => (categories ?? []).find((c) => c.id === catId)?.name || catId;
 
-  const runtimeBadge = (runtime: string) => {
-    const m: Record<string, string> = {
-      java: "bg-orange-500/15 text-orange-400",
-      python: "bg-blue-500/15 text-blue-400",
-      node: "bg-green-500/15 text-green-400",
-      native: "bg-zinc-500/15 text-zinc-400",
-    };
-    return m[runtime] || "bg-muted/50 text-muted-foreground";
+  const fieldCtx: EditorFieldsContext = { formData, handleFormChange };
+  const actionCtx: ActionButtonProps = {
+    busy, installProgress, dlProgress,
+    onCancel: handleCancelInstall, onUninstall: handleUninstall, onInstall: handleInstall,
   };
 
-  const installMethodBadge = (method: string) => {
-    const m: Record<string, string> = {
-      github: "bg-purple-500/12 text-purple-400",
-      homebrew: "bg-amber-500/12 text-amber-400",
-    };
-    return m[method] || "bg-muted/30 text-muted-foreground/50";
-  };
-
-  const installMethodLabel = (tool: ToolWithMeta) => {
-    const method = tool.install?.method;
-    if (!method || method === "manual") return t("toolManager.manual");
-    if (method === "github") return "GitHub";
-    if (method === "homebrew") return "Homebrew";
-    if (method === "gem") return "RubyGem";
-    return method;
-  };
-
-  // Editor sub-components
-  const InlineSelect = ({ value, onChange, options }: {
-    value: string; onChange: (v: string) => void;
-    options: { value: string; label: string }[];
-  }) => (
-    <Select value={value || undefined} onValueChange={onChange}>
-      <SelectTrigger size="sm" className="flex-1 h-7 border-transparent bg-transparent hover:border-border/20 text-[12px] shadow-none px-2 gap-1">
-        <SelectValue placeholder={t("common.select")} />
-      </SelectTrigger>
-      <SelectContent position="popper" className="min-w-[120px]">
-        {options.map((o) => <SelectItem key={o.value} value={o.value || "_none"} className="text-[12px]">{o.label}</SelectItem>)}
-      </SelectContent>
-    </Select>
-  );
-
-  const FieldRow = ({ label, field, placeholder, mono, type = "text", options }: {
-    label: string; field: string; placeholder?: string; mono?: boolean;
-    type?: "text" | "select"; options?: { value: string; label: string }[];
-  }) => {
-    const val = (formData[field] as string) ?? "";
-    return (
-      <div className="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-[var(--bg-hover)]/30 transition-colors">
-        <span className="text-[12px] text-muted-foreground/60 w-24 flex-shrink-0">{label}</span>
-        {type === "select" && options ? (
-          <InlineSelect value={val} onChange={(v) => handleFormChange(field, v === "_none" ? "" : v)} options={options} />
-        ) : (
-          <input type="text" value={val} onChange={(e) => handleFormChange(field, e.target.value)} placeholder={placeholder}
-            className={cn("flex-1 h-7 px-2 text-[12px] rounded-md bg-transparent border border-transparent hover:border-border/20 focus:border-accent/40 text-foreground placeholder:text-muted-foreground/20 outline-none transition-colors", mono && "font-mono text-[11px]")} />
-        )}
+  const renderToolList = (items: ToolWithMeta[]) =>
+    viewMode === "grid" ? (
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+        {items.map((tool) => <GridCard key={tool.id} tool={tool} onOpen={openEditor} onContextMenu={handleContextMenu} actionCtx={actionCtx} />)}
+      </div>
+    ) : (
+      <div className="space-y-1">
+        {items.map((tool) => <ListRow key={tool.id} tool={tool} onOpen={openEditor} onContextMenu={handleContextMenu} actionCtx={actionCtx} />)}
       </div>
     );
-  };
-
-  const InstallFieldRow = ({ label, subField, placeholder, mono, type = "text", options }: {
-    label: string; subField: string; placeholder?: string; mono?: boolean;
-    type?: "text" | "select"; options?: { value: string; label: string }[];
-  }) => {
-    const install = (formData.install as Record<string, string>) || {};
-    const val = install[subField] || "";
-    const onChange = (v: string) => handleFormChange("install", { ...install, [subField]: v === "_none" ? "" : v });
-    return (
-      <div className="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-[var(--bg-hover)]/30 transition-colors">
-        <span className="text-[12px] text-muted-foreground/60 w-24 flex-shrink-0">{label}</span>
-        {type === "select" && options ? (
-          <InlineSelect value={val} onChange={onChange} options={options} />
-        ) : (
-          <input type="text" value={val} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
-            className={cn("flex-1 h-7 px-2 text-[12px] rounded-md bg-transparent border border-transparent hover:border-border/20 focus:border-accent/40 text-foreground placeholder:text-muted-foreground/20 outline-none transition-colors", mono && "font-mono text-[11px]")} />
-        )}
-      </div>
-    );
-  };
-
-  const ParamsEditor = () => {
-    const params = (formData.params as Array<Record<string, unknown>>) || [];
-    const updateParam = (idx: number, key: string, value: unknown) => {
-      const next = [...params]; next[idx] = { ...next[idx], [key]: value };
-      handleFormChange("params", next);
-    };
-    const removeParam = (idx: number) => handleFormChange("params", params.filter((_, i) => i !== idx));
-    const addParam = () => handleFormChange("params", [...params, { label: "", flag: "", type: "string" }]);
-
-    return (
-      <div className="px-3">
-        {params.length === 0 ? (
-          <p className="text-[12px] text-muted-foreground/50 py-3 text-center">{t("toolManager.noParams")}</p>
-        ) : (
-          <div className="space-y-1">
-            {params.map((p, i) => (
-              <div key={i} className="flex items-center gap-2 py-1.5 group/param rounded-lg hover:bg-[var(--bg-hover)]/30 px-1">
-                <input value={(p.label as string) || ""} onChange={(e) => updateParam(i, "label", e.target.value)}
-                  placeholder={t("toolManager.label")} className="flex-[3] h-7 px-2 text-[12px] rounded-md bg-transparent border border-transparent hover:border-border/20 focus:border-accent/40 text-foreground placeholder:text-muted-foreground/20 outline-none transition-colors" />
-                <input value={(p.flag as string) || ""} onChange={(e) => updateParam(i, "flag", e.target.value)}
-                  placeholder="--flag" className="flex-[2] h-7 px-2 text-[11px] font-mono rounded-md bg-transparent border border-transparent hover:border-border/20 focus:border-accent/40 text-foreground placeholder:text-muted-foreground/20 outline-none transition-colors" />
-                <div className="flex-[1.5]">
-                  <Select value={(p.type as string) || "string"} onValueChange={(v) => updateParam(i, "type", v)}>
-                    <SelectTrigger size="sm" className="h-7 border-transparent bg-transparent hover:border-border/20 text-[11px] shadow-none px-2 gap-1 w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent position="popper" className="min-w-[100px]">
-                      {["string", "number", "boolean", "file"].map((t) => <SelectItem key={t} value={t} className="text-[12px]">{t}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <button type="button" onClick={() => removeParam(i)}
-                  className="p-0.5 text-muted-foreground/15 opacity-0 group-hover/param:opacity-100 hover:text-destructive transition-all flex-shrink-0">
-                  <X className="w-3 h-3" />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        <button type="button" onClick={addParam}
-          className="flex items-center gap-1 text-[11px] text-accent/60 hover:text-accent transition-colors mt-2 px-1">
-          <Plus className="w-3 h-3" /> {t("toolManager.addParam")}
-        </button>
-      </div>
-    );
-  };
-
-  const CircleProgress = ({ size = 28, pct }: { size?: number; pct: number }) => {
-    const r = (size - 4) / 2;
-    const circ = 2 * Math.PI * r;
-    const offset = circ * (1 - Math.min(Math.max(pct, 0), 1));
-    return (
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="flex-shrink-0">
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none"
-          stroke="currentColor" strokeWidth="2.5" className="text-muted-foreground/10" />
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none"
-          stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
-          strokeDasharray={`${circ}`} strokeDashoffset={`${offset}`}
-          transform={`rotate(-90 ${size / 2} ${size / 2})`}
-          className="text-accent transition-[stroke-dashoffset] duration-200" />
-      </svg>
-    );
-  };
-
-  // Tool card (used in both grid and list views)
-  const ActionButton = ({ tool }: { tool: ToolWithMeta }) => {
-    const isBusy = busy === tool.id;
-    const progress = installProgress[tool.id];
-    const hasDlProgress = isBusy && dlProgress && dlProgress.total > 0;
-    const dlPct = hasDlProgress ? dlProgress!.downloaded / dlProgress!.total : 0;
-    return (
-      <div className="flex items-center gap-1 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
-        {isBusy ? (
-          <div className="flex items-center gap-1.5">
-            {hasDlProgress ? (
-              <CircleProgress pct={dlPct} size={22} />
-            ) : (
-              <Loader2 className="w-3.5 h-3.5 animate-spin text-accent/60" />
-            )}
-            {progress && <span className="text-[10px] text-accent/50 whitespace-nowrap max-w-[80px] truncate">{progress}</span>}
-            <button
-              type="button"
-              onClick={handleCancelInstall}
-              className="p-0.5 rounded text-muted-foreground/40 hover:text-destructive transition-colors"
-              title={t("common.cancel")}
-            >
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        ) : tool.installed ? (
-          <button type="button" onClick={() => handleUninstall(tool)}
-            className="p-1 rounded text-muted-foreground/30 opacity-0 group-hover:opacity-100 hover:text-destructive transition-all" title={t("common.uninstall")}>
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
-        ) : (
-          <button type="button" onClick={() => handleInstall(tool)}
-            className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
-            title={t("toolManager.installVia", { method: installMethodLabel(tool) })}>
-            <Download className="w-3 h-3" /> {t("common.install")}
-          </button>
-        )}
-      </div>
-    );
-  };
-
-  const TagBadges = ({ tool, compact }: { tool: ToolWithMeta; compact?: boolean }) => (
-    <div className="flex items-center gap-1.5 flex-wrap">
-      <span className={cn("text-[9px] px-1.5 py-0.5 rounded-full font-medium", runtimeBadge(tool.runtime))}>
-        {tool.runtime}{tool.runtimeVersion ? ` ${tool.runtimeVersion}` : ""}
-      </span>
-      {tool.install?.method && tool.install.method !== "manual" && (
-        <span className={cn("text-[9px] px-1.5 py-0.5 rounded-full", installMethodBadge(tool.install.method))}>
-          {installMethodLabel(tool)}
-        </span>
-      )}
-      {(tool.tier === "essential" || tool.tier === "recommended") && (
-        <span className={cn("text-[9px] px-1.5 py-0.5 rounded-full font-medium",
-          tool.tier === "essential" ? "bg-red-500/10 text-red-400" : "bg-amber-500/10 text-amber-400")}>
-          {tool.tier === "essential" ? t("toolManager.tierEssential") : t("toolManager.tierRecommended")}
-        </span>
-      )}
-      <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-muted/30 text-muted-foreground/50">
-        {tool.categoryName}
-      </span>
-      {!compact && tool.subcategoryName && (
-        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-muted/30 text-muted-foreground/50">
-          {tool.subcategoryName}
-        </span>
-      )}
-    </div>
-  );
-
-  const GridCard = ({ tool }: { tool: ToolWithMeta }) => (
-    <div
-      onClick={() => openEditor(tool)}
-      onContextMenu={(e) => handleContextMenu(e, tool)}
-      className={cn(
-        "group rounded-xl border transition-colors cursor-pointer p-4",
-        tool.installed
-          ? "border-border/15 bg-[var(--bg-hover)]/20 hover:bg-[var(--bg-hover)]/40"
-          : "border-border/10 bg-[var(--bg-hover)]/8 hover:bg-[var(--bg-hover)]/20"
-      )}
-    >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            {tool.icon && <span className="text-[14px] flex-shrink-0">{tool.icon}</span>}
-            <span className={cn("text-[13px] font-medium truncate", tool.installed ? "text-foreground" : "text-foreground/60")}>{tool.name}</span>
-            {tool.installed && (
-              <span className="text-[9px] px-1.5 py-px rounded-full bg-green-500/15 text-green-400 flex-shrink-0 flex items-center gap-0.5">
-                <Check className="w-2.5 h-2.5" /> {t("common.installed")}
-              </span>
-            )}
-          </div>
-          <p className={cn("text-[11px] mt-1 line-clamp-2",
-            tool.installed ? "text-muted-foreground/60" : "text-muted-foreground/50"
-          )}>{tool.description}</p>
-        </div>
-        <ActionButton tool={tool} />
-      </div>
-      <div className="mt-3"><TagBadges tool={tool} /></div>
-    </div>
-  );
-
-  const ListRow = ({ tool }: { tool: ToolWithMeta }) => (
-    <div
-      onClick={() => openEditor(tool)}
-      onContextMenu={(e) => handleContextMenu(e, tool)}
-      className={cn(
-        "group rounded-xl border transition-colors cursor-pointer px-4 py-2.5 flex items-center",
-        tool.installed
-          ? "border-border/15 bg-[var(--bg-hover)]/20 hover:bg-[var(--bg-hover)]/40"
-          : "border-border/10 bg-[var(--bg-hover)]/8 hover:bg-[var(--bg-hover)]/20"
-      )}
-    >
-      <div className="flex items-center gap-2 w-[200px] flex-shrink-0">
-        {tool.icon && <span className="text-[14px] flex-shrink-0">{tool.icon}</span>}
-        <span className={cn("text-[13px] font-medium truncate", tool.installed ? "text-foreground" : "text-foreground/60")}>{tool.name}</span>
-        {tool.installed && (
-          <span className="text-[9px] px-1.5 py-px rounded-full bg-green-500/15 text-green-400 flex-shrink-0 flex items-center gap-0.5">
-            <Check className="w-2.5 h-2.5" /> {t("common.installed")}
-          </span>
-        )}
-      </div>
-      <p className="flex-1 min-w-0 text-[11px] text-muted-foreground/60 truncate px-4">{tool.description}</p>
-      <div className="flex-shrink-0 mr-3">
-        <TagBadges tool={tool} compact />
-      </div>
-      <div className="w-[70px] flex justify-end flex-shrink-0">
-        <ActionButton tool={tool} />
-      </div>
-    </div>
-  );
 
   return (
     <div className="h-full flex flex-col">
@@ -1153,26 +835,16 @@ export function ToolManager() {
             </div>
             <div className="flex items-center gap-2">
               <div className="flex items-center rounded-lg border border-border/15 overflow-hidden">
-                <button type="button" onClick={() => handleSwitchMode("form")}
-                  className={cn("flex items-center gap-1.5 px-3 py-1.5 text-[11px] transition-colors",
-                    editorMode === "form" ? "bg-accent/15 text-accent" : "text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)]")}>
-                  <FileText className="w-3 h-3" /> {t("toolManager.form")}
-                </button>
-                <button type="button" onClick={() => handleSwitchMode("skills")}
-                  className={cn("flex items-center gap-1.5 px-3 py-1.5 text-[11px] transition-colors",
-                    editorMode === "skills" ? "bg-accent/15 text-accent" : "text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)]")}>
-                  <BookOpen className="w-3 h-3" /> Skills
-                </button>
-                <button type="button" onClick={() => handleSwitchMode("output")}
-                  className={cn("flex items-center gap-1.5 px-3 py-1.5 text-[11px] transition-colors",
-                    editorMode === "output" ? "bg-accent/15 text-accent" : "text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)]")}>
-                  <ArrowUpDown className="w-3 h-3" /> Output
-                </button>
-                <button type="button" onClick={() => handleSwitchMode("raw")}
-                  className={cn("flex items-center gap-1.5 px-3 py-1.5 text-[11px] transition-colors",
-                    editorMode === "raw" ? "bg-accent/15 text-accent" : "text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)]")}>
-                  <Code2 className="w-3 h-3" /> {t("toolManager.json")}
-                </button>
+                {(["form", "skills", "output", "raw"] as const).map((mode) => (
+                  <button key={mode} type="button" onClick={() => handleSwitchMode(mode)}
+                    className={cn("flex items-center gap-1.5 px-3 py-1.5 text-[11px] transition-colors",
+                      editorMode === mode ? "bg-accent/15 text-accent" : "text-muted-foreground/50 hover:text-foreground hover:bg-[var(--bg-hover)]")}>
+                    {mode === "form" && <><FileText className="w-3 h-3" /> {t("toolManager.form")}</>}
+                    {mode === "skills" && <><BookOpen className="w-3 h-3" /> Skills</>}
+                    {mode === "output" && <><ArrowUpDown className="w-3 h-3" /> Output</>}
+                    {mode === "raw" && <><Code2 className="w-3 h-3" /> {t("toolManager.json")}</>}
+                  </button>
+                ))}
               </div>
               {editorMode === "skills" ? (
                 <button type="button" onClick={handleSaveSkill} disabled={skillSaving || !skillDirty}
@@ -1241,7 +913,6 @@ export function ToolManager() {
               style={{ tabSize: 2 }} />
           ) : editorMode === "skills" ? (
             <div className="flex gap-4 h-full min-h-[400px]">
-              {/* Skills list */}
               <div className="w-[220px] flex-shrink-0 rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden flex flex-col">
                 <div className="px-3 py-2 border-b border-border/8 flex items-center justify-between">
                   <span className="text-[11px] font-medium text-muted-foreground/60">Skills</span>
@@ -1291,7 +962,6 @@ export function ToolManager() {
                   )}
                 </div>
               </div>
-              {/* Skill editor */}
               <div className="flex-1 min-w-0 rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden flex flex-col">
                 {activeSkillId ? (
                   <>
@@ -1334,49 +1004,49 @@ export function ToolManager() {
               <div className="flex-1 min-w-0 space-y-4 overflow-y-auto">
                 <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
                   <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/60">{t("toolManager.basicInfo")}</span></div>
-                  <FieldRow label={t("toolManager.name")} field="name" placeholder="dirsearch" />
-                  <FieldRow label={t("toolManager.icon")} field="icon" placeholder="📂" />
+                  <FieldRow label={t("toolManager.name")} field="name" placeholder="dirsearch" ctx={fieldCtx} />
+                  <FieldRow label={t("toolManager.icon")} field="icon" placeholder="📂" ctx={fieldCtx} />
                   <div className="flex items-start gap-3 py-2 px-3 rounded-lg hover:bg-[var(--bg-hover)]/30 transition-colors">
                     <span className="text-[12px] text-muted-foreground/60 w-24 flex-shrink-0 mt-1.5">{t("toolManager.description")}</span>
                     <textarea value={(formData.description as string) ?? ""} onChange={(e) => handleFormChange("description", e.target.value)}
                       placeholder={t("toolManager.descriptionPlaceholder")} rows={2}
                       className="flex-1 px-2 py-1.5 text-[12px] rounded-md bg-transparent border border-transparent hover:border-border/20 focus:border-accent/40 text-foreground placeholder:text-muted-foreground/20 outline-none transition-colors resize-y" />
                   </div>
-                  <FieldRow label={t("common.version")} field="version" placeholder="1.0.0" />
-                  <FieldRow label="ID" field="id" mono placeholder="hash" />
-                  <FieldRow label={t("toolManager.executable")} field="executable" mono placeholder="tool/main.py" />
+                  <FieldRow label={t("common.version")} field="version" placeholder="1.0.0" ctx={fieldCtx} />
+                  <FieldRow label="ID" field="id" mono placeholder="hash" ctx={fieldCtx} />
+                  <FieldRow label={t("toolManager.executable")} field="executable" mono placeholder="tool/main.py" ctx={fieldCtx} />
                 </div>
                 <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
                   <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/60">{t("toolManager.runtime")}</span></div>
                   <FieldRow label={t("toolManager.runtimeLabel")} field="runtime" type="select" options={[
                     { value: "python", label: "Python" }, { value: "java", label: "Java" },
                     { value: "node", label: "Node.js" }, { value: "native", label: "Native" },
-                  ]} />
+                  ]} ctx={fieldCtx} />
                   {formData.runtime !== "native" && (
                     <FieldRow label={t("toolManager.runtimeVersion")} field="runtimeVersion" placeholder={
                       formData.runtime === "java" ? "17" : formData.runtime === "node" ? "20" : "3.11"
-                    } />
+                    } ctx={fieldCtx} />
                   )}
                   <FieldRow label={t("toolManager.uiLabel")} field="ui" type="select" options={[
                     { value: "cli", label: "CLI" }, { value: "gui", label: "GUI" }, { value: "web", label: "Web" },
-                  ]} />
+                  ]} ctx={fieldCtx} />
                 </div>
                 <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
                   <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/60">{t("toolManager.installMethod")}</span></div>
                   <InstallFieldRow label={t("toolManager.installMethodLabel")} subField="method" type="select" options={[
                     { value: "", label: t("common.none") }, { value: "github", label: "GitHub" },
                     { value: "homebrew", label: "Homebrew" }, { value: "manual", label: t("toolManager.manual") },
-                  ]} />
+                  ]} ctx={fieldCtx} />
                   <InstallFieldRow label={t("toolManager.source")} subField="source"
                     placeholder={
                       ((formData.install as Record<string, string>)?.method === "github") ? "owner/repo" :
                       ((formData.install as Record<string, string>)?.method === "homebrew") ? "formula-name" :
                       t("toolManager.source")
-                    } mono />
+                    } mono ctx={fieldCtx} />
                 </div>
                 <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
                   <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/60">{t("toolManager.paramConfig")}</span></div>
-                  <div className="py-2"><ParamsEditor /></div>
+                  <div className="py-2"><ParamsEditor ctx={fieldCtx} /></div>
                 </div>
                 <div className="rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden">
                   <div className="px-3 py-2 border-b border-border/8"><span className="text-[11px] font-medium text-muted-foreground/60">{t("toolManager.category")}</span></div>
@@ -1384,12 +1054,12 @@ export function ToolManager() {
                     (categories ?? []).length > 0
                       ? (categories ?? []).map((c) => ({ value: c.id, label: c.name }))
                       : [{ value: "misc", label: "misc" }]
-                  } />
+                  } ctx={fieldCtx} />
                   <FieldRow label={t("toolManager.subcategory")} field="subcategory" type="select" options={(() => {
                     const cat = (categories ?? []).find((c) => c.id === (formData.category as string));
                     if (cat && cat.items.length > 0) return cat.items.map((s) => ({ value: s.id, label: s.name }));
                     return [{ value: "other", label: "other" }];
-                  })()} />
+                  })()} ctx={fieldCtx} />
                 </div>
               </div>
               <div className="w-[380px] flex-shrink-0 rounded-xl bg-[var(--bg-hover)]/20 overflow-hidden flex flex-col">
@@ -1440,7 +1110,6 @@ export function ToolManager() {
             </Select>
 
             <div className="ml-auto flex items-center gap-1">
-              {/* Sort */}
               <Select value={sortKey} onValueChange={(v) => setSortKey(v as SortKey)}>
                 <SelectTrigger size="sm" className="h-7 w-auto border-transparent bg-transparent hover:bg-[var(--bg-hover)] text-[11px] shadow-none px-2 gap-1 text-muted-foreground/50">
                   <ArrowUpDown className="w-3 h-3" />
@@ -1454,7 +1123,6 @@ export function ToolManager() {
                 </SelectContent>
               </Select>
 
-              {/* View toggle */}
               <div className="flex items-center rounded-md border border-border/10 overflow-hidden">
                 <button type="button" onClick={() => setViewMode("grid")} title={t("toolManager.gridView")}
                   className={cn("p-1.5 transition-colors", viewMode === "grid" ? "bg-accent/15 text-accent" : "text-muted-foreground/50 hover:text-foreground")}>
@@ -1491,20 +1159,7 @@ export function ToolManager() {
               const requiredTools = filteredTools.filter((t) => t.tier === "essential" || t.tier === "recommended");
               const optionalTools = filteredTools.filter((t) => !t.tier || t.tier === "optional");
 
-              const renderToolList = (items: ToolWithMeta[]) =>
-                viewMode === "grid" ? (
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                    {items.map((tool) => <GridCard key={tool.id} tool={tool} />)}
-                  </div>
-                ) : (
-                  <div className="space-y-1">
-                    {items.map((tool) => <ListRow key={tool.id} tool={tool} />)}
-                  </div>
-                );
-
-              if (!shouldGroup) {
-                return renderToolList(filteredTools);
-              }
+              if (!shouldGroup) return renderToolList(filteredTools);
 
               return (
                 <div className="space-y-6">
@@ -1549,251 +1204,15 @@ export function ToolManager() {
         </>
       )}
 
-      {/* Context menu - rendered via portal to avoid transform containing block offset */}
-      {ctxMenu && createPortal(
-        <div className="fixed z-50 rounded-lg border border-border/20 bg-popover shadow-xl py-1 min-w-[140px]"
-          style={{ left: ctxMenu.x, top: ctxMenu.y }}
-          onClick={(e) => e.stopPropagation()}>
-          <button type="button" onClick={() => ctxAction("edit")}
-            className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2">
-            <FileText className="w-3 h-3 text-muted-foreground/50" /> {t("toolManager.edit")}
-          </button>
-          {ctxMenu.tool.installed ? (
-            <button type="button" onClick={() => ctxAction("uninstall")}
-              className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2">
-              <Trash2 className="w-3 h-3 text-muted-foreground/50" /> {t("common.uninstall")}
-            </button>
-          ) : (
-            <button type="button" onClick={() => ctxAction("install")}
-              className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2">
-              <Download className="w-3 h-3 text-muted-foreground/50" /> {t("common.install")}
-            </button>
-          )}
-          <div className="my-1 border-t border-border/10" />
-          <button type="button" onClick={() => ctxAction("copy-id")}
-            className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2">
-            <Copy className="w-3 h-3 text-muted-foreground/50" /> {t("toolManager.copyId")}
-          </button>
-          {ctxMenu.tool.installed && (
-            <button type="button" onClick={() => ctxAction("open-dir")}
-              className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2">
-              <FolderOpen className="w-3 h-3 text-muted-foreground/50" /> {t("toolManager.openDir")}
-            </button>
-          )}
-          {ctxMenu.tool.installed && ctxMenu.tool.runtime === "python" && (
-            <button type="button" onClick={() => ctxAction("install-deps")}
-              className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2">
-              <Download className="w-3 h-3 text-muted-foreground/50" /> {t("toolManager.installDeps")}
-            </button>
-          )}
-          <div className="my-1 border-t border-border/10" />
-          <button type="button" onClick={() => ctxAction("delete")}
-            className="w-full text-left px-3 py-1.5 text-[12px] text-red-400 hover:bg-red-500/10 transition-colors flex items-center gap-2">
-            <Trash2 className="w-3 h-3" /> {t("toolManager.deleteConfig")}
-          </button>
-        </div>,
-        document.body
-      )}
-
-      {/* Uninstall confirm */}
-      {uninstallTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setUninstallTarget(null)}>
-          <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-xs w-full" onClick={(e) => e.stopPropagation()}>
-            <p className="text-[13px] text-foreground mb-1">{t("toolManager.uninstallConfirm", { name: uninstallTarget.name })}</p>
-            <p className="text-[11px] text-muted-foreground/50 mb-4">{t("toolManager.uninstallKeepConfig")}</p>
-            <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setUninstallTarget(null)}
-                className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">{t("common.cancel")}</button>
-              <button type="button" onClick={confirmUninstall}
-                className="text-[12px] px-3 py-1.5 rounded-lg bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors">{t("toolManager.confirmUninstall")}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Dep file picker */}
-      {depPicker && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setDepPicker(null)}>
-          <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-sm w-full" onClick={(e) => e.stopPropagation()}>
-            <p className="text-[13px] text-foreground mb-1">{t("toolManager.selectDepFile")}</p>
-            <p className="text-[11px] text-muted-foreground/50 mb-3">{t("toolManager.depFileHint", { name: depPicker.tool.name })}</p>
-            <div className="space-y-1 max-h-48 overflow-y-auto mb-4">
-              {depPicker.files.map((f) => (
-                <button key={f} type="button" onClick={() => doInstallDepFile(depPicker.tool, f)}
-                  className="w-full text-left px-3 py-2 rounded-lg text-[12px] font-mono text-foreground hover:bg-accent/10 transition-colors">
-                  {f}
-                </button>
-              ))}
-            </div>
-            <div className="flex justify-end">
-              <button type="button" onClick={() => setDepPicker(null)}
-                className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">{t("common.cancel")}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Executable picker */}
-      {execPicker && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-          onClick={() => { execPicker.resolve(null); setExecPicker(null); }}>
-          <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-sm w-full" onClick={(e) => e.stopPropagation()}>
-            <p className="text-[13px] text-foreground mb-1">{t("toolManager.selectExecutable")}</p>
-            <p className="text-[11px] text-muted-foreground/50 mb-3">
-              {t("toolManager.multipleExecsDetected", { name: execPicker.tool.name })}
-            </p>
-            <div className="space-y-1 max-h-48 overflow-y-auto mb-4">
-              {execPicker.candidates.map((f, i) => (
-                <button key={f} type="button"
-                  onClick={() => { execPicker.resolve(f); setExecPicker(null); }}
-                  className={cn(
-                    "w-full text-left px-3 py-2 rounded-lg text-[12px] font-mono transition-colors",
-                    i === 0
-                      ? "bg-accent/15 text-accent hover:bg-accent/20 font-semibold"
-                      : "text-foreground hover:bg-accent/10",
-                  )}>
-                  {f}{i === 0 && <span className="ml-2 text-[10px] text-accent/70 font-normal">{t("common.recommended")}</span>}
-                </button>
-              ))}
-            </div>
-            <div className="flex justify-end">
-              <button type="button" onClick={() => { execPicker.resolve(null); setExecPicker(null); }}
-                className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">{t("common.skip")}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Delete config confirm */}
-      {deleteTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setDeleteTarget(null)}>
-          <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-xs w-full" onClick={(e) => e.stopPropagation()}>
-            <p className="text-[13px] text-foreground mb-1">{t("toolManager.deleteConfirmTitle", { name: deleteTarget.name })}</p>
-            <p className="text-[11px] text-muted-foreground/50 mb-4">
-              {t("toolManager.deleteConfirmMsg")}
-              {deleteTarget.installed && t("toolManager.deleteKeepFiles")}
-            </p>
-            <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setDeleteTarget(null)}
-                className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">{t("common.cancel")}</button>
-              <button type="button" onClick={async () => {
-                const tool = deleteTarget;
-                setDeleteTarget(null);
-                try {
-                  await invoke("pentest_delete_tool", {
-                    toolId: tool.id,
-                    category: tool.category,
-                    subcategory: tool.subcategory,
-                    toolFolder: null,
-                  });
-                  await loadData();
-                } catch (e) {
-                  setError(t("toolManager.deleteFailed", { error: e }));
-                }
-              }}
-                className="text-[12px] px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors">{t("toolManager.confirmDelete")}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Close confirm */}
-      {showCloseConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowCloseConfirm(false)}>
-          <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-xs w-full" onClick={(e) => e.stopPropagation()}>
-            <p className="text-[13px] text-foreground mb-1">{t("toolManager.unsavedChanges")}</p>
-            <p className="text-[11px] text-muted-foreground/50 mb-4">{t("toolManager.unsavedChangesMsg")}</p>
-            <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setShowCloseConfirm(false)}
-                className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">{t("toolManager.continueEditing")}</button>
-              <button type="button" onClick={forceCloseEditor}
-                className="text-[12px] px-3 py-1.5 rounded-lg bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors">{t("toolManager.discardChanges")}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Tool updates dialog */}
-      {showUpdates && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowUpdates(false)}>
-          <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-md w-full" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-2 mb-3">
-              <ArrowUpCircle className="w-4 h-4 text-accent" />
-              <h2 className="text-[14px] font-semibold flex-1">Tool Updates</h2>
-              <button onClick={() => setShowUpdates(false)} className="p-0.5 rounded hover:bg-muted/50">
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-            {toolUpdates.length === 0 ? (
-              <p className="text-[11px] text-muted-foreground/50 py-4 text-center">No tools with GitHub sources found.</p>
-            ) : (
-              <div className="space-y-1.5 max-h-[400px] overflow-y-auto">
-                {toolUpdates.map((u) => (
-                  <div key={u.tool_id} className={cn(
-                    "flex items-center gap-2 px-3 py-2 rounded-lg text-[11px]",
-                    u.has_update ? "bg-amber-500/5 border border-amber-500/20" : "bg-muted/10 border border-border/10",
-                  )}>
-                    <span className="flex-1 font-medium truncate">{u.tool_name}</span>
-                    <span className="text-muted-foreground/50 font-mono">{u.current_version || "?"}</span>
-                    {u.has_update && (
-                      <>
-                        <span className="text-muted-foreground/50">→</span>
-                        <span className="text-amber-400 font-mono font-medium">{u.latest_version}</span>
-                        {u.release_url && (
-                          <a href={u.release_url} target="_blank" rel="noopener noreferrer"
-                            className="p-0.5 text-accent/50 hover:text-accent transition-colors">
-                            <ExternalLink className="w-3 h-3" />
-                          </a>
-                        )}
-                      </>
-                    )}
-                    {!u.has_update && (
-                      <span className="text-green-400/60 flex items-center gap-1">
-                        <Check className="w-3 h-3" /> latest
-                      </span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* GitHub import dialog */}
-      {showGithubImport && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => { setShowGithubImport(false); setGithubUrl(""); }}>
-          <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-6 shadow-xl max-w-md w-full" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-2 mb-4">
-              <Github className="w-5 h-5 text-accent" />
-              <h2 className="text-[15px] font-semibold text-foreground">{t("toolManager.importGithub")}</h2>
-            </div>
-            <p className="text-[11px] text-muted-foreground/50 mb-3">{t("toolManager.importGithubHint")}</p>
-            <input
-              value={githubUrl}
-              onChange={(e) => setGithubUrl(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") handleGithubImport(); }}
-              placeholder="owner/repo or https://github.com/owner/repo"
-              autoFocus
-              className="w-full h-9 px-3 text-[12px] font-mono bg-background rounded-lg border border-border/20 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40 transition-colors"
-            />
-            <div className="flex justify-end gap-2 mt-4">
-              <button type="button" onClick={() => { setShowGithubImport(false); setGithubUrl(""); }}
-                className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">
-                {t("common.cancel")}
-              </button>
-              <button type="button" onClick={handleGithubImport} disabled={githubAnalyzing || !githubUrl.trim()}
-                className={cn("flex items-center gap-1.5 text-[12px] px-4 py-1.5 rounded-lg font-medium transition-colors",
-                  githubUrl.trim()
-                    ? "bg-accent text-accent-foreground hover:bg-accent/90"
-                    : "bg-muted/30 text-muted-foreground/30 cursor-not-allowed")}>
-                {githubAnalyzing && <Loader2 className="w-3 h-3 animate-spin" />}
-                {t("toolManager.analyzeImport")}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Dialogs */}
+      {ctxMenu && <ContextMenu ctx={ctxMenu} onAction={ctxAction} />}
+      {uninstallTarget && <UninstallConfirmDialog target={uninstallTarget} onCancel={() => setUninstallTarget(null)} onConfirm={confirmUninstall} />}
+      {depPicker && <DepPickerDialog tool={depPicker.tool} files={depPicker.files} onPick={doInstallDepFile} onCancel={() => setDepPicker(null)} />}
+      {execPicker && <ExecPickerDialog state={execPicker} onDismiss={() => setExecPicker(null)} />}
+      {deleteTarget && <DeleteConfirmDialog target={deleteTarget} onCancel={() => setDeleteTarget(null)} onConfirm={handleDeleteTool} />}
+      {showCloseConfirm && <CloseConfirmDialog onCancel={() => setShowCloseConfirm(false)} onDiscard={forceCloseEditor} />}
+      {showUpdates && <UpdatesDialog updates={toolUpdates} onClose={() => setShowUpdates(false)} />}
+      {showGithubImport && <GitHubImportDialog url={githubUrl} onUrlChange={setGithubUrl} analyzing={githubAnalyzing} onImport={handleGithubImport} onCancel={() => { setShowGithubImport(false); setGithubUrl(""); }} />}
     </div>
   );
 }

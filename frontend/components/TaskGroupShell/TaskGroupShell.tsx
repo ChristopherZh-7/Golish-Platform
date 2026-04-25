@@ -7,13 +7,8 @@ import {
   XCircle,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { formatDurationLong } from "@/lib/time";
 import { cn } from "@/lib/utils";
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`;
-}
 
 export interface TaskGroupShellProps {
   title: string;
@@ -96,7 +91,7 @@ export const TaskGroupShell = memo(function TaskGroupShell({
         <div className="ml-auto flex items-center gap-2">
           {titleExtra}
           {allDone && totalDurationMs > 0 && (
-            <span className="text-muted-foreground/40">{formatDuration(totalDurationMs)}</span>
+            <span className="text-muted-foreground/40">{formatDurationLong(totalDurationMs)}</span>
           )}
           {isCollapsed ? (
             <ChevronDown className="w-3.5 h-3.5 text-muted-foreground/40" />

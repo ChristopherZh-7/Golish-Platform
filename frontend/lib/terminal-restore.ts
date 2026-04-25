@@ -56,7 +56,23 @@ function restoreRetiredPlans(
   if (termInfo.retiredPlansJson.length === 0) return;
   useStore.setState((state) => {
     if (state.sessions[sessionId]) {
-      state.sessions[sessionId].retiredPlans = termInfo.retiredPlansJson as any;
+      // Normalize stale in_progress/pending steps to cancelled (old data may
+      // have been saved before the retirement step-status fix).
+      const plans = (termInfo.retiredPlansJson as any[]).map((rp: any) => {
+        if (!rp?.plan?.steps) return rp;
+        return {
+          ...rp,
+          plan: {
+            ...rp.plan,
+            steps: rp.plan.steps.map((s: any) =>
+              s.status === "in_progress" || s.status === "pending"
+                ? { ...s, status: "cancelled" }
+                : s,
+            ),
+          },
+        };
+      });
+      state.sessions[sessionId].retiredPlans = plans;
       if (termInfo.planMessageId) {
         state.sessions[sessionId].planMessageId = termInfo.planMessageId;
       }

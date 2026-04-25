@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 
 use golish_core::events::AiEvent;
 use golish_core::hitl::RiskLevel;
-use golish_core::utils::truncate_str;
+use golish_core::utils::{is_tool_result_success, truncate_str};
 use golish_sub_agents::{execute_sub_agent, SubAgentContext, SubAgentExecutorContext};
 
 use super::sub_agent_dispatch::{build_sub_agent_briefing, execute_sub_agent_with_client};
@@ -138,13 +138,24 @@ where
 
     match &result {
         Ok(v) => {
-            let is_failure_by_exit_code = v
-                .get("exit_code")
-                .and_then(|ec| ec.as_i64())
-                .map(|ec| ec != 0)
-                .unwrap_or(false);
-            let has_error_field = v.get("error").is_some();
-            let is_success = !is_failure_by_exit_code && !has_error_field;
+            let is_success = is_tool_result_success(v);
+
+            if effective_tool_name == "run_pty_cmd" && is_success {
+                if let Some(tracker) = ctx.db_tracker {
+                    let pool = tracker.pool_arc().clone();
+                    let stdout = v.get("stdout").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                    let command = tool_args.get("command").and_then(|c| c.as_str()).unwrap_or("").to_string();
+                    let ws = ctx.workspace.read().await;
+                    let pp = ws.to_string_lossy().to_string();
+                    drop(ws);
+                    tokio::spawn(async move {
+                        let _ = golish_pentest::output_store::maybe_detect_and_store(
+                            &pool, &command, &stdout, Some(&pp),
+                        ).await;
+                    });
+                }
+            }
+
             Ok(ToolExecutionResult {
                 value: v.clone(),
                 success: is_success,

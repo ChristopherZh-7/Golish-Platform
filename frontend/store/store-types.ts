@@ -366,6 +366,7 @@ export interface SubAgentToolCall {
   args: Record<string, unknown>;
   status: "running" | "completed" | "error";
   result?: unknown;
+  streamingOutput?: string;
   startedAt: string;
   completedAt?: string;
 }

@@ -1,13 +1,7 @@
 import {
   CheckCircle,
-  Edit,
-  FileCode,
-  FileText,
-  FolderOpen,
-  Globe,
   Loader2,
   Maximize2,
-  Search,
   Terminal,
   X,
   XCircle,
@@ -28,22 +22,9 @@ import {
   formatPrimaryArg,
   sortToolsByStartedAtAsc,
 } from "@/lib/toolGrouping";
+import { getToolIcon } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 
-/** Tool name to icon mapping */
-const toolIcons: Record<string, typeof FileText> = {
-  read_file: FileText,
-  write_file: Edit,
-  edit_file: Edit,
-  list_files: FolderOpen,
-  grep_file: Search,
-  run_pty_cmd: Terminal,
-  shell: Terminal,
-  web_fetch: Globe,
-  web_search: Globe,
-  web_search_answer: Globe,
-  apply_patch: FileCode,
-};
 
 /** Status configuration for icons */
 const statusConfig: Record<
@@ -128,7 +109,7 @@ function ToolRow({
   tool: AnyToolCall;
   onViewDetails: (tool: AnyToolCall) => void;
 }) {
-  const Icon = toolIcons[tool.name] || Terminal;
+  const Icon = getToolIcon(tool.name);
   const status = statusConfig[tool.status];
   const StatusIcon = status.icon;
   const primaryArg = formatPrimaryArg(tool);

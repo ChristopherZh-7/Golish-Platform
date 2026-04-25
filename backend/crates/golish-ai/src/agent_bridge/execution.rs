@@ -121,6 +121,10 @@ impl AgentBridge {
             ));
         }
 
+        if context.depth == 0 {
+            self.reset_cancelled();
+        }
+
         // Generate a unique turn ID
         let turn_id = uuid::Uuid::new_v4().to_string();
         tracing::debug!(
@@ -349,6 +353,12 @@ impl AgentBridge {
                 "Maximum agent recursion depth ({}) exceeded",
                 MAX_AGENT_DEPTH
             ));
+        }
+
+        // Only reset at the top level; sub-agents share the same cancelled flag
+        // and must not clear a cancellation the user triggered mid-execution.
+        if context.depth == 0 {
+            self.reset_cancelled();
         }
 
         // Generate a unique turn ID

@@ -4,6 +4,7 @@ import {
   ChevronDown, ChevronRight, Code, Copy, FileCode2, FileText,
   Loader2, Play, Search, Trash2, X, Zap,
 } from "lucide-react";
+import { copyToClipboard } from "@/lib/clipboard";
 import type { VulnLink, PocTemplate, DbVulnLinkFull } from "./types";
 import { dbToVulnLink } from "./types";
 import { CustomSelect } from "@/components/ui/custom-select";
@@ -124,13 +125,13 @@ export const PocLibraryView = memo(function PocLibraryView({ vulnLinks, onLinksC
   }, [vulnLinks, onLinksChange]);
 
   const handleCopy = useCallback((content: string) => {
-    navigator.clipboard.writeText(content);
+    copyToClipboard(content);
   }, []);
 
   const handleRunPoc = useCallback(() => {
     if (!runTarget || !targetUrl.trim()) return;
     const rendered = runTarget.poc.content.replace(/\{\{BaseURL\}\}/g, targetUrl.trim());
-    navigator.clipboard.writeText(rendered);
+    copyToClipboard(rendered);
 
     const next = { ...vulnLinks };
     const link = next[runTarget.cveId] || { wikiPaths: [], pocTemplates: [], scanHistory: [] };

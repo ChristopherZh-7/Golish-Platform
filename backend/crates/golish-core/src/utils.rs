@@ -64,6 +64,107 @@ pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
     }
 }
 
+/// Truncate using a 70/30 head/tail strategy, preserving both start and end.
+pub fn truncate_head_tail(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let head_len = (max_bytes as f64 * 0.7) as usize;
+    let tail_len = max_bytes.saturating_sub(head_len);
+    let head = truncate_str(s, head_len);
+    let tail_start = s.len().saturating_sub(tail_len);
+    let mut tail_boundary = tail_start;
+    while tail_boundary < s.len() && !s.is_char_boundary(tail_boundary) {
+        tail_boundary += 1;
+    }
+    let tail = &s[tail_boundary..];
+    format!(
+        "{}\n\n... [truncated {} chars] ...\n\n{}",
+        head,
+        s.len() - head.len() - tail.len(),
+        tail
+    )
+}
+
+/// Extract a required string argument from a JSON `Value` object.
+/// Returns the string reference or a JSON error value.
+pub fn get_required_str<'a>(
+    args: &'a serde_json::Value,
+    key: &str,
+) -> Result<&'a str, serde_json::Value> {
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| serde_json::json!({"error": format!("Missing required argument: {}", key)}))
+}
+
+/// Extract an optional string argument from a JSON `Value` object.
+pub fn get_optional_str<'a>(args: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    args.get(key).and_then(|v| v.as_str())
+}
+
+pub fn get_optional_u64(args: &serde_json::Value, key: &str) -> Option<u64> {
+    args.get(key).and_then(|v| v.as_u64())
+}
+
+pub fn get_optional_i64(args: &serde_json::Value, key: &str) -> Option<i64> {
+    args.get(key).and_then(|v| v.as_i64())
+}
+
+pub fn get_optional_bool(args: &serde_json::Value, key: &str) -> Option<bool> {
+    args.get(key).and_then(|v| v.as_bool())
+}
+
+pub fn get_optional_usize(args: &serde_json::Value, key: &str) -> Option<usize> {
+    args.get(key).and_then(|v| v.as_u64()).map(|n| n as usize)
+}
+
+pub fn get_optional_u32(args: &serde_json::Value, key: &str) -> Option<u32> {
+    args.get(key).and_then(|v| v.as_u64()).map(|n| n as u32)
+}
+
+/// Check whether a tool's JSON result represents a successful execution.
+///
+/// A result is considered a failure if:
+/// - It has a non-zero `exit_code` field
+/// - It has an `"error"` field present
+pub fn is_tool_result_success(value: &serde_json::Value) -> bool {
+    let is_failure_by_exit_code = value
+        .get("exit_code")
+        .and_then(|ec| ec.as_i64())
+        .map(|ec| ec != 0)
+        .unwrap_or(false);
+    let has_error_field = value.get("error").is_some();
+    !is_failure_by_exit_code && !has_error_field
+}
+
+/// Simple JSONPath-like resolver: supports `$.foo.bar` and `$.foo[0].bar` patterns.
+/// Strips leading `$.` prefix. Returns `None` for null or empty arrays.
+pub fn resolve_json_path(val: &serde_json::Value, path: &str) -> Option<String> {
+    let path = path.strip_prefix("$.").unwrap_or(path);
+    let mut current = val;
+    for segment in path.split('.') {
+        if let Some(idx_start) = segment.find('[') {
+            let key = &segment[..idx_start];
+            let idx_str = &segment[idx_start + 1..segment.len() - 1];
+            if !key.is_empty() {
+                current = current.get(key)?;
+            }
+            let idx: usize = idx_str.parse().ok()?;
+            current = current.get(idx)?;
+        } else {
+            current = current.get(segment)?;
+        }
+    }
+    match current {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        serde_json::Value::Null => None,
+        serde_json::Value::Array(arr) if arr.is_empty() => None,
+        other => Some(other.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

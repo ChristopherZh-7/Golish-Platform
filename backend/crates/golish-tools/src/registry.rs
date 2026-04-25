@@ -176,6 +176,11 @@ impl ToolRegistry {
         self.tools.insert(tool.name().to_string(), tool);
     }
 
+    /// Remove all registered tools (used for non-agentic sessions like title generation).
+    pub fn clear(&mut self) {
+        self.tools.clear();
+    }
+
     /// Get the workspace path.
     pub fn workspace(&self) -> &PathBuf {
         &self.workspace

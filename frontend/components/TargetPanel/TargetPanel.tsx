@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
+import { logAudit } from "@/lib/audit";
 import { QuickNotes } from "@/components/QuickNotes/QuickNotes";
 import {
   Check, ChevronDown, ChevronRight, Crosshair, Database, FileCode2, Globe,
@@ -8,6 +9,7 @@ import {
   Plus, Search, Server, Shield, ShieldOff, Tag, Trash2, Wifi, X, Zap,
 } from "lucide-react";
 import { TargetGraphView } from "@/components/TargetPanel/TargetGraphView";
+import { getRootDomain } from "@/lib/domain";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import { getProjectPath } from "@/lib/projects";
@@ -67,31 +69,6 @@ interface TargetStore {
   targets: Target[];
 }
 
-const MULTI_PART_TLDS = new Set([
-  "co.uk", "co.jp", "co.kr", "co.nz", "co.za", "co.in", "co.id",
-  "com.au", "com.br", "com.cn", "com.hk", "com.mx", "com.sg", "com.tw",
-  "net.au", "net.cn", "org.au", "org.uk", "org.cn",
-  "ac.uk", "gov.uk", "gov.cn", "edu.cn", "edu.au",
-]);
-
-function getRootDomain(value: string): string {
-  let host: string;
-  try {
-    const u = new URL(value.includes("://") ? value : `https://${value}`);
-    host = u.hostname;
-  } catch {
-    host = value.replace(/\/.*$/, "");
-  }
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(":")) return host;
-  const parts = host.split(".");
-  if (parts.length <= 2) return host;
-  const last2 = parts.slice(-2).join(".");
-  if (MULTI_PART_TLDS.has(last2) && parts.length > 2) {
-    return parts.slice(-3).join(".");
-  }
-  return last2;
-}
-
 const TYPE_ICONS: Record<string, React.ReactNode> = {
   domain: <Globe className="w-3.5 h-3.5 text-blue-400" />,
   ip: <Hash className="w-3.5 h-3.5 text-green-400" />,
@@ -116,64 +93,7 @@ const STATUS_CONFIG: Record<TargetStatus, { label: string; color: string; bg: st
   tested: { label: "Tested", color: "text-green-400", bg: "bg-green-500/10" },
 };
 
-function MiniDropdown({
-  value,
-  onChange,
-  options,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  options: { value: string; label: string }[];
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const selected = options.find((o) => o.value === value);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        type="button"
-        className={cn(
-          "flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md border transition-colors",
-          "bg-[var(--bg-hover)]/30 border-border/30 text-foreground",
-          "hover:bg-[var(--bg-hover)]/60 hover:border-border/50",
-          open && "border-accent/40 bg-[var(--bg-hover)]/50",
-        )}
-        onClick={() => setOpen(!open)}
-      >
-        <span className="truncate max-w-[80px]">{selected?.label ?? value}</span>
-        <ChevronDown className={cn("w-3 h-3 text-muted-foreground transition-transform", open && "rotate-180")} />
-      </button>
-      {open && (
-        <div className="absolute top-full left-0 mt-1 min-w-[120px] max-h-48 overflow-y-auto rounded-lg border border-border/30 bg-card shadow-lg z-50 py-1">
-          {options.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              className={cn(
-                "w-full text-left px-3 py-1.5 text-xs transition-colors",
-                "hover:bg-[var(--bg-hover)]/60",
-                opt.value === value && "text-accent bg-accent/5 font-medium",
-              )}
-              onClick={() => { onChange(opt.value); setOpen(false); }}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+import { MiniDropdown } from "@/components/ui/MiniDropdown";
 
 import { lazy, Suspense } from "react";
 const SecurityViewLazy = lazy(() =>
@@ -262,7 +182,7 @@ export function TargetPanel() {
       setShowAdd(false);
       loadTargets();
       emit("targets-changed").catch(() => {});
-      invoke("audit_log", { action: "target_added", category: "targets", details: addForm.value.trim(), projectPath: getProjectPath() }).catch(() => {});
+      logAudit({ action: "target_added", category: "targets", details: addForm.value.trim() });
     } catch (e) {
       const msg = String(e);
       if (msg.includes("duplicate") || msg.includes("unique") || msg.includes("already exists")) {
@@ -296,7 +216,7 @@ export function TargetPanel() {
     try {
       await invoke("target_delete", { id, projectPath: getProjectPath() });
       loadTargets();
-      invoke("audit_log", { action: "target_deleted", category: "targets", details: id, entityType: "target", entityId: id, projectPath: getProjectPath() }).catch(() => {});
+      logAudit({ action: "target_deleted", category: "targets", details: id, entityType: "target", entityId: id });
     } catch (e) {
       console.error("Failed to delete target:", e);
     }
@@ -518,6 +438,8 @@ export function TargetPanel() {
           />
         </div>
         <MiniDropdown
+          variant="standard"
+          buttonClassName="py-1.5 text-xs"
           value={scopeFilter}
           onChange={(v) => setScopeFilter(v as "all" | "in" | "out")}
           options={[

@@ -13,22 +13,7 @@ use serde_json::{json, Value};
 use crate::brave::BraveSearchState;
 use crate::tavily::TavilyState;
 
-/// Get a required string argument from JSON.
-fn get_required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, Value> {
-    args.get(key)
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| json!({"error": format!("Missing required argument: {}", key)}))
-}
-
-/// Get an optional integer argument from JSON.
-fn get_optional_usize(args: &Value, key: &str) -> Option<usize> {
-    args.get(key).and_then(|v| v.as_u64()).map(|n| n as usize)
-}
-
-/// Get an optional u32 argument from JSON.
-fn get_optional_u32(args: &Value, key: &str) -> Option<u32> {
-    args.get(key).and_then(|v| v.as_u64()).map(|n| n as u32)
-}
+use golish_core::utils::{get_required_str, get_optional_usize, get_optional_u32};
 
 // ============================================================================
 // web_search

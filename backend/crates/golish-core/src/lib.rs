@@ -21,6 +21,9 @@ pub mod tool;
 pub mod tool_name;
 
 pub mod hitl;
+pub mod jsonl;
+pub mod os;
+pub mod paths;
 pub mod plan;
 pub mod prompt;
 pub mod utils;

@@ -91,13 +91,22 @@ pub async fn delete_project_config(
             "directory_entries",
             "target_assets",
             "conversations",
-            "topology_scans",
             "workspace_preferences",
+            "sessions",
+            "target_groups",
+            "recordings",
+            "execution_plans",
+            "scan_queue",
+            "custom_passive_rules",
+            "msg_logs",
+            "screenshots",
+            "vector_store_logs",
+            "prompt_templates",
         ];
         let mut total_deleted = 0u64;
         for table in &tables_with_project_path {
             match sqlx::query(&format!(
-                "DELETE FROM {} WHERE project_path = $1 OR project_path = ''",
+                "DELETE FROM {} WHERE project_path = $1",
                 table
             ))
             .bind(path)

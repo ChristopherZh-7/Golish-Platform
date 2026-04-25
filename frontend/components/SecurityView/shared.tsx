@@ -4,9 +4,9 @@ import {
   RefreshCw, Shield, ShieldCheck, ShieldX,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { zapDownloadRootCert, zapInstallRootCert } from "@/lib/pentest/zap-api";
 import type { ZapStatusInfo } from "@/lib/pentest/types";
 import { useTranslation } from "react-i18next";
+import { useZapProxyCert } from "@/hooks/useZapProxyCert";
 
 export function StyledSelect({ value, onChange, options, className }: {
   value: string; onChange: (v: string) => void;
@@ -146,36 +146,9 @@ export function ZapNotInstalled({ onRetry }: { onRetry: () => void }) {
 
 export function ZapNotRunning({ onStart, loading, error }: { onStart: () => void; loading: boolean; error: string | null }) {
   const { t } = useTranslation();
-  const [copied, setCopied] = useState(false);
-  const [certLoading, setCertLoading] = useState(false);
-  const [certResult, setCertResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const proxyAddr = "127.0.0.1:8090";
-
-  const copyProxy = useCallback(async () => {
-    await navigator.clipboard.writeText(proxyAddr);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  }, []);
-
-  const handleDownloadCert = useCallback(async () => {
-    setCertLoading(true);
-    setCertResult(null);
-    try {
-      const path = await zapDownloadRootCert();
-      setCertResult({ ok: true, msg: path });
-    } catch (e) { setCertResult({ ok: false, msg: String(e) }); }
-    finally { setCertLoading(false); }
-  }, []);
-
-  const handleInstallCert = useCallback(async () => {
-    setCertLoading(true);
-    setCertResult(null);
-    try {
-      const path = await zapInstallRootCert();
-      setCertResult({ ok: true, msg: t("browser.certInstalled", `Certificate installed: ${path}`) });
-    } catch (e) { setCertResult({ ok: false, msg: String(e) }); }
-    finally { setCertLoading(false); }
-  }, [t]);
+  const { copied, certLoading, certResult, copyProxy, handleDownloadCert, handleInstallCert } =
+    useZapProxyCert(proxyAddr);
 
   return (
     <div className="h-full overflow-y-auto">
@@ -317,20 +290,15 @@ export function methodColor(m: string): string {
   return c[m] || "text-muted-foreground";
 }
 
-export function statusColor(code: number): string {
+export function statusColor(code: number, fallback = "text-muted-foreground"): string {
   if (code >= 200 && code < 300) return "text-green-400";
   if (code >= 300 && code < 400) return "text-blue-400";
   if (code >= 400 && code < 500) return "text-yellow-400";
   if (code >= 500) return "text-red-400";
-  return "text-muted-foreground";
+  return fallback;
 }
 
-export function formatSize(bytes: number): string {
-  if (bytes === 0) return "-";
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}K`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}M`;
-}
+export { formatBytes as formatSize } from "@/lib/format";
 
 export function DetailSection({ title, content }: { title: string; content: string }) {
   const [expanded, setExpanded] = useState(true);

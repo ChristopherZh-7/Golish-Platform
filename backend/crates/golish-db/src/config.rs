@@ -2,17 +2,7 @@ use std::path::PathBuf;
 
 /// Where Golish stores its PostgreSQL data and binaries.
 fn golish_data_dir() -> PathBuf {
-    let home = dirs::home_dir().expect("cannot resolve home directory");
-    #[cfg(target_os = "macos")]
-    let base = home
-        .join("Library")
-        .join("Application Support")
-        .join("golish-platform");
-    #[cfg(target_os = "windows")]
-    let base = home.join("AppData").join("Local").join("golish-platform");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let base = home.join(".golish-platform");
-    base
+    golish_core::paths::app_data_base().expect("cannot resolve home directory")
 }
 
 #[derive(Debug, Clone)]

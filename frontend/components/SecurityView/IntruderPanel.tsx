@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { CustomSelect } from "@/components/ui/custom-select";
+import { statusColor } from "./shared";
 import { zapSendRequest } from "@/lib/pentest/zap-api";
 import {
   AlertTriangle, Crosshair,
@@ -540,7 +541,7 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
                             <span className="text-foreground/70">{r.payload}</span>
                           )}
                         </td>
-                        <td className={cn("px-2 py-1 font-mono", statusColor(r.status))}>{r.status || "—"}</td>
+                        <td className={cn("px-2 py-1 font-mono", statusColor(r.status, "text-muted-foreground/30"))}>{r.status || "—"}</td>
                         <td className="px-2 py-1 font-mono text-muted-foreground/40">{r.length}</td>
                         <td className="px-2 py-1 font-mono text-muted-foreground/30">{r.time_ms}ms</td>
                       </tr>
@@ -590,10 +591,3 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
   );
 }
 
-function statusColor(code: number): string {
-  if (code >= 200 && code < 300) return "text-green-400";
-  if (code >= 300 && code < 400) return "text-blue-400";
-  if (code >= 400 && code < 500) return "text-yellow-400";
-  if (code >= 500) return "text-red-400";
-  return "text-muted-foreground/30";
-}

@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
-  Activity, ArrowRight, ChevronRight, Copy,
-  Crosshair, Download, Globe, Loader2, RefreshCw,
+  Activity, ArrowRight, ChevronRight,
+  Download, Globe, Loader2, RefreshCw,
   Search, Send, Trash2, TreePine, X, Zap,
 } from "lucide-react";
+import { getRootDomain } from "@/lib/domain";
 import { cn } from "@/lib/utils";
 import { zapGetHistory, zapGetSiteMapData, zapGetMessage } from "@/lib/pentest/zap-api";
 import type { SiteMapEntry, SiteMapData } from "@/lib/pentest/zap-api";
@@ -13,6 +13,7 @@ import { useTranslation } from "react-i18next";
 import { useStore } from "@/store";
 import { ResizeHandle, methodColor, statusColor } from "./shared";
 import { buildRawRequest, DetailTabs } from "./HttpHistoryPanel";
+import { ZapContextMenu } from "./ZapContextMenu";
 
 interface SiteTreeNode {
   name: string;
@@ -24,26 +25,13 @@ interface SiteTreeNode {
   nodeType?: "domain" | "subdomain" | "api" | "static" | "path";
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-}
+import { formatBytes } from "@/lib/format";
 
 function normalizeHost(raw: string): string {
   let h = raw.toLowerCase().trim();
   h = h.replace(/^https?:\/\//, "");
   h = h.replace(/\/.*$/, "");
   return h;
-}
-
-function getRootDomain(host: string): string {
-  const bare = host.replace(/:\d+$/, "");
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(bare)) return host;
-  if (bare.startsWith("[") || bare.includes(":")) return host;
-  const parts = bare.split(".");
-  if (parts.length <= 2) return host;
-  return parts.slice(-2).join(".");
 }
 
 function buildSiteTree(entries: HttpHistoryEntry[]): Map<string, SiteTreeNode> {
@@ -496,52 +484,18 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
           )}
         </div>
       </div>
-      {ctxMenu && createPortal(
-        <div
-          className="fixed z-[9999] min-w-[160px] rounded-lg border border-border/20 bg-popover shadow-lg py-1 text-[11px]"
-          style={{ top: ctxMenu.y, left: ctxMenu.x }}
-        >
-          <button
-            type="button"
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-accent/10 transition-colors"
-            onClick={() => { handleCtxSendToRepeater(ctxMenu.entry); setCtxMenu(null); }}
-          >
-            <Send className="w-3 h-3 text-accent" />
-            {t("security.sendToRepeater")}
-          </button>
-          {onSendToIntruder && (
-            <button
-              type="button"
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-accent/10 transition-colors"
-              onClick={async () => {
-                try { const msg = await zapGetMessage(ctxMenu.entry.id, ctxMenu.entry.url); onSendToIntruder(buildRawRequest(msg)); } catch { /* ignore */ }
-                setCtxMenu(null);
-              }}
-            >
-              <Crosshair className="w-3 h-3 text-orange-400" />
-              Send to Intruder
-            </button>
-          )}
-          {onActiveScan && (
-            <button
-              type="button"
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-accent/10 transition-colors"
-              onClick={() => { onActiveScan(ctxMenu.entry.url); setCtxMenu(null); }}
-            >
-              <Zap className="w-3 h-3 text-orange-400" />
-              {t("security.activeScan")}
-            </button>
-          )}
-          <button
-            type="button"
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-accent/10 transition-colors"
-            onClick={() => { navigator.clipboard.writeText(ctxMenu.entry.url); setCtxMenu(null); }}
-          >
-            <Copy className="w-3 h-3 text-muted-foreground/50" />
-            {t("security.copyUrl")}
-          </button>
-        </div>,
-        document.body,
+      {ctxMenu && (
+        <ZapContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          entry={ctxMenu.entry}
+          onClose={() => setCtxMenu(null)}
+          onSendToRepeater={(e) => handleCtxSendToRepeater(e as any)}
+          onSendToIntruder={onSendToIntruder ? async (e) => {
+            try { const msg = await zapGetMessage(e.id, e.url); onSendToIntruder(buildRawRequest(msg)); } catch { /* ignore */ }
+          } : undefined}
+          onActiveScan={onActiveScan}
+        />
       )}
     </div>
   );

@@ -119,7 +119,8 @@ export const MessageBlock = memo(function MessageBlock({
         type Segment =
           | { kind: "text"; content: string }
           | { kind: "tools"; calls: ChatToolCall[]; requestIds: string[] }
-          | { kind: "sub_agent"; requestId: string; toolCall: ChatToolCall };
+          | { kind: "sub_agent"; requestId: string; toolCall: ChatToolCall }
+          | { kind: "plan_marker" };
 
         const segments: Segment[] = [];
 
@@ -151,7 +152,12 @@ export const MessageBlock = memo(function MessageBlock({
               textCursor = offset;
             }
 
-            if (isSubAgentCall(allCalls[i])) {
+            if (allCalls[i].name === "update_plan") {
+              flushToolBatch(toolBatch, toolBatchIds);
+              toolBatch = [];
+              toolBatchIds = [];
+              segments.push({ kind: "plan_marker" });
+            } else if (isSubAgentCall(allCalls[i])) {
               flushToolBatch(toolBatch, toolBatchIds);
               toolBatch = [];
               toolBatchIds = [];
@@ -181,7 +187,12 @@ export const MessageBlock = memo(function MessageBlock({
           let toolBatchIds: string[] = [];
 
           for (const tc of allCalls) {
-            if (isSubAgentCall(tc)) {
+            if (tc.name === "update_plan") {
+              flushToolBatch(toolBatch, toolBatchIds);
+              toolBatch = [];
+              toolBatchIds = [];
+              segments.push({ kind: "plan_marker" });
+            } else if (isSubAgentCall(tc)) {
               flushToolBatch(toolBatch, toolBatchIds);
               toolBatch = [];
               toolBatchIds = [];
@@ -251,22 +262,20 @@ export const MessageBlock = memo(function MessageBlock({
                 );
               }
 
+              if (seg.kind === "plan_marker") {
+                if (!planInserted && shouldShowPlan) {
+                  planInserted = true;
+                  return <TaskPlanCard key={`seg-${idx}`} plan={taskPlan!} terminalId={terminalId} />;
+                }
+                return null;
+              }
+
               if (seg.kind === "sub_agent") {
                 return null;
               }
 
               // Tool segment
               const messageComplete = !message.isStreaming;
-              if (!planInserted && shouldShowPlan) {
-                planInserted = true;
-                return (
-                  <React.Fragment key={`seg-${idx}`}>
-                    <TaskPlanCard plan={taskPlan!} terminalId={terminalId} />
-                    <ToolCallSummary toolCalls={seg.calls} requestIds={seg.requestIds} isMessageComplete={messageComplete} />
-                  </React.Fragment>
-                );
-              }
-
               return (
                 <ToolCallSummary key={`seg-${idx}`} toolCalls={seg.calls} requestIds={seg.requestIds} isMessageComplete={messageComplete} />
               );

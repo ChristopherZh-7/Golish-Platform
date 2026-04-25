@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::state::AppState;
 
@@ -14,32 +13,15 @@ pub struct Note {
     pub updated_at: u64,
 }
 
-fn ts(dt: chrono::DateTime<chrono::Utc>) -> u64 {
-    dt.timestamp() as u64
-}
-
-#[derive(sqlx::FromRow)]
-struct NoteRow {
-    id: Uuid,
-    entity_type: String,
-    entity_id: String,
-    content: String,
-    color: String,
-    created_at: chrono::DateTime<chrono::Utc>,
-    updated_at: chrono::DateTime<chrono::Utc>,
-}
-
-impl From<NoteRow> for Note {
-    fn from(r: NoteRow) -> Self {
-        Note {
-            id: r.id.to_string(),
-            entity_type: r.entity_type,
-            entity_id: r.entity_id,
-            content: r.content,
-            color: r.color,
-            created_at: ts(r.created_at),
-            updated_at: ts(r.updated_at),
-        }
+fn to_note(n: golish_db::models::Note) -> Note {
+    Note {
+        id: n.id.to_string(),
+        entity_type: n.entity_type,
+        entity_id: n.entity_id,
+        content: n.content,
+        color: n.color,
+        created_at: n.created_at.timestamp() as u64,
+        updated_at: n.updated_at.timestamp() as u64,
     }
 }
 
@@ -51,21 +33,15 @@ pub async fn notes_list(
     project_path: Option<String>,
 ) -> Result<Vec<Note>, String> {
     let pool = state.db_pool_ready().await?;
-    let rows = sqlx::query_as::<_, NoteRow>(
-        r#"SELECT id, entity_type, entity_id, content, color, created_at, updated_at
-           FROM notes
-           WHERE ($1::text IS NULL OR entity_type = $1)
-             AND ($2::text IS NULL OR entity_id = $2)
-             AND project_path = $3
-           ORDER BY created_at DESC"#,
+    let rows = golish_db::repo::notes::list_filtered(
+        pool,
+        entity_type.as_deref(),
+        entity_id.as_deref(),
+        project_path.as_deref(),
     )
-    .bind(entity_type.as_deref())
-    .bind(entity_id.as_deref())
-    .bind(project_path.as_deref())
-    .fetch_all(pool)
     .await
     .map_err(|e| e.to_string())?;
-    Ok(rows.into_iter().map(Note::from).collect())
+    Ok(rows.into_iter().map(to_note).collect())
 }
 
 #[tauri::command]
@@ -79,19 +55,17 @@ pub async fn notes_add(
 ) -> Result<String, String> {
     let pool = state.db_pool_ready().await?;
     let c = color.unwrap_or_else(|| "yellow".to_string());
-    let id: Uuid = sqlx::query_scalar(
-        r#"INSERT INTO notes (entity_type, entity_id, content, color, project_path)
-           VALUES ($1, $2, $3, $4, $5) RETURNING id"#,
+    let note = golish_db::repo::notes::create(
+        pool,
+        &entity_type,
+        &entity_id,
+        &content,
+        &c,
+        project_path.as_deref(),
     )
-    .bind(&entity_type)
-    .bind(&entity_id)
-    .bind(&content)
-    .bind(&c)
-    .bind(project_path.as_deref())
-    .fetch_one(pool)
     .await
     .map_err(|e| e.to_string())?;
-    Ok(id.to_string())
+    Ok(note.id.to_string())
 }
 
 #[tauri::command]
@@ -102,18 +76,13 @@ pub async fn notes_update(
     color: Option<String>,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
     let _ = project_path;
-    let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let pool = state.db_pool_ready().await?;
+    let uid: uuid::Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let c = color.unwrap_or_else(|| "yellow".to_string());
-    sqlx::query("UPDATE notes SET content=$1, color=$2, updated_at=NOW() WHERE id=$3")
-        .bind(&content)
-        .bind(&c)
-        .bind(uid)
-        .execute(pool)
+    golish_db::repo::notes::update(pool, uid, &content, &c)
         .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -122,13 +91,10 @@ pub async fn notes_delete(
     id: String,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
     let _ = project_path;
-    let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    sqlx::query("DELETE FROM notes WHERE id=$1")
-        .bind(uid)
-        .execute(pool)
+    let pool = state.db_pool_ready().await?;
+    let uid: uuid::Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    golish_db::repo::notes::delete(pool, uid)
         .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+        .map_err(|e| e.to_string())
 }

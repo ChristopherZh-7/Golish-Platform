@@ -25,17 +25,9 @@ fn is_text_searchable(name: &str) -> bool {
 }
 
 fn wiki_base_dir() -> PathBuf {
-    let home = dirs::home_dir().expect("cannot resolve home directory");
-    #[cfg(target_os = "macos")]
-    let base = home
-        .join("Library")
-        .join("Application Support")
-        .join("golish-platform");
-    #[cfg(target_os = "windows")]
-    let base = home.join("AppData").join("Local").join("golish-platform");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let base = home.join(".golish-platform");
-    base.join("wiki")
+    golish_core::paths::app_data_base()
+        .expect("cannot resolve home directory")
+        .join("wiki")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

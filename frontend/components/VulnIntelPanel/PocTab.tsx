@@ -4,6 +4,7 @@ import {
   ChevronDown, ChevronRight, Code, Copy, ExternalLink, FileCode2,
   FileText, Loader2, Plus, Search, Trash2, Zap,
 } from "lucide-react";
+import { copyToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 import type { VulnLink, PocTemplate } from "./types";
 import { CustomSelect } from "@/components/ui/custom-select";
@@ -341,7 +342,7 @@ int main(int argc, char *argv[]) {
   }, [onUpdateLink]);
 
   const handleCopyContent = useCallback((content: string) => {
-    navigator.clipboard.writeText(content);
+    copyToClipboard(content);
   }, []);
 
   const typeIcon = (type: PocTemplate["type"]) => {

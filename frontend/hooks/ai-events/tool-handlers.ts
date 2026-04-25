@@ -95,6 +95,10 @@ export const handleToolApprovalRequest: EventHandler<{
 }> = (event, ctx) => {
   const state = ctx.getState();
 
+  // #region agent log
+  fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify({sessionId:'14d8b8',location:'tool-handlers.ts:handleToolApprovalRequest',message:'tool_approval_request received',data:{toolName:event.tool_name,requestId:event.request_id,sessionId:ctx.sessionId,isTitleGen:ctx.sessionId.startsWith('title-gen-')},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
+
   // Deduplicate: ignore already-processed requests
   if (state.isToolRequestProcessed(ctx.sessionId, event.request_id)) {
     logger.debug("Ignoring duplicate tool_approval_request:", event.request_id);
@@ -180,6 +184,9 @@ export const handleToolAutoApproved: EventHandler<{
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
+  // #region agent log
+  fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify({sessionId:'14d8b8',location:'tool-handlers.ts:handleToolAutoApproved',message:'tool_auto_approved handler called',data:{toolName:event.tool_name,requestId:event.request_id,routedSessionId:ctx.sessionId},timestamp:Date.now(),hypothesisId:'event-routing'})}).catch(()=>{});
+  // #endregion
   const state = ctx.getState();
 
   // Deduplicate: ignore already-processed requests
@@ -250,6 +257,9 @@ export const handleToolResult: EventHandler<{
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
+  // #region agent log
+  fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify({sessionId:'14d8b8',location:'tool-handlers.ts:handleToolResult',message:'tool_result handler called',data:{toolName:event.tool_name,requestId:event.request_id,success:event.success,routedSessionId:ctx.sessionId,originalSessionId:event.session_id},timestamp:Date.now(),hypothesisId:'running-stuck'})}).catch(()=>{});
+  // #endregion
   const state = ctx.getState();
   // Update tool call status to completed/error
   state.completeActiveToolCall(ctx.sessionId, event.request_id, event.success, event.result);
@@ -274,6 +284,11 @@ export const handleToolOutputChunk: EventHandler<{
   seq?: number;
 }> = (event, ctx) => {
   const state = ctx.getState();
+
+  if (event.source?.type === "sub_agent") {
+    state.appendSubAgentToolOutput(ctx.sessionId, event.request_id, event.chunk);
+    return;
+  }
 
   // Debug: Log what blocks exist and which one we're trying to match
   const blocks = state.streamingBlocks[ctx.sessionId] ?? [];

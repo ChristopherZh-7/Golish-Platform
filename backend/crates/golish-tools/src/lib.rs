@@ -55,6 +55,7 @@ mod definitions;
 pub mod directory_ops;
 mod error;
 pub mod file_ops;
+pub mod path_policy;
 mod registry;
 
 pub use definitions::{build_function_declarations, FunctionDeclaration};

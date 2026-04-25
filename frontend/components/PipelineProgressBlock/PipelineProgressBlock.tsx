@@ -11,6 +11,7 @@ import {
   Target,
 } from "lucide-react";
 import { stripAllAnsi } from "@/lib/ansi";
+import { formatDurationLong } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import type { PipelineExecution, PipelineStepExecution, PipelineStepStatus } from "@/store";
 import { SubAgentCard } from "@/components/SubAgentCard";
@@ -41,12 +42,6 @@ function StatusIcon({ status }: { status: PipelineStepStatus }) {
     case "interrupted":
       return <AlertTriangle className="w-3.5 h-3.5 text-amber-400/60" />;
   }
-}
-
-function formatStepDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`;
 }
 
 function StepRow({ step, isExpanded, onToggle }: {
@@ -107,7 +102,7 @@ function StepRow({ step, isExpanded, onToggle }: {
         {(!step.command || step.command === step.name) && <span className="flex-1" />}
         {step.durationMs != null && (
           <span className="text-[9px] text-muted-foreground/40 tabular-nums flex-shrink-0">
-            {formatStepDuration(step.durationMs)}
+            {formatDurationLong(step.durationMs)}
           </span>
         )}
         {step.exitCode != null && step.exitCode !== 0 && (
@@ -129,7 +124,7 @@ function StepRow({ step, isExpanded, onToggle }: {
               <StatusIcon status={sub.status} />
               <span className="font-mono text-muted-foreground/70 truncate">{sub.target}</span>
               {sub.durationMs != null && (
-                <span className="ml-auto text-muted-foreground/40 tabular-nums">{formatStepDuration(sub.durationMs)}</span>
+                <span className="ml-auto text-muted-foreground/40 tabular-nums">{formatDurationLong(sub.durationMs)}</span>
               )}
             </div>
           ))}

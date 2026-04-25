@@ -5,25 +5,9 @@ import {
   RefreshCw, Search, Strikethrough, Table, Trash2, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { Markdown } from "@/components/Markdown/Markdown";
-
-interface WikiEntry {
-  path: string;
-  name: string;
-  is_dir: boolean;
-  children?: WikiEntry[];
-  size?: number;
-  modified?: number;
-}
-
-interface WikiSearchResult {
-  path: string;
-  name: string;
-  line: number;
-  content: string;
-}
+import { wikiApi, type WikiEntry, type WikiSearchResult, type WikiStats } from "@/lib/wiki";
 
 function extToLang(name: string): string | null {
   const ext = name.split(".").pop()?.toLowerCase();
@@ -200,24 +184,6 @@ function MarkdownToolbar({
   );
 }
 
-interface WikiStats {
-  total_pages: number;
-  total_words: number;
-  orphan_count: number;
-  by_category: Record<string, number>;
-  by_status: Record<string, number>;
-  recent_changes: Array<{
-    id: number;
-    page_path: string;
-    action: string;
-    title: string;
-    category: string;
-    actor: string;
-    summary: string;
-    created_at: string;
-  }>;
-}
-
 const CATEGORY_META: Record<string, { icon: string; label: string; color: string }> = {
   products: { icon: "📦", label: "Products", color: "text-blue-400" },
   techniques: { icon: "⚔️", label: "Techniques", color: "text-red-400" },
@@ -369,8 +335,8 @@ export function WikiPanel({ initialPath }: { initialPath?: string | null }) {
   const loadTree = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await invoke("wiki_list");
-      setTree(Array.isArray(data) ? data as WikiEntry[] : []);
+      const data = await wikiApi.list();
+      setTree(Array.isArray(data) ? data : []);
     } catch (e) {
       setError(t("wiki.loadFailed", { error: String(e) }));
     } finally {
@@ -385,13 +351,13 @@ export function WikiPanel({ initialPath }: { initialPath?: string | null }) {
   useEffect(() => {
     if (reindexedRef.current) return;
     reindexedRef.current = true;
-    invoke("wiki_reindex")
-      .then(() => invoke<WikiStats>("wiki_stats_full").then(setWikiStats).catch(() => {}))
+    wikiApi.reindex()
+      .then(() => wikiApi.statsFull().then(setWikiStats).catch(() => {}))
       .catch(() => {});
   }, []);
 
   useEffect(() => {
-    invoke<WikiStats>("wiki_stats_full")
+    wikiApi.statsFull()
       .then(setWikiStats)
       .catch(() => setWikiStats(null));
   }, [tree]);
@@ -404,10 +370,10 @@ export function WikiPanel({ initialPath }: { initialPath?: string | null }) {
 
   const openFile = useCallback(async (path: string, fileName?: string) => {
     if (dirty && activePath) {
-      try { await invoke("wiki_write", { path: activePath, content }); } catch { /* ignore */ }
+      try { await wikiApi.write(activePath, content); } catch { /* ignore */ }
     }
     try {
-      const data: string = await invoke("wiki_read", { path });
+      const data: string = await wikiApi.read(path);
       setActivePath(path);
       setActiveFileName(fileName || path.split("/").pop() || path);
       setContent(data);
@@ -426,7 +392,7 @@ export function WikiPanel({ initialPath }: { initialPath?: string | null }) {
     saveTimerRef.current = setTimeout(async () => {
       if (activePath) {
         try {
-          await invoke("wiki_write", { path: activePath, content: value });
+          await wikiApi.write(activePath, value);
           setOriginalContent(value);
           setDirty(false);
         } catch (e) {
@@ -441,7 +407,7 @@ export function WikiPanel({ initialPath }: { initialPath?: string | null }) {
     if (!q.trim()) { setSearchResults(null); return; }
     setSearching(true);
     try {
-      const results: WikiSearchResult[] = await invoke("wiki_search", { query: q.trim() });
+      const results = await wikiApi.search(q.trim());
       setSearchResults(results);
     } catch { setSearchResults([]); }
     finally { setSearching(false); }
@@ -460,10 +426,10 @@ export function WikiPanel({ initialPath }: { initialPath?: string | null }) {
     const path = creating.parentPath ? `${creating.parentPath}/${name}` : name;
     try {
       if (creating.type === "folder") {
-        await invoke("wiki_create_dir", { path });
+        await wikiApi.createDir(path);
       } else {
         const filePath = name.includes(".") ? path : `${path}.md`;
-        await invoke("wiki_write", { path: filePath, content: name.endsWith(".md") || !name.includes(".") ? `# ${name.replace(/\.\w+$/, "")}\n\n` : "" });
+        await wikiApi.write(filePath, name.endsWith(".md") || !name.includes(".") ? `# ${name.replace(/\.\w+$/, "")}\n\n` : "");
         await loadTree();
         setCreating(null);
         setNewName("");
@@ -480,7 +446,7 @@ export function WikiPanel({ initialPath }: { initialPath?: string | null }) {
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return;
     try {
-      await invoke("wiki_delete", { path: deleteTarget.path });
+      await wikiApi.delete(deleteTarget.path);
       if (activePath === deleteTarget.path || activePath?.startsWith(deleteTarget.path + "/")) {
         setActivePath(null);
         setContent("");
@@ -613,10 +579,10 @@ export function WikiPanel({ initialPath }: { initialPath?: string | null }) {
           <button type="button"
             onClick={async () => {
               try {
-                const result = await invoke<{ reindexed: number }>("wiki_reindex");
+                const result = await wikiApi.reindex() as unknown as { reindexed: number };
                 await loadTree();
                 setWikiStats(null);
-                invoke<WikiStats>("wiki_stats_full").then(setWikiStats).catch(() => {});
+                wikiApi.statsFull().then(setWikiStats).catch(() => {});
                 setError(null);
                 if (result.reindexed > 0) {
                   setError(`Reindexed ${result.reindexed} pages`);

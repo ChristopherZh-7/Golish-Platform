@@ -17,31 +17,8 @@ pub struct ParseResult {
     pub produces: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OutputParserConfig {
-    pub format: String,
-    pub produces: Vec<String>,
-    #[serde(default)]
-    pub patterns: Vec<PatternConfig>,
-    #[serde(default)]
-    pub fields: HashMap<String, String>,
-    #[serde(default)]
-    pub detect: Option<String>,
-    #[serde(default)]
-    pub db_action: Option<String>,
-    /// Optional jq expression to pre-process tool output before parsing.
-    /// Runs `echo $stdout | jq '$transform'` and replaces stdout with the result.
-    #[serde(default)]
-    pub transform: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PatternConfig {
-    #[serde(rename = "type")]
-    pub data_type: String,
-    pub regex: String,
-    pub fields: HashMap<String, String>,
-}
+pub use golish_pentest::models::OutputConfig as OutputParserConfig;
+pub use golish_pentest::models::OutputPattern as PatternConfig;
 
 /// Run a jq expression against raw output to transform it before parsing.
 /// Falls back to the original output on any error.
@@ -208,29 +185,7 @@ fn parse_json(raw: &str, field_mappings: &HashMap<String, String>) -> Vec<Parsed
     }
 }
 
-/// Simple JSONPath-like resolver: supports "$.foo.bar" and "$.foo[0].bar" patterns.
-fn resolve_json_path(val: &serde_json::Value, path: &str) -> Option<String> {
-    let path = path.strip_prefix("$.").unwrap_or(path);
-    let mut current = val;
-    for segment in path.split('.') {
-        if let Some(idx_start) = segment.find('[') {
-            let key = &segment[..idx_start];
-            let idx_str = &segment[idx_start + 1..segment.len() - 1];
-            current = current.get(key)?;
-            let idx: usize = idx_str.parse().ok()?;
-            current = current.get(idx)?;
-        } else {
-            current = current.get(segment)?;
-        }
-    }
-    match current {
-        serde_json::Value::String(s) => Some(s.clone()),
-        serde_json::Value::Number(n) => Some(n.to_string()),
-        serde_json::Value::Bool(b) => Some(b.to_string()),
-        serde_json::Value::Null => None,
-        other => Some(other.to_string()),
-    }
-}
+use golish_core::utils::resolve_json_path;
 
 #[tauri::command]
 pub async fn output_parse(
@@ -261,22 +216,7 @@ pub async fn output_parse(
 }
 
 fn toolsconfig_dir() -> Result<std::path::PathBuf, String> {
-    let home = dirs::home_dir().ok_or("cannot resolve home directory")?;
-    #[cfg(target_os = "macos")]
-    let dir = home
-        .join("Library")
-        .join("Application Support")
-        .join("golish-platform")
-        .join("toolsconfig");
-    #[cfg(target_os = "windows")]
-    let dir = home
-        .join("AppData")
-        .join("Local")
-        .join("golish-platform")
-        .join("toolsconfig");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let dir = home.join(".golish-platform").join("toolsconfig");
-    Ok(dir)
+    golish_core::paths::toolsconfig_dir().ok_or_else(|| "cannot resolve home directory".to_string())
 }
 
 #[tauri::command]
@@ -332,14 +272,11 @@ pub async fn output_detect_tool(
 }
 
 // ============================================================================
-// Parse + Store pipeline: parses tool output and routes to DB by db_action
+// Parse + Store pipeline: parses tool output and routes to DB by db_action.
+// Storage functions are shared from golish_pentest::output_store.
 // ============================================================================
 
 use crate::state::AppState;
-use crate::tools::targets::{
-    db_directory_entry_add, db_target_add, db_target_update_recon_extended, ReconUpdate,
-};
-use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreStats {
@@ -402,12 +339,19 @@ pub async fn output_parse_and_store(
     let pp = project_path.as_deref();
     let tname = tool_name.as_deref().unwrap_or("unknown");
 
+    use golish_pentest::output_store;
     for item in &items {
         let result = match db_action.as_str() {
-            "target_add" => store_target_add(pool, item, pp).await,
-            "target_update_recon" => store_target_update_recon(pool, item, pp).await,
-            "directory_entry_add" => store_directory_entry(pool, item, tname, pp).await,
-            "finding_add" => store_finding(pool, item, tname, pp).await,
+            "target_add" => output_store::store_target_add(pool, &item.fields, pp).await,
+            "target_update_recon" => {
+                output_store::store_target_update_recon(pool, &item.fields, pp, tname).await
+            }
+            "directory_entry_add" => {
+                output_store::store_directory_entry(pool, &item.fields, tname, pp).await
+            }
+            "finding_add" => {
+                output_store::store_finding(pool, &item.fields, tname, pp).await
+            }
             other => {
                 skipped_count += 1;
                 errors.push(format!("Unknown db_action: {other}"));
@@ -441,108 +385,7 @@ pub async fn output_parse_and_store(
     })
 }
 
-async fn store_target_add(
-    pool: &sqlx::PgPool,
-    item: &ParsedItem,
-    project_path: Option<&str>,
-) -> Result<(), String> {
-    let hostname = item
-        .fields
-        .get("hostname")
-        .or_else(|| item.fields.get("host"))
-        .or_else(|| item.fields.get("ip"))
-        .ok_or("No hostname/host/ip field in parsed record")?;
-
-    db_target_add(pool, hostname, hostname, None, project_path, "discovered", None).await?;
-    Ok(())
-}
-
-async fn store_target_update_recon(
-    pool: &sqlx::PgPool,
-    item: &ParsedItem,
-    project_path: Option<&str>,
-) -> Result<(), String> {
-    let host_val = item
-        .fields
-        .get("host")
-        .or_else(|| item.fields.get("ip"))
-        .or_else(|| item.fields.get("url"))
-        .ok_or("No host/ip/url field for recon update")?;
-
-    let target = find_or_create_target(pool, host_val, project_path).await?;
-    let target_uuid: Uuid = target.id.parse().map_err(|e: uuid::Error| e.to_string())?;
-
-    let mut update = ReconUpdate::new();
-
-    if let Some(ip) = item.fields.get("ip") {
-        update.real_ip = ip.clone();
-    }
-    if let Some(cdn) = item.fields.get("cdn") {
-        update.cdn_waf = cdn.clone();
-    }
-    if let Some(title) = item.fields.get("title") {
-        update.http_title = title.clone();
-    }
-    if let Some(status) = item.fields.get("status_code").or_else(|| item.fields.get("status")) {
-        update.http_status = status.parse().ok();
-    }
-    if let Some(ws) = item.fields.get("webserver") {
-        update.webserver = ws.clone();
-    }
-    if let Some(os) = item.fields.get("os") {
-        update.os_info = os.clone();
-    }
-    if let Some(ct) = item.fields.get("content_type") {
-        update.content_type = ct.clone();
-    }
-
-    // Build port entries with embedded HTTP metadata when available
-    if let Some(port_str) = item.fields.get("port") {
-        let mut port_entry = serde_json::json!({
-            "port": port_str.parse::<u16>().unwrap_or(0),
-            "proto": item.fields.get("protocol").cloned().unwrap_or_else(|| "tcp".to_string()),
-            "service": item.fields.get("service").cloned().unwrap_or_default(),
-            "state": item.fields.get("state").cloned().unwrap_or_else(|| "open".to_string()),
-        });
-        if let Some(title) = item.fields.get("title") {
-            port_entry["http_title"] = serde_json::Value::String(title.clone());
-        }
-        if let Some(status) = item.fields.get("status_code").or_else(|| item.fields.get("status")) {
-            if let Ok(code) = status.parse::<i32>() {
-                port_entry["http_status"] = serde_json::json!(code);
-                port_entry["service"] = serde_json::Value::String("http".to_string());
-            }
-        }
-        if let Some(ws) = item.fields.get("webserver") {
-            port_entry["webserver"] = serde_json::Value::String(ws.clone());
-        }
-        if let Some(ct) = item.fields.get("content_type") {
-            port_entry["content_type"] = serde_json::Value::String(ct.clone());
-        }
-        if let Some(techs) = item.fields.get("technologies") {
-            if let Ok(arr) = serde_json::from_str::<serde_json::Value>(techs) {
-                port_entry["technologies"] = arr;
-            } else {
-                let tech_list: Vec<&str> = techs.split(',').map(|s| s.trim()).collect();
-                port_entry["technologies"] = serde_json::to_value(tech_list).unwrap_or_default();
-            }
-        }
-        if let Some(url) = item.fields.get("url") {
-            port_entry["url"] = serde_json::Value::String(url.clone());
-        }
-        update.ports = serde_json::json!([port_entry]);
-    }
-
-    db_target_update_recon_extended(pool, target_uuid, &update).await?;
-
-    let tool_source = item.fields.get("_tool").map(|s| s.as_str()).unwrap_or("httpx");
-    tracing::info!("[store-recon] target={}, tool={}, fields={:?}", target_uuid, tool_source,
-        item.fields.keys().collect::<Vec<_>>());
-    store_recon_fingerprints(pool, target_uuid, project_path, item, tool_source).await;
-
-    Ok(())
-}
-
+/// Thin wrapper for backward compatibility with callers passing `ParsedItem`.
 pub async fn store_recon_fingerprints(
     pool: &sqlx::PgPool,
     target_id: uuid::Uuid,
@@ -550,205 +393,5 @@ pub async fn store_recon_fingerprints(
     item: &ParsedItem,
     source: &str,
 ) {
-    let mut count = 0u32;
-    if let Some(ws) = item.fields.get("webserver") {
-        if !ws.is_empty() {
-            let (name, version) = parse_server_version(ws);
-            let ev = serde_json::json!({ "source": source, "raw": ws });
-            match golish_db::repo::fingerprints::upsert(
-                pool, target_id, project_path, "webserver", &name,
-                version.as_deref(), 0.8, &ev, None, source,
-            ).await {
-                Ok(_) => count += 1,
-                Err(e) => tracing::warn!("[fingerprint-store] webserver upsert failed: {}", e),
-            };
-        }
-    }
-    if let Some(techs) = item.fields.get("technologies") {
-        let tech_list: Vec<String> = if let Ok(arr) = serde_json::from_str::<Vec<String>>(techs) {
-            arr
-        } else {
-            techs.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
-        };
-        for tech in &tech_list {
-            let (name, version) = parse_server_version(tech);
-            let ev = serde_json::json!({ "source": source, "technology": tech });
-            match golish_db::repo::fingerprints::upsert(
-                pool, target_id, project_path, "technology", &name,
-                version.as_deref(), 0.7, &ev, None, source,
-            ).await {
-                Ok(_) => count += 1,
-                Err(e) => tracing::warn!("[fingerprint-store] technology upsert failed: {}", e),
-            };
-        }
-    }
-    if let Some(cdn) = item.fields.get("cdn") {
-        if !cdn.is_empty() {
-            let ev = serde_json::json!({ "source": source, "raw": cdn });
-            match golish_db::repo::fingerprints::upsert(
-                pool, target_id, project_path, "cdn", cdn,
-                None, 0.9, &ev, None, source,
-            ).await {
-                Ok(_) => count += 1,
-                Err(e) => tracing::warn!("[fingerprint-store] cdn upsert failed: {}", e),
-            };
-        }
-    }
-    if let Some(os) = item.fields.get("os") {
-        if !os.is_empty() {
-            let (name, version) = parse_server_version(os);
-            let ev = serde_json::json!({ "source": source, "raw": os });
-            match golish_db::repo::fingerprints::upsert(
-                pool, target_id, project_path, "os", &name,
-                version.as_deref(), 0.6, &ev, None, source,
-            ).await {
-                Ok(_) => count += 1,
-                Err(e) => tracing::warn!("[fingerprint-store] os upsert failed: {}", e),
-            };
-        }
-    }
-    if count > 0 {
-        tracing::info!("[fingerprint-store] Stored {} fingerprints for target {} from {}", count, target_id, source);
-    }
-}
-
-fn parse_server_version(s: &str) -> (String, Option<String>) {
-    let s = s.trim();
-    if let Some(idx) = s.find('/') {
-        let name = s[..idx].trim().to_string();
-        let ver = s[idx + 1..].trim().to_string();
-        if ver.is_empty() { (name, None) } else { (name, Some(ver)) }
-    } else if let Some(idx) = s.rfind(' ') {
-        let maybe_ver = s[idx + 1..].trim();
-        if maybe_ver.chars().next().map_or(false, |c| c.is_ascii_digit()) {
-            (s[..idx].trim().to_string(), Some(maybe_ver.to_string()))
-        } else {
-            (s.to_string(), None)
-        }
-    } else {
-        (s.to_string(), None)
-    }
-}
-
-async fn store_directory_entry(
-    pool: &sqlx::PgPool,
-    item: &ParsedItem,
-    tool_name: &str,
-    project_path: Option<&str>,
-) -> Result<(), String> {
-    let url = item
-        .fields
-        .get("url")
-        .ok_or("No url field in directory entry")?;
-
-    let status: Option<i32> = item
-        .fields
-        .get("status")
-        .and_then(|s| s.parse().ok());
-    let size: Option<i32> = item
-        .fields
-        .get("size")
-        .or_else(|| item.fields.get("content_length"))
-        .and_then(|s| s.parse().ok());
-    let lines: Option<i32> = item.fields.get("lines").and_then(|s| s.parse().ok());
-    let words: Option<i32> = item.fields.get("words").and_then(|s| s.parse().ok());
-
-    db_directory_entry_add(pool, None, url, status, size, lines, words, tool_name, project_path)
-        .await?;
-    Ok(())
-}
-
-async fn store_finding(
-    pool: &sqlx::PgPool,
-    item: &ParsedItem,
-    tool_name: &str,
-    project_path: Option<&str>,
-) -> Result<(), String> {
-    let title = item
-        .fields
-        .get("title")
-        .cloned()
-        .unwrap_or_else(|| "Untitled Finding".to_string());
-    let severity = item
-        .fields
-        .get("severity")
-        .cloned()
-        .unwrap_or_else(|| "info".to_string());
-    let url = item.fields.get("url").cloned().unwrap_or_default();
-    let template = item.fields.get("template").cloned().unwrap_or_default();
-    let description = item.fields.get("description").cloned().unwrap_or_default();
-    let references = item.fields.get("reference").cloned().unwrap_or_default();
-
-    let refs_json: serde_json::Value = if references.is_empty() {
-        serde_json::json!([])
-    } else if let Ok(arr) = serde_json::from_str::<serde_json::Value>(&references) {
-        arr
-    } else {
-        serde_json::json!([references])
-    };
-
-    let sev = match severity.to_lowercase().as_str() {
-        "critical" => "critical",
-        "high" => "high",
-        "medium" => "medium",
-        "low" => "low",
-        _ => "info",
-    };
-
-    sqlx::query(
-        r#"INSERT INTO findings (title, sev, url, target, description, tool, template, refs, project_path)
-           VALUES ($1, $2::severity, $3, $4, $5, $6, $7, $8, $9)
-           ON CONFLICT DO NOTHING"#,
-    )
-    .bind(&title)
-    .bind(sev)
-    .bind(&url)
-    .bind(&url)
-    .bind(&description)
-    .bind(tool_name)
-    .bind(&template)
-    .bind(&refs_json)
-    .bind(project_path)
-    .execute(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
-async fn find_or_create_target(
-    pool: &sqlx::PgPool,
-    host_val: &str,
-    project_path: Option<&str>,
-) -> Result<super::targets::Target, String> {
-    // Try to extract hostname from URL
-    let hostname = if host_val.starts_with("http://") || host_val.starts_with("https://") {
-        url::Url::parse(host_val)
-            .ok()
-            .and_then(|u| u.host_str().map(|s| s.to_string()))
-            .unwrap_or_else(|| host_val.to_string())
-    } else {
-        host_val.to_string()
-    };
-
-    // Search for existing target by value
-    let existing = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM targets WHERE value = $1 AND project_path = $2 LIMIT 1",
-    )
-    .bind(&hostname)
-    .bind(project_path)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    if let Some(_) = existing {
-        // Return existing
-        let targets = super::targets::db_target_list(pool, project_path).await?;
-        return targets
-            .into_iter()
-            .find(|t| t.value == hostname)
-            .ok_or_else(|| "Target disappeared".to_string());
-    }
-
-    db_target_add(pool, &hostname, &hostname, None, project_path, "discovered", None).await
+    golish_pentest::output_store::store_fingerprints(pool, target_id, project_path, &item.fields, source).await;
 }

@@ -96,6 +96,7 @@ mod loop_capture_context_tests {
 
 mod unified_loop_tests {
     use super::*;
+    use golish_llm_providers::ModelCapabilities;
 
     #[test]
     fn test_agentic_loop_config_main_agent_anthropic() {

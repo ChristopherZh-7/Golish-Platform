@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { copyToClipboard } from "@/lib/clipboard";
+import { formatDurationLong } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { CustomSelect } from "@/components/ui/custom-select";
 import { getProjectPath } from "@/lib/projects";
@@ -41,12 +43,6 @@ interface StepDetail {
 interface PipelineLauncherProps {
   targetId: string;
   targetValue: string;
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`;
 }
 
 const STATUS_CONFIG = {
@@ -163,9 +159,8 @@ function StepRow({ step, index }: { step: StepDetail; index: number }) {
   const isExpandable = hasContent && step.status !== "pending";
   const cfg = STATUS_CONFIG[step.status];
 
-  const copyOutput = useCallback(() => {
-    if (step.output) {
-      navigator.clipboard.writeText(step.output);
+  const copyOutput = useCallback(async () => {
+    if (step.output && await copyToClipboard(step.output)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     }
@@ -222,7 +217,7 @@ function StepRow({ step, index }: { step: StepDetail; index: number }) {
           {step.duration_ms != null && step.duration_ms > 0 && (
             <span className="text-[10px] text-zinc-400 flex items-center gap-1">
               <Clock className="w-3 h-3" />
-              {formatDuration(step.duration_ms)}
+              {formatDurationLong(step.duration_ms)}
             </span>
           )}
           {step.status === "skipped" && (

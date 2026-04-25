@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { logAudit } from "@/lib/audit";
 import {
   ChevronDown, ChevronRight, Copy, Eye, EyeOff, Globe, KeyRound, Link2, Loader2, Plus, ShieldCheck, ShieldX, Trash2, X,
 } from "lucide-react";
+import { copyToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import { getProjectPath } from "@/lib/projects";
@@ -239,7 +241,7 @@ export function VaultSettings() {
       setAddForm({ name: "", type: "password", value: "", username: "", notes: "", project: "", tags: "" });
       setShowAdd(false);
       loadEntries();
-      invoke("audit_log", { action: "vault_entry_added", category: "vault", details: addForm.name.trim(), projectPath: getProjectPath() }).catch(() => {});
+      logAudit({ action: "vault_entry_added", category: "vault", details: addForm.name.trim() });
     } catch (e) {
       console.error("Failed to add entry:", e);
     }
@@ -251,7 +253,7 @@ export function VaultSettings() {
       await invoke("vault_delete", { id, projectPath: getProjectPath() });
       setRevealedIds((s) => { const n = new Set(s); n.delete(id); return n; });
       loadEntries();
-      invoke("audit_log", { action: "vault_entry_deleted", category: "vault", details: name, entityType: "vault", entityId: id, projectPath: getProjectPath() }).catch(() => {});
+      logAudit({ action: "vault_entry_deleted", category: "vault", details: name, entityType: "vault", entityId: id });
     } catch (e) {
       console.error("Failed to delete:", e);
     }
@@ -283,15 +285,13 @@ export function VaultSettings() {
       if (entry.notes) lines.push(`Notes: ${entry.notes}`);
       if (entry.project) lines.push(`Project: ${entry.project}`);
       if (entry.tags.length > 0) lines.push(`Tags: ${entry.tags.join(", ")}`);
-      await navigator.clipboard.writeText(lines.join("\n"));
-    } catch (e) {
-      console.error("Failed to copy:", e);
-    }
+      await copyToClipboard(lines.join("\n"));
+    } catch { /* ignore */ }
   }, []);
 
   const handleCopyRef = useCallback(async (name: string) => {
     const ref = `{{vault:${name}}}`;
-    await navigator.clipboard.writeText(ref);
+    await copyToClipboard(ref);
   }, []);
 
   return (

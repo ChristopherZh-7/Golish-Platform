@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { js_beautify as jsBeautify, css_beautify as cssBeautify } from "js-beautify";
 import {
-  ArrowDown, ArrowUp, Copy, Crosshair,
-  Loader2, RefreshCw, Search, Send, Trash2, X, Zap,
+  ArrowDown, ArrowUp, Copy,
+  Loader2, RefreshCw, Search, Send, Trash2, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -11,7 +10,10 @@ import {
 } from "@/lib/pentest/zap-api";
 import type { HttpHistoryEntry, HttpMessageDetail } from "@/lib/pentest/types";
 import { useTranslation } from "react-i18next";
-import { ResizeHandle, methodColor, statusColor, formatSize } from "./shared";
+import { copyToClipboard } from "@/lib/clipboard";
+import { formatBytes as formatSize } from "@/lib/format";
+import { ResizeHandle, methodColor, statusColor } from "./shared";
+import { ZapContextMenu } from "./ZapContextMenu";
 
 export function buildRawRequest(detail: HttpMessageDetail): string {
   let headers = detail.request_headers;
@@ -171,52 +173,18 @@ export function HttpHistoryPanel({ onSendToRepeater, onSendToIntruder, onActiveS
         onCtxMenu={(x, y, entry) => setCtxMenu({ x, y, entry })}
         onClose={() => { setSelectedId(null); setDetail(null); }}
       />
-      {ctxMenu && createPortal(
-        <div
-          className="fixed z-[9999] min-w-[160px] rounded-lg border border-border/20 bg-popover shadow-lg py-1 text-[11px]"
-          style={{ top: ctxMenu.y, left: ctxMenu.x }}
-        >
-          <button
-            type="button"
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-accent/10 transition-colors"
-            onClick={() => { handleSendToRepeater(ctxMenu.entry.id); setCtxMenu(null); }}
-          >
-            <Send className="w-3 h-3 text-accent" />
-            {t("security.sendToRepeater")}
-          </button>
-          {onSendToIntruder && (
-            <button
-              type="button"
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-accent/10 transition-colors"
-              onClick={async () => {
-                try { const msg = await zapGetMessage(ctxMenu.entry.id, ctxMenu.entry.url); onSendToIntruder(buildRawRequest(msg)); } catch { /* ignore */ }
-                setCtxMenu(null);
-              }}
-            >
-              <Crosshair className="w-3 h-3 text-orange-400" />
-              Send to Intruder
-            </button>
-          )}
-          {onActiveScan && (
-            <button
-              type="button"
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-accent/10 transition-colors"
-              onClick={() => { onActiveScan(ctxMenu.entry.url); setCtxMenu(null); }}
-            >
-              <Zap className="w-3 h-3 text-orange-400" />
-              {t("security.activeScan")}
-            </button>
-          )}
-          <button
-            type="button"
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-accent/10 transition-colors"
-            onClick={() => { navigator.clipboard.writeText(ctxMenu.entry.url); setCtxMenu(null); }}
-          >
-            <Copy className="w-3 h-3 text-muted-foreground/50" />
-            {t("security.copyUrl")}
-          </button>
-        </div>,
-        document.body,
+      {ctxMenu && (
+        <ZapContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          entry={ctxMenu.entry}
+          onClose={() => setCtxMenu(null)}
+          onSendToRepeater={(e) => handleSendToRepeater(e.id)}
+          onSendToIntruder={onSendToIntruder ? async (e) => {
+            try { const msg = await zapGetMessage(e.id, e.url); onSendToIntruder(buildRawRequest(msg)); } catch { /* ignore */ }
+          } : undefined}
+          onActiveScan={onActiveScan}
+        />
       )}
     </div>
   );
@@ -462,7 +430,7 @@ function BodyView({ content, headers }: { content: string; headers?: string }) {
     <div className="relative group">
       <button
         type="button"
-        onClick={() => navigator.clipboard.writeText(formatted)}
+        onClick={() => copyToClipboard(formatted)}
         className="absolute top-2 right-2 p-1 rounded text-muted-foreground/0 group-hover:text-muted-foreground/40 hover:!text-accent hover:!bg-accent/10 transition-all z-10"
         title="Copy"
       >

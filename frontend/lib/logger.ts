@@ -10,16 +10,9 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { isTauri } from "@/lib/env";
 
 type LogLevel = "debug" | "info" | "warn" | "error";
-
-/**
- * Check if we're running inside Tauri.
- * In Tauri v2, window.__TAURI_INTERNALS__ is defined.
- */
-function isTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-}
 
 /**
  * Format arguments into a single string for file logging

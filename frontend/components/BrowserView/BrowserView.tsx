@@ -4,7 +4,8 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
-import { zapDownloadRootCert, zapInstallRootCert, zapStatus } from "@/lib/pentest/zap-api";
+import { zapStatus } from "@/lib/pentest/zap-api";
+import { useZapProxyCert } from "@/hooks/useZapProxyCert";
 
 interface BrowserViewProps {
   initialUrl?: string;
@@ -16,9 +17,6 @@ const DEFAULT_PORT = 8090;
 export function BrowserView({ initialUrl = "" }: BrowserViewProps) {
   const { t } = useTranslation();
   const [url, setUrl] = useState(initialUrl);
-  const [copied, setCopied] = useState(false);
-  const [certLoading, setCertLoading] = useState(false);
-  const [certResult, setCertResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [zapPort, setZapPort] = useState(DEFAULT_PORT);
 
   useEffect(() => {
@@ -26,44 +24,14 @@ export function BrowserView({ initialUrl = "" }: BrowserViewProps) {
   }, []);
 
   const proxyAddr = `127.0.0.1:${zapPort}`;
+  const { copied, certLoading, certResult, copyProxy, handleDownloadCert, handleInstallCert } =
+    useZapProxyCert(proxyAddr);
 
   const openSystemBrowser = useCallback(async () => {
     const target = url.trim() || "https://example.com";
     const { open } = await import("@tauri-apps/plugin-shell");
     await open(target);
   }, [url]);
-
-  const copyProxy = useCallback(async () => {
-    await navigator.clipboard.writeText(proxyAddr);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  }, []);
-
-  const handleDownloadCert = useCallback(async () => {
-    setCertLoading(true);
-    setCertResult(null);
-    try {
-      const path = await zapDownloadRootCert();
-      setCertResult({ ok: true, msg: path });
-    } catch (e) {
-      setCertResult({ ok: false, msg: String(e) });
-    } finally {
-      setCertLoading(false);
-    }
-  }, []);
-
-  const handleInstallCert = useCallback(async () => {
-    setCertLoading(true);
-    setCertResult(null);
-    try {
-      const path = await zapInstallRootCert();
-      setCertResult({ ok: true, msg: t("browser.certInstalled", `Certificate installed: ${path}`) });
-    } catch (e) {
-      setCertResult({ ok: false, msg: String(e) });
-    } finally {
-      setCertLoading(false);
-    }
-  }, [t]);
 
   return (
     <div className="h-full w-full flex flex-col bg-[var(--bg-primary)]">

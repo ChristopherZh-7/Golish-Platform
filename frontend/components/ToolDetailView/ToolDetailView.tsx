@@ -53,21 +53,32 @@ const PlanStepGroup = memo(function PlanStepGroup({
     return false;
   });
   const [open, setOpen] = useState(isInProgress || (!isCompleted && hasItems) || hasHighlight);
+  const prevStatusRef = useRef(step.status);
 
   useEffect(() => {
-    if (isInProgress || hasHighlight) setOpen(true);
+    if (isInProgress || hasHighlight) {
+      setOpen(true);
+    }
   }, [isInProgress, hasHighlight]);
+
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = step.status;
+    if (prev === "in_progress" && step.status !== "in_progress") {
+      setOpen(false);
+    }
+  }, [step.status]);
 
   const toggle = useCallback(() => setOpen((v) => !v), []);
 
   return (
-    <div className="mb-0.5">
+    <div className="mb-0.5 transition-opacity duration-200">
       {/* Step header */}
       <button
         type="button"
         onClick={hasItems ? toggle : undefined}
         className={cn(
-          "w-full flex items-center gap-2 px-3 py-2 text-[11px] rounded transition-colors text-left",
+          "w-full flex items-center gap-2 px-3 py-2 text-[11px] rounded transition-all duration-200 text-left",
           isInProgress && "bg-accent/8",
           isCompleted && "opacity-75",
           isFailed && "opacity-50",
@@ -109,29 +120,36 @@ const PlanStepGroup = memo(function PlanStepGroup({
         )}
       </button>
 
-      {/* Nested items */}
-      {hasItems && open && (
-        <div className="ml-5 pl-3 border-l-2 border-[var(--border-subtle)] space-y-0.5 pb-1">
-          {items.map((item) =>
-            item.kind === "tool" ? (
-              <ToolExecutionCard
-                key={item.data.requestId}
-                execution={item.data}
-                compact
-                highlighted={!!highlightSet?.has(item.data.requestId)}
-                isOpen={expandedCardId === item.data.requestId}
-                onToggle={() => onExpandCard?.(expandedCardId === item.data.requestId ? null : item.data.requestId)}
-              />
-            ) : item.kind === "pipeline" ? (
-              <PipelineProgressBlock key={item.id} execution={item.data} />
-            ) : (
-              <SubAgentCard
-                key={item.data.parentRequestId}
-                subAgent={item.data}
-                highlighted={!!highlightSet?.has(item.data.parentRequestId)}
-              />
-            ),
-          )}
+      {/* Nested items — animated with CSS grid for smooth height transition */}
+      {hasItems && (
+        <div
+          className="grid transition-[grid-template-rows] duration-200 ease-out"
+          style={{ gridTemplateRows: open ? "1fr" : "0fr" }}
+        >
+          <div className="overflow-hidden">
+            <div className="ml-5 pl-3 border-l-2 border-[var(--border-subtle)] space-y-0.5 pb-1">
+              {items.map((item) =>
+                item.kind === "tool" ? (
+                  <ToolExecutionCard
+                    key={item.data.requestId}
+                    execution={item.data}
+                    compact
+                    highlighted={!!highlightSet?.has(item.data.requestId)}
+                    isOpen={expandedCardId === item.data.requestId}
+                    onToggle={() => onExpandCard?.(expandedCardId === item.data.requestId ? null : item.data.requestId)}
+                  />
+                ) : item.kind === "pipeline" ? (
+                  <PipelineProgressBlock key={item.id} execution={item.data} />
+                ) : (
+                  <SubAgentCard
+                    key={item.data.parentRequestId}
+                    subAgent={item.data}
+                    highlighted={!!highlightSet?.has(item.data.parentRequestId)}
+                  />
+                ),
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -172,7 +190,7 @@ const RetiredPlanSection = memo(function RetiredPlanSection({
   const totalItems = stepsWithItems.reduce((sum, s) => sum + s.items.length, 0);
 
   return (
-    <div className="mt-2 pt-2 border-t border-[var(--border-subtle)]">
+    <div className="mt-2 pt-2 border-t border-[var(--border-subtle)] animate-in fade-in slide-in-from-top-1 duration-200">
       <button
         type="button"
         onClick={toggle}
@@ -185,21 +203,26 @@ const RetiredPlanSection = memo(function RetiredPlanSection({
           {open ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
         </span>
       </button>
-      {open && (
-        <div className="mt-1 opacity-80">
-          {stepsWithItems.map(({ step, items }) => (
-            <PlanStepGroup
-              key={step.id}
-              step={step}
-              items={items}
-              highlightSet={highlightSet}
-              expandedCardId={expandedCardId}
-              onExpandCard={onExpandCard}
-              versionLabel="Previous"
-            />
-          ))}
+      <div
+        className="grid transition-[grid-template-rows] duration-200 ease-out"
+        style={{ gridTemplateRows: open ? "1fr" : "0fr" }}
+      >
+        <div className="overflow-hidden">
+          <div className="mt-1 opacity-80">
+            {stepsWithItems.map(({ step, items }) => (
+              <PlanStepGroup
+                key={step.id}
+                step={step}
+                items={items}
+                highlightSet={highlightSet}
+                expandedCardId={expandedCardId}
+                onExpandCard={onExpandCard}
+                versionLabel="Previous"
+              />
+            ))}
+          </div>
         </div>
-      )}
+      </div>
     </div>
   );
 });
@@ -229,9 +252,11 @@ export const ToolDetailView = memo(function ToolDetailView({
     if (highlightIds?.[0]) setExpandedCardId(highlightIds[0]);
   }, [highlightIds]);
 
-  // Auto-scroll to bottom when new items are added
+  // Stick-to-bottom auto-scroll: follows streaming output, not just new items
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const prevItemCountRef = useRef(0);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const isStuckToBottomRef = useRef(true);
+  const isProgrammaticScrollRef = useRef(false);
 
   const allItems = useMemo(() => {
     const result: DetailItem[] = [];
@@ -318,6 +343,9 @@ export const ToolDetailView = memo(function ToolDetailView({
         rest.push(item);
       }
     }
+    // #region agent log
+    fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify({sessionId:'14d8b8',location:'ToolDetailView.tsx:stepItems:useMemo',message:'stepItems recomputed',data:{planVersion:(plan as any)?.version,stepCount:plan?.steps?.length,groupedKeys:Array.from(grouped.keys()),retiredKeys:Array.from(retiredGrouped.keys()),ungroupedCount:rest.length,allItemsCount:allItems.length},timestamp:Date.now(),hypothesisId:'E'})}).catch(()=>{});
+    // #endregion
     return { stepItems: grouped, retiredStepItems: retiredGrouped, ungrouped: rest };
   }, [plan, allItems, planStepLookup, currentStepIds, retiredPlans]);
 
@@ -335,19 +363,97 @@ export const ToolDetailView = memo(function ToolDetailView({
         return s === "completed" || s === "error" || s === "interrupted" || s === "failed";
       }).length;
 
+  // #region agent log
+  const debugPlanVersionRef = useRef(plan?.version ?? 1);
+  useEffect(() => {
+    if (plan) debugPlanVersionRef.current = plan.version;
+  }, [plan?.version]);
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && e.key === 'U') {
+        e.preventDefault();
+        const store = useStore.getState();
+        const currentPlan = store.sessions[sessionId]?.plan;
+        if (!currentPlan) return;
+        const nextV = debugPlanVersionRef.current + 1;
+        debugPlanVersionRef.current = nextV;
+        const newSteps = currentPlan.steps.map((s, i) => {
+          if (s.status === 'in_progress') return { ...s, status: 'completed' as const };
+          if (s.status === 'pending' && currentPlan.steps[i - 1]?.status === 'in_progress') return { ...s, status: 'in_progress' as const };
+          return { ...s };
+        });
+        const completed = newSteps.filter(s => s.status === 'completed').length;
+        const inProgress = newSteps.filter(s => s.status === 'in_progress').length;
+        store.setPlan(sessionId, {
+          ...currentPlan,
+          version: nextV,
+          steps: newSteps,
+          summary: { total: newSteps.length, completed, in_progress: inProgress, pending: newSteps.length - completed - inProgress },
+          updated_at: new Date().toISOString(),
+        });
+        fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify({sessionId:'14d8b8',location:'ToolDetailView.tsx:debugKeyHandler',message:'DEBUG: Manual plan update triggered',data:{version:nextV,statuses:newSteps.map(s=>s.status)},timestamp:Date.now(),hypothesisId:'debug'})}).catch(()=>{});
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [sessionId]);
+  // #endregion
+
   const hasContent = allItems.length > 0 || plan;
 
+  // Track user scroll to detect manual scroll-up (unstick from bottom).
+  // Programmatic scrolls are ignored so users can freely scroll up.
+  const handleScroll = useCallback(() => {
+    if (isProgrammaticScrollRef.current) return;
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const threshold = 60;
+    isStuckToBottomRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el || !isStuckToBottomRef.current) return;
+    // #region agent log
+    fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify({sessionId:'14d8b8',location:'ToolDetailView.tsx:scrollToBottom',message:'scrollToBottom triggered',data:{scrollTop:el.scrollTop,scrollHeight:el.scrollHeight,clientHeight:el.clientHeight,isStuck:isStuckToBottomRef.current},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    isProgrammaticScrollRef.current = true;
+    el.scrollTop = el.scrollHeight;
+    requestAnimationFrame(() => {
+      isProgrammaticScrollRef.current = false;
+    });
+  }, []);
+
+  // ResizeObserver detects when the content area grows (streaming output,
+  // new cards, expanded sections) and keeps the scroll pinned to the bottom.
+  // Throttled via rAF to prevent feedback loops between observers and layout.
   useEffect(() => {
-    if (allItems.length > prevItemCountRef.current && scrollContainerRef.current) {
-      requestAnimationFrame(() => {
-        scrollContainerRef.current?.scrollTo({
-          top: scrollContainerRef.current.scrollHeight,
-          behavior: "smooth",
-        });
+    const scrollEl = scrollContainerRef.current;
+    const contentEl = contentRef.current;
+    if (!scrollEl || !contentEl) return;
+
+    let rafId: number | null = null;
+    const throttledScroll = () => {
+      if (rafId != null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        scrollToBottom();
       });
-    }
-    prevItemCountRef.current = allItems.length;
-  }, [allItems.length]);
+    };
+
+    const ro = new ResizeObserver(throttledScroll);
+    ro.observe(contentEl);
+
+    const mo = new MutationObserver(throttledScroll);
+    mo.observe(contentEl, { childList: true, subtree: true });
+
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+      if (rafId != null) cancelAnimationFrame(rafId);
+    };
+  }, [hasContent, scrollToBottom]);
 
   return (
     <div className="h-full flex flex-col">
@@ -368,13 +474,32 @@ export const ToolDetailView = memo(function ToolDetailView({
       </div>
 
       {/* Execution list */}
-      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-3 py-2">
+      <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-3 py-2">
         {!hasContent ? (
           <div className="h-full flex items-center justify-center text-muted-foreground/50 text-sm">
             No tool executions yet
           </div>
         ) : (
-          <div className="space-y-0.5">
+          <div ref={contentRef} className="space-y-0.5">
+            {/* Ungrouped items (pre-plan tool calls) rendered above the plan */}
+            {ungrouped.filter((i) => i.kind !== "sub_agent").length > 0 && (
+              <div className={cn(plan && "mb-2 pb-2 border-b border-[var(--border-subtle)]")}>
+                {ungrouped.map((item) =>
+                  item.kind === "tool" ? (
+                    <ToolExecutionCard
+                      key={item.data.requestId}
+                      execution={item.data}
+                      highlighted={!!highlightSet?.has(item.data.requestId)}
+                      isOpen={expandedCardId === item.data.requestId}
+                      onToggle={() => setExpandedCardId(expandedCardId === item.data.requestId ? null : item.data.requestId)}
+                    />
+                  ) : item.kind === "pipeline" ? (
+                    <PipelineProgressBlock key={item.id} execution={item.data} />
+                  ) : null,
+                )}
+              </div>
+            )}
+
             {/* Integrated plan + grouped tools */}
             {plan &&
               plan.steps.map((step, i) => {
@@ -400,25 +525,6 @@ export const ToolDetailView = memo(function ToolDetailView({
                 expandedCardId={expandedCardId}
                 onExpandCard={setExpandedCardId}
               />
-            )}
-
-            {/* Ungrouped items (no planStepIndex or no plan) — sub-agents excluded since they show inline in chat */}
-            {ungrouped.filter((i) => i.kind !== "sub_agent").length > 0 && (
-              <div className={cn(plan && "mt-2 pt-2 border-t border-[var(--border-subtle)]")}>
-                {ungrouped.map((item) =>
-                  item.kind === "tool" ? (
-                    <ToolExecutionCard
-                      key={item.data.requestId}
-                      execution={item.data}
-                      highlighted={!!highlightSet?.has(item.data.requestId)}
-                      isOpen={expandedCardId === item.data.requestId}
-                      onToggle={() => setExpandedCardId(expandedCardId === item.data.requestId ? null : item.data.requestId)}
-                    />
-                  ) : item.kind === "pipeline" ? (
-                    <PipelineProgressBlock key={item.id} execution={item.data} />
-                  ) : null,
-                )}
-              </div>
             )}
           </div>
         )}

@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { useDismissMenu } from "@/hooks/useDismissMenu";
 import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
 import {
@@ -145,26 +146,7 @@ function WorktreeContextMenu({
   onClose: () => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
-
-  // Close on click outside
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        onClose();
-      }
-    };
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onClose();
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    document.addEventListener("keydown", handleEscape);
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-      document.removeEventListener("keydown", handleEscape);
-    };
-  }, [onClose]);
+  useDismissMenu(menuRef, onClose);
 
   const handleDeleteClick = useCallback(() => {
     onDelete();
@@ -369,26 +351,7 @@ function ProjectContextMenu({
   onClose: () => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
-
-  // Close on click outside
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        onClose();
-      }
-    };
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onClose();
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    document.addEventListener("keydown", handleEscape);
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-      document.removeEventListener("keydown", handleEscape);
-    };
-  }, [onClose]);
+  useDismissMenu(menuRef, onClose);
 
   const handleNewWorktreeClick = useCallback(() => {
     onNewWorktree();
@@ -557,6 +520,9 @@ export const HomeView = memo(function HomeView() {
                 scrollback: t.scrollback,
                 customName: t.customName ?? undefined,
                 planJson: t.planJson ?? undefined,
+                executionMode: t.executionMode ?? undefined,
+                useAgents: t.useAgents ?? undefined,
+                retiredPlansJson: t.retiredPlansJson ?? undefined,
                 timelineBlocks: t.timelineBlocks.map((b) => ({
                   id: b.id,
                   type: b.type as any,
@@ -765,6 +731,10 @@ export const HomeView = memo(function HomeView() {
               onClick={async () => {
                 if (deleteConfirm) {
                   const wasCurrent = useStore.getState().currentProjectName === deleteConfirm.name;
+                  if (wasCurrent) {
+                    await disposeAllRuntimeTerminals();
+                    clearSaveFingerprints();
+                  }
                   await deleteProject(deleteConfirm.name);
                   if (wasCurrent) {
                     useStore.getState().setCurrentProject(null);

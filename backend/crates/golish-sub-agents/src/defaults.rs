@@ -788,6 +788,8 @@ Be concise and focused. Complete the task as efficiently as possible."#,
             "record_finding".to_string(),
             "vault".to_string(),
             "js_collect".to_string(),
+            "pentest_list_tools".to_string(),
+            "pentest_run".to_string(),
         ])
         .with_max_iterations(50)
         .with_timeout(900)
@@ -953,7 +955,7 @@ pub async fn create_default_sub_agents_from_registry(
             "Penetration testing specialist for security assessments.",
             tmpl_or_fallback!("pentester", build_pentester_prompt()),
         )
-        .with_tools(vec!["run_pty_cmd".into(), "read_file".into(), "write_file".into(), "web_fetch".into(), "web_search".into(), "list_directory".into(), "list_files".into(), "grep_file".into(), "search_memories".into(), "run_pipeline".into(), "flow_compose".into(), "manage_targets".into(), "record_finding".into(), "vault".into(), "js_collect".into()])
+        .with_tools(vec!["run_pty_cmd".into(), "read_file".into(), "write_file".into(), "web_fetch".into(), "web_search".into(), "list_directory".into(), "list_files".into(), "grep_file".into(), "search_memories".into(), "run_pipeline".into(), "flow_compose".into(), "manage_targets".into(), "record_finding".into(), "vault".into(), "js_collect".into(), "pentest_list_tools".into(), "pentest_run".into()])
         .with_max_iterations(50).with_timeout(900).with_idle_timeout(300)
         .with_delegatable_agents(vec!["coder".into(), "researcher".into(), "memorist".into(), "explorer".into()]),
     );

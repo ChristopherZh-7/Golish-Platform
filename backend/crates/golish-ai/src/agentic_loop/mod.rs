@@ -13,7 +13,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use futures::StreamExt;
 use rig::completion::{
-    AssistantContent, CompletionModel as RigCompletionModel, GetTokenUsage, Message,
+    AssistantContent, GetTokenUsage, Message,
 };
 use rig::message::{
     Reasoning, ReasoningContent, Text, ToolCall, ToolResult, ToolResultContent, UserContent,
@@ -43,18 +43,23 @@ use golish_core::hitl::ApprovalDecision;
 use golish_core::runtime::GolishRuntime;
 use golish_core::utils::truncate_str;
 use golish_core::ApiRequestStats;
-use golish_llm_providers::ModelCapabilities;
 use golish_sidecar::{CaptureContext, SidecarState};
 use golish_sub_agents::{SubAgentContext, SubAgentRegistry, MAX_AGENT_DEPTH};
 
 use crate::event_coordinator::CoordinatorHandle;
 
+mod config;
+mod context;
+mod entry;
 mod helpers;
+mod llm_helpers;
+mod single_tool_call;
+use single_tool_call::execute_single_tool_call;
 pub(crate) mod sub_agent_dispatch;
 mod tool_execution;
 pub mod toolcall_fixer;
 
-use helpers::{estimate_message_tokens, handle_loop_detection};
+use helpers::estimate_message_tokens;
 use sub_agent_dispatch::{detect_repetitive_text, partition_tool_calls};
 pub use tool_execution::{
     execute_tool_direct_generic, execute_with_hitl_generic,
@@ -83,355 +88,14 @@ pub use compaction::{
     CompactionResult,
 };
 
-/// Marker error indicating that a terminal `AiEvent::Error` has already been emitted.
-///
-/// `AgentBridge` uses this to avoid duplicate terminal error emission.
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("{message}")]
-pub struct TerminalErrorEmitted {
-    message: String,
-    partial_response: Option<String>,
-    final_history: Option<Vec<Message>>,
-}
-
-impl TerminalErrorEmitted {
-    pub fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            partial_response: None,
-            final_history: None,
-        }
-    }
-
-    pub fn with_partial_state(
-        message: impl Into<String>,
-        partial_response: Option<String>,
-        final_history: Option<Vec<Message>>,
-    ) -> Self {
-        Self {
-            message: message.into(),
-            partial_response,
-            final_history,
-        }
-    }
-
-    pub fn partial_response(&self) -> Option<&str> {
-        self.partial_response.as_deref()
-    }
-
-    pub fn final_history(&self) -> Option<&[Message]> {
-        self.final_history.as_deref()
-    }
-}
-
-/// Context for the agentic loop execution.
-pub struct AgenticLoopContext<'a> {
-    pub event_tx: &'a mpsc::UnboundedSender<AiEvent>,
-    pub tool_registry: &'a Arc<RwLock<ToolRegistry>>,
-    pub sub_agent_registry: &'a Arc<RwLock<SubAgentRegistry>>,
-    pub indexer_state: Option<&'a Arc<IndexerState>>,
-    pub workspace: &'a Arc<RwLock<std::path::PathBuf>>,
-    pub client: &'a Arc<RwLock<golish_llm_providers::LlmClient>>,
-    pub approval_recorder: &'a Arc<ApprovalRecorder>,
-    pub pending_approvals: &'a Arc<RwLock<HashMap<String, oneshot::Sender<ApprovalDecision>>>>,
-    pub tool_policy_manager: &'a Arc<ToolPolicyManager>,
-    pub context_manager: &'a Arc<ContextManager>,
-    pub loop_detector: &'a Arc<RwLock<LoopDetector>>,
-    /// Compaction state for tracking token usage and triggering context compaction
-    pub compaction_state: &'a Arc<RwLock<CompactionState>>,
-    /// Tool configuration for filtering available tools
-    pub tool_config: &'a ToolConfig,
-    /// Sidecar state for context capture (optional)
-    pub sidecar_state: Option<&'a Arc<SidecarState>>,
-    /// Runtime for auto-approve checks (optional for backward compatibility)
-    pub runtime: Option<&'a Arc<dyn GolishRuntime>>,
-    /// Agent mode for controlling tool approval behavior
-    pub agent_mode: &'a Arc<RwLock<super::agent_mode::AgentMode>>,
-    /// Plan manager for update_plan tool
-    pub plan_manager: &'a Arc<crate::planner::PlanManager>,
-    /// API request stats collector (per session)
-    pub api_request_stats: &'a Arc<ApiRequestStats>,
-    /// Provider name for capability detection (e.g., "openai", "anthropic")
-    pub provider_name: &'a str,
-    /// Model name for capability detection
-    pub model_name: &'a str,
-    /// OpenAI web search config (if enabled)
-    pub openai_web_search_config: Option<&'a golish_llm_providers::OpenAiWebSearchConfig>,
-    /// OpenAI reasoning effort level (if set)
-    pub openai_reasoning_effort: Option<&'a str>,
-    /// OpenRouter provider preferences JSON for routing and filtering (if set)
-    pub openrouter_provider_preferences: Option<&'a serde_json::Value>,
-    /// Factory for creating sub-agent model override clients (optional)
-    pub model_factory: Option<&'a Arc<super::llm_client::LlmClientFactory>>,
-    /// Session ID for Langfuse trace grouping (optional)
-    pub session_id: Option<&'a str>,
-    /// Transcript writer for persisting AI events (optional)
-    pub transcript_writer: Option<&'a Arc<crate::transcript::TranscriptWriter>>,
-    /// Base directory for transcript files (e.g., `~/.golish/transcripts`)
-    /// Used to create separate transcript files for sub-agent internal events.
-    pub transcript_base_dir: Option<&'a std::path::Path>,
-    /// Additional tool definitions to include (e.g., SWE-bench test tool).
-    /// These are added to the tool list alongside the standard tools.
-    pub additional_tool_definitions: Vec<rig::completion::ToolDefinition>,
-    /// Custom tool executor for handling additional tools.
-    /// If provided, this function is called for tools not handled by the standard executors.
-    /// Returns `Some((result, success))` if the tool was handled, `None` otherwise.
-    #[allow(clippy::type_complexity)]
-    pub custom_tool_executor: Option<
-        std::sync::Arc<
-            dyn Fn(
-                    &str,
-                    &serde_json::Value,
-                ) -> std::pin::Pin<
-                    Box<dyn std::future::Future<Output = Option<(serde_json::Value, bool)>> + Send>,
-                > + Send
-                + Sync,
-        >,
-    >,
-    /// Event coordinator for message-passing based event management (optional).
-    /// When available, approval registration uses the coordinator instead of pending_approvals.
-    pub coordinator: Option<&'a CoordinatorHandle>,
-    /// Database tracker for background recording of tool calls, token usage, etc.
-    pub db_tracker: Option<&'a crate::db_tracking::DbTracker>,
-    /// Cancellation flag: checked between loop iterations to support user-initiated stop.
-    pub cancelled: Option<&'a Arc<std::sync::atomic::AtomicBool>>,
-    /// Execution monitor for the Mentor pattern (PentAGI-style).
-    /// When present, tracks tool call patterns and the agentic loop can
-    /// inject mentor advice into tool results when the monitor triggers.
-    pub execution_monitor: Option<Arc<RwLock<crate::loop_detection::ExecutionMonitor>>>,
-    /// Execution mode: Chat (all tools) vs Task (delegation-only).
-    /// In Task mode the primary agent loses direct environment access (shell, file, web)
-    /// and must delegate to sub-agents, matching PentAGI's primary agent pattern.
-    pub execution_mode: super::execution_mode::ExecutionMode,
-}
-
-/// Result of a single tool execution.
-pub struct ToolExecutionResult {
-    pub value: serde_json::Value,
-    pub success: bool,
-}
-
-/// Wrapper for capture context that persists across the loop
-pub struct LoopCaptureContext {
-    inner: Option<std::sync::Mutex<CaptureContext>>,
-}
-
-impl LoopCaptureContext {
-    /// Create a new loop capture context
-    pub fn new(sidecar: Option<&Arc<SidecarState>>) -> Self {
-        Self {
-            inner: sidecar.map(|s| std::sync::Mutex::new(CaptureContext::new(s.clone()))),
-        }
-    }
-
-    /// Process an event if capture is enabled
-    pub fn process(&self, event: &AiEvent) {
-        if let Some(ref capture) = self.inner {
-            if let Ok(mut guard) = capture.lock() {
-                guard.process(event);
-            }
-        }
-    }
-}
-
-/// Helper to emit an event to frontend and transcript (but not sidecar)
-/// Use this when sidecar capture is handled separately (e.g., with stateful capture_ctx)
-fn emit_to_frontend(ctx: &AgenticLoopContext<'_>, event: AiEvent) {
-    // Write to transcript if configured (skip streaming events)
-    if let Some(writer) = ctx.transcript_writer {
-        if crate::transcript::should_transcript(&event) {
-            let writer = Arc::clone(writer);
-            let event_clone = event.clone();
-            tokio::spawn(async move {
-                if let Err(e) = writer.append(&event_clone).await {
-                    tracing::warn!("Failed to write to transcript: {}", e);
-                }
-            });
-        }
-    }
-
-    let _ = ctx.event_tx.send(event);
-}
-
-/// Helper to emit an event to both frontend and sidecar (stateless capture)
-/// Use this for events that don't need state correlation (e.g., Reasoning)
-fn emit_event(ctx: &AgenticLoopContext<'_>, event: AiEvent) {
-    // Log reasoning events being emitted to frontend (trace level to reduce spam)
-    if let AiEvent::Reasoning { ref content } = event {
-        tracing::trace!(
-            "[Thinking] Emitting reasoning event to frontend: {} chars",
-            content.len()
-        );
-    }
-
-    // Write to transcript if configured (skip streaming events)
-    if let Some(writer) = ctx.transcript_writer {
-        if crate::transcript::should_transcript(&event) {
-            let writer = Arc::clone(writer);
-            let event_clone = event.clone();
-            tokio::spawn(async move {
-                if let Err(e) = writer.append(&event_clone).await {
-                    tracing::warn!("Failed to write to transcript: {}", e);
-                }
-            });
-        }
-    }
-
-    // Send to frontend
-    let _ = ctx.event_tx.send(event.clone());
-
-    // Capture in sidecar if available (stateless - creates fresh context each time)
-    if let Some(sidecar) = ctx.sidecar_state {
-        let mut capture = CaptureContext::new(sidecar.clone());
-        capture.process(&event);
-    }
-}
+pub use context::{
+    AgenticLoopContext, LoopCaptureContext, TerminalErrorEmitted, ToolExecutionResult,
+};
+use context::{emit_event, emit_to_frontend, is_cancelled};
 
 
-/// Execute the main agentic loop with tool calling.
-///
-/// This function runs the LLM completion loop, handling:
-/// - Tool calls and results
-/// - Loop detection
-/// - Context window management
-/// - HITL approval
-/// - Extended thinking (streaming reasoning content)
-///
-/// Returns a tuple of (response_text, message_history, token_usage)
-///
-/// Note: This is the Anthropic-specific entry point that delegates to the unified loop
-/// with thinking history support enabled.
-///
-/// Returns: (response, reasoning, history, token_usage)
-pub async fn run_agentic_loop(
-    model: &rig_anthropic_vertex::CompletionModel,
-    system_prompt: &str,
-    initial_history: Vec<Message>,
-    context: SubAgentContext,
-    ctx: &AgenticLoopContext<'_>,
-) -> Result<(String, Option<String>, Vec<Message>, Option<TokenUsage>)> {
-    // Delegate to unified loop with Anthropic configuration (thinking history enabled)
-    run_agentic_loop_unified(
-        model,
-        system_prompt,
-        initial_history,
-        context,
-        ctx,
-        AgenticLoopConfig::main_agent_anthropic(),
-    )
-    .await
-}
-
-
-/// Generic agentic loop that works with any rig CompletionModel.
-///
-/// This is a simplified version of `run_agentic_loop` that:
-/// - Works with any model implementing `rig::completion::CompletionModel`
-/// - Does NOT support extended thinking (Anthropic-specific)
-/// - Supports sub-agent calls (uses the same model for sub-agents)
-///
-/// Returns: (response, reasoning, history, token_usage)
-///
-/// Note: This is the generic entry point that delegates to the unified loop.
-/// Model capabilities are detected from the provider/model name in the context.
-pub async fn run_agentic_loop_generic<M>(
-    model: &M,
-    system_prompt: &str,
-    initial_history: Vec<Message>,
-    context: SubAgentContext,
-    ctx: &AgenticLoopContext<'_>,
-) -> Result<(String, Option<String>, Vec<Message>, Option<TokenUsage>)>
-where
-    M: RigCompletionModel + Sync,
-{
-    // Detect capabilities from provider/model name for proper temperature handling
-    let config = AgenticLoopConfig::with_detection(ctx.provider_name, ctx.model_name, false);
-
-    // Delegate to unified loop with detected configuration
-    run_agentic_loop_unified(model, system_prompt, initial_history, context, ctx, config).await
-}
-
-// ============================================================================
-// UNIFIED AGENTIC LOOP (Phase 1.3)
-// ============================================================================
-
-/// Configuration for the unified agentic loop.
-///
-/// This struct controls model-specific behavior in the unified loop,
-/// allowing it to handle both Anthropic-style (thinking-enabled) and
-/// generic model execution paths.
-#[derive(Debug, Clone)]
-pub struct AgenticLoopConfig {
-    /// Model capabilities (thinking support, temperature, etc.)
-    pub capabilities: ModelCapabilities,
-    /// Whether HITL approval is required for tool execution.
-    pub require_hitl: bool,
-    /// Whether this is a sub-agent execution (affects tool restrictions).
-    pub is_sub_agent: bool,
-    /// Whether to invoke the reflector agent when the model produces text
-    /// without any tool calls. Default: false (only enabled for main agent).
-    pub enable_reflector: bool,
-    /// Tool names hint passed to the reflector so it can suggest specific tools.
-    pub tool_names_for_reflector: Option<Vec<String>>,
-}
-
-impl AgenticLoopConfig {
-    /// Create config for main agent with Anthropic model.
-    ///
-    /// Anthropic models support extended thinking (reasoning history tracking)
-    /// and require HITL approval for tool execution.
-    pub fn main_agent_anthropic() -> Self {
-        Self {
-            capabilities: ModelCapabilities::anthropic_defaults(),
-            require_hitl: true,
-            is_sub_agent: false,
-            enable_reflector: true,
-            tool_names_for_reflector: None,
-        }
-    }
-
-    /// Create config for main agent with generic model.
-    ///
-    /// Generic models use conservative defaults (no thinking history tracking)
-    /// and require HITL approval for tool execution.
-    pub fn main_agent_generic() -> Self {
-        Self {
-            capabilities: ModelCapabilities::conservative_defaults(),
-            require_hitl: true,
-            is_sub_agent: false,
-            enable_reflector: true,
-            tool_names_for_reflector: None,
-        }
-    }
-
-    /// Create config for sub-agent (trusted, no HITL).
-    ///
-    /// Sub-agents are trusted and do not require HITL approval.
-    /// The capabilities should match the model being used.
-    pub fn sub_agent(capabilities: ModelCapabilities) -> Self {
-        Self {
-            capabilities,
-            require_hitl: false,
-            is_sub_agent: true,
-            enable_reflector: false,
-            tool_names_for_reflector: None,
-        }
-    }
-
-    /// Create config with detected capabilities based on provider and model name.
-    ///
-    /// This factory method detects capabilities automatically and is useful
-    /// when calling from code that has provider/model info but not an LlmClient.
-    pub fn with_detection(provider_name: &str, model_name: &str, is_sub_agent: bool) -> Self {
-        Self {
-            capabilities: ModelCapabilities::detect(provider_name, model_name),
-            require_hitl: !is_sub_agent,
-            is_sub_agent,
-            enable_reflector: !is_sub_agent,
-            tool_names_for_reflector: None,
-        }
-    }
-}
+pub use entry::{run_agentic_loop, run_agentic_loop_generic};
+pub use config::AgenticLoopConfig;
 
 /// Unified agentic loop that handles all model types.
 ///
@@ -1181,6 +845,15 @@ where
                 output_schema: None,
             };
 
+            if is_cancelled(ctx) {
+                tracing::info!("Agent cancelled before LLM call (attempt {})", attempt);
+                let _ = ctx.event_tx.send(AiEvent::Error {
+                    message: "Agent stopped by user".to_string(),
+                    error_type: "cancelled".to_string(),
+                });
+                return Err(anyhow::anyhow!("Agent stopped by user"));
+            }
+
             // Record outgoing request at the stream boundary (main agent)
             ctx.api_request_stats.record_sent(ctx.provider_name).await;
 
@@ -1312,6 +985,15 @@ where
         let mut current_tool_args = String::new();
 
         while let Some(chunk_result) = stream.next().await {
+            if is_cancelled(ctx) {
+                tracing::info!("Agent cancelled during stream processing (chunk {})", chunk_count);
+                drop(stream);
+                let _ = ctx.event_tx.send(AiEvent::Error {
+                    message: "Agent stopped by user".to_string(),
+                    error_type: "cancelled".to_string(),
+                });
+                return Err(anyhow::anyhow!("Agent stopped by user"));
+            }
             chunk_count += 1;
             // Log progress every 50 chunks to avoid spam but track stream activity
             if chunk_count % 50 == 0 {
@@ -2078,6 +1760,10 @@ where
         } else {
             // 0 or 1 sub-agent calls — execute sequentially (no spawn overhead)
             for (original_idx, tool_call) in sub_agent_calls {
+                if is_cancelled(ctx) {
+                    tracing::info!("Agent cancelled before sub-agent call: {}", tool_call.function.name);
+                    break;
+                }
                 let result = execute_single_tool_call(
                     tool_call, ctx, &capture_ctx, model, &sub_agent_context,
                     &hook_registry, &llm_span,
@@ -2089,6 +1775,10 @@ where
 
         // Execute non-sub-agent calls sequentially (always)
         for (original_idx, tool_call) in other_calls {
+            if is_cancelled(ctx) {
+                tracing::info!("Agent cancelled before tool execution: {}", tool_call.function.name);
+                break;
+            }
             let result = execute_single_tool_call(
                 tool_call, ctx, &capture_ctx, model, &sub_agent_context,
                 &hook_registry, &llm_span,
@@ -2214,462 +1904,6 @@ where
 // =============================================================================
 // CONTEXT COMPACTION ORCHESTRATION
 // =============================================================================
-
-/// Execute a single tool call with loop detection, HITL approval, event emission,
-/// truncation, and post-tool hooks. Returns (UserContent, system_hooks).
-///
-/// This function is extracted from the tool execution loop to enable both
-/// sequential and concurrent (via `join_all`) execution of tool calls.
-#[allow(clippy::too_many_arguments)]
-async fn execute_single_tool_call<M>(
-    tool_call: ToolCall,
-    ctx: &AgenticLoopContext<'_>,
-    capture_ctx: &LoopCaptureContext,
-    model: &M,
-    sub_agent_context: &SubAgentContext,
-    hook_registry: &HookRegistry,
-    llm_span: &tracing::Span,
-) -> (UserContent, Vec<String>)
-where
-    M: RigCompletionModel + Sync,
-{
-    let tool_name = &tool_call.function.name;
-    let tool_args = if tool_name == "run_pty_cmd" || tool_name == "run_command" {
-        normalize_run_pty_cmd_args(tool_call.function.arguments.clone())
-    } else {
-        tool_call.function.arguments.clone()
-    };
-    let tool_id = tool_call.id.clone();
-    let tool_call_id = tool_call.call_id.clone().unwrap_or_else(|| tool_id.clone());
-
-    tracing::info!(
-        "[tool-dispatch] Executing tool: name={}, id={}, args_len={}",
-        tool_name,
-        tool_id,
-        serde_json::to_string(&tool_args).map(|s| s.len()).unwrap_or(0),
-    );
-
-    // Create span for tool call
-    let args_str = serde_json::to_string(&tool_args).unwrap_or_default();
-    let args_for_span = if args_str.len() > 1000 {
-        format!("{}... [truncated]", truncate_str(&args_str, 1000))
-    } else {
-        args_str
-    };
-    let tool_span = tracing::info_span!(
-        parent: llm_span,
-        "tool_call",
-        "otel.name" = %tool_name,
-        "langfuse.span.name" = %tool_name,
-        "langfuse.observation.type" = "tool",
-        "langfuse.session.id" = ctx.session_id.unwrap_or(""),
-        tool.name = %tool_name,
-        tool.id = %tool_id,
-        "langfuse.observation.input" = %args_for_span,
-        "langfuse.observation.output" = tracing::field::Empty,
-        success = tracing::field::Empty,
-    );
-
-    // Check for loop detection
-    let loop_result = {
-        let mut detector = ctx.loop_detector.write().await;
-        detector.record_tool_call(tool_name, &tool_args)
-    };
-
-    // Handle loop detection (may return a blocked result)
-    if let Some(blocked_result) =
-        handle_loop_detection(&loop_result, &tool_id, &tool_call_id, ctx.event_tx)
-    {
-        let loop_info = match &loop_result {
-            crate::loop_detection::LoopDetectionResult::Blocked {
-                repeat_count,
-                max_count,
-                ..
-            } => format!("repeat_count={}, max={}", repeat_count, max_count),
-            crate::loop_detection::LoopDetectionResult::MaxIterationsReached {
-                iterations,
-                max_iterations,
-                ..
-            } => format!("iterations={}, max={}", iterations, max_iterations),
-            _ => String::new(),
-        };
-        let _loop_event = tracing::info_span!(
-            parent: llm_span,
-            "loop_blocked",
-            "langfuse.observation.type" = "event",
-            "langfuse.session.id" = ctx.session_id.unwrap_or(""),
-            tool_name = %tool_name,
-            details = %loop_info,
-        );
-        tool_span.record("success", false);
-        tool_span.record("langfuse.observation.output", "blocked by loop detection");
-        return (blocked_result, vec![]);
-    }
-
-    // Start DB tracking for tool call timing
-    let db_guard = ctx
-        .db_tracker
-        .map(|t| t.start_tool_call(&tool_id, tool_name, &tool_args));
-
-    // Execute tool with HITL approval check
-    let mut result = execute_with_hitl_generic(
-        tool_name,
-        &tool_args,
-        &tool_id,
-        ctx,
-        capture_ctx,
-        model,
-        sub_agent_context,
-    )
-    .await
-    .unwrap_or_else(|e| ToolExecutionResult {
-        value: json!({ "error": e.to_string() }),
-        success: false,
-    });
-
-    // Tool Call Auto-Fixer: if execution failed with a schema/argument error,
-    // try a lightweight LLM call to repair the args and retry once.
-    if !result.success {
-        let error_text = result.value.get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let tool_schema = {
-            let registry = ctx.tool_registry.read().await;
-            registry.get_tool_definitions()
-                .into_iter()
-                .find(|td| td.name == *tool_name)
-                .map(|td| td.parameters)
-        };
-
-        if let Some(fixed_args) = toolcall_fixer::try_fix_tool_args(
-            model,
-            tool_name,
-            &tool_args,
-            &error_text,
-            tool_schema.as_ref(),
-        ).await {
-            tracing::info!(
-                "[toolcall-fixer] Retrying '{}' with repaired args",
-                tool_name
-            );
-            result = execute_with_hitl_generic(
-                tool_name,
-                &fixed_args,
-                &tool_id,
-                ctx,
-                capture_ctx,
-                model,
-                sub_agent_context,
-            )
-            .await
-            .unwrap_or_else(|e| ToolExecutionResult {
-                value: json!({ "error": e.to_string() }),
-                success: false,
-            });
-        }
-    }
-
-    // Finish DB tracking with result
-    if let (Some(tracker), Some(guard)) = (ctx.db_tracker, db_guard) {
-        let result_text = serde_json::to_string(&result.value).unwrap_or_default();
-        tracker.finish_tool_call(guard, result.success, &result_text);
-
-        // Record search logs for web search tools
-        if tool_name.starts_with("tavily_") || tool_name.starts_with("web_search") {
-            let query = tool_args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            let result_preview = serde_json::to_string(&result.value)
-                .ok()
-                .map(|s| truncate_str(&s, 10000).to_string());
-            tracker.record_search(
-                if tool_name.starts_with("tavily_") { "tavily" } else { "web" },
-                query,
-                result_preview.as_deref(),
-            );
-        }
-
-        // Record terminal logs for shell/PTY commands
-        if tool_name == "run_pty_cmd" || tool_name == "run_command" || tool_name == "run_shell_cmd" {
-            let output = result.value.get("output")
-                .or_else(|| result.value.get("stdout"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if !output.is_empty() {
-                tracker.record_terminal_output("stdout", output);
-            }
-            if let Some(stderr) = result.value.get("stderr").and_then(|v| v.as_str()) {
-                if !stderr.is_empty() {
-                    tracker.record_terminal_output("stderr", stderr);
-                }
-            }
-        }
-
-        // Memory gatekeeper: decide if this tool result is worth persisting
-        tracker.maybe_store_tool_memory(tool_name, &tool_args, &result.value, result.success);
-    }
-
-    // Record tool result in span
-    let result_str = serde_json::to_string(&result.value).unwrap_or_default();
-    let result_for_span = if result_str.len() > 1000 {
-        format!("{}... [truncated]", truncate_str(&result_str, 1000))
-    } else {
-        result_str
-    };
-    tool_span.record("langfuse.observation.output", result_for_span.as_str());
-    tool_span.record("success", result.success);
-
-    // Emit tool result event
-    let result_event = AiEvent::ToolResult {
-        tool_name: tool_name.clone(),
-        result: result.value.clone(),
-        success: result.success,
-        request_id: tool_id.clone(),
-        source: golish_core::events::ToolSource::Main,
-    };
-    emit_to_frontend(ctx, result_event.clone());
-    capture_ctx.process(&result_event);
-
-    // Execution Mentor check (PentAGI pattern): when the monitor detects
-    // repetitive tool usage, generate corrective advice and append it.
-    let mentor_advice = if let Some(ref monitor) = ctx.execution_monitor {
-        let args_summary = serde_json::to_string(&tool_args).unwrap_or_default();
-        let should_mentor = {
-            let mut mon = monitor.write().await;
-            mon.record_and_check(tool_name, &args_summary)
-        };
-        if should_mentor {
-            let (repeated_tool, repeat_count, recent_summary) = {
-                let mon = monitor.read().await;
-                (
-                    mon.repeated_tool_name().to_string(),
-                    mon.same_tool_count(),
-                    mon.recent_calls_summary(),
-                )
-            };
-            tracing::info!(
-                "[ExecutionMentor] Monitor triggered: '{}' called {} times, invoking LLM mentor",
-                repeated_tool,
-                repeat_count,
-            );
-            let advice = {
-                let mentor_system = crate::task_orchestrator::prompts::mentor_system_prompt();
-                let mentor_user = crate::task_orchestrator::prompts::mentor_user_prompt(
-                    tool_name,
-                    &repeated_tool,
-                    repeat_count,
-                    &recent_summary,
-                );
-                match mentor_one_shot(ctx.client, mentor_system, &mentor_user).await {
-                    Ok(llm_advice) => {
-                        tracing::info!(
-                            "[ExecutionMentor] LLM mentor produced {} chars of advice",
-                            llm_advice.len()
-                        );
-                        format!("\n\n--- EXECUTION ADVISOR ---\n{}\n-------------------------", llm_advice)
-                    }
-                    Err(e) => {
-                        tracing::warn!("[ExecutionMentor] LLM mentor failed, using static fallback: {}", e);
-                        format!(
-                            "\n\n--- EXECUTION ADVISOR ---\n\
-                             You have called '{}' {} times. Consider a different approach:\n\
-                             - Try a different tool to make progress\n\
-                             - Check if previous results already contain the information you need\n\
-                             - If stuck, use a different strategy entirely\n\
-                             Recent calls: {}\n\
-                             -------------------------",
-                            repeated_tool, repeat_count, recent_summary,
-                        )
-                    }
-                }
-            };
-            {
-                let mut mon = monitor.write().await;
-                mon.reset_after_mentor();
-            }
-            Some(advice)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    // Convert result to text and truncate if necessary
-    let mut raw_result_text = serde_json::to_string(&result.value).unwrap_or_default();
-    if let Some(ref advice) = mentor_advice {
-        raw_result_text.push_str(advice);
-    }
-    let truncation_result = ctx
-        .context_manager
-        .truncate_tool_response(&raw_result_text, tool_name)
-        .await;
-
-    let final_content = if truncation_result.truncated {
-        let original_tokens = golish_context::TokenBudgetManager::estimate_tokens(&raw_result_text);
-        let truncated_tokens =
-            golish_context::TokenBudgetManager::estimate_tokens(&truncation_result.content);
-        let _ = ctx.event_tx.send(AiEvent::ToolResponseTruncated {
-            tool_name: tool_name.clone(),
-            original_tokens,
-            truncated_tokens,
-        });
-
-        // If truncated output is still large, attempt LLM summarization
-        if truncated_tokens > SUMMARIZE_THRESHOLD_TOKENS {
-            match summarize_tool_output(ctx.client, tool_name, &truncation_result.content).await {
-                Ok(summary) => {
-                    tracing::info!(
-                        "[ToolSummarizer] Summarized '{}' output: {} -> {} tokens",
-                        tool_name,
-                        truncated_tokens,
-                        golish_context::TokenBudgetManager::estimate_tokens(&summary),
-                    );
-                    summary
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "[ToolSummarizer] Failed for '{}', using truncated: {}",
-                        tool_name,
-                        e
-                    );
-                    truncation_result.content
-                }
-            }
-        } else {
-            truncation_result.content
-        }
-    } else {
-        truncation_result.content
-    };
-
-    let user_content = UserContent::ToolResult(ToolResult {
-        id: tool_id.clone(),
-        call_id: Some(tool_call_id),
-        content: OneOrMany::one(ToolResultContent::Text(Text {
-            text: final_content,
-        })),
-    });
-
-    // Run post-tool hooks
-    let post_ctx = PostToolContext::new(
-        tool_name,
-        &tool_args,
-        &result.value,
-        result.success,
-        0,
-        ctx.session_id.unwrap_or(""),
-    );
-    let hooks = hook_registry.run_post_tool_hooks(&post_ctx);
-
-    (user_content, hooks)
-}
-
-/// Summarize large tool output using a one-shot LLM call.
-///
-/// Preserves key data (IPs, ports, versions, URLs, errors) while removing noise.
-/// Falls back to truncated content on failure.
-async fn summarize_tool_output(
-    client: &Arc<RwLock<golish_llm_providers::LlmClient>>,
-    tool_name: &str,
-    content: &str,
-) -> anyhow::Result<String> {
-    let system = r#"You are a technical output summarizer for a penetration testing agent.
-Summarize the tool output below, preserving ALL:
-- IP addresses, hostnames, domain names
-- Port numbers and service versions
-- HTTP status codes and response headers
-- Error messages and warnings
-- Vulnerability identifiers (CVE, CWE)
-- Credentials, tokens, or sensitive data found
-- File paths and URLs
-
-Remove: redundant lines, progress bars, banner art, duplicate entries, verbose formatting.
-Output a clean, structured summary. Keep it under 800 tokens."#;
-
-    let user_msg = format!(
-        "Tool: {}\n\nOutput to summarize:\n{}",
-        tool_name, content
-    );
-
-    let summary = mentor_one_shot(client, system, &user_msg).await?;
-    if summary.trim().is_empty() {
-        return Err(anyhow::anyhow!("LLM returned empty summary"));
-    }
-    Ok(format!(
-        "[LLM-summarized output from '{}']\n\n{}\n\n[End of summary — original output was {} chars]",
-        tool_name,
-        summary.trim(),
-        content.len()
-    ))
-}
-
-/// One-shot LLM completion for the Execution Mentor.
-///
-/// Uses the session's model to generate strategic advice when the agent is stuck.
-async fn mentor_one_shot(
-    client: &Arc<RwLock<golish_llm_providers::LlmClient>>,
-    system_prompt: &str,
-    user_message: &str,
-) -> anyhow::Result<String> {
-    use rig::completion::{AssistantContent, CompletionModel as _, CompletionRequest};
-    use rig::message::{Text as RigText, UserContent};
-
-    let request = CompletionRequest {
-        preamble: Some(system_prompt.to_string()),
-        chat_history: OneOrMany::one(Message::User {
-            content: OneOrMany::one(UserContent::Text(RigText {
-                text: user_message.to_string(),
-            })),
-        }),
-        documents: vec![],
-        tools: vec![],
-        temperature: Some(0.4),
-        max_tokens: Some(500),
-        tool_choice: None,
-        additional_params: None,
-        model: None,
-        output_schema: None,
-    };
-
-    let client_guard = client.read().await;
-
-    macro_rules! complete {
-        ($model:expr) => {{
-            let response = $model
-                .completion(request)
-                .await
-                .map_err(|e| anyhow::anyhow!("Mentor LLM call failed: {}", e))?;
-            let text = response
-                .choice
-                .iter()
-                .filter_map(|c| match c {
-                    AssistantContent::Text(t) => Some(t.text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("");
-            Ok(text)
-        }};
-    }
-
-    match &*client_guard {
-        golish_llm_providers::LlmClient::VertexAnthropic(m) => complete!(m),
-        golish_llm_providers::LlmClient::VertexGemini(m) => complete!(m),
-        golish_llm_providers::LlmClient::RigOpenRouter(m) => complete!(m),
-        golish_llm_providers::LlmClient::RigOpenAi(m) => complete!(m),
-        golish_llm_providers::LlmClient::RigOpenAiResponses(m) => complete!(m),
-        golish_llm_providers::LlmClient::OpenAiReasoning(m) => complete!(m),
-        golish_llm_providers::LlmClient::RigAnthropic(m) => complete!(m),
-        golish_llm_providers::LlmClient::RigOllama(m) => complete!(m),
-        golish_llm_providers::LlmClient::RigGemini(m) => complete!(m),
-        golish_llm_providers::LlmClient::RigGroq(m) => complete!(m),
-        golish_llm_providers::LlmClient::RigXai(m) => complete!(m),
-        golish_llm_providers::LlmClient::RigZaiSdk(m) => complete!(m),
-        golish_llm_providers::LlmClient::RigNvidia(m) => complete!(m),
-        golish_llm_providers::LlmClient::Mock => Err(anyhow::anyhow!("Mock client")),
-    }
-}
 
 #[cfg(test)]
 mod tests;

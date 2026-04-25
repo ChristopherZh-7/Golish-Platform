@@ -7,28 +7,7 @@ import {
 import { cn } from "@/lib/utils";
 import type { VulnLink } from "./types";
 import { Markdown } from "@/components/Markdown";
-
-interface WikiPageInfo {
-  path: string;
-  title: string;
-  category: string;
-  tags: string[];
-  status: string;
-  word_count: number;
-  updated_at: string;
-}
-
-interface WikiBacklinkInfo {
-  source_path: string;
-  context: string;
-}
-
-interface WikiTreeNode {
-  path: string;
-  name: string;
-  is_dir: boolean;
-  children?: WikiTreeNode[];
-}
+import { wikiApi, type WikiPageInfo, type WikiBacklinkInfo, type WikiTreeNode } from "@/lib/wiki";
 
 export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: string; onUpdateLink: (updater: (l: VulnLink) => VulnLink) => void }) {
   const [fullTree, setFullTree] = useState<WikiTreeNode[]>([]);
@@ -54,7 +33,7 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
 
   const reloadTree = useCallback(() => {
     setLoadingTree(true);
-    invoke<WikiTreeNode[]>("wiki_list")
+    wikiApi.list().then(d => d as unknown as WikiTreeNode[])
       .then((tree) => {
         setFullTree(Array.isArray(tree) ? tree : []);
         const dirs = new Set<string>();
@@ -73,7 +52,7 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
 
   useEffect(() => {
     if (!selectedPath || articleContents[selectedPath] !== undefined) return;
-    invoke<string>("wiki_read", { path: selectedPath })
+    wikiApi.read(selectedPath)
       .then((content) => setArticleContents((prev) => ({ ...prev, [selectedPath]: content })))
       .catch(() => setArticleContents((prev) => ({ ...prev, [selectedPath]: "" })));
   }, [selectedPath]);
@@ -84,7 +63,7 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
   useEffect(() => {
     if (reindexDone.current) return;
     reindexDone.current = true;
-    invoke("wiki_reindex")
+    wikiApi.reindex()
       .catch(() => {})
       .finally(() => setIndexReady(true));
   }, []);
@@ -183,7 +162,7 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
   const handleSaveEdit = useCallback(async () => {
     if (!editingPath) return;
     try {
-      await invoke("wiki_write", { path: editingPath, content: editContent });
+      await wikiApi.write(editingPath, editContent);
       setArticleContents((prev) => ({ ...prev, [editingPath]: editContent }));
       setEditingPath(null);
     } catch (err) {
@@ -194,7 +173,7 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
   const handleDeletePage = useCallback(async (path: string) => {
     if (!confirm(`Delete wiki page "${path}"? This cannot be undone.`)) return;
     try {
-      await invoke("wiki_delete", { path });
+      await wikiApi.delete(path);
       setArticleContents((prev) => {
         const next = { ...prev };
         delete next[path];
@@ -214,7 +193,7 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
     const path = p.endsWith(".md") ? p : `${p}.md`;
     const template = `---\ntitle: ${path.split("/").pop()?.replace(/\.md$/, "") || "New Page"}\ncategory: ${path.split("/")[0] || "uncategorized"}\ntags: []\ncves: [${cveId}]\nstatus: draft\n---\n\n# ${path.split("/").pop()?.replace(/\.md$/, "") || "New Page"}\n\nContent here.\n`;
     try {
-      await invoke("wiki_write", { path, content: template });
+      await wikiApi.write(path, template);
       handleLinkWiki(path);
       setCreating(false);
       setCreatePath("");

@@ -3,18 +3,13 @@ import {
   ChevronDown,
   ChevronRight,
   Circle,
-  FileSearch,
-  Globe,
   Loader2,
-  Network,
-  Pencil,
-  Search,
-  Terminal,
-  Wrench,
   XCircle,
 } from "lucide-react";
 import { memo, useEffect, useMemo, useState } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { formatDurationShort } from "@/lib/time";
+import { getToolIcon, getToolLabel, getToolPrimaryArg } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import type { AiToolExecution } from "@/store";
 import { useStore } from "@/store";
@@ -25,60 +20,13 @@ interface InlineTaskPlanProps {
   className?: string;
 }
 
-const TOOL_ICONS: Record<string, typeof Terminal> = {
-  run_command: Terminal,
-  run_pty_cmd: Terminal,
-  read_file: FileSearch,
-  write_file: Pencil,
-  edit_file: Pencil,
-  search_files: Search,
-  web_search: Globe,
-  web_fetch: Globe,
-  manage_targets: Network,
-};
-
-const TOOL_LABELS: Record<string, string> = {
-  run_command: "Shell Command",
-  run_pty_cmd: "Shell Command",
-  read_file: "Read File",
-  write_file: "Write File",
-  edit_file: "Edit File",
-  search_files: "Search Files",
-  web_search: "Web Search",
-  web_fetch: "Fetch URL",
-  manage_targets: "Manage Targets",
-  record_finding: "Record Finding",
-  credential_vault: "Credential Vault",
-  js_collect: "JS Collect",
-  run_pipeline: "Run Pipeline",
-  flow_compose: "Flow Compose",
-  pentest_run: "Pentest Run",
-  pentest_list_tools: "List Tools",
-  pentest_read_skill: "Read Skill",
-};
-
-function getToolLabel(name: string): string {
-  return TOOL_LABELS[name] || name.replace(/_/g, " ");
-}
-
-function getToolPrimaryArg(name: string, args: Record<string, unknown>): string | null {
-  if ((name === "run_command" || name === "run_pty_cmd") && args.command)
-    return String(args.command);
-  if (args.path) return String(args.path);
-  if (args.file_path) return String(args.file_path);
-  if (args.url) return String(args.url);
-  if (args.query) return String(args.query);
-  if (args.pattern) return String(args.pattern);
-  return null;
-}
-
 /** Compact inline tool execution item for nesting under plan steps. */
 const CompactToolItem = memo(function CompactToolItem({
   exec,
 }: {
   exec: AiToolExecution;
 }) {
-  const Icon = TOOL_ICONS[exec.toolName] || Wrench;
+  const Icon = getToolIcon(exec.toolName);
   const label = getToolLabel(exec.toolName);
   const primaryArg = getToolPrimaryArg(exec.toolName, exec.args);
   const isRunning = exec.status === "running";
@@ -99,8 +47,8 @@ const CompactToolItem = memo(function CompactToolItem({
         {isOk && (
           <>
             <CheckCircle2 className="w-3 h-3 text-green-500" />
-            {exec.durationMs != null && (
-              <span className="text-[10px] opacity-50">{exec.durationMs}ms</span>
+            {exec.durationMs != null && formatDurationShort(exec.durationMs) && (
+              <span className="text-[10px] opacity-50">{formatDurationShort(exec.durationMs)}</span>
             )}
           </>
         )}

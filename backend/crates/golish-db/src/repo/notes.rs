@@ -38,6 +38,27 @@ pub async fn list_for_entity(pool: &PgPool, entity_type: &str, entity_id: &str) 
     Ok(rows)
 }
 
+pub async fn list_filtered(
+    pool: &PgPool,
+    entity_type: Option<&str>,
+    entity_id: Option<&str>,
+    project_path: Option<&str>,
+) -> Result<Vec<Note>> {
+    let rows = sqlx::query_as::<_, Note>(
+        r#"SELECT * FROM notes
+           WHERE ($1::text IS NULL OR entity_type = $1)
+             AND ($2::text IS NULL OR entity_id = $2)
+             AND project_path IS NOT DISTINCT FROM $3
+           ORDER BY created_at DESC"#,
+    )
+    .bind(entity_type)
+    .bind(entity_id)
+    .bind(project_path)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 pub async fn update(pool: &PgPool, id: Uuid, content: &str, color: &str) -> Result<()> {
     sqlx::query("UPDATE notes SET content = $1, color = $2, updated_at = NOW() WHERE id = $3")
         .bind(content)

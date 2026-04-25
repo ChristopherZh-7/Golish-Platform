@@ -459,6 +459,7 @@ interface GolishState
   ) => void;
   failSubAgent: (sessionId: string, parentRequestId: string, error: string) => void;
   updateSubAgentStreamingText: (sessionId: string, parentRequestId: string, text: string) => void;
+  appendSubAgentToolOutput: (sessionId: string, toolId: string, chunk: string) => void;
   clearActiveSubAgents: (sessionId: string) => void;
 
   // AI tool execution timeline actions
@@ -494,7 +495,6 @@ interface GolishState
 
   // Plan actions
   setPlan: (sessionId: string, plan: TaskPlan, currentMessageId?: string | null, newMessageId?: string | null) => void;
-  retirePlan: (sessionId: string, messageId: string) => void;
   /** Bridge plan_updated events into a pipeline_progress timeline block */
   syncPlanToPipeline: (sessionId: string, plan: TaskPlan) => void;
 
@@ -570,6 +570,43 @@ interface GolishState
   ) => void;
   /** Set the current project name and path (for workspace persistence). */
   setCurrentProject: (name: string | null, path?: string | null) => void;
+}
+
+/**
+ * Determine whether two step lists represent a structural change (different
+ * steps, not just status updates).  Uses step IDs when available; for
+ * ID-less steps, normalises the text and compares word overlap so that
+ * minor rephrasing (e.g. "Run nmap scan" → "Execute nmap scan") is
+ * tolerated.
+ */
+function planStepsStructurallyChanged(
+  prev: Array<{ id?: string; step: string }>,
+  next: Array<{ id?: string; step: string }>,
+): boolean {
+  if (prev.length !== next.length) return true;
+
+  const allHaveIds = prev.every((s) => s.id) && next.every((s) => s.id);
+  if (allHaveIds) {
+    const prevIds = new Set(prev.map((s) => s.id));
+    return next.some((s) => !prevIds.has(s.id));
+  }
+
+  // Positional comparison with fuzzy text matching for ID-less steps
+  for (let i = 0; i < prev.length; i++) {
+    const pId = prev[i].id;
+    const nId = next[i].id;
+    if (pId && nId) {
+      if (pId !== nId) return true;
+      continue;
+    }
+    const pWords = new Set(prev[i].step.toLowerCase().replace(/[^\w\s]/g, "").split(/\s+/).filter(Boolean));
+    const nWords = new Set(next[i].step.toLowerCase().replace(/[^\w\s]/g, "").split(/\s+/).filter(Boolean));
+    const union = new Set([...pWords, ...nWords]);
+    const intersection = [...pWords].filter((w) => nWords.has(w)).length;
+    // Jaccard similarity ≥ 0.5 → considered the same step
+    if (union.size > 0 && intersection / union.size < 0.5) return true;
+  }
+  return false;
 }
 
 /**
@@ -1885,6 +1922,7 @@ export const useStore = create<GolishState>()(
 
           const agent = agents.find((a) => a.parentRequestId === parentRequestId);
           if (agent) {
+            if (agent.toolCalls.some((tc) => tc.id === toolCall.id)) return;
             agent.toolCalls.push({
               ...toolCall,
               status: "running",
@@ -1973,6 +2011,23 @@ export const useStore = create<GolishState>()(
           }
         }),
 
+      appendSubAgentToolOutput: (sessionId, toolId, chunk) =>
+        set((state) => {
+          const agents = state.activeSubAgents[sessionId];
+          if (!agents) return;
+          for (const agent of agents) {
+            const tool = agent.toolCalls.find((t) => t.id === toolId);
+            if (tool) {
+              tool.streamingOutput = (tool.streamingOutput ?? "") + chunk;
+              const timeline = state.timelines[sessionId];
+              if (timeline) {
+                syncSubAgentToTimeline(state, timeline, agent.parentRequestId, agent);
+              }
+              return;
+            }
+          }
+        }),
+
       clearActiveSubAgents: (sessionId) =>
         set((state) => {
           state.activeSubAgents[sessionId] = [];
@@ -1993,12 +2048,22 @@ export const useStore = create<GolishState>()(
           let planStepId: string | undefined;
           const plan = state.sessions[sessionId]?.plan;
           if (plan) {
-            const idx = plan.steps.findIndex((s) => s.status === "in_progress");
+            // Prefer the first in-progress step; fall back to the last completed
+            // step so tools that start after their step finishes still group correctly.
+            let idx = plan.steps.findIndex((s) => s.status === "in_progress");
+            if (idx < 0) {
+              for (let i = plan.steps.length - 1; i >= 0; i--) {
+                if (plan.steps[i].status === "completed") { idx = i; break; }
+              }
+            }
             if (idx >= 0) {
               planStepIndex = idx;
               planStepId = plan.steps[idx].id;
             }
           }
+          // #region agent log
+          try { fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify({sessionId:'14d8b8',location:'store/index.ts:addToolExecBlock',message:'Tool execution block added',data:{sid:sessionId,requestId:execution.requestId,toolName:execution.toolName,planStepIndex,planStepId,hasPlan:!!plan},timestamp:Date.now(),hypothesisId:'tool-lifecycle'})}).catch(()=>{}); } catch(_e){}
+          // #endregion
           state.timelines[sessionId].push({
             id: `tool-exec-${execution.requestId}`,
             type: "ai_tool_execution",
@@ -2021,6 +2086,9 @@ export const useStore = create<GolishState>()(
       completeToolExecutionBlock: (sessionId, requestId, success, result) =>
         set((state) => {
           const timeline = state.timelines[sessionId];
+          // #region agent log
+          try { fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify({sessionId:'14d8b8',location:'store/index.ts:completeToolExecBlock',message:'completeToolExecutionBlock called',data:{sid:sessionId,requestId,success,hasTimeline:!!timeline,blockFound:timeline?.some((b:any)=>b.type==='ai_tool_execution'&&b.data.requestId===requestId)},timestamp:Date.now(),hypothesisId:'running-stuck'})}).catch(()=>{}); } catch(_e){}
+          // #endregion
           if (!timeline) return;
           const block = timeline.find(
             (b) => b.type === "ai_tool_execution" && b.data.requestId === requestId
@@ -2107,21 +2175,30 @@ export const useStore = create<GolishState>()(
             return;
           }
 
+          // #region agent log
+          try { const _logData = {sessionId:'14d8b8',location:'store/index.ts:setPlan',message:'setPlan called',data:{sid:sessionId,prevVersion:prev?.version,newVersion:plan.version,prevStepCount:prev?.steps?.length,newStepCount:plan.steps?.length,prevStepIds:prev?.steps?.map((s:{id?:string})=>s.id),newStepIds:plan.steps?.map((s:{id?:string})=>s.id),prevStatuses:prev?.steps?.map((s:{status:string})=>s.status),newStatuses:plan.steps?.map((s:{status:string})=>s.status)},timestamp:Date.now(),hypothesisId:'C'}; fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify(_logData)}).catch(()=>{}); } catch(_e){}
+          // #endregion
+
           // Retire the previous plan if steps structurally changed.
           // Fall back to session.planMessageId when caller doesn't provide a messageId
           // (e.g. the global useAiEvents handler).
           const msgId = currentMessageId ?? state.sessions[sessionId].planMessageId;
           if (prev && msgId) {
-            const prevStepIds = new Set(prev.steps.map((s) => s.id ?? s.step));
-            const newStepIds = new Set(plan.steps.map((s) => s.id ?? s.step));
-            const stepsChanged = prevStepIds.size !== newStepIds.size ||
-              [...prevStepIds].some((id) => !newStepIds.has(id));
+            const stepsChanged = planStepsStructurallyChanged(prev.steps, plan.steps);
             if (stepsChanged) {
+              // #region agent log
+              try { fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify({sessionId:'14d8b8',location:'store/index.ts:setPlan:retire',message:'Plan structurally changed - retiring old plan',data:{sid:sessionId,prevVersion:prev.version,newVersion:plan.version,retiredCount:(state.sessions[sessionId].retiredPlans?.length??0)+1},timestamp:Date.now(),hypothesisId:'D'})}).catch(()=>{}); } catch(_e){}
+              // #endregion
               if (!state.sessions[sessionId].retiredPlans) {
                 state.sessions[sessionId].retiredPlans = [];
               }
+              const retiredSteps = prev.steps.map((s) =>
+                s.status === "in_progress" || s.status === "pending"
+                  ? { ...s, status: "cancelled" as const }
+                  : { ...s },
+              );
               state.sessions[sessionId].retiredPlans!.push({
-                plan: { ...prev },
+                plan: { ...prev, steps: retiredSteps },
                 messageId: msgId,
                 retiredAt: new Date().toISOString(),
               });
@@ -2145,15 +2222,44 @@ export const useStore = create<GolishState>()(
                   block.data.planStepIndex == null &&
                   block.data.status === "running"
                 ) {
+                  // #region agent log
+                  try { fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify({sessionId:'14d8b8',location:'store/index.ts:setPlan:backfill',message:'Backfilling tool into plan step',data:{sid:sessionId,toolName:block.data.toolName,requestId:block.data.requestId,stepIdx:firstInProgress,stepId,stepText:plan.steps[firstInProgress]?.step?.slice(0,60)},timestamp:Date.now(),hypothesisId:'backfill'})}).catch(()=>{}); } catch(_e){}
+                  // #endregion
                   block.data.planStepIndex = firstInProgress;
                   block.data.planStepId = stepId;
                 }
               }
             }
+
+            // Finalize running tools whose plan step has completed.
+            // This handles cases where tool_result events are never received
+            // (e.g. title-gen sessions that emit tool_approval_request but not tool_result).
+            if (prev) {
+              for (let i = 0; i < plan.steps.length; i++) {
+                const wasInProgress = prev.steps[i]?.status === "in_progress";
+                const nowCompleted = plan.steps[i].status === "completed";
+                if (wasInProgress && nowCompleted) {
+                  const stepId2 = plan.steps[i].id;
+                  for (const block of timeline) {
+                    if (
+                      block.type === "ai_tool_execution" &&
+                      block.data.status === "running" &&
+                      block.data.planStepId === stepId2
+                    ) {
+                      // #region agent log
+                      fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify({sessionId:'14d8b8',location:'store/index.ts:setPlan:finalize',message:'Finalizing stuck running tool via plan step completion',data:{toolName:block.data.toolName,requestId:block.data.requestId,planStepId:stepId2,sessionId},timestamp:Date.now()})}).catch(()=>{});
+                      // #endregion
+                      block.data.status = "completed";
+                      block.data.completedAt = new Date().toISOString();
+                      const start = new Date(block.data.startedAt).getTime();
+                      block.data.durationMs = Date.now() - start;
+                    }
+                  }
+                }
+              }
+            }
           }
         }),
-
-      retirePlan: () => {},
 
       syncPlanToPipeline: (sessionId, plan) =>
         set((state) => {
@@ -3102,233 +3208,7 @@ export function getOwningTabId(sessionId: string): string | null {
   return null;
 }
 
-// Helper function to clear conversation (both frontend and backend)
-// This should be called instead of clearTimeline when you want to reset AI context
-export async function clearConversation(sessionId: string): Promise<void> {
-  // Clear frontend state
-  useStore.getState().clearTimeline(sessionId);
+export { clearConversation, restoreSession } from "./actions";
 
-  // Clear backend conversation history (try session-specific first, fall back to global)
-  try {
-    const { clearAiConversationSession, clearAiConversation } = await import("@/lib/ai");
-    // Try session-specific clear first
-    try {
-      await clearAiConversationSession(sessionId);
-    } catch {
-      // Fall back to global clear (legacy)
-      await clearAiConversation();
-    }
-  } catch (error) {
-    logger.warn("Failed to clear backend conversation history:", error);
-  }
-}
-
-// Helper function to restore a previous session (both frontend and backend)
-export async function restoreSession(sessionId: string, identifier: string): Promise<void> {
-  const aiModule = await import("@/lib/ai");
-  const { loadAiSession, restoreAiSession, initAiSession, buildProviderConfig } = aiModule;
-  const { getSettings } = await import("@/lib/settings");
-
-  // First, load the session data from disk (doesn't require AI bridge)
-  const session = await loadAiSession(identifier);
-  if (!session) {
-    throw new Error(`Session '${identifier}' not found`);
-  }
-
-  // Get current settings and use the user's current default provider
-  // (not the session's original provider - conversation history is provider-agnostic)
-  const settings = await getSettings();
-  const workspace = session.workspace_path;
-
-  logger.info(
-    `Restoring session (original: ${session.provider}/${session.model}, ` +
-      `using current: ${settings.ai.default_provider}/${settings.ai.default_model})`
-  );
-
-  // Build config using the user's current default provider
-  const config = await buildProviderConfig(settings, workspace);
-
-  // Initialize the AI bridge BEFORE restoring messages
-  await initAiSession(sessionId, config);
-
-  // Update the store's AI config for this session with the current provider
-  useStore.getState().setSessionAiConfig(sessionId, {
-    provider: settings.ai.default_provider,
-    model: settings.ai.default_model,
-    status: "ready",
-  });
-
-  // Now restore the backend conversation history (bridge is initialized)
-  await restoreAiSession(sessionId, identifier);
-
-  // Convert session messages to AgentMessages for the UI
-  const agentMessages: AgentMessage[] = session.messages
-    .filter((msg) => msg.role === "user" || msg.role === "assistant")
-    .map((msg, index) => ({
-      id: `restored-${identifier}-${index}`,
-      sessionId,
-      role: msg.role as "user" | "assistant",
-      content: msg.content,
-      timestamp: index === 0 ? session.started_at : session.ended_at,
-      isStreaming: false,
-    }));
-
-  // Clear existing state first
-  useStore.getState().clearTimeline(sessionId);
-
-  // Restore the messages to the store (this also populates the timeline)
-  useStore.getState().restoreAgentMessages(sessionId, agentMessages);
-
-  // Switch to agent mode since we're restoring an AI conversation
-  useStore.getState().setInputMode(sessionId, "agent");
-}
-
-// Expose store for testing in development
-if (import.meta.env.DEV) {
-  (window as unknown as { __GOLISH_STORE__: typeof useStore }).__GOLISH_STORE__ = useStore;
-
-  /**
-   * Inject a full demo scenario: conversation messages + plan + tool executions + retired plans.
-   * Usage: __mockPlan()  — active plan with progress
-   *        __mockPlan('done')  — all steps completed
-   *        __mockPlan('retired')  — includes a previous (retired) plan version
-   */
-  (window as unknown as Record<string, unknown>).__mockPlan = (variant?: "active" | "done" | "retired") => {
-    const state = useStore.getState();
-    const sid = state.activeSessionId;
-    if (!sid) { console.warn("No active session"); return; }
-
-    const v = variant ?? "active";
-    const now = Date.now();
-
-    // --- 1. Ensure a conversation exists and is active ---
-    let convId = state.activeConversationId;
-    if (!convId) {
-      convId = `mock-conv-${now}`;
-      state.addConversation({
-        id: convId,
-        title: "Security Assessment",
-        messages: [],
-        createdAt: now,
-        aiSessionId: sid,
-        aiInitialized: true,
-        isStreaming: false,
-      });
-    }
-
-    // --- 2. Add messages to conversation (right-side chat panel) ---
-    const planMsgId = `mock-plan-msg-${now}`;
-    state.addConversationMessage(convId, {
-      id: `mock-user-${now}`,
-      role: "user",
-      content: "Scan http://8.138.179.62:8080/ for vulnerabilities",
-      timestamp: now - 60000,
-    });
-
-    state.addConversationMessage(convId, {
-      id: `mock-asst-${now}`,
-      role: "assistant",
-      content: "I'll analyze the target and create a comprehensive security assessment plan.",
-      timestamp: now - 55000,
-    });
-
-    state.addConversationMessage(convId, {
-      id: planMsgId,
-      role: "assistant",
-      content: "I've created the following plan and will begin execution now.",
-      timestamp: now - 50000,
-      toolCalls: [{ name: "update_plan", args: "{}", requestId: "tc-plan" }],
-    });
-
-    // --- 3. Set plan message ID so TaskPlanCard renders at that message ---
-    useStore.setState((s) => {
-      if (s.sessions[sid]) {
-        s.sessions[sid].planMessageId = planMsgId;
-      }
-    });
-
-    // --- 4. Create plan ---
-    const plan = {
-      version: 1,
-      summary: {
-        total: 5,
-        completed: v === "done" ? 5 : v === "active" ? 2 : 3,
-        in_progress: v === "active" ? 1 : 0,
-        failed: 0,
-      },
-      steps: [
-        { id: "s1", step: "Verify target registration in database", status: (v === "done" || v === "active" ? "completed" : "completed") as string },
-        { id: "s2", step: "Execute reconnaissance pipeline against target", status: (v === "done" || v === "active" ? "completed" : "completed") as string },
-        { id: "s3", step: "Run port scanning and service fingerprinting", status: (v === "done" ? "completed" : v === "active" ? "in_progress" : "completed") as string },
-        { id: "s4", step: "Perform vulnerability assessment with nuclei", status: (v === "done" ? "completed" : "pending") as string },
-        { id: "s5", step: "Generate final security report", status: (v === "done" ? "completed" : "pending") as string },
-      ],
-    };
-    state.setPlan(sid, plan as Parameters<typeof state.setPlan>[1]);
-
-    // --- 5. Add tool execution blocks (left-side ToolDetailView) ---
-    const toolExecs = [
-      { id: "te-1", tool: "run_pty_cmd", step: "s1", args: { command: "sqlite3 targets.db 'SELECT * FROM targets'" }, status: "completed" as const, result: '{"stdout": "id|url|status\\n1|http://8.138.179.62:8080/|active"}' },
-      { id: "te-2", tool: "run_pty_cmd", step: "s2", args: { command: "nmap -sV -p 1-1000 8.138.179.62" }, status: "completed" as const, result: '{"stdout": "PORT     STATE SERVICE\\n22/tcp   open  ssh\\n80/tcp   open  http\\n8080/tcp open  http-proxy"}' },
-      { id: "te-3", tool: "read_file", step: "s2", args: { path: "/pentest/nuclei-templates/http/" }, status: "completed" as const, result: '{"response": "Found 45 templates in http/ directory"}' },
-      { id: "te-4", tool: "run_pty_cmd", step: "s3", args: { command: "nmap -sC -sV -p 22,80,8080 -A 8.138.179.62" }, status: v === "active" ? "running" as const : "completed" as const, result: v === "active" ? null : '{"stdout": "PORT     STATE SERVICE  VERSION\\n22/tcp   open  ssh      OpenSSH 8.2p1\\n80/tcp   open  http     nginx 1.18.0\\n8080/tcp open  http     Apache Tomcat 9.0.41"}' },
-    ];
-
-    for (const te of toolExecs) {
-      state.addToolExecutionBlock(sid, {
-        requestId: te.id,
-        toolName: te.tool,
-        args: te.args,
-        source: undefined,
-      });
-      useStore.setState((s) => {
-        const tl = s.timelines[sid];
-        if (!tl) return;
-        const block = tl.find((b) => b.type === "ai_tool_execution" && b.data.requestId === te.id);
-        if (block && block.type === "ai_tool_execution") {
-          block.data.planStepId = te.step;
-          block.data.status = te.status;
-          if (te.result) block.data.result = te.result;
-        }
-      });
-    }
-
-    // --- 6. Switch to tool-detail view ---
-    state.setDetailViewMode(sid, "tool-detail");
-
-    // --- 7. Add retired plan if requested ---
-    if (v === "retired") {
-      useStore.setState((s) => {
-        if (s.sessions[sid]) {
-          s.sessions[sid].retiredPlans = [{
-            plan: {
-              version: 0,
-              updated_at: new Date(now - 3600000).toISOString(),
-              summary: { total: 4, completed: 2, in_progress: 0, failed: 0 },
-              steps: [
-                { id: "old-1", step: "DNS resolution and subdomain enumeration", status: "completed" as const },
-                { id: "old-2", step: "Port scanning", status: "completed" as const },
-                { id: "old-3", step: "HTTP service probing", status: "cancelled" as const },
-                { id: "old-4", step: "Vulnerability scanning", status: "pending" as const },
-              ],
-            },
-            messageId: planMsgId,
-            retiredAt: new Date(now - 3600000).toISOString(),
-          }];
-        }
-      });
-    }
-
-    // --- 8. Add final report for done variant ---
-    if (v === "done") {
-      state.addConversationMessage(convId, {
-        id: `mock-final-${now}`,
-        role: "assistant",
-        content: "## Security Assessment Complete\n\nAll 5 steps have been completed successfully. Key findings:\n- 3 open ports detected (22, 80, 8080)\n- Apache Tomcat 9.0.41 on port 8080 (known CVEs)\n- 2 medium-severity vulnerabilities found\n\nSee the detailed report for remediation recommendations.",
-        timestamp: now,
-      });
-    }
-
-    console.log(`[__mockPlan] Injected full "${v}" scenario into session ${sid}, convId=${convId}`);
-  };
-}
+import { installDevTools } from "./dev-mock";
+installDevTools();

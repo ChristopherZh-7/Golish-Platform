@@ -124,6 +124,11 @@ export function useAiEvents() {
     };
 
     const handleEvent = (event: AiEvent) => {
+      // #region agent log
+      if (event.type !== 'text_delta' && event.type !== 'reasoning') {
+        fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify({sessionId:'14d8b8',location:'useAiEvents.ts:handleEvent:entry',message:'handleEvent called',data:{eventType:event.type,rawSessionId:event.session_id,seq:(event as any).seq,toolName:(event as any).tool_name,requestId:(event as any).request_id},timestamp:Date.now(),hypothesisId:'event-routing'})}).catch(()=>{});
+      }
+      // #endregion
       // Get the session ID from the event for proper routing
       const state = useStore.getState();
       let sessionId = event.session_id;
@@ -180,6 +185,11 @@ export function useAiEvents() {
         }
 
         if (!resolved) {
+          // #region agent log
+          if (event.type === 'tool_result') {
+            fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify({sessionId:'14d8b8',location:'useAiEvents.ts:handleEvent:session-drop',message:'tool_result DROPPED by session-not-found',data:{toolName:(event as any).tool_name,requestId:(event as any).request_id,originalSessionId:sessionId,activeSessionId:state.activeSessionId},timestamp:Date.now(),hypothesisId:'event-routing'})}).catch(()=>{});
+          }
+          // #endregion
           logger.warn("AI event dropped for unknown session:", {
             sessionId,
             eventType: event.type,
@@ -195,6 +205,11 @@ export function useAiEvents() {
 
         // Skip duplicate or out-of-order events
         if (event.seq <= lastSeq) {
+          // #region agent log
+          if (event.type === 'tool_result') {
+            fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify({sessionId:'14d8b8',location:'useAiEvents.ts:handleEvent:dedup-drop',message:'tool_result DROPPED by dedup',data:{toolName:(event as any).tool_name,requestId:(event as any).request_id,seq:event.seq,lastSeq,resolvedSessionId:sessionId},timestamp:Date.now(),hypothesisId:'event-routing'})}).catch(()=>{});
+          }
+          // #endregion
           logger.debug(
             `Skipping duplicate/out-of-order event: seq=${event.seq}, lastSeq=${lastSeq}, type=${event.type}`
           );
