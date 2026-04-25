@@ -1,9 +1,7 @@
 use chrono::{Duration, Utc};
-use serde::{Deserialize, Serialize};
 
 use crate::state::AppState;
-use uuid::Uuid;
-use super::types::{VulnFeed, VulnEntry, FeedRow, EntryRow, ensure_default_feeds, ts_from_dt, nvd_recent_url, upsert_entries};
+use super::types::{VulnFeed, VulnEntry, FeedRow, EntryRow, ensure_default_feeds, nvd_recent_url, upsert_entries};
 use super::fetch::{merge_and_enrich, enrich_missing_cvss, fetch_cisa_kev, fetch_nvd, fetch_rss};
 
 #[tauri::command]

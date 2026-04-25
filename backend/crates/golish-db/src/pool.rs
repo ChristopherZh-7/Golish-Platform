@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -8,6 +9,28 @@ use tracing::{info, warn};
 pub struct PoolInfo {
     pub pool: PgPool,
     pub has_pgvector: bool,
+}
+
+/// Build a **lazy** [`PgPool`] using the canonical golish-db pool config.
+///
+/// No TCP connection is opened here — the pool auto-connects on the first
+/// query. This is the entry point for the GUI bootstrap, which has to hand a
+/// pool to [`crate::AppState`] before the embedded PostgreSQL server has
+/// finished starting; an eager [`create_pool`] would block the UI thread.
+///
+/// The connection-pool tuning (max/min connections, acquire timeout) lives
+/// next to [`create_pool`] so both eager and lazy callers stay in lockstep
+/// when those numbers are tweaked in the future. The lazy variant
+/// intentionally keeps `min_connections = 0` so we don't try to connect
+/// before the embedded server is up.
+pub fn create_lazy_pool(connection_string: &str) -> Result<Arc<PgPool>> {
+    let pool = PgPoolOptions::new()
+        .max_connections(10)
+        .min_connections(0)
+        .acquire_timeout(Duration::from_secs(30))
+        .connect_lazy(connection_string)
+        .context("Failed to create lazy PG pool")?;
+    Ok(Arc::new(pool))
 }
 
 /// Create a connection pool, run migrations, and detect available extensions.

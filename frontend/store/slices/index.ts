@@ -90,5 +90,66 @@ export {
   selectConversationTerminals,
 } from "./conversation";
 
+// Session slice
+export {
+  _drainOutputBuffer,
+  _drainOutputBufferSize,
+  createSessionSlice,
+  initialSessionState,
+  selectActiveSessionId,
+  selectSession,
+  selectTabOrder,
+  type SessionActions,
+  type SessionSlice,
+  type SessionState,
+} from "./session";
+
+// AI slice
+export {
+  createAiSlice,
+  initialAiState,
+  selectActiveToolCalls,
+  selectAiConfig,
+  selectIsAgentResponding,
+  selectIsAgentThinking,
+  type AiActions,
+  type AiSlice,
+  type AiState,
+} from "./ai";
+
+// Workflow slice
+export {
+  createWorkflowSlice,
+  initialWorkflowState,
+  selectActiveSubAgents,
+  selectActiveWorkflow,
+  type WorkflowActions,
+  type WorkflowSlice,
+  type WorkflowState,
+} from "./workflow";
+
+// Pane slice
+export {
+  createPaneSlice,
+  initialPaneState,
+  selectPaneMoveState,
+  selectTabLayout,
+  type PaneActions,
+  type PaneSlice,
+  type PaneState,
+} from "./pane";
+
+// HITL slice
+export {
+  createHitlSlice,
+  initialHitlState,
+  selectApprovalMode,
+  selectPendingAskHuman,
+  selectPendingToolApproval,
+  type HitlActions,
+  type HitlSlice,
+  type HitlState,
+} from "./hitl";
+
 // Types
 export type { ImmerSet, SliceCreator, StateGet } from "./types";
