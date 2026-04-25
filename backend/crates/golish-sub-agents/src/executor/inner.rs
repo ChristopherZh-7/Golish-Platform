@@ -758,6 +758,11 @@ where
                     tool_provider
                         .execute_web_fetch_tool(tool_name, &tool_args)
                         .await
+                } else if let Some(result) = tool_provider
+                    .execute_memory_tool(tool_name, &tool_args)
+                    .await
+                {
+                    result
                 } else if tool_name == "run_pty_cmd" || tool_name == "run_command" {
                     let command = tool_args.get("command").and_then(|c| c.as_str()).unwrap_or("");
                     let cwd = tool_args.get("cwd").and_then(|c| c.as_str());

@@ -34,6 +34,12 @@ pub trait ToolProvider: Send + Sync {
         args: &serde_json::Value,
     ) -> (serde_json::Value, bool);
 
+    async fn execute_memory_tool(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> Option<(serde_json::Value, bool)>;
+
     /// Normalize run_pty_cmd arguments
     fn normalize_run_pty_cmd_args(&self, args: serde_json::Value) -> serde_json::Value;
 }
