@@ -1,10 +1,8 @@
-use std::sync::Arc;
-use rig::completion::{CompletionModel as RigCompletionModel, Message};
+use rig::completion::CompletionModel as RigCompletionModel;
 use rig::message::{Text, ToolCall, ToolResult, ToolResultContent, UserContent};
 use rig::one_or_many::OneOrMany;
 use serde_json::json;
-use tokio::sync::RwLock;
-use golish_core::events::{AiEvent, ToolSource};
+use golish_core::events::AiEvent;
 use golish_core::utils::truncate_str;
 use golish_sub_agents::SubAgentContext;
 use super::context::{AgenticLoopContext, LoopCaptureContext, ToolExecutionResult, emit_to_frontend};

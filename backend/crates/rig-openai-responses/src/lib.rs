@@ -24,11 +24,17 @@
 //!     .with_reasoning_effort(ReasoningEffort::High);
 //! ```
 
+mod client;
 mod completion;
 mod error;
+mod request;
+mod response;
+mod stream_map;
 
-pub use completion::{Client, CompletionModel, ReasoningEffort, StreamingResponseData};
+pub use client::{Client, ReasoningEffort};
+pub use completion::CompletionModel;
 pub use error::OpenAiResponsesError;
+pub use response::StreamingResponseData;
 
 /// Check if a model is an OpenAI reasoning model that benefits from this provider.
 ///

@@ -1,6 +1,5 @@
-use serde::Deserialize;
 
-use super::types::{VulnEntry, nvd_recent_url};
+use super::types::VulnEntry;
 
 pub(super) fn merge_and_enrich(entries: Vec<VulnEntry>) -> Vec<VulnEntry> {
     let mut map = std::collections::HashMap::<String, VulnEntry>::new();

@@ -39,6 +39,7 @@ use sqlx::PgPool;
 
 pub use config::DbConfig;
 pub use models::*;
+pub use pool::create_lazy_pool;
 pub use ready_gate::DbReadyGate;
 
 /// Top-level database handle. Owns the embedded PG server and connection pool.
