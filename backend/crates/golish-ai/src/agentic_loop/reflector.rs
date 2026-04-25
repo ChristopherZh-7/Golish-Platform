@@ -100,7 +100,7 @@ pub(super) async fn maybe_run_reflector(
 
     let correction = {
         use crate::tool_provider_impl::DefaultToolProvider;
-        let tool_provider = DefaultToolProvider::new();
+        let tool_provider = DefaultToolProvider::with_db_tracker(ctx.db_tracker);
         let sub_ctx = golish_sub_agents::SubAgentExecutorContext {
             event_tx: ctx.event_tx,
             tool_registry: ctx.tool_registry,

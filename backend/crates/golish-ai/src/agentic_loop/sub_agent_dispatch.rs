@@ -20,7 +20,7 @@ pub(crate) async fn execute_sub_agent_with_client(
     context: &SubAgentContext,
     client: &golish_llm_providers::LlmClient,
     ctx: SubAgentExecutorContext<'_>,
-    tool_provider: &DefaultToolProvider,
+    tool_provider: &DefaultToolProvider<'_>,
     parent_request_id: &str,
 ) -> anyhow::Result<golish_sub_agents::SubAgentResult> {
     use golish_llm_providers::LlmClient;

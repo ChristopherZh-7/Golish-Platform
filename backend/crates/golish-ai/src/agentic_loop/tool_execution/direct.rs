@@ -193,7 +193,7 @@ where
     };
     drop(registry);
 
-    let tool_provider = DefaultToolProvider::new();
+    let tool_provider = DefaultToolProvider::with_db_tracker(ctx.db_tracker);
 
     let task_desc = tool_args
         .get("task")
