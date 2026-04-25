@@ -58,25 +58,17 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Create a new AppState with all subsystems initialized.
+    /// Build a new [`AppState`] from a pre-initialized [`SettingsManager`].
     ///
-    /// This is async because SettingsManager needs to load from disk.
-    ///
-    /// # Arguments
-    /// * `langfuse_active` - Whether Langfuse tracing is enabled and properly configured.
-    /// * `telemetry_stats` - Optional telemetry stats for monitoring (only when Langfuse is active).
+    /// Callers should construct the settings manager once during bootstrap
+    /// and reuse it here so we don't read settings off disk twice.
     pub async fn new(
+        settings_manager: Arc<SettingsManager>,
         langfuse_active: bool,
         telemetry_stats: Option<Arc<TelemetryStats>>,
         db_pool: Arc<PgPool>,
         db_ready: DbReadyGate,
     ) -> Self {
-        let settings_manager = Arc::new(
-            SettingsManager::new()
-                .await
-                .expect("Failed to initialize settings manager"),
-        );
-
         let settings = settings_manager.get().await;
         let sidecar_config = SidecarConfig::from_golish_settings(&settings.sidecar);
         tracing::debug!(
@@ -123,49 +115,5 @@ impl AppState {
             return Err("Database is still starting up, please retry".to_string());
         }
         Ok(&self.db_pool)
-    }
-
-    /// Create a new AppState with a pre-initialized SettingsManager.
-    ///
-    /// This avoids redundant disk reads when the SettingsManager has already been created.
-    ///
-    /// # Arguments
-    /// * `settings_manager` - Already-initialized settings manager to use.
-    /// * `langfuse_active` - Whether Langfuse tracing is enabled and properly configured.
-    /// * `telemetry_stats` - Optional telemetry stats for monitoring (only when Langfuse is active).
-    pub async fn with_settings_manager(
-        settings_manager: Arc<SettingsManager>,
-        langfuse_active: bool,
-        telemetry_stats: Option<Arc<TelemetryStats>>,
-        db_pool: Arc<PgPool>,
-        db_ready: DbReadyGate,
-    ) -> Self {
-        let settings = settings_manager.get().await;
-        let sidecar_config = SidecarConfig::from_golish_settings(&settings.sidecar);
-        tracing::debug!(
-            "[app-state] Created sidecar config: enabled={}",
-            sidecar_config.enabled
-        );
-
-        let sidecar_state = Arc::new(SidecarState::with_config(sidecar_config.clone()));
-
-        Self {
-            pty_manager: Arc::new(PtyManager::new()),
-            ai_state: AiState::new(),
-            indexer_state: Arc::new(IndexerState::new()),
-            settings_manager,
-            sidecar_config,
-            sidecar_state,
-            langfuse_active,
-            telemetry_stats,
-            mcp_manager: Arc::new(RwLock::new(None)),
-            command_index: Arc::new(CommandIndex::new()),
-            pentest_config_manager: Arc::new(golish_pentest::ConfigManager::with_defaults()),
-            pty_output_tap: Arc::new(PtyOutputTap::new()),
-            active_terminal_session: Arc::new(Mutex::new(None)),
-            pentest_busy_sessions: Arc::new(Mutex::new(HashSet::new())),
-            db_pool,
-            db_ready,
-        }
     }
 }

@@ -1,569 +1,397 @@
-# UnifiedInput Refactoring Plan
+# UnifiedInput Refactoring Plan (v2 — Terminal-Only)
 
-## Current Structure Analysis
+> **NOTE.** The previous version of this PLAN described a 1487-line dual-mode (terminal + agent) component with image attachments and Tauri drag-drop. That code shape no longer exists in the repository — agent / image / drag-drop concerns have been extracted to the right-side AI Chat Panel, and the component is now terminal-only with two new subsystems (tool search via `/t`, tool-launch mode with parameter chips). This v2 PLAN matches the **actual current file** and supersedes the previous PLAN entirely.
 
-### Metrics
-- **Total lines:** 1,487
-- **Number of useState calls:** 21
-- **Number of useEffect calls:** 7
-- **Number of useCallback calls:** 15
-- **Number of useMemo calls:** 2
-- **Number of useRef calls:** 8
+## 1. Current Structure Analysis
 
-### Main Responsibilities
+### 1.1 Metrics (measured on current file)
 
-The UnifiedInput component currently handles 10+ distinct responsibilities:
+| Metric | Value | Notes |
+|---|---|---|
+| `UnifiedInput.tsx` | **1322 lines** | (legacy PLAN said 1487) |
+| `useState` calls | 18 | (legacy PLAN said 21) |
+| `useRef` calls | 8 | textarea / dropZone / inputContainer / prevImeSource / state / lastTextareaHeight / toolContext / toolHistory |
+| `useEffect` calls | 4 | caret settings, focus on session/mode, blur-on-running, textarea height |
+| `useCallback` calls | 10 | adjustTextareaHeight, handleSubmit, handleSlashSelect, handleFileSelect, handlePathSelect, handlePathSelectFinal, handleHistorySelect, clearToolMode, handleToolSelect, handleKeyDown |
+| `useMemo` calls | 2 (+ 1 in `GhostTextHint`) | filteredSlashCommands, ghostText |
 
-1. **Input Management**
-   - Text input state and textarea handling
-   - Auto-resize textarea height
-   - Mode switching (terminal/agent)
-   - Input submission handling
-
-2. **Command History Navigation**
-   - Arrow up/down history navigation
-   - History search (Ctrl+R) with search query state
-   - History match selection
-
-3. **Slash Command Popup**
-   - Show/hide popup state
-   - Command filtering
-   - Selection navigation and execution
-
-4. **File Command Popup (@-mentions)**
-   - Show/hide popup state
-   - File filtering and selection
-
-5. **Path Completion (Terminal Mode)**
-   - Path query state and completions
-   - Ghost text hint display
-   - Tab completion behavior
-
-6. **Image Attachments (Agent Mode)**
-   - Attachment state management
-   - Vision capabilities checking
-   - Drag-and-drop handling via Tauri events
-   - Clipboard paste handling
-
-7. **Keyboard Event Handling**
-   - 200+ lines of handleKeyDown logic
-   - Mode-specific shortcuts (Ctrl+C, Ctrl+D, Ctrl+L for terminal)
-   - Popup navigation (arrows, Tab, Enter, Escape)
-
-8. **Status Display**
-   - Working directory badge
-   - Git branch/status badge
-   - Virtual environment badge
-
-9. **Session Lifecycle**
-   - Session switching cleanup
-   - Agent busy/dead state handling
-   - Submission state management
-
-10. **Drop Zone Management**
-    - Pane-level drag-over visual state
-    - Drop zone rect caching and hit testing
-    - Portal rendering for overlay
-
-### State Dependencies
-
-```
-Local State (21 useState):
-├── input                    -> used by: handleSubmit, handleKeyDown, onChange
-├── isSubmitting             -> used by: isAgentBusy, handleSubmit, session effects
-├── showSlashPopup           -> used by: popup rendering, handleKeyDown
-├── slashSelectedIndex       -> used by: popup navigation, handleKeyDown
-├── showFilePopup            -> used by: popup rendering, handleKeyDown, onChange
-├── fileSelectedIndex        -> used by: popup navigation, handleKeyDown
-├── showPathPopup            -> used by: popup rendering, handleKeyDown, onChange
-├── pathSelectedIndex        -> used by: popup navigation, handleKeyDown
-├── pathQuery                -> used by: usePathCompletion, ghostText
-├── showHistorySearch        -> used by: popup rendering, handleKeyDown
-├── historySearchQuery       -> used by: useHistorySearch, handleKeyDown
-├── historySelectedIndex     -> used by: handleKeyDown
-├── originalInput            -> used by: history search cancel
-├── imageAttachments         -> used by: handleSubmit, ImageAttachment, paste/drop handlers
-├── visionCapabilities       -> used by: ImageAttachment, handleSubmit validation
-├── isDragOver               -> used by: drop zone overlay
-└── dragError                -> used by: drop zone overlay
-
-Store Subscriptions (via useUnifiedInputState selector):
-├── inputMode
-├── virtualEnv
-├── isAgentResponding
-├── isCompacting
-├── isSessionDead
-├── streamingBlocksLength
-├── gitBranch
-└── gitStatus
-```
-
-### Callback Dependencies Graph
-
-```
-handleSubmit
-├── uses: input, inputMode, isAgentBusy, imageAttachments, visionCapabilities
-├── calls: setInput, resetHistory, addToHistory, addAgentMessage, ptyWrite
-└── calls: setLastSentCommand, sendPromptSession, sendPromptWithAttachments
-
-handleKeyDown
-├── uses: ALL popup states, ALL selection indices, input, inputMode
-├── calls: ALL popup state setters, handleSubmit, navigation hooks
-└── handles: 15+ different key combinations
-
-handleSlashSelect
-├── uses: inputMode
-├── calls: setShowSlashPopup, setInput, setInputMode, addAgentMessage
-└── calls: setIsSubmitting, sendPromptSession
-
-handleFileSelect
-├── uses: input
-└── calls: setShowFilePopup, setInput, setFileSelectedIndex
-
-handlePathSelect / handlePathSelectFinal
-├── uses: input, pathCompletions, pathSelectedIndex
-└── calls: setInput, setPathQuery, setShowPathPopup, setPathSelectedIndex
-
-handleHistorySelect
-└── calls: setInput, setShowHistorySearch, setHistorySearchQuery, setHistorySelectedIndex
-
-processImageFiles / processFilePaths
-├── uses: visionCapabilities
-└── called by: handlePaste, Tauri drag-drop listener
-```
-
----
-
-## Proposed Component Structure
-
-### 1. UnifiedInput.tsx (Orchestrator) - Target: ~250 lines
-
-**Purpose:** Top-level composition and mode orchestration
-
-**Responsibilities:**
-- Compose sub-components
-- Manage mode switching (terminal/agent)
-- Session-level state coordination
-- Render layout structure
-
-**State to retain:**
-- `input` and `setInput` (shared across modes)
-- `isSubmitting` (affects both modes)
-
-**Receives from children:**
-- Submission callbacks
-- Popup trigger signals
+### 1.2 Props signature (DO NOT change)
 
 ```tsx
-// Simplified structure
-export function UnifiedInput({ sessionId, workingDirectory, onOpenGitPanel }) {
-  const [input, setInput] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  const { inputMode, ... } = useUnifiedInputState(sessionId);
-
-  return (
-    <div className="border-t">
-      <InlineTaskPlan sessionId={sessionId} />
-      <InputStatusBadges
-        sessionId={sessionId}
-        workingDirectory={workingDirectory}
-        onOpenGitPanel={onOpenGitPanel}
-        isAgentBusy={isAgentBusy}
-      />
-      <InputContainer
-        sessionId={sessionId}
-        input={input}
-        setInput={setInput}
-        inputMode={inputMode}
-        textareaRef={textareaRef}
-        isSubmitting={isSubmitting}
-        setIsSubmitting={setIsSubmitting}
-        workingDirectory={workingDirectory}
-      />
-      <InputStatusRow sessionId={sessionId} />
-    </div>
-  );
-}
-```
-
----
-
-### 2. InputStatusBadges.tsx - Target: ~120 lines
-
-**Purpose:** Display working directory, git, and virtualenv badges
-
-**Responsibilities:**
-- Path abbreviation logic
-- Git branch/status display
-- Virtual environment badge
-- Shimmer animation on busy state
-
-**Props:**
-```tsx
-interface InputStatusBadgesProps {
+interface UnifiedInputProps {
   sessionId: string;
-  workingDirectory?: string;
-  onOpenGitPanel?: () => void;
-  isAgentBusy: boolean;
 }
 ```
 
-**State:** None (purely presentational, derived from props/store)
+The only caller is `frontend/components/PaneContainer/PaneLeaf.tsx` which passes only `sessionId`.
+
+`workingDirectory` is read **inside** the component via `useStore((s) => s.sessions[sessionId]?.workingDirectory)` — it is not a prop. There is no `onOpenGitPanel` anywhere in the workspace.
+
+### 1.3 Store subscriptions (DO NOT change selector shape)
+
+Only field destructured from `useUnifiedInputState(sessionId)`:
+- `isSessionDead`
+
+Other store reads:
+- `useStore((s) => s.sessions[sessionId]?.workingDirectory)`
+- `useStore((s) => s.setLastSentCommand)`
+- `usePendingCommand(sessionId)` → `isProcessRunning`
+- `useStore.getState()` for ad-hoc imperative calls (`clearBlocks`, `requestTerminalClear`, `handlePromptStart`, …)
+
+### 1.4 Main responsibilities (current 10)
+
+1. **Text input state + auto-resize textarea** (rAF batching).
+2. **Custom block caret overlay** (`BlockCaret`) + caret settings + IME source auto-swap on focus/blur.
+3. **Command history navigation** (Arrow Up/Down on first/last line) with **tool-history badge restoration** (recalled commands that were originally tool launches re-enter tool mode).
+4. **Ctrl+R history search popup**.
+5. **Slash command popup** (`/` at start), with exact-match-plus-space close behavior.
+6. **File @-mention popup** — *gated to `inputMode !== "terminal"`, so currently inert; it stays so we don't regress when this gets re-enabled.*
+7. **Path completion popup** (Tab in terminal mode), with ghost-text hint of the top match.
+8. **Tool search mode** (`/t <query>`): badge shown next to textarea, popup with installed-tool matches.
+9. **Tool launch mode** (after a tool is picked): tool badge, parameter chips that toggle flags into the input, Backspace-on-empty-to-exit, history-recall restores the tool context.
+10. **Submission**: `ptyWrite` for normal commands; `clear` does both `clearBlocks(sessionId)` + `requestTerminalClear(sessionId)` + `ptyWrite("clear\n")`; tool mode prefixes the typed args with the resolved `baseCmd` (and optional `cdPrefix`); `/t` prefixes are swallowed (never sent to PTY).
+
+### 1.5 Things explicitly **NOT** in current code (and will stay out)
+
+- Agent mode / `inputMode` toggle (mode is hardcoded `"terminal"`).
+- `imageAttachments`, `visionCapabilities`, paste-image, Tauri drag-drop file ingestion.
+- `isAgentBusy`, `sendPromptSession`, `sendPromptWithAttachments`.
+- `InlineTaskPlan`, `InputStatusBadges`, rendering of `InputStatusRow`.
+- `Cmd+I` / `Cmd+Shift+T` mode toggles.
+
+### 1.6 Already-orphaned files in this directory (DO NOT delete, DO NOT re-import)
+
+- `ImageAttachment.tsx`
+- `InputStatusRow.tsx`
+- `ModelSelector.tsx`
+- `StatusBadges.tsx`
+
+These are kept as-is per the agreed scope.
 
 ---
 
-### 3. InputContainer.tsx - Target: ~300 lines
+## 2. Target File Structure
 
-**Purpose:** Main input area with popups and drag-drop handling
+```
+frontend/components/UnifiedInput/
+├── UnifiedInput.tsx                   # Orchestrator              (~200 lines)
+├── InputContextRow.tsx                # ContextBar + tool params  (~120)
+├── InputContainer.tsx                 # textarea + 5 popups + Send (~280)
+├── ToolModeBadges.tsx                 # /t badge + activeTool chip (~80)
+├── GhostTextHint.tsx                  # Pure presentational       (~30)
+├── hooks/
+│   ├── useInputSubmission.ts          # handleSubmit + tool ctx   (~100)
+│   ├── useKeyboardNavigation.ts       # handleKeyDown state machine (~280)
+│   ├── usePopupTriggers.ts            # onChange popup triggers   (~80)
+│   ├── useToolMode.ts                 # activeTool + toolParams   (~100)
+│   ├── useTextareaAutoResize.ts       # rAF height batcher        (~30)
+│   └── useImeSourceSwap.ts            # focus/blur IME swap       (~30)
+├── utils/
+│   └── inputHelpers.ts                # extractWordAtCursor, isCursorOnFirstLine, isCursorOnLastLine, clearTerminal (~50)
+├── index.ts                           # barrel: re-export UnifiedInput
+└── REFACTOR_PLAN.md                   # this file
+```
 
-**Responsibilities:**
-- Textarea rendering and auto-resize
-- Popup wrapper composition (nested Radix popovers)
-- Send button
-- Image attachment integration
-- Drop zone overlay (portal rendering)
+> Untouched (kept as-is): `BlockCaret.tsx`, `ContextBar.tsx`, `ModelSelector.tsx`, `StatusBadges.tsx`, `ImageAttachment.tsx`, `InputStatusRow.tsx` and all `*.test.tsx`.
 
-**Extracted components composed within:**
-- HistorySearchPopup
-- PathCompletionPopup
-- SlashCommandPopup
-- FileCommandPopup
-- GhostTextHint
-- ImageAttachment (already extracted)
+---
 
-**Props:**
+## 3. Per-File Specs
+
+### 3.1 `UnifiedInput.tsx` (orchestrator) — target ~200 lines
+
+**Owns:**
+- `input` state (single source of truth, threaded into hooks/components).
+- `textareaRef`, `inputContainerRef`, `dropZoneRef` (ref creation only).
+- `stateRef` mutation in render (the perf optimization the user explicitly wants preserved).
+- Composition / layout JSX.
+
+**Reads from store:**
+- `useUnifiedInputState(sessionId)` → `{ isSessionDead }` (UNCHANGED).
+- `useStore((s) => s.sessions[sessionId]?.workingDirectory)` (UNCHANGED).
+- `usePendingCommand(sessionId)` (UNCHANGED).
+
+**Calls into hooks:**
+```ts
+const submission   = useInputSubmission({ sessionId });
+const toolMode     = useToolMode({ input });
+const popupState   = useUnifiedPopupState();           // collects 18 popup-related useState (kept here, not in a hook, see §6)
+const popupTriggers= usePopupTriggers({ input, inputMode: "terminal", commands, activeTool: toolMode.activeTool });
+const keyDown      = useKeyboardNavigation({ ...stateRef, ...handlers });
+useTextareaAutoResize(textareaRef, input);
+useImeSourceSwap(textareaRef, prevImeSourceRef);
+```
+
+**Layout:**
+```tsx
+return (
+  <div className="border-t border-[var(--border-subtle)]">
+    <InputContextRow
+      sessionId={sessionId}
+      activeTool={toolMode.activeTool}
+      toolParams={toolMode.toolParams}
+      input={input}
+      setInput={setInput}
+      textareaRef={textareaRef}
+    />
+    <InputContainer
+      sessionId={sessionId}
+      input={input}
+      setInput={setInput}
+      isSessionDead={isSessionDead}
+      isProcessRunning={isProcessRunning}
+      textareaRef={textareaRef}
+      inputContainerRef={inputContainerRef}
+      dropZoneRef={dropZoneRef}
+      submission={submission}
+      toolMode={toolMode}
+      popupState={popupState}
+      popupTriggers={popupTriggers}
+      onKeyDown={keyDown.handleKeyDown}
+    />
+  </div>
+);
+```
+
+### 3.2 `InputContextRow.tsx` — target ~120 lines
+
+Renders the existing `<ContextBar sessionId={sessionId} />` followed (conditionally) by the **tool params chip panel**.
+
+```tsx
+interface InputContextRowProps {
+  sessionId: string;
+  activeTool: ToolConfig | null;
+  toolParams: ToolParam[];
+  input: string;
+  setInput: (next: string) => void;
+  textareaRef: React.RefObject<HTMLTextAreaElement>;
+}
+```
+
+The existing chip click logic (the ~50-line `onClick` that toggles `p.flag` into `input`) is moved here verbatim.
+
+### 3.3 `InputContainer.tsx` — target ~280 lines
+
+Owns the inner `<textarea>` + the 5 popups + the Send button + `BlockCaret` overlay + `GhostTextHint`. Receives all popup states & handlers via props (no internal popup useState).
+
 ```tsx
 interface InputContainerProps {
   sessionId: string;
   input: string;
-  setInput: (value: string) => void;
-  inputMode: "terminal" | "agent";
+  setInput: (next: string) => void;
+  isSessionDead: boolean;
+  isProcessRunning: boolean;
   textareaRef: React.RefObject<HTMLTextAreaElement>;
-  isSubmitting: boolean;
-  setIsSubmitting: (value: boolean) => void;
-  workingDirectory?: string;
+  inputContainerRef: React.RefObject<HTMLDivElement>;
+  dropZoneRef: React.RefObject<HTMLDivElement>;
+  submission: ReturnType<typeof useInputSubmission>;
+  toolMode: ReturnType<typeof useToolMode>;
+  popupState: PopupBundle;
+  popupTriggers: ReturnType<typeof usePopupTriggers>;
+  onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
 }
 ```
 
-**State to manage:**
-- All popup show/hide states
-- All selected index states
-- `pathQuery` for path completions
-- `historySearchQuery` and `originalInput`
-- `isDragOver` and `dragError`
+It also keeps the `isFocused` + `caretSettings` local state (they're scoped purely to the textarea overlay).
 
----
+### 3.4 `ToolModeBadges.tsx` — target ~80 lines
 
-### 4. useInputSubmission.ts (Custom Hook) - Target: ~150 lines
+Two small sibling chips that may render before the textarea:
 
-**Purpose:** Encapsulate submission logic for both terminal and agent modes
+1. `/t` tool-search badge (orange, with `×` to clear input).
+2. Active-tool badge (accent, with runtime initial avatar + `×` to exit).
 
-**Responsibilities:**
-- Terminal command submission (ptyWrite)
-- Agent prompt submission (with/without attachments)
-- Clear command handling
-- Submission state management
-- History integration
-
-**Interface:**
 ```tsx
+interface ToolModeBadgesProps {
+  isToolSearchMode: boolean;
+  activeTool: ToolConfig | null;
+  onClearSearch: () => void;
+  onClearActiveTool: () => void;
+}
+```
+
+This is composed inside `InputContainer.tsx`.
+
+### 3.5 `GhostTextHint.tsx` — target ~30 lines
+
+The existing inline `memo` component, moved verbatim into its own file. Only Imports `memo`, `useMemo` from `react`.
+
+### 3.6 `hooks/useInputSubmission.ts` — target ~100 lines
+
+```ts
 interface UseInputSubmissionOptions {
   sessionId: string;
-  inputMode: "terminal" | "agent";
-  imageAttachments: ImagePart[];
-  visionCapabilities: VisionCapabilities | null;
-  onClearAttachments: () => void;
+  inputRef: React.MutableRefObject<{ input: string; activeTool: ToolConfig | null }>;
+  resetHistory: () => void;
+  addToHistory: (entry: string) => void;
+  toolContextRef: React.MutableRefObject<{ cdPrefix: string; baseCmd: string }>;
+  toolHistoryRef: React.MutableRefObject<Map<string, ToolHistoryEntry>>;
+  clearToolMode: () => void;
+  setInput: (next: string) => void;
 }
 
 interface UseInputSubmissionReturn {
-  handleSubmit: (input: string) => Promise<void>;
-  isSubmitting: boolean;
-  setIsSubmitting: (value: boolean) => void;
+  handleSubmit: () => void;
 }
 ```
 
----
+Encapsulates: `/t` swallow, `clear` special-case, tool-mode prefix construction, `setLastSentCommand`, `ptyWrite`. Reads `input` and `activeTool` from `stateRef` to keep callback stable (no deps on input).
 
-### 5. useKeyboardNavigation.ts (Custom Hook) - Target: ~250 lines
+### 3.7 `hooks/useKeyboardNavigation.ts` — target ~280 lines
 
-**Purpose:** Centralize keyboard event handling
+The big `handleKeyDown` state machine. Takes the entire `stateRef` plus the suite of setters and select-handlers, returns a stable `handleKeyDown`.
 
-**Responsibilities:**
-- History navigation (arrows, Ctrl+R)
-- Popup navigation (arrows, Tab, Enter, Escape)
-- Mode-specific shortcuts (terminal: Ctrl+C, Ctrl+D, Ctrl+L)
-- Mode toggle (Cmd+I, Cmd+Shift+T)
-- Slash command execution
+Branches preserved in this exact order (matches current code):
+1. Escape during `isProcessRunning` → `handlePromptStart`.
+2. `/t` search-mode escape/backspace.
+3. Active-tool escape / backspace-on-empty.
+4. Tool popup nav (↑↓/Enter/Tab).
+5. History search nav (Esc/Ctrl+G/Enter/Ctrl+R/↑↓/Backspace/printable).
+6. Open history search (Ctrl+R).
+7. Path popup nav (Esc/↑↓ + Ctrl+N/J/P/K, Tab, Enter).
+8. Slash popup nav (Esc/↑↓/Tab/Enter).
+9. File popup nav (Esc/↑↓/Tab/Enter).
+10. Slash-with-args Enter handoff.
+11. Plain Enter → submit.
+12. Arrow Up history (with tool-history badge restoration).
+13. Arrow Down history (same).
+14. Terminal-only: Tab path completion, Ctrl+C, Ctrl+D, Ctrl+L.
 
-**Interface:**
-```tsx
-interface UseKeyboardNavigationOptions {
-  sessionId: string;
-  inputMode: "terminal" | "agent";
-  // Popup states
-  popupStates: {
-    slash: PopupState<SlashCommand>;
-    file: PopupState<FileInfo>;
-    path: PopupState<PathCompletion>;
-    history: PopupState<HistoryMatch>;
-  };
-  // Callbacks
-  onSubmit: () => Promise<void>;
-  onInputChange: (value: string) => void;
-  onToggleMode: () => void;
-  // History hooks
-  historyNav: { navigateUp: () => string | null; navigateDown: () => string };
-  // Refs
-  textareaRef: React.RefObject<HTMLTextAreaElement>;
-}
+### 3.8 `hooks/usePopupTriggers.ts` — target ~80 lines
 
-interface PopupState<T> {
-  isOpen: boolean;
-  setIsOpen: (open: boolean) => void;
-  items: T[];
-  selectedIndex: number;
-  setSelectedIndex: (index: number) => void;
-  onSelect: (item: T, args?: string) => void;
-}
-```
+Pure-derived: given `input` and `inputMode` and the slash `commands` list, returns:
 
----
-
-### 6. useImageAttachments.ts (Custom Hook) - Target: ~120 lines
-
-**Purpose:** Manage image attachment lifecycle and validation
-
-**Responsibilities:**
-- Vision capabilities fetching
-- File processing (from paste and drop)
-- Attachment array state
-- Validation against provider limits
-
-**Interface:**
-```tsx
-interface UseImageAttachmentsOptions {
-  sessionId: string;
-  inputMode: "terminal" | "agent";
-}
-
-interface UseImageAttachmentsReturn {
-  attachments: ImagePart[];
-  setAttachments: (attachments: ImagePart[]) => void;
-  capabilities: VisionCapabilities | null;
-  processImageFiles: (files: FileList | File[]) => Promise<ImagePart[]>;
-  processFilePaths: (paths: string[]) => Promise<ImagePart[]>;
-  clearAttachments: () => void;
-}
-```
-
----
-
-### 7. useDragDrop.ts (Custom Hook) - Target: ~100 lines
-
-**Purpose:** Handle Tauri drag-drop events for image attachment
-
-**Responsibilities:**
-- Tauri event listeners setup/cleanup
-- Drop zone rect caching
-- Position hit testing
-- Drag state management
-
-**Interface:**
-```tsx
-interface UseDragDropOptions {
-  sessionId: string;
-  inputMode: "terminal" | "agent";
-  onDrop: (filePaths: string[]) => Promise<void>;
-}
-
-interface UseDragDropReturn {
-  isDragOver: boolean;
-  dragError: string | null;
-  dropZoneRef: React.RefObject<HTMLDivElement>;
-  paneContainerRef: React.RefObject<HTMLElement>;
-}
-```
-
----
-
-### 8. usePopupTriggers.ts (Custom Hook) - Target: ~80 lines
-
-**Purpose:** Detect when to show popups based on input changes
-
-**Responsibilities:**
-- Slash command detection (`/` at start)
-- File mention detection (`@` in agent mode)
-- Path completion trigger (Tab in terminal mode)
-
-**Interface:**
-```tsx
-interface UsePopupTriggersOptions {
-  input: string;
-  inputMode: "terminal" | "agent";
-  commands: SlashCommand[];
-}
-
+```ts
 interface UsePopupTriggersReturn {
-  shouldShowSlashPopup: boolean;
-  shouldShowFilePopup: boolean;
+  isToolSearchMode: boolean;       // /^\/t\s/i.test(input)
+  toolSearchQuery: string;          // input.replace(/^\/t\s+/i, '')
+  toolSearchEnabled: boolean;       // isToolSearchMode && query.length > 0 && !activeTool
   slashCommandName: string;
-  fileQuery: string;
+  filteredSlashCommands: SlashCommand[];
+  fileQuery: string;                // last "@..." token
 }
 ```
 
+The actual popup-open/close `setShowXxx` calls stay in `InputContainer.onChange` — this hook only computes derived flags.
+
+### 3.9 `hooks/useToolMode.ts` — target ~100 lines
+
+Owns `activeTool`, `toolParams`, `toolContextRef`, `toolHistoryRef`. Exposes `handleToolSelect(tool)`, `clearToolMode()`, plus a `restoreFromHistory(cmd)` helper that the keyboard nav can call when `navigateUp/Down` returns a command.
+
+### 3.10 `hooks/useTextareaAutoResize.ts` — target ~30 lines
+
+Wraps the existing rAF height-batching logic. Returns nothing; just runs an effect on `[input]`.
+
+### 3.11 `hooks/useImeSourceSwap.ts` — target ~30 lines
+
+Returns `{ onFocus, onBlur }` to be wired onto the textarea. Internally uses a ref to remember the prior IME source.
+
+### 3.12 `utils/inputHelpers.ts` — target ~50 lines
+
+Pure functions, no React:
+- `extractWordAtCursor(input, cursorPos): { word, startIndex }`
+- `isCursorOnFirstLine(text, cursorPos): boolean`
+- `isCursorOnLastLine(text, cursorPos): boolean`
+- `clearTerminal(sessionId): void` (currently stays as a closure over `useStore.getState()`; moving it here keeps a stable import surface)
+
 ---
 
-## File Structure After Refactoring
+## 4. Migration Strategy (Phase 1 → 5)
 
+Each Phase ends with the **same 3 commands**:
+```bash
+pnpm tsc --noEmit
+pnpm biome check frontend/components/UnifiedInput
+pnpm vitest run frontend/components/UnifiedInput
 ```
-frontend/components/UnifiedInput/
-├── UnifiedInput.tsx           # Main orchestrator (~250 lines)
-├── InputStatusBadges.tsx      # Status badges component (~120 lines)
-├── InputContainer.tsx         # Input area with popups (~300 lines)
-├── InputStatusRow.tsx         # Already extracted (1312 lines - see note below)
-├── ImageAttachment.tsx        # Already extracted (276 lines)
-├── GhostTextHint.tsx          # Small presentational component (~30 lines)
-├── hooks/
-│   ├── useInputSubmission.ts  # Submission logic (~150 lines)
-│   ├── useKeyboardNavigation.ts # Keyboard handling (~250 lines)
-│   ├── useImageAttachments.ts # Image attachment logic (~120 lines)
-│   ├── useDragDrop.ts         # Drag-drop handling (~100 lines)
-│   └── usePopupTriggers.ts    # Popup show/hide triggers (~80 lines)
-├── utils/
-│   └── inputHelpers.ts        # Pure utility functions (~50 lines)
-└── index.ts                   # Barrel exports
-```
 
-**Note:** InputStatusRow.tsx is already quite large (1312 lines) and may warrant its own refactoring in a separate effort, but it's already extracted from UnifiedInput.
+**Pass criteria** for each Phase:
+1. `tsc --noEmit` exits 0.
+2. `biome check` exits 0 on the directory.
+3. `vitest` results vs. baseline:
+   - Baseline (this PLAN's Step 0): `Tests 49 failed | 18 passed (67)` across 6 files.
+   - **Each Phase must have `failed ≤ 49` and `passed ≥ 18`.** Newly red previously-green tests block the Phase.
 
----
+### Phase 1 — Pure functions
 
-## Migration Strategy
+1. Create `utils/inputHelpers.ts` with `extractWordAtCursor`, `isCursorOnFirstLine`, `isCursorOnLastLine`, `clearTerminal`.
+2. Replace local definitions in `UnifiedInput.tsx` with imports.
+3. Run the 3 checks.
 
-### Phase 1: Extract Utility Functions and Types (Low Risk)
+### Phase 2 — Hooks (in dependency order)
 
-1. Create `utils/inputHelpers.ts` with pure functions:
-   - `extractWordAtCursor()`
-   - `isCursorOnFirstLine()`
-   - `isCursorOnLastLine()`
-   - `clearTerminal()`
+1. **2a** — `useTextareaAutoResize` and `useImeSourceSwap` (no deps on each other).
+2. **2b** — `usePopupTriggers` (pure derivations, no useState).
+3. **2c** — `useToolMode` (owns `activeTool`, `toolParams`, two refs).
+4. **2d** — `useInputSubmission` (depends on `useToolMode` for context refs + clearer).
+5. **2e** — `useKeyboardNavigation` (depends on all of the above + popup state).
 
-2. Create shared types file if needed
+After each substep, all 3 checks must pass.
 
-3. **Verification:** Run tests, ensure no behavior change
+### Phase 3 — UI components
 
-### Phase 2: Extract Custom Hooks (Medium Risk)
+1. **3a** — `GhostTextHint.tsx` (verbatim move).
+2. **3b** — `ToolModeBadges.tsx` (extract the two badges).
+3. **3c** — `InputContextRow.tsx` (extract `ContextBar` wrapper + tool-params chip panel).
+4. **3d** — `InputContainer.tsx` (extract textarea + popups + Send + BlockCaret).
 
-**Order matters - extract in dependency order:**
+### Phase 4 — Final orchestrator + barrel
 
-1. `usePopupTriggers.ts` - No dependencies on other new hooks
-2. `useDragDrop.ts` - Uses only Tauri events
-3. `useImageAttachments.ts` - May use `useDragDrop`
-4. `useInputSubmission.ts` - Independent logic
-5. `useKeyboardNavigation.ts` - Uses other hooks/state
+1. Trim `UnifiedInput.tsx` to ≤ 250 lines, only doing composition + state ownership the children genuinely need from the parent.
+2. Confirm `index.ts` still exports only `UnifiedInput`.
 
-**For each hook:**
-- Extract with minimal changes to interface
-- Keep stateRef pattern for stable callbacks if needed
-- Add unit tests before extraction
-- Verify existing tests pass after extraction
+### Phase 5 — Final report
 
-### Phase 3: Extract UI Components (Medium Risk)
-
-1. Extract `GhostTextHint` (already memoized inline, just move to file)
-2. Extract `InputStatusBadges`
-3. Extract `InputContainer`
-
-**For each component:**
-- Move JSX and related logic
-- Wire up to parent via props
-- Ensure CSS classes and animations transfer correctly
-
-### Phase 4: Simplify UnifiedInput.tsx (Final Cleanup)
-
-1. Replace inline code with hook calls
-2. Replace inline JSX with component composition
-3. Remove unused imports
-4. Add/update barrel exports
-
-### Phase 5: Test Updates and Documentation
-
-1. Update existing tests to target new file locations
-2. Add unit tests for new hooks
-3. Add integration tests for component composition
-4. Update Storybook stories if applicable
+Deliverable to user:
+- Original / new line counts.
+- For every new file: relative path + final line count.
+- Per-Phase test results (failed/passed) vs. baseline.
+- Any deviation from this PLAN with rationale.
 
 ---
 
-## Risk Assessment
+## 5. Hard Constraints (recap)
 
-### Breaking Changes
-
-1. **Import paths** - Components importing from `./UnifiedInput` need updates
-   - Mitigation: Use index.ts barrel exports to maintain backwards compatibility
-
-2. **Context/ref threading** - textareaRef is used across multiple concerns
-   - Mitigation: Keep ref in top-level UnifiedInput, pass down via props
-
-3. **stateRef pattern** - Complex optimization pattern for stable callbacks
-   - Mitigation: May need to keep this in InputContainer or use a simpler approach with useCallback dependencies now that hooks are separated
-
-### Test Coverage Gaps
-
-Current test files identified:
-- `UnifiedInput.stateRef.test.tsx` - Tests stateRef optimization
-- `InputStatusRow.test.tsx` - Tests status row
-
-**Additional tests needed:**
-- Unit tests for each extracted hook
-- Integration tests for popup interactions
-- Edge case tests for keyboard navigation
-- Drag-drop event simulation tests
-
-### State Synchronization Concerns
-
-1. **Popup state race conditions** - Multiple popups shouldn't be open simultaneously
-   - Mitigation: Create `useExclusivePopup` hook that manages mutual exclusion
-
-2. **Submission state across mode switch** - isSubmitting should reset on mode change
-   - Mitigation: Handle in useInputSubmission hook, triggered by inputMode dep
-
-3. **Session switching cleanup** - All local state should reset on session change
-   - Mitigation: Consolidate cleanup logic in UnifiedInput, pass reset callbacks to hooks
-
-4. **stateRef sync** - Current code updates ref properties directly in render
-   - Mitigation: Consider moving to a custom `useLatest` hook for cleaner semantics, or keep the pattern in the component that needs it
+1. Exported component name `UnifiedInput` and props `{ sessionId: string }` MUST NOT change.
+2. The selector shape of `useUnifiedInputState(sessionId)` MUST NOT change.
+3. NO business-logic changes — extraction / move / rewire only.
+4. `stateRef` per-property mutation pattern MUST be preserved (currently in `UnifiedInput.tsx` lines 245–289).
+5. DO NOT touch: `BlockCaret.tsx`, `ContextBar.tsx`, `ModelSelector.tsx`, `StatusBadges.tsx`, `ImageAttachment.tsx`, `InputStatusRow.tsx`, and all `*.test.tsx`.
+6. DO NOT re-introduce agent / image / drag-drop concerns.
+7. TypeScript strict mode, NO `any`.
+8. Testing baseline: do not add NEW failing tests; do not "fix" the 23 currently-red tests in the 3 named files.
 
 ---
 
-## Performance Considerations
+## 6. State Ownership Decision Log
 
-### Current Optimizations to Preserve
+A few non-trivial calls explained:
 
-1. **stateRef pattern** - Prevents callback recreation on every keystroke
-2. **useUnifiedInputState selector** - Single subscription instead of ~15
-3. **GhostTextHint memo** - Prevents re-render on parent changes
-4. **requestAnimationFrame for textarea resize** - Batched DOM operations
-5. **Cached drop zone rect** - Avoids getBoundingClientRect on every drag-over
-
-### New Optimization Opportunities
-
-1. **Separate popup state subscriptions** - Each popup only subscribes to its own state
-2. **Lazy loading of popup components** - Load PathCompletionPopup only in terminal mode
-3. **Debounced path query** - Reduce completion API calls during fast typing
-4. **Virtualized history matches** - For users with very long history
+- **18 useState stays in `UnifiedInput.tsx`?** No. Most popup-related useState (`showSlashPopup`, `slashSelectedIndex`, `showFilePopup`, `fileSelectedIndex`, `showPathPopup`, `pathSelectedIndex`, `pathQuery`, `showHistorySearch`, `historySearchQuery`, `historySelectedIndex`, `originalInput`, `showToolPopup`, `toolSelectedIndex`) move into `InputContainer.tsx` so the parent doesn't re-render on every popup nav. `input`, `setInput`, the 4 refs and `stateRef` stay in the parent because both `InputContextRow` (params chips read `input`, write `setInput`) and `InputContainer` need them.
+- **`isFocused` + `caretSettings`** — confined to `InputContainer.tsx` (only the textarea + BlockCaret consume them).
+- **`activeTool` + `toolParams`** — owned by `useToolMode` hook, consumed by both `InputContextRow` (chip panel) and `InputContainer` (active-tool badge + placeholder copy). Hook is instantiated once in the orchestrator and the return value is threaded down.
+- **`stateRef` mutations** must remain in the orchestrator's render body to preserve the synchronous-availability semantics described in the original code's comment block.
 
 ---
 
-## Success Metrics
+## 7. Performance Properties to Preserve
 
-After refactoring, we should see:
+1. `stateRef` per-property updates (no new object allocation per render).
+2. `requestAnimationFrame` batching of textarea resize.
+3. `lastTextareaHeightRef` cache to skip no-op writes.
+4. `GhostTextHint` `memo` + `useMemo`'d style.
+5. Single `useUnifiedInputState` selector subscription.
+6. `usePathCompletion` `enabled` flag gating (only fetches when popup is open).
 
-1. **UnifiedInput.tsx < 300 lines** (down from 1,487)
-2. **No single file > 400 lines** in the UnifiedInput directory
-3. **Each file has a single responsibility** clearly stated in header comment
-4. **All existing tests pass** without modification
-5. **No performance regression** in typing/submission latency
-6. **Easier to unit test** individual concerns
+No new optimization is introduced in this PLAN — the goal is decomposition, not perf changes.
+
+---
+
+## 8. Success Metrics
+
+1. `UnifiedInput.tsx` ≤ 250 lines (down from 1322).
+2. No file in this directory > 300 lines after the refactor (excluding the already-existing untouched files).
+3. `pnpm tsc --noEmit` clean.
+4. `pnpm biome check frontend/components/UnifiedInput` clean.
+5. `pnpm vitest run frontend/components/UnifiedInput`: `failed ≤ 49 && passed ≥ 18` (baseline preserved).
+6. Visual + functional smoke (manual): typing, /t search, tool-launch chip toggling, history Up/Down with tool restoration, path Tab completion, slash Enter, BlockCaret rendering, IME swap on focus.

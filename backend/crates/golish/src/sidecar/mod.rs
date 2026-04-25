@@ -7,11 +7,9 @@
 //! - **golish-sidecar**: Infrastructure crate with session management and context capture
 //! - **golish/sidecar/mod.rs**: Re-exports + Tauri commands
 
-// Tauri commands (stay in main crate due to AppState dependency)
+// Tauri commands (stay in main crate due to AppState dependency).
+// Consumers access them via `crate::sidecar::commands::*`.
 pub mod commands;
 
 // Re-export everything from golish-sidecar
 pub use golish_sidecar::*;
-
-// Re-export commands for Tauri
-pub use commands::*;

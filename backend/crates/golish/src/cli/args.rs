@@ -181,34 +181,18 @@ pub struct Args {
 }
 
 impl Args {
-    /// Resolve the workspace path to an absolute path.
+    /// Resolve the workspace path to an absolute, validated directory.
     ///
-    /// Priority:
-    /// 1. QBIT_WORKSPACE environment variable (if set)
-    /// 2. CLI argument (defaults to ".")
+    /// Delegates to [`crate::app::workspace::resolve_validated_workspace`] so
+    /// the GUI and the CLI share **one** resolution policy:
+    ///
+    /// 1. `QBIT_WORKSPACE` environment variable (with `~/` expansion).
+    /// 2. The CLI's positional `[WORKSPACE]` argument (defaults to `.`).
+    /// 3. (Validation) the path must exist and be a directory.
     ///
     /// Returns an error if the path does not exist or is not a directory.
     pub fn resolve_workspace(&self) -> anyhow::Result<PathBuf> {
-        // Check QBIT_WORKSPACE env var first
-        let workspace_path = if let Ok(env_workspace) = std::env::var("QBIT_WORKSPACE") {
-            PathBuf::from(env_workspace)
-        } else {
-            self.workspace.clone()
-        };
-
-        let canonical = workspace_path.canonicalize().map_err(|e| {
-            anyhow::anyhow!(
-                "Workspace '{}' does not exist or is not accessible: {}",
-                workspace_path.display(),
-                e
-            )
-        })?;
-
-        if !canonical.is_dir() {
-            anyhow::bail!("Workspace '{}' is not a directory", canonical.display());
-        }
-
-        Ok(canonical)
+        crate::app::workspace::resolve_validated_workspace(Some(&self.workspace))
     }
 }
 

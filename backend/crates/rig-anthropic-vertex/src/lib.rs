@@ -27,13 +27,19 @@
 
 mod client;
 mod completion;
+mod config;
 mod error;
+mod request;
+mod response;
+mod stream_map;
 mod streaming;
 mod types;
 
 pub use client::Client;
 pub use completion::CompletionModel;
+pub use config::{ServerToolsConfig, WebFetchConfig, WebSearchConfig};
 pub use error::AnthropicVertexError;
+pub use response::StreamingCompletionResponseData;
 pub use types::*;
 
 /// Available Claude models on Vertex AI

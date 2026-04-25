@@ -24,6 +24,7 @@ vi.mock("@/lib/tauri", () => ({
   getGitBranch: vi.fn(),
   shellIntegrationStatus: vi.fn(),
   shellIntegrationInstall: vi.fn(),
+  setActiveTerminalSession: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("@/lib/ai", () => ({
