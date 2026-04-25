@@ -81,7 +81,10 @@ impl BridgeAgentExecutor {
             "task": format!("{}\n\n{}", subtask_title, subtask_description),
         });
 
-        let tool_provider = crate::tool_provider_impl::DefaultToolProvider::new();
+        let tool_provider =
+            crate::tool_provider_impl::DefaultToolProvider::with_db_tracker(
+                self.bridge.db_tracker.as_ref(),
+            );
         let db_pool_arc = self.bridge.db_pool();
 
         let sub_ctx = SubAgentExecutorContext {
