@@ -343,9 +343,6 @@ export const ToolDetailView = memo(function ToolDetailView({
         rest.push(item);
       }
     }
-    // #region agent log
-    fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify({sessionId:'14d8b8',location:'ToolDetailView.tsx:stepItems:useMemo',message:'stepItems recomputed',data:{planVersion:(plan as any)?.version,stepCount:plan?.steps?.length,groupedKeys:Array.from(grouped.keys()),retiredKeys:Array.from(retiredGrouped.keys()),ungroupedCount:rest.length,allItemsCount:allItems.length},timestamp:Date.now(),hypothesisId:'E'})}).catch(()=>{});
-    // #endregion
     return { stepItems: grouped, retiredStepItems: retiredGrouped, ungrouped: rest };
   }, [plan, allItems, planStepLookup, currentStepIds, retiredPlans]);
 
@@ -363,7 +360,6 @@ export const ToolDetailView = memo(function ToolDetailView({
         return s === "completed" || s === "error" || s === "interrupted" || s === "failed";
       }).length;
 
-  // #region agent log
   const debugPlanVersionRef = useRef(plan?.version ?? 1);
   useEffect(() => {
     if (plan) debugPlanVersionRef.current = plan.version;
@@ -391,13 +387,11 @@ export const ToolDetailView = memo(function ToolDetailView({
           summary: { total: newSteps.length, completed, in_progress: inProgress, pending: newSteps.length - completed - inProgress },
           updated_at: new Date().toISOString(),
         });
-        fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify({sessionId:'14d8b8',location:'ToolDetailView.tsx:debugKeyHandler',message:'DEBUG: Manual plan update triggered',data:{version:nextV,statuses:newSteps.map(s=>s.status)},timestamp:Date.now(),hypothesisId:'debug'})}).catch(()=>{});
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [sessionId]);
-  // #endregion
 
   const hasContent = allItems.length > 0 || plan;
 
@@ -415,9 +409,6 @@ export const ToolDetailView = memo(function ToolDetailView({
   const scrollToBottom = useCallback(() => {
     const el = scrollContainerRef.current;
     if (!el || !isStuckToBottomRef.current) return;
-    // #region agent log
-    fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify({sessionId:'14d8b8',location:'ToolDetailView.tsx:scrollToBottom',message:'scrollToBottom triggered',data:{scrollTop:el.scrollTop,scrollHeight:el.scrollHeight,clientHeight:el.clientHeight,isStuck:isStuckToBottomRef.current},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
     isProgrammaticScrollRef.current = true;
     el.scrollTop = el.scrollHeight;
     requestAnimationFrame(() => {
@@ -434,6 +425,7 @@ export const ToolDetailView = memo(function ToolDetailView({
     if (!scrollEl || !contentEl) return;
 
     let rafId: number | null = null;
+
     const throttledScroll = () => {
       if (rafId != null) return;
       rafId = requestAnimationFrame(() => {

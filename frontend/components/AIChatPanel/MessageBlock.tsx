@@ -9,7 +9,7 @@ import {
   CollapsibleToolCall,
   PlanUpdatedNotice,
   TaskPlanCard,
-  type TaskPlanState,
+  type TaskPlanViewModel,
   ThinkingBlock,
   ToolCallSummary,
   usePlanNestedRequestIds,
@@ -51,7 +51,7 @@ export const MessageBlock = memo(function MessageBlock({
   onDeny?: (requestId: string) => void;
   approvalMode?: string;
   onApprovalModeChange?: (mode: "ask" | "allowlist" | "run-all") => void;
-  taskPlan?: TaskPlanState | null;
+  taskPlan?: TaskPlanViewModel | null;
   planTextOffset?: number | null;
   terminalId?: string | null;
 }) {

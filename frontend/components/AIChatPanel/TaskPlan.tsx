@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
 import { parseToolPrimary } from "./ToolCallSummary";
 
-export interface TaskPlanState {
+export interface TaskPlanViewModel {
   version: number;
   steps: Array<{ step: string; status: "pending" | "in_progress" | "completed" | "cancelled" | "failed" }>;
   summary: { total: number; completed: number; in_progress: number; pending: number };
@@ -114,7 +114,7 @@ export function usePlanNestedRequestIds(terminalId: string | null): Set<string> 
   return useMemo(() => new Set(raw ? raw.split("\n") : []), [raw]);
 }
 
-export function TaskPlanCard({ plan, terminalId, retired }: { plan: TaskPlanState; terminalId?: string | null; retired?: boolean }) {
+export function TaskPlanCard({ plan, terminalId, retired }: { plan: TaskPlanViewModel; terminalId?: string | null; retired?: boolean }) {
   const [expanded, setExpanded] = useState(!retired);
   const [collapsedSteps, setCollapsedSteps] = useState<Set<number>>(new Set());
   const stepTools = useStepTools(terminalId ?? null);
@@ -268,7 +268,7 @@ export function PlanUpdatedNotice() {
   );
 }
 
-export function StickyPlanProgress({ plan }: { plan: TaskPlanState }) {
+export function StickyPlanProgress({ plan }: { plan: TaskPlanViewModel }) {
   const [expanded, setExpanded] = useState(false);
   const current = plan.steps.find((s) => s.status === "in_progress");
   const currentIdx = current ? plan.steps.indexOf(current) : -1;

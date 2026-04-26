@@ -14,21 +14,12 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { listIndexedCodebases } from "@/lib/indexer";
-import { logger } from "@/lib/logger";
-import { notify } from "@/lib/notify";
-import {
-  type CodebaseConfig,
-  getSettings,
-  type GolishSettings,
-  updateSettings,
-} from "@/lib/settings";
-import { updateConfig as updatePentestConfig } from "@/lib/pentest/api";
 import { cn } from "@/lib/utils";
+import { useSettingsNavigation, type SettingsSection } from "./hooks/useSettingsNavigation";
 
 const AdvancedSettings = lazy(() =>
   import("./AdvancedSettings").then((m) => ({ default: m.AdvancedSettings }))
@@ -67,21 +58,6 @@ interface SettingsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
-
-type SettingsSection =
-  | "providers"
-  | "ai"
-  | "terminal"
-  | "editor"
-  | "agent"
-  | "mcp"
-  | "codebases"
-  | "network"
-  | "notifications"
-  | "appearance"
-  | "advanced"
-  | "pentest"
-  | "vault";
 
 interface NavItemDef {
   id: SettingsSection;
@@ -144,61 +120,15 @@ export function SettingsNav({
 
 export function SettingsContent({
   activeSection: activeSectionProp,
-  onSectionChange,
 }: {
   activeSection?: string;
-  onSectionChange?: (section: SettingsSection) => void;
 }) {
-  const [settings, setSettings] = useState<GolishSettings | null>(null);
-  const [activeSection, setActiveSection] = useState<SettingsSection>(
-    (activeSectionProp as SettingsSection) || "pentest"
-  );
-  const [isLoading, setIsLoading] = useState(false);
+  const {
+    settings, activeSection, isLoading, loadSettings,
+    updateSection, handleNetworkChange,
+  } = useSettingsNavigation(activeSectionProp);
 
-  useEffect(() => {
-    if (activeSectionProp) {
-      setActiveSection(activeSectionProp as SettingsSection);
-    }
-  }, [activeSectionProp]);
-
-  useEffect(() => {
-    setIsLoading(true);
-    getSettings()
-      .then(setSettings)
-      .catch((err) => {
-        logger.error("Failed to load settings:", err);
-        notify.error("Failed to load settings");
-      })
-      .finally(() => setIsLoading(false));
-  }, []);
-
-  const saveSettings = useCallback(async (settingsToSave: GolishSettings) => {
-    try {
-      const currentCodebases = await listIndexedCodebases();
-      const updatedCodebases: CodebaseConfig[] = currentCodebases.map((cb) => ({
-        path: cb.path,
-        memory_file: cb.memory_file,
-      }));
-      const finalSettings = { ...settingsToSave, codebases: updatedCodebases };
-      await updateSettings(finalSettings);
-      window.dispatchEvent(new CustomEvent("settings-updated", { detail: finalSettings }));
-    } catch (err) {
-      logger.error("Failed to save settings:", err);
-      notify.error("Failed to save settings");
-    }
-  }, []);
-
-  const updateSection = useCallback(
-    <K extends keyof GolishSettings>(section: K, value: GolishSettings[K]) => {
-      setSettings((prev) => {
-        if (!prev) return null;
-        const updated = { ...prev, [section]: value };
-        saveSettings(updated);
-        return updated;
-      });
-    },
-    [saveSettings]
-  );
+  useEffect(() => { loadSettings(); }, [loadSettings]);
 
   const renderContent = useCallback(() => {
     if (activeSection === "pentest") {
@@ -237,18 +167,7 @@ export function SettingsContent({
       case "codebases":
         return <CodebasesSettings />;
       case "network":
-        return (
-          <NetworkSettings
-            settings={settings.network}
-            onChange={(network) => {
-              updateSection("network", network);
-              updatePentestConfig({
-                proxy_url: network.proxy_url || "",
-                github_token: network.github_token || "",
-              }).catch((e) => console.error("[Settings] pentest config sync failed:", e));
-            }}
-          />
-        );
+        return <NetworkSettings settings={settings.network} onChange={handleNetworkChange} />;
       case "notifications":
         return <NotificationsSettings settings={settings.notifications} onChange={(notifications) => updateSection("notifications", notifications)} />;
       case "appearance":
@@ -263,7 +182,7 @@ export function SettingsContent({
           />
         );
     }
-  }, [activeSection, settings, updateSection]);
+  }, [activeSection, settings, updateSection, handleNetworkChange]);
 
   if (isLoading) {
     return (
@@ -330,66 +249,18 @@ function SettingsDialogNav({ activeSection, onSectionChange }: { activeSection: 
 }
 
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
-  const [settings, setSettings] = useState<GolishSettings | null>(null);
-  const [activeSection, setActiveSection] = useState<SettingsSection>("pentest");
-  const [isLoading, setIsLoading] = useState(false);
+  const {
+    settings, activeSection, setActiveSection, isLoading,
+    loadSettings, updateSection, handleNetworkChange,
+  } = useSettingsNavigation();
 
-  // Load settings when dialog opens
   useEffect(() => {
-    if (open) {
-      setIsLoading(true);
-      getSettings()
-        .then(setSettings)
-        .catch((err) => {
-          logger.error("Failed to load settings:", err);
-          notify.error("Failed to load settings");
-        })
-        .finally(() => setIsLoading(false));
-    }
-  }, [open]);
-
-  // Auto-save settings when they change
-  const saveSettings = useCallback(async (settingsToSave: GolishSettings) => {
-    try {
-      // Reload codebases from backend before saving to preserve any changes made
-      // via CodebasesSettings (which saves directly to backend, not to parent state)
-      const currentCodebases = await listIndexedCodebases();
-      const updatedCodebases: CodebaseConfig[] = currentCodebases.map((cb) => ({
-        path: cb.path,
-        memory_file: cb.memory_file,
-      }));
-
-      const finalSettings = {
-        ...settingsToSave,
-        codebases: updatedCodebases,
-      };
-
-      await updateSettings(finalSettings);
-      // Notify other components (e.g., StatusBar) that settings have been updated
-      window.dispatchEvent(new CustomEvent("settings-updated", { detail: finalSettings }));
-    } catch (err) {
-      logger.error("Failed to save settings:", err);
-      notify.error("Failed to save settings");
-    }
-  }, []);
+    if (open) loadSettings();
+  }, [open, loadSettings]);
 
   const handleClose = useCallback(() => {
     onOpenChange(false);
   }, [onOpenChange]);
-
-  // Handler to update a specific section of settings and auto-save
-  const updateSection = useCallback(
-    <K extends keyof GolishSettings>(section: K, value: GolishSettings[K]) => {
-      setSettings((prev) => {
-        if (!prev) return null;
-        const updated = { ...prev, [section]: value };
-        // Auto-save after state update
-        saveSettings(updated);
-        return updated;
-      });
-    },
-    [saveSettings]
-  );
 
   const renderContent = useCallback(() => {
     if (activeSection === "pentest") {
@@ -399,9 +270,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
 
     switch (activeSection) {
       case "providers":
-        return (
-          <ProviderSettings settings={settings.ai} onChange={(ai) => updateSection("ai", ai)} />
-        );
+        return <ProviderSettings settings={settings.ai} onChange={(ai) => updateSection("ai", ai)} />;
       case "ai":
         return (
           <AiSettings
@@ -412,12 +281,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
           />
         );
       case "terminal":
-        return (
-          <TerminalSettings
-            settings={settings.terminal}
-            onChange={(terminal) => updateSection("terminal", terminal)}
-          />
-        );
+        return <TerminalSettings settings={settings.terminal} onChange={(terminal) => updateSection("terminal", terminal)} />;
       case "editor":
         return <EditorSettings />;
       case "agent":
@@ -428,9 +292,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             subAgentModels={settings.ai.sub_agent_models || {}}
             onChange={(agent) => updateSection("agent", agent)}
             onToolsChange={(tools) => updateSection("tools", tools)}
-            onSubAgentModelsChange={(models) =>
-              updateSection("ai", { ...settings.ai, sub_agent_models: models })
-            }
+            onSubAgentModelsChange={(models) => updateSection("ai", { ...settings.ai, sub_agent_models: models })}
           />
         );
       case "mcp":
@@ -438,34 +300,11 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
       case "codebases":
         return <CodebasesSettings />;
       case "network":
-        return (
-          <NetworkSettings
-            settings={settings.network}
-            onChange={(network) => {
-              updateSection("network", network);
-              const hasToken = !!network.github_token;
-              console.log(`[Settings] 同步 pentest config: proxy=${!!network.proxy_url}, github_token=${hasToken}`);
-              updatePentestConfig({
-                proxy_url: network.proxy_url || "",
-                github_token: network.github_token || "",
-              }).catch((e) => console.error("[Settings] pentest config 同步失败:", e));
-            }}
-          />
-        );
+        return <NetworkSettings settings={settings.network} onChange={handleNetworkChange} />;
       case "notifications":
-        return (
-          <NotificationsSettings
-            settings={settings.notifications}
-            onChange={(notifications) => updateSection("notifications", notifications)}
-          />
-        );
+        return <NotificationsSettings settings={settings.notifications} onChange={(notifications) => updateSection("notifications", notifications)} />;
       case "appearance":
-        return (
-          <AppearanceSettings
-            terminalSettings={settings.terminal}
-            onTerminalChange={(terminal) => updateSection("terminal", terminal)}
-          />
-        );
+        return <AppearanceSettings terminalSettings={settings.terminal} onTerminalChange={(terminal) => updateSection("terminal", terminal)} />;
       case "advanced":
         return (
           <AdvancedSettings
@@ -476,7 +315,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
           />
         );
     }
-  }, [activeSection, settings, updateSection]);
+  }, [activeSection, settings, updateSection, handleNetworkChange]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

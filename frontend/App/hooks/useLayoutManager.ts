@@ -16,7 +16,7 @@ const SPLIT_DRAG_INITIAL: SplitDragState = { startX: 0, startY: 0, dragging: fal
  * Setters for the slice consumed by `useAppLifecycle` (split-tab DOM events)
  * are exposed alongside the state so App can wire them up directly.
  */
-export function useRightSplitPane() {
+export function useLayoutManager() {
   const [rightPanelTabs, setRightPanelTabs] = useState<string[]>([]);
   const [rightActiveTab, setRightActiveTab] = useState<string | null>(null);
   const [showSplitDropZone, setShowSplitDropZone] = useState(false);

@@ -1,5 +1,6 @@
 import { memo, useMemo } from "react";
 import { cn } from "@/lib/utils";
+import type { DiffLine } from "./types";
 
 export interface DiffViewProps {
   diff: string;
@@ -9,11 +10,7 @@ export interface DiffViewProps {
   maxHeight?: string;
 }
 
-interface DiffLine {
-  type: "addition" | "deletion" | "context";
-  content: string;
-  lineNumber?: number;
-}
+export type { DiffLine } from "./types";
 
 /**
  * Parse a unified diff string into structured lines

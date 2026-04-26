@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use rig::completion::Message;
-use rig::message::{Text, UserContent};
+use rig::message::{AssistantContent, Text, ToolCall, ToolFunction, ToolResult, ToolResultContent, UserContent};
 use rig::one_or_many::OneOrMany;
 
 use golish_core::events::AiEvent;
@@ -242,26 +242,54 @@ pub fn apply_compaction(chat_history: &mut Vec<Message>, summary: &str) -> usize
         }
     });
 
+    let preserved_user_count = usize::from(last_user_message.is_some());
     chat_history.clear();
 
-    let message_text = match last_user_message {
-        Some(last_msg) => format!(
-            "[Context Summary - Previous conversation has been compacted]\n\n{}\n\n[End of Summary]\n\nThe user's most recent request was:\n\n{}",
-            summary,
-            last_msg
-        ),
-        None => format!(
-            "[Context Summary - Previous conversation has been compacted]\n\n{}\n\n[End of Summary]",
-            summary
-        ),
-    };
+    let summary_tool_id = "compaction_summary_tool_call".to_string();
+    let summary_tool_name = "execute_task_and_return_summary".to_string();
 
-    let summary_message = Message::User {
-        content: OneOrMany::one(UserContent::Text(Text { text: message_text })),
+    // Encode compaction as a pseudo tool-call/tool-result pair to preserve
+    // provider-friendly message ordering constraints.
+    let summary_tool_call = Message::Assistant {
+        id: None,
+        content: OneOrMany::one(AssistantContent::ToolCall(ToolCall {
+            id: summary_tool_id.clone(),
+            call_id: Some(summary_tool_id.clone()),
+            function: ToolFunction {
+                name: summary_tool_name,
+                arguments: serde_json::json!({
+                    "source": "context_compaction",
+                }),
+            },
+            signature: None,
+            additional_params: None,
+        })),
     };
-    chat_history.push(summary_message);
+    chat_history.push(summary_tool_call);
 
-    original_len.saturating_sub(chat_history.len())
+    let summary_result_text = format!(
+        "[Context Summary - Previous conversation has been compacted]\n\n{}\n\n[End of Summary]",
+        summary
+    );
+    let summary_tool_result = Message::User {
+        content: OneOrMany::one(UserContent::ToolResult(ToolResult {
+            id: summary_tool_id.clone(),
+            call_id: Some(summary_tool_id),
+            content: OneOrMany::one(ToolResultContent::Text(Text {
+                text: summary_result_text,
+            })),
+        })),
+    };
+    chat_history.push(summary_tool_result);
+
+    // Preserve the latest explicit user request so the next turn remains grounded.
+    if let Some(last_msg) = last_user_message {
+        chat_history.push(Message::User {
+            content: OneOrMany::one(UserContent::Text(Text { text: last_msg })),
+        });
+    }
+
+    original_len.saturating_sub(preserved_user_count)
 }
 
 #[cfg(test)]
@@ -315,7 +343,7 @@ mod tests {
         let mut history: Vec<Message> = vec![];
         let removed = apply_compaction(&mut history, "Test summary");
 
-        assert_eq!(history.len(), 1);
+        assert_eq!(history.len(), 2);
         assert_eq!(removed, 0);
     }
 
@@ -336,19 +364,34 @@ mod tests {
 
         let removed = apply_compaction(&mut history, "Test summary");
 
-        assert_eq!(history.len(), 1);
+        assert_eq!(history.len(), 3);
         assert_eq!(removed, 1);
 
-        if let Message::User { ref content } = history[0] {
-            let text = content.iter().next().unwrap();
-            if let UserContent::Text(t) = text {
-                assert!(t.text.contains("[Context Summary"));
-                assert!(t.text.contains("Test summary"));
+        if let Message::Assistant { ref content, .. } = history[0] {
+            let tool_call = content.iter().next().unwrap();
+            if let AssistantContent::ToolCall(tc) = tool_call {
+                assert_eq!(tc.function.name, "execute_task_and_return_summary");
             } else {
-                panic!("Expected text content");
+                panic!("Expected tool call content");
             }
         } else {
-            panic!("Expected user message");
+            panic!("Expected assistant message");
+        }
+
+        if let Message::User { ref content } = history[1] {
+            let entry = content.iter().next().unwrap();
+            if let UserContent::ToolResult(tr) = entry {
+                if let ToolResultContent::Text(t) = tr.content.iter().next().unwrap() {
+                    assert!(t.text.contains("[Context Summary"));
+                    assert!(t.text.contains("Test summary"));
+                } else {
+                    panic!("Expected tool result text content");
+                }
+            } else {
+                panic!("Expected tool result content");
+            }
+        } else {
+            panic!("Expected user tool-result message");
         }
     }
 
@@ -364,7 +407,7 @@ mod tests {
 
         let removed = apply_compaction(&mut history, "Comprehensive summary");
 
-        assert_eq!(history.len(), 1);
+        assert_eq!(history.len(), 3);
         assert_eq!(removed, 9);
     }
 
@@ -378,17 +421,30 @@ mod tests {
 
         apply_compaction(&mut history, "This is the summary content");
 
-        if let Message::User { ref content } = history[0] {
-            let text = content.iter().next().unwrap();
-            if let UserContent::Text(t) = text {
+        if let Message::User { ref content } = history[1] {
+            let entry = content.iter().next().unwrap();
+            if let UserContent::ToolResult(tr) = entry {
+                if let ToolResultContent::Text(t) = tr.content.iter().next().unwrap() {
                 assert!(t
                     .text
                     .contains("[Context Summary - Previous conversation has been compacted]"));
                 assert!(t.text.contains("This is the summary content"));
                 assert!(t.text.contains("[End of Summary]"));
-                assert!(t.text.contains("The user's most recent request was:"));
-                assert!(t.text.contains("Original message"));
+                } else {
+                    panic!("Expected tool result text content");
+                }
             }
+        } else {
+            panic!("Expected user tool-result message");
+        }
+
+        if let Message::User { ref content } = history[2] {
+            let text = content.iter().next().unwrap();
+            if let UserContent::Text(t) = text {
+                assert_eq!(t.text, "Original message");
+            }
+        } else {
+            panic!("Expected preserved last user message");
         }
     }
 
@@ -415,12 +471,10 @@ mod tests {
 
         apply_compaction(&mut history, "Summary of conversation");
 
-        if let Message::User { ref content } = history[0] {
+        if let Message::User { ref content } = history[2] {
             let text = content.iter().next().unwrap();
             if let UserContent::Text(t) = text {
-                assert!(t.text.contains("Summary of conversation"));
-                assert!(t.text.contains("This is my latest request"));
-                assert!(t.text.contains("The user's most recent request was:"));
+                assert_eq!(t.text, "This is my latest request");
             } else {
                 panic!("Expected text content");
             }

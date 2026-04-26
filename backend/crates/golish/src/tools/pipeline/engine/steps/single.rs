@@ -4,6 +4,7 @@
 use uuid::Uuid;
 
 use crate::tools::output_parser::{PatternConfig, StoreStats};
+use crate::tools::pentest::{preflight_tool, PreflightMode};
 use crate::tools::pipeline::templates::resolve_port_targets;
 use crate::tools::pipeline::PipelineStep;
 
@@ -65,6 +66,53 @@ pub(in super::super::super) async fn run_single_step<'a>(
             parent_target_id, tmp_dir, config_manager, pipeline_id, run_id, app,
             step_outputs, depth,
         ).await;
+    }
+
+    let preflight = preflight_tool(
+        &step.command_template,
+        config_manager,
+        PreflightMode::AllowPathFallback,
+    )
+    .await;
+    if !preflight.ready {
+        let duration_ms = step_start.elapsed().as_millis() as u64;
+        let err_msg = preflight
+            .error_message
+            .clone()
+            .unwrap_or_else(|| format!("Preflight failed for '{}'", step.command_template));
+
+        emit_pipeline_event(app, &PipelineEvent {
+            pipeline_id: pipeline_id.to_string(),
+            run_id: run_id.to_string(),
+            step_id: step.id.clone(),
+            step_index,
+            total_steps,
+            status: "error".to_string(),
+            tool_name: step.tool_name.clone(),
+            message: Some(err_msg.clone()),
+            store_stats: None,
+            pipeline_name: None,
+            target: None,
+            all_steps: None,
+            output: None,
+            duration_ms: Some(duration_ms),
+            exit_code: Some(127),
+        });
+
+        return SingleStepResult {
+            step_result: StepResult {
+                step_id: step.id.clone(),
+                tool_name: step.tool_name.clone(),
+                command: step.command_template.clone(),
+                exit_code: Some(127),
+                stdout_lines: 0,
+                stderr_preview: err_msg,
+                store_stats: None,
+                duration_ms,
+            },
+            output_path: tmp_dir.join(format!("step-{}-{}.txt", step_index, step.tool_name)),
+            stored_count: 0,
+        };
     }
 
     let iter_targets: Vec<String> = if step.iterate_over.as_deref() == Some("ports") {

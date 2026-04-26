@@ -2,7 +2,6 @@ import {
   CheckCircle,
   Loader2,
   Maximize2,
-  Terminal,
   XCircle,
 } from "lucide-react";
 import { memo } from "react";

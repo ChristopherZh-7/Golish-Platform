@@ -32,7 +32,6 @@ import {
   listRecentDirectories,
   type ProjectInfo,
   type RecentDirectory,
-  removeRecentDirectory,
 } from "@/lib/indexer";
 import { logger } from "@/lib/logger";
 import {
@@ -378,10 +377,9 @@ function ProjectContextMenu({
 
 export const HomeView = memo(function HomeView() {
   const { createTerminalTab } = useCreateTerminalTab();
-  const [projects, setProjects] = useState<ProjectInfo[]>([]);
+  const [, setProjects] = useState<ProjectInfo[]>([]);
   const [savedProjects, setSavedProjects] = useState<ProjectData[]>([]);
-  const [recentDirectories, setRecentDirectories] = useState<RecentDirectory[]>([]);
-  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
+  const [, setRecentDirectories] = useState<RecentDirectory[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSetupModalOpen, setIsSetupModalOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -467,25 +465,6 @@ export const HomeView = memo(function HomeView() {
       }
     };
   }, [fetchData]);
-
-  const toggleProject = useCallback((path: string) => {
-    setExpandedProjects((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
-      }
-      return next;
-    });
-  }, []);
-
-  const handleOpenDirectory = useCallback(
-    (path: string) => {
-      createTerminalTab(path);
-    },
-    [createTerminalTab]
-  );
 
   /** Open a project: load its workspace state, set as current, create terminal */
   const handleOpenProject = useCallback(
@@ -606,31 +585,6 @@ export const HomeView = memo(function HomeView() {
       logger.error("Failed to open project:", error);
     }
   }, [fetchData, handleOpenProject]);
-
-  const handleProjectContextMenu = useCallback((e: React.MouseEvent, project: ProjectInfo) => {
-    e.preventDefault();
-    setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
-      projectPath: project.path,
-      projectName: project.name,
-    });
-  }, []);
-
-  const handleWorktreeContextMenu = useCallback(
-    (e: React.MouseEvent, projectPath: string, worktreePath: string, branchName: string) => {
-      e.preventDefault();
-      e.stopPropagation(); // Prevent project context menu
-      setWorktreeContextMenu({
-        x: e.clientX,
-        y: e.clientY,
-        projectPath,
-        worktreePath,
-        branchName,
-      });
-    },
-    []
-  );
 
   const handleNewWorktree = useCallback(() => {
     if (contextMenu) {
