@@ -7,11 +7,11 @@ async function getActiveSessionId(page: import("@playwright/test").Page): Promis
   return await page.evaluate(() => {
     const store = (
       window as unknown as {
-        __QBIT_STORE__?: {
+        __GOLISH_STORE__?: {
           getState: () => { activeSessionId: string | null };
         };
       }
-    ).__QBIT_STORE__;
+    ).__GOLISH_STORE__;
     return store?.getState().activeSessionId ?? null;
   });
 }
@@ -33,11 +33,11 @@ test.describe("Timeline Auto-Scroll", () => {
       () => {
         const store = (
           window as unknown as {
-            __QBIT_STORE__?: {
+            __GOLISH_STORE__?: {
               getState: () => { activeSessionId: string | null };
             };
           }
-        ).__QBIT_STORE__;
+        ).__GOLISH_STORE__;
         return store?.getState().activeSessionId != null;
       },
       { timeout: 10000 }

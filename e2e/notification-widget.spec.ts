@@ -11,9 +11,9 @@ async function waitForAppReady(page: Page) {
   await page.evaluate(() => {
     const store = (
       window as unknown as {
-        __QBIT_STORE__?: { getState: () => { clearNotifications: () => void } };
+        __GOLISH_STORE__?: { getState: () => { clearNotifications: () => void } };
       }
-    ).__QBIT_STORE__;
+    ).__GOLISH_STORE__;
     if (store) {
       store.getState().clearNotifications();
     }
@@ -31,9 +31,9 @@ async function addNotification(
     ({ type, title, message }) => {
       const store = (
         window as unknown as {
-          __QBIT_STORE__?: { getState: () => { addNotification: (n: unknown) => void } };
+          __GOLISH_STORE__?: { getState: () => { addNotification: (n: unknown) => void } };
         }
-      ).__QBIT_STORE__;
+      ).__GOLISH_STORE__;
       if (store) {
         store.getState().addNotification({ type, title, message });
         return true;

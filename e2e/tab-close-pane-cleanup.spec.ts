@@ -29,8 +29,8 @@ async function waitForAppReady(page: Page) {
  */
 async function getStoreState(page: Page) {
   return await page.evaluate(() => {
-    const store = (window as unknown as { __QBIT_STORE__?: { getState: () => unknown } })
-      .__QBIT_STORE__;
+    const store = (window as unknown as { __GOLISH_STORE__?: { getState: () => unknown } })
+      .__GOLISH_STORE__;
     if (!store) return null;
     const state = store.getState() as {
       sessions: Record<string, unknown>;
@@ -93,7 +93,7 @@ async function createSplitPane(page: Page, direction: "vertical" | "horizontal")
   const newSessionId = await page.evaluate(async (dir) => {
     const store = (
       window as unknown as {
-        __QBIT_STORE__?: {
+        __GOLISH_STORE__?: {
           getState: () => {
             activeSessionId: string | null;
             sessions: Record<string, { workingDirectory: string }>;
@@ -109,7 +109,7 @@ async function createSplitPane(page: Page, direction: "vertical" | "horizontal")
           };
         };
       }
-    ).__QBIT_STORE__;
+    ).__GOLISH_STORE__;
 
     if (!store) throw new Error("Store not found");
 

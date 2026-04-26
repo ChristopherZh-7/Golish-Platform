@@ -915,7 +915,7 @@ url = "postgresql://..."
 |------|------|
 | `TAVILY_API_KEY` | Web search API key |
 | `VT_SESSION_DIR` | Session 存储路径覆盖 |
-| `QBIT_WORKSPACE` | 工作区路径覆盖 |
+| `GOLISH_WORKSPACE` | 工作区路径覆盖（旧名 QBIT_WORKSPACE 仍临时兼容，未来版本移除） |
 
 ---
 

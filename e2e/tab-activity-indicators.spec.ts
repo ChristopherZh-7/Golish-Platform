@@ -24,8 +24,8 @@ async function waitForAppReady(page: Page) {
  */
 async function getStoreState(page: Page) {
   return await page.evaluate(() => {
-    const store = (window as unknown as { __QBIT_STORE__?: { getState: () => unknown } })
-      .__QBIT_STORE__;
+    const store = (window as unknown as { __GOLISH_STORE__?: { getState: () => unknown } })
+      .__GOLISH_STORE__;
     if (!store) return null;
     const state = store.getState() as {
       sessions: Record<string, { tabType?: string }>;
@@ -89,13 +89,13 @@ async function setAgentResponding(page: Page, sessionId: string, isResponding: b
     ({ sessionId, isResponding }) => {
       const store = (
         window as unknown as {
-          __QBIT_STORE__?: {
+          __GOLISH_STORE__?: {
             getState: () => {
               setAgentResponding: (sessionId: string, isResponding: boolean) => void;
             };
           };
         }
-      ).__QBIT_STORE__;
+      ).__GOLISH_STORE__;
       if (store) {
         store.getState().setAgentResponding(sessionId, isResponding);
       }
@@ -113,13 +113,13 @@ async function markTabNewActivity(page: Page, sessionId: string) {
     ({ sessionId }) => {
       const store = (
         window as unknown as {
-          __QBIT_STORE__?: {
+          __GOLISH_STORE__?: {
             getState: () => {
               markTabNewActivityBySession: (sessionId: string) => void;
             };
           };
         }
-      ).__QBIT_STORE__;
+      ).__GOLISH_STORE__;
       if (store) {
         store.getState().markTabNewActivityBySession(sessionId);
       }
