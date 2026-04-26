@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type AiEvent, onAiEvent, respondToToolApproval } from "@/lib/ai";
 import { type ChatMessage, useStore } from "@/store";
-import type { AskHumanState, WorkflowState } from "./ChatSubComponents";
+import type { AskHumanState, WorkflowRunSnapshot } from "./ChatSubComponents";
 
 /**
  * Local UI state owned by the AI-event subscription.
@@ -44,7 +44,7 @@ export interface UseChatAiEventsResult {
   pendingApproval: PendingApprovalState | null;
   pendingApprovalRef: React.MutableRefObject<PendingApprovalState | null>;
   askHumanRequest: AskHumanState | null;
-  activeWorkflow: WorkflowState | null;
+  activeWorkflow: WorkflowRunSnapshot | null;
   compactionState: CompactionUiState | null;
   contextUsage: ContextUsageState | null;
 
@@ -86,7 +86,7 @@ export function useChatAiEvents({
   pendingApprovalRef.current = pendingApproval;
 
   const [askHumanRequest, setAskHumanRequest] = useState<AskHumanState | null>(null);
-  const [activeWorkflow, setActiveWorkflow] = useState<WorkflowState | null>(null);
+  const [activeWorkflow, setActiveWorkflow] = useState<WorkflowRunSnapshot | null>(null);
   const [compactionState, setCompactionState] = useState<CompactionUiState | null>(null);
   const [contextUsage, setContextUsage] = useState<ContextUsageState | null>(null);
 

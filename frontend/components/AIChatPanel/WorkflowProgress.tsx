@@ -2,7 +2,7 @@ import { CheckCircle2, ChevronDown, GitBranch, Loader2, XCircle } from "lucide-r
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 
-export interface WorkflowState {
+export interface WorkflowRunSnapshot {
   id: string;
   name: string;
   currentStep: string;
@@ -14,7 +14,7 @@ export interface WorkflowState {
   totalDurationMs?: number;
 }
 
-export function WorkflowProgress({ workflow }: { workflow: WorkflowState }) {
+export function WorkflowProgress({ workflow }: { workflow: WorkflowRunSnapshot }) {
   const [expanded, setExpanded] = useState(false);
   const progress =
     workflow.totalSteps > 0 ? (workflow.completedSteps.length / workflow.totalSteps) * 100 : 0;

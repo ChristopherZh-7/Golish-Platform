@@ -1,9 +1,9 @@
 import { useCallback, useState } from "react";
 import { AppShell, type AppShellProps } from "./App/AppShell";
-import { useActivityViewRouting } from "./App/useActivityViewRouting";
-import { useAppKeyboardShortcuts } from "./App/useAppKeyboardShortcuts";
-import { useAppLifecycle } from "./App/useAppLifecycle";
-import { useRightSplitPane } from "./App/useRightSplitPane";
+import { useAppRouting } from "./App/hooks/useAppRouting";
+import { useGlobalShortcuts } from "./App/hooks/useGlobalShortcuts";
+import { useAppLifecycle } from "./App/hooks/useAppLifecycle";
+import { useLayoutManager } from "./App/hooks/useLayoutManager";
 import { useCreateTerminalTab } from "./hooks/useCreateTerminalTab";
 import { usePaneControls } from "./hooks/usePaneControls";
 import { ThemeProvider } from "./hooks/useTheme";
@@ -41,11 +41,11 @@ export function App() {
   const [recordingsPanelOpen, setRecordingsPanelOpen] = useState(false);
 
   // Right split column state + handlers
-  const rightSplit = useRightSplitPane();
+  const rightSplit = useLayoutManager();
 
   // Routing state (activity view + page route)
   const { currentPage, setCurrentPage, activityView, setActivityView, visitedViews } =
-    useActivityViewRouting();
+    useAppRouting();
 
   // Lifecycle / startup side effects + isLoading / error flags
   const { isLoading, error } = useAppLifecycle({
@@ -67,7 +67,7 @@ export function App() {
   const handleNewTab = useCallback(() => createTerminalTab(), [createTerminalTab]);
 
   // Wire global keyboard shortcuts (refs pattern, listener installed once)
-  useAppKeyboardShortcuts({
+  useGlobalShortcuts({
     gitPanelOpen,
     handleNewTab,
     handleToggleMode,

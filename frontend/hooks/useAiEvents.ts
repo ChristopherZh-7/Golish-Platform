@@ -1,8 +1,16 @@
 import { useEffect, useRef } from "react";
-import { type AiEvent, onAiEvent, signalFrontendReady, type ToolSource } from "@/lib/ai";
+import { type AiEvent, onAiEvent, signalFrontendReady } from "@/lib/ai";
 import { logger } from "@/lib/logger";
-import { type ToolCallSource, useStore } from "@/store";
+import { useStore } from "@/store";
 import { dispatchEvent, type EventHandlerContext } from "./ai-events";
+import {
+  pendingTextBatches,
+  scheduledTextBatchFlush,
+  runTextBatchFlush,
+  scheduleTextBatchFlush,
+} from "@/lib/ai/streaming-buffer";
+export { discardPendingBatchedDeltasForAiSession, discardAllPendingBatchedDeltas } from "@/lib/ai/streaming-buffer";
+import { convertToolSource } from "@/lib/ai/tool-source";
 
 /**
  * Track last seen sequence number per session for deduplication.
@@ -40,29 +48,6 @@ export function getSessionSequenceCount(): number {
   return lastSeenSeq.size;
 }
 
-/** Convert AI event source to store source (snake_case to camelCase) */
-function convertToolSource(source?: ToolSource): ToolCallSource | undefined {
-  if (!source) return undefined;
-  if (source.type === "main") return { type: "main" };
-  if (source.type === "sub_agent") {
-    return {
-      type: "sub_agent",
-      agentId: source.agent_id,
-      agentName: source.agent_name,
-    };
-  }
-  if (source.type === "workflow") {
-    return {
-      type: "workflow",
-      workflowId: source.workflow_id,
-      workflowName: source.workflow_name,
-      stepName: source.step_name,
-      stepIndex: source.step_index,
-    };
-  }
-  return undefined;
-}
-
 /**
  * Hook to subscribe to AI events from the Tauri backend
  * and update the store accordingly.
@@ -80,55 +65,30 @@ export function useAiEvents() {
     // Track if this effect instance is still mounted (for async cleanup)
     let isMounted = true;
 
-    // Throttle state: batch text deltas and flush periodically
-    const pendingDeltas = new Map<string, string>();
-    let flushTimeout: ReturnType<typeof setTimeout> | null = null;
-    let lastFlushTime = 0;
-    const FLUSH_INTERVAL_MS = 16; // ~60fps
-
-    // Flush all pending deltas to the store
+    // Flush all pending text batches to the store
     const flushPendingDeltas = () => {
-      if (pendingDeltas.size === 0) return;
-      const state = useStore.getState();
-      for (const [sessionId, delta] of pendingDeltas) {
-        state.updateAgentStreaming(sessionId, delta);
-      }
-      pendingDeltas.clear();
-      lastFlushTime = Date.now();
-      flushTimeout = null;
+      if (pendingTextBatches.size === 0) return;
+      runTextBatchFlush();
     };
 
     // Flush pending deltas for a specific session immediately
     // Called before adding non-text blocks to ensure correct ordering
     const flushSessionDeltas = (sessionId: string) => {
-      const pending = pendingDeltas.get(sessionId);
+      const pending = pendingTextBatches.get(sessionId);
       if (pending) {
         useStore.getState().updateAgentStreaming(sessionId, pending);
-        pendingDeltas.delete(sessionId);
+        pendingTextBatches.delete(sessionId);
       }
     };
 
     // Add a text delta to the pending batch
     const batchTextDelta = (sessionId: string, delta: string) => {
-      const current = pendingDeltas.get(sessionId) ?? "";
-      pendingDeltas.set(sessionId, current + delta);
-
-      // Flush immediately if enough time has passed since last flush
-      const now = Date.now();
-      if (now - lastFlushTime >= FLUSH_INTERVAL_MS) {
-        flushPendingDeltas();
-      } else if (!flushTimeout) {
-        // Schedule a flush for the remaining time
-        flushTimeout = setTimeout(flushPendingDeltas, FLUSH_INTERVAL_MS - (now - lastFlushTime));
-      }
+      const current = pendingTextBatches.get(sessionId) ?? "";
+      pendingTextBatches.set(sessionId, current + delta);
+      scheduleTextBatchFlush();
     };
 
     const handleEvent = (event: AiEvent) => {
-      // #region agent log
-      if (event.type !== 'text_delta' && event.type !== 'reasoning') {
-        fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify({sessionId:'14d8b8',location:'useAiEvents.ts:handleEvent:entry',message:'handleEvent called',data:{eventType:event.type,rawSessionId:event.session_id,seq:(event as any).seq,toolName:(event as any).tool_name,requestId:(event as any).request_id},timestamp:Date.now(),hypothesisId:'event-routing'})}).catch(()=>{});
-      }
-      // #endregion
       // Get the session ID from the event for proper routing
       const state = useStore.getState();
       let sessionId = event.session_id;
@@ -185,11 +145,6 @@ export function useAiEvents() {
         }
 
         if (!resolved) {
-          // #region agent log
-          if (event.type === 'tool_result') {
-            fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify({sessionId:'14d8b8',location:'useAiEvents.ts:handleEvent:session-drop',message:'tool_result DROPPED by session-not-found',data:{toolName:(event as any).tool_name,requestId:(event as any).request_id,originalSessionId:sessionId,activeSessionId:state.activeSessionId},timestamp:Date.now(),hypothesisId:'event-routing'})}).catch(()=>{});
-          }
-          // #endregion
           logger.warn("AI event dropped for unknown session:", {
             sessionId,
             eventType: event.type,
@@ -205,11 +160,6 @@ export function useAiEvents() {
 
         // Skip duplicate or out-of-order events
         if (event.seq <= lastSeq) {
-          // #region agent log
-          if (event.type === 'tool_result') {
-            fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify({sessionId:'14d8b8',location:'useAiEvents.ts:handleEvent:dedup-drop',message:'tool_result DROPPED by dedup',data:{toolName:(event as any).tool_name,requestId:(event as any).request_id,seq:event.seq,lastSeq,resolvedSessionId:sessionId},timestamp:Date.now(),hypothesisId:'event-routing'})}).catch(()=>{});
-          }
-          // #endregion
           logger.debug(
             `Skipping duplicate/out-of-order event: seq=${event.seq}, lastSeq=${lastSeq}, type=${event.type}`
           );
@@ -282,10 +232,8 @@ export function useAiEvents() {
         unlistenRef.current();
         unlistenRef.current = null;
       }
-      // Cancel any pending delta flush
-      if (flushTimeout !== null) {
-        clearTimeout(flushTimeout);
-        flushTimeout = null;
+      if (scheduledTextBatchFlush) {
+        clearTimeout(scheduledTextBatchFlush);
       }
       // Flush any remaining deltas before unmount
       flushPendingDeltas();
