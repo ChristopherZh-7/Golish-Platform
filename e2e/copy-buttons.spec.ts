@@ -22,7 +22,7 @@ declare global {
       output: string,
       exitCode?: number
     ) => Promise<void>;
-    __QBIT_STORE__?: {
+    __GOLISH_STORE__?: {
       getState: () => { activeSessionId: string | null };
     };
     __MOCK_EVENT_LISTENERS__?: Map<string, unknown[]>;
@@ -80,7 +80,7 @@ function getInputTextarea(page: Page) {
  */
 async function getActiveSessionId(page: Page): Promise<string | null> {
   return await page.evaluate(() => {
-    return window.__QBIT_STORE__?.getState().activeSessionId ?? null;
+    return window.__GOLISH_STORE__?.getState().activeSessionId ?? null;
   });
 }
 

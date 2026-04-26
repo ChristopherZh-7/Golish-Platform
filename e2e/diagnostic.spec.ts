@@ -165,9 +165,9 @@ test.describe("Diagnostic Tests", () => {
         // Get the store and subscribe to changes
         const store = (
           window as unknown as {
-            __QBIT_STORE__?: { subscribe: (fn: () => void) => () => void; getState: () => unknown };
+            __GOLISH_STORE__?: { subscribe: (fn: () => void) => () => void; getState: () => unknown };
           }
-        ).__QBIT_STORE__;
+        ).__GOLISH_STORE__;
         if (!store) {
           resolve(results);
           return;
@@ -523,8 +523,8 @@ test.describe("Diagnostic Tests", () => {
 
     // Get store state
     const storeState = await page.evaluate(() => {
-      const store = (window as unknown as { __QBIT_STORE__?: { getState: () => unknown } })
-        .__QBIT_STORE__;
+      const store = (window as unknown as { __GOLISH_STORE__?: { getState: () => unknown } })
+        .__GOLISH_STORE__;
       if (!store) return null;
       const state = store.getState() as {
         sessions: Record<string, { id: string; tabType?: string; name: string }>;
