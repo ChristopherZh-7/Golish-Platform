@@ -30,8 +30,8 @@ async function waitForAppReady(page: Page) {
  */
 async function getStoreState(page: Page) {
   return await page.evaluate(() => {
-    const store = (window as unknown as { __QBIT_STORE__?: { getState: () => unknown } })
-      .__QBIT_STORE__;
+    const store = (window as unknown as { __GOLISH_STORE__?: { getState: () => unknown } })
+      .__GOLISH_STORE__;
     if (!store) return null;
     const state = store.getState() as {
       sessions: Record<string, { renderMode?: string }>;
@@ -82,7 +82,7 @@ async function createSplitPane(
   const result = await page.evaluate(async (dir) => {
     const store = (
       window as unknown as {
-        __QBIT_STORE__?: {
+        __GOLISH_STORE__?: {
           getState: () => {
             activeSessionId: string | null;
             sessions: Record<string, { workingDirectory: string }>;
@@ -98,7 +98,7 @@ async function createSplitPane(
           };
         };
       }
-    ).__QBIT_STORE__;
+    ).__GOLISH_STORE__;
 
     if (!store) throw new Error("Store not found");
 
@@ -147,13 +147,13 @@ async function setRenderMode(page: Page, sessionId: string, mode: "timeline" | "
     ({ sessionId, mode }) => {
       const store = (
         window as unknown as {
-          __QBIT_STORE__?: {
+          __GOLISH_STORE__?: {
             getState: () => {
               setRenderMode: (sessionId: string, mode: string) => void;
             };
           };
         }
-      ).__QBIT_STORE__;
+      ).__GOLISH_STORE__;
       if (store) {
         store.getState().setRenderMode(sessionId, mode);
       }
@@ -170,7 +170,7 @@ async function closePane(page: Page, paneId: string) {
   await page.evaluate((paneId) => {
     const store = (
       window as unknown as {
-        __QBIT_STORE__?: {
+        __GOLISH_STORE__?: {
           getState: () => {
             activeSessionId: string | null;
             tabLayouts: Record<string, { focusedPaneId: string }>;
@@ -178,7 +178,7 @@ async function closePane(page: Page, paneId: string) {
           };
         };
       }
-    ).__QBIT_STORE__;
+    ).__GOLISH_STORE__;
     if (!store) throw new Error("Store not found");
 
     const state = store.getState();
@@ -282,14 +282,14 @@ test.describe("Terminal Portal Architecture", () => {
     const tabLayout = await page.evaluate(() => {
       const store = (
         window as unknown as {
-          __QBIT_STORE__?: {
+          __GOLISH_STORE__?: {
             getState: () => {
               activeSessionId: string | null;
               tabLayouts: Record<string, { focusedPaneId: string }>;
             };
           };
         }
-      ).__QBIT_STORE__;
+      ).__GOLISH_STORE__;
       if (!store) return null;
       const state = store.getState();
       const tabId = state.activeSessionId;
@@ -448,14 +448,14 @@ test.describe("Pane Focus Management", () => {
     const focusBefore = await page.evaluate(() => {
       const store = (
         window as unknown as {
-          __QBIT_STORE__?: {
+          __GOLISH_STORE__?: {
             getState: () => {
               activeSessionId: string | null;
               tabLayouts: Record<string, { focusedPaneId: string }>;
             };
           };
         }
-      ).__QBIT_STORE__;
+      ).__GOLISH_STORE__;
       if (!store) return null;
       const state = store.getState();
       const tabId = state.activeSessionId;
@@ -480,14 +480,14 @@ test.describe("Pane Focus Management", () => {
     const focusAfter = await page.evaluate(() => {
       const store = (
         window as unknown as {
-          __QBIT_STORE__?: {
+          __GOLISH_STORE__?: {
             getState: () => {
               activeSessionId: string | null;
               tabLayouts: Record<string, { focusedPaneId: string }>;
             };
           };
         }
-      ).__QBIT_STORE__;
+      ).__GOLISH_STORE__;
       if (!store) return null;
       const state = store.getState();
       const tabId = state.activeSessionId;
