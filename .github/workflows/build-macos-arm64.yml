@@ -65,7 +65,7 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          projectPath: backend/crates/qbit
+          projectPath: backend/crates/golish
           tauriScript: pnpm --dir ../../.. tauri
           args: --target aarch64-apple-darwin
 
@@ -73,8 +73,8 @@ jobs:
         if: ${{ inputs.upload_artifact }}
         uses: actions/upload-artifact@v4
         with:
-          name: qbit-macos-arm64
+          name: golish-macos-arm64
           path: |
-            backend/crates/qbit/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-            backend/crates/qbit/target/aarch64-apple-darwin/release/bundle/macos/*.app
+            backend/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            backend/target/aarch64-apple-darwin/release/bundle/macos/*.app
           retention-days: 7

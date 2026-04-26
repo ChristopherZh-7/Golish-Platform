@@ -39,15 +39,16 @@ Cargo.lock
 
 # Tauri
 backend/gen/
-backend/crates/qbit/gen/
+backend/crates/golish/gen/
 
 # Environment files
 .env
 .env.*
 !.env.example
 
-# Qbit app data (indexer cache, etc.)
+# Golish app data (indexer cache, etc.)
 .qbit/
+.golish/
 
 # Claude Code
 .claude/
@@ -98,6 +99,7 @@ mistral-testbed/target/
 
 # Test workspace for evals
 qbit-go-testbed/
+golish-go-testbed/
 
 # Python
 *.egg-info/
