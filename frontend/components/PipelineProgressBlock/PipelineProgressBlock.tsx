@@ -177,7 +177,6 @@ export const PipelineProgressBlock = memo(function PipelineProgressBlock({
   const running = execution.steps.filter((s) => s.status === "running").length;
   const completed = execution.steps.filter((s) => s.status === "success").length;
   const failed = execution.steps.filter((s) => s.status === "failed" || s.status === "interrupted").length;
-  const skipped = execution.steps.filter((s) => s.status === "skipped").length;
 
   const totalDurationMs = useMemo(() => {
     if (execution.finishedAt && execution.startedAt) {

@@ -22,12 +22,9 @@ interface CommandBlockProps {
   source?: "manual" | "pipeline";
 }
 
-const OUTPUT_COLLAPSED_HEIGHT = 120;
-
 export function CommandBlock({ block, sessionId, onToggleCollapse, source }: CommandBlockProps) {
   const isSuccess = block.exitCode === 0;
-  const isVeryLargeOutput = block.output.length > 50000;
-  const [outputExpanded, setOutputExpanded] = useState(!isVeryLargeOutput);
+  const [outputExpanded, setOutputExpanded] = useState(false);
 
   // Strip OSC sequences but keep ANSI color codes for rendering
   const cleanOutput = useMemo(() => stripOscSequences(block.output), [block.output]);
@@ -56,7 +53,7 @@ export function CommandBlock({ block, sessionId, onToggleCollapse, source }: Com
           disabled={!hasOutput}
         >
           {/* Command */}
-          <code className="flex-1 truncate text-[var(--ansi-white)]" style={codeStyle}>
+          <code className="flex-1 truncate text-foreground" style={codeStyle}>
             {source === "pipeline" && (
               <span className="inline-flex items-center text-[8px] px-1 py-px rounded bg-blue-500/15 text-blue-400 font-sans font-medium mr-1.5 align-middle leading-none">
                 AUTO

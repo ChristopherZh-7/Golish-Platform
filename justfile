@@ -428,9 +428,7 @@ swebench-verbose problems="0-49" provider="vertex-claude" model="claude-opus-4-5
 # Kill any running dev processes (including server)
 kill:
     -pkill -f "target/debug/golish" 2>/dev/null
-    -pkill -f "target/debug/qbit" 2>/dev/null
     -pkill -f "golish-cli" 2>/dev/null
-    -pkill -f "qbit-cli" 2>/dev/null
     -pkill -f "vite" 2>/dev/null
     -lsof -ti:1420 | xargs kill -9 2>/dev/null
 

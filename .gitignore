@@ -47,7 +47,6 @@ backend/crates/golish/gen/
 !.env.example
 
 # Golish app data (indexer cache, etc.)
-.qbit/
 .golish/
 
 # Claude Code
@@ -98,7 +97,6 @@ tools/*/node_modules/
 mistral-testbed/target/
 
 # Test workspace for evals
-qbit-go-testbed/
 golish-go-testbed/
 
 # Python

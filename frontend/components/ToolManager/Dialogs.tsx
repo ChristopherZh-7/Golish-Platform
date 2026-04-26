@@ -1,9 +1,11 @@
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowUpCircle, Check, Copy, Download, ExternalLink,
   FolderOpen, FileText, Github, Loader2, Trash2, X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { cn } from "@/lib/utils";
 import type { ToolWithMeta } from "./OutputParserEditor";
 
@@ -68,11 +70,27 @@ export function UninstallConfirmDialog({ target, onCancel, onConfirm }: {
   target: ToolWithMeta; onCancel: () => void; onConfirm: () => void;
 }) {
   const { t } = useTranslation();
+
+  const via = target.installedVia;
+  const method = target.install?.method;
+  const pkg = target.install?.source?.trim() || target.name;
+
+  let actionDesc = t("toolManager.uninstallKeepConfig");
+  if (via === "homebrew" || method === "homebrew") {
+    actionDesc = t("toolManager.uninstallBrewCmd", { pkg });
+  } else if (via === "gem" || method === "gem") {
+    actionDesc = t("toolManager.uninstallGemCmd", { pkg });
+  } else if (via === "system_path") {
+    actionDesc = t("toolManager.uninstallSystemPath", {
+      executable: target.executable || target.name,
+    });
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onCancel}>
-      <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-xs w-full" onClick={(e) => e.stopPropagation()}>
-        <p className="text-[13px] text-foreground mb-1">{t("toolManager.uninstallConfirm", { name: target.name })}</p>
-        <p className="text-[11px] text-muted-foreground/50 mb-4">{t("toolManager.uninstallKeepConfig")}</p>
+      <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-sm w-full" onClick={(e) => e.stopPropagation()}>
+        <p className="text-[13px] text-foreground mb-2">{t("toolManager.uninstallConfirm", { name: target.name })}</p>
+        <p className="text-[11px] text-muted-foreground/70 mb-4 font-mono break-all">{actionDesc}</p>
         <div className="flex justify-end gap-2">
           <button type="button" onClick={onCancel}
             className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">{t("common.cancel")}</button>
@@ -116,9 +134,17 @@ export function DepPickerDialog({ tool, files, onPick, onCancel }: {
 
 /* ── Exec Picker ── */
 
+/**
+ * Pops up after a GitHub-installed tool is extracted so the user can pick the
+ * entry-point binary/script. We intentionally show this for 0/1/many candidates
+ * — even when there is exactly one match, the user gets the chance to confirm
+ * or override the auto-detected entry instead of having it silently chosen.
+ */
 export interface ExecPickerState {
   tool: ToolWithMeta;
   dirName: string;
+  /** Absolute path of the extracted tool dir on disk (used as the file picker root). */
+  toolDirAbs: string;
   candidates: string[];
   resolve: (v: string | null) => void;
 }
@@ -128,31 +154,108 @@ export function ExecPickerDialog({ state, onDismiss }: {
   onDismiss: () => void;
 }) {
   const { t } = useTranslation();
+  const recommended = state.candidates[0] || "";
+  const [manual, setManual] = useState("");
+
+  useEffect(() => {
+    setManual("");
+  }, [state.dirName]);
+
+  const cancel = () => { state.resolve(null); onDismiss(); };
+  const pick = (value: string) => { state.resolve(value); onDismiss(); };
+
+  const submitManual = () => {
+    const trimmed = manual.trim();
+    if (!trimmed) return;
+    pick(trimmed.replace(/^[/\\]+/, ""));
+  };
+
+  const browse = async () => {
+    try {
+      const picked = await openFileDialog({
+        multiple: false,
+        directory: false,
+        defaultPath: state.toolDirAbs || undefined,
+        title: t("toolManager.pickExecutableTitle", { name: state.tool.name }),
+      });
+      if (!picked || typeof picked !== "string") return;
+      const root = state.toolDirAbs.replace(/[/\\]+$/, "");
+      let rel = picked;
+      if (root && picked.startsWith(root)) {
+        rel = picked.slice(root.length).replace(/^[/\\]+/, "");
+      } else {
+        rel = picked.split(/[\\/]/).pop() || picked;
+      }
+      pick(rel);
+    } catch {
+      // dialog cancelled or unavailable
+    }
+  };
+
+  const empty = state.candidates.length === 0;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-      onClick={() => { state.resolve(null); onDismiss(); }}>
-      <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-sm w-full" onClick={(e) => e.stopPropagation()}>
+      onClick={cancel}>
+      <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-md w-full" onClick={(e) => e.stopPropagation()}>
         <p className="text-[13px] text-foreground mb-1">{t("toolManager.selectExecutable")}</p>
         <p className="text-[11px] text-muted-foreground/50 mb-3">
-          {t("toolManager.multipleExecsDetected", { name: state.tool.name })}
+          {empty
+            ? t("toolManager.noExecsDetected", { name: state.tool.name })
+            : t("toolManager.confirmEntrypoint", { name: state.tool.name })}
         </p>
-        <div className="space-y-1 max-h-48 overflow-y-auto mb-4">
-          {state.candidates.map((f, i) => (
-            <button key={f} type="button"
-              onClick={() => { state.resolve(f); onDismiss(); }}
-              className={cn(
-                "w-full text-left px-3 py-2 rounded-lg text-[12px] font-mono transition-colors",
-                i === 0
-                  ? "bg-accent/15 text-accent hover:bg-accent/20 font-semibold"
-                  : "text-foreground hover:bg-accent/10",
-              )}>
-              {f}{i === 0 && <span className="ml-2 text-[10px] text-accent/70 font-normal">{t("common.recommended")}</span>}
+
+        {!empty && (
+          <div className="space-y-1 max-h-48 overflow-y-auto mb-3">
+            {state.candidates.map((f, i) => (
+              <button key={f} type="button"
+                onClick={() => pick(f)}
+                className={cn(
+                  "w-full text-left px-3 py-2 rounded-lg text-[12px] font-mono transition-colors",
+                  i === 0
+                    ? "bg-accent/15 text-accent hover:bg-accent/20 font-semibold"
+                    : "text-foreground hover:bg-accent/10",
+                )}>
+                <span>{f}</span>
+                {i === 0 && <span className="ml-2 text-[10px] text-accent/70 font-normal">{t("common.recommended")}</span>}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className="rounded-lg border border-border/15 p-3 mb-3">
+          <p className="text-[11px] text-muted-foreground/60 mb-2">
+            {t("toolManager.manualEntrypointLabel", { dir: state.dirName })}
+          </p>
+          <div className="flex items-center gap-2">
+            <input
+              value={manual}
+              onChange={(e) => setManual(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") submitManual(); }}
+              placeholder={recommended || "bin/tool"}
+              className="flex-1 h-8 px-2 text-[12px] font-mono bg-background rounded-md border border-border/20 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40 transition-colors"
+            />
+            <button type="button" onClick={browse}
+              className="text-[11px] px-2.5 py-1.5 rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-[var(--bg-hover)] border border-border/15 transition-colors flex items-center gap-1">
+              <FolderOpen className="w-3 h-3" /> {t("toolManager.browse")}
             </button>
-          ))}
+          </div>
         </div>
-        <div className="flex justify-end">
-          <button type="button" onClick={() => { state.resolve(null); onDismiss(); }}
-            className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">{t("common.skip")}</button>
+
+        <div className="flex justify-between items-center gap-2">
+          <button type="button" onClick={cancel}
+            className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">
+            {t("toolManager.decideLater")}
+          </button>
+          <button type="button" onClick={submitManual} disabled={!manual.trim()}
+            className={cn(
+              "text-[12px] px-3 py-1.5 rounded-lg font-medium transition-colors",
+              manual.trim()
+                ? "bg-accent text-accent-foreground hover:bg-accent/90"
+                : "bg-muted/30 text-muted-foreground/30 cursor-not-allowed",
+            )}>
+            {t("toolManager.useManualEntry")}
+          </button>
         </div>
       </div>
     </div>

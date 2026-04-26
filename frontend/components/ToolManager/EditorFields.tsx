@@ -25,20 +25,74 @@ function InlineSelect({ value, onChange, options }: {
   );
 }
 
+/** Mirror the backend's normalize logic for runtimeVersion. */
+export function normalizeVersion(v: string): string {
+  return v
+    .trim()
+    .replace(/^[><=vV]+/, "")
+    .replace(/\+$/, "")
+    .replace(/\.x$/, "")
+    .replace(/\.\*$/, "")
+    .trim();
+}
+
+export const RUNTIME_VERSION_MAP: Record<string, { value: string; label: string }[]> = {
+  python: [
+    { value: "3.8", label: "3.8" },
+    { value: "3.9", label: "3.9" },
+    { value: "3.10", label: "3.10" },
+    { value: "3.11", label: "3.11" },
+    { value: "3.12", label: "3.12" },
+    { value: "3.13", label: "3.13" },
+  ],
+  java: [
+    { value: "8", label: "8 (LTS)" },
+    { value: "11", label: "11 (LTS)" },
+    { value: "17", label: "17 (LTS)" },
+    { value: "21", label: "21 (LTS)" },
+  ],
+  node: [
+    { value: "16", label: "16 (LTS)" },
+    { value: "18", label: "18 (LTS)" },
+    { value: "20", label: "20 (LTS)" },
+    { value: "22", label: "22 (LTS)" },
+  ],
+  ruby: [
+    { value: "3.0", label: "3.0" },
+    { value: "3.1", label: "3.1" },
+    { value: "3.2", label: "3.2" },
+    { value: "3.3", label: "3.3" },
+  ],
+};
+
+export const VALID_RUNTIMES = ["native", "python", "java", "node", "ruby"] as const;
+export const VALID_LAUNCH_MODES = ["cli", "gui", "web"] as const;
+export const VALID_TIERS = ["essential", "recommended", "optional"] as const;
+export const VALID_INSTALL_METHODS = ["", "github", "homebrew", "homebrew-cask", "gem", "pip", "system", "manual"] as const;
+export const VALID_PARAM_TYPES = ["string", "number", "boolean", "file", "select"] as const;
+
 export function FieldRow({ label, field, placeholder, mono, type = "text", options, ctx }: {
   label: string; field: string; placeholder?: string; mono?: boolean;
   type?: "text" | "select"; options?: { value: string; label: string }[];
   ctx: EditorFieldsContext;
 }) {
   const val = (ctx.formData[field] as string) ?? "";
+  const hint = field === "runtimeVersion" ? versionHint(val) : null;
   return (
-    <div className="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-[var(--bg-hover)]/30 transition-colors">
-      <span className="text-[12px] text-muted-foreground/60 w-24 flex-shrink-0">{label}</span>
-      {type === "select" && options ? (
-        <InlineSelect value={val} onChange={(v) => ctx.handleFormChange(field, v === "_none" ? "" : v)} options={options} />
-      ) : (
-        <input type="text" value={val} onChange={(e) => ctx.handleFormChange(field, e.target.value)} placeholder={placeholder}
-          className={cn("flex-1 h-7 px-2 text-[12px] rounded-md bg-transparent border border-transparent hover:border-border/20 focus:border-accent/40 text-foreground placeholder:text-muted-foreground/20 outline-none transition-colors", mono && "font-mono text-[11px]")} />
+    <div className="flex flex-col gap-0.5 py-2 px-3 rounded-lg hover:bg-[var(--bg-hover)]/30 transition-colors">
+      <div className="flex items-center gap-3">
+        <span className="text-[12px] text-muted-foreground/60 w-24 flex-shrink-0">{label}</span>
+        {type === "select" && options ? (
+          <InlineSelect value={val} onChange={(v) => ctx.handleFormChange(field, v === "_none" ? "" : v)} options={options} />
+        ) : (
+          <input type="text" value={val} onChange={(e) => ctx.handleFormChange(field, e.target.value)} placeholder={placeholder}
+            className={cn("flex-1 h-7 px-2 text-[12px] rounded-md bg-transparent border border-transparent hover:border-border/20 focus:border-accent/40 text-foreground placeholder:text-muted-foreground/20 outline-none transition-colors", mono && "font-mono text-[11px]")} />
+        )}
+      </div>
+      {hint && (
+        <span className="text-[10px] text-amber-400/70 ml-[calc(6rem+12px)]">
+          {hint}
+        </span>
       )}
     </div>
   );

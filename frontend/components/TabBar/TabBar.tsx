@@ -50,7 +50,7 @@ import { ptyDestroy } from "@/lib/tauri";
 import { liveTerminalManager, TerminalInstanceManager } from "@/lib/terminal";
 import { TerminalRecordingControls } from "@/components/Terminal/TerminalRecordingControls";
 import { cn } from "@/lib/utils";
-import { useInputMode, useStore } from "@/store";
+import { useStore } from "@/store";
 import { type TabItemState, useTabBarState } from "@/store/selectors/tab-bar";
 import { selectDisplaySettings } from "@/store/slices";
 
@@ -147,8 +147,6 @@ export const TabBar = React.memo(function TabBar({ excludeTabIds, showDropHint }
 
   // Display settings for animated show/hide of right-side buttons
   const display = useStore(selectDisplaySettings);
-  const inputMode = useInputMode(activeSessionId ?? "");
-  const hideAiItems = display.hideAiSettingsInShellMode && inputMode === "terminal";
 
   // State for convert-to-pane modal
   const [convertToPaneTab, setConvertToPaneTab] = React.useState<string | null>(null);
@@ -448,7 +446,6 @@ export const TabBar = React.memo(function TabBar({ excludeTabIds, showDropHint }
                   <TabItem
                     key={tab.id}
                     tab={tab}
-                    index={index}
                     isActive={isActive}
                     isBusy={isBusy}
                     onClose={(e) => handleCloseTab(e, tab.id, tab.tabType)}
@@ -602,7 +599,6 @@ export const TabBar = React.memo(function TabBar({ excludeTabIds, showDropHint }
 
 interface TabItemProps {
   tab: TabItemState;
-  index: number;
   isActive: boolean;
   isBusy: boolean;
   onClose: (e: React.MouseEvent) => void;
@@ -624,7 +620,6 @@ interface TabItemProps {
 
 const TabItem = React.memo(function TabItem({
   tab,
-  index,
   isActive,
   isBusy,
   onClose,

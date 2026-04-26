@@ -3,7 +3,7 @@ import {
   createKeyboardHandler,
   type KeyboardHandlerContext,
   useKeyboardHandlerContext,
-} from "../hooks/useKeyboardHandlerContext";
+} from "../../hooks/useKeyboardHandlerContext";
 
 type KeyboardCallbacks = Omit<KeyboardHandlerContext, "activeSessionId">;
 
@@ -14,7 +14,7 @@ type KeyboardCallbacks = Omit<KeyboardHandlerContext, "activeSessionId">;
  * the existing refs pattern in App.tsx) so the actual `keydown` listener can
  * be installed exactly once with no React-state-driven re-subscriptions.
  */
-export function useAppKeyboardShortcuts(callbacks: KeyboardCallbacks) {
+export function useGlobalShortcuts(callbacks: KeyboardCallbacks) {
   const keyboardContextRef = useKeyboardHandlerContext();
 
   // Keyboard shortcuts using refs pattern to avoid recreating the handler on every state change

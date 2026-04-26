@@ -34,6 +34,7 @@ export function installMethodBadge(method: string) {
   const m: Record<string, string> = {
     github: "bg-purple-500/12 text-purple-400",
     homebrew: "bg-amber-500/12 text-amber-400",
+    gem: "bg-rose-500/12 text-rose-400",
   };
   return m[method] || "bg-muted/30 text-muted-foreground/50";
 }
@@ -47,8 +48,24 @@ export function getInstallMethodLabel(tool: ToolWithMeta, t: (key: string) => st
   return method;
 }
 
+function provenanceBadge(via: string | undefined): { className: string; label: string } | null {
+  switch (via) {
+    case "homebrew":
+      return { className: "bg-amber-500/15 text-amber-400", label: "Homebrew" };
+    case "gem":
+      return { className: "bg-rose-500/15 text-rose-400", label: "RubyGem" };
+    case "system_path":
+      return { className: "bg-sky-500/15 text-sky-400", label: "PATH" };
+    case "golish_managed":
+      return null;
+    default:
+      return null;
+  }
+}
+
 export function TagBadges({ tool, compact }: { tool: ToolWithMeta; compact?: boolean }) {
   const { t } = useTranslation();
+  const provBadge = provenanceBadge(tool.installedVia);
   return (
     <div className="flex items-center gap-1.5 flex-wrap">
       <span className={cn("text-[9px] px-1.5 py-0.5 rounded-full font-medium", runtimeBadge(tool.runtime))}>
@@ -57,6 +74,14 @@ export function TagBadges({ tool, compact }: { tool: ToolWithMeta; compact?: boo
       {tool.install?.method && tool.install.method !== "manual" && (
         <span className={cn("text-[9px] px-1.5 py-0.5 rounded-full", installMethodBadge(tool.install.method))}>
           {getInstallMethodLabel(tool, t)}
+        </span>
+      )}
+      {tool.installed && provBadge && (
+        <span
+          title={t("toolManager.installedVia", { source: provBadge.label })}
+          className={cn("text-[9px] px-1.5 py-0.5 rounded-full font-medium", provBadge.className)}
+        >
+          {provBadge.label}
         </span>
       )}
       {(tool.tier === "essential" || tool.tier === "recommended") && (
@@ -84,6 +109,7 @@ export interface ActionButtonProps {
   onCancel: () => void;
   onUninstall: (tool: ToolWithMeta) => void;
   onInstall: (tool: ToolWithMeta) => void;
+  onFixPermission: (tool: ToolWithMeta) => void;
 }
 
 export function ActionButton({ tool, ...ctx }: ActionButtonProps & { tool: ToolWithMeta }) {
@@ -108,10 +134,21 @@ export function ActionButton({ tool, ...ctx }: ActionButtonProps & { tool: ToolW
           </button>
         </div>
       ) : tool.installed ? (
-        <button type="button" onClick={() => ctx.onUninstall(tool)}
-          className="p-1 rounded text-muted-foreground/30 opacity-0 group-hover:opacity-100 hover:text-destructive transition-all" title={t("common.uninstall")}>
-          <Trash2 className="w-3.5 h-3.5" />
-        </button>
+        tool.executableReady === false ? (
+          <button
+            type="button"
+            onClick={() => ctx.onFixPermission(tool)}
+            className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 transition-colors"
+            title={tool.executableError || t("toolManager.fixPermission")}
+          >
+            {t("toolManager.fixPermission")}
+          </button>
+        ) : (
+          <button type="button" onClick={() => ctx.onUninstall(tool)}
+            className="p-1 rounded text-muted-foreground/30 opacity-0 group-hover:opacity-100 hover:text-destructive transition-all" title={t("common.uninstall")}>
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        )
       ) : (
         <button type="button" onClick={() => ctx.onInstall(tool)}
           className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
@@ -153,6 +190,14 @@ export function GridCard({ tool, onOpen, onContextMenu, actionCtx }: ToolCardPro
                 <Check className="w-2.5 h-2.5" /> {t("common.installed")}
               </span>
             )}
+            {tool.installed && tool.executableReady === false && (
+              <span
+                className="text-[9px] px-1.5 py-px rounded-full bg-amber-500/15 text-amber-400 flex-shrink-0"
+                title={tool.executableError || ""}
+              >
+                {t("toolManager.permissionMissing")}
+              </span>
+            )}
           </div>
           <p className={cn("text-[11px] mt-1 line-clamp-2",
             tool.installed ? "text-muted-foreground/60" : "text-muted-foreground/50"
@@ -184,6 +229,14 @@ export function ListRow({ tool, onOpen, onContextMenu, actionCtx }: ToolCardProp
         {tool.installed && (
           <span className="text-[9px] px-1.5 py-px rounded-full bg-green-500/15 text-green-400 flex-shrink-0 flex items-center gap-0.5">
             <Check className="w-2.5 h-2.5" /> {t("common.installed")}
+          </span>
+        )}
+        {tool.installed && tool.executableReady === false && (
+          <span
+            className="text-[9px] px-1.5 py-px rounded-full bg-amber-500/15 text-amber-400 flex-shrink-0"
+            title={tool.executableError || ""}
+          >
+            {t("toolManager.permissionMissing")}
           </span>
         )}
       </div>

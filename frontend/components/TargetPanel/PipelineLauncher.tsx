@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { copyToClipboard } from "@/lib/clipboard";
 import { formatDurationLong } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { CustomSelect } from "@/components/ui/custom-select";
-import { getProjectPath } from "@/lib/projects";
+import { type StepDetail } from "./pipelineValidation";
+import { usePipelineForm } from "./hooks/usePipelineForm";
 import {
   ChevronDown,
   ChevronRight,
@@ -14,31 +13,12 @@ import {
   Play,
   CheckCircle2,
   AlertTriangle,
-  X,
   XCircle,
   Clock,
   SkipForward,
   Copy,
   Check,
 } from "lucide-react";
-
-interface Pipeline {
-  id: string;
-  name: string;
-  description: string;
-  steps: { id: string; tool_name: string }[];
-}
-
-interface StepDetail {
-  tool_name: string;
-  status: "running" | "completed" | "error" | "skipped" | "pending";
-  stored: number;
-  output?: string;
-  message?: string;
-  exit_code?: number | null;
-  duration_ms?: number;
-  command?: string;
-}
 
 interface PipelineLauncherProps {
   targetId: string;
@@ -155,7 +135,6 @@ function StepRow({ step, index }: { step: StepDetail; index: number }) {
   const autoExpand = step.status === "running" && !!step.output;
   const expanded = manualExpanded ?? autoExpand;
   const hasContent = !!step.output || (!!step.message && (step.status === "error" || step.status === "skipped"));
-  const isRunningWithOutput = step.status === "running" && !!step.output;
   const isExpandable = hasContent && step.status !== "pending";
   const cfg = STATUS_CONFIG[step.status];
 
@@ -177,7 +156,6 @@ function StepRow({ step, index }: { step: StepDetail; index: number }) {
           !isExpandable && "cursor-default",
         )}
       >
-        {/* Step number */}
         <span className={cn(
           "w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold flex-shrink-0",
           step.status === "running" ? "bg-blue-500/20 text-blue-300" :
@@ -189,15 +167,12 @@ function StepRow({ step, index }: { step: StepDetail; index: number }) {
           {index + 1}
         </span>
 
-        {/* Status icon */}
         {cfg.icon(index)}
 
-        {/* Tool name */}
         <span className={cn("text-[11px] font-semibold min-w-0 truncate", cfg.text)}>
           {step.tool_name}
         </span>
 
-        {/* Right side badges */}
         <div className="flex items-center gap-2 ml-auto flex-shrink-0">
           {step.status === "running" && (
             <span className="text-[10px] font-medium text-blue-400 bg-blue-500/15 px-2 py-0.5 rounded-full animate-pulse">
@@ -231,7 +206,6 @@ function StepRow({ step, index }: { step: StepDetail; index: number }) {
         </div>
       </button>
 
-      {/* Running state - always show live area */}
       {step.status === "running" && (
         <div className="border-t border-blue-500/10 mx-2 mb-2">
           {step.output ? (
@@ -247,7 +221,6 @@ function StepRow({ step, index }: { step: StepDetail; index: number }) {
         </div>
       )}
 
-      {/* Expanded content for completed/error/skipped */}
       {expanded && hasContent && step.status !== "running" && (
         <div className="border-t border-white/[0.06] mx-2 mb-2">
           {step.message && step.status === "skipped" && (
@@ -274,187 +247,18 @@ function StepRow({ step, index }: { step: StepDetail; index: number }) {
   );
 }
 
-export function PipelineLauncher({ targetId, targetValue }: PipelineLauncherProps) {
-  const [expanded, setExpanded] = useState(false);
-  const [pipelines, setPipelines] = useState<Pipeline[]>([]);
-  const [selected, setSelected] = useState<Pipeline | null>(null);
-  const [running, setRunning] = useState(false);
-  const [progress, setProgress] = useState<{ step: number; total: number; tool: string } | null>(null);
-  const [steps, setSteps] = useState<StepDetail[]>([]);
-  const [summary, setSummary] = useState<{ total_stored: number; success: boolean } | null>(null);
-  const activeRunId = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (!expanded) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const list = await invoke<Pipeline[]>("pipeline_list", {
-          projectPath: getProjectPath(),
-        });
-        if (!cancelled) {
-          setPipelines(Array.isArray(list) ? list : []);
-          if (list.length > 0 && !selected) setSelected(list[0]);
-        }
-      } catch {
-        if (!cancelled) setPipelines([]);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [expanded]);
-
-  useEffect(() => {
-    const unlistenPromise = listen<{
-      run_id: string;
-      step_index: number;
-      total_steps: number;
-      tool_name: string;
-      status: string;
-      store_stats?: { stored_count: number; parsed_count: number; skipped_count: number; errors: string[] };
-      message?: string;
-      output?: string;
-      duration_ms?: number;
-      exit_code?: number | null;
-      pipeline_name?: string;
-      target?: string;
-      all_steps?: { id: string; tool_name: string; command_template: string }[];
-    }>("pipeline-event", (event) => {
-      const p = event.payload;
-
-      if (p.status === "started" && p.all_steps) {
-        if (p.target !== targetValue) return;
-        activeRunId.current = p.run_id;
-        setSteps(p.all_steps.map((s) => ({
-          tool_name: s.tool_name,
-          status: "pending",
-          stored: 0,
-          command: s.command_template,
-        })));
-        setRunning(true);
-        setSummary(null);
-        return;
-      }
-
-      if (p.run_id !== activeRunId.current) return;
-
-      const ensureLength = (prev: StepDetail[], idx: number, toolName: string): StepDetail[] => {
-        const next = [...prev];
-        while (next.length <= idx) {
-          next.push({ tool_name: "...", status: "pending", stored: 0 });
-        }
-        if (toolName) next[idx] = { ...next[idx], tool_name: toolName };
-        return next;
-      };
-
-      if (p.status === "output" && p.output) {
-        setSteps((prev) => {
-          const next = ensureLength(prev, p.step_index, p.tool_name);
-          const existing = next[p.step_index].output ?? "";
-          const isStderr = p.message === "stderr";
-          const prefix = isStderr ? `[stderr] ${p.output}` : p.output;
-          const MAX_LIVE = 8192;
-          let updated = existing + prefix;
-          if (updated.length > MAX_LIVE) {
-            updated = updated.slice(updated.length - MAX_LIVE);
-          }
-          next[p.step_index] = { ...next[p.step_index], output: updated };
-          return next;
-        });
-        return;
-      }
-
-      if (p.status === "running") {
-        setRunning(true);
-        setProgress({ step: p.step_index + 1, total: p.total_steps, tool: p.tool_name });
-        setSteps((prev) => {
-          const next = ensureLength(prev, p.step_index, p.tool_name);
-          next[p.step_index] = { ...next[p.step_index], status: "running" };
-          return next;
-        });
-        return;
-      }
-
-      if (p.status === "skipped") {
-        setSteps((prev) => {
-          const next = ensureLength(prev, p.step_index, p.tool_name);
-          next[p.step_index] = {
-            ...next[p.step_index],
-            status: "skipped",
-            message: p.message,
-          };
-          return next;
-        });
-        return;
-      }
-
-      if (p.status === "cancelled") {
-        setRunning(false);
-        setProgress(null);
-        setSteps((prev) => prev.map((s) =>
-          s.status === "running" || s.status === "pending"
-            ? { ...s, status: "skipped" as const, message: "Cancelled" }
-            : s,
-        ));
-        setSummary({ total_stored: 0, success: false });
-        return;
-      }
-
-      if (p.status === "completed" || p.status === "error") {
-        setSteps((prev) => {
-          const next = ensureLength(prev, p.step_index, p.tool_name);
-          next[p.step_index] = {
-            ...next[p.step_index],
-            status: p.status as "completed" | "error",
-            stored: p.store_stats?.stored_count ?? 0,
-            output: p.output ?? next[p.step_index].output,
-            message: p.message,
-            exit_code: p.exit_code,
-            duration_ms: p.duration_ms,
-          };
-          return next;
-        });
-        if (p.step_index + 1 >= p.total_steps) {
-          setRunning(false);
-          setProgress(null);
-          setSteps((prev) => {
-            const totalStored = prev.reduce((sum, s) => sum + s.stored, 0);
-            const allOk = prev.every((s) => s.status === "completed" || s.status === "skipped");
-            setSummary({ total_stored: totalStored, success: allOk });
-            return prev;
-          });
-        }
-      }
-    });
-    return () => { unlistenPromise.then((f) => f()); };
-  }, [targetValue]);
-
-  const runPipeline = useCallback(async () => {
-    if (!selected || running) return;
-    setSteps([]);
-    setSummary(null);
-    setRunning(true);
-    try {
-      await invoke("pipeline_execute", {
-        pipeline: selected,
-        target: targetValue,
-        projectPath: getProjectPath(),
-      });
-    } catch {
-      setSummary({ total_stored: 0, success: false });
-    }
-    setRunning(false);
-    setProgress(null);
-  }, [selected, targetValue, running]);
-
-  const cancelPipeline = useCallback(async () => {
-    try { await invoke("pipeline_cancel"); } catch { /* ignore */ }
-  }, []);
+export function PipelineLauncher({ targetValue }: PipelineLauncherProps) {
+  const {
+    expanded, setExpanded,
+    pipelines, selected, setSelected,
+    running, progress, steps, summary,
+    runPipeline, cancelPipeline,
+  } = usePipelineForm(targetValue);
 
   const hasResults = steps.length > 0;
 
   return (
     <div className="rounded-lg border border-zinc-700/30 overflow-hidden">
-      {/* Header */}
       <button
         type="button"
         onClick={() => setExpanded(!expanded)}
@@ -494,7 +298,6 @@ export function PipelineLauncher({ targetId, targetValue }: PipelineLauncherProp
 
       {expanded && (
         <div className="border-t border-zinc-700/20 px-3 py-2.5 space-y-2">
-          {/* Pipeline selector + run button */}
           <div className="flex items-center gap-2">
             <CustomSelect
               value={selected?.id ?? ""}
@@ -531,7 +334,6 @@ export function PipelineLauncher({ targetId, targetValue }: PipelineLauncherProp
             )}
           </div>
 
-          {/* Step rows or preview */}
           {hasResults ? (
             <div className="space-y-1.5">
               {steps.map((s, i) => (

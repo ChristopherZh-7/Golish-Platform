@@ -1,7 +1,6 @@
 import {
   ChevronDown,
   ChevronRight,
-  Loader2,
   Terminal,
   Workflow,
 } from "lucide-react";

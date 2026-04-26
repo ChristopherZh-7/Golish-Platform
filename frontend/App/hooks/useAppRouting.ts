@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import type { ActivityView } from "../components/ActivityBar/ActivityBar";
-import type { PageRoute } from "../components/CommandPalette";
+import type { ActivityView } from "../../components/ActivityBar/ActivityBar";
+import type { PageRoute } from "../../components/CommandPalette";
 
 /**
  * Owns the local routing state used by App: the current `PageRoute` (main vs
@@ -10,7 +10,7 @@ import type { PageRoute } from "../components/CommandPalette";
  * Also wires the `open-activity-view` / `close-activity-view` window events
  * that child panels (e.g. TargetPanel) dispatch to control the overlay.
  */
-export function useActivityViewRouting() {
+export function useAppRouting() {
   const [currentPage, setCurrentPage] = useState<PageRoute>("main");
   const [activityView, setActivityView] = useState<ActivityView>(null);
   const [visitedViews, setVisitedViews] = useState<Set<string>>(new Set());

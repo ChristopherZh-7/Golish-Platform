@@ -23,6 +23,7 @@ import { triggerAutoRecon } from "@/lib/ai";
 import { logger } from "@/lib/logger";
 import { useStore } from "@/store";
 import { getProjectPath } from "@/lib/projects";
+import { type Target as PentestTarget } from "@/lib/pentest/types";
 
 declare global {
   interface Window {
@@ -35,30 +36,8 @@ declare global {
   }
 }
 
-type TargetStatus = "new" | "recon" | "recon_done" | "scanning" | "tested";
-
-interface TargetEntry {
-  id: string;
-  name: string;
-  type: string;
-  value: string;
-  status: TargetStatus;
-  scope: string;
-  source: string;
-  ports: unknown[];
-  real_ip: string;
-  cdn_waf: string;
-  http_title: string;
-  http_status: number | null;
-  webserver: string;
-  os_info: string;
-  content_type: string;
-  created_at: number;
-  updated_at: number;
-}
-
 interface TargetStore {
-  targets: TargetEntry[];
+  targets: PentestTarget[];
   groups: string[];
 }
 
@@ -352,7 +331,7 @@ const RECON_STEPS = ["initialize", "tool_check", "tool_install", "dns_lookup", "
 export function ProjectOverview({ sessionId }: { sessionId: string }) {
   const projectName = useStore((s) => s.currentProjectName);
   const projectPath = useStore((s) => s.currentProjectPath);
-  const [targets, setTargets] = useState<TargetEntry[]>([]);
+  const [targets, setTargets] = useState<PentestTarget[]>([]);
   const [loading, setLoading] = useState(true);
   const [reconRunning, setReconRunning] = useState(false);
   const [pipelineActive, setPipelineActive] = useState(false);

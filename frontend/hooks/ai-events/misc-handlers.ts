@@ -31,9 +31,6 @@ export const handlePlanUpdated: EventHandler<{
     explanation: event.explanation,
     updated_at: new Date().toISOString(),
   };
-  // #region agent log
-  fetch('http://127.0.0.1:7341/ingest/24dd9020-1878-48cb-9ea3-2d36ab187a5f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'14d8b8'},body:JSON.stringify({sessionId:'14d8b8',location:'misc-handlers.ts:handlePlanUpdated',message:'plan_updated event received',data:{version:event.version,stepCount:event.steps.length,statuses:event.steps.map((s: {status:string})=>s.status),ids:event.steps.map((s: {id?:string})=>s.id),summary:event.summary},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
-  // #endregion
   const state = ctx.getState();
   state.setPlan(ctx.sessionId, plan);
 };

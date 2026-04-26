@@ -24,7 +24,7 @@ pub async fn run_recon_pipeline(
 }
 
 /// Check if common recon tools are installed.
-/// Checks both system PATH (via `which`) and the app's managed tools directory.
+/// Uses unified pentest preflight checks for consistency.
 #[tauri::command]
 pub async fn check_recon_tools_cmd() -> Result<serde_json::Value, String> {
     let tools = [
@@ -33,41 +33,26 @@ pub async fn check_recon_tools_cmd() -> Result<serde_json::Value, String> {
         "feroxbuster", "dig",
     ];
 
-    // Build the app's tools directory path
-    let app_tools_dir = golish_core::paths::tools_dir();
-
     let mut results = Vec::new();
     let mut missing = Vec::new();
+    let config_manager = golish_pentest::ConfigManager::with_defaults();
 
     for tool in &tools {
-        // Check system PATH
-        let in_path = std::process::Command::new("which")
-            .arg(tool)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-
-        // Check app's tools directory (case-insensitive directory name match)
-        let in_app = app_tools_dir.as_ref().map_or(false, |dir| {
-            if !dir.exists() { return false; }
-            std::fs::read_dir(dir)
-                .ok()
-                .map(|entries| {
-                    entries.filter_map(|e| e.ok()).any(|e| {
-                        let name = e.file_name().to_string_lossy().to_lowercase();
-                        name == *tool && e.path().is_dir()
-                    })
-                })
-                .unwrap_or(false)
-        });
-
-        let installed = in_path || in_app;
-        if !installed {
+        let preflight = crate::tools::pentest::preflight_tool(
+            tool,
+            &config_manager,
+            crate::tools::pentest::PreflightMode::AllowPathFallback,
+        )
+        .await;
+        if !preflight.ready {
             missing.push(tool.to_string());
         }
         results.push(serde_json::json!({
             "name": tool,
-            "installed": installed,
+            "installed": preflight.installed,
+            "ready": preflight.ready,
+            "error_kind": preflight.error_kind,
+            "error_message": preflight.error_message,
         }));
     }
 

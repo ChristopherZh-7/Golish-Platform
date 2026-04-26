@@ -38,6 +38,24 @@ import {
   WikiPanelView,
   WordlistPanelView,
 } from "./lazyRegistry";
+import type { ActivityView } from "../components/ActivityBar/ActivityBar";
+
+const FULLSCREEN_OVERLAYS: Array<{
+  view: NonNullable<ActivityView>;
+  Component: React.LazyExoticComponent<React.ComponentType>;
+  innerClassName?: string;
+}> = [
+  { view: "toolManage", Component: ToolManagerView },
+  { view: "wiki", Component: WikiPanelView },
+  { view: "targets", Component: TargetPanelView },
+  { view: "methodology", Component: MethodologyPanelView, innerClassName: "relative" },
+  { view: "dashboard", Component: DashboardPanelView },
+  { view: "findings", Component: FindingsPanelView },
+  { view: "pipelines", Component: PipelinePanelView },
+  { view: "auditLog", Component: AuditLogPanelView },
+  { view: "wordlists", Component: WordlistPanelView },
+  { view: "vulnIntel", Component: VulnIntelPanelView },
+];
 
 interface SplitDragRef {
   startX: number;
@@ -378,201 +396,32 @@ export function AppShell(props: AppShellProps) {
             </div>
           )}
 
-          {/* Tool Manager view - overlays entire center+right area */}
-          {visitedViews.has("toolManage") && (
-            <div
-              className={cn(
-                "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
-                activityView === "toolManage"
-                  ? "opacity-100 pointer-events-auto z-10"
-                  : "opacity-0 pointer-events-none z-0"
-              )}
-            >
-              <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
-                <Suspense fallback={null}>
-                  <ToolManagerView />
-                </Suspense>
+          {/* Fullscreen activity view overlays */}
+          {FULLSCREEN_OVERLAYS.map(({ view, Component, innerClassName }) =>
+            visitedViews.has(view) && (
+              <div
+                key={view}
+                className={cn(
+                  "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
+                  activityView === view
+                    ? "opacity-100 pointer-events-auto z-10"
+                    : "opacity-0 pointer-events-none z-0"
+                )}
+              >
+                <div className={cn("flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float", innerClassName)}>
+                  <Suspense fallback={null}>
+                    <Component />
+                  </Suspense>
+                </div>
               </div>
-            </div>
-          )}
-
-          {/* Wiki view - overlays entire center+right area */}
-          {visitedViews.has("wiki") && (
-            <div
-              className={cn(
-                "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
-                activityView === "wiki"
-                  ? "opacity-100 pointer-events-auto z-10"
-                  : "opacity-0 pointer-events-none z-0"
-              )}
-            >
-              <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
-                <Suspense fallback={null}>
-                  <WikiPanelView />
-                </Suspense>
-              </div>
-            </div>
-          )}
-
-          {/* Target view - overlays entire center+right area */}
-          {visitedViews.has("targets") && (
-            <div
-              className={cn(
-                "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
-                activityView === "targets"
-                  ? "opacity-100 pointer-events-auto z-10"
-                  : "opacity-0 pointer-events-none z-0"
-              )}
-            >
-              <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
-                <Suspense fallback={null}>
-                  <TargetPanelView />
-                </Suspense>
-              </div>
-            </div>
-          )}
-
-          {/* Methodology view */}
-          {visitedViews.has("methodology") && (
-            <div
-              className={cn(
-                "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
-                activityView === "methodology"
-                  ? "opacity-100 pointer-events-auto z-10"
-                  : "opacity-0 pointer-events-none z-0"
-              )}
-            >
-              <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float relative">
-                <Suspense fallback={null}>
-                  <MethodologyPanelView />
-                </Suspense>
-              </div>
-            </div>
-          )}
-
-          {/* Dashboard view */}
-          {visitedViews.has("dashboard") && (
-            <div
-              className={cn(
-                "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
-                activityView === "dashboard"
-                  ? "opacity-100 pointer-events-auto z-10"
-                  : "opacity-0 pointer-events-none z-0"
-              )}
-            >
-              <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
-                <Suspense fallback={null}>
-                  <DashboardPanelView />
-                </Suspense>
-              </div>
-            </div>
-          )}
-
-          {/* Findings view */}
-          {visitedViews.has("findings") && (
-            <div
-              className={cn(
-                "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
-                activityView === "findings"
-                  ? "opacity-100 pointer-events-auto z-10"
-                  : "opacity-0 pointer-events-none z-0"
-              )}
-            >
-              <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
-                <Suspense fallback={null}>
-                  <FindingsPanelView />
-                </Suspense>
-              </div>
-            </div>
-          )}
-
-          {/* Pipelines view */}
-          {visitedViews.has("pipelines") && (
-            <div
-              className={cn(
-                "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
-                activityView === "pipelines"
-                  ? "opacity-100 pointer-events-auto z-10"
-                  : "opacity-0 pointer-events-none z-0"
-              )}
-            >
-              <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
-                <Suspense fallback={null}>
-                  <PipelinePanelView />
-                </Suspense>
-              </div>
-            </div>
-          )}
-
-          {/* Audit log view */}
-          {visitedViews.has("auditLog") && (
-            <div
-              className={cn(
-                "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
-                activityView === "auditLog"
-                  ? "opacity-100 pointer-events-auto z-10"
-                  : "opacity-0 pointer-events-none z-0"
-              )}
-            >
-              <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
-                <Suspense fallback={null}>
-                  <AuditLogPanelView />
-                </Suspense>
-              </div>
-            </div>
-          )}
-
-          {/* Wordlists view */}
-          {visitedViews.has("wordlists") && (
-            <div
-              className={cn(
-                "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
-                activityView === "wordlists"
-                  ? "opacity-100 pointer-events-auto z-10"
-                  : "opacity-0 pointer-events-none z-0"
-              )}
-            >
-              <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
-                <Suspense fallback={null}>
-                  <WordlistPanelView />
-                </Suspense>
-              </div>
-            </div>
-          )}
-
-          {/* Vuln intel view */}
-          {visitedViews.has("vulnIntel") && (
-            <div
-              className={cn(
-                "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
-                activityView === "vulnIntel"
-                  ? "opacity-100 pointer-events-auto z-10"
-                  : "opacity-0 pointer-events-none z-0"
-              )}
-            >
-              <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
-                <Suspense fallback={null}>
-                  <VulnIntelPanelView />
-                </Suspense>
-              </div>
-            </div>
+            )
           )}
 
           {/* Normal view - center + right panels */}
           <div
             className={cn(
               "flex-1 flex gap-1 min-w-0 transition-opacity duration-150 ease-out",
-              activityView === "settings" ||
-                activityView === "toolManage" ||
-                activityView === "wiki" ||
-                activityView === "targets" ||
-                activityView === "methodology" ||
-                activityView === "dashboard" ||
-                activityView === "findings" ||
-                activityView === "pipelines" ||
-                activityView === "auditLog" ||
-                activityView === "wordlists" ||
-                activityView === "vulnIntel"
+              activityView === "settings" || FULLSCREEN_OVERLAYS.some((o) => o.view === activityView)
                 ? "opacity-0 pointer-events-none"
                 : "opacity-100 pointer-events-auto"
             )}

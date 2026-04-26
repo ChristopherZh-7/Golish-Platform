@@ -4,24 +4,24 @@ import type React from "react";
 import { useEffect, useState } from "react";
 import { logger } from "@/lib/logger";
 import { getProjectPath } from "@/lib/projects";
-import { useAiEvents } from "../hooks/useAiEvents";
-import { useCreateTerminalTab } from "../hooks/useCreateTerminalTab";
-import { usePipelineEvents } from "../hooks/usePipelineEvents";
-import { useTauriEvents } from "../hooks/useTauriEvents";
-import { createDbAutoSaver, loadFromDb, markDbLoadSucceeded } from "../lib/conversation-db-sync";
-import { notify } from "../lib/notify";
-import { updateConfig as updatePentestConfig } from "../lib/pentest/api";
-import { getSettings } from "../lib/settings";
-import { initSystemNotifications, listenForSettingsUpdates } from "../lib/systemNotifications";
-import { shellIntegrationInstall, shellIntegrationStatus } from "../lib/tauri";
+import { useAiEvents } from "../../hooks/useAiEvents";
+import { useCreateTerminalTab } from "../../hooks/useCreateTerminalTab";
+import { usePipelineEvents } from "../../hooks/usePipelineEvents";
+import { useTauriEvents } from "../../hooks/useTauriEvents";
+import { createDbAutoSaver, loadFromDb, markDbLoadSucceeded } from "../../lib/conversation-db-sync";
+import { notify } from "../../lib/notify";
+import { updateConfig as updatePentestConfig } from "../../lib/pentest/api";
+import { getSettings } from "../../lib/settings";
+import { initSystemNotifications, listenForSettingsUpdates } from "../../lib/systemNotifications";
+import { shellIntegrationInstall, shellIntegrationStatus } from "../../lib/tauri";
 import {
   getLastProjectName,
   loadWorkspaceState,
   toChatConversation,
-} from "../lib/workspace-storage";
-import { useStore } from "../store";
-import { useFileEditorSidebarStore } from "../store/file-editor-sidebar";
-import { createNewConversation } from "../store/slices/conversation";
+} from "../../lib/workspace-storage";
+import { useStore } from "../../store";
+import { useFileEditorSidebarStore } from "../../store/file-editor-sidebar";
+import { createNewConversation } from "../../store/slices/conversation";
 
 interface UseAppLifecycleProps {
   setRightPanelTabs: React.Dispatch<React.SetStateAction<string[]>>;
@@ -121,7 +121,7 @@ export function useAppLifecycle({
         const lastProject = getLastProjectName();
         if (lastProject) {
           logger.info("[App] Restoring project:", lastProject);
-          const { getProjectConfig } = await import("../lib/projects");
+          const { getProjectConfig } = await import("@/lib/projects");
           const config = await getProjectConfig(lastProject);
           if (cancelled) return;
 

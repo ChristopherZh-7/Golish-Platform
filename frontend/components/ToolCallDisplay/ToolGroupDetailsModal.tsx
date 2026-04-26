@@ -2,7 +2,6 @@ import {
   CheckCircle,
   Loader2,
   Maximize2,
-  Terminal,
   X,
   XCircle,
 } from "lucide-react";

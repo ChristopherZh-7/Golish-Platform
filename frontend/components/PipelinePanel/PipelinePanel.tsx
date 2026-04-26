@@ -13,8 +13,11 @@ import type { ToolConfig } from "@/lib/pentest/types";
 import { checkReconTools, type ReconToolCheck } from "@/lib/ai";
 import { useStore } from "@/store";
 import { MiniDropdown } from "@/components/ui/MiniDropdown";
-
-type ExecMode = "pipe" | "sequential" | "parallel" | "on_success" | "on_failure";
+import {
+  type PipelineStep,
+  type PipelineConnection,
+  type Pipeline,
+} from "@/lib/pentest/pipeline-types";
 
 const STEP_ICONS: Record<string, { icon: typeof Shield; color: string }> = {
   dns_lookup:       { icon: Globe,    color: "text-blue-400" },
@@ -51,35 +54,6 @@ function typeStyle(t: string) {
   return TYPE_COLORS[t] ?? { bg: "bg-violet-500/10", text: "text-violet-400", border: "border-violet-500/20", dot: "bg-violet-400" };
 }
 
-interface PipelineStep {
-  id: string;
-  step_type: string;
-  tool_name: string;
-  tool_id: string;
-  command_template: string;
-  args: string[];
-  params: Record<string, unknown>;
-  input_from: string | null;
-  exec_mode: ExecMode;
-  requires?: string | null;
-  iterate_over?: string | null;
-  db_action?: string | null;
-  on_failure?: string;
-  timeout_secs?: number | null;
-  sub_pipeline?: string | null;
-  inline_pipeline?: Pipeline | null;
-  foreach_source?: string | null;
-  max_parallel?: number | null;
-  x: number;
-  y: number;
-}
-
-interface PipelineConnection { from_step: string; to_step: string; condition?: string | null; }
-interface Pipeline {
-  id: string; name: string; description: string; is_template: boolean;
-  workflow_id?: string; steps: PipelineStep[]; connections: PipelineConnection[];
-  created_at: number; updated_at: number;
-}
 type ToolWithMeta = ToolConfig & { categoryName?: string; subcategoryName?: string };
 
 function uuid() { return Math.random().toString(36).slice(2, 10); }
@@ -543,7 +517,7 @@ export function PipelinePanel() {
     try {
       const [pl, tl] = await Promise.all([invoke<Pipeline[]>("pipeline_list", { projectPath: getProjectPath() }), scanTools()]);
       setPipelines(Array.isArray(pl) ? pl : []);
-      setTools((tl?.tools || []).filter((t) => t.ui === "cli" && t.installed));
+      setTools((tl?.tools || []).filter((t) => t.launchMode === "cli" && t.installed));
     } catch { /* */ }
     setLoading(false);
   }, []);

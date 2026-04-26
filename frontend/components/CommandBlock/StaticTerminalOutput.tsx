@@ -83,6 +83,10 @@ export function StaticTerminalOutput({
     return Math.min(lineCount * lineHeightPx, MAX_TERMINAL_HEIGHT);
   }, [lineCount]);
 
+  // Guard flag: suppress ResizeObserver's fitAddon.fit() during content write
+  // to prevent resize loops that cause the "progressive deletion" visual bug.
+  const isWritingRef = useRef(false);
+
   // Effect to create terminal (runs once on mount)
   useEffect(() => {
     if (!containerRef.current) return;
@@ -97,7 +101,7 @@ export function StaticTerminalOutput({
         fontWeight: "normal",
         fontWeightBold: "bold",
         lineHeight: 1.4,
-        scrollback: isLargeOutput ? 10000 : 0,
+        scrollback: 10000,
         convertEol: true,
         allowProposedApi: true,
       });
@@ -123,16 +127,21 @@ export function StaticTerminalOutput({
       // Fit columns to container width
       try {
         fitAddon.fit();
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
 
-    // Re-fit when container resizes
+    // Re-fit when container resizes, but skip during content writes
     const container = containerRef.current;
     const observer = new ResizeObserver(() => {
+      if (isWritingRef.current) return;
       if (fitAddonRef.current && terminalRef.current) {
         try {
           fitAddonRef.current.fit();
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
     });
     observer.observe(container);
@@ -212,10 +221,20 @@ export function StaticTerminalOutput({
     return highlightFilePaths(output);
   }, [output, sessionId, workingDirectory]);
 
-  // Effect to write content
+  // Effect to write content.
+  // Hide terminal during async write to prevent the "progressive deletion"
+  // visual glitch where xterm progressively pushes old lines out of view.
   useEffect(() => {
     const terminal = terminalRef.current;
     if (!terminal || !processedOutput) return;
+
+    isWritingRef.current = true;
+
+    // Hide content while writing to avoid visual flicker
+    const container = containerRef.current;
+    if (container) {
+      container.style.opacity = "0";
+    }
 
     const cols = terminal.cols || 80;
     const lines = processedOutput.split("\n");
@@ -234,8 +253,20 @@ export function StaticTerminalOutput({
     }
 
     terminal.clear();
-    terminal.write(processedOutput);
-  }, [processedOutput, lineCount, isLargeOutput]);
+    terminal.write(processedOutput, () => {
+      const actualRows = Math.max(terminal.buffer.active.length, 1);
+      const nextRows = isLargeOutput ? Math.min(actualRows, maxVisibleRows) : actualRows;
+      if (terminal.rows !== nextRows || terminal.cols !== cols) {
+        terminal.resize(cols, nextRows);
+      }
+      terminal.scrollToTop();
+
+      isWritingRef.current = false;
+      if (container) {
+        container.style.opacity = "1";
+      }
+    });
+  }, [processedOutput, isLargeOutput]);
 
   const handleOpenFile = useCallback(
     (absolutePath: string, _line?: number, _column?: number) => {
@@ -250,10 +281,14 @@ export function StaticTerminalOutput({
     <>
       <div
         ref={containerRef}
-        style={{ minHeight: estimatedMinHeight, maxHeight: isLargeOutput ? MAX_TERMINAL_HEIGHT : undefined }}
-        className={isLargeOutput
-          ? "overflow-hidden"
-          : "overflow-hidden [&_.xterm-viewport]:!overflow-hidden [&_.xterm-screen]:!h-auto"
+        style={{
+          minHeight: estimatedMinHeight,
+          maxHeight: isLargeOutput ? MAX_TERMINAL_HEIGHT : undefined,
+        }}
+        className={
+          isLargeOutput
+            ? "overflow-hidden"
+            : "overflow-hidden [&_.xterm-viewport]:!overflow-hidden [&_.xterm-screen]:!h-auto"
         }
       />
       {popupPosition && (

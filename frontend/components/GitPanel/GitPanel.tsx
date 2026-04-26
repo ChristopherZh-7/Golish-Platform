@@ -62,16 +62,16 @@ interface TreeNode {
 
 const SUMMARY_MAX_LENGTH = 72;
 
-interface DiffLine {
+interface GitDiffLine {
   oldLineNum: number | null;
   newLineNum: number | null;
   content: string;
   type: "header" | "hunk" | "add" | "remove" | "context";
 }
 
-function parseDiff(diffText: string): DiffLine[] {
+function parseDiff(diffText: string): GitDiffLine[] {
   const lines = diffText.split("\n");
-  const result: DiffLine[] = [];
+  const result: GitDiffLine[] = [];
   let oldLine = 0;
   let newLine = 0;
 

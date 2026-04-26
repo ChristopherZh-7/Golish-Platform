@@ -5,18 +5,22 @@ import type { ToolConfig } from "@/lib/pentest/types";
 export function useToolSearch(query: string, enabled: boolean) {
   const [allTools, setAllTools] = useState<ToolConfig[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const loadedRef = useRef(false);
+  const prevEnabledRef = useRef(false);
 
   useEffect(() => {
-    if (loadedRef.current) return;
-    loadedRef.current = true;
+    if (!enabled) {
+      prevEnabledRef.current = false;
+      return;
+    }
+    if (prevEnabledRef.current) return;
+    prevEnabledRef.current = true;
     scanTools()
       .then((r) => {
         if (r.success) setAllTools(r.tools);
       })
       .catch(() => {});
     setLoaded(true);
-  }, []);
+  }, [enabled]);
 
   const matches = useMemo(() => {
     if (!enabled || !query.trim() || !loaded) return [];

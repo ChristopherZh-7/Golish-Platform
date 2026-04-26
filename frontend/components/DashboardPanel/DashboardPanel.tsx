@@ -33,28 +33,10 @@ import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import { useStore } from "@/store";
 import { getProjectPath } from "@/lib/projects";
-
-interface PortInfo {
-  port: number;
-  protocol?: string;
-  service?: string;
-  state?: string;
-}
-
-interface TargetItem {
-  id: string;
-  name: string;
-  type: "domain" | "ip" | "cidr" | "url" | "wildcard";
-  value: string;
-  scope: "in" | "out";
-  ports: PortInfo[];
-  technologies: string[];
-  parent_id: string | null;
-  created_at: number;
-}
+import { type Target as PentestTarget } from "@/lib/pentest/types";
 
 interface TargetStore {
-  targets: TargetItem[];
+  targets: PentestTarget[];
 }
 
 interface MethodPhase {
@@ -133,7 +115,7 @@ interface AiStats {
 }
 
 interface DashboardStats {
-  targets: TargetItem[];
+  targets: PentestTarget[];
   methodProjects: ProjectMethodology[];
   vaultEntries: VaultEntry[];
   findings: Finding[];
