@@ -1,4 +1,4 @@
-# Qbit - Tauri Terminal App
+# Golish - Tauri Terminal App
 # Run `just` to see all available commands
 
 # Default recipe - show help
@@ -82,7 +82,7 @@ test-rust-verbose:
 
 # Build for production
 build:
-    cd backend && cargo build -p qbit --release
+    cd backend && cargo build -p golish --release
     pnpm tauri build
 
 # Build frontend only
@@ -107,8 +107,8 @@ generate-types:
     echo "Generating TypeScript types from Rust..."
     cd backend && cargo test export_bindings -q
     mkdir -p ../frontend/lib/generated
-    cp crates/qbit-models/bindings/generated/*.ts ../frontend/lib/generated/
-    cp crates/qbit-settings/bindings/generated/*.ts ../frontend/lib/generated/
+    cp crates/golish-models/bindings/generated/*.ts ../frontend/lib/generated/
+    cp crates/golish-settings/bindings/generated/*.ts ../frontend/lib/generated/
     echo "✓ Types generated in frontend/lib/generated/"
 
 # ============================================
@@ -212,15 +212,15 @@ update-rust:
 
 # Build CLI binary (unified with GUI - use --headless flag for CLI mode)
 build-cli:
-    cd backend && cargo build -p qbit
+    cd backend && cargo build -p golish
 
 # Run all Rust eval scenarios
 eval *args:
-    cd backend && cargo run -p qbit --features evals -- --eval {{args}}
+    cd backend && cargo run -p golish --features evals -- --eval {{args}}
 
 # List available eval scenarios
 eval-list:
-    cd backend && cargo run -p qbit --features evals -- --list-scenarios
+    cd backend && cargo run -p golish --features evals -- --list-scenarios
 
 # ============================================
 # SWE-bench Evaluations
@@ -231,7 +231,7 @@ swebench-setup:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    VENV_DIR="$HOME/.qbit/swebench-venv"
+    VENV_DIR="$HOME/.golish/swebench-venv"
 
     echo "Setting up SWE-bench environment..."
 
@@ -299,7 +299,7 @@ swebench problems="0-49" provider="vertex-claude" model="claude-opus-4-5@2025110
     #!/usr/bin/env bash
     set -euo pipefail
 
-    VENV_DIR="$HOME/.qbit/swebench-venv"
+    VENV_DIR="$HOME/.golish/swebench-venv"
 
     # Check Docker is running
     if ! docker info &> /dev/null; then
@@ -359,7 +359,7 @@ swebench problems="0-49" provider="vertex-claude" model="claude-opus-4-5@2025110
     echo ""
 
     # Run the evaluation
-    cd backend && cargo run -p qbit --features evals -- \
+    cd backend && cargo run -p golish --features evals -- \
         --swebench \
         --problems {{ problems }} \
         --eval-provider {{ provider }} \
@@ -373,7 +373,7 @@ swebench-verbose problems="0-49" provider="vertex-claude" model="claude-opus-4-5
     #!/usr/bin/env bash
     set -euo pipefail
 
-    VENV_DIR="$HOME/.qbit/swebench-venv"
+    VENV_DIR="$HOME/.golish/swebench-venv"
 
     # Check Docker is running
     if ! docker info &> /dev/null; then
@@ -412,7 +412,7 @@ swebench-verbose problems="0-49" provider="vertex-claude" model="claude-opus-4-5
     echo "  Model: {{ model }}"
     echo ""
 
-    cd backend && RUST_LOG=debug cargo run -p qbit --features evals -- \
+    cd backend && RUST_LOG=debug cargo run -p golish --features evals -- \
         --swebench \
         --problems {{ problems }} \
         --eval-provider {{ provider }} \
@@ -427,7 +427,9 @@ swebench-verbose problems="0-49" provider="vertex-claude" model="claude-opus-4-5
 
 # Kill any running dev processes (including server)
 kill:
+    -pkill -f "target/debug/golish" 2>/dev/null
     -pkill -f "target/debug/qbit" 2>/dev/null
+    -pkill -f "golish-cli" 2>/dev/null
     -pkill -f "qbit-cli" 2>/dev/null
     -pkill -f "vite" 2>/dev/null
     -lsof -ti:1420 | xargs kill -9 2>/dev/null

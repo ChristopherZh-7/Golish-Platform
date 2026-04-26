@@ -58,7 +58,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_CONFIG: '{"bundle":{"externalBin":null}}'
         with:
-          projectPath: backend/crates/qbit
+          projectPath: backend/crates/golish
           tauriScript: pnpm --dir ../../.. tauri
           args: --target x86_64-pc-windows-msvc
 
@@ -66,7 +66,7 @@ jobs:
         if: ${{ inputs.upload_artifact }}
         uses: actions/upload-artifact@v4
         with:
-          name: qbit-windows-x86_64
+          name: golish-windows-x86_64
           path: |
             backend/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
             backend/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
