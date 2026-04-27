@@ -485,7 +485,7 @@ def main():
                 WHERE wp.status = 'partial'
                   AND wp.category = 'products'
                 ORDER BY wp.created_at DESC
-                LIMIT 200
+                LIMIT 8000
             """)
             partial_pages = cur.fetchall()
 

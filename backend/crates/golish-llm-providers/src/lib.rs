@@ -137,6 +137,7 @@ pub use rig_openai_responses;
 pub use rig_zai_sdk;
 
 /// LLM client abstraction for different providers
+#[derive(Clone)]
 pub enum LlmClient {
     /// Anthropic on Vertex AI via rig-anthropic-vertex
     VertexAnthropic(rig_anthropic_vertex::CompletionModel),
