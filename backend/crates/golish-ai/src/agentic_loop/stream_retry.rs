@@ -267,8 +267,8 @@ mod tests {
         let test_ctx = TestContextBuilder::new().build().await;
         let client = Arc::new(RwLock::new(LlmClient::Mock));
         let mut ctx = test_ctx.as_agentic_context_with_client(&client);
-        ctx.provider_name = "openai";
-        ctx.model_name = "gpt-4o-mini";
+        ctx.llm.provider_name = "openai";
+        ctx.llm.model_name = "gpt-4o-mini";
 
         let model = ScriptedStreamStartModel::new(vec![
             StreamStartAttempt::Error("API error (429): RESOURCE_EXHAUSTED".to_string()),
@@ -318,8 +318,8 @@ mod tests {
         let test_ctx = TestContextBuilder::new().build().await;
         let client = Arc::new(RwLock::new(LlmClient::Mock));
         let mut ctx = test_ctx.as_agentic_context_with_client(&client);
-        ctx.provider_name = "openai";
-        ctx.model_name = "gpt-4o-mini";
+        ctx.llm.provider_name = "openai";
+        ctx.llm.model_name = "gpt-4o-mini";
 
         let attempts = (0..STREAM_START_MAX_ATTEMPTS)
             .map(|_| StreamStartAttempt::Error("429 RESOURCE_EXHAUSTED".to_string()))
@@ -374,8 +374,8 @@ mod tests {
         let test_ctx = TestContextBuilder::new().build().await;
         let client = Arc::new(RwLock::new(LlmClient::Mock));
         let mut ctx = test_ctx.as_agentic_context_with_client(&client);
-        ctx.provider_name = "openai";
-        ctx.model_name = "gpt-4o-mini";
+        ctx.llm.provider_name = "openai";
+        ctx.llm.model_name = "gpt-4o-mini";
 
         let model = ScriptedStreamStartModel::new(vec![StreamStartAttempt::Error(
             "401 Unauthorized".to_string(),
