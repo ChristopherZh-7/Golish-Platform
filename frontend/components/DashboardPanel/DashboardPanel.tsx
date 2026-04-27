@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import {
   Activity,
   AlertTriangle,
@@ -374,7 +375,7 @@ export function DashboardPanel() {
         loadAiStats();
       }
     });
-    return () => { unlisten.then((fn) => fn()); };
+    return () => { runTauriUnlistenFromPromise(unlisten); };
   }, [loadStats]);
 
   const derived = useMemo(() => {

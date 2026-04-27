@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { logAudit } from "@/lib/audit";
+import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import { getProjectPath } from "@/lib/projects";
 import { useStore } from "@/store";
 import { type Target } from "@/lib/pentest/types";
@@ -58,10 +59,10 @@ export function useTargetData() {
     const unlistenTargets = listen("targets-changed", () => loadTargets());
     const pollInterval = setInterval(loadTargets, 15000);
     return () => {
-      unlistenAi.then((fn) => fn());
-      unlistenPipeline.then((fn) => fn());
-      unlistenDb.then((fn) => fn());
-      unlistenTargets.then((fn) => fn());
+      runTauriUnlistenFromPromise(unlistenAi);
+      runTauriUnlistenFromPromise(unlistenPipeline);
+      runTauriUnlistenFromPromise(unlistenDb);
+      runTauriUnlistenFromPromise(unlistenTargets);
       clearInterval(pollInterval);
     };
   }, [loadTargets]);
