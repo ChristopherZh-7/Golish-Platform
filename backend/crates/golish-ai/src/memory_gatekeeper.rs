@@ -44,7 +44,12 @@ pub async fn should_search_memory(client: &LlmClient, user_message: &str) -> boo
             tracing::info!(
                 "[memory-gatekeeper] Decision: {} for message: {:?}",
                 if should { "SEARCH" } else { "SKIP" },
-                &user_message[..user_message.len().min(80)]
+                &user_message[..{
+                    let max = user_message.len().min(80);
+                    let mut end = max;
+                    while end > 0 && !user_message.is_char_boundary(end) { end -= 1; }
+                    end
+                }]
             );
             should
         }

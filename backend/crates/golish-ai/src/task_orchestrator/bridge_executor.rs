@@ -17,6 +17,20 @@ use super::prompts;
 use super::{AgentExecutor, AgentResult, AgentTokenUsage, ExecutionContext, GeneratorOutput, PlannedSubtask, RefinerOutput};
 use crate::agent_bridge::AgentBridge;
 
+/// Truncate a string to at most `max_bytes` bytes, ensuring the cut lands on a
+/// UTF-8 char boundary so we never panic on multi-byte characters.
+fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    // Walk backwards from max_bytes until we hit a char boundary.
+    let mut end = max_bytes;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// `AgentExecutor` implementation backed by an `AgentBridge`.
 pub struct BridgeAgentExecutor {
     pub(crate) bridge: Arc<AgentBridge>,
@@ -145,6 +159,9 @@ impl BridgeAgentExecutor {
     }
 
     /// One-shot LLM completion with optional per-phase model override.
+    ///
+    /// Includes a 120-second timeout to prevent indefinite hangs on
+    /// unresponsive providers.
     async fn simple_completion_for_phase(
         &self,
         system_prompt: &str,
@@ -159,12 +176,32 @@ impl BridgeAgentExecutor {
 
         let request = build_one_shot_request(system_prompt, user_message, &params);
 
-        if let Some(ref override_client) = phase_override {
-            return complete_with_client(override_client, request).await;
-        }
+        tracing::debug!(
+            phase = ?phase_key,
+            user_msg_len = user_message.len(),
+            "[TaskMode] Starting one-shot completion"
+        );
 
-        let client = self.bridge.llm.client.read().await;
-        complete_with_client(&client, request).await
+        let result = if let Some(ref override_client) = phase_override {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(120),
+                complete_with_client(override_client, request),
+            )
+            .await
+        } else {
+            let client = { let g = self.bridge.llm.client.read().await; (*g).clone() };
+            tokio::time::timeout(
+                std::time::Duration::from_secs(120),
+                async move { complete_with_client(&client, request).await },
+            )
+            .await
+        };
+
+        result
+            .map_err(|_| anyhow::anyhow!(
+                "LLM completion timed out (120s) for phase {:?}",
+                phase_key
+            ))?
     }
 }
 
@@ -252,13 +289,26 @@ pub enum UserIntent {
 ///
 /// Uses a minimal one-shot call with low max_tokens so it completes fast.
 /// Falls back to `Task` if anything goes wrong (conservative — don't silently ignore tasks).
+///
+/// The prompt is truncated to 500 bytes for classification — the full content
+/// is not needed to determine intent, and large prompts can cause timeouts
+/// on some providers (e.g., Nvidia NIM).
 pub async fn classify_user_intent(bridge: &AgentBridge, prompt: &str) -> UserIntent {
+    // Only send a small prefix; intent is obvious from the first few hundred chars.
+    let truncated_prompt = truncate_to_char_boundary(prompt, 500);
+
+    tracing::info!(
+        prompt_len = prompt.len(),
+        truncated_len = truncated_prompt.len(),
+        "[IntentClassifier] Starting classification"
+    );
+
     let request = CompletionRequest {
         model: None,
         preamble: Some(prompts::intent_classifier_prompt().to_string()),
         chat_history: OneOrMany::one(Message::User {
             content: OneOrMany::one(UserContent::Text(Text {
-                text: prompt.to_string(),
+                text: truncated_prompt.to_string(),
             })),
         }),
         documents: vec![],
@@ -270,13 +320,24 @@ pub async fn classify_user_intent(bridge: &AgentBridge, prompt: &str) -> UserInt
         output_schema: None,
     };
 
-    let client = bridge.llm.client.read().await;
-    match complete_with_client(&client, request).await {
-        Ok(response) => {
+    // Clone the client out and drop the read lock before the API call to avoid
+    // holding the lock during a potentially slow network request.
+    let client = { let g = bridge.llm.client.read().await; (*g).clone() };
+
+    // Wrap the API call in a timeout so we don't hang forever if the provider
+    // is unresponsive.
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        complete_with_client(&client, request),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(response)) => {
             let word = response.trim().to_uppercase();
             tracing::info!(
                 classification = %word,
-                prompt_preview = %&prompt[..prompt.len().min(80)],
+                prompt_preview = %truncate_to_char_boundary(prompt, 80),
                 "[IntentClassifier] Result"
             );
             if word.contains("CHAT") {
@@ -285,10 +346,16 @@ pub async fn classify_user_intent(bridge: &AgentBridge, prompt: &str) -> UserInt
                 UserIntent::Task
             }
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             tracing::warn!(
                 error = %e,
                 "[IntentClassifier] Classification failed, defaulting to Task"
+            );
+            UserIntent::Task
+        }
+        Err(_) => {
+            tracing::warn!(
+                "[IntentClassifier] Classification timed out (15s), defaulting to Task"
             );
             UserIntent::Task
         }
@@ -326,7 +393,7 @@ impl AgentExecutor for BridgeAgentExecutor {
         let json_str = extract_json_from_response(&response);
         serde_json::from_str::<GeneratorOutput>(json_str).context(format!(
             "Failed to parse generator JSON. Raw response:\n{}",
-            &response[..response.len().min(500)]
+            truncate_to_char_boundary(&response, 500)
         ))
     }
 
@@ -390,7 +457,7 @@ impl AgentExecutor for BridgeAgentExecutor {
         let json_str = extract_json_from_response(&response);
         serde_json::from_str::<RefinerOutput>(json_str).context(format!(
             "Failed to parse refiner JSON. Raw response:\n{}",
-            &response[..response.len().min(500)]
+            truncate_to_char_boundary(&response, 500)
         ))
     }
 
