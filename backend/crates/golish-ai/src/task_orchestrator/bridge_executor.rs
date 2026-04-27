@@ -30,7 +30,7 @@ impl BridgeAgentExecutor {
     /// Try to build a per-phase LLM client from settings `sub_agent_models`.
     /// Returns None if no override configured, meaning "use session default".
     async fn phase_client(&self, phase_key: &str) -> Option<LlmClient> {
-        let settings_mgr = self.bridge.settings_manager.as_ref()?;
+        let settings_mgr = self.bridge.services.settings_manager.as_ref()?;
         let settings = settings_mgr.get().await;
         let config = settings.ai.sub_agent_models.get(phase_key)?;
         let provider = config.provider.as_ref()?;
@@ -83,7 +83,7 @@ impl BridgeAgentExecutor {
 
         let tool_provider =
             crate::tool_provider_impl::DefaultToolProvider::with_db_tracker(
-                self.bridge.db_tracker.as_ref(),
+                self.bridge.services.db_tracker.as_ref(),
             );
         let db_pool_arc = self.bridge.db_pool();
 
@@ -102,6 +102,7 @@ impl BridgeAgentExecutor {
             top_p_override: agent_def.top_p,
             db_pool: db_pool_arc.as_ref(),
             sub_agent_registry: Some(self.bridge.sub_agent_registry()),
+            post_shell_hook: crate::pentest_hook::make_post_shell_hook(),
         };
 
         let client = self.bridge.client().read().await;
@@ -126,7 +127,7 @@ impl BridgeAgentExecutor {
 
     /// Load LLM parameter overrides (temperature, max_tokens, top_p) for a phase.
     async fn phase_params(&self, phase_key: &str) -> LlmParamOverrides {
-        let Some(settings_mgr) = self.bridge.settings_manager.as_ref() else {
+        let Some(settings_mgr) = self.bridge.services.settings_manager.as_ref() else {
             return LlmParamOverrides::default();
         };
         let settings = settings_mgr.get().await;
@@ -159,7 +160,7 @@ impl BridgeAgentExecutor {
             return complete_with_client(override_client, request).await;
         }
 
-        let client = self.bridge.client.read().await;
+        let client = self.bridge.llm.client.read().await;
         complete_with_client(&client, request).await
     }
 }
@@ -266,7 +267,7 @@ pub async fn classify_user_intent(bridge: &AgentBridge, prompt: &str) -> UserInt
         output_schema: None,
     };
 
-    let client = bridge.client.read().await;
+    let client = bridge.llm.client.read().await;
     match complete_with_client(&client, request).await {
         Ok(response) => {
             let word = response.trim().to_uppercase();
@@ -492,7 +493,7 @@ impl AgentExecutor for BridgeAgentExecutor {
         subtask_result: &str,
         _execution_context: &ExecutionContext,
     ) -> Result<Option<String>> {
-        let db_tracker = match &self.bridge.db_tracker {
+        let db_tracker = match &self.bridge.services.db_tracker {
             Some(t) => t,
             None => return Ok(None),
         };

@@ -47,7 +47,7 @@ impl AgentBridge {
     /// prevents context leakage between Task-mode subtasks.
     pub async fn execute_isolated(&self, prompt: &str) -> Result<String> {
         let saved_history = {
-            let mut guard = self.conversation_history.write().await;
+            let mut guard = self.session.conversation_history.write().await;
             std::mem::take(&mut *guard)
         };
 
@@ -60,7 +60,7 @@ impl AgentBridge {
         let result = self.execute_with_context(prompt, subtask_ctx).await;
 
         {
-            let mut guard = self.conversation_history.write().await;
+            let mut guard = self.session.conversation_history.write().await;
             *guard = saved_history;
         }
 
@@ -108,7 +108,7 @@ impl AgentBridge {
             message = "[execute_with_content_and_context] Starting execution",
             content_parts = content.len(),
             depth = context.depth,
-            event_session_id = ?self.event_session_id,
+            event_session_id = ?self.events.event_session_id,
         );
 
         if context.depth >= MAX_AGENT_DEPTH {
@@ -150,7 +150,7 @@ impl AgentBridge {
             .prepare_execution_context_with_content(content, &text_for_logging)
             .await;
 
-        let client = self.client.read().await;
+        let client = self.llm.client.read().await;
 
         // Vertex Anthropic supports inline images natively via the Anthropic
         // Messages API; route there first.
@@ -270,7 +270,7 @@ impl AgentBridge {
         });
 
         let start_time = std::time::Instant::now();
-        let client = self.client.read().await;
+        let client = self.llm.client.read().await;
 
         let result = match &*client {
             LlmClient::VertexAnthropic(vertex_model) => {
@@ -474,7 +474,7 @@ impl AgentBridge {
 
     /// Get the sidecar session context (state.md content) for prompt injection.
     pub async fn get_session_context(&self) -> Option<String> {
-        let sidecar = self.sidecar_state.as_ref()?;
+        let sidecar = self.services.sidecar_state.as_ref()?;
 
         match sidecar.get_injectable_context().await {
             Ok(context) => context,

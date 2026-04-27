@@ -645,6 +645,7 @@ where
                             top_p_override: delegate_def.top_p,
                             db_pool: ctx.db_pool,
                             sub_agent_registry: ctx.sub_agent_registry,
+                            post_shell_hook: ctx.post_shell_hook.clone(),
                         };
                         match Box::pin(super::execute_sub_agent(
                             &delegate_def,
@@ -848,9 +849,8 @@ where
                 }
             };
 
-            // Auto-detect and store structured pentest output for shell-style tools.
             if success && (tool_name == "run_pty_cmd" || tool_name == "run_command") {
-                if let Some(db_pool) = ctx.db_pool {
+                if let (Some(db_pool), Some(hook)) = (ctx.db_pool, ctx.post_shell_hook.as_ref()) {
                     let pool = Arc::clone(db_pool);
                     let cmd = result_value
                         .get("command")
@@ -866,11 +866,9 @@ where
                         let ws = ctx.workspace.read().await;
                         ws.to_string_lossy().to_string()
                     };
+                    let hook = Arc::clone(hook);
                     tokio::spawn(async move {
-                        let _ = golish_pentest::output_store::maybe_detect_and_store(
-                            &pool, &cmd, &stdout, Some(&pp),
-                        )
-                        .await;
+                        hook(pool, cmd, stdout, Some(pp)).await;
                     });
                 }
             }

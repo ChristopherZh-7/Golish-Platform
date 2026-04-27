@@ -62,11 +62,12 @@ impl AgentBridge {
         use crate::agentic_loop::apply_compaction;
 
         let session_id = self
+            .events
             .event_session_id
             .as_deref()
             .ok_or_else(|| "No session ID available".to_string())?;
 
-        let messages_before = self.conversation_history.read().await.len();
+        let messages_before = self.session.conversation_history.read().await.len();
 
         // Estimate current tokens
         let tokens_before = {
@@ -106,7 +107,7 @@ impl AgentBridge {
             crate::transcript::save_summarizer_input(&artifacts_dir, session_id, &summarizer_input);
 
         // Generate summary
-        let client = self.client.read().await;
+        let client = self.llm.client.read().await;
         let summary_result = crate::summarizer::generate_summary(&client, &summarizer_input).await;
         drop(client);
 
@@ -128,13 +129,13 @@ impl AgentBridge {
         let _ = crate::transcript::save_summary(&summaries_dir, session_id, &summary);
 
         // Apply compaction to chat history
-        let mut chat_history = self.conversation_history.write().await;
+        let mut chat_history = self.session.conversation_history.write().await;
         let _messages_removed = apply_compaction(&mut chat_history, &summary);
         let messages_after = chat_history.len();
         drop(chat_history);
 
         // Update context manager
-        let history = self.conversation_history.read().await;
+        let history = self.session.conversation_history.read().await;
         self.context_manager.update_from_messages(&history).await;
         drop(history);
 

@@ -14,32 +14,29 @@ impl AgentBridge {
     // Session Persistence Methods
     // ========================================================================
 
-    /// Enable or disable session persistence.
     pub async fn set_session_persistence_enabled(&self, enabled: bool) {
-        *self.session_persistence_enabled.write().await = enabled;
+        *self.session.session_persistence_enabled.write().await = enabled;
         tracing::debug!("Session persistence enabled: {}", enabled);
     }
 
-    /// Check if session persistence is enabled.
     pub async fn is_session_persistence_enabled(&self) -> bool {
-        *self.session_persistence_enabled.read().await
+        *self.session.session_persistence_enabled.read().await
     }
 
-    /// Start a new session for persistence.
     pub(crate) async fn start_session(&self) {
-        if !*self.session_persistence_enabled.read().await {
+        if !*self.session.session_persistence_enabled.read().await {
             return;
         }
 
-        let mut manager_guard = self.session_manager.write().await;
+        let mut manager_guard = self.session.session_manager.write().await;
         if manager_guard.is_some() {
             return;
         }
 
         let workspace = self.workspace.read().await.clone();
-        match GolishSessionManager::new(workspace, &self.model_name, &self.provider_name).await {
+        match GolishSessionManager::new(workspace, &self.llm.model_name, &self.llm.provider_name).await {
             Ok(mut manager) => {
-                if let Some(ref pool) = self.db_pool {
+                if let Some(ref pool) = self.services.db_pool {
                     manager.set_db_pool(pool.clone());
                 }
                 *manager_guard = Some(manager);
@@ -51,12 +48,11 @@ impl AgentBridge {
         }
     }
 
-    /// Execute an operation with the session manager if available.
     pub(crate) async fn with_session_manager<F>(&self, f: F)
     where
         F: FnOnce(&mut GolishSessionManager),
     {
-        let mut guard = self.session_manager.write().await;
+        let mut guard = self.session.session_manager.write().await;
         if let Some(ref mut manager) = *guard {
             f(manager);
         }
@@ -76,18 +72,16 @@ impl AgentBridge {
 
     /// Update the session workspace path.
     pub(crate) async fn update_session_workspace(&self, new_path: PathBuf) {
-        let mut guard = self.session_manager.write().await;
+        let mut guard = self.session.session_manager.write().await;
         if let Some(ref mut manager) = *guard {
             manager.update_workspace(new_path).await;
         }
     }
 
-    /// Save the current session to disk.
     pub(crate) async fn save_session(&self) {
-        // Sync agent mode to session manager before saving
         self.sync_agent_mode_to_session().await;
 
-        let manager_guard = self.session_manager.read().await;
+        let manager_guard = self.session.session_manager.read().await;
         if let Some(ref manager) = *manager_guard {
             if let Err(e) = manager.save() {
                 tracing::warn!("Failed to save session: {}", e);
@@ -95,12 +89,10 @@ impl AgentBridge {
         }
     }
 
-    /// Finalize and save the current session.
     pub async fn finalize_session(&self) -> Option<PathBuf> {
-        // Sync agent mode to session manager before finalizing
         self.sync_agent_mode_to_session().await;
 
-        let mut manager_guard = self.session_manager.write().await;
+        let mut manager_guard = self.session.session_manager.write().await;
         if let Some(ref mut manager) = manager_guard.take() {
             match manager.finalize() {
                 Ok(path) => {
@@ -115,13 +107,12 @@ impl AgentBridge {
         None
     }
 
-    /// Sync the current agent mode to the session manager.
     async fn sync_agent_mode_to_session(&self) {
-        let mode = self.agent_mode.read().await;
+        let mode = self.access.agent_mode.read().await;
         let mode_str = mode.to_string();
-        drop(mode); // Release lock before acquiring session manager lock
+        drop(mode);
 
-        let mut guard = self.session_manager.write().await;
+        let mut guard = self.session.session_manager.write().await;
         if let Some(ref mut manager) = *guard {
             manager.set_agent_mode(mode_str);
         }
@@ -131,28 +122,25 @@ impl AgentBridge {
     // Conversation History Methods
     // ========================================================================
 
-    /// Clear the conversation history.
     pub async fn clear_conversation_history(&self) {
         self.finalize_session().await;
 
-        let mut history = self.conversation_history.write().await;
+        let mut history = self.session.conversation_history.write().await;
         history.clear();
         tracing::debug!("Conversation history cleared");
     }
 
-    /// Get the current conversation history length.
     pub async fn conversation_history_len(&self) -> usize {
-        self.conversation_history.read().await.len()
+        self.session.conversation_history.read().await.len()
     }
 
-    /// Restore conversation history from a previous session.
     pub async fn restore_session(&self, messages: Vec<golish_session::GolishSessionMessage>) {
         self.finalize_session().await;
 
         let rig_messages: Vec<Message> =
             messages.iter().filter_map(|m| m.to_rig_message()).collect();
 
-        let mut history = self.conversation_history.write().await;
+        let mut history = self.session.conversation_history.write().await;
         *history = rig_messages;
 
         tracing::info!(

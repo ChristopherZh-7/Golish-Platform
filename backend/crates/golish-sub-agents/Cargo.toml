@@ -36,9 +36,6 @@ golish-tools = { workspace = true }
 # Background shell execution for sub-agent commands
 golish-shell-exec = { workspace = true }
 
-# Output detection and structured storage for external tool results
-golish-pentest = { workspace = true }
-
 # LLM provider configuration (for model capability checks)
 golish-llm-providers = { workspace = true }
 

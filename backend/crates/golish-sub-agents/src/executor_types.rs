@@ -76,4 +76,20 @@ pub struct SubAgentExecutorContext<'a> {
     /// Sub-agent registry for nested delegation (PentAGI hierarchical pattern).
     /// When set, agents with `delegatable_agents` can invoke other sub-agents.
     pub sub_agent_registry: Option<&'a Arc<RwLock<crate::definition::SubAgentRegistry>>>,
+    /// Optional hook called after a successful shell tool execution (run_pty_cmd / run_command).
+    /// Used for auto-detecting and storing structured output without coupling to pentest crate.
+    /// Arguments: (db_pool, command, stdout, project_path)
+    #[allow(clippy::type_complexity)]
+    pub post_shell_hook: Option<
+        Arc<
+            dyn Fn(
+                    Arc<sqlx::PgPool>,
+                    String,
+                    String,
+                    Option<String>,
+                ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+                + Send
+                + Sync,
+        >,
+    >,
 }

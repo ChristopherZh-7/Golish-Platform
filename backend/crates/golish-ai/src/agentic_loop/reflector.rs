@@ -116,6 +116,7 @@ pub(super) async fn maybe_run_reflector(
             top_p_override: reflector_def.top_p,
             db_pool: ctx.db_tracker.map(|t| t.pool_arc()),
             sub_agent_registry: Some(ctx.sub_agent_registry),
+            post_shell_hook: None,
         };
 
         match super::sub_agent_dispatch::execute_sub_agent_with_client(
