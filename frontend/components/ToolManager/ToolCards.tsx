@@ -35,6 +35,7 @@ export function installMethodBadge(method: string) {
     github: "bg-purple-500/12 text-purple-400",
     homebrew: "bg-amber-500/12 text-amber-400",
     gem: "bg-rose-500/12 text-rose-400",
+    pip: "bg-blue-500/12 text-blue-400",
   };
   return m[method] || "bg-muted/30 text-muted-foreground/50";
 }
@@ -45,6 +46,7 @@ export function getInstallMethodLabel(tool: ToolWithMeta, t: (key: string) => st
   if (method === "github") return "GitHub";
   if (method === "homebrew") return "Homebrew";
   if (method === "gem") return "RubyGem";
+  if (method === "pip") return "pip";
   return method;
 }
 
@@ -56,6 +58,8 @@ function provenanceBadge(via: string | undefined): { className: string; label: s
       return { className: "bg-rose-500/15 text-rose-400", label: "RubyGem" };
     case "system_path":
       return { className: "bg-sky-500/15 text-sky-400", label: "PATH" };
+    case "pip":
+      return { className: "bg-blue-500/15 text-blue-400", label: "pip" };
     case "golish_managed":
       return null;
     default:

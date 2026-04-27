@@ -8,6 +8,8 @@ mod core_tools;
 mod memory_tools;
 mod knowledge_base;
 mod security_tools;
+mod graph_tools;
+mod sploitus_tools;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -43,6 +45,8 @@ pub fn build_function_declarations() -> Vec<FunctionDeclaration> {
     decls.extend(memory_tools::guide_store_declarations());
     decls.extend(knowledge_base::knowledge_base_declarations());
     decls.extend(security_tools::security_analysis_declarations());
+    decls.extend(graph_tools::graph_declarations());
+    decls.extend(sploitus_tools::sploitus_declarations());
     decls
 }
 
@@ -55,7 +59,7 @@ mod tests {
     fn test_build_function_declarations_returns_all_tools() {
         let declarations = build_function_declarations();
 
-        assert_eq!(declarations.len(), 33);
+        assert_eq!(declarations.len(), 39);
 
         let names: Vec<&str> = declarations.iter().map(|d| d.name.as_str()).collect();
 
@@ -95,6 +99,14 @@ mod tests {
         assert!(names.contains(&"fingerprint_target"));
         assert!(names.contains(&"log_scan_result"));
         assert!(names.contains(&"query_target_data"));
+
+        assert!(names.contains(&"graph_add_entity"));
+        assert!(names.contains(&"graph_add_relation"));
+        assert!(names.contains(&"graph_search"));
+        assert!(names.contains(&"graph_neighbors"));
+        assert!(names.contains(&"graph_attack_paths"));
+
+        assert!(names.contains(&"search_exploits"));
     }
 
     #[test]

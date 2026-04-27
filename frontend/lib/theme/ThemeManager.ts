@@ -1,6 +1,6 @@
 import type { Terminal as XTerm } from "@xterm/xterm";
 import { logger } from "@/lib/logger";
-import { getThemeAssetPath } from "../themes";
+import { getThemeAssetPath } from "./api";
 // Import builtin theme assets directly (use ?url to get the asset path)
 import obsidianEmberBg from "./builtin/obsidian-ember/assets/background.jpeg?url";
 import { ThemeRegistry } from "./registry";

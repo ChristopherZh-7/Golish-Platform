@@ -314,7 +314,7 @@ export function VulnIntelPanel() {
       )}
 
       {/* Intel content - hidden when wiki or poc-library active */}
-      <div className={cn(topTab !== "intel" && "hidden")}>
+      <div className={cn("flex-1 min-h-0 flex flex-col overflow-hidden", topTab !== "intel" && "hidden")}>
         <>
 
       {/* Stats overview bar */}
@@ -648,7 +648,7 @@ export function VulnIntelPanel() {
 
           {/* Right: Detail panel */}
           {selectedEntry && (
-            <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+            <div className="flex-1 min-h-0 flex flex-col overflow-hidden min-w-0">
               <VulnDetailView
                 entry={selectedEntry}
                 link={vulnLinks[selectedEntry.cve_id] || { wikiPaths: [], pocTemplates: [], scanHistory: [] }}

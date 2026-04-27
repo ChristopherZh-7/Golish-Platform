@@ -22,7 +22,7 @@ import { FaJava } from "react-icons/fa";
 import {
   SiC,
   SiCplusplus,
-  SiCss3,
+  SiCss,
   SiDocker,
   SiGit,
   SiGnubash,
@@ -102,12 +102,12 @@ export function getFileIcon(name: string, className?: string) {
     case "htm":
       return <SiHtml5 className={cn(cls, "text-[#E34F26]")} />;
     case "css":
-      return <SiCss3 className={cn(cls, "text-[#1572B6]")} />;
+      return <SiCss className={cn(cls, "text-[#1572B6]")} />;
     case "scss":
     case "sass":
       return <SiSass className={cn(cls, "text-[#CC6699]")} />;
     case "less":
-      return <SiCss3 className={cn(cls, "text-[#1D365D]")} />;
+      return <SiCss className={cn(cls, "text-[#1D365D]")} />;
 
     // Data formats
     case "json":

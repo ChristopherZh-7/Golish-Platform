@@ -17,7 +17,7 @@ import type {
 import { deleteOutputBuffer, purgeSessionStateInDraft } from "./session-helpers";
 import type { ImmerSet, StateGet } from "./types";
 
-export function createSessionCoreActions(set: ImmerSet<any>, get: StateGet<any>) {
+export function createSessionCoreActions(set: ImmerSet<any>, _get: StateGet<any>) {
   return {
     addSession: (session: Session, options?: { isPaneSession?: boolean }) =>
       set((state: any) => {

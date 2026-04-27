@@ -4,7 +4,7 @@ import {
   listThemes,
   readTheme,
   saveTheme as saveTauriTheme,
-} from "../themes";
+} from "./api";
 import { registerBuiltinThemes } from "./builtin";
 import type { GolishTheme, ThemeRegistryEntry } from "./types";
 

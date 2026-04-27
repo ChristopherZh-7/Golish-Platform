@@ -108,6 +108,22 @@ pub enum ToolName {
     LogScanResult,
     /// Query aggregated target data (assets, endpoints, fingerprints)
     QueryTargetData,
+
+    // === Graph Knowledge Base ===
+    /// Add or update an entity in the knowledge graph
+    GraphAddEntity,
+    /// Add or update a relation between entities
+    GraphAddRelation,
+    /// Search entities in the knowledge graph
+    GraphSearch,
+    /// Get neighboring entities and relations
+    GraphNeighbors,
+    /// Find attack paths between entities
+    GraphAttackPaths,
+
+    // === Vulnerability Database ===
+    /// Search exploits and CVEs via Sploitus
+    SearchExploits,
 }
 
 impl ToolName {
@@ -175,6 +191,16 @@ impl ToolName {
             Self::FingerprintTarget => "fingerprint_target",
             Self::LogScanResult => "log_scan_result",
             Self::QueryTargetData => "query_target_data",
+
+            // Graph Knowledge Base
+            Self::GraphAddEntity => "graph_add_entity",
+            Self::GraphAddRelation => "graph_add_relation",
+            Self::GraphSearch => "graph_search",
+            Self::GraphNeighbors => "graph_neighbors",
+            Self::GraphAttackPaths => "graph_attack_paths",
+
+            // Vulnerability Database
+            Self::SearchExploits => "search_exploits",
         }
     }
 
@@ -246,6 +272,16 @@ impl ToolName {
             "log_scan_result" => Some(Self::LogScanResult),
             "query_target_data" => Some(Self::QueryTargetData),
 
+            // Graph Knowledge Base
+            "graph_add_entity" => Some(Self::GraphAddEntity),
+            "graph_add_relation" => Some(Self::GraphAddRelation),
+            "graph_search" => Some(Self::GraphSearch),
+            "graph_neighbors" => Some(Self::GraphNeighbors),
+            "graph_attack_paths" => Some(Self::GraphAttackPaths),
+
+            // Vulnerability Database
+            "search_exploits" => Some(Self::SearchExploits),
+
             // Unknown (includes dynamic sub-agent tools like "sub_agent_*")
             _ => None,
         }
@@ -308,7 +344,15 @@ impl ToolName {
             | Self::SaveJsAnalysis
             | Self::FingerprintTarget
             | Self::LogScanResult
-            | Self::QueryTargetData => ToolCategory::SecurityAnalysis,
+            | Self::QueryTargetData
+            | Self::SearchExploits => ToolCategory::SecurityAnalysis,
+
+            // Graph Knowledge Base
+            Self::GraphAddEntity
+            | Self::GraphAddRelation
+            | Self::GraphSearch
+            | Self::GraphNeighbors
+            | Self::GraphAttackPaths => ToolCategory::Graph,
         }
     }
 
@@ -336,6 +380,10 @@ impl ToolName {
                 | Self::SearchKnowledgeBase
                 | Self::ReadKnowledge
                 | Self::QueryTargetData
+                | Self::GraphSearch
+                | Self::GraphNeighbors
+                | Self::GraphAttackPaths
+                | Self::SearchExploits
         )
     }
 
@@ -395,6 +443,8 @@ pub enum ToolCategory {
     KnowledgeBase,
     /// Security analysis and pentest operations
     SecurityAnalysis,
+    /// Graph knowledge base operations (typed entities/relations)
+    Graph,
 }
 
 impl ToolCategory {
@@ -451,6 +501,14 @@ impl ToolCategory {
                 ToolName::FingerprintTarget,
                 ToolName::LogScanResult,
                 ToolName::QueryTargetData,
+                ToolName::SearchExploits,
+            ],
+            Self::Graph => &[
+                ToolName::GraphAddEntity,
+                ToolName::GraphAddRelation,
+                ToolName::GraphSearch,
+                ToolName::GraphNeighbors,
+                ToolName::GraphAttackPaths,
             ],
         }
     }
@@ -475,6 +533,7 @@ impl std::fmt::Display for ToolCategory {
             Self::SubAgent => write!(f, "sub_agent"),
             Self::KnowledgeBase => write!(f, "knowledge_base"),
             Self::SecurityAnalysis => write!(f, "security_analysis"),
+            Self::Graph => write!(f, "graph"),
         }
     }
 }

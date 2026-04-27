@@ -38,8 +38,8 @@ export function useToolEditor(loadData: (silent?: boolean) => Promise<void>, set
   const syncRawToForm = useCallback((json: string) => {
     try {
       const p = JSON.parse(json) as { tool?: Record<string, unknown> } | Record<string, unknown>;
-      const t = ("tool" in p && p.tool) ? p.tool : (p as Record<string, unknown>);
-      setFormData(t);
+      const next = ("tool" in p && p.tool ? p.tool : p) as Record<string, unknown>;
+      setFormData(next);
     } catch { /* ignore */ }
   }, []);
 
@@ -81,7 +81,7 @@ export function useToolEditor(loadData: (silent?: boolean) => Promise<void>, set
     requestAnimationFrame(() => setEditorVisible(true));
     try {
       const content: string = await invoke("pentest_read_tool_config", {
-        category: tool.category, subcategory: tool.subcategory, toolId: tool.id,
+        toolId: tool.id,
       });
       originalJsonRef.current = content;
       setRawJson(content);
@@ -190,8 +190,8 @@ export function useToolEditor(loadData: (silent?: boolean) => Promise<void>, set
 
       const KNOWN_FIELDS = new Set([
         "id", "name", "description", "executable", "runtime", "launchMode", "args",
-        "version", "tags", "features", "category", "subcategory", "jvm_options",
-        "workingDirectory", "updateInfo", "icon",
+        "version", "tags", "category", "subcategory", "jvm_options",
+        "icon",
         "runtimeVersion", "install", "skills", "output", "tier", "params",
       ]);
       const unknownFields = Object.keys(data).filter((k) => !KNOWN_FIELDS.has(k));
@@ -204,17 +204,9 @@ export function useToolEditor(loadData: (silent?: boolean) => Promise<void>, set
       }
 
       const content = JSON.stringify({ tool: data }, null, 2);
-      const category = (data.category as string) || editingTool.category || "misc";
-      const subcategory = (data.subcategory as string) || editingTool.subcategory || "other";
       const toolId = (data.id as string) || editingTool.id;
 
-      if (editingTool.category && editingTool.subcategory &&
-          (editingTool.category !== category || editingTool.subcategory !== subcategory)) {
-        await invoke("pentest_delete_tool", {
-          toolId: editingTool.id, category: editingTool.category, subcategory: editingTool.subcategory, toolFolder: null,
-        }).catch(() => {});
-      }
-      await invoke("pentest_save_tool_config", { category, subcategory, toolId, content });
+      await invoke("pentest_save_tool_config", { toolId, content });
       setEditorDirty(false);
       if (editorMode === "raw") {
         setRawJson(content);

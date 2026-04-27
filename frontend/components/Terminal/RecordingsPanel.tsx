@@ -12,7 +12,6 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { cn } from "@/lib/utils";
 import { CustomSelect } from "@/components/ui/custom-select";
-import { ThemeManager } from "@/lib/theme";
 import {
   deleteRecording,
   listRecordings,
@@ -52,7 +51,7 @@ export function RecordingsPanel({ onClose }: { onClose: () => void }) {
       disableStdin: true,
       fontSize: 13,
       fontFamily: '"SF Mono", Menlo, Monaco, "JetBrains Mono", Consolas, monospace',
-      theme: ThemeManager.getCurrentTheme(),
+      // theme is applied after open via ThemeManager.applyToTerminal
       cols: activeRecording.meta.width || 80,
       rows: activeRecording.meta.height || 24,
     });

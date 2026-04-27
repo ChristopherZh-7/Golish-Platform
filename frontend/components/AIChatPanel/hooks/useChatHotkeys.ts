@@ -1,7 +1,7 @@
 import { useCallback, type KeyboardEvent, type RefObject } from "react";
 
 interface UseChatHotkeysOptions {
-  textareaRef: RefObject<HTMLTextAreaElement>;
+  textareaRef: RefObject<HTMLTextAreaElement | null>;
   onSend: () => void;
 }
 

@@ -398,6 +398,8 @@ pub fn run_gui() {
             tools::pentest::pentest_save_tool_config,
             tools::pentest::pentest_git_clone_tool,
             tools::pentest::pentest_pip_install_tool,
+            tools::pentest::pentest_pip_install,
+            tools::pentest::pentest_pip_uninstall,
             tools::pentest::pentest_conda_install_tool,
             tools::pentest::pentest_resolve_python_path,
             tools::pentest::pentest_resolve_java_path,

@@ -315,9 +315,9 @@ export async function loadFromDb(
               } satisfies LoadedTerminalData;
             }),
           );
-          terminals = termResults
-            .filter((r): r is PromiseFulfilledResult<LoadedTerminalData> => r.status === "fulfilled")
-            .map((r) => r.value);
+          terminals = termResults.flatMap((result) =>
+            result.status === "fulfilled" ? [result.value as LoadedTerminalData] : [],
+          );
         }
 
         return { conv, terminals };
@@ -690,7 +690,7 @@ export function createDbAutoSaver(
 
   // Rust-side emits "flush-state" before the window is destroyed (300ms grace period).
   let unlistenFlush: (() => void) | null = null;
-  listen("flush-state", flushNow).then((fn) => { unlistenFlush = fn; }).catch(() => {});
+  listen("flush-state", () => flushNow()).then((fn) => { unlistenFlush = fn; }).catch(() => {});
 
   window.addEventListener("beforeunload", flushNow as EventListener);
 

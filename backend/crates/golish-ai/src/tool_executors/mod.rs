@@ -7,6 +7,8 @@
 //! - Memory tools (search, store, list memories + code/guide stores)
 //! - Knowledge base tools (wiki-based vulnerability knowledge)
 //! - Security analysis tools (finding management and analysis)
+//! - Graph tools (typed entity/relation knowledge graph)
+//! - Sploitus tools (exploit / CVE database lookup)
 //! - Shell helpers (PTY command normalization)
 //!
 //! Note: Workflow tool execution is handled in the golish crate to avoid
@@ -19,6 +21,8 @@ mod ask_human;
 mod memory;
 pub mod knowledge_base;
 pub mod security;
+mod graph;
+mod sploitus;
 mod shell;
 
 pub use common::{ToolResult, error_result, extract_string_param};
@@ -28,6 +32,8 @@ pub use ask_human::execute_ask_human_tool;
 pub use memory::execute_memory_tool;
 pub use knowledge_base::execute_knowledge_base_tool;
 pub use security::execute_security_analysis_tool;
+pub use graph::execute_graph_tool;
+pub use sploitus::execute_sploitus_tool;
 pub use shell::normalize_run_pty_cmd_args;
 
 #[cfg(test)]
