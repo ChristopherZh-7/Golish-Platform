@@ -38,14 +38,14 @@ pub(super) async fn pre_turn_compaction(
         }
     }
 
-    let Some(session_id) = ctx.session_id else {
+    let Some(session_id) = ctx.events.session_id else {
         return;
     };
 
     match maybe_compact(ctx, session_id, chat_history).await {
         Ok(Some(result)) => {
             if result.success {
-                let _ = ctx.event_tx.send(AiEvent::CompactionCompleted {
+                let _ = ctx.events.event_tx.send(AiEvent::CompactionCompleted {
                     tokens_before: result.tokens_before,
                     messages_before: result.messages_before,
                     messages_after: chat_history.len(),
@@ -55,7 +55,7 @@ pub(super) async fn pre_turn_compaction(
                 });
                 ctx.context_manager.update_from_messages(chat_history).await;
             } else {
-                let _ = ctx.event_tx.send(AiEvent::CompactionFailed {
+                let _ = ctx.events.event_tx.send(AiEvent::CompactionFailed {
                     tokens_before: result.tokens_before,
                     messages_before: result.messages_before,
                     error: result
@@ -95,14 +95,14 @@ pub(super) async fn inter_turn_compaction(
         );
     }
 
-    let Some(session_id) = ctx.session_id else {
+    let Some(session_id) = ctx.events.session_id else {
         return Ok(());
     };
 
     match maybe_compact(ctx, session_id, chat_history).await {
         Ok(Some(result)) => {
             if result.success {
-                let _ = ctx.event_tx.send(AiEvent::CompactionCompleted {
+                let _ = ctx.events.event_tx.send(AiEvent::CompactionCompleted {
                     tokens_before: result.tokens_before,
                     messages_before: result.messages_before,
                     messages_after: chat_history.len(),
@@ -114,7 +114,7 @@ pub(super) async fn inter_turn_compaction(
                 ctx.context_manager.update_from_messages(chat_history).await;
                 Ok(())
             } else {
-                let _ = ctx.event_tx.send(AiEvent::CompactionFailed {
+                let _ = ctx.events.event_tx.send(AiEvent::CompactionFailed {
                     tokens_before: result.tokens_before,
                     messages_before: result.messages_before,
                     error: result
@@ -128,7 +128,7 @@ pub(super) async fn inter_turn_compaction(
                 let check = {
                     let compaction_state = ctx.compaction_state.read().await;
                     ctx.context_manager
-                        .should_compact(&compaction_state, ctx.model_name)
+                        .should_compact(&compaction_state, ctx.llm.model_name)
                 };
 
                 if check.should_compact {
@@ -136,7 +136,7 @@ pub(super) async fn inter_turn_compaction(
                         "[compaction] Failed and context still exceeded: {} tokens",
                         check.current_tokens
                     );
-                    let _ = ctx.event_tx.send(AiEvent::Error {
+                    let _ = ctx.events.event_tx.send(AiEvent::Error {
                         message: format!(
                             "Context compaction failed and limit exceeded ({} tokens). {}",
                             check.current_tokens,

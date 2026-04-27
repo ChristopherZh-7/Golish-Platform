@@ -11,7 +11,9 @@ use rig::completion::{CompletionModel as RigCompletionModel, Message};
 use tokio::sync::{mpsc, oneshot, RwLock};
 
 use crate::agent_mode::AgentMode;
-use crate::agentic_loop::{AgenticLoopConfig, AgenticLoopContext};
+use crate::agentic_loop::{
+    AgenticLoopConfig, AgenticLoopContext, LoopAccessControl, LoopEventRefs, LoopLlmRefs,
+};
 use crate::hitl::ApprovalRecorder;
 use crate::loop_detection::LoopDetector;
 use crate::planner::PlanManager;
@@ -110,37 +112,43 @@ where
         let api_request_stats = Arc::new(ApiRequestStats::new());
 
         let ctx = AgenticLoopContext {
-            event_tx: &event_tx,
+            llm: LoopLlmRefs {
+                client: &llm_client,
+                provider_name: &config.provider_name,
+                model_name: &config.model_name,
+                openai_web_search_config: None,
+                openai_reasoning_effort: None,
+                openrouter_provider_preferences: None,
+                model_factory: None,
+            },
+            access: LoopAccessControl {
+                approval_recorder: &approval_recorder,
+                pending_approvals: &pending_approvals,
+                tool_policy_manager: &tool_policy_manager,
+                agent_mode: &agent_mode,
+                loop_detector: &loop_detector,
+                coordinator: None,
+            },
+            events: LoopEventRefs {
+                event_tx: &event_tx,
+                transcript_writer: None,
+                transcript_base_dir: None,
+                session_id: None,
+                db_tracker: None,
+                runtime: None,
+            },
             tool_registry: &tool_registry,
             sub_agent_registry: &sub_agent_registry,
             indexer_state: None,
             workspace: &workspace_arc,
-            client: &llm_client,
-            approval_recorder: &approval_recorder,
-            pending_approvals: &pending_approvals,
-            tool_policy_manager: &tool_policy_manager,
             context_manager: &context_manager,
             compaction_state: &compaction_state,
-            loop_detector: &loop_detector,
             tool_config: &tool_config,
             sidecar_state: None,
-            runtime: None,
-            agent_mode: &agent_mode,
             plan_manager: &plan_manager,
-            provider_name: &config.provider_name,
-            model_name: &config.model_name,
             api_request_stats: &api_request_stats,
-            openai_web_search_config: None,
-            openai_reasoning_effort: None,
-            openrouter_provider_preferences: None,
-            model_factory: None,
-            session_id: None,
-            transcript_writer: None,
-            transcript_base_dir: None,
             additional_tool_definitions: vec![],
             custom_tool_executor: None,
-            coordinator: None, // Evals use legacy path
-            db_tracker: None,
             cancelled: None,
             execution_monitor: None,
             execution_mode: crate::execution_mode::ExecutionMode::Chat,

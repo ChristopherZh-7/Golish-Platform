@@ -53,7 +53,7 @@ where
         "otel.name" = %tool_name,
         "langfuse.span.name" = %tool_name,
         "langfuse.observation.type" = "tool",
-        "langfuse.session.id" = ctx.session_id.unwrap_or(""),
+        "langfuse.session.id" = ctx.events.session_id.unwrap_or(""),
         tool.name = %tool_name,
         tool.id = %tool_id,
         "langfuse.observation.input" = %args_for_span,
@@ -63,13 +63,13 @@ where
 
     // Check for loop detection
     let loop_result = {
-        let mut detector = ctx.loop_detector.write().await;
+        let mut detector = ctx.access.loop_detector.write().await;
         detector.record_tool_call(tool_name, &tool_args)
     };
 
     // Handle loop detection (may return a blocked result)
     if let Some(blocked_result) =
-        handle_loop_detection(&loop_result, &tool_id, &tool_call_id, ctx.event_tx)
+        handle_loop_detection(&loop_result, &tool_id, &tool_call_id, ctx.events.event_tx)
     {
         let loop_info = match &loop_result {
             crate::loop_detection::LoopDetectionResult::Blocked {
@@ -88,7 +88,7 @@ where
             parent: llm_span,
             "loop_blocked",
             "langfuse.observation.type" = "event",
-            "langfuse.session.id" = ctx.session_id.unwrap_or(""),
+            "langfuse.session.id" = ctx.events.session_id.unwrap_or(""),
             tool_name = %tool_name,
             details = %loop_info,
         );
@@ -99,7 +99,7 @@ where
 
     // Start DB tracking for tool call timing
     let db_guard = ctx
-        .db_tracker
+        .events.db_tracker
         .map(|t| t.start_tool_call(&tool_id, tool_name, &tool_args));
 
     // Execute tool with HITL approval check
@@ -163,7 +163,7 @@ where
     }
 
     // Finish DB tracking with result
-    if let (Some(tracker), Some(guard)) = (ctx.db_tracker, db_guard) {
+    if let (Some(tracker), Some(guard)) = (ctx.events.db_tracker, db_guard) {
         let result_text = serde_json::to_string(&result.value).unwrap_or_default();
         tracker.finish_tool_call(guard, result.success, &result_text);
 
@@ -270,7 +270,7 @@ where
                     repeat_count,
                     &recent_summary,
                 );
-                match mentor_one_shot(ctx.client, mentor_system, &mentor_user).await {
+                match mentor_one_shot(ctx.llm.client, mentor_system, &mentor_user).await {
                     Ok(llm_advice) => {
                         tracing::info!(
                             "[ExecutionMentor] LLM mentor produced {} chars of advice",
@@ -319,7 +319,7 @@ where
         let original_tokens = golish_context::TokenBudgetManager::estimate_tokens(&raw_result_text);
         let truncated_tokens =
             golish_context::TokenBudgetManager::estimate_tokens(&truncation_result.content);
-        let _ = ctx.event_tx.send(AiEvent::ToolResponseTruncated {
+        let _ = ctx.events.event_tx.send(AiEvent::ToolResponseTruncated {
             tool_name: tool_name.clone(),
             original_tokens,
             truncated_tokens,
@@ -327,7 +327,7 @@ where
 
         // If truncated output is still large, attempt LLM summarization
         if truncated_tokens > SUMMARIZE_THRESHOLD_TOKENS {
-            match summarize_tool_output(ctx.client, tool_name, &truncation_result.content).await {
+            match summarize_tool_output(ctx.llm.client, tool_name, &truncation_result.content).await {
                 Ok(summary) => {
                     tracing::info!(
                         "[ToolSummarizer] Summarized '{}' output: {} -> {} tokens",
@@ -368,7 +368,7 @@ where
         &result.value,
         result.success,
         0,
-        ctx.session_id.unwrap_or(""),
+        ctx.events.session_id.unwrap_or(""),
     );
     let hooks = hook_registry.run_post_tool_hooks(&post_ctx);
 
