@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Terminal } from "@/components/Terminal/Terminal";
+import { runTauriUnlistenFromPromise, runTauriUnlistenFn } from "@/lib/run-tauri-unlisten";
 import { ThemeManager } from "@/lib/theme";
 import type { SecurityTab } from "@/components/SecurityView/SecurityView";
 import "@xterm/xterm/css/xterm.css";
@@ -41,7 +42,7 @@ export function DetachedView({ sessionId, tabType }: DetachedViewProps) {
         await emit("detached-window-closed", { session_id: sessionId });
       } catch { /* ignore */ }
     });
-    return () => { unlisten.then((fn) => fn()); };
+    return () => { runTauriUnlistenFromPromise(unlisten); };
   }, [sessionId]);
 
   useEffect(() => {
@@ -52,7 +53,7 @@ export function DetachedView({ sessionId, tabType }: DetachedViewProps) {
         getCurrentWindow().setTitle(event.payload.title).catch(() => {});
       }
     }).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
+    return () => { runTauriUnlistenFn(unlisten); };
   }, [sessionId]);
 
   const isSecuritySubTab = tabType.startsWith("security-") && tabType !== "security-all";

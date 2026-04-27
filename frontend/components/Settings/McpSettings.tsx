@@ -18,6 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { logger } from "@/lib/logger";
+import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import * as mcp from "@/lib/mcp";
 import { notify } from "@/lib/notify";
 
@@ -72,7 +73,7 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
     });
 
     return () => {
-      unlisten.then((fn) => fn());
+      runTauriUnlistenFromPromise(unlisten);
     };
   }, [loadData]);
 
