@@ -60,6 +60,7 @@ pub mod tool_execution;
 pub mod tool_executors;
 pub mod tool_provider_impl;
 pub mod transcript;
+pub(crate) mod pentest_hook;
 
 // Evaluation support (for eval framework)
 pub mod eval_support;

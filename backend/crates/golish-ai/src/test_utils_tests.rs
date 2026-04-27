@@ -2309,6 +2309,7 @@ async fn test_sub_agent_context_inheritance() {
         top_p_override: None,
         db_pool: None,
         sub_agent_registry: None,
+        post_shell_hook: None,
     };
 
     let agent_def = test_sub_agent_definition_for_executor("analyzer");
@@ -2414,6 +2415,7 @@ async fn test_sub_agent_result_propagation() {
         top_p_override: None,
         db_pool: None,
         sub_agent_registry: None,
+        post_shell_hook: None,
     };
 
     let agent_def = test_sub_agent_definition_for_executor("executor");
@@ -2481,6 +2483,7 @@ async fn test_sub_agent_events_emitted() {
         top_p_override: None,
         db_pool: None,
         sub_agent_registry: None,
+        post_shell_hook: None,
     };
 
     let agent_def = test_sub_agent_definition_for_executor("event_tester");
@@ -2586,6 +2589,7 @@ async fn test_sub_agent_error_handling() {
         top_p_override: None,
         db_pool: None,
         sub_agent_registry: None,
+        post_shell_hook: None,
     };
 
     // Create agent with very low max_iterations to trigger the error path
@@ -2670,6 +2674,7 @@ async fn test_sub_agent_tool_restrictions() {
         top_p_override: None,
         db_pool: None,
         sub_agent_registry: None,
+        post_shell_hook: None,
     };
 
     // Create agent with restricted tools (only read_file allowed)
@@ -2763,6 +2768,7 @@ async fn test_sub_agent_timeout_behavior() {
         top_p_override: None,
         db_pool: None,
         sub_agent_registry: None,
+        post_shell_hook: None,
     };
 
     // Create agent with very low max_iterations to simulate timeout

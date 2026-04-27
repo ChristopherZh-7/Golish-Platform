@@ -32,7 +32,7 @@ impl AgentBridge {
 
     /// Get a clone of the database pool (if available).
     pub fn db_pool(&self) -> Option<Arc<sqlx::PgPool>> {
-        self.db_pool.clone()
+        self.services.db_pool.clone()
     }
 
     /// Set the database pool for session persistence dual-write and activity tracking.
@@ -47,11 +47,11 @@ impl AgentBridge {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .filter(|s| s != ".");
-        self.db_tracker = Some(
+        self.services.db_tracker = Some(
             crate::db_tracking::DbTracker::new(pool.clone(), session_uuid, ready_gate.clone())
                 .with_project_path(project_path),
         );
-        self.db_pool = Some(pool.clone());
+        self.services.db_pool = Some(pool.clone());
 
         // Load prompt template overrides from DB (non-blocking)
         let prompt_reg = self.prompt_registry.clone();
@@ -106,29 +106,27 @@ impl AgentBridge {
 
     /// Set the PtyManager for executing commands in user's terminal
     pub fn set_pty_manager(&mut self, pty_manager: Arc<PtyManager>) {
-        self.pty_manager = Some(pty_manager);
+        self.services.pty_manager = Some(pty_manager);
     }
 
     /// Set the IndexerState for code analysis tools
     pub fn set_indexer_state(&mut self, indexer_state: Arc<IndexerState>) {
-        self.indexer_state = Some(indexer_state);
+        self.services.indexer_state = Some(indexer_state);
     }
 
     /// Set the SidecarState for context capture
     pub fn set_sidecar_state(&mut self, sidecar_state: Arc<SidecarState>) {
-        self.sidecar_state = Some(sidecar_state);
+        self.services.sidecar_state = Some(sidecar_state);
     }
 
     /// Set the TranscriptWriter for persisting AI events to JSONL.
     pub fn set_transcript_writer(&mut self, writer: TranscriptWriter, base_dir: PathBuf) {
         let writer = Arc::new(writer);
-        // Forward to coordinator so bridge-level events (UserMessage, Completed, etc.)
-        // are also written to the transcript.
-        if let Some(ref coordinator) = self.coordinator {
+        if let Some(ref coordinator) = self.events.coordinator {
             coordinator.set_transcript_writer(Arc::clone(&writer));
         }
-        self.transcript_writer = Some(writer);
-        self.transcript_base_dir = Some(base_dir);
+        self.events.transcript_writer = Some(writer);
+        self.events.transcript_base_dir = Some(base_dir);
     }
 
     /// Set the memory file path for project instructions.
@@ -142,12 +140,12 @@ impl AgentBridge {
         &mut self,
         settings_manager: Arc<golish_settings::SettingsManager>,
     ) {
-        self.settings_manager = Some(settings_manager);
+        self.services.settings_manager = Some(settings_manager);
     }
 
     /// Attach an embedder to the DB tracker for semantic memory operations.
     pub fn set_embedder(&mut self, embedder: Arc<dyn golish_db::embeddings::Embedder>) {
-        if let Some(ref mut tracker) = self.db_tracker {
+        if let Some(ref mut tracker) = self.services.db_tracker {
             tracker.set_embedder(embedder);
         }
     }
@@ -157,7 +155,7 @@ impl AgentBridge {
     /// after the AI session was initialized.
     /// Falls back to cached value if `settings_manager` is not available.
     pub(super) async fn get_memory_file_path_dynamic(&self) -> Option<PathBuf> {
-        if let Some(ref settings_manager) = self.settings_manager {
+        if let Some(ref settings_manager) = self.services.settings_manager {
             let workspace_path = self.workspace.read().await;
             let settings = settings_manager.get().await;
             if let Some(path) = crate::memory_file::find_memory_file_for_workspace(
@@ -318,14 +316,14 @@ impl AgentBridge {
 
     /// Set the agent mode. Controls how tool approvals are handled.
     pub async fn set_agent_mode(&self, mode: AgentMode) {
-        let mut current = self.agent_mode.write().await;
+        let mut current = self.access.agent_mode.write().await;
         tracing::debug!("Agent mode changed: {} -> {}", *current, mode);
         *current = mode;
     }
 
     /// Get the current agent mode.
     pub async fn get_agent_mode(&self) -> AgentMode {
-        *self.agent_mode.read().await
+        *self.access.agent_mode.read().await
     }
 
     /// Set the useAgents flag (controls whether sub-agent delegation is available).
@@ -364,7 +362,7 @@ impl AgentBridge {
         use super::super::system_prompt::build_system_prompt_with_contributions;
 
         let workspace_path = self.workspace.read().await;
-        let agent_mode = *self.agent_mode.read().await;
+        let agent_mode = *self.access.agent_mode.read().await;
         let memory_file_path = self.get_memory_file_path_dynamic().await;
 
         build_system_prompt_with_contributions(
@@ -392,12 +390,12 @@ impl AgentBridge {
 
     /// Get the provider name.
     pub fn provider_name(&self) -> &str {
-        &self.provider_name
+        &self.llm.provider_name
     }
 
     /// Get the model name.
     pub fn model_name(&self) -> &str {
-        &self.model_name
+        &self.llm.model_name
     }
 
     /// Get the plan manager.
@@ -407,7 +405,7 @@ impl AgentBridge {
 
     /// Get the LLM client.
     pub fn client(&self) -> &Arc<RwLock<LlmClient>> {
-        &self.client
+        &self.llm.client
     }
 
     /// Get the tool registry.
@@ -422,17 +420,17 @@ impl AgentBridge {
 
     /// Get the indexer state.
     pub fn indexer_state(&self) -> Option<&Arc<IndexerState>> {
-        self.indexer_state.as_ref()
+        self.services.indexer_state.as_ref()
     }
 
     /// Get the model factory (for sub-agent model overrides).
     pub fn model_factory(&self) -> Option<&Arc<LlmClientFactory>> {
-        self.model_factory.as_ref()
+        self.llm.model_factory.as_ref()
     }
 
     /// Set the model factory for sub-agent model overrides.
     pub fn set_model_factory(&mut self, factory: Arc<LlmClientFactory>) {
-        self.model_factory = Some(factory);
+        self.llm.model_factory = Some(factory);
     }
 
     /// Override the tool configuration (e.g. to disable all tools for title-gen sessions).
@@ -441,11 +439,11 @@ impl AgentBridge {
     }
 
     pub fn event_session_id(&self) -> Option<&str> {
-        self.event_session_id.as_deref()
+        self.events.event_session_id.as_deref()
     }
 
     pub fn transcript_base_dir(&self) -> Option<&std::path::Path> {
-        self.transcript_base_dir.as_deref()
+        self.events.transcript_base_dir.as_deref()
     }
 
     pub fn api_request_stats(&self) -> &Arc<ApiRequestStats> {
@@ -458,9 +456,6 @@ impl AgentBridge {
         self.mcp_tool_definitions.read().await.clone()
     }
 
-    /// Set MCP tool executor for handling MCP tool calls.
-    /// Should be called together with `set_mcp_tools`.
-    /// Takes `&self` (uses interior mutability) so it can be called after bridge creation.
     #[allow(clippy::type_complexity)]
     pub async fn set_mcp_executor(
         &self,
