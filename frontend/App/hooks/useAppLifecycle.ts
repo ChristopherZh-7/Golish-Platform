@@ -3,7 +3,6 @@ import { listen } from "@tauri-apps/api/event";
 import type React from "react";
 import { useEffect, useState } from "react";
 import { logger } from "@/lib/logger";
-import { getProjectPath } from "@/lib/projects";
 import { useAiEvents } from "../../hooks/useAiEvents";
 import { useCreateTerminalTab } from "../../hooks/useCreateTerminalTab";
 import { usePipelineEvents } from "../../hooks/usePipelineEvents";
@@ -22,6 +21,8 @@ import {
 import { useStore } from "../../store";
 import { useFileEditorSidebarStore } from "../../store/file-editor-sidebar";
 import { createNewConversation } from "../../store/slices/conversation";
+import { useCredentialCapture } from "./useCredentialCapture";
+import { useTabSplitEvents } from "./useTabSplitEvents";
 
 interface UseAppLifecycleProps {
   setRightPanelTabs: React.Dispatch<React.SetStateAction<string[]>>;
@@ -67,6 +68,12 @@ export function useAppLifecycle({
 
   // Subscribe to pipeline progress events (bridges Rust pipeline-event → timeline)
   usePipelineEvents();
+
+  // Tab split/detach/tool-output/recording events
+  useTabSplitEvents({ setRightPanelTabs, setRightActiveTab, setShowSplitDropZone });
+
+  // Auto-capture credentials detected by ZAP proxy
+  useCredentialCapture();
 
   useEffect(() => {
     const root = document.documentElement;
@@ -339,220 +346,6 @@ export function useAppLifecycle({
     };
   }, []);
 
-  // Handle tab split events from TabBar
-  // Original effect in App.tsx had empty deps; setters arriving as props are stable
-  // React useState setters so [] is still correct here. Preserved verbatim per
-  // refactor constraint: do not change useEffect dependency arrays.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: preserve original empty deps; setters are stable
-  useEffect(() => {
-    const handleSplitTab = (e: Event) => {
-      const tabId = (e as CustomEvent<string>).detail;
-      setRightPanelTabs((prev) => {
-        if (prev.includes(tabId)) return prev;
-        const s = useStore.getState();
-        if (s.activeSessionId === tabId) {
-          const other = s.tabOrder.find(
-            (id) =>
-              id !== tabId &&
-              !prev.includes(id) &&
-              (s.sessions[id]?.tabType ?? "terminal") !== "home"
-          );
-          if (other) s.setActiveSession(other);
-        }
-        return [...prev, tabId];
-      });
-      setRightActiveTab(tabId);
-      setShowSplitDropZone(false);
-    };
-    const handleUnsplitTab = () => {
-      setRightPanelTabs([]);
-      setRightActiveTab(null);
-    };
-    const handleDragHint = (e: Event) => setShowSplitDropZone((e as CustomEvent<boolean>).detail);
-    const handleToolOutput = async (e: Event) => {
-      if (localStorage.getItem("golish-auto-detect-output") === "false") return;
-      const { command, output } = (
-        e as CustomEvent<{ command: string; output: string; sessionId: string }>
-      ).detail;
-      try {
-        const detected = await invoke<{
-          tool_id: string;
-          tool_name: string;
-          output_config: {
-            format: string;
-            produces: string[];
-            patterns: unknown[];
-            fields: Record<string, string>;
-            detect?: string;
-          };
-        } | null>("output_detect_tool", { command, rawOutput: output });
-        if (!detected) return;
-        const parsed = await invoke<{
-          items: { data_type: string; fields: Record<string, string> }[];
-        }>("output_parse", {
-          rawOutput: output,
-          config: detected.output_config,
-          toolId: detected.tool_id,
-          toolName: detected.tool_name,
-        });
-        if (!parsed.items.length) return;
-        const pp = getProjectPath();
-        const produces = detected.output_config.produces;
-
-        if (produces.includes("vulnerability")) {
-          const vulnItems = parsed.items
-            .filter((it) => it.data_type === "vulnerability")
-            .map((it) => it.fields);
-          if (vulnItems.length > 0) {
-            const added = await invoke<number>("findings_import_parsed", {
-              items: vulnItems,
-              toolName: detected.tool_name,
-              projectPath: pp,
-            });
-            if (added > 0) {
-              notify.success(`${detected.tool_name}: ${added} findings imported`);
-            }
-          }
-        }
-      } catch {
-        /* ignore */
-      }
-    };
-    const handleDetachTab = async (e: Event) => {
-      const { tabId, screenX, screenY } = (
-        e as CustomEvent<{ tabId: string; screenX: number; screenY: number }>
-      ).detail;
-      const s = useStore.getState();
-      const session = s.sessions[tabId];
-      if (!session) return;
-      const tabType = session.tabType ?? "terminal";
-
-      if (tabType === "security") {
-        const pseudoId = `security-all-${Date.now()}`;
-        try {
-          await invoke("create_detached_window", {
-            sessionId: pseudoId,
-            tabType: "security-all",
-            title: "Security — Detached",
-            x: screenX - 50,
-            y: screenY - 20,
-            width: 1000.0,
-            height: 700.0,
-          });
-          notify.info("Security detached to floating window");
-        } catch (err) {
-          logger.error("[App] detach security tab failed:", err);
-        }
-        return;
-      }
-
-      if (tabType !== "terminal") return;
-
-      const title =
-        session.customName ||
-        session.processName ||
-        session.workingDirectory?.split(/[/\\]/).pop() ||
-        "Terminal";
-
-      try {
-        await invoke("create_detached_window", {
-          sessionId: tabId,
-          tabType,
-          title: `${title} — Detached`,
-          x: screenX - 50,
-          y: screenY - 20,
-          width: 800.0,
-          height: 500.0,
-        });
-        const detached = JSON.parse(localStorage.getItem("golish-detached-tabs") || "{}");
-        detached[tabId] = { title, tabType };
-        try {
-          localStorage.setItem("golish-detached-tabs", JSON.stringify(detached));
-        } catch {
-          /* ignore */
-        }
-
-        const other = s.tabOrder.find(
-          (id) => id !== tabId && (s.sessions[id]?.tabType ?? "terminal") !== "home"
-        );
-        if (other) s.setActiveSession(other);
-        notify.info(`"${title}" detached to floating window`);
-      } catch (err) {
-        logger.error("[App] detach tab failed:", err);
-      }
-    };
-
-    const handleDetachSecurityTab = async (e: Event) => {
-      const { tabId, screenX, screenY } = (
-        e as CustomEvent<{ tabId: string; screenX: number; screenY: number }>
-      ).detail;
-      const tabLabels: Record<string, string> = {
-        history: "HTTP History",
-        sitemap: "Site Map",
-        scanner: "Scanner",
-        repeater: "Repeater",
-        alerts: "Alerts",
-        audit: "Audit Log",
-        passive: "Passive Scan",
-        vault: "Credential Vault",
-      };
-      const title = tabLabels[tabId] || tabId;
-      const pseudoId = `security-${tabId}-${Date.now()}`;
-
-      try {
-        await invoke("create_detached_window", {
-          sessionId: pseudoId,
-          tabType: `security-${tabId}`,
-          title: `${title} — Detached`,
-          x: screenX - 50,
-          y: screenY - 20,
-          width: 900.0,
-          height: 600.0,
-        });
-        notify.info(`"${title}" detached to floating window`);
-      } catch (err) {
-        logger.error("[App] detach security tab failed:", err);
-      }
-    };
-
-    window.addEventListener("split-tab-right", handleSplitTab);
-    window.addEventListener("unsplit-tab", handleUnsplitTab);
-    window.addEventListener("tab-drag-split-hint", handleDragHint);
-    window.addEventListener("detach-tab", handleDetachTab);
-    window.addEventListener("detach-security-tab", handleDetachSecurityTab);
-    const handleRecordingSaved = () => {
-      notify.success("Terminal recording saved");
-    };
-    window.addEventListener("tool-output-completed", handleToolOutput);
-    window.addEventListener("recording-saved", handleRecordingSaved);
-
-    // Listen for detached window close events from Tauri
-    let unlistenDetachedClose: (() => void) | null = null;
-    listen<{ session_id: string }>("detached-window-closed", (event) => {
-      const { session_id } = event.payload;
-      const detached = JSON.parse(localStorage.getItem("golish-detached-tabs") || "{}");
-      delete detached[session_id];
-      try {
-        localStorage.setItem("golish-detached-tabs", JSON.stringify(detached));
-      } catch {
-        /* ignore */
-      }
-      notify.info("Detached window closed — tab restored");
-    }).then((fn) => {
-      unlistenDetachedClose = fn;
-    });
-
-    return () => {
-      window.removeEventListener("split-tab-right", handleSplitTab);
-      window.removeEventListener("unsplit-tab", handleUnsplitTab);
-      window.removeEventListener("tab-drag-split-hint", handleDragHint);
-      window.removeEventListener("detach-tab", handleDetachTab);
-      window.removeEventListener("detach-security-tab", handleDetachSecurityTab);
-      window.removeEventListener("tool-output-completed", handleToolOutput);
-      window.removeEventListener("recording-saved", handleRecordingSaved);
-      unlistenDetachedClose?.();
-    };
-  }, []);
 
   // Handle native menu events from Tauri backend
   useEffect(() => {
@@ -579,110 +372,6 @@ export function useAppLifecycle({
     };
   }, [openHomeTab, openSettingsTab]);
 
-  // Auto-capture credentials detected by ZAP proxy and save/update vault
-  useEffect(() => {
-    const knownEntries = new Map<string, { id: string; valueHash: string }>();
-    let unlisten: (() => void) | null = null;
-
-    interface DetectedCredential {
-      source_url: string;
-      host: string;
-      cred_type: string;
-      username: string | null;
-      value: string;
-      field_name: string;
-      zap_message_id: number;
-    }
-
-    interface VaultEntry {
-      id: string;
-      name: string;
-      tags: string[];
-    }
-
-    const credTypeMap: Record<string, string> = {
-      password: "password",
-      bearer_token: "token",
-      basic_auth: "password",
-      api_key: "api_key",
-      access_token: "token",
-      refresh_token: "token",
-      session_cookie: "cookie",
-      o_auth_client_secret: "api_key",
-    };
-
-    function hashValue(v: string): string {
-      let h = 0;
-      for (let i = 0; i < v.length; i++) h = ((h << 5) - h + v.charCodeAt(i)) | 0;
-      return h.toString(36);
-    }
-
-    (async () => {
-      try {
-        const existing = await invoke<VaultEntry[]>("vault_list", {
-          projectPath: getProjectPath(),
-        });
-        if (Array.isArray(existing)) {
-          for (const e of existing) {
-            if (e.tags?.includes("auto-captured")) {
-              knownEntries.set(e.name, { id: e.id, valueHash: "" });
-            }
-          }
-        }
-      } catch {
-        /* vault might not be ready yet */
-      }
-
-      unlisten = await listen<DetectedCredential>("credential-detected", async (event) => {
-        const cred = event.payload;
-        const name = `${cred.host} - ${cred.field_name}`;
-        const newHash = hashValue(cred.value);
-        const existing = knownEntries.get(name);
-
-        if (existing && existing.valueHash === newHash) return;
-
-        const entryType = credTypeMap[cred.cred_type] || "other";
-
-        try {
-          if (existing) {
-            await invoke("vault_update", {
-              id: existing.id,
-              value: cred.value,
-              username: cred.username || null,
-              notes: `Auto-captured from ${cred.source_url} (updated)`,
-              projectPath: getProjectPath(),
-            });
-            knownEntries.set(name, { id: existing.id, valueHash: newHash });
-            notify.info("Credential updated", {
-              message: `${cred.host} — ${cred.field_name}`,
-            });
-          } else {
-            const added = await invoke<{ id: string }>("vault_add", {
-              name,
-              entryType,
-              value: cred.value,
-              username: cred.username || null,
-              notes: `Auto-captured from ${cred.source_url}`,
-              project: cred.host,
-              tags: ["auto-captured", "zap"],
-              sourceUrl: cred.source_url,
-              projectPath: getProjectPath(),
-            });
-            knownEntries.set(name, { id: added.id, valueHash: newHash });
-            notify.success("Credential captured", {
-              message: `${cred.host} — ${cred.field_name} (${cred.cred_type})`,
-            });
-          }
-        } catch (e) {
-          console.error("[CredAutoCapture] Failed to save credential:", e);
-        }
-      });
-    })();
-
-    return () => {
-      unlisten?.();
-    };
-  }, []);
 
   return { isLoading, error };
 }

@@ -8,7 +8,6 @@ import { CommandPalette, type PageRoute } from "../components/CommandPalette";
 import { PaneContainer } from "../components/PaneContainer";
 import { SidecarNotifications } from "../components/Sidecar";
 import { TerminalLayer } from "../components/Terminal";
-import { Skeleton } from "../components/ui/skeleton";
 import { useCreateTerminalTab } from "../hooks/useCreateTerminalTab";
 import { TerminalPortalProvider } from "../hooks/useTerminalPortal";
 import { useStore } from "../store";
@@ -38,7 +37,10 @@ import {
   WikiPanelView,
   WordlistPanelView,
 } from "./lazyRegistry";
-import type { ActivityView } from "../components/ActivityBar/ActivityBar";
+import { AppErrorFallback, AppLoadingSkeleton } from "./components/AppLoadingSkeleton";
+import { SplitColumn, SplitDropZone } from "./components/SplitColumn";
+import { useSplitTabDrag } from "./hooks/useSplitTabDrag";
+
 
 const FULLSCREEN_OVERLAYS: Array<{
   view: NonNullable<ActivityView>;
@@ -56,13 +58,6 @@ const FULLSCREEN_OVERLAYS: Array<{
   { view: "wordlists", Component: WordlistPanelView },
   { view: "vulnIntel", Component: VulnIntelPanelView },
 ];
-
-interface SplitDragRef {
-  startX: number;
-  startY: number;
-  dragging: boolean;
-  tabId: string | null;
-}
 
 export interface AppShellProps {
   // Lifecycle status
@@ -94,7 +89,7 @@ export interface AppShellProps {
 
   // Bottom terminal
   bottomTerminalOpen: boolean;
-  setBottomTerminalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  setBottomTerminalOpen: (open: boolean) => void;
 
   // Right split column
   rightPanelTabs: string[];
@@ -107,7 +102,6 @@ export interface AppShellProps {
   setSplitDragGhost: React.Dispatch<
     React.SetStateAction<{ x: number; y: number; name: string } | null>
   >;
-  splitDragRef: React.MutableRefObject<SplitDragRef>;
   closeRightTab: (tabId?: string) => void;
   handlePanelResizeStart: (e: React.PointerEvent) => void;
 
@@ -185,7 +179,7 @@ export function AppShell(props: AppShellProps) {
     sessionBrowserOpen,
     setSessionBrowserOpen,
     bottomTerminalOpen,
-    setBottomTerminalOpen,
+    setBottomTerminalOpen: _setBottomTerminalOpen,
     rightPanelTabs,
     rightActiveTab,
     setRightActiveTab,
@@ -194,7 +188,6 @@ export function AppShell(props: AppShellProps) {
     setShowMergeDropZone,
     splitDragGhost,
     setSplitDragGhost,
-    splitDragRef,
     closeRightTab,
     handlePanelResizeStart,
     handleNewTab,
@@ -225,55 +218,12 @@ export function AppShell(props: AppShellProps) {
   const uiScale = useStore((s) => s.displaySettings.uiScale);
 
   const { createTerminalTab } = useCreateTerminalTab();
+  const splitDrag = useSplitTabDrag({ setShowMergeDropZone, setSplitDragGhost, closeRightTab });
 
   const hasSplit = rightPanelTabs.length > 0;
 
-  if (isLoading) {
-    return (
-      <div className="h-screen w-screen bg-background flex overflow-hidden">
-        {/* Skeleton Activity Bar */}
-        <div className="w-[48px] flex-shrink-0 bg-background border-r border-[var(--border-subtle)] flex flex-col items-center gap-2 pt-12">
-          <Skeleton className="h-8 w-8 rounded-md bg-muted" />
-          <Skeleton className="h-8 w-8 rounded-md bg-muted" />
-          <Skeleton className="h-8 w-8 rounded-md bg-muted" />
-        </div>
-
-        {/* Skeleton left panel */}
-        <div className="w-[220px] flex-shrink-0 bg-card border-r border-[var(--border-subtle)] p-3 space-y-3">
-          <Skeleton className="h-6 w-16 bg-muted" />
-          <Skeleton className="h-7 w-full bg-muted" />
-          <Skeleton className="h-4 w-20 bg-muted" />
-          <Skeleton className="h-4 w-24 bg-muted" />
-        </div>
-
-        {/* Skeleton center */}
-        <div className="flex-1 flex flex-col">
-          <div className="flex items-center h-[34px] bg-card border-b border-[var(--border-subtle)] pl-2 pr-2 gap-2">
-            <Skeleton className="h-5 w-20 bg-muted" />
-            <Skeleton className="h-5 w-5 rounded bg-muted" />
-          </div>
-          <div className="flex-1 p-4 space-y-3">
-            <Skeleton className="h-16 w-full bg-muted" />
-            <Skeleton className="h-16 w-3/4 bg-muted" />
-          </div>
-        </div>
-
-        {/* Skeleton right panel */}
-        <div className="w-[340px] flex-shrink-0 bg-card border-l border-[var(--border-subtle)] p-3 space-y-3">
-          <Skeleton className="h-6 w-16 bg-muted" />
-          <Skeleton className="h-20 w-full bg-muted" />
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="flex items-center justify-center h-screen bg-background">
-        <div className="text-[#f7768e] text-lg">Error: {error}</div>
-      </div>
-    );
-  }
+  if (isLoading) return <AppLoadingSkeleton />;
+  if (error) return <AppErrorFallback error={error} />;
 
   // Render component testbed page
   if (currentPage === "testbed") {
@@ -359,7 +309,7 @@ export function AppShell(props: AppShellProps) {
                     return;
                   }
                 }
-                setBottomTerminalOpen((v) => !v);
+                useStore.getState().toggleBottomTerminal();
               }}
               onOpenSettings={() => setSettingsOpen(true)}
             />
@@ -389,7 +339,6 @@ export function AppShell(props: AppShellProps) {
                 <Suspense fallback={null}>
                   <SettingsContent
                     activeSection={settingsSection}
-                    onSectionChange={setSettingsSection}
                   />
                 </Suspense>
               </div>
@@ -483,138 +432,17 @@ export function AppShell(props: AppShellProps) {
                 </div>
               </div>
 
-              {/* Right split column */}
               {hasSplit && (
-                <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float animate-in slide-in-from-right-4 fade-in duration-300">
-                  <div className="h-[34px] flex items-center border-b border-border/30 flex-shrink-0 overflow-x-auto">
-                    {rightPanelTabs.map((rTabId) => {
-                      const rSession = useStore.getState().sessions[rTabId];
-                      const rName =
-                        rSession?.customName ||
-                        rSession?.processName ||
-                        rSession?.workingDirectory?.split(/[/\\]/).pop() ||
-                        "Terminal";
-                      const isRightActive = rTabId === rightActiveTab;
-                      return (
-                        <div
-                          key={rTabId}
-                          className={cn(
-                            "flex items-center gap-1.5 px-3 py-1 h-full relative cursor-grab active:cursor-grabbing select-none text-[11px] font-mono transition-colors",
-                            isRightActive
-                              ? "bg-muted text-foreground"
-                              : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-                          )}
-                          onClick={() => setRightActiveTab(rTabId)}
-                          onPointerDown={(e) => {
-                            if ((e.target as HTMLElement).closest("button")) return;
-                            e.preventDefault();
-                            splitDragRef.current = {
-                              startX: e.clientX,
-                              startY: e.clientY,
-                              dragging: false,
-                              tabId: rTabId,
-                            };
-                            (e.target as HTMLElement).setPointerCapture(e.pointerId);
-                          }}
-                          onPointerMove={(e) => {
-                            const ref = splitDragRef.current;
-                            if (!ref.startX && !ref.startY) return;
-                            const dx = e.clientX - ref.startX;
-                            const dist = Math.sqrt(dx * dx + (e.clientY - ref.startY) ** 2);
-                            if (!ref.dragging && dist > 8) {
-                              ref.dragging = true;
-                              document.documentElement.classList.add("tab-dragging");
-                            }
-                            if (ref.dragging) {
-                              setShowMergeDropZone(dx < -40);
-                              setSplitDragGhost({ x: e.clientX, y: e.clientY, name: rName });
-                            }
-                          }}
-                          onPointerUp={(e) => {
-                            const ref = splitDragRef.current;
-                            if (ref.dragging && e.clientX - ref.startX < -40) closeRightTab(rTabId);
-                            splitDragRef.current = {
-                              startX: 0,
-                              startY: 0,
-                              dragging: false,
-                              tabId: null,
-                            };
-                            setShowMergeDropZone(false);
-                            setSplitDragGhost(null);
-                            document.documentElement.classList.remove("tab-dragging");
-                          }}
-                        >
-                          {isRightActive && (
-                            <span className="absolute bottom-0 left-0 right-0 h-px bg-accent" />
-                          )}
-                          <span className="truncate max-w-[140px]">{rName}</span>
-                          <button
-                            className="p-0.5 rounded hover:bg-background/50 text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              closeRightTab(rTabId);
-                            }}
-                            title="Close split"
-                            onPointerDown={(e) => e.stopPropagation()}
-                          >
-                            <svg
-                              width="8"
-                              height="8"
-                              viewBox="0 0 10 10"
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth="1.5"
-                              strokeLinecap="round"
-                            >
-                              <line x1="2" y1="2" x2="8" y2="8" />
-                              <line x1="8" y1="2" x2="2" y2="8" />
-                            </svg>
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div className="flex-1 min-h-0 min-w-0 relative">
-                    {rightPanelTabs.map((rTabId) => {
-                      const layout = tabLayouts.find((l) => l.tabId === rTabId);
-                      if (!layout) return null;
-                      return (
-                        <div
-                          key={rTabId}
-                          className={`absolute inset-0 ${rTabId === rightActiveTab ? "visible" : "invisible pointer-events-none"}`}
-                        >
-                          <PaneContainer node={layout.root} tabId={rTabId} />
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
+                <SplitColumn
+                  rightPanelTabs={rightPanelTabs}
+                  rightActiveTab={rightActiveTab}
+                  setRightActiveTab={setRightActiveTab}
+                  tabLayouts={tabLayouts}
+                  closeRightTab={closeRightTab}
+                  splitDrag={splitDrag}
+                />
               )}
-
-              {/* Split drop zone indicator */}
-              {showSplitDropZone && (
-                <div className="absolute inset-0 z-20 pointer-events-none flex animate-in fade-in duration-200">
-                  <div className="flex-1" />
-                  <div className="w-1/2 m-2 rounded-xl border-2 border-dashed border-accent/60 bg-accent/8 flex items-center justify-center backdrop-blur-[2px] animate-in slide-in-from-right-2 duration-300">
-                    <div className="flex flex-col items-center gap-1.5 animate-pulse">
-                      <svg
-                        width="28"
-                        height="28"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        className="text-accent/60"
-                      >
-                        <rect x="3" y="3" width="18" height="18" rx="2" />
-                        <line x1="12" y1="3" x2="12" y2="21" />
-                      </svg>
-                      <span className="text-xs text-accent/60 font-medium">Split Right</span>
-                    </div>
-                  </div>
-                </div>
-              )}
+              {showSplitDropZone && <SplitDropZone />}
             </div>
 
             {/* Resize handle between center and right panels */}
@@ -720,7 +548,7 @@ export function AppShell(props: AppShellProps) {
                 return;
               }
             }
-            setBottomTerminalOpen((v) => !v);
+            useStore.getState().toggleBottomTerminal();
           }}
           onFocusAiChat={() => {
             setActivityView(null);

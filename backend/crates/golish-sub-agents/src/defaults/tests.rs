@@ -1,5 +1,12 @@
 use super::builder::create_default_sub_agents;
-use super::prompts::{build_analyzer_prompt, build_coder_prompt, build_explorer_prompt, build_pentester_prompt, build_planner_prompt};
+use super::prompts::{
+    build_analyzer_prompt, build_coder_prompt, build_explorer_prompt, build_pentester_prompt,
+    build_planner_prompt, build_researcher_prompt,
+};
+
+fn has_tool(agent: &crate::SubAgentDefinition, tool: &str) -> bool {
+    agent.allowed_tools.iter().any(|t| t == tool)
+}
 
 #[test]
 fn test_create_default_sub_agents_count() {
@@ -46,9 +53,11 @@ fn test_explorer_has_navigation_tools() {
     // Should have navigation and search tools
     assert!(explorer.allowed_tools.contains(&"read_file".to_string()));
     assert!(explorer.allowed_tools.contains(&"list_files".to_string()));
-    assert!(explorer
-        .allowed_tools
-        .contains(&"list_directory".to_string()));
+    assert!(
+        explorer
+            .allowed_tools
+            .contains(&"list_directory".to_string())
+    );
     assert!(explorer.allowed_tools.contains(&"grep_file".to_string()));
     assert!(explorer.allowed_tools.contains(&"find_files".to_string()));
 
@@ -60,9 +69,11 @@ fn test_explorer_has_navigation_tools() {
     assert!(!explorer.allowed_tools.contains(&"edit_file".to_string()));
 
     // Should NOT have indexer tools (those are for analyzer)
-    assert!(!explorer
-        .allowed_tools
-        .contains(&"indexer_analyze_file".to_string()));
+    assert!(
+        !explorer
+            .allowed_tools
+            .contains(&"indexer_analyze_file".to_string())
+    );
 }
 
 #[test]
@@ -70,8 +81,15 @@ fn test_researcher_has_web_tools() {
     let agents = create_default_sub_agents();
     let researcher = agents.iter().find(|a| a.id == "researcher").unwrap();
 
-    assert!(researcher.allowed_tools.contains(&"web_search".to_string()));
-    assert!(researcher.allowed_tools.contains(&"web_fetch".to_string()));
+    assert!(has_tool(researcher, "web_search"));
+    assert!(has_tool(researcher, "web_fetch"));
+    assert!(has_tool(researcher, "search_knowledge_base"));
+    assert!(has_tool(researcher, "read_knowledge"));
+    assert!(has_tool(researcher, "write_knowledge"));
+    assert!(has_tool(researcher, "ingest_cve"));
+    assert!(has_tool(researcher, "save_poc"));
+    assert!(has_tool(researcher, "list_cves_with_pocs"));
+    assert!(has_tool(researcher, "list_unresearched_cves"));
 }
 
 #[test]
@@ -142,16 +160,28 @@ fn test_worker_has_broad_tool_access() {
     // Should have search tools
     assert!(worker.allowed_tools.contains(&"grep_file".to_string()));
     assert!(worker.allowed_tools.contains(&"ast_grep".to_string()));
-    assert!(worker
-        .allowed_tools
-        .contains(&"ast_grep_replace".to_string()));
+    assert!(
+        worker
+            .allowed_tools
+            .contains(&"ast_grep_replace".to_string())
+    );
 
     // Should have shell access
     assert!(worker.allowed_tools.contains(&"run_pty_cmd".to_string()));
 
     // Should have web tools
-    assert!(worker.allowed_tools.contains(&"web_search".to_string()));
-    assert!(worker.allowed_tools.contains(&"web_fetch".to_string()));
+    assert!(has_tool(worker, "web_search"));
+    assert!(has_tool(worker, "web_fetch"));
+
+    // Should have full vulnerability KB access
+    assert!(has_tool(worker, "search_knowledge_base"));
+    assert!(has_tool(worker, "read_knowledge"));
+    assert!(has_tool(worker, "write_knowledge"));
+    assert!(has_tool(worker, "ingest_cve"));
+    assert!(has_tool(worker, "save_poc"));
+    assert!(has_tool(worker, "list_cves_with_pocs"));
+    assert!(has_tool(worker, "list_unresearched_cves"));
+    assert!(has_tool(worker, "poc_stats"));
 }
 
 #[test]
@@ -199,27 +229,50 @@ fn test_pentester_has_security_tools() {
     let agents = create_default_sub_agents();
     let pentester = agents.iter().find(|a| a.id == "pentester").unwrap();
 
-    assert!(pentester.allowed_tools.contains(&"run_pty_cmd".to_string()));
-    assert!(pentester.allowed_tools.contains(&"web_search".to_string()));
-    assert!(pentester.allowed_tools.contains(&"search_memories".to_string()));
-    assert!(pentester.allowed_tools.contains(&"run_pipeline".to_string()));
-    assert!(pentester.allowed_tools.contains(&"manage_targets".to_string()));
-    assert!(pentester.allowed_tools.contains(&"record_finding".to_string()));
-    assert!(pentester.allowed_tools.contains(&"js_collect".to_string()));
+    assert!(has_tool(pentester, "run_pty_cmd"));
+    assert!(has_tool(pentester, "web_search"));
+    assert!(has_tool(pentester, "search_memories"));
+    assert!(has_tool(pentester, "run_pipeline"));
+    assert!(has_tool(pentester, "manage_targets"));
+    assert!(has_tool(pentester, "record_finding"));
+    assert!(has_tool(pentester, "js_collect"));
+    assert!(has_tool(pentester, "search_knowledge_base"));
+    assert!(has_tool(pentester, "read_knowledge"));
+    assert!(!has_tool(pentester, "write_knowledge"));
     assert_eq!(pentester.max_iterations, 50);
     assert_eq!(pentester.timeout_secs, Some(900));
 }
 
 #[test]
-fn test_memorist_has_memory_tools_only() {
+fn test_memorist_has_memory_and_readonly_wiki_tools() {
     let agents = create_default_sub_agents();
     let memorist = agents.iter().find(|a| a.id == "memorist").unwrap();
 
-    assert!(memorist.allowed_tools.contains(&"search_memories".to_string()));
-    assert!(memorist.allowed_tools.contains(&"store_memory".to_string()));
-    assert!(memorist.allowed_tools.contains(&"list_memories".to_string()));
-    assert!(!memorist.allowed_tools.contains(&"run_pty_cmd".to_string()));
+    assert!(has_tool(memorist, "search_memories"));
+    assert!(has_tool(memorist, "store_memory"));
+    assert!(has_tool(memorist, "list_memories"));
+    assert!(has_tool(memorist, "search_knowledge_base"));
+    assert!(has_tool(memorist, "read_knowledge"));
+    assert!(!has_tool(memorist, "write_knowledge"));
+    assert!(!has_tool(memorist, "run_pty_cmd"));
     assert_eq!(memorist.max_iterations, 10);
+}
+
+#[test]
+fn test_reporter_and_adviser_have_readonly_wiki_tools() {
+    let agents = create_default_sub_agents();
+    let reporter = agents.iter().find(|a| a.id == "reporter").unwrap();
+    let adviser = agents.iter().find(|a| a.id == "adviser").unwrap();
+
+    assert!(has_tool(reporter, "search_knowledge_base"));
+    assert!(has_tool(reporter, "read_knowledge"));
+    assert!(has_tool(reporter, "list_cves_with_pocs"));
+    assert!(has_tool(reporter, "poc_stats"));
+    assert!(!has_tool(reporter, "write_knowledge"));
+
+    assert!(has_tool(adviser, "search_knowledge_base"));
+    assert!(has_tool(adviser, "read_knowledge"));
+    assert!(!has_tool(adviser, "write_knowledge"));
 }
 
 #[test]
@@ -227,7 +280,11 @@ fn test_planner_is_mostly_readonly() {
     let agents = create_default_sub_agents();
     let planner = agents.iter().find(|a| a.id == "planner").unwrap();
 
-    assert!(planner.allowed_tools.contains(&"search_memories".to_string()));
+    assert!(
+        planner
+            .allowed_tools
+            .contains(&"search_memories".to_string())
+    );
     assert!(!planner.allowed_tools.contains(&"run_pty_cmd".to_string()));
     assert!(!planner.allowed_tools.contains(&"write_file".to_string()));
     assert_eq!(planner.max_iterations, 5);
@@ -249,6 +306,16 @@ fn test_pentester_prompt_has_core_identity() {
     assert!(prompt.contains("penetration testing specialist"));
     assert!(prompt.contains("<expertise>"));
     assert!(prompt.contains("<constraints>"));
+    assert!(prompt.contains("search_knowledge_base"));
+}
+
+#[test]
+fn test_researcher_prompt_instructs_wiki_writes_with_cve_id() {
+    let prompt = build_researcher_prompt();
+    assert!(prompt.contains("search_knowledge_base"));
+    assert!(prompt.contains("write_knowledge"));
+    assert!(prompt.contains("cve_id"));
+    assert!(prompt.contains("save_poc"));
 }
 
 #[test]

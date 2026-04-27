@@ -1,0 +1,31 @@
+[package]
+name = "golish-graphiti"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "PostgreSQL-backed graph knowledge base for security entity/relation reasoning"
+
+[dependencies]
+# Async SQL toolkit (shares the embedded PG instance from golish-db)
+sqlx = { version = "0.8", features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "uuid",
+    "chrono",
+    "json",
+] }
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Tracing
+tracing.workspace = true
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }

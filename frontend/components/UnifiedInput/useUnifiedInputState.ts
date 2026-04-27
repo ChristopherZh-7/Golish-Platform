@@ -405,14 +405,10 @@ export function useInputState({ sessionId }: { sessionId: string }) {
         let rawJson = "";
         try {
           rawJson = await invoke<string>("pentest_read_tool_config", {
-            category: tool.category,
-            subcategory: tool.subcategory,
             toolId: tool.name.toLowerCase(),
           });
         } catch {
           rawJson = await invoke<string>("pentest_read_tool_config", {
-            category: tool.category,
-            subcategory: tool.subcategory,
             toolId: tool.id,
           });
         }
@@ -553,6 +549,7 @@ export function useInputState({ sessionId }: { sessionId: string }) {
     toolSelectedIndex,
     setToolSelectedIndex,
     activeTool,
+    setActiveTool,
     toolParams,
     isFocused,
     caretSettings,

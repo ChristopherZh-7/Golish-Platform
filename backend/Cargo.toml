@@ -30,6 +30,7 @@ members = [
     "crates/golish-pentest",
     "crates/golish-pentest-mcp",
     "crates/golish-db",
+    "crates/golish-graphiti",
 ]
 # Default members for fast inner-loop development (excludes Tauri app, evals, benchmarks)
 default-members = [
@@ -59,6 +60,7 @@ default-members = [
     "crates/golish-pentest",
     "crates/golish-pentest-mcp",
     "crates/golish-db",
+    "crates/golish-graphiti",
 ]
 resolver = "2"
 
@@ -96,6 +98,7 @@ rig-gemini-vertex = { path = "crates/rig-gemini-vertex" }
 golish-pentest = { path = "crates/golish-pentest" }
 golish-pentest-mcp = { path = "crates/golish-pentest-mcp" }
 golish-db = { path = "crates/golish-db" }
+golish-graphiti = { path = "crates/golish-graphiti" }
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate"] }

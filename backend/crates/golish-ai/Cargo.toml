@@ -26,6 +26,7 @@ golish-sub-agents = { workspace = true }
 golish-skills = { workspace = true }
 golish-shell-exec = { workspace = true }
 golish-pentest = { workspace = true }
+golish-graphiti = { workspace = true }
 
 # JSON repair for malformed LLM output
 golish-json-repair = { path = "../golish-json-repair" }

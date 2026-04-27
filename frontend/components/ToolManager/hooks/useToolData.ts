@@ -4,7 +4,7 @@ import type { ToolConfig, ToolCategory } from "@/lib/pentest/types";
 import { useTranslation } from "react-i18next";
 import type { ToolWithMeta, SortKey } from "../OutputParserEditor";
 
-const VIA_NO_CHMOD: Array<NonNullable<ToolConfig["installedVia"]>> = ["homebrew", "gem", "system_path"];
+const VIA_NO_CHMOD: Array<NonNullable<ToolConfig["installedVia"]>> = ["homebrew", "gem", "pip", "system_path"];
 
 export function useToolData() {
   const { t } = useTranslation();
@@ -25,7 +25,14 @@ export function useToolData() {
         scanTools().catch(() => ({ success: false, tools: [] as ToolConfig[] })),
         getCategories().catch(() => [] as ToolCategory[]),
       ]);
-      const safeCats = Array.isArray(cats) ? cats : [];
+      const safeCats: ToolCategory[] = (Array.isArray(cats) ? cats : []).map((c) => ({
+        ...c,
+        name: c.name || t(`categories.${c.id}`, c.id),
+        items: (c.items || []).map((s) => ({
+          ...s,
+          name: s.name || t(`subcategories.${s.id}`, s.id),
+        })),
+      }));
       setCategories(safeCats);
       const catMap = new Map<string, string>();
       const subMap = new Map<string, string>();
@@ -40,8 +47,8 @@ export function useToolData() {
         seen.add(tool.id);
         enriched.push({
           ...tool,
-          categoryName: catMap.get(tool.category) || tool.category,
-          subcategoryName: subMap.get(`${tool.category}/${tool.subcategory}`) || tool.subcategory,
+          categoryName: catMap.get(tool.category) || t(`categories.${tool.category}`, tool.category),
+          subcategoryName: subMap.get(`${tool.category}/${tool.subcategory}`) || t(`subcategories.${tool.subcategory}`, tool.subcategory),
         });
       }
 
@@ -110,7 +117,7 @@ export function useToolData() {
       }
     });
 
-  const categoryDisplayName = (catId: string) => (categories ?? []).find((c) => c.id === catId)?.name || catId;
+  const categoryDisplayName = (catId: string) => (categories ?? []).find((c) => c.id === catId)?.name || t(`categories.${catId}`, catId);
 
   return {
     tools, categories, loading, error, setError,

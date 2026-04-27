@@ -11,10 +11,10 @@ use crate::definition::SubAgentDefinition;
 use crate::schemas::IMPLEMENTATION_PLAN_FULL_EXAMPLE;
 
 use super::prompts::{
-    build_adviser_prompt, build_analyzer_prompt, build_coder_prompt, build_explorer_prompt,
-    build_memorist_prompt, build_pentester_prompt, build_planner_prompt, build_reflector_prompt,
-    build_reporter_prompt, build_researcher_prompt, build_researcher_prompt_fallback,
-    build_worker_prompt, build_worker_prompt_fallback, WORKER_PROMPT_TEMPLATE,
+    WORKER_PROMPT_TEMPLATE, build_adviser_prompt, build_analyzer_prompt, build_coder_prompt,
+    build_explorer_prompt, build_installer_prompt, build_memorist_prompt, build_pentester_prompt,
+    build_planner_prompt, build_reflector_prompt, build_reporter_prompt, build_researcher_prompt,
+    build_researcher_prompt_fallback, build_worker_prompt, build_worker_prompt_fallback,
 };
 
 /// Create default sub-agents for common tasks.
@@ -85,10 +85,37 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "web_search".to_string(),
             "web_fetch".to_string(),
             "read_file".to_string(),
+            "search_knowledge_base".to_string(),
+            "read_knowledge".to_string(),
+            "write_knowledge".to_string(),
+            "ingest_cve".to_string(),
+            "save_poc".to_string(),
+            "list_cves_with_pocs".to_string(),
+            "list_unresearched_cves".to_string(),
         ])
         .with_max_iterations(25)
         .with_timeout(600)
-        .with_idle_timeout(180),
+        .with_idle_timeout(180)
+        .with_delegatable_agents(vec!["memorist".into()]),
+        SubAgentDefinition::new(
+            "installer",
+            "Installer",
+            "Tool installation and environment configuration specialist. Handles downloading, compiling, and configuring penetration testing tools. Manages Python virtual environments, Go builds, and dependency conflicts. Delegate when a tool needs to be installed or a complex environment needs setup.",
+            build_installer_prompt(),
+        )
+        .with_tools(vec![
+            "run_pty_cmd".into(),
+            "read_file".into(),
+            "write_file".into(),
+            "web_fetch".into(),
+            "list_directory".into(),
+            "list_files".into(),
+            "grep_file".into(),
+        ])
+        .with_max_iterations(30)
+        .with_timeout(600)
+        .with_idle_timeout(300)
+        .with_delegatable_agents(vec!["researcher".into(), "memorist".into()]),
         // js_harvester and js_analyzer removed — JS collection (via js_collect tool)
         // and JS security analysis (as prompt knowledge) are now integrated into pentester.
         SubAgentDefinition::new(
@@ -111,10 +138,23 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "run_pty_cmd".to_string(),
             "web_search".to_string(),
             "web_fetch".to_string(),
+            "search_knowledge_base".to_string(),
+            "read_knowledge".to_string(),
+            "write_knowledge".to_string(),
+            "ingest_cve".to_string(),
+            "save_poc".to_string(),
+            "list_cves_with_pocs".to_string(),
+            "list_unresearched_cves".to_string(),
+            "poc_stats".to_string(),
         ])
         .with_max_iterations(30)
         .with_timeout(600)
         .with_idle_timeout(180)
+        .with_delegatable_agents(vec![
+            "explorer".into(),
+            "researcher".into(),
+            "memorist".into(),
+        ])
         .with_prompt_template(WORKER_PROMPT_TEMPLATE),
         // ── New Phase 1 agents ─────────────────────────────────────────
         SubAgentDefinition::new(
@@ -141,6 +181,13 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "js_collect".to_string(),
             "pentest_list_tools".to_string(),
             "pentest_run".to_string(),
+            "graph_search".to_string(),
+            "graph_add_entity".to_string(),
+            "graph_add_relation".to_string(),
+            "graph_attack_paths".to_string(),
+            "search_exploits".to_string(),
+            "search_knowledge_base".to_string(),
+            "read_knowledge".to_string(),
         ])
         .with_max_iterations(50)
         .with_timeout(900)
@@ -150,6 +197,7 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "researcher".to_string(),
             "memorist".to_string(),
             "explorer".to_string(),
+            "installer".to_string(),
         ]),
         SubAgentDefinition::new(
             "memorist",
@@ -161,6 +209,13 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "search_memories".to_string(),
             "store_memory".to_string(),
             "list_memories".to_string(),
+            "graph_add_entity".to_string(),
+            "graph_add_relation".to_string(),
+            "graph_search".to_string(),
+            "graph_neighbors".to_string(),
+            "graph_attack_paths".to_string(),
+            "search_knowledge_base".to_string(),
+            "read_knowledge".to_string(),
         ])
         .with_max_iterations(10)
         .with_timeout(120)
@@ -196,10 +251,13 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "web_fetch".to_string(),
             "read_file".to_string(),
             "search_memories".to_string(),
+            "search_knowledge_base".to_string(),
+            "read_knowledge".to_string(),
         ])
         .with_max_iterations(15)
         .with_timeout(300)
-        .with_idle_timeout(120),
+        .with_idle_timeout(120)
+        .with_delegatable_agents(vec!["researcher".into(), "memorist".into()]),
         SubAgentDefinition::new(
             "reporter",
             "Reporter",
@@ -211,10 +269,15 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "search_memories".to_string(),
             "list_memories".to_string(),
             "write_file".to_string(),
+            "search_knowledge_base".to_string(),
+            "read_knowledge".to_string(),
+            "list_cves_with_pocs".to_string(),
+            "poc_stats".to_string(),
         ])
         .with_max_iterations(20)
         .with_timeout(600)
-        .with_idle_timeout(180),
+        .with_idle_timeout(180)
+        .with_delegatable_agents(vec!["memorist".into()]),
     ]
 }
 
@@ -226,8 +289,10 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
 pub async fn create_default_sub_agents_from_registry(
     registry: &crate::prompt_registry::PromptRegistry,
 ) -> Vec<SubAgentDefinition> {
-    let ctx = crate::prompt_registry::PromptContext::new()
-        .set("implementation_plan_example", IMPLEMENTATION_PLAN_FULL_EXAMPLE);
+    let ctx = crate::prompt_registry::PromptContext::new().set(
+        "implementation_plan_example",
+        IMPLEMENTATION_PLAN_FULL_EXAMPLE,
+    );
 
     let mut agents = Vec::new();
 
@@ -283,40 +348,141 @@ pub async fn create_default_sub_agents_from_registry(
             "Researches topics by reading documentation, searching the web, and gathering information.",
             tmpl_or_fallback!("researcher", build_researcher_prompt_fallback()),
         )
-        .with_tools(vec!["web_search".into(), "web_fetch".into(), "read_file".into()])
-        .with_max_iterations(25).with_timeout(600).with_idle_timeout(180),
+        .with_tools(vec![
+            "web_search".into(),
+            "web_fetch".into(),
+            "read_file".into(),
+            "search_knowledge_base".into(),
+            "read_knowledge".into(),
+            "write_knowledge".into(),
+            "ingest_cve".into(),
+            "save_poc".into(),
+            "list_cves_with_pocs".into(),
+            "list_unresearched_cves".into(),
+        ])
+        .with_max_iterations(25).with_timeout(600).with_idle_timeout(180)
+        .with_delegatable_agents(vec!["memorist".into()]),
     );
 
     agents.push(
         SubAgentDefinition::new(
-            "worker", "Worker",
+            "installer", "Installer",
+            "Tool installation and environment configuration specialist. Handles downloading, compiling, and configuring penetration testing tools. Manages Python virtual environments, Go builds, and dependency conflicts. Delegate when a tool needs to be installed or a complex environment needs setup.",
+            tmpl_or_fallback!("installer", build_installer_prompt()),
+        )
+        .with_tools(vec!["run_pty_cmd".into(), "read_file".into(), "write_file".into(), "web_fetch".into(), "list_directory".into(), "list_files".into(), "grep_file".into()])
+        .with_max_iterations(30).with_timeout(600).with_idle_timeout(300)
+        .with_delegatable_agents(vec!["researcher".into(), "memorist".into()]),
+    );
+
+    agents.push(
+        SubAgentDefinition::new(
+            "worker",
+            "Worker",
             "A general-purpose agent that can handle any task with access to all standard tools.",
             tmpl_or_fallback!("worker", build_worker_prompt_fallback()),
         )
-        .with_tools(vec!["read_file".into(), "write_file".into(), "create_file".into(), "edit_file".into(), "delete_file".into(), "list_files".into(), "list_directory".into(), "grep_file".into(), "ast_grep".into(), "ast_grep_replace".into(), "run_pty_cmd".into(), "web_search".into(), "web_fetch".into()])
-        .with_max_iterations(30).with_timeout(600).with_idle_timeout(180)
+        .with_tools(vec![
+            "read_file".into(),
+            "write_file".into(),
+            "create_file".into(),
+            "edit_file".into(),
+            "delete_file".into(),
+            "list_files".into(),
+            "list_directory".into(),
+            "grep_file".into(),
+            "ast_grep".into(),
+            "ast_grep_replace".into(),
+            "run_pty_cmd".into(),
+            "web_search".into(),
+            "web_fetch".into(),
+            "search_knowledge_base".into(),
+            "read_knowledge".into(),
+            "write_knowledge".into(),
+            "ingest_cve".into(),
+            "save_poc".into(),
+            "list_cves_with_pocs".into(),
+            "list_unresearched_cves".into(),
+            "poc_stats".into(),
+        ])
+        .with_max_iterations(30)
+        .with_timeout(600)
+        .with_idle_timeout(180)
+        .with_delegatable_agents(vec![
+            "explorer".into(),
+            "researcher".into(),
+            "memorist".into(),
+        ])
         .with_prompt_template(WORKER_PROMPT_TEMPLATE),
     );
 
     agents.push(
         SubAgentDefinition::new(
-            "pentester", "Pentester",
+            "pentester",
+            "Pentester",
             "Penetration testing specialist for security assessments.",
             tmpl_or_fallback!("pentester", build_pentester_prompt()),
         )
-        .with_tools(vec!["run_pty_cmd".into(), "read_file".into(), "write_file".into(), "web_fetch".into(), "web_search".into(), "list_directory".into(), "list_files".into(), "grep_file".into(), "search_memories".into(), "run_pipeline".into(), "flow_compose".into(), "manage_targets".into(), "record_finding".into(), "vault".into(), "js_collect".into(), "pentest_list_tools".into(), "pentest_run".into()])
-        .with_max_iterations(50).with_timeout(900).with_idle_timeout(300)
-        .with_delegatable_agents(vec!["coder".into(), "researcher".into(), "memorist".into(), "explorer".into()]),
+        .with_tools(vec![
+            "run_pty_cmd".into(),
+            "read_file".into(),
+            "write_file".into(),
+            "web_fetch".into(),
+            "web_search".into(),
+            "list_directory".into(),
+            "list_files".into(),
+            "grep_file".into(),
+            "search_memories".into(),
+            "run_pipeline".into(),
+            "flow_compose".into(),
+            "manage_targets".into(),
+            "record_finding".into(),
+            "vault".into(),
+            "js_collect".into(),
+            "pentest_list_tools".into(),
+            "pentest_run".into(),
+            "graph_search".into(),
+            "graph_add_entity".into(),
+            "graph_add_relation".into(),
+            "graph_attack_paths".into(),
+            "search_exploits".into(),
+            "search_knowledge_base".into(),
+            "read_knowledge".into(),
+        ])
+        .with_max_iterations(50)
+        .with_timeout(900)
+        .with_idle_timeout(300)
+        .with_delegatable_agents(vec![
+            "coder".into(),
+            "researcher".into(),
+            "memorist".into(),
+            "explorer".into(),
+            "installer".into(),
+        ]),
     );
 
     agents.push(
         SubAgentDefinition::new(
-            "memorist", "Memorist",
+            "memorist",
+            "Memorist",
             "Memory management agent for long-term knowledge persistence.",
             tmpl_or_fallback!("memorist", build_memorist_prompt()),
         )
-        .with_tools(vec!["search_memories".into(), "store_memory".into(), "list_memories".into()])
-        .with_max_iterations(10).with_timeout(120).with_idle_timeout(60),
+        .with_tools(vec![
+            "search_memories".into(),
+            "store_memory".into(),
+            "list_memories".into(),
+            "graph_add_entity".into(),
+            "graph_add_relation".into(),
+            "graph_search".into(),
+            "graph_neighbors".into(),
+            "graph_attack_paths".into(),
+            "search_knowledge_base".into(),
+            "read_knowledge".into(),
+        ])
+        .with_max_iterations(10)
+        .with_timeout(120)
+        .with_idle_timeout(60),
     );
 
     agents.push(
@@ -341,22 +507,46 @@ pub async fn create_default_sub_agents_from_registry(
 
     agents.push(
         SubAgentDefinition::new(
-            "adviser", "Adviser",
+            "adviser",
+            "Adviser",
             "Security expert consultant for complex findings.",
             tmpl_or_fallback!("adviser", build_adviser_prompt()),
         )
-        .with_tools(vec!["web_search".into(), "web_fetch".into(), "read_file".into(), "search_memories".into()])
-        .with_max_iterations(15).with_timeout(300).with_idle_timeout(120),
+        .with_tools(vec![
+            "web_search".into(),
+            "web_fetch".into(),
+            "read_file".into(),
+            "search_memories".into(),
+            "search_knowledge_base".into(),
+            "read_knowledge".into(),
+        ])
+        .with_max_iterations(15)
+        .with_timeout(300)
+        .with_idle_timeout(120)
+        .with_delegatable_agents(vec!["researcher".into(), "memorist".into()]),
     );
 
     agents.push(
         SubAgentDefinition::new(
-            "reporter", "Reporter",
+            "reporter",
+            "Reporter",
             "Generates structured security assessment reports.",
             tmpl_or_fallback!("reporter", build_reporter_prompt()),
         )
-        .with_tools(vec!["read_file".into(), "search_memories".into(), "list_memories".into(), "write_file".into()])
-        .with_max_iterations(20).with_timeout(600).with_idle_timeout(180),
+        .with_tools(vec![
+            "read_file".into(),
+            "search_memories".into(),
+            "list_memories".into(),
+            "write_file".into(),
+            "search_knowledge_base".into(),
+            "read_knowledge".into(),
+            "list_cves_with_pocs".into(),
+            "poc_stats".into(),
+        ])
+        .with_max_iterations(20)
+        .with_timeout(600)
+        .with_idle_timeout(180)
+        .with_delegatable_agents(vec!["memorist".into()]),
     );
 
     agents

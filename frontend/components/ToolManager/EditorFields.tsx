@@ -71,6 +71,14 @@ export const VALID_TIERS = ["essential", "recommended", "optional"] as const;
 export const VALID_INSTALL_METHODS = ["", "github", "homebrew", "homebrew-cask", "gem", "pip", "system", "manual"] as const;
 export const VALID_PARAM_TYPES = ["string", "number", "boolean", "file", "select"] as const;
 
+/** Returns a hint string if the version value looks non-standard. */
+function versionHint(val: string): string | null {
+  if (!val) return null;
+  const normalized = normalizeVersion(val);
+  if (normalized !== val) return `Will be normalized to "${normalized}"`;
+  return null;
+}
+
 export function FieldRow({ label, field, placeholder, mono, type = "text", options, ctx }: {
   label: string; field: string; placeholder?: string; mono?: boolean;
   type?: "text" | "select"; options?: { value: string; label: string }[];

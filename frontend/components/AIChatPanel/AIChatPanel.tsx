@@ -1,28 +1,13 @@
-import {
-  ArrowUp,
-  ChevronDown,
-  Cpu,
-  Image,
-  MessageSquare,
-  Square,
-  Users,
-  Wrench,
-  X,
-  Zap,
-} from "lucide-react";
+import { ArrowUp, Image, Square, Wrench, X } from "lucide-react";
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
-import { formatModelName, PROVIDER_GROUPS } from "@/lib/models";
+import { formatModelName } from "@/lib/models";
 import { cn } from "@/lib/utils";
+import { ExecutionModePicker } from "./ExecutionModePicker";
+import { ChatModelSelector } from "./ChatModelSelector";
+import { ContextUsageRing } from "./ContextUsageRing";
 import { type ChatMessage, useStore } from "@/store";
 import { useAiChatInit } from "./hooks/useAiChatInit";
 import { useChatSessionInit } from "./hooks/useChatSessionInit";
@@ -116,12 +101,13 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const { handleSend, handleStop } = useChatSend({
     input, setInput, isStreaming, activeConvId,
     imageAttachments, setImageAttachments,
-    textareaRef, userScrolledUpRef, streamingMsgRef,
+    textareaRef: textareaRef as React.MutableRefObject<HTMLTextAreaElement | null>, userScrolledUpRef, streamingMsgRef,
     chatExecutionModeRef: modes.chatExecutionModeRef,
     taskInProgressRef,
     initializeSession: sessionInit.initializeSession,
     buildPentestSystemPrompt: buildSystemPrompt,
-    createTerminalTab, t,
+    createTerminalTab,
+    t: ((key: string, fallback?: string) => t(key, fallback ?? key)) as (key: string, fallback?: string) => string,
   });
 
   const { handleNewChat, handleCloseTab } = useChatConversationOps(createTerminalTab);
@@ -344,89 +330,23 @@ export const AIChatPanel = memo(function AIChatPanel() {
           {/* Bottom toolbar */}
           <div className="flex items-center justify-between px-2.5 pb-2">
             <div className="flex items-center gap-1.5">
-              {/* Execution mode dropdown */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button type="button" className={cn(
-                    "flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors",
-                    modes.chatExecutionMode === "task"
-                      ? "bg-[var(--ansi-magenta)]/10 text-[var(--ansi-magenta)] hover:bg-[var(--ansi-magenta)]/20"
-                      : "bg-muted text-foreground hover:bg-[var(--bg-hover)]"
-                  )}>
-                    {modes.chatExecutionMode === "task" ? <Zap className="w-3 h-3" /> : <MessageSquare className="w-3 h-3" />}
-                    {modes.chatExecutionMode === "task" ? "Task" : "Chat"}
-                    <ChevronDown className="w-2.5 h-2.5 text-muted-foreground" />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" side="top" className="bg-card border-[var(--border-medium)] min-w-[220px]">
-                  <DropdownMenuItem onClick={() => { modes.handleExecutionModeChange("chat"); modes.handleAgentModeChange("default"); }} className={cn("text-xs cursor-pointer flex items-start gap-2 py-2.5", modes.chatExecutionMode === "chat" ? "text-accent bg-[var(--accent-dim)]" : "text-foreground hover:text-accent")}>
-                    <MessageSquare className="w-4 h-4 mt-0.5 shrink-0" />
-                    <div className="flex flex-col"><span className="font-medium">Chat</span><span className="text-[10px] text-muted-foreground">Conversational assistant with tools</span></div>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => { modes.handleExecutionModeChange("task"); modes.handleAgentModeChange("auto-approve"); }} className={cn("text-xs cursor-pointer flex items-start gap-2 py-2.5", modes.chatExecutionMode === "task" ? "text-[var(--ansi-magenta)] bg-[var(--ansi-magenta)]/10" : "text-foreground hover:text-accent")}>
-                    <Zap className="w-4 h-4 mt-0.5 shrink-0" />
-                    <div className="flex flex-col"><span className="font-medium">Task</span><span className="text-[10px] text-muted-foreground">Auto: plan → execute → refine → report</span></div>
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator className="bg-[var(--border-medium)]" />
-                  <DropdownMenuItem onSelect={(e) => { e.preventDefault(); modes.handleToggleSubAgents(); }} className="text-xs cursor-pointer flex items-center gap-2 py-2">
-                    <Users className={cn("w-4 h-4 shrink-0", modes.chatUseSubAgents ? "text-[var(--ansi-green)]" : "text-muted-foreground")} />
-                    <div className="flex flex-col flex-1"><span className="font-medium">Sub-Agents</span><span className="text-[10px] text-muted-foreground">{modes.chatUseSubAgents ? "Enabled" : "Disabled"}</span></div>
-                    <div className={cn("w-7 h-4 rounded-full transition-colors duration-200 flex items-center shrink-0", modes.chatUseSubAgents ? "bg-[var(--ansi-green)]/30 justify-end" : "bg-muted justify-start")}>
-                      <div className={cn("w-3 h-3 rounded-full mx-0.5 transition-colors duration-200", modes.chatUseSubAgents ? "bg-[var(--ansi-green)]" : "bg-muted-foreground/50")} />
-                    </div>
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-
-              {/* Model selector dropdown */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button type="button" className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-accent hover:bg-[var(--bg-hover)] transition-colors">
-                    <Cpu className="w-3 h-3" />
-                    {modelDisplay}
-                    <ChevronDown className="w-2.5 h-2.5 text-muted-foreground" />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" side="top" className="bg-card border-[var(--border-medium)] min-w-[200px] max-h-[400px] overflow-y-auto">
-                  {(() => {
-                    const filtered = PROVIDER_GROUPS.filter((g) => configuredProviders.has(g.provider));
-                    if (filtered.length === 0) {
-                      return (
-                        <div className="px-3 py-4 text-center">
-                          <p className="text-xs text-muted-foreground">{t("ai.noProviders", "No providers configured")}</p>
-                          <p className="text-[10px] text-muted-foreground/60 mt-1">{t("ai.configureInSettings", "Configure API keys in Settings → Providers")}</p>
-                        </div>
-                      );
-                    }
-                    return filtered.map((group, gi) => (
-                      <div key={group.provider}>
-                        {gi > 0 && <DropdownMenuSeparator />}
-                        <div className="px-2 py-1 text-[10px] text-muted-foreground uppercase tracking-wide">{group.providerName}</div>
-                        {group.models.map((model) => {
-                          const isSelected = currentModel === model.id && (currentProvider === group.provider || currentProvider === "anthropic_vertex");
-                          return (
-                            <DropdownMenuItem key={`${group.provider}-${model.id}-${model.reasoningEffort ?? ""}`} onClick={() => handleModelSelect(model.id, group.provider)} className={cn("text-xs cursor-pointer", isSelected ? "text-accent bg-[var(--accent-dim)]" : "text-foreground hover:text-accent")}>
-                              {model.name}
-                            </DropdownMenuItem>
-                          );
-                        })}
-                      </div>
-                    ));
-                  })()}
-                </DropdownMenuContent>
-              </DropdownMenu>
+              <ExecutionModePicker
+                chatExecutionMode={modes.chatExecutionMode}
+                chatUseSubAgents={modes.chatUseSubAgents}
+                onExecutionModeChange={modes.handleExecutionModeChange}
+                onAgentModeChange={modes.handleAgentModeChange}
+                onToggleSubAgents={modes.handleToggleSubAgents}
+              />
+              <ChatModelSelector
+                modelDisplay={modelDisplay}
+                currentModel={currentModel}
+                currentProvider={currentProvider}
+                configuredProviders={configuredProviders}
+                onModelSelect={handleModelSelect}
+              />
             </div>
             <div className="flex items-center gap-1">
-              {/* Context usage ring */}
-              <div className="relative group" title={contextUsage ? `${(contextUsage.utilization * 100).toFixed(1)}% · ${(contextUsage.totalTokens / 1000).toFixed(1)}K / ${(contextUsage.maxTokens / 1000).toFixed(0)}K context used` : "No context data"}>
-                <svg className="w-5 h-5 -rotate-90" viewBox="0 0 20 20">
-                  <circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" strokeWidth="2" className="text-muted-foreground/20" />
-                  <circle cx="10" cy="10" r="8" fill="none" strokeWidth="2" strokeLinecap="round" strokeDasharray={`${(contextUsage?.utilization ?? 0) * 50.27} 50.27`} className={cn("transition-all duration-300", !contextUsage ? "text-muted-foreground/30" : contextUsage.utilization > 0.9 ? "text-red-400" : contextUsage.utilization > 0.7 ? "text-[#e0af68]" : "text-accent")} stroke="currentColor" />
-                </svg>
-                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 rounded bg-popover border border-border/30 text-[10px] text-popover-foreground whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
-                  {contextUsage ? `${(contextUsage.utilization * 100).toFixed(1)}% · ${(contextUsage.totalTokens / 1000).toFixed(1)}K / ${(contextUsage.maxTokens / 1000).toFixed(0)}K context used` : "Context usage unavailable"}
-                </div>
-              </div>
+              <ContextUsageRing contextUsage={contextUsage} />
               <button type="button" title={t("ai.uploadImage")} className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors" onClick={() => fileInputRef.current?.click()}>
                 <Image className="w-3.5 h-3.5" />
               </button>

@@ -1,13 +1,9 @@
 import { memo, useMemo } from "react";
-import { FileCommandPopup } from "@/components/FileCommandPopup";
-import { HistorySearchPopup } from "@/components/HistorySearchPopup";
-import { PathCompletionPopup } from "@/components/PathCompletionPopup";
-import { SlashCommandPopup } from "@/components/SlashCommandPopup";
-import { ToolSearchPopup } from "@/components/ToolSearchPopup/ToolSearchPopup";
 import { cn } from "@/lib/utils";
 import { BlockCaret } from "./BlockCaret";
 import { ContextBar } from "./ContextBar";
 import { InputBadges, SendButton, ToolParamsPanel } from "./InputToolbar";
+import { InputPopups } from "./InputPopups";
 import { useInputKeyboard } from "./useInputKeyboard";
 import { useInputState } from "./useUnifiedInputState";
 
@@ -179,47 +175,35 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
                 <GhostTextHint text={ghostText} inputLength={input.length} />
               )}
 
-              <HistorySearchPopup
-                open={showHistorySearch}
-                onOpenChange={setShowHistorySearch}
-                matches={historyMatches}
-                selectedIndex={historySelectedIndex}
-                searchQuery={historySearchQuery}
-                onSelect={handleHistorySelect}
+              <InputPopups
                 containerRef={inputContainerRef}
-              />
-              <PathCompletionPopup
-                open={showPathPopup}
-                onOpenChange={setShowPathPopup}
-                completions={pathCompletions}
-                totalCount={pathTotalCount}
-                selectedIndex={pathSelectedIndex}
-                onSelect={handlePathSelect}
-                containerRef={inputContainerRef}
-              />
-              <SlashCommandPopup
-                open={showSlashPopup}
-                onOpenChange={setShowSlashPopup}
-                commands={filteredSlashCommands}
-                selectedIndex={slashSelectedIndex}
-                onSelect={handleSlashSelect}
-                containerRef={inputContainerRef}
-              />
-              <FileCommandPopup
-                open={showFilePopup}
-                onOpenChange={setShowFilePopup}
+                showHistorySearch={showHistorySearch}
+                setShowHistorySearch={setShowHistorySearch}
+                historyMatches={historyMatches}
+                historySelectedIndex={historySelectedIndex}
+                historySearchQuery={historySearchQuery}
+                onHistorySelect={handleHistorySelect}
+                showPathPopup={showPathPopup}
+                setShowPathPopup={setShowPathPopup}
+                pathCompletions={pathCompletions}
+                pathTotalCount={pathTotalCount}
+                pathSelectedIndex={pathSelectedIndex}
+                onPathSelect={handlePathSelect}
+                showSlashPopup={showSlashPopup}
+                setShowSlashPopup={setShowSlashPopup}
+                filteredSlashCommands={filteredSlashCommands}
+                slashSelectedIndex={slashSelectedIndex}
+                onSlashSelect={handleSlashSelect}
+                showFilePopup={showFilePopup}
+                setShowFilePopup={setShowFilePopup}
                 files={files}
-                selectedIndex={fileSelectedIndex}
-                onSelect={handleFileSelect}
-                containerRef={inputContainerRef}
-              />
-              <ToolSearchPopup
-                open={showToolPopup && toolMatches.length > 0}
-                onOpenChange={setShowToolPopup}
-                tools={toolMatches}
-                selectedIndex={toolSelectedIndex}
-                onSelect={handleToolSelect}
-                containerRef={inputContainerRef}
+                fileSelectedIndex={fileSelectedIndex}
+                onFileSelect={handleFileSelect}
+                showToolPopup={showToolPopup}
+                setShowToolPopup={setShowToolPopup}
+                toolMatches={toolMatches}
+                toolSelectedIndex={toolSelectedIndex}
+                onToolSelect={handleToolSelect}
               />
             </div>
 

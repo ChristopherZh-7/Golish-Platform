@@ -151,5 +151,14 @@ export {
   type HitlState,
 } from "./hitl";
 
+// Dialog slice
+export {
+  createDialogSlice,
+  initialDialogState,
+  type DialogActions,
+  type DialogSlice,
+  type DialogState,
+} from "./dialog";
+
 // Types
 export type { ImmerSet, SliceCreator, StateGet } from "./types";

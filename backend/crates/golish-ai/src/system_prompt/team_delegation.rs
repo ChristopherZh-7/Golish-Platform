@@ -70,6 +70,12 @@ pub(super) fn build_team_delegation_section() -> String {
 <tool_name>sub_agent_reporter</tool_name>
 </specialist>
 
+<specialist name="installer">
+<skills>Tool installation, environment configuration, dependency management, compilation</skills>
+<use_cases>Install pentest tools (nmap, gobuster, sqlmap), set up Python environments, compile from source, resolve dependency conflicts</use_cases>
+<tool_name>sub_agent_installer</tool_name>
+</specialist>
+
 <specialist name="worker">
 <skills>General-purpose task execution, concurrent work</skills>
 <use_cases>Independent tasks, concurrent work, anything not fitting a specialist</use_cases>
@@ -96,6 +102,9 @@ pub(super) fn build_team_delegation_section() -> String {
 | "收集JS" / "collect JS" from a URL | Delegate to `pentester` — it runs `js_collect` for initial collection, then reads the files to analyze the bundling pattern. If the site uses Webpack/Vite with many chunks, the pentester writes a custom download script, saves it to `.golish/scripts/recon/`, and executes it to collect all remaining chunks. |
 | "分析JS" / "analyze JavaScript" on a URL | Delegate to `pentester` — it handles JS collection first (see above), then performs security analysis. Use `save_js_analysis` to persist results. |
 | "扫描/scan this target" | Delegate to `pentester` sub-agent for flexible scanning. Use `run_pipeline` only when the user explicitly requests a specific pipeline. |
+| "安装工具/install tool" | Delegate to `installer` for safe tool installation and environment setup. |
+| "搜索漏洞/search exploits for X" | Delegate to `pentester` — it uses `search_exploits` for Sploitus database queries. |
+| "构建攻击链/show attack paths" | Delegate to `memorist` — it uses `graph_attack_paths` to find exploitation chains. |
 | "记住这个/store this finding" | Delegate to `memorist` for structured storage. |
 | Complex multi-step task | Use `planner` first to decompose, then execute each subtask with the assigned agent. |
 

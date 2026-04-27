@@ -121,52 +121,79 @@ pub fn primary_agent_subtask_prompt(
     primary_agent_subtask_prompt_with_agent(subtask_title, subtask_description, execution_context, None)
 }
 
-/// Primary agent prompt with optional agent-type specialization.
+/// Primary agent prompt with optional agent-type hint.
+///
+/// The Primary agent acts as a pure orchestrator (PentAGI-style): it delegates
+/// work to specialist sub-agents via `sub_agent_*` tools and synthesizes their
+/// results. The `agent_type` from Generator is a hint, not a hard constraint.
 pub fn primary_agent_subtask_prompt_with_agent(
     subtask_title: &str,
     subtask_description: &str,
     execution_context: &str,
     agent_type: Option<&str>,
 ) -> String {
-    let role_guidance = agent_type_guidance(agent_type.unwrap_or("primary"));
+    let specialist_hint = match agent_type {
+        Some("primary") | None => String::new(),
+        Some(at) => format!(
+            "\n**Suggested specialist**: `sub_agent_{at}` — prioritize calling this agent, \
+             but use your judgment if a different specialist would be more effective.\n"
+        ),
+    };
 
     format!(
-        r#"## CURRENT SUBTASK
+        r#"## TASK MODE — SUBTASK EXECUTION
 
-You are executing a specific subtask as part of a larger automated task.
-{role_guidance}
-### Subtask: {title}
+You are the **Primary orchestrator** executing a subtask as part of a larger automated task.
+
+### YOUR ROLE
+
+You are a COORDINATOR. You delegate work to specialist sub-agents and synthesize their results.
+You have access to sub_agent_* tools to invoke specialists — use them.
+{specialist_hint}
+### Current Subtask: {title}
+
 {description}
 
 ### Previous Results
+
 {context}
 
-## MANDATORY EXECUTION RULES
+### AVAILABLE SPECIALISTS
 
-1. You MUST use tools to execute this subtask. Describing what you would do is NOT acceptable.
-2. Focus ONLY on completing this specific subtask — do not attempt the entire parent task.
-3. After executing tools, provide a structured report of actual results.
-4. If a tool fails, try an alternative approach before giving up.
-5. If you encounter blockers, document them with specific error messages.
+Call these via their `sub_agent_*` tools:
+- `sub_agent_pentester` — security scanning, exploitation, vulnerability assessment
+- `sub_agent_coder` — code editing, script generation, diff application
+- `sub_agent_researcher` — web research, documentation lookup, CVE investigation
+- `sub_agent_memorist` — store/retrieve findings from long-term memory
+- `sub_agent_installer` — install and configure penetration testing tools
+- `sub_agent_adviser` — expert security consulting and risk assessment
+- `sub_agent_explorer` — fast file search and codebase navigation
+- `sub_agent_analyzer` — deep code analysis and architecture review
+- `sub_agent_reporter` — generate structured security reports
 
-## EXECUTION CHECKLIST
+### WORKFLOW
 
-Before finishing, verify:
-- [ ] You executed at least one tool (run_pty_cmd, web_fetch, etc.)
-- [ ] You have concrete results (scan output, HTTP responses, file contents, etc.)
-- [ ] Your findings are based on actual evidence, not assumptions
+1. Analyze the subtask requirements
+2. Delegate to the appropriate specialist(s) — you may call multiple agents sequentially
+3. After each agent returns, decide if more work is needed
+4. Synthesize results into a coherent summary
 
-## OUTPUT FORMAT
+### RULES
 
-After completing tool execution, provide a structured summary:
+1. **DELEGATE** — always use sub_agent_* tools. Do not try to run shell commands or edit files directly.
+2. **MULTI-AGENT** — you may call multiple agents for one subtask (e.g., pentester → memorist to store findings).
+3. **FOCUS** — complete only this specific subtask, not the entire parent task.
+4. **EVIDENCE** — include concrete findings and evidence in your summary.
 
-**Actions Taken**: List each tool you called and why
-**Findings**: Concrete results with evidence (IP addresses, open ports, service versions, etc.)
-**Artifacts**: Any files created or saved (paths)
-**Blockers**: Any issues that prevented progress (with error details)
-**Next Steps**: Recommendations for subsequent subtasks based on your findings
+### OUTPUT FORMAT
+
+After all specialists complete, provide:
+
+**Actions Taken**: Which agents you called and why
+**Findings**: Key results with evidence
+**Next Steps**: Recommendations for subsequent subtasks
 "#,
-        role_guidance = role_guidance,
+        specialist_hint = specialist_hint,
         title = subtask_title,
         description = subtask_description,
         context = if execution_context.is_empty() {
@@ -175,43 +202,6 @@ After completing tool execution, provide a structured summary:
             execution_context.to_string()
         },
     )
-}
-
-/// Return agent-type-specific role guidance for the subtask prompt.
-fn agent_type_guidance(agent_type: &str) -> &'static str {
-    match agent_type {
-        "pentester" => r#"
-### YOUR ROLE: Penetration Tester
-You are a specialist in security scanning, vulnerability discovery, and exploitation.
-- Use tools like nmap, naabu, httpx, nuclei, subfinder, katana for reconnaissance
-- Always verify service types before assuming (use fingerprinting)
-- Store successful methodologies using save_guide for future reuse
-- Log all findings using record_finding and log_scan_result
-"#,
-        "coder" => r#"
-### YOUR ROLE: Security Coder
-You are a specialist in writing security tools, exploits, and automation scripts.
-- Write clean, functional code that handles errors gracefully
-- Save scripts to .golish/scripts/ directory
-- Test scripts after writing them
-- Save reusable code snippets using save_code
-"#,
-        "researcher" | "searcher" => r#"
-### YOUR ROLE: Security Researcher
-You are a specialist in information gathering, OSINT, and documentation lookup.
-- Use web_search and web_fetch for external research
-- Search for CVEs, exploits, and vulnerability databases relevant to discovered services
-- Provide detailed technical references for findings
-"#,
-        "analyzer" => r#"
-### YOUR ROLE: Code/Architecture Analyzer
-You are a specialist in reviewing code, analyzing architecture, and identifying security patterns.
-- Use read_file, grep_file, ast_grep for thorough code analysis
-- Focus on security-relevant patterns: input validation, authentication, authorization
-- Document findings with specific file paths and line numbers
-"#,
-        _ => "",
-    }
 }
 
 /// Refiner prompt — evaluates progress and adjusts the remaining plan.

@@ -126,7 +126,7 @@ export function svgUri(svg: string) {
 
 // ── Cytoscape style definitions ──
 
-function getCytoscapeStyles(): cytoscape.Stylesheet[] {
+function getCytoscapeStyles() {
   const typeStyles = Object.entries(TYPE_ICON_SVG).map(([type, svg]) => ({
     selector: `node[nodeType='${type}']`,
     style: {
@@ -141,7 +141,7 @@ function getCytoscapeStyles(): cytoscape.Stylesheet[] {
         label: "data(label)",
         color: "#94a3b8",
         "font-size": "10px",
-        "font-weight": "500" as any,
+        "font-weight": "500",
         "text-valign": "bottom",
         "text-halign": "center",
         "text-margin-y": 6,
@@ -158,16 +158,16 @@ function getCytoscapeStyles(): cytoscape.Stylesheet[] {
         shape: "ellipse",
         width: 34,
         height: 34,
-      },
+      } as unknown as cytoscape.Css.Node,
     },
     ...typeStyles,
     {
       selector: "node[nodeType='domain-group']",
-      style: { width: 38, height: 38 },
+      style: { width: 38, height: 38 } as cytoscape.Css.Node,
     },
     {
       selector: "node[scope='out']",
-      style: { opacity: 0.35, color: "#475569" },
+      style: { opacity: 0.35, color: "#475569" } as cytoscape.Css.Node,
     },
     {
       selector: "edge",
@@ -179,15 +179,15 @@ function getCytoscapeStyles(): cytoscape.Stylesheet[] {
         "arrow-scale": 0.6,
         "curve-style": "bezier",
         opacity: 0.5,
-      },
+      } as cytoscape.Css.Edge,
     },
     {
       selector: "node:active",
-      style: { "overlay-color": "#6366f1", "overlay-opacity": 0.12 },
+      style: { "overlay-color": "#6366f1", "overlay-opacity": 0.12 } as cytoscape.Css.Node,
     },
     {
       selector: ":selected",
-      style: { "overlay-color": "#f59e0b", "overlay-opacity": 0.2 },
+      style: { "overlay-color": "#f59e0b", "overlay-opacity": 0.2 } as cytoscape.Css.Node,
     },
   ];
 }

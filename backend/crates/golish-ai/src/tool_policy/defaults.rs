@@ -62,6 +62,12 @@ const ALLOW_TOOLS_TYPED: &[ToolName] = &[
     ToolName::IndexerDetectLanguage,
     ToolName::UpdatePlan,
     ToolName::AstGrep,
+    // Graph knowledge base (read-only)
+    ToolName::GraphSearch,
+    ToolName::GraphNeighbors,
+    ToolName::GraphAttackPaths,
+    // Vulnerability database (read-only)
+    ToolName::SearchExploits,
 ];
 
 /// Additional allowed tools without enum variants (dynamic/plugin tools).
@@ -97,6 +103,10 @@ pub const ALLOW_TOOLS: &[&str] = &[
     "load_skill",
     "search_tools",
     "ast_grep",
+    "graph_search",
+    "graph_neighbors",
+    "graph_attack_paths",
+    "search_exploits",
 ];
 
 /// Type-safe list of prompt tools that have enum variants.
@@ -108,6 +118,9 @@ const PROMPT_TOOLS_TYPED: &[ToolName] = &[
     ToolName::RunPtyCmd,
     ToolName::RunCommand,
     ToolName::AstGrepReplace,
+    // Graph knowledge base (mutating)
+    ToolName::GraphAddEntity,
+    ToolName::GraphAddRelation,
 ];
 
 /// Additional prompt tools without enum variants.
@@ -131,6 +144,8 @@ const PROMPT_TOOLS: &[&str] = &[
     "create_pty_session",
     "send_pty_input",
     "ast_grep_replace",
+    "graph_add_entity",
+    "graph_add_relation",
 ];
 
 /// Type-safe list of denied tools that have enum variants.

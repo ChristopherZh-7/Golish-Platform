@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
 import { AppShell, type AppShellProps } from "./App/AppShell";
 import { useAppRouting } from "./App/hooks/useAppRouting";
 import { useGlobalShortcuts } from "./App/hooks/useGlobalShortcuts";
@@ -31,14 +31,21 @@ export function App() {
   const { createTerminalTab } = useCreateTerminalTab();
   const { handleSplitPane, handleClosePane, handleNavigatePane } = usePaneControls(activeSessionId);
 
-  // Local UI dialog state
-  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
-  const [quickOpenDialogOpen, setQuickOpenDialogOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState("environment");
-  const [bottomTerminalOpen, setBottomTerminalOpen] = useState(true);
-  const [shortcutsHelpOpen, setShortcutsHelpOpen] = useState(false);
-  const [recordingsPanelOpen, setRecordingsPanelOpen] = useState(false);
+  // Dialog state from store (was local useState, now centralized)
+  const commandPaletteOpen = useStore((s) => s.commandPaletteOpen);
+  const setCommandPaletteOpen = useStore((s) => s.setCommandPaletteOpen);
+  const quickOpenDialogOpen = useStore((s) => s.quickOpenDialogOpen);
+  const setQuickOpenDialogOpen = useStore((s) => s.setQuickOpenDialogOpen);
+  const settingsOpen = useStore((s) => s.settingsDialogOpen);
+  const setSettingsOpen = useStore((s) => s.setSettingsDialogOpen);
+  const settingsSection = useStore((s) => s.settingsSection);
+  const setSettingsSection = useStore((s) => s.setSettingsSection);
+  const bottomTerminalOpen = useStore((s) => s.bottomTerminalOpen);
+  const setBottomTerminalOpen = useStore((s) => s.setBottomTerminalOpen);
+  const shortcutsHelpOpen = useStore((s) => s.shortcutsHelpOpen);
+  const setShortcutsHelpOpen = useStore((s) => s.setShortcutsHelpOpen);
+  const recordingsPanelOpen = useStore((s) => s.recordingsPanelOpen);
+  const setRecordingsPanelOpen = useStore((s) => s.setRecordingsPanelOpen);
 
   // Right split column state + handlers
   const rightSplit = useLayoutManager();
@@ -97,7 +104,7 @@ export function App() {
           return;
         }
       }
-      setBottomTerminalOpen((v) => !v);
+      useStore.getState().toggleBottomTerminal();
     },
     focusAiChat: () => {
       setActivityView(null);
@@ -197,7 +204,6 @@ export function App() {
     setShowMergeDropZone: rightSplit.setShowMergeDropZone,
     splitDragGhost: rightSplit.splitDragGhost,
     setSplitDragGhost: rightSplit.setSplitDragGhost,
-    splitDragRef: rightSplit.splitDragRef,
     closeRightTab: rightSplit.closeRightTab,
     handlePanelResizeStart: rightSplit.handlePanelResizeStart,
     handleNewTab,

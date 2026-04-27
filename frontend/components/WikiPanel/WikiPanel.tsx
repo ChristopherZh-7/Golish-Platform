@@ -676,7 +676,7 @@ export function WikiPanel({ initialPath }: { initialPath?: string | null }) {
         </div>
 
         {/* Right: editor / preview */}
-        <div className="flex-1 min-w-0 flex flex-col">
+        <div className="flex-1 min-w-0 min-h-0 flex flex-col">
           {activePath ? (
             <>
               <div className="flex items-center justify-between px-4 py-2 border-b border-border/8 flex-shrink-0">

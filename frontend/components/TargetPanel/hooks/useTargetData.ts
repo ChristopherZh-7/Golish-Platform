@@ -17,7 +17,7 @@ interface AddForm {
   tags: string;
 }
 
-const EMPTY_ADD_FORM: AddForm = { name: "", value: "", notes: "", tags: "" };
+
 
 export function useTargetData() {
   const currentProjectPath = useStore((s) => s.currentProjectPath);
