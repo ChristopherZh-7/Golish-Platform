@@ -114,7 +114,7 @@ export function useFileWatcher() {
     });
 
     return () => {
-      unlisten.then((fn) => fn());
+      runTauriUnlistenFromPromise(unlisten);
     };
   }, []);
 }

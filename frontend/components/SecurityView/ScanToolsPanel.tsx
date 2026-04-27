@@ -8,6 +8,7 @@ import { formatDurationShort } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import { getProjectPath } from "@/lib/projects";
 import { useStore } from "@/store";
 import {
@@ -569,7 +570,7 @@ function ScanTimeline({ targetId, targetValue }: { targetId: string; targetValue
 
   useEffect(() => {
     const unlistenTargets = listen("targets-changed", () => loadLogs());
-    return () => { unlistenTargets.then((fn) => fn()); };
+    return () => { runTauriUnlistenFromPromise(unlistenTargets); };
   }, [loadLogs]);
 
   if (loading) {

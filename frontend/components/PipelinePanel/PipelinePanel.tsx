@@ -11,6 +11,7 @@ import { getProjectPath } from "@/lib/projects";
 import { scanTools } from "@/lib/pentest/api";
 import type { ToolConfig } from "@/lib/pentest/types";
 import { checkReconTools, type ReconToolCheck } from "@/lib/ai";
+import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import { useStore } from "@/store";
 import { MiniDropdown } from "@/components/ui/MiniDropdown";
 import {
@@ -594,7 +595,7 @@ export function PipelinePanel() {
         if (p.step_index + 1 >= p.total_steps) { setAiRunning(false); setAiProgress(null); }
       }
     });
-    return () => { ul.then((f) => f()); };
+    return () => { runTauriUnlistenFromPromise(ul); };
   }, []);
 
   if (loading) return <div className="flex-1 flex items-center justify-center"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground/30" /></div>;

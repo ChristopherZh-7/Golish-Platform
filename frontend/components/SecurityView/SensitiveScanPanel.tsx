@@ -5,6 +5,7 @@ import {
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import { useStore } from "@/store";
 import { StyledSelect } from "./shared";
 
@@ -51,7 +52,7 @@ export function SensitiveScanPanel() {
         }).catch(() => {});
       }
     });
-    return () => { unlisten.then((fn) => fn()); };
+    return () => { runTauriUnlistenFromPromise(unlisten); };
   }, [projectPath]);
 
   const handleStart = useCallback(async () => {
