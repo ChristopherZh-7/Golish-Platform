@@ -45,7 +45,7 @@ where
     }
 
     if tool_name == "update_plan" {
-        let (value, success) = execute_plan_tool(ctx.plan_manager, ctx.event_tx, tool_args).await;
+        let (value, success) = execute_plan_tool(ctx.plan_manager, ctx.events.event_tx, tool_args).await;
         return Ok(ToolExecutionResult { value, success });
     }
 
@@ -55,7 +55,7 @@ where
         | "search_code" | "save_code" | "search_guide" | "save_guide"
     ) {
         if let Some((value, success)) =
-            crate::tool_executors::execute_memory_tool(tool_name, tool_args, ctx.db_tracker).await
+            crate::tool_executors::execute_memory_tool(tool_name, tool_args, ctx.events.db_tracker).await
         {
             return Ok(ToolExecutionResult { value, success });
         }
@@ -70,7 +70,7 @@ where
             | "save_poc"
     ) {
         if let Some((value, success)) =
-            crate::tool_executors::execute_knowledge_base_tool(tool_name, tool_args, ctx.db_tracker)
+            crate::tool_executors::execute_knowledge_base_tool(tool_name, tool_args, ctx.events.db_tracker)
                 .await
         {
             return Ok(ToolExecutionResult { value, success });
@@ -92,9 +92,9 @@ where
         if let Some((value, success)) = crate::tool_executors::execute_security_analysis_tool(
             tool_name,
             tool_args,
-            ctx.db_tracker,
+            ctx.events.db_tracker,
             Some(project_path_str.as_str()),
-            ctx.session_id,
+            ctx.events.session_id,
         )
         .await
         {
@@ -105,9 +105,9 @@ where
     if tool_name == "ask_human" {
         let (value, success) = execute_ask_human_tool(
             tool_args,
-            ctx.event_tx,
-            ctx.coordinator,
-            ctx.pending_approvals,
+            ctx.events.event_tx,
+            ctx.access.coordinator,
+            ctx.access.pending_approvals,
         )
         .await;
         return Ok(ToolExecutionResult { value, success });
@@ -139,7 +139,7 @@ where
             let is_success = is_tool_result_success(v);
 
             if effective_tool_name == "run_pty_cmd" && is_success {
-                if let Some(tracker) = ctx.db_tracker {
+                if let Some(tracker) = ctx.events.db_tracker {
                     let pool = tracker.pool_arc().clone();
                     let stdout = v.get("stdout").and_then(|s| s.as_str()).unwrap_or("").to_string();
                     let command = tool_args.get("command").and_then(|c| c.as_str()).unwrap_or("").to_string();
@@ -193,16 +193,16 @@ where
     };
     drop(registry);
 
-    let tool_provider = DefaultToolProvider::with_db_tracker(ctx.db_tracker);
+    let tool_provider = DefaultToolProvider::with_db_tracker(ctx.events.db_tracker);
 
     let task_desc = tool_args
         .get("task")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let briefing = build_sub_agent_briefing(ctx.db_tracker, agent_id, task_desc).await;
+    let briefing = build_sub_agent_briefing(ctx.events.db_tracker, agent_id, task_desc).await;
 
     let result = if let Some((override_provider, override_model)) = &agent_def.model_override {
-        let override_client = if let Some(factory) = ctx.model_factory {
+        let override_client = if let Some(factory) = ctx.llm.model_factory {
             match factory
                 .get_or_create(override_provider, override_model)
                 .await
@@ -232,19 +232,19 @@ where
                 override_model
             );
             let sub_ctx = SubAgentExecutorContext {
-                event_tx: ctx.event_tx,
+                event_tx: ctx.events.event_tx,
                 tool_registry: ctx.tool_registry,
                 workspace: ctx.workspace,
                 provider_name: override_provider,
                 model_name: override_model,
-                session_id: ctx.session_id,
-                transcript_base_dir: ctx.transcript_base_dir,
+                session_id: ctx.events.session_id,
+                transcript_base_dir: ctx.events.transcript_base_dir,
                 api_request_stats: Some(ctx.api_request_stats),
                 briefing: briefing.clone(),
                 temperature_override: agent_def.temperature,
                 max_tokens_override: agent_def.max_tokens,
                 top_p_override: agent_def.top_p,
-                db_pool: ctx.db_tracker.map(|t| t.pool_arc()),
+                db_pool: ctx.events.db_tracker.map(|t| t.pool_arc()),
                 sub_agent_registry: Some(ctx.sub_agent_registry),
                 post_shell_hook: crate::pentest_hook::make_post_shell_hook(),
             };
@@ -262,23 +262,23 @@ where
             tracing::info!(
                 "[sub-agent:{}] Executing with main model (override failed): provider={}, model={}",
                 agent_id,
-                ctx.provider_name,
-                ctx.model_name
+                ctx.llm.provider_name,
+                ctx.llm.model_name
             );
             let sub_ctx = SubAgentExecutorContext {
-                event_tx: ctx.event_tx,
+                event_tx: ctx.events.event_tx,
                 tool_registry: ctx.tool_registry,
                 workspace: ctx.workspace,
-                provider_name: ctx.provider_name,
-                model_name: ctx.model_name,
-                session_id: ctx.session_id,
-                transcript_base_dir: ctx.transcript_base_dir,
+                provider_name: ctx.llm.provider_name,
+                model_name: ctx.llm.model_name,
+                session_id: ctx.events.session_id,
+                transcript_base_dir: ctx.events.transcript_base_dir,
                 api_request_stats: Some(ctx.api_request_stats),
                 briefing: briefing.clone(),
                 temperature_override: agent_def.temperature,
                 max_tokens_override: agent_def.max_tokens,
                 top_p_override: agent_def.top_p,
-                db_pool: ctx.db_tracker.map(|t| t.pool_arc()),
+                db_pool: ctx.events.db_tracker.map(|t| t.pool_arc()),
                 sub_agent_registry: Some(ctx.sub_agent_registry),
                 post_shell_hook: crate::pentest_hook::make_post_shell_hook(),
             };
@@ -297,23 +297,23 @@ where
         tracing::info!(
             "[sub-agent:{}] Executing with main model (no override): provider={}, model={}",
             agent_id,
-            ctx.provider_name,
-            ctx.model_name
+            ctx.llm.provider_name,
+            ctx.llm.model_name
         );
         let sub_ctx = SubAgentExecutorContext {
-            event_tx: ctx.event_tx,
+            event_tx: ctx.events.event_tx,
             tool_registry: ctx.tool_registry,
             workspace: ctx.workspace,
-            provider_name: ctx.provider_name,
-            model_name: ctx.model_name,
-            session_id: ctx.session_id,
-            transcript_base_dir: ctx.transcript_base_dir,
+            provider_name: ctx.llm.provider_name,
+            model_name: ctx.llm.model_name,
+            session_id: ctx.events.session_id,
+            transcript_base_dir: ctx.events.transcript_base_dir,
             api_request_stats: Some(ctx.api_request_stats),
             briefing,
             temperature_override: agent_def.temperature,
             max_tokens_override: agent_def.max_tokens,
             top_p_override: agent_def.top_p,
-            db_pool: ctx.db_tracker.map(|t| t.pool_arc()),
+            db_pool: ctx.events.db_tracker.map(|t| t.pool_arc()),
             sub_agent_registry: Some(ctx.sub_agent_registry),
             post_shell_hook: crate::pentest_hook::make_post_shell_hook(),
         };
@@ -331,7 +331,7 @@ where
 
     match result {
         Ok(result) => {
-            if let Some(tracker) = ctx.db_tracker {
+            if let Some(tracker) = ctx.events.db_tracker {
                 let result_preview = truncate_str(&result.response, 500);
                 tracker.record_agent_call(
                     "primary",
@@ -389,7 +389,7 @@ pub(crate) async fn execute_shell_command_streaming(
     let shell_override: Option<String> = None;
     let (chunk_tx, mut chunk_rx) = mpsc::channel::<OutputChunk>(100);
 
-    let event_tx = ctx.event_tx.clone();
+    let event_tx = ctx.events.event_tx.clone();
     let request_id = tool_id.to_string();
 
     let chunk_forwarder = tokio::spawn(async move {

@@ -104,7 +104,7 @@ where
         if is_cancelled(ctx) {
             tracing::info!("Agent cancelled during stream processing (chunk {})", chunk_count);
             drop(stream);
-            let _ = ctx.event_tx.send(AiEvent::Error {
+            let _ = ctx.events.event_tx.send(AiEvent::Error {
                 message: "Agent stopped by user".to_string(),
                 error_type: "cancelled".to_string(),
             });
@@ -186,7 +186,7 @@ where
                         // Regular text content
                         text_content.push_str(&text_msg.text);
                         accumulated_response.push_str(&text_msg.text);
-                        let _ = ctx.event_tx.send(AiEvent::TextDelta {
+                        let _ = ctx.events.event_tx.send(AiEvent::TextDelta {
                             delta: text_msg.text,
                             accumulated: accumulated_response.clone(),
                         });
@@ -409,7 +409,7 @@ where
     {
         if let Some(ref err_msg) = last_stream_chunk_error {
             let classification = classify_stream_start_error(err_msg);
-            let _ = ctx.event_tx.send(AiEvent::Error {
+            let _ = ctx.events.event_tx.send(AiEvent::Error {
                 message: classification.user_message.clone(),
                 error_type: classification.error_type.to_string(),
             });

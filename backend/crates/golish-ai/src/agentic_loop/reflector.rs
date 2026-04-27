@@ -100,21 +100,21 @@ pub(super) async fn maybe_run_reflector(
 
     let correction = {
         use crate::tool_provider_impl::DefaultToolProvider;
-        let tool_provider = DefaultToolProvider::with_db_tracker(ctx.db_tracker);
+        let tool_provider = DefaultToolProvider::with_db_tracker(ctx.events.db_tracker);
         let sub_ctx = golish_sub_agents::SubAgentExecutorContext {
-            event_tx: ctx.event_tx,
+            event_tx: ctx.events.event_tx,
             tool_registry: ctx.tool_registry,
             workspace: ctx.workspace,
-            provider_name: ctx.provider_name,
-            model_name: ctx.model_name,
-            session_id: ctx.session_id,
-            transcript_base_dir: ctx.transcript_base_dir,
+            provider_name: ctx.llm.provider_name,
+            model_name: ctx.llm.model_name,
+            session_id: ctx.events.session_id,
+            transcript_base_dir: ctx.events.transcript_base_dir,
             api_request_stats: Some(ctx.api_request_stats),
             briefing: None,
             temperature_override: reflector_def.temperature,
             max_tokens_override: reflector_def.max_tokens,
             top_p_override: reflector_def.top_p,
-            db_pool: ctx.db_tracker.map(|t| t.pool_arc()),
+            db_pool: ctx.events.db_tracker.map(|t| t.pool_arc()),
             sub_agent_registry: Some(ctx.sub_agent_registry),
             post_shell_hook: None,
         };
@@ -123,7 +123,7 @@ pub(super) async fn maybe_run_reflector(
             &reflector_def,
             &reflector_args,
             sub_agent_context,
-            &*ctx.client.read().await,
+            &*ctx.llm.client.read().await,
             sub_ctx,
             &tool_provider,
             "reflector",

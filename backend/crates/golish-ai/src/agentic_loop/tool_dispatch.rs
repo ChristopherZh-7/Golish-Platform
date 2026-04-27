@@ -134,7 +134,7 @@ pub(super) async fn dispatch_tool_calls<M>(
             "Injecting system hooks into tool results message"
         );
 
-        let _ = ctx.event_tx.send(AiEvent::SystemHooksInjected {
+        let _ = ctx.events.event_tx.send(AiEvent::SystemHooksInjected {
             hooks: system_hooks.clone(),
         });
 
@@ -143,7 +143,7 @@ pub(super) async fn dispatch_tool_calls<M>(
             "system_hooks_injected",
             "langfuse.observation.type" = "event",
             "langfuse.observation.level" = "DEFAULT",
-            "langfuse.session.id" = ctx.session_id.unwrap_or(""),
+            "langfuse.session.id" = ctx.events.session_id.unwrap_or(""),
             hook_count = system_hooks.len(),
             "langfuse.observation.input" = %formatted_hooks,
         );

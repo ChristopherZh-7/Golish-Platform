@@ -4,7 +4,7 @@
 //! When the tool policy says `Allow`, runs immediately. When it says
 //! `Prompt`, emits a `ToolApprovalRequest` event and blocks on a
 //! `oneshot::Receiver<ApprovalDecision>` registered in
-//! `ctx.pending_approvals` (or via the coordinator). Honours
+//! `ctx.access.pending_approvals` (or via the coordinator). Honours
 //! `APPROVAL_TIMEOUT_SECS` to avoid hanging forever, and applies
 //! `PolicyConstraintResult` arg modifications inline.
 
@@ -44,10 +44,10 @@ where
         source: golish_core::events::ToolSource::Main,
     });
 
-    let agent_mode = *ctx.agent_mode.read().await;
+    let agent_mode = *ctx.access.agent_mode.read().await;
 
     let is_auto_approve =
-        agent_mode.is_auto_approve() || ctx.runtime.is_some_and(|r| r.auto_approve());
+        agent_mode.is_auto_approve() || ctx.events.runtime.is_some_and(|r| r.auto_approve());
 
     // Planning mode: only allow read-only tools
     if agent_mode.is_planning() {
@@ -72,7 +72,7 @@ where
         }
     }
 
-    if !is_auto_approve && ctx.tool_policy_manager.is_denied(tool_name).await {
+    if !is_auto_approve && ctx.access.tool_policy_manager.is_denied(tool_name).await {
         let denied_event = AiEvent::ToolDenied {
             request_id: tool_id.to_string(),
             tool_name: tool_name.to_string(),
@@ -92,6 +92,7 @@ where
     }
 
     let (effective_args, constraint_note) = match ctx
+        .access
         .tool_policy_manager
         .apply_constraints(tool_name, tool_args)
         .await
@@ -122,7 +123,7 @@ where
         }
     };
 
-    let policy = ctx.tool_policy_manager.get_policy(tool_name).await;
+    let policy = ctx.access.tool_policy_manager.get_policy(tool_name).await;
     if policy == ToolPolicy::Allow {
         let reason = if let Some(note) = constraint_note {
             format!("Allowed by policy ({})", note)
@@ -144,7 +145,7 @@ where
             .await;
     }
 
-    if ctx.approval_recorder.should_auto_approve(tool_name).await {
+    if ctx.access.approval_recorder.should_auto_approve(tool_name).await {
         emit_event(
             ctx,
             AiEvent::ToolAutoApproved {
@@ -199,20 +200,20 @@ where
     }
 
     // Need HITL approval
-    let stats = ctx.approval_recorder.get_pattern(tool_name).await;
+    let stats = ctx.access.approval_recorder.get_pattern(tool_name).await;
     let risk_level = RiskLevel::for_tool(tool_name);
-    let config = ctx.approval_recorder.get_config().await;
+    let config = ctx.access.approval_recorder.get_config().await;
     let can_learn = !config
         .always_require_approval
         .contains(&tool_name.to_string());
-    let suggestion = ctx.approval_recorder.get_suggestion(tool_name).await;
+    let suggestion = ctx.access.approval_recorder.get_suggestion(tool_name).await;
 
-    let rx = if let Some(coordinator) = ctx.coordinator {
+    let rx = if let Some(coordinator) = ctx.access.coordinator {
         coordinator.register_approval(tool_id.to_string())
     } else {
         let (tx, rx) = tokio::sync::oneshot::channel();
         {
-            let mut pending = ctx.pending_approvals.write().await;
+            let mut pending = ctx.access.pending_approvals.write().await;
             pending.insert(tool_id.to_string(), tx);
         }
         rx
@@ -248,6 +249,7 @@ where
             );
             if decision.approved {
                 let _ = ctx
+                    .access
                     .approval_recorder
                     .record_approval(tool_name, true, decision.reason, decision.always_allow)
                     .await;
@@ -263,6 +265,7 @@ where
                 .await
             } else {
                 let _ = ctx
+                    .access
                     .approval_recorder
                     .record_approval(tool_name, false, decision.reason, false)
                     .await;
@@ -283,8 +286,8 @@ where
                 APPROVAL_TIMEOUT_SECS,
                 tool_name
             );
-            if ctx.coordinator.is_none() {
-                let mut pending = ctx.pending_approvals.write().await;
+            if ctx.access.coordinator.is_none() {
+                let mut pending = ctx.access.pending_approvals.write().await;
                 pending.remove(tool_id);
             }
 

@@ -58,58 +58,56 @@ impl TerminalErrorEmitted {
     }
 }
 
+/// LLM client handle and provider-specific configuration references.
+pub struct LoopLlmRefs<'a> {
+    pub client: &'a Arc<RwLock<golish_llm_providers::LlmClient>>,
+    pub provider_name: &'a str,
+    pub model_name: &'a str,
+    pub openai_web_search_config: Option<&'a golish_llm_providers::OpenAiWebSearchConfig>,
+    pub openai_reasoning_effort: Option<&'a str>,
+    pub openrouter_provider_preferences: Option<&'a serde_json::Value>,
+    pub model_factory: Option<&'a Arc<crate::llm_client::LlmClientFactory>>,
+}
+
+/// Tool access control: policy engine, HITL approval, agent mode, loop detection.
+pub struct LoopAccessControl<'a> {
+    pub approval_recorder: &'a Arc<ApprovalRecorder>,
+    pub pending_approvals: &'a Arc<RwLock<HashMap<String, oneshot::Sender<ApprovalDecision>>>>,
+    pub tool_policy_manager: &'a Arc<ToolPolicyManager>,
+    pub agent_mode: &'a Arc<RwLock<crate::agent_mode::AgentMode>>,
+    pub loop_detector: &'a Arc<RwLock<LoopDetector>>,
+    pub coordinator: Option<&'a CoordinatorHandle>,
+}
+
+/// Event emission, transcript, tracing, and runtime references.
+pub struct LoopEventRefs<'a> {
+    pub event_tx: &'a mpsc::UnboundedSender<AiEvent>,
+    pub transcript_writer: Option<&'a Arc<crate::transcript::TranscriptWriter>>,
+    pub transcript_base_dir: Option<&'a std::path::Path>,
+    pub session_id: Option<&'a str>,
+    pub db_tracker: Option<&'a crate::db_tracking::DbTracker>,
+    pub runtime: Option<&'a Arc<dyn GolishRuntime>>,
+}
+
 /// Context for the agentic loop execution.
 pub struct AgenticLoopContext<'a> {
-    pub event_tx: &'a mpsc::UnboundedSender<AiEvent>,
+    // -- Composed subsystems --------------------------------------------------
+    pub llm: LoopLlmRefs<'a>,
+    pub access: LoopAccessControl<'a>,
+    pub events: LoopEventRefs<'a>,
+
+    // -- Cross-cutting references ---------------------------------------------
     pub tool_registry: &'a Arc<RwLock<ToolRegistry>>,
     pub sub_agent_registry: &'a Arc<RwLock<SubAgentRegistry>>,
     pub indexer_state: Option<&'a Arc<IndexerState>>,
     pub workspace: &'a Arc<RwLock<std::path::PathBuf>>,
-    pub client: &'a Arc<RwLock<golish_llm_providers::LlmClient>>,
-    pub approval_recorder: &'a Arc<ApprovalRecorder>,
-    pub pending_approvals: &'a Arc<RwLock<HashMap<String, oneshot::Sender<ApprovalDecision>>>>,
-    pub tool_policy_manager: &'a Arc<ToolPolicyManager>,
     pub context_manager: &'a Arc<ContextManager>,
-    pub loop_detector: &'a Arc<RwLock<LoopDetector>>,
-    /// Compaction state for tracking token usage and triggering context compaction
     pub compaction_state: &'a Arc<RwLock<CompactionState>>,
-    /// Tool configuration for filtering available tools
     pub tool_config: &'a ToolConfig,
-    /// Sidecar state for context capture (optional)
     pub sidecar_state: Option<&'a Arc<SidecarState>>,
-    /// Runtime for auto-approve checks (optional for backward compatibility)
-    pub runtime: Option<&'a Arc<dyn GolishRuntime>>,
-    /// Agent mode for controlling tool approval behavior
-    pub agent_mode: &'a Arc<RwLock<crate::agent_mode::AgentMode>>,
-    /// Plan manager for update_plan tool
     pub plan_manager: &'a Arc<crate::planner::PlanManager>,
-    /// API request stats collector (per session)
     pub api_request_stats: &'a Arc<ApiRequestStats>,
-    /// Provider name for capability detection (e.g., "openai", "anthropic")
-    pub provider_name: &'a str,
-    /// Model name for capability detection
-    pub model_name: &'a str,
-    /// OpenAI web search config (if enabled)
-    pub openai_web_search_config: Option<&'a golish_llm_providers::OpenAiWebSearchConfig>,
-    /// OpenAI reasoning effort level (if set)
-    pub openai_reasoning_effort: Option<&'a str>,
-    /// OpenRouter provider preferences JSON for routing and filtering (if set)
-    pub openrouter_provider_preferences: Option<&'a serde_json::Value>,
-    /// Factory for creating sub-agent model override clients (optional)
-    pub model_factory: Option<&'a Arc<crate::llm_client::LlmClientFactory>>,
-    /// Session ID for Langfuse trace grouping (optional)
-    pub session_id: Option<&'a str>,
-    /// Transcript writer for persisting AI events (optional)
-    pub transcript_writer: Option<&'a Arc<crate::transcript::TranscriptWriter>>,
-    /// Base directory for transcript files (e.g., `~/.golish/transcripts`)
-    /// Used to create separate transcript files for sub-agent internal events.
-    pub transcript_base_dir: Option<&'a std::path::Path>,
-    /// Additional tool definitions to include (e.g., SWE-bench test tool).
-    /// These are added to the tool list alongside the standard tools.
     pub additional_tool_definitions: Vec<rig::completion::ToolDefinition>,
-    /// Custom tool executor for handling additional tools.
-    /// If provided, this function is called for tools not handled by the standard executors.
-    /// Returns `Some((result, success))` if the tool was handled, `None` otherwise.
     #[allow(clippy::type_complexity)]
     pub custom_tool_executor: Option<
         std::sync::Arc<
@@ -122,20 +120,8 @@ pub struct AgenticLoopContext<'a> {
                 + Sync,
         >,
     >,
-    /// Event coordinator for message-passing based event management (optional).
-    /// When available, approval registration uses the coordinator instead of pending_approvals.
-    pub coordinator: Option<&'a CoordinatorHandle>,
-    /// Database tracker for background recording of tool calls, token usage, etc.
-    pub db_tracker: Option<&'a crate::db_tracking::DbTracker>,
-    /// Cancellation flag: checked between loop iterations to support user-initiated stop.
     pub cancelled: Option<&'a Arc<std::sync::atomic::AtomicBool>>,
-    /// Execution monitor for the Mentor pattern (PentAGI-style).
-    /// When present, tracks tool call patterns and the agentic loop can
-    /// inject mentor advice into tool results when the monitor triggers.
     pub execution_monitor: Option<Arc<RwLock<crate::loop_detection::ExecutionMonitor>>>,
-    /// Execution mode: Chat (all tools) vs Task (delegation-only).
-    /// In Task mode the primary agent loses direct environment access (shell, file, web)
-    /// and must delegate to sub-agents, matching PentAGI's primary agent pattern.
     pub execution_mode: crate::execution_mode::ExecutionMode,
 }
 
@@ -178,8 +164,7 @@ impl LoopCaptureContext {
 /// Helper to emit an event to frontend and transcript (but not sidecar)
 /// Use this when sidecar capture is handled separately (e.g., with stateful capture_ctx)
 pub(super) fn emit_to_frontend(ctx: &AgenticLoopContext<'_>, event: AiEvent) {
-    // Write to transcript if configured (skip streaming events)
-    if let Some(writer) = ctx.transcript_writer {
+    if let Some(writer) = ctx.events.transcript_writer {
         if crate::transcript::should_transcript(&event) {
             let writer = Arc::clone(writer);
             let event_clone = event.clone();
@@ -191,13 +176,12 @@ pub(super) fn emit_to_frontend(ctx: &AgenticLoopContext<'_>, event: AiEvent) {
         }
     }
 
-    let _ = ctx.event_tx.send(event);
+    let _ = ctx.events.event_tx.send(event);
 }
 
 /// Helper to emit an event to both frontend and sidecar (stateless capture)
 /// Use this for events that don't need state correlation (e.g., Reasoning)
 pub(super) fn emit_event(ctx: &AgenticLoopContext<'_>, event: AiEvent) {
-    // Log reasoning events being emitted to frontend (trace level to reduce spam)
     if let AiEvent::Reasoning { ref content } = event {
         tracing::trace!(
             "[Thinking] Emitting reasoning event to frontend: {} chars",
@@ -205,8 +189,7 @@ pub(super) fn emit_event(ctx: &AgenticLoopContext<'_>, event: AiEvent) {
         );
     }
 
-    // Write to transcript if configured (skip streaming events)
-    if let Some(writer) = ctx.transcript_writer {
+    if let Some(writer) = ctx.events.transcript_writer {
         if crate::transcript::should_transcript(&event) {
             let writer = Arc::clone(writer);
             let event_clone = event.clone();
@@ -218,10 +201,8 @@ pub(super) fn emit_event(ctx: &AgenticLoopContext<'_>, event: AiEvent) {
         }
     }
 
-    // Send to frontend
-    let _ = ctx.event_tx.send(event.clone());
+    let _ = ctx.events.event_tx.send(event.clone());
 
-    // Capture in sidecar if available (stateless - creates fresh context each time)
     if let Some(sidecar) = ctx.sidecar_state {
         let mut capture = CaptureContext::new(sidecar.clone());
         capture.process(&event);

@@ -72,12 +72,12 @@ pub(super) async fn run_first_iteration_hooks(
         return outcome;
     };
 
-    let msg_ctx = MessageHookContext::user_input(user_text, ctx.session_id.unwrap_or(""));
+    let msg_ctx = MessageHookContext::user_input(user_text, ctx.events.session_id.unwrap_or(""));
     let mut hook_messages = hook_registry.run_message_hooks(&msg_ctx);
 
     // Memory gatekeeper: classifies whether memory search is warranted for this message.
     {
-        let client = ctx.client.read().await;
+        let client = ctx.llm.client.read().await;
         let wants_memory =
             crate::memory_gatekeeper::should_search_memory(&client, user_text).await;
         outcome.gatekeeper_wants_memory = wants_memory;
@@ -107,7 +107,7 @@ pub(super) async fn run_first_iteration_hooks(
             "Injecting message hooks before first LLM call"
         );
 
-        let _ = ctx.event_tx.send(AiEvent::SystemHooksInjected {
+        let _ = ctx.events.event_tx.send(AiEvent::SystemHooksInjected {
             hooks: hook_messages,
         });
 

@@ -354,7 +354,9 @@ use golish_sub_agents::SubAgentRegistry;
 use golish_tools::ToolRegistry;
 
 use crate::agent_mode::AgentMode;
-use crate::agentic_loop::{AgenticLoopContext, LoopCaptureContext};
+use crate::agentic_loop::{
+    AgenticLoopContext, LoopAccessControl, LoopCaptureContext, LoopEventRefs, LoopLlmRefs,
+};
 use crate::tool_definitions::ToolConfig;
 
 // ============================================================================
@@ -596,37 +598,43 @@ impl TestContext {
         client: &'a Arc<RwLock<LlmClient>>,
     ) -> AgenticLoopContext<'a> {
         AgenticLoopContext {
-            event_tx: &self.event_tx,
+            llm: LoopLlmRefs {
+                client,
+                provider_name: "mock",
+                model_name: "mock-model",
+                openai_web_search_config: None,
+                openai_reasoning_effort: None,
+                openrouter_provider_preferences: None,
+                model_factory: None,
+            },
+            access: LoopAccessControl {
+                approval_recorder: &self.approval_recorder,
+                pending_approvals: &self.pending_approvals,
+                tool_policy_manager: &self.tool_policy_manager,
+                agent_mode: &self.agent_mode,
+                loop_detector: &self.loop_detector,
+                coordinator: None,
+            },
+            events: LoopEventRefs {
+                event_tx: &self.event_tx,
+                transcript_writer: None,
+                transcript_base_dir: None,
+                session_id: None,
+                db_tracker: None,
+                runtime: self.runtime.as_ref(),
+            },
             tool_registry: &self.tool_registry,
             sub_agent_registry: &self.sub_agent_registry,
             indexer_state: None,
             workspace: &self.workspace,
-            client,
-            approval_recorder: &self.approval_recorder,
-            pending_approvals: &self.pending_approvals,
-            tool_policy_manager: &self.tool_policy_manager,
             context_manager: &self.context_manager,
             compaction_state: &self.compaction_state,
-            loop_detector: &self.loop_detector,
             tool_config: &self.tool_config,
             sidecar_state: None,
-            runtime: self.runtime.as_ref(),
-            agent_mode: &self.agent_mode,
             plan_manager: &self.plan_manager,
-            provider_name: "mock",
-            model_name: "mock-model",
             api_request_stats: &self.api_request_stats,
-            openai_web_search_config: None,
-            openai_reasoning_effort: None,
-            openrouter_provider_preferences: None,
-            model_factory: None,
-            session_id: None,
-            transcript_writer: None,
-            transcript_base_dir: None,
             additional_tool_definitions: vec![],
             custom_tool_executor: None,
-            coordinator: None, // Tests use legacy path
-            db_tracker: None,
             cancelled: None,
             execution_monitor: None,
             execution_mode: crate::execution_mode::ExecutionMode::Chat,
