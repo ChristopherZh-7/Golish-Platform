@@ -14,7 +14,7 @@ import psycopg2.extras
 
 DB_DSN = "postgres://golish:golish_local@localhost:15432/golish"
 WIKI_ROOT = Path.home() / "Library" / "Application Support" / "golish-platform" / "wiki"
-BATCH_SIZE = 200
+BATCH_SIZE = 8000
 
 TECHNIQUE_MAP = {
     "sqli": ("sql-injection", "SQL Injection"),
@@ -322,7 +322,6 @@ def main():
                     p.tags
                 FROM vuln_kb_pocs p
                 WHERE NOT EXISTS(SELECT 1 FROM vuln_kb_links l WHERE l.cve_id = p.cve_id)
-                AND p.severity = 'critical'
                 GROUP BY p.cve_id, p.name, p.poc_type, p.language, p.source,
                          p.source_url, p.severity, p.description, p.tags
                 ORDER BY

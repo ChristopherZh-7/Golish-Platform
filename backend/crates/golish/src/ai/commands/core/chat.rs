@@ -120,7 +120,16 @@ async fn execute_task_mode(
     let db_session = golish_db::repo::sessions::create(
         &pool,
         golish_db::models::NewSession {
-            title: Some(format!("Task: {}", &prompt[..prompt.len().min(50)])),
+            title: Some(format!("Task: {}", {
+                let max = 50;
+                if prompt.len() <= max {
+                    prompt
+                } else {
+                    let mut end = max;
+                    while !prompt.is_char_boundary(end) { end -= 1; }
+                    &prompt[..end]
+                }
+            })),
             workspace_path: None,
             workspace_label: None,
             model: Some(bridge.model_name().to_string()),

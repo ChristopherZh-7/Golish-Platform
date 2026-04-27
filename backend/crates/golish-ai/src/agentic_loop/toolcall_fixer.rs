@@ -85,7 +85,12 @@ where
     if !is_fixable_error(error_message) {
         tracing::debug!(
             "[toolcall-fixer] Error not fixable by semantic repair: {}",
-            &error_message[..error_message.len().min(100)]
+            &error_message[..{
+                let max = error_message.len().min(100);
+                let mut end = max;
+                while end > 0 && !error_message.is_char_boundary(end) { end -= 1; }
+                end
+            }]
         );
         return None;
     }

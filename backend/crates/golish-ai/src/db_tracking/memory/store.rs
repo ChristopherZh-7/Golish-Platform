@@ -206,7 +206,12 @@ impl DbTracker {
             "store",
             &format!("{}:{}", mem_type, tool_name.unwrap_or("unknown")),
             1,
-            &content[..content.len().min(200)],
+            &content[..{
+                let max = content.len().min(200);
+                let mut end = max;
+                while end > 0 && !content.is_char_boundary(end) { end -= 1; }
+                end
+            }],
         );
 
         let pool = self.pool.clone();
