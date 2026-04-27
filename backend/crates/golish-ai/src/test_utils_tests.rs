@@ -655,8 +655,8 @@ async fn test_hitl_approval_timeout() {
     // and verifying the pending_approvals state.
 
     // Start the approval request in a task
-    let pending_approvals = ctx.pending_approvals.clone();
-    let event_tx = ctx.event_tx.clone();
+    let pending_approvals = ctx.access.pending_approvals.clone();
+    let event_tx = ctx.events.event_tx.clone();
 
     let tool_name = "edit_file";
     let tool_id = "timeout-test-id";
