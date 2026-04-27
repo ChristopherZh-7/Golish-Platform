@@ -84,7 +84,8 @@ pub use compaction::{
 };
 
 pub use context::{
-    AgenticLoopContext, LoopCaptureContext, TerminalErrorEmitted, ToolExecutionResult,
+    AgenticLoopContext, LoopAccessControl, LoopCaptureContext, LoopEventRefs, LoopLlmRefs,
+    TerminalErrorEmitted, ToolExecutionResult,
 };
 use context::{emit_event, emit_to_frontend};
 
@@ -158,8 +159,8 @@ where
     tracing::info!(
         "[{}] Starting agentic loop: provider={}, model={}, thinking={}, temperature={}",
         agent_label,
-        ctx.provider_name,
-        ctx.model_name,
+        ctx.llm.provider_name,
+        ctx.llm.model_name,
         supports_thinking,
         config.capabilities.supports_temperature
     );
@@ -199,7 +200,7 @@ where
     // Create outer trace span (this becomes the Langfuse trace)
     let chat_message_span = tracing::info_span!(
         "chat_message",
-        "langfuse.session.id" = ctx.session_id.unwrap_or(""),
+        "langfuse.session.id" = ctx.events.session_id.unwrap_or(""),
         "langfuse.observation.input" = %trace_input_truncated,
         "langfuse.observation.output" = tracing::field::Empty,
     );
@@ -209,19 +210,19 @@ where
         parent: &chat_message_span,
         "agent",
         "langfuse.observation.type" = "agent",
-        "langfuse.session.id" = ctx.session_id.unwrap_or(""),
+        "langfuse.session.id" = ctx.events.session_id.unwrap_or(""),
         "langfuse.observation.input" = %trace_input_truncated,
         "langfuse.observation.output" = tracing::field::Empty,
         agent_type = %agent_label,
-        model = %ctx.model_name,
-        provider = %ctx.provider_name,
+        model = %ctx.llm.model_name,
+        provider = %ctx.llm.provider_name,
     );
     // Instrument the main loop body with both spans so they're properly exported to OpenTelemetry.
     // Using nested .instrument() ensures both spans are entered for the duration of the loop.
     let (accumulated_response, accumulated_thinking, chat_history, total_usage) = async {
         // Reset loop detector for new turn
         {
-        let mut detector = ctx.loop_detector.write().await;
+        let mut detector = ctx.access.loop_detector.write().await;
         detector.reset();
     }
 
@@ -244,11 +245,11 @@ where
     // which is triggered via should_compact() in the agentic loop
 
     // Audit: record agent turn start + msg_log for user message
-    if let Some(tracker) = ctx.db_tracker {
+    if let Some(tracker) = ctx.events.db_tracker {
         tracker.audit(
             "agent_turn_start",
             "ai",
-            &format!("model={} provider={}", ctx.model_name, ctx.provider_name),
+            &format!("model={} provider={}", ctx.llm.model_name, ctx.llm.provider_name),
         );
         let user_msg_preview = chat_history
             .last()
@@ -298,7 +299,7 @@ where
         if let Some(flag) = &ctx.cancelled {
             if flag.load(std::sync::atomic::Ordering::SeqCst) {
                 tracing::info!("Agent loop cancelled by user (iteration {})", iteration);
-                let _ = ctx.event_tx.send(AiEvent::Error {
+                let _ = ctx.events.event_tx.send(AiEvent::Error {
                     message: "Agent stopped by user".to_string(),
                     error_type: "cancelled".to_string(),
                 });
@@ -312,11 +313,11 @@ where
                 parent: &agent_span,
                 "max_iterations_reached",
                 "langfuse.observation.type" = "event",
-                "langfuse.session.id" = ctx.session_id.unwrap_or(""),
+                "langfuse.session.id" = ctx.events.session_id.unwrap_or(""),
                 max_iterations = MAX_TOOL_ITERATIONS,
             );
 
-            let _ = ctx.event_tx.send(AiEvent::Error {
+            let _ = ctx.events.event_tx.send(AiEvent::Error {
                 message: "Maximum tool iterations reached".to_string(),
                 error_type: "max_iterations".to_string(),
             });
@@ -343,12 +344,12 @@ where
             parent: &agent_span,
             "llm_completion",
             "gen_ai.operation.name" = "chat_completion",
-            "gen_ai.request.model" = %ctx.model_name,
-            "gen_ai.system" = %ctx.provider_name,
+            "gen_ai.request.model" = %ctx.llm.model_name,
+            "gen_ai.system" = %ctx.llm.provider_name,
             "gen_ai.request.temperature" = 0.3_f64,
             "gen_ai.request.max_tokens" = MAX_COMPLETION_TOKENS as i64,
             "langfuse.observation.type" = "generation",
-            "langfuse.session.id" = ctx.session_id.unwrap_or(""),
+            "langfuse.session.id" = ctx.events.session_id.unwrap_or(""),
             iteration = iteration,
             "gen_ai.usage.prompt_tokens" = tracing::field::Empty,
             "gen_ai.usage.completion_tokens" = tracing::field::Empty,
@@ -441,7 +442,7 @@ where
                 "[OpenAI Debug] Starting stream: iteration={}, history_len={}, provider={}, has_reasoning_history={}, thinking={}",
                 iteration,
                 chat_history.len(),
-                ctx.provider_name,
+                ctx.llm.provider_name,
                 has_reasoning_in_history,
                 supports_thinking
             );
@@ -512,7 +513,7 @@ where
             &tool_calls_to_execute,
             has_tool_calls,
             supports_thinking,
-            ctx.provider_name,
+            ctx.llm.provider_name,
         );
 
         // If no tool calls, either invoke the reflector or finish.
@@ -568,8 +569,8 @@ where
     tracing::info!(
         "[{}] Turn complete: provider={}, model={}, tokens={{input={}, output={}, total={}}}",
         agent_label,
-        ctx.provider_name,
-        ctx.model_name,
+        ctx.llm.provider_name,
+        ctx.llm.model_name,
         total_usage.input_tokens,
         total_usage.output_tokens,
         total_usage.total()
@@ -591,13 +592,13 @@ where
     agent_span.record("langfuse.observation.output", output_for_span.as_str());
 
     // Record token usage to DB
-    if let Some(tracker) = ctx.db_tracker {
+    if let Some(tracker) = ctx.events.db_tracker {
         if total_usage.input_tokens > 0 || total_usage.output_tokens > 0 {
             tracker.record_token_usage(
                 total_usage.input_tokens,
                 total_usage.output_tokens,
-                ctx.model_name,
-                ctx.provider_name,
+                ctx.llm.model_name,
+                ctx.llm.provider_name,
                 0,
             );
         }

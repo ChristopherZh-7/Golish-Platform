@@ -61,7 +61,7 @@ pub async fn run_agentic_loop_generic<M>(
 where
     M: RigCompletionModel + Sync,
 {
-    let config = AgenticLoopConfig::with_detection(ctx.provider_name, ctx.model_name, false);
+    let config = AgenticLoopConfig::with_detection(ctx.llm.provider_name, ctx.llm.model_name, false);
 
     run_agentic_loop_unified(model, system_prompt, initial_history, context, ctx, config).await
 }

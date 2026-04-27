@@ -78,13 +78,13 @@ pub async fn maybe_compact(
     let compaction_state = ctx.compaction_state.read().await;
     let check = ctx
         .context_manager
-        .should_compact(&compaction_state, ctx.model_name);
+        .should_compact(&compaction_state, ctx.llm.model_name);
     drop(compaction_state);
 
     let threshold_tokens = (check.max_tokens as f64 * check.threshold) as u64;
     tracing::info!(
         "[compaction] Check: model={}, current={}, threshold={} ({}% of {}), should_compact={}",
-        ctx.model_name,
+        ctx.llm.model_name,
         check.current_tokens,
         threshold_tokens,
         (check.threshold * 100.0) as u32,
@@ -109,7 +109,7 @@ pub async fn maybe_compact(
         check.reason
     );
 
-    let _ = ctx.event_tx.send(AiEvent::CompactionStarted {
+    let _ = ctx.events.event_tx.send(AiEvent::CompactionStarted {
         tokens_before: check.current_tokens,
         messages_before: chat_history.len(),
     });
@@ -169,7 +169,7 @@ async fn perform_compaction(
         summarizer_input.len()
     );
 
-    let client = ctx.client.read().await;
+    let client = ctx.llm.client.read().await;
     let summary_result = crate::summarizer::generate_summary(&client, &summarizer_input).await;
     drop(client);
 
@@ -177,7 +177,7 @@ async fn perform_compaction(
         Ok(response) => response.summary,
         Err(e) => {
             tracing::error!("[compaction] Summarizer failed: {}", e);
-            let _ = ctx.event_tx.send(AiEvent::Warning {
+            let _ = ctx.events.event_tx.send(AiEvent::Warning {
                 message: format!("Context compaction failed: {}", e),
             });
             return CompactionResult {

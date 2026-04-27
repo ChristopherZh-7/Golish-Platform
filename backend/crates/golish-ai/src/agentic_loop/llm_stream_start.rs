@@ -4,7 +4,7 @@
 //! Provider-specific quirks handled here:
 //!
 //! - **OpenAI web search**: enabled via `additional_params.tools` when
-//!   `ctx.openai_web_search_config` is set.
+//!   `ctx.llm.openai_web_search_config` is set.
 //! - **OpenAI reasoning** (`o-series`, `gpt-5.2 Codex`): nested `reasoning`
 //!   object with `effort` + `summary` keys.
 //! - **OpenRouter provider preferences**: forwarded as top-level keys in
@@ -62,7 +62,7 @@ where
     } else {
         tracing::debug!(
             "Model {} does not support temperature parameter, omitting",
-            ctx.model_name
+            ctx.llm.model_name
         );
         None
     };
@@ -70,7 +70,7 @@ where
     let additional_params = build_additional_params(ctx);
 
     // NVIDIA NIM workaround: see module docs.
-    let is_nvidia_provider = ctx.provider_name == "nvidia";
+    let is_nvidia_provider = ctx.llm.provider_name == "nvidia";
     let (preamble, request_history) = if is_nvidia_provider {
         let mut nvidia_history = vec![Message::User {
             content: OneOrMany::one(UserContent::text(system_prompt)),
@@ -103,14 +103,14 @@ where
 
         if is_cancelled(ctx) {
             tracing::info!("Agent cancelled before LLM call (attempt {})", attempt);
-            let _ = ctx.event_tx.send(AiEvent::Error {
+            let _ = ctx.events.event_tx.send(AiEvent::Error {
                 message: "Agent stopped by user".to_string(),
                 error_type: "cancelled".to_string(),
             });
             return Err(anyhow::anyhow!("Agent stopped by user"));
         }
 
-        ctx.api_request_stats.record_sent(ctx.provider_name).await;
+        ctx.api_request_stats.record_sent(ctx.llm.provider_name).await;
 
         let stream_result = tokio::time::timeout(
             STREAM_START_TIMEOUT,
@@ -120,7 +120,7 @@ where
 
         match stream_result {
             Ok(Ok(s)) => {
-                ctx.api_request_stats.record_received(ctx.provider_name).await;
+                ctx.api_request_stats.record_received(ctx.llm.provider_name).await;
                 tracing::info!(
                     "[OpenAI Debug] Stream created successfully on attempt {}",
                     attempt
@@ -141,7 +141,7 @@ where
                 if should_retry_stream_start(attempt, &classification) {
                     let delay = compute_retry_backoff_delay(attempt);
                     let delay_ms = delay.as_millis();
-                    let _ = ctx.event_tx.send(AiEvent::Warning {
+                    let _ = ctx.events.event_tx.send(AiEvent::Warning {
                         message: format!(
                             "AI request failed ({}). Retrying in {}ms (attempt {}/{})",
                             classification.error_type,
@@ -171,7 +171,7 @@ where
                 if should_retry_stream_start(attempt, &classification) {
                     let delay = compute_retry_backoff_delay(attempt);
                     let delay_ms = delay.as_millis();
-                    let _ = ctx.event_tx.send(AiEvent::Warning {
+                    let _ = ctx.events.event_tx.send(AiEvent::Warning {
                         message: format!(
                             "AI request timed out. Retrying in {}ms (attempt {}/{})",
                             delay_ms,
@@ -204,7 +204,7 @@ where
         )
     });
 
-    let _ = ctx.event_tx.send(AiEvent::Error {
+    let _ = ctx.events.event_tx.send(AiEvent::Error {
         message: classification.user_message,
         error_type: classification.error_type.to_string(),
     });
@@ -222,7 +222,7 @@ where
 fn build_additional_params(ctx: &AgenticLoopContext<'_>) -> Option<serde_json::Value> {
     let mut additional_params_json = serde_json::Map::new();
 
-    if let Some(web_config) = ctx.openai_web_search_config {
+    if let Some(web_config) = ctx.llm.openai_web_search_config {
         tracing::info!(
             "Adding OpenAI web_search_preview tool with context_size={}",
             web_config.search_context_size
@@ -235,7 +235,7 @@ fn build_additional_params(ctx: &AgenticLoopContext<'_>) -> Option<serde_json::V
     // - effort: how much thinking the model should do
     // - summary: enables streaming reasoning text to the client
     //   ("detailed" shows full reasoning)
-    if let Some(effort) = ctx.openai_reasoning_effort {
+    if let Some(effort) = ctx.llm.openai_reasoning_effort {
         tracing::info!(
             "Setting OpenAI reasoning.effort={}, reasoning.summary=detailed",
             effort
@@ -249,7 +249,7 @@ fn build_additional_params(ctx: &AgenticLoopContext<'_>) -> Option<serde_json::V
         );
     }
 
-    if let Some(prefs) = ctx.openrouter_provider_preferences {
+    if let Some(prefs) = ctx.llm.openrouter_provider_preferences {
         if let serde_json::Value::Object(prefs_map) = prefs {
             for (key, value) in prefs_map {
                 tracing::info!("Adding OpenRouter provider preference: {}={}", key, value);

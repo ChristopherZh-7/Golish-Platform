@@ -49,10 +49,10 @@ pub(super) async fn record_token_usage<R: GetTokenUsage>(
             );
         }
 
-        let model_config = golish_context::TokenBudgetConfig::for_model(ctx.model_name);
+        let model_config = golish_context::TokenBudgetConfig::for_model(ctx.llm.model_name);
         let max_tokens = model_config.max_context_tokens;
         let utilization = usage.input_tokens as f64 / max_tokens as f64;
-        let _ = ctx.event_tx.send(AiEvent::ContextWarning {
+        let _ = ctx.events.event_tx.send(AiEvent::ContextWarning {
             utilization,
             total_tokens: usage.input_tokens as usize,
             max_tokens,
@@ -75,10 +75,10 @@ pub(super) async fn record_token_usage<R: GetTokenUsage>(
             );
         }
 
-        let model_config = golish_context::TokenBudgetConfig::for_model(ctx.model_name);
+        let model_config = golish_context::TokenBudgetConfig::for_model(ctx.llm.model_name);
         let max_tokens = model_config.max_context_tokens;
         let utilization = estimated_tokens as f64 / max_tokens as f64;
-        let _ = ctx.event_tx.send(AiEvent::ContextWarning {
+        let _ = ctx.events.event_tx.send(AiEvent::ContextWarning {
             utilization,
             total_tokens: estimated_tokens,
             max_tokens,
