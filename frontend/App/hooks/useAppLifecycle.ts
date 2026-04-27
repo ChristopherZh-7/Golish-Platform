@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import type React from "react";
 import { useEffect, useState } from "react";
 import { logger } from "@/lib/logger";
+import { runTauriUnlistenFn } from "@/lib/run-tauri-unlisten";
 import { useAiEvents } from "../../hooks/useAiEvents";
 import { useCreateTerminalTab } from "../../hooks/useCreateTerminalTab";
 import { usePipelineEvents } from "../../hooks/usePipelineEvents";
@@ -368,7 +369,9 @@ export function useAppLifecycle({
       );
     })();
     return () => {
-      unlisteners.forEach((fn) => fn());
+      for (const fn of unlisteners) {
+        runTauriUnlistenFn(fn);
+      }
     };
   }, [openHomeTab, openSettingsTab]);
 
