@@ -12,57 +12,43 @@ impl AgentBridge {
     // HITL (Human-in-the-Loop) Methods
     // ========================================================================
 
-    /// Get all approval patterns.
     pub async fn get_approval_patterns(&self) -> Vec<ApprovalPattern> {
-        self.approval_recorder.get_all_patterns().await
+        self.access.approval_recorder.get_all_patterns().await
     }
 
-    /// Get the approval pattern for a specific tool.
     pub async fn get_tool_approval_pattern(&self, tool_name: &str) -> Option<ApprovalPattern> {
-        self.approval_recorder.get_pattern(tool_name).await
+        self.access.approval_recorder.get_pattern(tool_name).await
     }
 
-    /// Get the HITL configuration.
     pub async fn get_hitl_config(&self) -> ToolApprovalConfig {
-        self.approval_recorder.get_config().await
+        self.access.approval_recorder.get_config().await
     }
 
-    /// Set the HITL configuration.
     pub async fn set_hitl_config(&self, config: ToolApprovalConfig) -> Result<()> {
-        self.approval_recorder.set_config(config).await
+        self.access.approval_recorder.set_config(config).await
     }
 
-    /// Add a tool to the always-allow list.
     pub async fn add_tool_always_allow(&self, tool_name: &str) -> Result<()> {
-        self.approval_recorder.add_always_allow(tool_name).await
+        self.access.approval_recorder.add_always_allow(tool_name).await
     }
 
-    /// Remove a tool from the always-allow list.
     pub async fn remove_tool_always_allow(&self, tool_name: &str) -> Result<()> {
-        self.approval_recorder.remove_always_allow(tool_name).await
+        self.access.approval_recorder.remove_always_allow(tool_name).await
     }
 
-    /// Reset all approval patterns.
     pub async fn reset_approval_patterns(&self) -> Result<()> {
-        self.approval_recorder.reset_patterns().await
+        self.access.approval_recorder.reset_patterns().await
     }
 
-    /// Respond to a pending approval request.
     pub async fn respond_to_approval(&self, decision: ApprovalDecision) -> Result<()> {
-        // If coordinator is available, use it (new path)
-        if let Some(ref coordinator) = self.coordinator {
+        if let Some(ref coordinator) = self.events.coordinator {
             coordinator.resolve_approval(decision.clone());
         } else {
-            // Legacy path: directly access pending_approvals
             let sender = {
-                let mut pending = self.pending_approvals.write().await;
+                let mut pending = self.access.pending_approvals.write().await;
                 pending.remove(&decision.request_id)
             };
 
-            // Send the decision to the waiting agentic loop FIRST, before recording.
-            // This ensures the tool execution continues even if pattern recording fails.
-            // The oneshot sender must not be dropped without sending, or the receiver
-            // gets RecvError ("Approval request cancelled").
             if let Some(sender) = sender {
                 let _ = sender.send(decision.clone());
             } else {
@@ -73,9 +59,8 @@ impl AgentBridge {
             }
         }
 
-        // Record the approval pattern (for learning/suggestions).
-        // Log errors but don't fail the approval - the tool execution should proceed.
         if let Err(e) = self
+            .access
             .approval_recorder
             .record_approval(
                 decision

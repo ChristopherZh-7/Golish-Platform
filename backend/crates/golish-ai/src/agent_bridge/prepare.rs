@@ -42,7 +42,7 @@ impl AgentBridge {
         initial_prompt: &str,
     ) -> (String, Vec<Message>, mpsc::UnboundedSender<AiEvent>) {
         let workspace_path = self.workspace.read().await;
-        let agent_mode = *self.agent_mode.read().await;
+        let agent_mode = *self.access.agent_mode.read().await;
         let memory_file_path = self.get_memory_file_path_dynamic().await;
 
         let contributors = create_default_contributors(self.sub_agent_registry.clone());
@@ -62,7 +62,7 @@ impl AgentBridge {
 
         let (available_skills, matched_skills) = self.match_and_load_skills(initial_prompt).await;
 
-        let prompt_context = PromptContext::new(&self.provider_name, &self.model_name)
+        let prompt_context = PromptContext::new(&self.llm.provider_name, &self.llm.model_name)
             .with_web_search(has_web_search)
             .with_sub_agents(has_sub_agents)
             .with_workspace(workspace_path.display().to_string())
@@ -79,7 +79,6 @@ impl AgentBridge {
         );
         drop(workspace_path);
 
-        // Inject Layer 1 session context if available
         if let Some(session_context) = self.get_session_context().await {
             if !session_context.is_empty() {
                 tracing::debug!(
@@ -91,7 +90,6 @@ impl AgentBridge {
             }
         }
 
-        // Inject active execution plan status if one exists
         if let Some(plan_status) = self.plan_manager.format_for_prompt().await {
             tracing::info!(
                 "[agent] Injecting active execution plan ({} chars)",
@@ -104,9 +102,7 @@ impl AgentBridge {
         self.start_session().await;
         self.record_user_message(initial_prompt).await;
 
-        // Sidecar capture: only start a new session if one doesn't already exist
-        // (sessions span conversations).
-        if let Some(ref sidecar) = self.sidecar_state {
+        if let Some(ref sidecar) = self.services.sidecar_state {
             use golish_sidecar::events::SessionEvent;
 
             let session_id = if let Some(existing_id) = sidecar.current_session_id() {
@@ -136,7 +132,7 @@ impl AgentBridge {
             }
         }
 
-        let mut history_guard = self.conversation_history.write().await;
+        let mut history_guard = self.session.conversation_history.write().await;
         history_guard.push(Message::User {
             content: OneOrMany::one(UserContent::Text(Text {
                 text: initial_prompt.to_string(),
@@ -164,7 +160,7 @@ impl AgentBridge {
         tracing::debug!("[prepare_context] Acquiring workspace read lock");
         let workspace_path = self.workspace.read().await;
         tracing::debug!("[prepare_context] Acquiring agent_mode read lock");
-        let agent_mode = *self.agent_mode.read().await;
+        let agent_mode = *self.access.agent_mode.read().await;
         let memory_file_path = self.get_memory_file_path_dynamic().await;
 
         let contributors = create_default_contributors(self.sub_agent_registry.clone());
@@ -184,7 +180,7 @@ impl AgentBridge {
 
         let (available_skills, matched_skills) = self.match_and_load_skills(text_for_logging).await;
 
-        let prompt_context = PromptContext::new(&self.provider_name, &self.model_name)
+        let prompt_context = PromptContext::new(&self.llm.provider_name, &self.llm.model_name)
             .with_web_search(has_web_search)
             .with_sub_agents(has_sub_agents)
             .with_workspace(workspace_path.display().to_string())
@@ -224,7 +220,7 @@ impl AgentBridge {
         self.start_session().await;
         self.record_user_message(text_for_logging).await;
 
-        if let Some(ref sidecar) = self.sidecar_state {
+        if let Some(ref sidecar) = self.services.sidecar_state {
             use golish_sidecar::events::SessionEvent;
 
             let session_id = if let Some(existing_id) = sidecar.current_session_id() {
@@ -254,7 +250,7 @@ impl AgentBridge {
             }
         }
 
-        let mut history_guard = self.conversation_history.write().await;
+        let mut history_guard = self.session.conversation_history.write().await;
 
         let incoming_text_count = content
             .iter()
@@ -309,39 +305,37 @@ impl AgentBridge {
             event_tx: loop_event_tx,
             tool_registry: &self.tool_registry,
             sub_agent_registry: &self.sub_agent_registry,
-            indexer_state: self.indexer_state.as_ref(),
+            indexer_state: self.services.indexer_state.as_ref(),
             workspace: &self.workspace,
-            client: &self.client,
-            approval_recorder: &self.approval_recorder,
-            pending_approvals: &self.pending_approvals,
-            tool_policy_manager: &self.tool_policy_manager,
+            client: &self.llm.client,
+            approval_recorder: &self.access.approval_recorder,
+            pending_approvals: &self.access.pending_approvals,
+            tool_policy_manager: &self.access.tool_policy_manager,
             context_manager: &self.context_manager,
             compaction_state: &self.compaction_state,
-            loop_detector: &self.loop_detector,
+            loop_detector: &self.access.loop_detector,
             tool_config: &self.tool_config,
-            sidecar_state: self.sidecar_state.as_ref(),
-            runtime: self.runtime.as_ref(),
-            agent_mode: &self.agent_mode,
+            sidecar_state: self.services.sidecar_state.as_ref(),
+            runtime: self.events.runtime.as_ref(),
+            agent_mode: &self.access.agent_mode,
             plan_manager: &self.plan_manager,
             api_request_stats: &self.api_request_stats,
-            provider_name: &self.provider_name,
-            model_name: &self.model_name,
-            openai_web_search_config: self.openai_web_search_config.as_ref(),
-            openai_reasoning_effort: self.openai_reasoning_effort.as_deref(),
-            openrouter_provider_preferences: self.openrouter_provider_preferences.as_ref(),
-            model_factory: self.model_factory.as_ref(),
-            session_id: self.event_session_id.as_deref(),
-            transcript_writer: self.transcript_writer.as_ref(),
-            transcript_base_dir: self.transcript_base_dir.as_deref(),
-            // MCP tool definitions and executor (otherwise empty in the main app -
-            // additional_tool_definitions is also used by the eval framework).
+            provider_name: &self.llm.provider_name,
+            model_name: &self.llm.model_name,
+            openai_web_search_config: self.llm.openai_web_search_config.as_ref(),
+            openai_reasoning_effort: self.llm.openai_reasoning_effort.as_deref(),
+            openrouter_provider_preferences: self.llm.openrouter_provider_preferences.as_ref(),
+            model_factory: self.llm.model_factory.as_ref(),
+            session_id: self.events.event_session_id.as_deref(),
+            transcript_writer: self.events.transcript_writer.as_ref(),
+            transcript_base_dir: self.events.transcript_base_dir.as_deref(),
             additional_tool_definitions: {
                 let mcp_tools = self.mcp_tool_definitions.read().await;
                 mcp_tools.clone()
             },
             custom_tool_executor: self.mcp_tool_executor.read().await.clone(),
-            coordinator: self.coordinator.as_ref(),
-            db_tracker: self.db_tracker.as_ref(),
+            coordinator: self.events.coordinator.as_ref(),
+            db_tracker: self.services.db_tracker.as_ref(),
             cancelled: Some(&self.cancelled),
             execution_monitor: None,
             execution_mode: *self.execution_mode.read().await,
@@ -372,7 +366,7 @@ impl AgentBridge {
         // Critical for the OpenAI Responses API where reasoning IDs must be preserved
         // in history for function calls to work correctly across turns.
         {
-            let mut history_guard = self.conversation_history.write().await;
+            let mut history_guard = self.session.conversation_history.write().await;
             *history_guard = final_history;
         }
 
@@ -381,7 +375,7 @@ impl AgentBridge {
             self.save_session().await;
         }
 
-        if let Some(ref sidecar) = self.sidecar_state {
+        if let Some(ref sidecar) = self.services.sidecar_state {
             use golish_sidecar::events::SessionEvent;
 
             if let Some(session_id) = sidecar.current_session_id() {
@@ -431,7 +425,7 @@ impl AgentBridge {
             }
         }
         let count = history.len();
-        let mut guard = self.conversation_history.write().await;
+        let mut guard = self.session.conversation_history.write().await;
         *guard = history;
         tracing::info!("[restore] Restored {} messages to conversation history", count);
     }
@@ -441,7 +435,7 @@ impl AgentBridge {
         terminal_state: &TerminalErrorState,
     ) {
         if let Some(final_history) = terminal_state.final_history.clone() {
-            let mut history_guard = self.conversation_history.write().await;
+            let mut history_guard = self.session.conversation_history.write().await;
             *history_guard = final_history;
         }
 
@@ -452,7 +446,7 @@ impl AgentBridge {
         {
             self.record_assistant_message(partial_response).await;
 
-            if let Some(ref sidecar) = self.sidecar_state {
+            if let Some(ref sidecar) = self.services.sidecar_state {
                 use golish_sidecar::events::SessionEvent;
 
                 if let Some(session_id) = sidecar.current_session_id() {
