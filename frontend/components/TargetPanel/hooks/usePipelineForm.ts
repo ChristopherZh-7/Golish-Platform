@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getProjectPath } from "@/lib/projects";
+import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import { type PipelineSummary } from "@/lib/pentest/pipeline-types";
 import {
   type StepDetail,
@@ -146,7 +147,7 @@ export function usePipelineForm(targetValue: string) {
         }
       }
     });
-    return () => { unlistenPromise.then((f) => f()); };
+    return () => { runTauriUnlistenFromPromise(unlistenPromise); };
   }, [targetValue]);
 
   const runPipeline = useCallback(async () => {

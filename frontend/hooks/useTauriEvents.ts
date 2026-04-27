@@ -6,6 +6,7 @@ import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
 import { getSettings } from "@/lib/settings";
 import { getGitBranch, gitStatus, ptyGetForegroundProcess } from "@/lib/tauri";
+import { runTauriUnlistenFn } from "@/lib/run-tauri-unlisten";
 import { listen } from "@/lib/tauri-listen";
 import { liveTerminalManager, virtualTerminalManager } from "@/lib/terminal";
 import { useStore, _drainOutputBufferSize } from "@/store";
@@ -308,7 +309,7 @@ export function useTauriEvents() {
       for (const { fallbackTimer } of deferredExitCodes.values()) clearTimeout(fallbackTimer);
       deferredExitCodes.clear();
       clearInterval(gitStatusPollInterval);
-      Promise.all(unlisteners.map((p) => p.then((unlisten) => { unlisten(); }))).catch((err) => {
+      Promise.all(unlisteners.map((p) => p.then((unlisten) => { runTauriUnlistenFn(unlisten); }))).catch((err) => {
         logger.warn("Failed to unlisten from some events:", err);
       });
     };
