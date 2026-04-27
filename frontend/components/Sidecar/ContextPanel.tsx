@@ -18,6 +18,7 @@ import { Markdown } from "@/components/Markdown/Markdown";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useThrottledResize } from "@/hooks/useThrottledResize";
+import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import {
   type Artifact,
   getAppliedPatches,
@@ -164,7 +165,7 @@ export function ContextPanel({ sessionId, open, onOpenChange }: ContextPanelProp
     });
 
     return () => {
-      unlisten.then((fn) => fn());
+      runTauriUnlistenFromPromise(unlisten);
     };
   }, [open, fetchContent]);
 
