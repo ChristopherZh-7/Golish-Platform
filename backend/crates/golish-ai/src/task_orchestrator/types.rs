@@ -115,8 +115,6 @@ pub struct ExecutionContext {
     pub completed_results: Vec<SubtaskResult>,
     /// The original user input.
     pub task_input: String,
-    /// Additional context gathered by the Enricher after subtask completions.
-    pub enrichment_context: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -140,13 +138,6 @@ impl ExecutionContext {
                 r.title,
                 r.result
             ));
-        }
-        if !self.enrichment_context.is_empty() {
-            s.push_str("### Additional Context (Enricher)\n");
-            for ctx in &self.enrichment_context {
-                s.push_str(&format!("- {}\n", ctx));
-            }
-            s.push('\n');
         }
         s
     }
@@ -224,41 +215,6 @@ pub trait AgentExecutor: Send + Sync {
         subtask_title: &str,
         agent_response: &str,
     ) -> Result<String>;
-
-    /// Generate a pre-execution plan for a subtask (PentAGI's Task Planner pattern).
-    ///
-    /// Before a specialist agent starts working, the Adviser creates a structured
-    /// checklist (3-7 steps) that is wrapped around the original subtask description.
-    /// This prevents the agent from acting blindly and improves efficiency.
-    ///
-    /// Default implementation returns `None` (no pre-planning).
-    async fn plan_subtask(
-        &self,
-        subtask_title: &str,
-        subtask_description: &str,
-        agent_type: &str,
-        execution_context: &ExecutionContext,
-    ) -> Result<Option<String>> {
-        let _ = (subtask_title, subtask_description, agent_type, execution_context);
-        Ok(None)
-    }
-
-    /// Enrich context after a subtask completes.
-    ///
-    /// Searches memories, knowledge bases, or external sources for context
-    /// relevant to the subtask result. Returns enrichment text to inject
-    /// into subsequent subtask prompts (PentAGI's Enricher pattern).
-    ///
-    /// Default implementation returns `None` (no enrichment).
-    async fn enrich(
-        &self,
-        subtask_title: &str,
-        subtask_result: &str,
-        execution_context: &ExecutionContext,
-    ) -> Result<Option<String>> {
-        let _ = (subtask_title, subtask_result, execution_context);
-        Ok(None)
-    }
 
     /// Serialize the current message chain for persistence.
     ///

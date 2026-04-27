@@ -55,6 +55,10 @@ impl ToolConfig {
                 "write_knowledge".to_string(),
                 "read_knowledge".to_string(),
                 "ingest_cve".to_string(),
+                "save_poc".to_string(),
+                "list_cves_with_pocs".to_string(),
+                "list_unresearched_cves".to_string(),
+                "poc_stats".to_string(),
                 // Security analysis
                 "log_operation".to_string(),
                 "discover_apis".to_string(),

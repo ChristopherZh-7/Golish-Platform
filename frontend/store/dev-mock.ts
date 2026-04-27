@@ -58,11 +58,13 @@ export function installDevTools() {
 
     const plan = {
       version: 1,
+      explanation: null,
+      updated_at: new Date(now - 50000).toISOString(),
       summary: {
         total: 5,
         completed: v === "done" ? 5 : v === "active" ? 2 : 3,
         in_progress: v === "active" ? 1 : 0,
-        failed: 0,
+        pending: v === "done" ? 0 : v === "active" ? 2 : 2,
       },
       steps: [
         { id: "s1", step: "Verify target registration in database", status: (v === "done" || v === "active" ? "completed" : "completed") as string },
@@ -108,8 +110,9 @@ export function installDevTools() {
           s.sessions[sid].retiredPlans = [{
             plan: {
               version: 0,
+              explanation: null,
               updated_at: new Date(now - 3600000).toISOString(),
-              summary: { total: 4, completed: 2, in_progress: 0, failed: 0 },
+              summary: { total: 4, completed: 2, in_progress: 0, pending: 2 },
               steps: [
                 { id: "old-1", step: "DNS resolution and subdomain enumeration", status: "completed" as const },
                 { id: "old-2", step: "Port scanning", status: "completed" as const },

@@ -44,7 +44,7 @@ function StatusIcon({
   status,
   size = "md",
 }: {
-  status: "running" | "completed" | "error";
+  status: "running" | "completed" | "error" | "interrupted";
   size?: "sm" | "md";
 }) {
   const sizeClass = size === "sm" ? "w-3 h-3" : "w-4 h-4";
@@ -56,6 +56,8 @@ function StatusIcon({
       return <Loader2 className={cn(sizeClass, "text-[var(--ansi-blue)] animate-spin")} />;
     case "error":
       return <XCircle className={cn(sizeClass, "text-[var(--ansi-red)]")} />;
+    case "interrupted":
+      return <XCircle className={cn(sizeClass, "text-[var(--ansi-yellow)]")} />;
   }
 }
 
@@ -134,7 +136,7 @@ interface SubAgentDetailsModalProps {
 
 /** Status badge styling */
 const statusStyles: Record<
-  "running" | "completed" | "error",
+  "running" | "completed" | "error" | "interrupted",
   { badgeClass: string; label: string }
 > = {
   running: {
@@ -148,6 +150,10 @@ const statusStyles: Record<
   error: {
     badgeClass: "bg-destructive/10 text-destructive",
     label: "Error",
+  },
+  interrupted: {
+    badgeClass: "bg-yellow-500/10 text-yellow-400",
+    label: "Interrupted",
   },
 };
 

@@ -426,10 +426,10 @@ export function AuditLogPanel() {
   const [searchQuery, setSearchQuery] = useState("");
   const [showSearch, setShowSearch] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
-  const [viewMode] = useState<ViewMode>("byTarget");
+  const [_viewMode] = useState<ViewMode>("byTarget");
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string> | "all">("all");
   const currentProjectPath = useStore((s) => s.currentProjectPath);
-  const pollRef = useRef<ReturnType<typeof setInterval>>();
+  const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
   const load = useCallback(async () => {
     setLoading(true);

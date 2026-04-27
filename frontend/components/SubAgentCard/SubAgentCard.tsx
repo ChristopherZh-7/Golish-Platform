@@ -1,4 +1,5 @@
 import {
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   Clock,
@@ -6,8 +7,9 @@ import {
   Maximize2,
   Terminal,
   Wand2,
+  XCircle,
 } from "lucide-react";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState, type ReactElement } from "react";
 import { Markdown } from "@/components/Markdown";
 import { StatusIcon } from "@/components/ui/StatusIcon";
 import { Badge } from "@/components/ui/badge";
@@ -63,8 +65,9 @@ const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall
   const isShellCmd = tool.name === "run_pty_cmd" || tool.name === "run_command";
   const [isExpanded, setIsExpanded] = useState(isShellCmd);
   const preRef = useRef<HTMLPreElement>(null);
-  const status =
-    tool.status === "completed" ? "completed" : tool.status === "error" ? "error" : tool.status === "interrupted" ? "interrupted" : "running";
+  const rawStatus = tool.status as string;
+  const status: "running" | "completed" | "error" | "interrupted" =
+    rawStatus === "completed" ? "completed" : rawStatus === "error" ? "error" : rawStatus === "interrupted" ? "interrupted" : "running";
   const isStreaming = isShellCmd && tool.status === "running" && !!tool.streamingOutput;
 
   useEffect(() => {
@@ -85,13 +88,41 @@ const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall
     return null;
   })();
 
-  const shellOutput = (() => {
+  const shellOutput: string | null = (() => {
     if (!isShellCmd) return null;
     if (tool.streamingOutput) return tool.streamingOutput;
     if (!tool.result || typeof tool.result !== "object") return null;
     const r = tool.result as Record<string, unknown>;
     return (r.stdout as string) || (r.output as string) || null;
   })();
+  const argsPreview: string =
+    JSON.stringify(tool.args ?? null, null, 2) ?? String(tool.args ?? "");
+  const resultPreview: string =
+    typeof tool.result === "string"
+      ? tool.result
+      : (JSON.stringify(tool.result as Record<string, unknown>, null, 2) ?? "");
+  const renderArgsSection = (): ReactElement | null => {
+    if (isShellCmd) return null;
+    return (
+      <div>
+        <span className="text-muted-foreground">Args:</span>
+        <pre className="mt-0.5 rounded bg-muted px-2 py-1 text-[10px]">
+          {argsPreview}
+        </pre>
+      </div>
+    );
+  };
+  const renderResultSection = (): ReactElement | null => {
+    if (isShellCmd || tool.result === undefined) return null;
+    return (
+      <div>
+        <span className="text-muted-foreground">Result:</span>
+        <pre className="mt-0.5 max-h-40 overflow-auto rounded bg-muted px-2 py-1 text-[10px]">
+          {resultPreview}
+        </pre>
+      </div>
+    );
+  };
 
   return (
     <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
@@ -146,26 +177,10 @@ const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall
           )}
 
           {/* Non-shell arguments */}
-          {!isShellCmd && (
-            <div>
-              <span className="text-muted-foreground">Args:</span>
-              <pre className="mt-0.5 rounded bg-muted px-2 py-1 text-[10px]">
-                {JSON.stringify(tool.args, null, 2)}
-              </pre>
-            </div>
-          )}
+          {renderArgsSection() as any}
 
           {/* Non-shell result */}
-          {!isShellCmd && tool.result !== undefined && (
-            <div>
-              <span className="text-muted-foreground">Result:</span>
-              <pre className="mt-0.5 max-h-40 overflow-auto rounded bg-muted px-2 py-1 text-[10px]">
-                {typeof tool.result === "string"
-                  ? tool.result
-                  : JSON.stringify(tool.result, null, 2)}
-              </pre>
-            </div>
-          )}
+          {renderResultSection() as any}
 
           {/* Shell error output */}
           {isShellCmd && tool.result && typeof tool.result === "object" && (tool.result as Record<string, unknown>).error && (
@@ -386,7 +401,6 @@ const FullSubAgentCard = memo(function FullSubAgentCard({
   const isInterrupted = subAgent.status === "interrupted";
   const isRunning = subAgent.status === "running";
   const isError = subAgent.status === "error";
-  const isDone = subAgent.status === "completed";
   const nestingDepth = Math.max(0, (subAgent.depth ?? 1) - 1);
 
   return (

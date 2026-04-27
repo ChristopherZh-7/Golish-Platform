@@ -31,7 +31,7 @@ export function DetachedView({ sessionId, tabType }: DetachedViewProps) {
   useEffect(() => {
     if (initialized.current) return;
     initialized.current = true;
-    ThemeManager.initialize().then(() => ThemeManager.tryLoadPersistedTheme()).catch(() => {});
+    ThemeManager.tryLoadPersistedTheme().catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -96,7 +96,7 @@ function DetachedTerminal({ sessionId, title }: { sessionId: string; title: stri
   useEffect(() => {
     if (themeInit.current) return;
     themeInit.current = true;
-    ThemeManager.initialize().then(() => ThemeManager.tryLoadPersistedTheme()).catch(() => {}).finally(() => setReady(true));
+    ThemeManager.tryLoadPersistedTheme().catch(() => {}).finally(() => setReady(true));
   }, []);
 
   const handleClose = useCallback(() => closeDetachedWindow(sessionId), [sessionId]);
@@ -144,7 +144,6 @@ function DetachedSecurity({ sessionId, title, securitySubTab }: { sessionId: str
     themeInitialized.current = true;
     (async () => {
       try {
-        await ThemeManager.initialize();
         await ThemeManager.tryLoadPersistedTheme();
       } catch { /* ignore */ }
       await getCurrentWindow().setFocus().catch(() => {});

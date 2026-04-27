@@ -44,17 +44,21 @@ export function VulnDetailView({
       .catch(() => {});
   }, [entry.cve_id]);
 
-  // Load fresh link data from DB when viewing this CVE
+  // Load fresh link data from DB when viewing this CVE (runs once per CVE)
   useEffect(() => {
+    let stale = false;
     invoke<DbVulnLinkFull>("vuln_link_get", { cveId: entry.cve_id })
       .then((dbLink) => {
-        const link = dbToVulnLink(dbLink);
-        if (link.wikiPaths.length > 0 || link.pocTemplates.length > 0 || link.scanHistory.length > 0) {
-          onUpdateLink(() => link);
+        if (stale) return;
+        const freshLink = dbToVulnLink(dbLink);
+        if (freshLink.wikiPaths.length > 0 || freshLink.pocTemplates.length > 0 || freshLink.scanHistory.length > 0) {
+          onUpdateLink(() => freshLink);
         }
       })
       .catch(() => {});
-  }, [entry.cve_id, onUpdateLink]);
+    return () => { stale = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- onUpdateLink is stable (useCallback), only re-run on cve_id change
+  }, [entry.cve_id]);
 
   const handleAiResearch = useCallback(async () => {
     setIngesting(true);
@@ -268,7 +272,10 @@ Update the product page frontmatter \`status\`:
       </div>
 
       {/* Detail content */}
-      <div className="flex-1 overflow-y-auto px-4 py-3">
+      <div className={cn(
+        "flex-1 min-h-0",
+        detailTab === "wiki" ? "overflow-hidden" : "overflow-y-auto px-4 py-3"
+      )}>
         {detailTab === "intel" && <IntelTab entry={entry} />}
         {detailTab === "wiki" && <WikiTab link={link} cveId={entry.cve_id} onUpdateLink={onUpdateLink} />}
         {detailTab === "poc" && <PocTab link={link} cveId={entry.cve_id} onUpdateLink={onUpdateLink} />}

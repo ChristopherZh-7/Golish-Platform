@@ -337,6 +337,15 @@ fn test_tool_config_main_agent() {
     assert!(config.is_tool_enabled("tavily_crawl"));
     assert!(config.is_tool_enabled("tavily_map"));
 
+    assert!(config.is_tool_enabled("search_knowledge_base"));
+    assert!(config.is_tool_enabled("read_knowledge"));
+    assert!(config.is_tool_enabled("write_knowledge"));
+    assert!(config.is_tool_enabled("ingest_cve"));
+    assert!(config.is_tool_enabled("save_poc"));
+    assert!(config.is_tool_enabled("list_cves_with_pocs"));
+    assert!(config.is_tool_enabled("list_unresearched_cves"));
+    assert!(config.is_tool_enabled("poc_stats"));
+
     assert!(!config.is_tool_enabled("run_pty_cmd"));
 
     assert!(!config.is_tool_enabled("save_skill"));
@@ -356,6 +365,10 @@ fn test_main_agent_tool_definitions() {
     assert!(tool_names.contains(&"list_files"));
     assert!(tool_names.contains(&"create_file"));
     assert!(tool_names.contains(&"delete_file"));
+    assert!(tool_names.contains(&"save_poc"));
+    assert!(tool_names.contains(&"list_cves_with_pocs"));
+    assert!(tool_names.contains(&"list_unresearched_cves"));
+    assert!(tool_names.contains(&"poc_stats"));
 
     assert!(!tool_names.contains(&"run_pty_cmd"));
 }

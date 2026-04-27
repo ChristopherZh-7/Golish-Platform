@@ -580,9 +580,16 @@ describe("App Keyboard Event Listener Subscription", () => {
         handleSplitPane: async () => {},
         handleClosePane: async () => {},
         handleNavigatePane: () => {},
+        openBrowserTab: () => {},
+        openSecurityTab: () => {},
+        toggleToolManager: () => {},
+        toggleWiki: () => {},
+        toggleBottomTerminal: () => {},
+        focusAiChat: () => {},
         setCommandPaletteOpen: () => {},
         setSidecarPanelOpen: () => {},
         setQuickOpenDialogOpen: () => {},
+        setShortcutsHelpOpen: () => {},
       },
     };
 

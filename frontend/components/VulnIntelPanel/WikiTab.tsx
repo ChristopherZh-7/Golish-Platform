@@ -392,7 +392,7 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
   const isEditing = editingPath === selectedPath;
 
   return (
-    <div className="flex h-full" style={{ minHeight: "300px" }}>
+    <div className="flex h-full min-h-0">
       {/* Left: categorized page list */}
       <div className="w-[220px] flex-shrink-0 border-r border-border/10 flex flex-col">
         {/* Header with actions */}
@@ -604,7 +604,7 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
       </div>
 
       {/* Right: article content */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         {selectedPath ? (
           <>
             {/* Article header */}
@@ -654,16 +654,13 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
               )}
             </div>
 
-            {/* Metadata row: path + tags + related CVEs */}
+            {/* Metadata row: path + tags (CVE badges hidden to reduce clutter) */}
             <div className="px-3 py-1.5 border-b border-border/3 space-y-1">
               <span className="text-[8px] font-mono text-muted-foreground/25">{selectedPath}</span>
-              {(selectedTags.length > 0 || selectedCves.length > 0) && (
+              {selectedTags.length > 0 && (
                 <div className="flex items-center gap-1 flex-wrap">
                   {selectedTags.map((tag) => (
                     <span key={tag} className="text-[7px] px-1 py-0.5 rounded bg-accent/10 text-accent/60">{tag}</span>
-                  ))}
-                  {selectedCves.filter((c) => c !== cveId).map((c) => (
-                    <span key={c} className="text-[7px] px-1 py-0.5 rounded bg-blue-500/10 text-blue-400/60">{c}</span>
                   ))}
                 </div>
               )}

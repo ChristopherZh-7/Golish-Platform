@@ -57,7 +57,10 @@ impl BridgeAgentExecutor {
         }
     }
 
-    /// Dispatch a subtask to a specific sub-agent (PentAGI-style specialist routing).
+    /// Dispatch a subtask to a specific sub-agent directly.
+    /// Currently unused: Primary orchestrates via sub_agent_* tools in the agentic loop.
+    /// Retained for potential future use (e.g., bypass Primary for performance-critical paths).
+    #[allow(dead_code)]
     async fn execute_via_sub_agent(
         &self,
         agent_def: &golish_sub_agents::SubAgentDefinition,
@@ -336,55 +339,23 @@ impl AgentExecutor for BridgeAgentExecutor {
     ) -> Result<AgentResult> {
         let agent_label = agent_type.unwrap_or("primary");
         tracing::info!(
-            "[TaskMode] Executing subtask: {} (agent: {})",
+            "[TaskMode] Executing subtask: {} (suggested agent: {})",
             subtask_title,
             agent_label,
         );
         let start = std::time::Instant::now();
 
-        // Try to route to the appropriate sub-agent for specialist work.
-        // This matches PentAGI's pattern where subtasks are dispatched to
-        // pentester, coder, searcher, etc. instead of the primary agent.
-        let content = if let Some(at) = agent_type {
-            let registry = self.bridge.sub_agent_registry().read().await;
-            let agent_def = registry.get(at).cloned();
-            drop(registry);
-
-            if let Some(agent_def) = agent_def {
-                tracing::info!(
-                    "[TaskMode] Dispatching subtask '{}' to sub-agent '{}'",
-                    subtask_title,
-                    at,
-                );
-                self.execute_via_sub_agent(
-                    &agent_def,
-                    subtask_title,
-                    subtask_description,
-                    execution_context,
-                )
-                .await?
-            } else {
-                tracing::info!(
-                    "[TaskMode] No sub-agent '{}' found, falling back to primary agent",
-                    at,
-                );
-                let prompt = prompts::primary_agent_subtask_prompt_with_agent(
-                    subtask_title,
-                    subtask_description,
-                    &execution_context.summary(),
-                    agent_type,
-                );
-                self.bridge.execute_isolated(&prompt).await?
-            }
-        } else {
-            let prompt = prompts::primary_agent_subtask_prompt_with_agent(
-                subtask_title,
-                subtask_description,
-                &execution_context.summary(),
-                agent_type,
-            );
-            self.bridge.execute_isolated(&prompt).await?
-        };
+        // Always execute via Primary agent (PentAGI-style orchestration).
+        // Primary has access to all sub_agent_* tools and decides autonomously
+        // which specialists to invoke. The agent_type from Generator is passed
+        // as a hint in the prompt, not as a hard routing constraint.
+        let prompt = prompts::primary_agent_subtask_prompt_with_agent(
+            subtask_title,
+            subtask_description,
+            &execution_context.summary(),
+            agent_type,
+        );
+        let content = self.bridge.execute_isolated(&prompt).await?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -394,7 +365,7 @@ impl AgentExecutor for BridgeAgentExecutor {
                 input_tokens: 0,
                 output_tokens: 0,
                 duration_ms,
-                phase: agent_label.to_string(),
+                phase: format!("primary_subtask:{}", agent_label),
             },
         ))
     }
@@ -459,86 +430,6 @@ impl AgentExecutor for BridgeAgentExecutor {
             .context("Reflector LLM call failed")
     }
 
-    async fn plan_subtask(
-        &self,
-        subtask_title: &str,
-        subtask_description: &str,
-        agent_type: &str,
-        execution_context: &ExecutionContext,
-    ) -> Result<Option<String>> {
-        tracing::info!(
-            "[TaskMode/Planner] Generating execution plan for '{}'",
-            subtask_title
-        );
-        let system = prompts::task_planner_system_prompt();
-        let user = prompts::task_planner_user_prompt(
-            agent_type,
-            subtask_title,
-            subtask_description,
-            &execution_context.summary(),
-        );
-        match self.simple_completion_for_phase(system, &user, Some("pipeline_planner")).await {
-            Ok(plan) if !plan.trim().is_empty() => Ok(Some(plan)),
-            Ok(_) => Ok(None),
-            Err(e) => {
-                tracing::warn!("[TaskMode/Planner] Plan generation failed: {}", e);
-                Ok(None)
-            }
-        }
-    }
-
-    async fn enrich(
-        &self,
-        subtask_title: &str,
-        subtask_result: &str,
-        _execution_context: &ExecutionContext,
-    ) -> Result<Option<String>> {
-        let db_tracker = match &self.bridge.services.db_tracker {
-            Some(t) => t,
-            None => return Ok(None),
-        };
-
-        let keywords: Vec<&str> = subtask_result
-            .split_whitespace()
-            .filter(|w| w.len() > 4)
-            .take(5)
-            .collect();
-
-        if keywords.is_empty() {
-            return Ok(None);
-        }
-
-        let memories = db_tracker
-            .fetch_memories_for_briefing(&keywords, 3)
-            .await;
-
-        if memories.is_empty() {
-            return Ok(None);
-        }
-
-        let mut enrichment = format!(
-            "Context gathered after subtask '{}':\n",
-            subtask_title
-        );
-        for mem in &memories {
-            let preview = if mem.content.len() > 200 {
-                let mut end = 200;
-                while !mem.content.is_char_boundary(end) && end > 0 {
-                    end -= 1;
-                }
-                format!("{}...", &mem.content[..end])
-            } else {
-                mem.content.clone()
-            };
-            enrichment.push_str(&format!("- [{}] {}\n", mem.mem_type, preview));
-        }
-
-        tracing::info!(
-            "[Enricher] Found {} relevant memories for '{}'",
-            memories.len(),
-            subtask_title
-        );
-
-        Ok(Some(enrichment))
-    }
+    // plan_subtask and enrich removed: PentAGI-style flow delegates knowledge
+    // retrieval to agents themselves via their memory/search tools.
 }

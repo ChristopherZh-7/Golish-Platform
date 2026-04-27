@@ -80,6 +80,8 @@ export function UninstallConfirmDialog({ target, onCancel, onConfirm }: {
     actionDesc = t("toolManager.uninstallBrewCmd", { pkg });
   } else if (via === "gem" || method === "gem") {
     actionDesc = t("toolManager.uninstallGemCmd", { pkg });
+  } else if (via === "pip" || method === "pip") {
+    actionDesc = t("toolManager.uninstallPipCmd", { pkg });
   } else if (via === "system_path") {
     actionDesc = t("toolManager.uninstallSystemPath", {
       executable: target.executable || target.name,

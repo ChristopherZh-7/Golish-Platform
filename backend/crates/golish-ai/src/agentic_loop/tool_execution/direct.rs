@@ -12,13 +12,12 @@ use tokio::sync::mpsc;
 
 use golish_core::events::AiEvent;
 use golish_core::utils::{is_tool_result_success, truncate_str};
-use golish_sub_agents::{execute_sub_agent, SubAgentContext, SubAgentExecutorContext};
+use golish_sub_agents::{SubAgentContext, SubAgentExecutorContext, execute_sub_agent};
 
 use super::super::sub_agent_dispatch::{build_sub_agent_briefing, execute_sub_agent_with_client};
 use super::super::{AgenticLoopContext, ToolExecutionResult};
 use crate::tool_executors::{execute_ask_human_tool, execute_plan_tool, execute_web_fetch_tool};
 use crate::tool_provider_impl::DefaultToolProvider;
-
 
 /// Execute a tool directly for generic models (after approval or auto-approved).
 pub async fn execute_tool_direct_generic<M>(
@@ -45,17 +44,24 @@ where
     }
 
     if tool_name == "update_plan" {
-        let (value, success) = execute_plan_tool(ctx.plan_manager, ctx.events.event_tx, tool_args).await;
+        let (value, success) =
+            execute_plan_tool(ctx.plan_manager, ctx.events.event_tx, tool_args).await;
         return Ok(ToolExecutionResult { value, success });
     }
 
     if matches!(
         tool_name,
-        "search_memories" | "store_memory" | "list_memories"
-        | "search_code" | "save_code" | "search_guide" | "save_guide"
+        "search_memories"
+            | "store_memory"
+            | "list_memories"
+            | "search_code"
+            | "save_code"
+            | "search_guide"
+            | "save_guide"
     ) {
         if let Some((value, success)) =
-            crate::tool_executors::execute_memory_tool(tool_name, tool_args, ctx.events.db_tracker).await
+            crate::tool_executors::execute_memory_tool(tool_name, tool_args, ctx.events.db_tracker)
+                .await
         {
             return Ok(ToolExecutionResult { value, success });
         }
@@ -68,10 +74,16 @@ where
             | "read_knowledge"
             | "ingest_cve"
             | "save_poc"
+            | "list_cves_with_pocs"
+            | "list_unresearched_cves"
+            | "poc_stats"
     ) {
-        if let Some((value, success)) =
-            crate::tool_executors::execute_knowledge_base_tool(tool_name, tool_args, ctx.events.db_tracker)
-                .await
+        if let Some((value, success)) = crate::tool_executors::execute_knowledge_base_tool(
+            tool_name,
+            tool_args,
+            ctx.events.db_tracker,
+        )
+        .await
         {
             return Ok(ToolExecutionResult { value, success });
         }
@@ -141,15 +153,27 @@ where
             if effective_tool_name == "run_pty_cmd" && is_success {
                 if let Some(tracker) = ctx.events.db_tracker {
                     let pool = tracker.pool_arc().clone();
-                    let stdout = v.get("stdout").and_then(|s| s.as_str()).unwrap_or("").to_string();
-                    let command = tool_args.get("command").and_then(|c| c.as_str()).unwrap_or("").to_string();
+                    let stdout = v
+                        .get("stdout")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let command = tool_args
+                        .get("command")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     let ws = ctx.workspace.read().await;
                     let pp = ws.to_string_lossy().to_string();
                     drop(ws);
                     tokio::spawn(async move {
                         let _ = golish_pentest::output_store::maybe_detect_and_store(
-                            &pool, &command, &stdout, Some(&pp),
-                        ).await;
+                            &pool,
+                            &command,
+                            &stdout,
+                            Some(&pp),
+                        )
+                        .await;
                     });
                 }
             }
@@ -165,7 +189,6 @@ where
         }),
     }
 }
-
 
 /// Handle sub-agent tool calls (tool names starting with `sub_agent_`).
 async fn execute_sub_agent_call<M>(
@@ -195,10 +218,7 @@ where
 
     let tool_provider = DefaultToolProvider::with_db_tracker(ctx.events.db_tracker);
 
-    let task_desc = tool_args
-        .get("task")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let task_desc = tool_args.get("task").and_then(|v| v.as_str()).unwrap_or("");
     let briefing = build_sub_agent_briefing(ctx.events.db_tracker, agent_id, task_desc).await;
 
     let result = if let Some((override_provider, override_model)) = &agent_def.model_override {
@@ -211,7 +231,10 @@ where
                 Err(e) => {
                     tracing::warn!(
                         "Failed to create override model {}/{} for sub-agent '{}': {}. Using main model.",
-                        override_provider, override_model, agent_id, e
+                        override_provider,
+                        override_model,
+                        agent_id,
+                        e
                     );
                     None
                 }
@@ -369,7 +392,7 @@ pub(crate) async fn execute_shell_command_streaming(
     tool_id: &str,
     ctx: &AgenticLoopContext<'_>,
 ) -> Result<ToolExecutionResult> {
-    use golish_shell_exec::{execute_streaming, OutputChunk};
+    use golish_shell_exec::{OutputChunk, execute_streaming};
 
     let command = tool_args
         .get("command")
@@ -445,8 +468,7 @@ pub(crate) async fn execute_shell_command_streaming(
             }
 
             if streaming_result.timed_out {
-                value["error"] =
-                    json!(format!("Command timed out after {} seconds", timeout_secs));
+                value["error"] = json!(format!("Command timed out after {} seconds", timeout_secs));
                 value["timeout"] = json!(true);
             } else if exit_code != 0 {
                 let error_output = if streaming_result.stderr.is_empty() {

@@ -1,4 +1,4 @@
-import { useCallback, useRef, type MutableRefObject } from "react";
+import { useCallback, type MutableRefObject } from "react";
 import {
   cancelAiGeneration,
   createTextPayload,

@@ -35,7 +35,6 @@ impl TaskOrchestrator {
         let mut exec_ctx = ExecutionContext {
             completed_results: Vec::new(),
             task_input: String::new(),
-            enrichment_context: Vec::new(),
         };
 
         if start_index > 0 {
@@ -165,34 +164,6 @@ impl TaskOrchestrator {
                 subtask_index as u32 + 2,
             );
 
-            // Enricher: search for additional context after subtask completion
-            match executor
-                .enrich(&planned.title, &result_text, &exec_ctx)
-                .await
-            {
-                Ok(Some(enrichment)) => {
-                    tracing::info!(
-                        "[Enricher] Added {} chars of context after '{}'",
-                        enrichment.len(),
-                        planned.title
-                    );
-                    if let Some(ref st) = db_subtask {
-                        let _ =
-                            subtasks::set_context(&self.pool, st.id, &enrichment).await;
-                        self.emit(AiEvent::EnricherResult {
-                            task_id: task_id.to_string(),
-                            subtask_id: st.id.to_string(),
-                            context_added: truncate(&enrichment, 300),
-                        });
-                    }
-                    exec_ctx.enrichment_context.push(enrichment);
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::warn!("[Enricher] Failed after '{}': {}", planned.title, e);
-                }
-            }
-
             subtask_index += 1;
 
             // Refine remaining plan (unless this was the last subtask)
@@ -265,6 +236,11 @@ impl TaskOrchestrator {
     }
 
     /// Execute a single subtask with reflector retry and optional user input pause.
+    ///
+    /// Follows PentAGI's simplified flow: the subtask description is passed
+    /// directly to the Primary agent (via `execute_subtask`), which decides
+    /// autonomously which specialist sub-agents to invoke. No pre-enrichment
+    /// or pre-planning layers — agents search their own knowledge stores.
     async fn execute_single_subtask(
         &mut self,
         planned: &PlannedSubtask,
@@ -273,75 +249,14 @@ impl TaskOrchestrator {
         db_subtask: &Option<golish_db::models::Subtask>,
         task_id: Uuid,
     ) -> (String, Option<AgentTokenUsage>) {
-        // Pre-fetch: search knowledge base for relevant guides/memories BEFORE execution.
-        // PentAGI's agents always search their guide store before acting.
-        let pre_knowledge = match executor
-            .enrich(&planned.title, &planned.description, exec_ctx)
-            .await
-        {
-            Ok(Some(knowledge)) => {
-                tracing::info!(
-                    "[PreFetch] Found {} chars of prior knowledge for '{}'",
-                    knowledge.len(),
-                    planned.title
-                );
-                Some(knowledge)
-            }
-            Ok(None) => None,
-            Err(e) => {
-                tracing::debug!("[PreFetch] Knowledge search failed for '{}': {}", planned.title, e);
-                None
-            }
-        };
-
-        // Task Planner: generate an execution plan before the agent starts.
         let agent_type = planned.agent.as_deref().unwrap_or("primary");
-        let description_with_knowledge = if let Some(ref knowledge) = pre_knowledge {
-            format!(
-                "{}\n\n## PRIOR KNOWLEDGE\n\n\
-                 The following relevant information was found in the knowledge base:\n\n{}",
-                planned.description, knowledge
-            )
-        } else {
-            planned.description.clone()
-        };
-
-        let effective_description = match executor
-            .plan_subtask(&planned.title, &description_with_knowledge, agent_type, exec_ctx)
-            .await
-        {
-            Ok(Some(plan)) => {
-                tracing::info!(
-                    "[TaskPlanner] Generated {} char plan for '{}'",
-                    plan.len(),
-                    planned.title
-                );
-                format!(
-                    "<task_assignment>\n\
-                     <original_request>\n{}\n</original_request>\n\n\
-                     <execution_plan>\n{}\n</execution_plan>\n\n\
-                     <hint>\n\
-                     The original_request is the primary objective.\n\
-                     The execution_plan was prepared by analyzing the broader context.\n\
-                     Use this plan as guidance, but adapt to actual circumstances.\n\
-                     </hint>\n\
-                     </task_assignment>",
-                    description_with_knowledge, plan
-                )
-            }
-            Ok(None) => description_with_knowledge,
-            Err(e) => {
-                tracing::warn!("[TaskPlanner] Plan generation failed: {}", e);
-                description_with_knowledge
-            }
-        };
 
         let mut last_result: Option<AgentResult> = None;
 
         for reflector_attempt in 0..=MAX_REFLECTOR_RETRIES {
             let exec_result = if reflector_attempt == 0 {
                 executor
-                    .execute_subtask(&planned.title, &effective_description, exec_ctx, Some(agent_type))
+                    .execute_subtask(&planned.title, &planned.description, exec_ctx, Some(agent_type))
                     .await
             } else {
                 let prev_response = last_result
