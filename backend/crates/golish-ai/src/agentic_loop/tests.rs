@@ -714,8 +714,8 @@ mod openai_tracing_tests {
         let client = Arc::new(RwLock::new(LlmClient::Mock));
         let mut ctx = test_ctx.as_agentic_context_with_client(&client);
         // Use openai_reasoning provider to test the correct code path
-        ctx.provider_name = "openai_reasoning";
-        ctx.model_name = "gpt-5.2";
+        ctx.llm.provider_name = "openai_reasoning";
+        ctx.llm.model_name = "gpt-5.2";
 
         let initial_history = vec![rig::completion::Message::User {
             content: rig::one_or_many::OneOrMany::one(rig::message::UserContent::Text(
@@ -791,8 +791,8 @@ mod openai_tracing_tests {
 
         let client = Arc::new(RwLock::new(LlmClient::Mock));
         let mut ctx = test_ctx.as_agentic_context_with_client(&client);
-        ctx.provider_name = "openai_reasoning";
-        ctx.model_name = "gpt-5.2";
+        ctx.llm.provider_name = "openai_reasoning";
+        ctx.llm.model_name = "gpt-5.2";
 
         let initial_history = vec![rig::completion::Message::User {
             content: rig::one_or_many::OneOrMany::one(rig::message::UserContent::Text(
@@ -861,8 +861,8 @@ mod openai_tracing_tests {
 
         let client = Arc::new(RwLock::new(LlmClient::Mock));
         let mut ctx = test_ctx.as_agentic_context_with_client(&client);
-        ctx.provider_name = "openai_reasoning";
-        ctx.model_name = "gpt-5.2-codex";
+        ctx.llm.provider_name = "openai_reasoning";
+        ctx.llm.model_name = "gpt-5.2-codex";
 
         let initial_history = vec![rig::completion::Message::User {
             content: rig::one_or_many::OneOrMany::one(rig::message::UserContent::Text(
@@ -954,8 +954,8 @@ mod openai_tracing_tests {
 
         let client = Arc::new(RwLock::new(LlmClient::Mock));
         let mut ctx = test_ctx.as_agentic_context_with_client(&client);
-        ctx.provider_name = "openai_reasoning";
-        ctx.model_name = "gpt-5.2";
+        ctx.llm.provider_name = "openai_reasoning";
+        ctx.llm.model_name = "gpt-5.2";
 
         let initial_history = vec![rig::completion::Message::User {
             content: rig::one_or_many::OneOrMany::one(rig::message::UserContent::Text(
