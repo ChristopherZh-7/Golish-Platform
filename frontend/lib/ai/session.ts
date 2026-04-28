@@ -86,12 +86,12 @@ export async function updateAiWorkspace(workspace: string, sessionId?: string): 
   return invoke("update_ai_workspace", { workspace, sessionId });
 }
 
-export async function clearAiConversation(): Promise<void> {
-  return invoke("clear_ai_conversation");
+export async function clearAiConversation(sessionId?: string): Promise<void> {
+  return invoke("clear_ai_conversation", { sessionId });
 }
 
-export async function getAiConversationLength(): Promise<number> {
-  return invoke("get_ai_conversation_length");
+export async function getAiConversationLength(sessionId?: string): Promise<number> {
+  return invoke("get_ai_conversation_length", { sessionId });
 }
 
 export async function initAiSession(sessionId: string, config: ProviderConfig): Promise<void> {
