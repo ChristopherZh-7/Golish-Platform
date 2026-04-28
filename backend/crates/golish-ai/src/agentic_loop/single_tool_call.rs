@@ -209,7 +209,9 @@ where
                 .get("stdout")
                 .and_then(|s| s.as_str())
                 .unwrap_or("");
-            golish_pentest::output_store::has_structured_storage(cmd, stdout)
+            ctx.output_classifier
+                .as_ref()
+                .map_or(false, |classifier| classifier(cmd, stdout))
         } else {
             false
         };

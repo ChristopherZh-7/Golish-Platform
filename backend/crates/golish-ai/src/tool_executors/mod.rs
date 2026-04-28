@@ -22,7 +22,6 @@ mod memory;
 pub mod knowledge_base;
 pub mod security;
 mod graph;
-mod sploitus;
 mod shell;
 
 pub use common::{ToolResult, error_result, extract_string_param};
@@ -33,7 +32,6 @@ pub use memory::execute_memory_tool;
 pub use knowledge_base::execute_knowledge_base_tool;
 pub use security::execute_security_analysis_tool;
 pub use graph::execute_graph_tool;
-pub use sploitus::execute_sploitus_tool;
 pub use shell::normalize_run_pty_cmd_args;
 
 #[cfg(test)]
