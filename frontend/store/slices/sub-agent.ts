@@ -354,7 +354,7 @@ export const createSubAgentActions = (
     }),
 
   clearActiveSubAgents: (sessionId) =>
-    set((state) => {
+    set((state: any) => {
       state.activeSubAgents[sessionId] = [];
     }),
 });
