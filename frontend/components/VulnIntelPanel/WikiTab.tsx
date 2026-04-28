@@ -280,14 +280,6 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
     return [];
   };
 
-  const extractCves = (content: string): string[] => {
-    const fm = content.match(/^---\n([\s\S]*?)\n---/);
-    if (!fm) return [];
-    const m = fm[1].match(/cves:\s*\[([^\]]*)\]/);
-    if (m) return m[1].split(",").map((c) => c.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
-    return [];
-  };
-
   // Intercept wiki-link clicks in rendered markdown
   const handleContentClick = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
@@ -388,7 +380,6 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
   const selectedStatus = selectedContent ? extractStatus(selectedContent) : null;
   const selectedBody = selectedContent ? stripFrontmatter(selectedContent) : "";
   const selectedTags = selectedContent ? extractTags(selectedContent) : [];
-  const selectedCves = selectedContent ? extractCves(selectedContent) : [];
   const isEditing = editingPath === selectedPath;
 
   return (
