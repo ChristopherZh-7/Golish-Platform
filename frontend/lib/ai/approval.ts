@@ -7,32 +7,32 @@ import type {
   ToolApprovalConfig,
 } from "./types";
 
-export async function getApprovalPatterns(): Promise<ApprovalPattern[]> {
-  return invoke("get_approval_patterns");
+export async function getApprovalPatterns(sessionId?: string): Promise<ApprovalPattern[]> {
+  return invoke("get_approval_patterns", { sessionId });
 }
 
-export async function getToolApprovalPattern(toolName: string): Promise<ApprovalPattern | null> {
-  return invoke("get_tool_approval_pattern", { toolName });
+export async function getToolApprovalPattern(toolName: string, sessionId?: string): Promise<ApprovalPattern | null> {
+  return invoke("get_tool_approval_pattern", { toolName, sessionId });
 }
 
-export async function getHitlConfig(): Promise<ToolApprovalConfig> {
-  return invoke("get_hitl_config");
+export async function getHitlConfig(sessionId?: string): Promise<ToolApprovalConfig> {
+  return invoke("get_hitl_config", { sessionId });
 }
 
-export async function setHitlConfig(config: ToolApprovalConfig): Promise<void> {
-  return invoke("set_hitl_config", { config });
+export async function setHitlConfig(config: ToolApprovalConfig, sessionId?: string): Promise<void> {
+  return invoke("set_hitl_config", { config, sessionId });
 }
 
-export async function addToolAlwaysAllow(toolName: string): Promise<void> {
-  return invoke("add_tool_always_allow", { toolName });
+export async function addToolAlwaysAllow(toolName: string, sessionId?: string): Promise<void> {
+  return invoke("add_tool_always_allow", { toolName, sessionId });
 }
 
-export async function removeToolAlwaysAllow(toolName: string): Promise<void> {
-  return invoke("remove_tool_always_allow", { toolName });
+export async function removeToolAlwaysAllow(toolName: string, sessionId?: string): Promise<void> {
+  return invoke("remove_tool_always_allow", { toolName, sessionId });
 }
 
-export async function resetApprovalPatterns(): Promise<void> {
-  return invoke("reset_approval_patterns");
+export async function resetApprovalPatterns(sessionId?: string): Promise<void> {
+  return invoke("reset_approval_patterns", { sessionId });
 }
 
 export async function respondToToolApproval(
