@@ -38,16 +38,16 @@ export async function exportAiSessionTranscript(
   return invoke("export_ai_session_transcript", { identifier, outputPath });
 }
 
-export async function setAiSessionPersistence(enabled: boolean): Promise<void> {
-  return invoke("set_ai_session_persistence", { enabled });
+export async function setAiSessionPersistence(enabled: boolean, sessionId?: string): Promise<void> {
+  return invoke("set_ai_session_persistence", { enabled, sessionId });
 }
 
-export async function isAiSessionPersistenceEnabled(): Promise<boolean> {
-  return invoke("is_ai_session_persistence_enabled");
+export async function isAiSessionPersistenceEnabled(sessionId?: string): Promise<boolean> {
+  return invoke("is_ai_session_persistence_enabled", { sessionId });
 }
 
-export async function finalizeAiSession(): Promise<string | null> {
-  return invoke("finalize_ai_session");
+export async function finalizeAiSession(sessionId?: string): Promise<string | null> {
+  return invoke("finalize_ai_session", { sessionId });
 }
 
 export async function restoreAiSession(
