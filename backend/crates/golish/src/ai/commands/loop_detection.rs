@@ -2,6 +2,7 @@
 
 use tauri::State;
 
+use super::ai_session_not_initialized_error;
 use crate::state::AppState;
 use golish_ai::loop_detection::{LoopDetectorStats, LoopProtectionConfig};
 
@@ -9,10 +10,15 @@ use golish_ai::loop_detection::{LoopDetectorStats, LoopProtectionConfig};
 #[tauri::command]
 pub async fn get_loop_protection_config(
     state: State<'_, AppState>,
+    session_id: Option<String>,
 ) -> Result<LoopProtectionConfig, String> {
-    let bridge_guard = state.ai_state.get_bridge().await?;
-    let bridge = bridge_guard.as_ref().unwrap();
-    Ok(bridge.get_loop_protection_config().await)
+    if let Some(ref sid) = session_id {
+        let bridge = state.ai_state.get_session_bridge(sid).await
+            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
+        return Ok(bridge.get_loop_protection_config().await);
+    }
+    let guard = state.ai_state.get_bridge().await?;
+    Ok(guard.as_ref().unwrap().get_loop_protection_config().await)
 }
 
 /// Set the loop protection configuration.
@@ -20,10 +26,16 @@ pub async fn get_loop_protection_config(
 pub async fn set_loop_protection_config(
     state: State<'_, AppState>,
     config: LoopProtectionConfig,
+    session_id: Option<String>,
 ) -> Result<(), String> {
-    let bridge_guard = state.ai_state.get_bridge().await?;
-    let bridge = bridge_guard.as_ref().unwrap();
-    bridge.set_loop_protection_config(config).await;
+    if let Some(ref sid) = session_id {
+        let bridge = state.ai_state.get_session_bridge(sid).await
+            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
+        bridge.set_loop_protection_config(config).await;
+        return Ok(());
+    }
+    let guard = state.ai_state.get_bridge().await?;
+    guard.as_ref().unwrap().set_loop_protection_config(config).await;
     Ok(())
 }
 
@@ -31,44 +43,79 @@ pub async fn set_loop_protection_config(
 #[tauri::command]
 pub async fn get_loop_detector_stats(
     state: State<'_, AppState>,
+    session_id: Option<String>,
 ) -> Result<LoopDetectorStats, String> {
-    let bridge_guard = state.ai_state.get_bridge().await?;
-    let bridge = bridge_guard.as_ref().unwrap();
-    Ok(bridge.get_loop_detector_stats().await)
+    if let Some(ref sid) = session_id {
+        let bridge = state.ai_state.get_session_bridge(sid).await
+            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
+        return Ok(bridge.get_loop_detector_stats().await);
+    }
+    let guard = state.ai_state.get_bridge().await?;
+    Ok(guard.as_ref().unwrap().get_loop_detector_stats().await)
 }
 
 /// Check if loop detection is currently enabled.
 #[tauri::command]
-pub async fn is_loop_detection_enabled(state: State<'_, AppState>) -> Result<bool, String> {
-    let bridge_guard = state.ai_state.get_bridge().await?;
-    let bridge = bridge_guard.as_ref().unwrap();
-    Ok(bridge.is_loop_detection_enabled().await)
+pub async fn is_loop_detection_enabled(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+) -> Result<bool, String> {
+    if let Some(ref sid) = session_id {
+        let bridge = state.ai_state.get_session_bridge(sid).await
+            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
+        return Ok(bridge.is_loop_detection_enabled().await);
+    }
+    let guard = state.ai_state.get_bridge().await?;
+    Ok(guard.as_ref().unwrap().is_loop_detection_enabled().await)
 }
 
 /// Disable loop detection for the current session.
-/// This allows the agent to continue even if loops are detected.
 #[tauri::command]
-pub async fn disable_loop_detection(state: State<'_, AppState>) -> Result<(), String> {
-    let bridge_guard = state.ai_state.get_bridge().await?;
-    let bridge = bridge_guard.as_ref().unwrap();
-    bridge.disable_loop_detection_for_session().await;
+pub async fn disable_loop_detection(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+) -> Result<(), String> {
+    if let Some(ref sid) = session_id {
+        let bridge = state.ai_state.get_session_bridge(sid).await
+            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
+        bridge.disable_loop_detection_for_session().await;
+        return Ok(());
+    }
+    let guard = state.ai_state.get_bridge().await?;
+    guard.as_ref().unwrap().disable_loop_detection_for_session().await;
     Ok(())
 }
 
 /// Re-enable loop detection.
 #[tauri::command]
-pub async fn enable_loop_detection(state: State<'_, AppState>) -> Result<(), String> {
-    let bridge_guard = state.ai_state.get_bridge().await?;
-    let bridge = bridge_guard.as_ref().unwrap();
-    bridge.enable_loop_detection().await;
+pub async fn enable_loop_detection(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+) -> Result<(), String> {
+    if let Some(ref sid) = session_id {
+        let bridge = state.ai_state.get_session_bridge(sid).await
+            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
+        bridge.enable_loop_detection().await;
+        return Ok(());
+    }
+    let guard = state.ai_state.get_bridge().await?;
+    guard.as_ref().unwrap().enable_loop_detection().await;
     Ok(())
 }
 
 /// Reset the loop detector (clears all tracking).
 #[tauri::command]
-pub async fn reset_loop_detector(state: State<'_, AppState>) -> Result<(), String> {
-    let bridge_guard = state.ai_state.get_bridge().await?;
-    let bridge = bridge_guard.as_ref().unwrap();
-    bridge.reset_loop_detector().await;
+pub async fn reset_loop_detector(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+) -> Result<(), String> {
+    if let Some(ref sid) = session_id {
+        let bridge = state.ai_state.get_session_bridge(sid).await
+            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
+        bridge.reset_loop_detector().await;
+        return Ok(());
+    }
+    let guard = state.ai_state.get_bridge().await?;
+    guard.as_ref().unwrap().reset_loop_detector().await;
     Ok(())
 }

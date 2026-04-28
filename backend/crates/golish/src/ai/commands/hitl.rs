@@ -11,12 +11,16 @@ use golish_core::hitl::ApprovalDecision;
 #[tauri::command]
 pub async fn get_approval_patterns(
     state: State<'_, AppState>,
+    session_id: Option<String>,
 ) -> Result<Vec<ApprovalPattern>, String> {
+    if let Some(ref sid) = session_id {
+        let bridge = state.ai_state.get_session_bridge(sid).await
+            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
+        return Ok(bridge.get_approval_patterns().await);
+    }
     let bridge_guard = state.ai_state.get_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
-
-    let patterns = bridge.get_approval_patterns().await;
-    Ok(patterns)
+    Ok(bridge.get_approval_patterns().await)
 }
 
 /// Get the approval pattern for a specific tool.
@@ -24,22 +28,32 @@ pub async fn get_approval_patterns(
 pub async fn get_tool_approval_pattern(
     state: State<'_, AppState>,
     tool_name: String,
+    session_id: Option<String>,
 ) -> Result<Option<ApprovalPattern>, String> {
+    if let Some(ref sid) = session_id {
+        let bridge = state.ai_state.get_session_bridge(sid).await
+            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
+        return Ok(bridge.get_tool_approval_pattern(&tool_name).await);
+    }
     let bridge_guard = state.ai_state.get_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
-
-    let pattern = bridge.get_tool_approval_pattern(&tool_name).await;
-    Ok(pattern)
+    Ok(bridge.get_tool_approval_pattern(&tool_name).await)
 }
 
 /// Get the HITL configuration.
 #[tauri::command]
-pub async fn get_hitl_config(state: State<'_, AppState>) -> Result<ToolApprovalConfig, String> {
+pub async fn get_hitl_config(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+) -> Result<ToolApprovalConfig, String> {
+    if let Some(ref sid) = session_id {
+        let bridge = state.ai_state.get_session_bridge(sid).await
+            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
+        return Ok(bridge.get_hitl_config().await);
+    }
     let bridge_guard = state.ai_state.get_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
-
-    let config = bridge.get_hitl_config().await;
-    Ok(config)
+    Ok(bridge.get_hitl_config().await)
 }
 
 /// Update the HITL configuration.
@@ -47,14 +61,16 @@ pub async fn get_hitl_config(state: State<'_, AppState>) -> Result<ToolApprovalC
 pub async fn set_hitl_config(
     state: State<'_, AppState>,
     config: ToolApprovalConfig,
+    session_id: Option<String>,
 ) -> Result<(), String> {
+    if let Some(ref sid) = session_id {
+        let bridge = state.ai_state.get_session_bridge(sid).await
+            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
+        return bridge.set_hitl_config(config).await.map_err(|e| e.to_string());
+    }
     let bridge_guard = state.ai_state.get_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
-
-    bridge
-        .set_hitl_config(config)
-        .await
-        .map_err(|e| e.to_string())
+    bridge.set_hitl_config(config).await.map_err(|e| e.to_string())
 }
 
 /// Add a tool to the always-allow list.
@@ -62,14 +78,16 @@ pub async fn set_hitl_config(
 pub async fn add_tool_always_allow(
     state: State<'_, AppState>,
     tool_name: String,
+    session_id: Option<String>,
 ) -> Result<(), String> {
+    if let Some(ref sid) = session_id {
+        let bridge = state.ai_state.get_session_bridge(sid).await
+            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
+        return bridge.add_tool_always_allow(&tool_name).await.map_err(|e| e.to_string());
+    }
     let bridge_guard = state.ai_state.get_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
-
-    bridge
-        .add_tool_always_allow(&tool_name)
-        .await
-        .map_err(|e| e.to_string())
+    bridge.add_tool_always_allow(&tool_name).await.map_err(|e| e.to_string())
 }
 
 /// Remove a tool from the always-allow list.
@@ -77,38 +95,35 @@ pub async fn add_tool_always_allow(
 pub async fn remove_tool_always_allow(
     state: State<'_, AppState>,
     tool_name: String,
+    session_id: Option<String>,
 ) -> Result<(), String> {
+    if let Some(ref sid) = session_id {
+        let bridge = state.ai_state.get_session_bridge(sid).await
+            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
+        return bridge.remove_tool_always_allow(&tool_name).await.map_err(|e| e.to_string());
+    }
     let bridge_guard = state.ai_state.get_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
-
-    bridge
-        .remove_tool_always_allow(&tool_name)
-        .await
-        .map_err(|e| e.to_string())
+    bridge.remove_tool_always_allow(&tool_name).await.map_err(|e| e.to_string())
 }
 
 /// Reset all approval patterns (does not reset configuration).
 #[tauri::command]
-pub async fn reset_approval_patterns(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn reset_approval_patterns(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+) -> Result<(), String> {
+    if let Some(ref sid) = session_id {
+        let bridge = state.ai_state.get_session_bridge(sid).await
+            .ok_or_else(|| ai_session_not_initialized_error(sid))?;
+        return bridge.reset_approval_patterns().await.map_err(|e| e.to_string());
+    }
     let bridge_guard = state.ai_state.get_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
-
-    bridge
-        .reset_approval_patterns()
-        .await
-        .map_err(|e| e.to_string())
+    bridge.reset_approval_patterns().await.map_err(|e| e.to_string())
 }
 
 /// Respond to a tool approval request.
-///
-/// This is called by the frontend after the user makes a decision in the approval dialog.
-///
-/// # Arguments
-/// * `session_id` - The session ID where the approval request originated
-/// * `decision` - The user's approval decision
-///
-/// IMPORTANT: Uses get_session_bridge() to clone the Arc and release the map
-/// lock immediately, avoiding deadlocks when other tasks need write access.
 #[tauri::command]
 pub async fn respond_to_tool_approval(
     state: State<'_, AppState>,

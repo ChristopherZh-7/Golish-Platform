@@ -12,7 +12,17 @@ use golish_session::{self as golish_sess, GolishMessageRole, GolishSessionSnapsh
 /// This also ends the current sidecar session (if any) so that a new session
 /// will be started with the next prompt.
 #[tauri::command]
-pub async fn clear_ai_conversation(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn clear_ai_conversation(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+) -> Result<(), String> {
+    if let Some(ref sid) = session_id {
+        let bridge = state.ai_state.get_session_bridge(sid).await
+            .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
+        bridge.clear_conversation_history().await;
+        tracing::info!("AI conversation history cleared for session {}", sid);
+        return Ok(());
+    }
     let bridge_guard = state.ai_state.get_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
     bridge.clear_conversation_history().await;
@@ -68,10 +78,17 @@ pub async fn restore_ai_conversation(
 /// Get the current conversation history length.
 /// Useful for debugging or showing context status in the UI.
 #[tauri::command]
-pub async fn get_ai_conversation_length(state: State<'_, AppState>) -> Result<usize, String> {
-    let bridge_guard = state.ai_state.get_bridge().await?;
-    let bridge = bridge_guard.as_ref().unwrap();
-    Ok(bridge.conversation_history_len().await)
+pub async fn get_ai_conversation_length(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+) -> Result<usize, String> {
+    if let Some(ref sid) = session_id {
+        let bridge = state.ai_state.get_session_bridge(sid).await
+            .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
+        return Ok(bridge.conversation_history_len().await);
+    }
+    let guard = state.ai_state.get_bridge().await?;
+    Ok(guard.as_ref().unwrap().conversation_history_len().await)
 }
 
 /// List recent AI conversation sessions.
@@ -136,32 +153,48 @@ pub async fn load_ai_session(
 pub async fn set_ai_session_persistence(
     state: State<'_, AppState>,
     enabled: bool,
+    session_id: Option<String>,
 ) -> Result<(), String> {
-    let bridge_guard = state.ai_state.get_bridge().await?;
-    let bridge = bridge_guard.as_ref().unwrap();
-
-    bridge.set_session_persistence_enabled(enabled).await;
+    if let Some(ref sid) = session_id {
+        let bridge = state.ai_state.get_session_bridge(sid).await
+            .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
+        bridge.set_session_persistence_enabled(enabled).await;
+        return Ok(());
+    }
+    let guard = state.ai_state.get_bridge().await?;
+    guard.as_ref().unwrap().set_session_persistence_enabled(enabled).await;
     Ok(())
 }
 
 /// Check if session persistence is enabled.
 #[tauri::command]
-pub async fn is_ai_session_persistence_enabled(state: State<'_, AppState>) -> Result<bool, String> {
-    let bridge_guard = state.ai_state.get_bridge().await?;
-    let bridge = bridge_guard.as_ref().unwrap();
-
-    Ok(bridge.is_session_persistence_enabled().await)
+pub async fn is_ai_session_persistence_enabled(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+) -> Result<bool, String> {
+    if let Some(ref sid) = session_id {
+        let bridge = state.ai_state.get_session_bridge(sid).await
+            .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
+        return Ok(bridge.is_session_persistence_enabled().await);
+    }
+    let guard = state.ai_state.get_bridge().await?;
+    Ok(guard.as_ref().unwrap().is_session_persistence_enabled().await)
 }
 
 /// Manually finalize and save the current session.
-///
-/// Returns the path to the saved session file, if any.
 #[tauri::command]
-pub async fn finalize_ai_session(state: State<'_, AppState>) -> Result<Option<String>, String> {
-    let bridge_guard = state.ai_state.get_bridge().await?;
-    let bridge = bridge_guard.as_ref().unwrap();
-
-    let path = bridge.finalize_session().await;
+pub async fn finalize_ai_session(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+) -> Result<Option<String>, String> {
+    if let Some(ref sid) = session_id {
+        let bridge = state.ai_state.get_session_bridge(sid).await
+            .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
+        let path = bridge.finalize_session().await;
+        return Ok(path.map(|p| p.display().to_string()));
+    }
+    let guard = state.ai_state.get_bridge().await?;
+    let path = guard.as_ref().unwrap().finalize_session().await;
     Ok(path.map(|p| p.display().to_string()))
 }
 

@@ -134,11 +134,7 @@ impl AiState {
 
     // ========== Legacy single bridge methods (for backwards compatibility) ==========
 
-    /// Get a read guard to the legacy bridge, returning an error if not initialized.
-    ///
-    /// DEPRECATED: Use with_session_bridge instead.
-    /// This helper reduces boilerplate in command handlers by providing
-    /// a consistent way to access the bridge with proper error handling.
+    /// DEPRECATED: Use `resolve_bridge(Some(session_id))` instead.
     pub async fn get_bridge(
         &self,
     ) -> Result<tokio::sync::RwLockReadGuard<'_, Option<AgentBridge>>, String> {
@@ -149,11 +145,7 @@ impl AiState {
         Ok(guard)
     }
 
-    /// Execute a closure with access to the legacy bridge reference.
-    ///
-    /// DEPRECATED: Use with_session_bridge instead.
-    /// This helper eliminates the two-step pattern of `get_bridge().await?.as_ref().unwrap()`.
-    /// Only use for synchronous operations. For async operations, use `get_bridge()` directly.
+    /// DEPRECATED: Use `resolve_bridge(Some(session_id))` instead.
     pub async fn with_bridge<F, T>(&self, f: F) -> Result<T, String>
     where
         F: FnOnce(&AgentBridge) -> T,
