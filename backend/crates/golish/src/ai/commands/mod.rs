@@ -177,37 +177,71 @@ pub async fn configure_bridge(bridge: &mut AgentBridge, state: &AppState, sessio
     let is_title_gen = session_id.starts_with("title-gen-");
 
     if is_title_gen {
-        bridge.set_tool_config(golish_ai::tool_definitions::ToolConfig::with_preset(
-            golish_ai::tool_definitions::ToolPreset::None,
-        ));
-        let mut registry = bridge.tool_registry().write().await;
-        registry.clear();
-        drop(registry);
-        tracing::info!("[configure_bridge] Title-gen session: disabled all tools");
+        configure_title_gen(bridge).await;
     }
 
+    configure_core_services(bridge, state).await;
+    configure_domain_hooks(bridge);
+
+    let settings = state.settings_manager.get().await;
+    configure_memory_and_embeddings(bridge, state, &settings).await;
+    configure_sub_agents(bridge, &settings).await;
+
+    if !is_title_gen {
+        setup_bridge_mcp_tools(bridge, state).await;
+        register_pentest_tools(bridge, state, app_handle).await;
+        register_visible_pty_tool(bridge, state).await;
+    }
+}
+
+async fn configure_title_gen(bridge: &mut AgentBridge) {
+    bridge.set_tool_config(golish_ai::tool_definitions::ToolConfig::with_preset(
+        golish_ai::tool_definitions::ToolPreset::None,
+    ));
+    let mut registry = bridge.tool_registry().write().await;
+    registry.clear();
+    drop(registry);
+    tracing::info!("[configure_bridge] Title-gen session: disabled all tools");
+}
+
+async fn configure_core_services(bridge: &mut AgentBridge, state: &AppState) {
     bridge.set_pty_manager(state.pty_manager.clone());
     bridge.set_indexer_state(state.indexer_state.clone());
-    // NOTE: Workflow state is no longer part of golish-ai's AgentBridge
-    // It's managed directly in the golish crate's WorkflowState
 
-    // Look up memory file from codebase settings based on workspace path
     let workspace_path = bridge.workspace().read().await.clone();
-
-    // Create per-session SidecarState from the shared config
-    // This enables concurrent agent execution across tabs without blocking
     let sidecar_state = std::sync::Arc::new(golish_sidecar::SidecarState::with_config(
         state.sidecar_config.clone(),
     ));
-    // Initialize the per-session sidecar with the workspace path
-    if let Err(e) = sidecar_state.initialize(workspace_path.clone()).await {
+    if let Err(e) = sidecar_state.initialize(workspace_path).await {
         tracing::warn!("Failed to initialize per-session sidecar: {}", e);
     }
     bridge.set_sidecar_state(sidecar_state);
     bridge.set_settings_manager(state.settings_manager.clone());
     bridge.set_db_pool(state.db_pool.clone(), state.db_ready.clone());
-    let settings = state.settings_manager.get().await;
+}
 
+fn configure_domain_hooks(bridge: &mut AgentBridge) {
+    bridge.set_post_shell_hook(std::sync::Arc::new(|pool, cmd, stdout, project_path| {
+        Box::pin(async move {
+            let _ = golish_pentest::output_store::maybe_detect_and_store(
+                &pool,
+                &cmd,
+                &stdout,
+                project_path.as_deref(),
+            )
+            .await;
+        })
+    }));
+    bridge.set_output_classifier(std::sync::Arc::new(|cmd, stdout| {
+        golish_pentest::output_store::has_structured_storage(cmd, stdout)
+    }));
+}
+
+async fn configure_memory_and_embeddings(
+    bridge: &mut AgentBridge,
+    state: &AppState,
+    settings: &golish_settings::GolishSettings,
+) {
     if let Some(ref key) = settings.ai.openai.api_key {
         if !key.is_empty() {
             let base = settings.ai.openai.base_url.as_deref().unwrap_or("https://api.openai.com/v1");
@@ -219,9 +253,8 @@ pub async fn configure_bridge(bridge: &mut AgentBridge, state: &AppState, sessio
         }
     }
 
-    // Find matching codebase and get memory file
+    let workspace_path = bridge.workspace().read().await.clone();
     let memory_file_path = find_memory_file_for_workspace(&workspace_path, &settings.codebases);
-
     if let Some(ref path) = memory_file_path {
         tracing::info!(
             "[agent] Using memory file from codebase settings: {}",
@@ -230,67 +263,61 @@ pub async fn configure_bridge(bridge: &mut AgentBridge, state: &AppState, sessio
     }
     bridge.set_memory_file_path(memory_file_path).await;
 
-    // Create model factory for sub-agent model overrides
     let model_factory = golish_ai::llm_client::LlmClientFactory::new(state.settings_manager.clone());
-    let model_factory = std::sync::Arc::new(model_factory);
-    bridge.set_model_factory(model_factory);
+    bridge.set_model_factory(std::sync::Arc::new(model_factory));
+}
 
-    // Apply sub-agent model overrides from settings
+async fn configure_sub_agents(
+    bridge: &AgentBridge,
+    settings: &golish_settings::GolishSettings,
+) {
     apply_sub_agent_model_settings(bridge, &settings.ai).await;
+}
 
-    if !is_title_gen {
-        // Set up MCP tools from the global manager (if initialized)
-        setup_bridge_mcp_tools(bridge, state).await;
-    }
-
-    if !is_title_gen {
-        // Register pentest AI tools so the agent can list and execute pentest tools.
-        // PentestRunTool routes through PTY so output appears in the visible terminal.
-        // When the active terminal is busy, a new session is auto-created.
-        {
-            let pentest_tools = crate::tools::pentest_ai::create_pentest_ai_tools(
-                state.pentest_config_manager.clone(),
-                state.pty_manager.clone(),
-                state.pty_output_tap.clone(),
-                state.active_terminal_session.clone(),
-                state.pentest_busy_sessions.clone(),
-                state.ai_state.runtime.clone(),
-            );
-            let mut registry = bridge.tool_registry().write().await;
-            for tool in pentest_tools {
-                tracing::info!("[pentest-ai] Registered tool: {}", tool.name());
-                registry.register_tool(tool);
-            }
-        }
-
-        // Register pentest bridge tools (targets, findings, vault) so the AI agent
-        // can record recon data and vulnerability findings directly into the database.
-        {
-            let bridge_tools = crate::tools::pentest_bridge::create_pentest_bridge_tools(
-                state.db_pool.clone(),
-                state.pentest_config_manager.clone(),
-                app_handle.clone(),
-            );
-            let mut registry = bridge.tool_registry().write().await;
-            for tool in bridge_tools {
-                tracing::info!("[pentest-bridge] Registered tool: {}", tool.name());
-                registry.register_tool(tool);
-            }
-        }
-    }
-
-    if !is_title_gen {
-        // Replace the default background run_pty_cmd with one that routes through
-        // the user's visible terminal so commands appear on the left side.
-        let visible_cmd_tool = crate::tools::pty_interactive::VisibleRunPtyCmdTool::new(
+async fn register_pentest_tools(
+    bridge: &AgentBridge,
+    state: &AppState,
+    app_handle: Option<tauri::AppHandle>,
+) {
+    {
+        let pentest_tools = crate::tools::pentest_ai::create_pentest_ai_tools(
+            state.pentest_config_manager.clone(),
             state.pty_manager.clone(),
             state.pty_output_tap.clone(),
             state.active_terminal_session.clone(),
+            state.pentest_busy_sessions.clone(),
+            state.ai_state.runtime.clone(),
         );
         let mut registry = bridge.tool_registry().write().await;
-        registry.register_tool(Arc::new(visible_cmd_tool));
-        tracing::info!("[configure_bridge] Registered VisibleRunPtyCmdTool for visible terminal execution");
+        for tool in pentest_tools {
+            tracing::info!("[pentest-ai] Registered tool: {}", tool.name());
+            registry.register_tool(tool);
+        }
     }
+
+    {
+        let bridge_tools = crate::tools::pentest_bridge::create_pentest_bridge_tools(
+            state.db_pool.clone(),
+            state.pentest_config_manager.clone(),
+            app_handle,
+        );
+        let mut registry = bridge.tool_registry().write().await;
+        for tool in bridge_tools {
+            tracing::info!("[pentest-bridge] Registered tool: {}", tool.name());
+            registry.register_tool(tool);
+        }
+    }
+}
+
+async fn register_visible_pty_tool(bridge: &AgentBridge, state: &AppState) {
+    let visible_cmd_tool = crate::tools::pty_interactive::VisibleRunPtyCmdTool::new(
+        state.pty_manager.clone(),
+        state.pty_output_tap.clone(),
+        state.active_terminal_session.clone(),
+    );
+    let mut registry = bridge.tool_registry().write().await;
+    registry.register_tool(Arc::new(visible_cmd_tool));
+    tracing::info!("[configure_bridge] Registered VisibleRunPtyCmdTool for visible terminal execution");
 }
 
 /// Set up MCP tool definitions and executor on a bridge from the global MCP manager.

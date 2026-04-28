@@ -119,7 +119,7 @@ impl BridgeAgentExecutor {
             top_p_override: agent_def.top_p,
             db_pool: db_pool_arc.as_ref(),
             sub_agent_registry: Some(self.bridge.sub_agent_registry()),
-            post_shell_hook: crate::pentest_hook::make_post_shell_hook(),
+            post_shell_hook: self.bridge.post_shell_hook.clone(),
         };
 
         let client = self.bridge.client().read().await;
@@ -412,16 +412,43 @@ impl AgentExecutor for BridgeAgentExecutor {
         );
         let start = std::time::Instant::now();
 
-        // Always execute via Primary agent (PentAGI-style orchestration).
-        // Primary has access to all sub_agent_* tools and decides autonomously
-        // which specialists to invoke. The agent_type from Generator is passed
-        // as a hint in the prompt, not as a hard routing constraint.
-        let prompt = prompts::primary_agent_subtask_prompt_with_agent(
-            subtask_title,
-            subtask_description,
-            &execution_context.summary(),
-            agent_type,
-        );
+        // Try to use orchestrator agent's prompt from the sub-agent registry
+        // (user-customizable via Settings). Falls back to hardcoded prompt
+        // if orchestrator definition is not found.
+        let prompt = {
+            let registry = self.bridge.sub_agent_registry();
+            let reg = registry.read().await;
+            let orchestrator_prompt = reg
+                .get("orchestrator")
+                .map(|def| {
+                    def.system_prompt
+                        .replace("{{execution_context}}", &execution_context.render_xml())
+                });
+            drop(reg);
+
+            if let Some(base_prompt) = orchestrator_prompt {
+                format!(
+                    "{}\n\n## CURRENT SUBTASK\n\nTitle: {}\nDescription: {}\n{}",
+                    base_prompt,
+                    subtask_title,
+                    subtask_description,
+                    agent_type
+                        .map(|a| format!("Suggested specialist: {}", a))
+                        .unwrap_or_default(),
+                )
+            } else {
+                tracing::warn!(
+                    "[TaskMode] Orchestrator agent not found in registry, using fallback prompt"
+                );
+                prompts::primary_agent_subtask_prompt_with_agent(
+                    subtask_title,
+                    subtask_description,
+                    &execution_context.summary(),
+                    agent_type,
+                )
+            }
+        };
+
         let content = self.bridge.execute_isolated(&prompt).await?;
 
         let duration_ms = start.elapsed().as_millis() as u64;

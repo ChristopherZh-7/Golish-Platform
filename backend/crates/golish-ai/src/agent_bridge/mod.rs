@@ -182,6 +182,10 @@ pub struct AgentBridge {
     pub(crate) current_session_id: Arc<RwLock<Option<String>>>,
     pub(crate) memory_file_path: Arc<RwLock<Option<PathBuf>>>,
 
+    // -- Domain hooks (injected by the host crate) ----------------------------
+    pub(crate) post_shell_hook: Option<crate::agentic_loop::PostShellHook>,
+    pub(crate) output_classifier: Option<crate::agentic_loop::OutputClassifier>,
+
     // -- Skills & MCP ---------------------------------------------------------
     pub(crate) skill_cache: Arc<RwLock<Vec<SkillMetadata>>>,
     pub(crate) mcp_tool_definitions: Arc<RwLock<Vec<rig::completion::ToolDefinition>>>,

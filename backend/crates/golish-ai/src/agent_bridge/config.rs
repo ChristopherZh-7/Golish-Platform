@@ -471,4 +471,18 @@ impl AgentBridge {
     ) {
         *self.mcp_tool_executor.write().await = Some(executor);
     }
+
+    // ========================================================================
+    // Domain hooks
+    // ========================================================================
+
+    /// Set the post-shell-command hook for structured output detection/storage.
+    pub fn set_post_shell_hook(&mut self, hook: crate::agentic_loop::PostShellHook) {
+        self.post_shell_hook = Some(hook);
+    }
+
+    /// Set the output classifier that detects structured storage for shell output.
+    pub fn set_output_classifier(&mut self, classifier: crate::agentic_loop::OutputClassifier) {
+        self.output_classifier = Some(classifier);
+    }
 }

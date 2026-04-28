@@ -5,6 +5,8 @@
 //! between built-in sub-agent execution and the registry-driven sub-agent
 //! dispatch path.
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use rig::completion::CompletionModel as RigCompletionModel;
 use serde_json::json;
@@ -151,7 +153,9 @@ where
             let is_success = is_tool_result_success(v);
 
             if effective_tool_name == "run_pty_cmd" && is_success {
-                if let Some(tracker) = ctx.events.db_tracker {
+                if let (Some(hook), Some(tracker)) =
+                    (&ctx.post_shell_hook, ctx.events.db_tracker)
+                {
                     let pool = tracker.pool_arc().clone();
                     let stdout = v
                         .get("stdout")
@@ -166,14 +170,9 @@ where
                     let ws = ctx.workspace.read().await;
                     let pp = ws.to_string_lossy().to_string();
                     drop(ws);
+                    let hook = Arc::clone(hook);
                     tokio::spawn(async move {
-                        let _ = golish_pentest::output_store::maybe_detect_and_store(
-                            &pool,
-                            &command,
-                            &stdout,
-                            Some(&pp),
-                        )
-                        .await;
+                        hook(pool, command, stdout, Some(pp)).await;
                     });
                 }
             }
@@ -269,7 +268,7 @@ where
                 top_p_override: agent_def.top_p,
                 db_pool: ctx.events.db_tracker.map(|t| t.pool_arc()),
                 sub_agent_registry: Some(ctx.sub_agent_registry),
-                post_shell_hook: crate::pentest_hook::make_post_shell_hook(),
+                post_shell_hook: ctx.post_shell_hook.clone(),
             };
             execute_sub_agent_with_client(
                 &agent_def,
@@ -303,7 +302,7 @@ where
                 top_p_override: agent_def.top_p,
                 db_pool: ctx.events.db_tracker.map(|t| t.pool_arc()),
                 sub_agent_registry: Some(ctx.sub_agent_registry),
-                post_shell_hook: crate::pentest_hook::make_post_shell_hook(),
+                post_shell_hook: ctx.post_shell_hook.clone(),
             };
             execute_sub_agent(
                 &agent_def,
@@ -338,7 +337,7 @@ where
             top_p_override: agent_def.top_p,
             db_pool: ctx.events.db_tracker.map(|t| t.pool_arc()),
             sub_agent_registry: Some(ctx.sub_agent_registry),
-            post_shell_hook: crate::pentest_hook::make_post_shell_hook(),
+            post_shell_hook: ctx.post_shell_hook.clone(),
         };
         execute_sub_agent(
             &agent_def,

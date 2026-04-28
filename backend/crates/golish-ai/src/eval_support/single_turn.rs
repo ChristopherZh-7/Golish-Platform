@@ -175,6 +175,8 @@ where
         cancelled: None,
         execution_monitor: None,
         execution_mode: crate::execution_mode::ExecutionMode::Chat,
+        post_shell_hook: None,
+        output_classifier: None,
     };
 
     let capabilities = ModelCapabilities::detect(&config.provider_name, &config.model_name);
@@ -408,6 +410,8 @@ where
         cancelled: None,
         execution_monitor: None,
         execution_mode: crate::execution_mode::ExecutionMode::Chat,
+        post_shell_hook: None,
+        output_classifier: None,
     };
 
     // Detect capabilities from provider/model

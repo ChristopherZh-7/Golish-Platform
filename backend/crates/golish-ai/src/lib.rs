@@ -60,7 +60,6 @@ pub mod tool_execution;
 pub mod tool_executors;
 pub mod tool_provider_impl;
 pub mod transcript;
-pub(crate) mod pentest_hook;
 
 // Evaluation support (for eval framework)
 pub mod eval_support;
@@ -90,6 +89,7 @@ pub use tool_execution::{
     ToolExecutionError, ToolExecutionResult, ToolRoutingCategory, ToolSource,
 };
 pub use tool_provider_impl::DefaultToolProvider;
+pub use agentic_loop::{OutputClassifier, PostShellHook};
 pub use transcript::{
     build_summarizer_input, format_for_summarizer, read_transcript, save_summarizer_input,
     save_summary, transcript_path, TranscriptEvent, TranscriptWriter,

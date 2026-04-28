@@ -89,6 +89,25 @@ pub struct LoopEventRefs<'a> {
     pub runtime: Option<&'a Arc<dyn GolishRuntime>>,
 }
 
+/// Async callback invoked after a shell command completes, used to store
+/// structured output (e.g. pentest tool results) without `golish-ai` depending
+/// on domain-specific crates.
+pub type PostShellHook = Arc<
+    dyn Fn(
+            Arc<sqlx::PgPool>,
+            String,
+            String,
+            Option<String>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Synchronous classifier that returns `true` when a shell command's output
+/// already has domain-specific structured storage, so the generic memory store
+/// can skip it.
+pub type OutputClassifier = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
+
 /// Context for the agentic loop execution.
 pub struct AgenticLoopContext<'a> {
     // -- Composed subsystems --------------------------------------------------
@@ -123,6 +142,14 @@ pub struct AgenticLoopContext<'a> {
     pub cancelled: Option<&'a Arc<std::sync::atomic::AtomicBool>>,
     pub execution_monitor: Option<Arc<RwLock<crate::loop_detection::ExecutionMonitor>>>,
     pub execution_mode: crate::execution_mode::ExecutionMode,
+
+    // -- Domain hooks (injected by the host crate) ----------------------------
+    /// Called after a successful `run_pty_cmd` execution to detect and store
+    /// structured output (e.g. pentest scan results) in the database.
+    pub post_shell_hook: Option<PostShellHook>,
+    /// Returns `true` when a shell command's output already has structured
+    /// storage, so the generic memory store can skip duplicating it.
+    pub output_classifier: Option<OutputClassifier>,
 }
 
 /// Check cancellation flag; returns true when the user has requested a stop.

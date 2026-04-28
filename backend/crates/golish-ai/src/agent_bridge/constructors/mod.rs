@@ -10,6 +10,12 @@
 //! core constructor that builds the struct from `AgentBridgeComponents` and
 //! a runtime). The shared `new_with_runtime` dispatcher in this file routes
 //! the legacy `provider`-string entry point onto the OpenRouter path.
+//!
+//! ## Unified entry point
+//!
+//! [`AgentBridge::from_provider_config`] dispatches to the correct
+//! `*_with_shared_config` constructor based on the [`ProviderConfig`] variant,
+//! eliminating duplicated match arms at every call site.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -25,7 +31,7 @@ use golish_core::ApiRequestStats;
 use super::AgentBridge;
 use crate::agent_mode::AgentMode;
 use crate::event_coordinator::EventCoordinator;
-use crate::llm_client::AgentBridgeComponents;
+use crate::llm_client::{AgentBridgeComponents, ProviderConfig, SharedComponentsConfig};
 use crate::planner::PlanManager;
 use crate::tool_definitions::ToolConfig;
 
@@ -47,6 +53,200 @@ impl AgentBridge {
         runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
         Self::new_openrouter_with_runtime(workspace, model, api_key, None, runtime).await
+    }
+
+    /// Unified constructor that dispatches to the correct provider-specific
+    /// builder based on the [`ProviderConfig`] variant.
+    ///
+    /// This replaces the duplicated 11-arm match statements that previously
+    /// existed in `init_ai_session` and `init_ai_agent_unified`.
+    pub async fn from_provider_config(
+        config: ProviderConfig,
+        shared_config: SharedComponentsConfig,
+        runtime: Arc<dyn GolishRuntime>,
+        event_session_id: &str,
+    ) -> Result<Self> {
+        let workspace_path: PathBuf = config.workspace().into();
+
+        match config {
+            ProviderConfig::VertexAi {
+                model,
+                credentials_path,
+                project_id,
+                location,
+                ..
+            } => {
+                Self::new_vertex_anthropic_with_shared_config(
+                    workspace_path,
+                    credentials_path.as_deref(),
+                    &project_id,
+                    &location,
+                    &model,
+                    shared_config,
+                    runtime,
+                    event_session_id,
+                )
+                .await
+            }
+            ProviderConfig::Openrouter {
+                model,
+                api_key,
+                provider_preferences,
+                ..
+            } => {
+                Self::new_openrouter_with_shared_config(
+                    workspace_path,
+                    &model,
+                    &api_key,
+                    provider_preferences,
+                    shared_config,
+                    runtime,
+                    event_session_id,
+                )
+                .await
+            }
+            ProviderConfig::Openai {
+                model,
+                api_key,
+                base_url,
+                reasoning_effort,
+                ..
+            } => {
+                Self::new_openai_with_shared_config(
+                    workspace_path,
+                    &model,
+                    &api_key,
+                    base_url.as_deref(),
+                    reasoning_effort.as_deref(),
+                    shared_config,
+                    runtime,
+                    event_session_id,
+                )
+                .await
+            }
+            ProviderConfig::Anthropic {
+                model, api_key, ..
+            } => {
+                Self::new_anthropic_with_shared_config(
+                    workspace_path,
+                    &model,
+                    &api_key,
+                    shared_config,
+                    runtime,
+                    event_session_id,
+                )
+                .await
+            }
+            ProviderConfig::Ollama {
+                model, base_url, ..
+            } => {
+                Self::new_ollama_with_shared_config(
+                    workspace_path,
+                    &model,
+                    base_url.as_deref(),
+                    shared_config,
+                    runtime,
+                    event_session_id,
+                )
+                .await
+            }
+            ProviderConfig::Gemini {
+                model, api_key, ..
+            } => {
+                Self::new_gemini_with_shared_config(
+                    workspace_path,
+                    &model,
+                    &api_key,
+                    shared_config,
+                    runtime,
+                    event_session_id,
+                )
+                .await
+            }
+            ProviderConfig::Groq {
+                model, api_key, ..
+            } => {
+                Self::new_groq_with_shared_config(
+                    workspace_path,
+                    &model,
+                    &api_key,
+                    shared_config,
+                    runtime,
+                    event_session_id,
+                )
+                .await
+            }
+            ProviderConfig::Xai {
+                model, api_key, ..
+            } => {
+                Self::new_xai_with_shared_config(
+                    workspace_path,
+                    &model,
+                    &api_key,
+                    shared_config,
+                    runtime,
+                    event_session_id,
+                )
+                .await
+            }
+            ProviderConfig::ZaiSdk {
+                model,
+                api_key,
+                base_url,
+                source_channel,
+                ..
+            } => {
+                Self::new_zai_sdk_with_shared_config(
+                    workspace_path,
+                    &model,
+                    &api_key,
+                    base_url.as_deref(),
+                    source_channel.as_deref(),
+                    shared_config,
+                    runtime,
+                    event_session_id,
+                )
+                .await
+            }
+            ProviderConfig::Nvidia {
+                model,
+                api_key,
+                base_url,
+                ..
+            } => {
+                Self::new_nvidia_with_shared_config(
+                    workspace_path,
+                    &model,
+                    &api_key,
+                    base_url.as_deref(),
+                    shared_config,
+                    runtime,
+                    event_session_id,
+                )
+                .await
+            }
+            ProviderConfig::VertexGemini {
+                model,
+                credentials_path,
+                project_id,
+                location,
+                include_thoughts,
+                ..
+            } => {
+                Self::new_vertex_gemini_with_shared_config(
+                    workspace_path,
+                    credentials_path.as_deref(),
+                    &project_id,
+                    &location,
+                    &model,
+                    include_thoughts,
+                    shared_config,
+                    runtime,
+                    event_session_id,
+                )
+                .await
+            }
+        }
     }
 
 
@@ -138,6 +338,8 @@ impl AgentBridge {
             plan_manager: Arc::new(PlanManager::new()),
             current_session_id: Default::default(),
             memory_file_path: Arc::new(RwLock::new(None)),
+            post_shell_hook: None,
+            output_classifier: None,
             skill_cache: Arc::new(RwLock::new(Vec::new())),
             mcp_tool_definitions: Arc::new(RwLock::new(Vec::new())),
             mcp_tool_executor: Arc::new(RwLock::new(None)),

@@ -152,6 +152,8 @@ where
             cancelled: None,
             execution_monitor: None,
             execution_mode: crate::execution_mode::ExecutionMode::Chat,
+            post_shell_hook: None,
+            output_classifier: None,
         };
 
         let loop_config = AgenticLoopConfig {
