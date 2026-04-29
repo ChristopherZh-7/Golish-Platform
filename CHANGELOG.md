@@ -1,5 +1,67 @@
 # Changelog
 
+## [0.2.44](https://github.com/ChristopherZh-7/Golish-Platform/compare/v0.2.43...v0.2.44) (2026-04-29)
+
+
+### Features
+
+* add audit_log entries for scan_runner and pipeline execution ([9f87ac7](https://github.com/ChristopherZh-7/Golish-Platform/commit/9f87ac7e33f6977a9088659afd03f1f6ba6e9333))
+* add katana web crawl to pipeline, redesign dashboard ([65fcd27](https://github.com/ChristopherZh-7/Golish-Platform/commit/65fcd27f3b10c02ecdf5988eda8077b02ccaed8a))
+* add new modules (brave, db, audit, notes, vuln_intel, wordlists) and updated icons ([2d43837](https://github.com/ChristopherZh-7/Golish-Platform/commit/2d438378d3251259fb059608b34ef9bd777cbc5d))
+* add NVIDIA NIM support, proxy settings, and Windows build ([b334a56](https://github.com/ChristopherZh-7/Golish-Platform/commit/b334a56767f831e6fe07e340893cdfa9f699c462))
+* add Scan Tools tab to SecurityView with target selector ([8aaf80b](https://github.com/ChristopherZh-7/Golish-Platform/commit/8aaf80b7fdc2ceb88145430359f79caddf1494b6))
+* add tool configuration panels for WhatWeb, Nuclei, feroxbuster ([4d24f58](https://github.com/ChristopherZh-7/Golish-Platform/commit/4d24f58892f91caf5d70eb61e6a98bb83ea2d480))
+* DB integration, 1:1 architecture, pipeline progress, UI refinements ([e8ebd10](https://github.com/ChristopherZh-7/Golish-Platform/commit/e8ebd10b336a345d274e74a465549548795c1b2a))
+* file-driven agent system, skills/rules management, rename Qbit to Golish ([2165c99](https://github.com/ChristopherZh-7/Golish-Platform/commit/2165c99a68e5e67e4111e225d49ea0f2a3a1f892))
+* host-level targets, event-driven sitemap sync, SiteMap persistence ([57c6a05](https://github.com/ChristopherZh-7/Golish-Platform/commit/57c6a057a6a5e3bc4a7298c6db58b7bdd586482c))
+* integrate graph intelligence and split-pane workflow ([586eeb9](https://github.com/ChristopherZh-7/Golish-Platform/commit/586eeb9a42813e4cfa5dd44350853cd8a98d310b))
+* merge topology into target graph view, scanner clear all, sitemap tree-only ([4e4d4b6](https://github.com/ChristopherZh-7/Golish-Platform/commit/4e4d4b65b813e9c80a7c7c52e2760c58e3ee630f))
+* multi-agent system, DB migration, UI improvements ([1c748b9](https://github.com/ChristopherZh-7/Golish-Platform/commit/1c748b95f338539195756647fdfd6247c892fcec))
+* performance optimization and large feature batch ([a927c05](https://github.com/ChristopherZh-7/Golish-Platform/commit/a927c053a9efa346db07ddba4dcea73b8db0f746))
+* port Golish backend to Rust (golish-pentest crate) ([6ff936c](https://github.com/ChristopherZh-7/Golish-Platform/commit/6ff936c13c4eff1b64cb6a73a70ba5391ac2c786))
+* rebrand to Golish Platform with IDE-style pentest UI ([6b44a4b](https://github.com/ChristopherZh-7/Golish-Platform/commit/6b44a4b1946e459cab06f8a517b1611e262bc6b9))
+* refactor terminal restore, CRUD stability, UI polish ([9bdd92e](https://github.com/ChristopherZh-7/Golish-Platform/commit/9bdd92eb9bf766f76c550e3069b0c70c32509053))
+* Ruby rbenv version manager, auto gem install, sitemap merge fix ([df544d9](https://github.com/ChristopherZh-7/Golish-Platform/commit/df544d9c8af868373e1657d909882248cee6dbd0))
+* scan workflow — WhatWeb, Nuclei targeted, feroxbuster integration ([42a4d16](https://github.com/ChristopherZh-7/Golish-Platform/commit/42a4d166e9ef6436338031ce641f50f36c4a55b8))
+* security analysis module + hierarchical target view ([b4c5609](https://github.com/ChristopherZh-7/Golish-Platform/commit/b4c560904cacb6bcababd12aafc509e13d73b745))
+* stable plan step IDs for persistent tool execution grouping ([15388b6](https://github.com/ChristopherZh-7/Golish-Platform/commit/15388b6e8750a54d25a61239e60da8edb1b8eeab))
+* unify fingerprint storage and improve Nuclei matching ([367fd17](https://github.com/ChristopherZh-7/Golish-Platform/commit/367fd17f29671280c8ed867023865bee48bcb881))
+* unify JS collection — js_collect tool, standardized storage ([edafe34](https://github.com/ChristopherZh-7/Golish-Platform/commit/edafe34daf9966a46d5caff90bca6815e03a5449))
+* wiki enhancements, PoC workflow, file storage, ZAP scan logging ([8a45da2](https://github.com/ChristopherZh-7/Golish-Platform/commit/8a45da25c181ed050faed134f329792fd730a2c1))
+* ZAP addon auto-repair, batch scanning, scan plugins UI, credential vault fixes ([a3b44c1](https://github.com/ChristopherZh-7/Golish-Platform/commit/a3b44c150b88694a27f89be724c9ed9692c7b600))
+* ZAP lifecycle, project isolation, domain grouping ([4a28460](https://github.com/ChristopherZh-7/Golish-Platform/commit/4a284604f14c663767079d3d2e69a67c65566abc))
+
+
+### Bug Fixes
+
+* **frontend:** resolve pre-existing TypeScript compilation errors ([911ce26](https://github.com/ChristopherZh-7/Golish-Platform/commit/911ce2618c0967e467d128965a67531998c27130))
+* localStorage quota crash, ZAP proxy bypass, scan queue/rules DB migration ([9cd99ac](https://github.com/ChristopherZh-7/Golish-Platform/commit/9cd99acb024cb1b6054cf62eb2337f26a2bbdf03))
+* plan card UI improvements, DB persistence, performance optimizations ([a923e9d](https://github.com/ChristopherZh-7/Golish-Platform/commit/a923e9d25777fe0928c20fb884e1f2c03a84a297))
+* prevent plan step text explosion + improve plan update UX ([f036bee](https://github.com/ChristopherZh-7/Golish-Platform/commit/f036bee738a44f3072d5feceb5e84c63a96905d2))
+* sub-agents toggle closing dropdown + remove AgentModeSelector ([5ec8022](https://github.com/ChristopherZh-7/Golish-Platform/commit/5ec8022fbffc2f84c22668349a8bc8cf4cffadbe))
+* **task-orchestrator:** 120s LLM timeout, UTF-8 safe intent truncation ([5b72083](https://github.com/ChristopherZh-7/Golish-Platform/commit/5b720838c605456c8e169d12de4ff299060f8ccb))
+* update test files for AgenticLoopContext sub-struct field paths ([ffbd26f](https://github.com/ChristopherZh-7/Golish-Platform/commit/ffbd26f63dd4b3d356b8dd545e447293e92d1078))
+* workspace restoration timing + auto-scroll + tab lifecycle ([4fb3aca](https://github.com/ChristopherZh-7/Golish-Platform/commit/4fb3acabf0010812bbb10585b1731a7bd3207611))
+
+
+### Performance
+
+* eliminate unnecessary clones in token truncation and summarizer ([b34896e](https://github.com/ChristopherZh-7/Golish-Platform/commit/b34896e6907f26ea78aa5e1cc84570a098b1ffeb))
+* optimize agent loop hot path to reduce allocations ([2d759d7](https://github.com/ChristopherZh-7/Golish-Platform/commit/2d759d70f62bbf5f199c94b7cb9e19d7e7aa79a6))
+
+
+### Refactoring
+
+* **backend:** decouple AI orchestration from pentest domain ([44c723f](https://github.com/ChristopherZh-7/Golish-Platform/commit/44c723f52550f37b800086f93cdf73dcd4d946c7))
+* **ci:** rename qbit→golish in CI/build/packaging artifacts ([c6be54d](https://github.com/ChristopherZh-7/Golish-Platform/commit/c6be54d7a6409a93fcea8b91ce02df5e41d985af))
+* **commands:** add optional session_id to legacy bridge commands ([021591a](https://github.com/ChristopherZh-7/Golish-Platform/commit/021591aa6c1e7a5d70478036ef031d181d981d08))
+* decompose AgentBridge into composed subsystems + decouple sub-agents from pentest ([a624821](https://github.com/ChristopherZh-7/Golish-Platform/commit/a624821f65e743ce7c9e438c130ce73d1ab19373))
+* decompose AgenticLoopContext into composed sub-structs ([221968c](https://github.com/ChristopherZh-7/Golish-Platform/commit/221968cdf9ccd4774db94cbb17944cbeb1e251e2))
+* decouple oversized backend modules across the workspace ([1da024d](https://github.com/ChristopherZh-7/Golish-Platform/commit/1da024d860e951ef9deaafbbd9e5fb8945a7682c))
+* **frontend:** add optional sessionId to legacy bridge API wrappers ([bf0e597](https://github.com/ChristopherZh-7/Golish-Platform/commit/bf0e597f307ce1ae26c5ecde80b17fb05b1b3d72))
+* **frontend:** rename __QBIT_STORE__ to __GOLISH_STORE__ in e2e + docs ([6595e66](https://github.com/ChristopherZh-7/Golish-Platform/commit/6595e66c363d9b5de6a6e69053da97edf3e21e25))
+* split core commands, fs completions, and telemetry; sync agent crates ([212d42a](https://github.com/ChristopherZh-7/Golish-Platform/commit/212d42a0a846ad0914e4dc47aee3a0cb520941c3))
+
 ## [0.2.43](https://github.com/golish-ai/golish/compare/v0.2.42...v0.2.43) (2026-03-13)
 
 
