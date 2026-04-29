@@ -116,6 +116,29 @@ where
         }
     }
 
+    if matches!(
+        tool_name,
+        "graph_add_entity"
+            | "graph_add_relation"
+            | "graph_search"
+            | "graph_neighbors"
+            | "graph_attack_paths"
+    ) {
+        let graph_client = ctx
+            .events
+            .db_tracker
+            .map(|t| golish_graphiti::GraphClient::new(t.pool().clone()));
+        if let Some((value, success)) = crate::tool_executors::execute_graph_tool(
+            tool_name,
+            tool_args,
+            graph_client.as_ref(),
+        )
+        .await
+        {
+            return Ok(ToolExecutionResult { value, success });
+        }
+    }
+
     if tool_name == "ask_human" {
         let (value, success) = execute_ask_human_tool(
             tool_args,

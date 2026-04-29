@@ -47,6 +47,8 @@ struct AgentFrontmatter {
     #[serde(default)]
     is_background: Option<bool>,
     #[serde(default)]
+    pipeline_only: Option<bool>,
+    #[serde(default)]
     temperature: Option<f32>,
     #[serde(default)]
     max_tokens: Option<u32>,
@@ -162,6 +164,9 @@ pub fn parse_agent_file(path: &Path) -> anyhow::Result<SubAgentDefinition> {
     if let Some(b) = fm.is_background {
         def.is_background = b;
     }
+    if let Some(p) = fm.pipeline_only {
+        def.pipeline_only = p;
+    }
     if let Some(t) = fm.temperature {
         def.temperature = Some(t);
     }
@@ -257,6 +262,9 @@ pub fn serialize_agent_to_md(def: &SubAgentDefinition) -> String {
     }
     if def.is_background {
         fm.push_str("is_background: true\n");
+    }
+    if def.pipeline_only {
+        fm.push_str("pipeline_only: true\n");
     }
     if let Some(t) = def.temperature {
         fm.push_str(&format!("temperature: {t}\n"));

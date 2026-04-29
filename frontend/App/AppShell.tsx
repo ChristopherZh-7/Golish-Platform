@@ -39,6 +39,7 @@ import {
 } from "./lazyRegistry";
 import { AppErrorFallback, AppLoadingSkeleton } from "./components/AppLoadingSkeleton";
 import { SplitColumn, SplitDropZone } from "./components/SplitColumn";
+import type { ActivityViewControls } from "./hooks/useActivityViewControls";
 import { useSplitTabDrag } from "./hooks/useSplitTabDrag";
 
 
@@ -69,6 +70,7 @@ export interface AppShellProps {
   setCurrentPage: (page: PageRoute) => void;
   activityView: ActivityView;
   setActivityView: React.Dispatch<React.SetStateAction<ActivityView>>;
+  activityControls: ActivityViewControls;
   visitedViews: Set<string>;
 
   // Dialog state
@@ -163,6 +165,7 @@ export function AppShell(props: AppShellProps) {
     setCurrentPage,
     activityView,
     setActivityView,
+    activityControls,
     visitedViews,
     commandPaletteOpen,
     setCommandPaletteOpen,
@@ -294,23 +297,7 @@ export function AppShell(props: AppShellProps) {
               activeView={activityView}
               onViewChange={setActivityView}
               terminalOpen={bottomTerminalOpen}
-              onToggleTerminal={() => {
-                setActivityView(null);
-                const s = useStore.getState();
-                const currentTabType = s.activeSessionId
-                  ? (s.sessions[s.activeSessionId]?.tabType ?? "terminal")
-                  : "terminal";
-                if (currentTabType !== "terminal") {
-                  const termTab = s.tabOrder.find(
-                    (id) => (s.sessions[id]?.tabType ?? "terminal") === "terminal"
-                  );
-                  if (termTab) {
-                    s.setActiveSession(termTab);
-                    return;
-                  }
-                }
-                useStore.getState().toggleBottomTerminal();
-              }}
+              onToggleTerminal={activityControls.toggleBottomTerminal}
               onOpenSettings={() => setSettingsOpen(true)}
             />
           </div>
@@ -527,35 +514,12 @@ export function AppShell(props: AppShellProps) {
           onSplitPaneDown={() => handleSplitPane("horizontal")}
           onClosePane={handleClosePane}
           onOpenQuickOpen={() => setQuickOpenDialogOpen(true)}
-          onOpenBrowser={() => setActivityView((v) => (v === "targets" ? null : "targets"))}
-          onOpenSecurity={() => setActivityView((v) => (v === "targets" ? null : "targets"))}
-          onToggleToolManager={() =>
-            setActivityView((v) => (v === "toolManage" ? null : "toolManage"))
-          }
-          onToggleWiki={() => setActivityView((v) => (v === "wiki" ? null : "wiki"))}
-          onToggleBottomTerminal={() => {
-            setActivityView(null);
-            const s = useStore.getState();
-            const currentTabType = s.activeSessionId
-              ? (s.sessions[s.activeSessionId]?.tabType ?? "terminal")
-              : "terminal";
-            if (currentTabType !== "terminal") {
-              const termTab = s.tabOrder.find(
-                (id) => (s.sessions[id]?.tabType ?? "terminal") === "terminal"
-              );
-              if (termTab) {
-                s.setActiveSession(termTab);
-                return;
-              }
-            }
-            useStore.getState().toggleBottomTerminal();
-          }}
-          onFocusAiChat={() => {
-            setActivityView(null);
-            requestAnimationFrame(() => {
-              document.querySelector<HTMLTextAreaElement>("[data-ai-chat-input]")?.focus();
-            });
-          }}
+          onOpenBrowser={() => activityControls.toggleView("targets")}
+          onOpenSecurity={() => activityControls.toggleView("targets")}
+          onToggleToolManager={() => activityControls.toggleView("toolManage")}
+          onToggleWiki={() => activityControls.toggleView("wiki")}
+          onToggleBottomTerminal={activityControls.toggleBottomTerminal}
+          onFocusAiChat={activityControls.focusAiChat}
           onOpenShortcutsHelp={() => setShortcutsHelpOpen(true)}
           onOpenRecordings={() => setRecordingsPanelOpen(true)}
         />

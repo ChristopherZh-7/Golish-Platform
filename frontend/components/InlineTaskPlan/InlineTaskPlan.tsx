@@ -43,7 +43,7 @@ const CompactToolItem = memo(function CompactToolItem({
         )}
       </span>
       <span className="ml-auto flex-shrink-0 flex items-center gap-1">
-        {isRunning && <Loader2 className="w-3 h-3 animate-spin text-[#7aa2f7]" />}
+        {isRunning && <Loader2 className="w-3 h-3 animate-spin text-accent" />}
         {isOk && (
           <>
             <CheckCircle2 className="w-3 h-3 text-green-500" />
@@ -119,9 +119,9 @@ export const InlineTaskPlan = memo(function InlineTaskPlan({
             {isPlanComplete ? (
               <CheckCircle2 className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />
             ) : isExpanded ? (
-              <ChevronDown className="w-3.5 h-3.5 text-[#7aa2f7] flex-shrink-0" />
+              <ChevronDown className="w-3.5 h-3.5 text-accent flex-shrink-0" />
             ) : (
-              <ChevronRight className="w-3.5 h-3.5 text-[#7aa2f7] flex-shrink-0" />
+              <ChevronRight className="w-3.5 h-3.5 text-accent flex-shrink-0" />
             )}
 
             <span className="text-xs font-medium text-foreground">Task Plan</span>
@@ -129,7 +129,7 @@ export const InlineTaskPlan = memo(function InlineTaskPlan({
             {!isPlanComplete && (
               <div className="flex-1 mx-2 h-1.5 bg-muted/30 rounded-full overflow-hidden max-w-[200px]">
                 <div
-                  className="h-full bg-[#7aa2f7] transition-all duration-300 ease-out"
+                  className="h-full bg-accent transition-all duration-300 ease-out"
                   style={{ width: `${progressPercentage}%` }}
                 />
               </div>
@@ -143,7 +143,7 @@ export const InlineTaskPlan = memo(function InlineTaskPlan({
                 Done
               </span>
             ) : (
-              <span className="text-xs font-medium text-[#7aa2f7]">
+              <span className="text-xs font-medium text-accent">
                 ({Math.round(progressPercentage)}%)
               </span>
             )}
@@ -231,7 +231,7 @@ const StepRow = memo(function StepRow({
         <CheckCircle2 className="w-3.5 h-3.5 text-green-500 flex-shrink-0 mt-0.5" />
       )}
       {isInProgress && (
-        <Loader2 className="w-3.5 h-3.5 text-[#7aa2f7] animate-spin flex-shrink-0 mt-0.5" />
+        <Loader2 className="w-3.5 h-3.5 text-accent animate-spin flex-shrink-0 mt-0.5" />
       )}
       {isCancelled && (
         <XCircle className="w-3.5 h-3.5 text-red-400/70 flex-shrink-0 mt-0.5" />

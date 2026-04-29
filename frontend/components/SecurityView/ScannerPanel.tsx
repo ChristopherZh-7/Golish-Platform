@@ -6,15 +6,12 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  zapStartScan, zapScanProgress, zapStopScan,
-  zapGetAlerts, zapStartSpider,
-  zapPauseScan, zapResumeScan,
-} from "@/lib/pentest/zap-api";
 import type { ZapAlert } from "@/lib/pentest/types";
 import { useTranslation } from "react-i18next";
 import { getProjectPath } from "@/lib/projects";
 import { useStore } from "@/store";
+import { useZapScanQueue } from "./hooks/useZapScanQueue";
+import type { ScanEndpoint } from "@/lib/pentest/scan-queue";
 
 interface VaultEntrySafe {
   id: string;
@@ -25,16 +22,6 @@ interface VaultEntrySafe {
   project: string;
   tags: string[];
   created_at: string;
-}
-
-interface ScanEndpoint {
-  url: string;
-  scanId: string | null;
-  progress: number;
-  status: "queued" | "spidering" | "scanning" | "paused" | "complete" | "error";
-  alerts: ZapAlert[];
-  addedAt: number;
-  messageCount?: number;
 }
 
 function PolicyDropdown({ value, onChange, options }: { value: string; onChange: (v: string) => void; options: { value: string; label: string }[] }) {
@@ -159,57 +146,10 @@ function CredentialDropdown({ value, onChange, open, onToggle, entries }: {
   );
 }
 
-function saveScanQueueToDb(q: ScanEndpoint[], pp: string | null) {
-  const seen = new Set<string>();
-  const deduped = q.filter((e) => {
-    if (seen.has(e.url)) return false;
-    seen.add(e.url);
-    return true;
-  });
-  invoke("scan_queue_save_all", {
-    endpoints: deduped.map((e) => ({
-      url: e.url, status: e.status, alerts: e.alerts,
-      addedAt: e.addedAt, scanId: e.scanId, progress: e.progress,
-    })),
-    projectPath: pp,
-  }).catch(() => {});
-}
-
-function zapAlertsToFindings(alerts: ZapAlert[]): Record<string, string>[] {
-  return alerts.map((a) => {
-    const refs: string[] = [];
-    if (a.reference) refs.push(...a.reference.split(/\s+/).filter((r) => r.startsWith("http")));
-    if (a.cweid && a.cweid !== "-1" && a.cweid !== "0") refs.push(`CWE-${a.cweid}`);
-    if (a.wascid && a.wascid !== "-1" && a.wascid !== "0") refs.push(`WASC-${a.wascid}`);
-
-    return {
-      title: a.name,
-      severity: a.risk === "Informational" ? "info" : a.risk.toLowerCase(),
-      url: a.url,
-      target: (() => { try { return new URL(a.url).host; } catch { return ""; } })(),
-      description: a.description,
-      template: a.pluginId,
-      reference: refs.join(","),
-    };
-  });
-}
-
-async function importZapAlerts(alerts: ZapAlert[], tool: string, pp: string | null) {
-  if (alerts.length === 0) return;
-  const parsed = zapAlertsToFindings(alerts);
-  try {
-    await invoke("findings_import_parsed", { items: parsed, toolName: tool, projectPath: pp ?? null });
-  } catch { /* best effort */ }
-}
-
 export function ScannerPanel({ initialUrl, initialBatchUrls, onUrlConsumed }: { initialUrl?: string | null; initialBatchUrls?: string[]; onUrlConsumed?: () => void }) {
   const { t } = useTranslation();
   const projectPath = useStore((s) => s.currentProjectPath);
   const [targetUrl, setTargetUrl] = useState("");
-  const [endpoints, setEndpoints] = useState<ScanEndpoint[]>([]);
-  const [selectedUrl, setSelectedUrl] = useState<string | null>(null);
-  const [scanning, setScanning] = useState(false);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [vaultEntries, setVaultEntries] = useState<VaultEntrySafe[]>([]);
   const [selectedCredential, setSelectedCredential] = useState<string>("");
   const [showCredSelector, setShowCredSelector] = useState(false);
@@ -219,85 +159,20 @@ export function ScannerPanel({ initialUrl, initialBatchUrls, onUrlConsumed }: { 
   const [showPlugins, setShowPlugins] = useState(false);
   const [scannerRules, setScannerRules] = useState<{ id: string; name: string; enabled: boolean; quality: string }[]>([]);
 
+  // Load vault entries + scan policies once per project (the scan queue itself is
+  // owned by `useZapScanQueue` below).
   useEffect(() => {
     const pp = getProjectPath();
     Promise.all([
       invoke<VaultEntrySafe[]>("vault_list", { projectPath: pp }).catch(() => []),
-      invoke<ScanEndpoint[]>("scan_queue_list", { projectPath: pp }).catch(() => []),
       invoke<string[]>("zap_list_scan_policies").catch(() => []),
-    ]).then(([v, q, policies]) => {
+    ]).then(([v, policies]) => {
       setVaultEntries(Array.isArray(v) ? v : []);
-      const raw = (Array.isArray(q) ? q : []).map((e) => ({
-        ...e,
-        status: (e.status === "spidering" && !e.scanId ? "queued" : e.status) as ScanEndpoint["status"],
-      } as ScanEndpoint));
-      const seen = new Set<string>();
-      const restored = raw.filter((e) => {
-        if (seen.has(e.url)) return false;
-        seen.add(e.url);
-        return true;
-      });
-      if (restored.length > 0) {
-        setEndpoints(restored);
-        if (restored.length < raw.length) saveScanQueueToDb(restored, pp);
-      }
       if (Array.isArray(policies)) setScanPolicies(policies);
     });
   }, [projectPath]);
 
-  useEffect(() => {
-    if (initialUrl) {
-      setEndpoints((prev) => {
-        if (prev.some((e) => e.url === initialUrl)) return prev;
-        const ep: ScanEndpoint = { url: initialUrl, scanId: null, progress: 0, status: "queued", alerts: [], addedAt: Date.now() };
-        const next = [...prev, ep];
-        saveScanQueueToDb(next, projectPath);
-        return next;
-      });
-      setSelectedUrl(initialUrl);
-      onUrlConsumed?.();
-    }
-  }, [initialUrl, onUrlConsumed]);
-
-  useEffect(() => {
-    if (!initialBatchUrls?.length) return;
-    const now = Date.now();
-    setEndpoints((prev) => {
-      const existing = new Set(prev.map((e) => e.url));
-      const newEps = initialBatchUrls
-        .filter((url) => !existing.has(url))
-        .map((url, i) => ({
-          url,
-          scanId: null,
-          progress: 0,
-          status: "queued" as const,
-          alerts: [] as ZapAlert[],
-          addedAt: now + i,
-        }));
-      if (newEps.length === 0) return prev;
-      const next = [...prev, ...newEps];
-      saveScanQueueToDb(next, projectPath);
-      return next;
-    });
-    onUrlConsumed?.();
-  }, [initialBatchUrls]);
-
-  const handleAddEndpoint = useCallback(() => {
-    const url = targetUrl.trim();
-    if (!url) return;
-    if (endpoints.some((e) => e.url === url)) { setSelectedUrl(url); setTargetUrl(""); return; }
-    const ep: ScanEndpoint = { url, scanId: null, progress: 0, status: "queued", alerts: [], addedAt: Date.now() };
-    setEndpoints((prev) => { const next = [...prev, ep]; saveScanQueueToDb(next, projectPath); return next; });
-    setSelectedUrl(url);
-    setTargetUrl("");
-  }, [targetUrl, endpoints]);
-
-  const handleRemoveEndpoint = useCallback((url: string) => {
-    setEndpoints((prev) => { const next = prev.filter((e) => e.url !== url); saveScanQueueToDb(next, projectPath); return next; });
-    invoke("scan_queue_remove", { url, projectPath }).catch(() => {});
-    if (selectedUrl === url) setSelectedUrl(null);
-  }, [selectedUrl, projectPath]);
-
+  // Inject vault credentials into ZAP before each scan (best-effort).
   const applyCredential = useCallback(async () => {
     if (!selectedCredential) return;
     try {
@@ -319,115 +194,49 @@ export function ScannerPanel({ initialUrl, initialBatchUrls, onUrlConsumed }: { 
     } catch { /* continue without credentials */ }
   }, [selectedCredential, vaultEntries]);
 
-  const scanSingleEndpoint = useCallback(async (url: string) => {
-    setEndpoints((prev) => prev.map((e) => e.url === url ? { ...e, status: "spidering", progress: 0, alerts: [] } : e));
-    await applyCredential();
-    try {
-      await zapStartSpider(url);
-      setEndpoints((prev) => prev.map((e) => e.url === url ? { ...e, status: "scanning" } : e));
-      const id = await zapStartScan(url, undefined, undefined, null, selectedPolicy || null);
-      setEndpoints((prev) => prev.map((e) => e.url === url ? { ...e, scanId: id } : e));
-    } catch {
-      setEndpoints((prev) => prev.map((e) => e.url === url ? { ...e, status: "error" } : e));
+  const queue = useZapScanQueue({
+    projectPath,
+    initialUrl,
+    initialBatchUrls,
+    onUrlConsumed,
+    selectedPolicy,
+    beforeScan: applyCredential,
+  });
+  const {
+    endpoints,
+    selectedUrl,
+    setSelectedUrl,
+    selectedEndpoint: sel,
+    scanning,
+    totalAlerts,
+    completedCount,
+    scanningCount,
+    pausedCount,
+    queuedCount,
+    addEndpoint,
+    removeEndpoint,
+    scanSelected: handleScanSelected,
+    scanAll: handleScanAll,
+    stopAll: handleStopAll,
+    pauseAll: handlePauseAll,
+    resumeAll: handleResumeAll,
+    clearCompleted: handleClearCompleted,
+    clearAll: handleClearAll,
+  } = queue;
+
+  const handleAddEndpoint = useCallback(() => {
+    if (addEndpoint(targetUrl)) {
+      setTargetUrl("");
+    } else if (targetUrl.trim()) {
+      // URL already existed — clear input but keep it focused on the existing entry.
+      setTargetUrl("");
     }
-  }, [applyCredential, selectedPolicy]);
+  }, [addEndpoint, targetUrl]);
 
-  const handleScanAll = useCallback(async () => {
-    setScanning(true);
-    const queued = endpoints.filter((e) => e.status === "queued");
-    for (const ep of queued) {
-      await scanSingleEndpoint(ep.url);
-    }
-    setScanning(false);
-  }, [endpoints, scanSingleEndpoint]);
-
-  const handleScanSelected = useCallback(async () => {
-    if (!selectedUrl) return;
-    setScanning(true);
-    await scanSingleEndpoint(selectedUrl);
-    setScanning(false);
-  }, [selectedUrl, scanSingleEndpoint]);
-
-  useEffect(() => {
-    const active = endpoints.filter((e) => (e.status === "scanning" || e.status === "paused") && e.scanId);
-    if (active.length === 0) return;
-    const poll = async () => {
-      for (const ep of active) {
-        try {
-          const [prog, alerts, msgCount] = await Promise.all([
-            zapScanProgress(ep.scanId!),
-            zapGetAlerts(ep.url, 0, 200),
-            invoke<number>("zap_scan_message_count", { scanId: ep.scanId! }).catch(() => 0),
-          ]);
-          const isComplete = prog.progress >= 100;
-          if (isComplete && alerts.length > 0) {
-            importZapAlerts(alerts, "ZAP Active Scan", projectPath);
-          }
-          setEndpoints((prev) => {
-            const next = prev.map((e) => {
-              if (e.url !== ep.url) return e;
-              const newStatus = isComplete ? "complete" as const
-                : e.status === "paused" ? "paused" as const
-                : "scanning" as const;
-              return { ...e, progress: prog.progress, alerts, messageCount: msgCount, status: newStatus };
-            });
-            saveScanQueueToDb(next, projectPath);
-            return next;
-          });
-        } catch { /* ignore */ }
-      }
-    };
-    poll();
-    intervalRef.current = setInterval(poll, 2000);
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [endpoints.filter((e) => e.status === "scanning" || e.status === "paused").map((e) => `${e.url}:${e.scanId}`).join(",")]);
-
-  const handleStopAll = useCallback(async () => {
-    for (const ep of endpoints.filter((e) => (e.status === "scanning" || e.status === "paused") && e.scanId)) {
-      await zapStopScan(ep.scanId!).catch(() => {});
-    }
-    setEndpoints((prev) => prev.map((e) => e.status === "scanning" || e.status === "spidering" || e.status === "paused" ? { ...e, status: "queued" } : e));
-    setScanning(false);
-  }, [endpoints]);
-
-  const handlePauseAll = useCallback(async () => {
-    for (const ep of endpoints.filter((e) => e.status === "scanning" && e.scanId)) {
-      await zapPauseScan(ep.scanId!).catch(() => {});
-    }
-    setEndpoints((prev) => {
-      const next = prev.map((e) => e.status === "scanning" ? { ...e, status: "paused" as const } : e);
-      saveScanQueueToDb(next, projectPath);
-      return next;
-    });
-  }, [endpoints, projectPath]);
-
-  const handleResumeAll = useCallback(async () => {
-    for (const ep of endpoints.filter((e) => e.status === "paused" && e.scanId)) {
-      await zapResumeScan(ep.scanId!).catch(() => {});
-    }
-    setEndpoints((prev) => {
-      const next = prev.map((e) => e.status === "paused" ? { ...e, status: "scanning" as const } : e);
-      saveScanQueueToDb(next, projectPath);
-      return next;
-    });
-  }, [endpoints, projectPath]);
-
-  const handleClearCompleted = useCallback(() => {
-    setEndpoints((prev) => { const next = prev.filter((e) => e.status !== "complete"); saveScanQueueToDb(next, projectPath); return next; });
-    invoke("scan_queue_clear_completed", { projectPath }).catch(() => {});
-  }, [projectPath]);
-
-  const handleClearAll = useCallback(async () => {
-    for (const ep of endpoints.filter((e) => (e.status === "scanning" || e.status === "paused") && e.scanId)) {
-      await zapStopScan(ep.scanId!).catch(() => {});
-    }
-    setEndpoints([]);
-    setSelectedUrl(null);
-    setScanning(false);
-    saveScanQueueToDb([], projectPath);
-  }, [endpoints, projectPath]);
-
-  const sel = endpoints.find((e) => e.url === selectedUrl);
+  const handleRemoveEndpoint = useCallback(
+    (url: string) => removeEndpoint(url),
+    [removeEndpoint]
+  );
 
   useEffect(() => {
     if (!sel || sel.status !== "complete") { setScanLogs([]); return; }
@@ -435,12 +244,6 @@ export function ScannerPanel({ initialUrl, initialBatchUrls, onUrlConsumed }: { 
       .then((data: any) => setScanLogs(Array.isArray(data) ? data : []))
       .catch(() => setScanLogs([]));
   }, [sel?.url, sel?.status]);
-
-  const totalAlerts = endpoints.reduce((acc, e) => acc + e.alerts.length, 0);
-  const completedCount = endpoints.filter((e) => e.status === "complete").length;
-  const scanningCount = endpoints.filter((e) => e.status === "scanning" || e.status === "spidering" || e.status === "paused").length;
-  const pausedCount = endpoints.filter((e) => e.status === "paused").length;
-  const queuedCount = endpoints.filter((e) => e.status === "queued").length;
 
   const riskColor = (risk: string) => {
     const c: Record<string, string> = { High: "text-red-400 bg-red-500/10", Medium: "text-orange-400 bg-orange-500/10", Low: "text-yellow-400 bg-yellow-500/10", Informational: "text-blue-400 bg-blue-500/10" };

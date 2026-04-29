@@ -9,6 +9,8 @@
 
 use anyhow::Result;
 use rig::completion::{AssistantContent, Message};
+use rig::message::{Text, UserContent};
+use rig::one_or_many::OneOrMany;
 use tracing::Instrument;
 
 // Re-exports kept private to this module for the test child (`mod tests;`),
@@ -540,17 +542,59 @@ where
             consecutive_no_tool_turns = 0;
         }
 
-        dispatch_tool_calls(
-            tool_calls_to_execute,
-            ctx,
-            &capture_ctx,
-            model,
-            &sub_agent_context,
-            &hook_registry,
-            &llm_span,
-            &mut chat_history,
-        )
-        .await;
+        // Filter out tool calls not in the allowed tool list.
+        // In Task mode the primary only has orchestration tools; the model may
+        // hallucinate direct-tool calls from the system prompt or restored history.
+        let allowed_names: std::collections::HashSet<&str> =
+            tools.iter().map(|t| t.name.as_str()).collect();
+        let (permitted, rejected): (Vec<_>, Vec<_>) = tool_calls_to_execute
+            .into_iter()
+            .partition(|tc| allowed_names.contains(tc.function.name.as_str()));
+
+        if !rejected.is_empty() {
+            let rejected_names: Vec<&str> = rejected.iter().map(|tc| tc.function.name.as_str()).collect();
+            tracing::warn!(
+                "[tool-guard] Blocked {} tool call(s) not in allowed list: {:?}",
+                rejected.len(),
+                rejected_names,
+            );
+            let error_results: Vec<UserContent> = rejected
+                .iter()
+                .map(|tc| {
+                    UserContent::ToolResult(rig::message::ToolResult {
+                        id: tc.id.clone(),
+                        call_id: Some(tc.id.clone()),
+                        content: OneOrMany::one(rig::message::ToolResultContent::Text(Text {
+                            text: format!(
+                                "Error: Tool '{}' is not available in the current execution mode. \
+                                 Use sub-agent delegation (sub_agent_*) tools instead.",
+                                tc.function.name
+                            ),
+                        })),
+                    })
+                })
+                .collect();
+            if !error_results.is_empty() {
+                chat_history.push(Message::User {
+                    content: OneOrMany::many(error_results)
+                        .expect("rejected list is non-empty"),
+                });
+            }
+        }
+
+        if !permitted.is_empty() {
+            dispatch_tool_calls(
+                permitted,
+                ctx,
+                &capture_ctx,
+                model,
+                &sub_agent_context,
+                &hook_registry,
+                &llm_span,
+                &mut chat_history,
+            )
+            .await;
+        }
     }
 
     // Log thinking stats at debug level

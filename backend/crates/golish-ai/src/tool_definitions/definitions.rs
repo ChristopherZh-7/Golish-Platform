@@ -84,6 +84,7 @@ pub fn get_ask_human_tool_definition() -> ToolDefinition {
 pub async fn get_sub_agent_tool_definitions(registry: &SubAgentRegistry) -> Vec<ToolDefinition> {
     registry
         .all()
+        .filter(|agent| !agent.pipeline_only)
         .map(|agent| ToolDefinition {
             name: format!("sub_agent_{}", agent.id),
             description: format!("[{}] {}", agent.name, agent.description),

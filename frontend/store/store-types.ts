@@ -63,7 +63,7 @@ export interface AiConfig {
   };
 }
 
-export type DetailViewMode = "timeline" | "tool-detail";
+export type DetailViewMode = "timeline" | "tool-detail" | "sub-agent-detail";
 
 export interface Session {
   id: string;

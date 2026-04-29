@@ -22,10 +22,8 @@ import { ConversationTabs } from "./ConversationTabs";
 import {
   AskHumanInline,
   CompactionNotice,
-  TaskPlanCard,
   WorkflowProgress,
 } from "./ChatSubComponents";
-import { SubAgentSummaryBar } from "./SubAgentSummaryBar";
 import { MessageBlock } from "./MessageBlock";
 import { buildPentestSystemPrompt } from "./pentestSystemPrompt";
 
@@ -124,7 +122,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
     generateTitleRef: sessionInit.generateTitleRef,
   });
 
-  const { activeAiSessionId, taskPlan, planTargetIdx, retiredPlansByMsg } =
+  const { activeAiSessionId, taskPlan, planTargetIdx } =
     useTaskPlanState(messages, planMessageIdRef);
 
   // ── Conversation switch: activate terminal + restore execution mode ──
@@ -266,17 +264,13 @@ export const AIChatPanel = memo(function AIChatPanel() {
             <div>
               {messages.map((msg, msgIdx) => {
                 const isPlanTarget = msgIdx === planTargetIdx;
-                const retiredHere = retiredPlansByMsg.get(msg.id);
                 return (
                   <React.Fragment key={msg.id}>
-                    {retiredHere && retiredHere.length > 0 && retiredHere.map((rp, ri) => (
-                      <TaskPlanCard key={`retired-${rp.retiredAt ?? ri}`} plan={rp} retired />
-                    ))}
                     <MessageBlock
                       message={msg}
                       taskPlan={isPlanTarget ? taskPlan : null}
                       planTextOffset={isPlanTarget ? planTextOffsetRef.current : null}
-                      terminalId={taskPlan ? activeAiSessionId : null}
+                      terminalId={activeAiSessionId}
                       pendingApproval={stablePendingApproval}
                       approvalMode={modes.approvalMode}
                       onApprovalModeChange={modes.handleApprovalModeChange}
@@ -288,7 +282,6 @@ export const AIChatPanel = memo(function AIChatPanel() {
               })}
 
               {activeWorkflow && <WorkflowProgress workflow={activeWorkflow} />}
-              <SubAgentSummaryBar />
               {compactionState && <CompactionNotice active={compactionState.active} tokensBefore={compactionState.tokensBefore} />}
               {askHumanRequest && <AskHumanInline request={askHumanRequest} onSubmit={handleAskHumanSubmit} onSkip={handleAskHumanSkip} />}
               <div ref={messagesEndRef} />
