@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { memo, useEffect, useRef, useState, type ReactElement } from "react";
 import { Markdown } from "@/components/Markdown";
+import { AnchorChip } from "@/components/ui/AnchorChip";
 import { StatusIcon } from "@/components/ui/StatusIcon";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -41,6 +42,8 @@ interface SubAgentCardProps {
   /** Compact inline style for nesting inside pipeline steps */
   compact?: boolean;
   highlighted?: boolean;
+  /** Session ID — for AnchorChip lookup. */
+  sessionId?: string | null;
 }
 
 /** Status icon component */
@@ -261,7 +264,8 @@ function InterleavedEntries({
 /** Compact inline sub-agent row for nesting inside pipeline steps */
 const CompactSubAgentCard = memo(function CompactSubAgentCard({
   subAgent,
-}: { subAgent: ActiveSubAgent }) {
+  sessionId,
+}: { subAgent: ActiveSubAgent; sessionId?: string | null }) {
   const [isExpanded, setIsExpanded] = useState(subAgent.status === "running");
   const [showAll, setShowAll] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
@@ -285,6 +289,7 @@ const CompactSubAgentCard = memo(function CompactSubAgentCard({
           <span className="font-mono text-[var(--ansi-cyan)] truncate">
             {subAgent.agentName || subAgent.agentId}
           </span>
+          <AnchorChip sessionId={sessionId} requestId={subAgent.parentRequestId} />
           {totalToolCalls > 0 && (
             <span className="text-[10px] text-muted-foreground flex-shrink-0">
               {totalToolCalls} tool{totalToolCalls > 1 ? "s" : ""}
@@ -349,9 +354,10 @@ export const SubAgentCard = memo(function SubAgentCard({
   autoCollapse,
   compact,
   highlighted = false,
+  sessionId,
 }: SubAgentCardProps) {
   if (compact) {
-    return <CompactSubAgentCard subAgent={subAgent} />;
+    return <CompactSubAgentCard subAgent={subAgent} sessionId={sessionId} />;
   }
 
   return (
@@ -359,6 +365,7 @@ export const SubAgentCard = memo(function SubAgentCard({
       subAgent={subAgent}
       autoCollapse={autoCollapse}
       highlighted={highlighted}
+      sessionId={sessionId}
     />
   );
 });
@@ -367,6 +374,7 @@ const FullSubAgentCard = memo(function FullSubAgentCard({
   subAgent,
   autoCollapse,
   highlighted = false,
+  sessionId,
 }: Omit<SubAgentCardProps, "compact">) {
   const defaultExpanded = autoCollapse ? false : highlighted ? true : true;
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
@@ -441,6 +449,7 @@ const FullSubAgentCard = memo(function FullSubAgentCard({
                 <span className="font-medium text-sm truncate">
                   {subAgent.agentName || subAgent.agentId}
                 </span>
+                <AnchorChip sessionId={sessionId} requestId={subAgent.parentRequestId} />
                 <StatusBadge status={subAgent.status} />
                 {totalToolCalls > 0 && (
                   <span className="text-[10px] text-muted-foreground flex-shrink-0">
@@ -583,6 +592,7 @@ const FullSubAgentCard = memo(function FullSubAgentCard({
               <span className="font-medium text-sm truncate">
                 {subAgent.agentName || subAgent.agentId}
               </span>
+              <AnchorChip sessionId={sessionId} requestId={subAgent.parentRequestId} />
               <StatusBadge status={subAgent.status} />
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">

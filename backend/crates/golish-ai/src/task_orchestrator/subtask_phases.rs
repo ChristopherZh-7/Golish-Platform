@@ -17,8 +17,9 @@ use golish_db::repo::{subtasks, tasks};
 
 use super::helpers::{looks_like_text_only_response, parse_agent_type, truncate};
 use super::types::{
-    AgentExecutor, AgentResult, AgentTokenUsage, ExecutionContext, PlannedSubtask, SubtaskResult,
-    TaskCostTracker, MAX_REFLECTOR_RETRIES, MAX_SUBTASKS,
+    AgentExecutor, AgentResult, AgentTokenUsage, CurrentSubtask, ExecutionContext,
+    PlannedSubtask, PlannedSubtaskInfo, SubtaskResult, TaskCostTracker, MAX_REFLECTOR_RETRIES,
+    MAX_SUBTASKS,
 };
 
 use super::TaskOrchestrator;
@@ -32,9 +33,18 @@ impl TaskOrchestrator {
         start_index: usize,
         executor: &dyn AgentExecutor,
     ) -> Result<String> {
+        let task_input = tasks::get(&self.pool, task_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|t| t.input)
+            .unwrap_or_default();
+
         let mut exec_ctx = ExecutionContext {
             completed_results: Vec::new(),
-            task_input: String::new(),
+            task_input,
+            current_subtask: None,
+            planned_subtasks: Vec::new(),
         };
 
         if start_index > 0 {
@@ -102,6 +112,20 @@ impl TaskOrchestrator {
             } else {
                 None
             };
+
+            // Populate execution context with current subtask and remaining plan
+            exec_ctx.current_subtask = Some(CurrentSubtask {
+                title: planned.title.clone(),
+                description: planned.description.clone(),
+                agent: planned.agent.clone(),
+            });
+            exec_ctx.planned_subtasks = queue[subtask_index + 1..]
+                .iter()
+                .map(|p| PlannedSubtaskInfo {
+                    title: p.title.clone(),
+                    description: p.description.clone(),
+                })
+                .collect();
 
             // Execute subtask with reflector retry
             let (result_text, subtask_usage) = self
@@ -235,12 +259,13 @@ impl TaskOrchestrator {
         Ok(report)
     }
 
-    /// Execute a single subtask with reflector retry and optional user input pause.
+    /// Execute a single subtask with enrichment, planning, reflector retry,
+    /// and optional user input pause.
     ///
-    /// Follows PentAGI's simplified flow: the subtask description is passed
-    /// directly to the Primary agent (via `execute_subtask`), which decides
-    /// autonomously which specialist sub-agents to invoke. No pre-enrichment
-    /// or pre-planning layers — agents search their own knowledge stores.
+    /// Follows PentAGI's full flow:
+    /// 1. **Enrich**: Gather supplementary context from completed work
+    /// 2. **Plan**: Generate an execution checklist via the Adviser
+    /// 3. **Execute**: Run the subtask with reflector retry loop
     async fn execute_single_subtask(
         &mut self,
         planned: &PlannedSubtask,
@@ -251,12 +276,76 @@ impl TaskOrchestrator {
     ) -> (String, Option<AgentTokenUsage>) {
         let agent_type = planned.agent.as_deref().unwrap_or("primary");
 
+        // Phase 1: Enrich — gather supplementary context
+        let enrichment = match executor
+            .enrich_subtask(&planned.title, &planned.description, exec_ctx, agent_type)
+            .await
+        {
+            Ok(Some(ctx)) => {
+                tracing::info!(
+                    "[TaskMode] Enrichment added for '{}': {} chars",
+                    planned.title,
+                    ctx.len()
+                );
+                Some(ctx)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!("[TaskMode] Enrichment failed (continuing): {}", e);
+                None
+            }
+        };
+
+        // Phase 2: Plan — generate execution checklist
+        let execution_plan = match executor
+            .plan_subtask(&planned.title, &planned.description, exec_ctx, agent_type)
+            .await
+        {
+            Ok(Some(plan)) => {
+                tracing::info!(
+                    "[TaskMode] Execution plan generated for '{}': {} chars",
+                    planned.title,
+                    plan.len()
+                );
+                Some(plan)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!("[TaskMode] Planning failed (continuing): {}", e);
+                None
+            }
+        };
+
+        // Build the augmented description:
+        // enrichment context + task_assignment_wrapper(original_description, plan)
+        let augmented_description = {
+            let mut desc = String::new();
+
+            if let Some(ref enrichment) = enrichment {
+                desc.push_str("## SUPPLEMENTARY CONTEXT\n\n");
+                desc.push_str(enrichment);
+                desc.push_str("\n\n");
+            }
+
+            if let Some(ref plan) = execution_plan {
+                desc.push_str(&super::prompts::wrap_task_with_plan(
+                    &planned.description,
+                    plan,
+                ));
+            } else {
+                desc.push_str(&planned.description);
+            }
+
+            desc
+        };
+
+        // Phase 3: Execute with reflector retry loop
         let mut last_result: Option<AgentResult> = None;
 
         for reflector_attempt in 0..=MAX_REFLECTOR_RETRIES {
             let exec_result = if reflector_attempt == 0 {
                 executor
-                    .execute_subtask(&planned.title, &planned.description, exec_ctx, Some(agent_type))
+                    .execute_subtask(&planned.title, &augmented_description, exec_ctx, Some(agent_type))
                     .await
             } else {
                 let prev_response = last_result

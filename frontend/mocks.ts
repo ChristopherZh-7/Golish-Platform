@@ -1783,8 +1783,7 @@ export function cleanupMocks(): void {
  * Components triggered:
  *  1. MessageBlock (user + assistant with markdown + thinking)
  *  2. TaskPlanCard (active + retired iterations)
- *  3. StickyPlanProgress
- *  4. ToolCallSummary / ToolCallCard (completed tools in message)
+ *  3. ToolCallSummary / ToolCallCard (completed tools in message)
  *  5. SubAgentInlineCard (sub_agent_* tool in message)
  *  6. SubAgentSummaryBar (from activeSubAgents)
  *  7. WorkflowProgress
@@ -1942,8 +1941,7 @@ export async function demoAllChatStyles(): Promise<void> {
     "  1. MessageBlock (user+assistant)\n" +
     "  2. ThinkingBlock (reasoning)\n" +
     "  3. TaskPlanCard (active v2 + retired v1)\n" +
-    "  4. StickyPlanProgress\n" +
-    "  5. ToolCallCard (read_file, run_command)\n" +
+    "  4. ToolCallCard (read_file, run_command)\n" +
     "  6. SubAgentInlineCard (sub_agent_researcher)\n" +
     "  7. SubAgentSummaryBar\n" +
     "  8. WorkflowProgress (running)\n" +

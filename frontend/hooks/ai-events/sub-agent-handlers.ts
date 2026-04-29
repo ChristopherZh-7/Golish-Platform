@@ -67,9 +67,8 @@ export const handleSubAgentStarted: EventHandler<{
     depth: event.depth,
   });
 
-  if (state.sessions[ctx.sessionId]) {
-    state.setDetailViewMode(ctx.sessionId, "tool-detail");
-  }
+  // Sub-agent detail is shown on-demand when the user clicks the inline card.
+  // No auto-switch here since sub-agent-detail only shows a single agent.
 };
 
 /**

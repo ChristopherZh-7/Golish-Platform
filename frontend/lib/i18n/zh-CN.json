@@ -333,7 +333,61 @@
     "noModelSelected": "请先选择模型（左下角下拉菜单）",
     "noProviders": "未配置任何服务商",
     "configureInSettings": "请在 设置 → Providers 中配置 API Key",
-    "messages": "条消息"
+    "messages": "条消息",
+    "toolDetail": {
+      "backToTerminal": "返回终端",
+      "done": "已完成",
+      "running": "进行中...",
+      "noToolExecutions": "尚未有工具调用",
+      "previousPlanSteps": "历史 Plan 步骤",
+      "stepsLabel": "{{count}} 步",
+      "executionsLabel": "{{count}} 次执行",
+      "view": "查看"
+    },
+    "agentTree": {
+      "agents": "个 agent",
+      "tools": "个工具",
+      "running": "进行中",
+      "failed": "失败",
+      "agentsRunning": "{{count}} 个 agent 正在运行",
+      "expandAll": "展开全部",
+      "collapseAll": "折叠全部",
+      "empty": "尚未有 sub-agent 调用",
+      "viewDetails": "查看完整详情"
+    },
+    "planBar": {
+      "view": "查看",
+      "viewDetail": "查看 Plan 详情（中央面板）",
+      "expand": "展开",
+      "collapse": "折叠",
+      "planUpdated": "Plan 已更新",
+      "seeAtTop": "见顶部 Plan 条"
+    },
+    "subAgent": {
+      "delegateTo": "委托给",
+      "viewMore": "详情"
+    },
+    "subAgentDetail": {
+      "notFound": "未找到该 Sub-Agent",
+      "task": "任务",
+      "toolCalls": "工具调用",
+      "response": "响应",
+      "errorTitle": "错误",
+      "metadata": "元数据",
+      "liveOutput": "实时输出",
+      "copy": "复制",
+      "copied": "已复制！",
+      "agentRunning": "Agent 正在运行...",
+      "promptGenerating": "正在生成 system prompt...",
+      "promptGenerated": "System prompt 已生成",
+      "promptFailed": "Prompt 生成失败",
+      "status": {
+        "running": "运行中",
+        "completed": "已完成",
+        "error": "出错",
+        "interrupted": "已中断"
+      }
+    }
   },
   "input": {
     "searchToolName": "搜索工具名称...",

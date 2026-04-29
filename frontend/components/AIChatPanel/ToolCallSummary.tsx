@@ -13,6 +13,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { AnchorChip } from "@/components/ui/AnchorChip";
 import { getToolColor, getToolLabel, getToolPrimaryArg } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
@@ -29,11 +30,15 @@ function ToolCallCard({
   onClick,
   isMessageComplete,
   isSelected,
+  sessionId,
+  requestId,
 }: {
   tc: { name: string; args?: string; result?: string; success?: boolean };
   onClick: () => void;
   isMessageComplete?: boolean;
   isSelected?: boolean;
+  sessionId?: string | null;
+  requestId?: string | null;
 }) {
   let label = getToolLabel(tc.name, "short");
   if (tc.name === "run_pipeline" && tc.args) {
@@ -76,6 +81,7 @@ function ToolCallCard({
       <div className="flex items-center gap-2">
         <Wrench className="w-3.5 h-3.5 flex-shrink-0" style={{ color: isExpired ? "var(--muted-foreground)" : color }} />
         <span className="text-[11px] font-medium text-foreground/80">{label}</span>
+        <AnchorChip sessionId={sessionId} requestId={requestId} />
         <div className="ml-auto flex items-center gap-1.5">
           {isExpired ? (
             <Clock className="w-3 h-3 text-[#565f89]" />
@@ -331,6 +337,8 @@ export function ToolCallSummary({
   };
 
 
+  const sessionId = useStore((s) => s.activeSessionId);
+
   return (
     <div className="mt-2 space-y-1.5">
       {toolCalls.map((tc, i) => {
@@ -342,6 +350,8 @@ export function ToolCallSummary({
             onClick={() => handleCardClick(i)}
             isMessageComplete={isMessageComplete}
             isSelected={selectedIdx === i}
+            sessionId={sessionId}
+            requestId={tc.requestId ?? requestIds?.[i] ?? null}
           />
         );
       })}

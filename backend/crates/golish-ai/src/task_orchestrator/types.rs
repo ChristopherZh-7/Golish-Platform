@@ -109,12 +109,33 @@ impl TaskCostTracker {
 }
 
 /// Context accumulated during task execution, passed between agents.
+///
+/// Renders in PentAGI-compatible XML format for injection into agent prompts.
 #[derive(Debug, Clone, Default)]
 pub struct ExecutionContext {
     /// Accumulated results from completed subtasks.
     pub completed_results: Vec<SubtaskResult>,
     /// The original user input.
     pub task_input: String,
+    /// Current subtask being executed (if any).
+    pub current_subtask: Option<CurrentSubtask>,
+    /// Remaining planned subtasks (after the current one).
+    pub planned_subtasks: Vec<PlannedSubtaskInfo>,
+}
+
+/// Info about a subtask being currently executed.
+#[derive(Debug, Clone)]
+pub struct CurrentSubtask {
+    pub title: String,
+    pub description: String,
+    pub agent: Option<String>,
+}
+
+/// Lightweight info about a planned subtask for context display.
+#[derive(Debug, Clone)]
+pub struct PlannedSubtaskInfo {
+    pub title: String,
+    pub description: String,
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +161,57 @@ impl ExecutionContext {
             ));
         }
         s
+    }
+
+    /// Render the execution context in PentAGI-compatible XML format.
+    ///
+    /// This format is injected into the orchestrator's prompt as `{{execution_context}}`.
+    pub fn render_xml(&self) -> String {
+        let mut out = String::new();
+
+        out.push_str("<global_task>\n");
+        out.push_str(&self.task_input);
+        out.push_str("\n</global_task>\n\n");
+
+        out.push_str("<completed_subtasks>\n");
+        if self.completed_results.is_empty() {
+            out.push_str("<status>none</status>\n");
+            out.push_str("<message>No completed subtasks yet. This is the first subtask.</message>\n");
+        } else {
+            for (i, r) in self.completed_results.iter().enumerate() {
+                out.push_str(&format!(
+                    "<subtask>\n<index>{}</index>\n<title>{}</title>\n<result>{}</result>\n</subtask>\n",
+                    i + 1, r.title, r.result
+                ));
+            }
+        }
+        out.push_str("</completed_subtasks>\n\n");
+
+        if let Some(ref current) = self.current_subtask {
+            out.push_str("<current_subtask>\n");
+            out.push_str(&format!("<title>{}</title>\n", current.title));
+            out.push_str(&format!("<description>{}</description>\n", current.description));
+            if let Some(ref agent) = current.agent {
+                out.push_str(&format!("<assigned_agent>{}</assigned_agent>\n", agent));
+            }
+            out.push_str("</current_subtask>\n\n");
+        }
+
+        out.push_str("<planned_subtasks>\n");
+        if self.planned_subtasks.is_empty() {
+            out.push_str("<status>none</status>\n");
+            out.push_str("<message>No remaining subtasks in the backlog.</message>\n");
+        } else {
+            for (i, p) in self.planned_subtasks.iter().enumerate() {
+                out.push_str(&format!(
+                    "<subtask>\n<index>{}</index>\n<title>{}</title>\n<description>{}</description>\n</subtask>\n",
+                    i + 1, p.title, p.description
+                ));
+            }
+        }
+        out.push_str("</planned_subtasks>");
+
+        out
     }
 }
 
@@ -215,6 +287,60 @@ pub trait AgentExecutor: Send + Sync {
         subtask_title: &str,
         agent_response: &str,
     ) -> Result<String>;
+
+    /// Enrich a subtask with supplementary context before execution.
+    ///
+    /// Mirrors PentAGI's `enricher.tmpl`: searches memory, knowledge base,
+    /// and completed subtask results to add context the executing agent
+    /// wouldn't otherwise have. Returns the enrichment text to prepend.
+    ///
+    /// Default returns `Ok(None)` (no enrichment).
+    async fn enrich_subtask(
+        &self,
+        subtask_title: &str,
+        subtask_description: &str,
+        execution_context: &ExecutionContext,
+        agent_type: &str,
+    ) -> Result<Option<String>> {
+        let _ = (subtask_title, subtask_description, execution_context, agent_type);
+        Ok(None)
+    }
+
+    /// Generate an execution plan for a subtask before delegating it.
+    ///
+    /// Mirrors PentAGI's `question_task_planner.tmpl` + `task_assignment_wrapper.tmpl`:
+    /// the Adviser creates a concise checklist (3-7 steps) that is wrapped
+    /// around the original task description.
+    ///
+    /// Default returns `Ok(None)` (no pre-planning).
+    async fn plan_subtask(
+        &self,
+        subtask_title: &str,
+        subtask_description: &str,
+        execution_context: &ExecutionContext,
+        agent_type: &str,
+    ) -> Result<Option<String>> {
+        let _ = (subtask_title, subtask_description, execution_context, agent_type);
+        Ok(None)
+    }
+
+    /// Monitor execution progress and provide corrective advice.
+    ///
+    /// Mirrors PentAGI's `question_execution_monitor.tmpl`: when the agentic
+    /// loop detects repetitive tool usage, this method is called to generate
+    /// strategic advice that is injected into the next tool response.
+    ///
+    /// Default returns `Ok(None)` (no advice).
+    async fn monitor_execution(
+        &self,
+        subtask_description: &str,
+        repeated_tool: &str,
+        repeat_count: usize,
+        recent_tool_calls: &str,
+    ) -> Result<Option<String>> {
+        let _ = (subtask_description, repeated_tool, repeat_count, recent_tool_calls);
+        Ok(None)
+    }
 
     /// Serialize the current message chain for persistence.
     ///

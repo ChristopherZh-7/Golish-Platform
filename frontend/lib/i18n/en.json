@@ -332,7 +332,61 @@
     "toolsAvailable": "tools available",
     "noModelSelected": "Please select a model first (bottom-left dropdown)",
     "noProviders": "No providers configured",
-    "configureInSettings": "Configure API keys in Settings → Providers"
+    "configureInSettings": "Configure API keys in Settings → Providers",
+    "toolDetail": {
+      "backToTerminal": "Back to Terminal",
+      "done": "done",
+      "running": "running...",
+      "noToolExecutions": "No tool executions yet",
+      "previousPlanSteps": "Previous Plan Steps",
+      "stepsLabel": "{{count}} steps",
+      "executionsLabel": "{{count}} executions",
+      "view": "View"
+    },
+    "agentTree": {
+      "agents": "agents",
+      "tools": "tools",
+      "running": "running",
+      "failed": "failed",
+      "agentsRunning": "{{count}} agents running",
+      "expandAll": "Expand all",
+      "collapseAll": "Collapse all",
+      "empty": "No sub-agent invocations yet",
+      "viewDetails": "View full details"
+    },
+    "planBar": {
+      "view": "View",
+      "viewDetail": "View Plan detail (center pane)",
+      "expand": "Expand",
+      "collapse": "Collapse",
+      "planUpdated": "Plan updated",
+      "seeAtTop": "See top Plan bar"
+    },
+    "subAgent": {
+      "delegateTo": "delegated to",
+      "viewMore": "details"
+    },
+    "subAgentDetail": {
+      "notFound": "Sub-agent not found",
+      "task": "Task",
+      "toolCalls": "Tool Calls",
+      "response": "Response",
+      "errorTitle": "Error",
+      "metadata": "Metadata",
+      "liveOutput": "Live Output",
+      "copy": "Copy",
+      "copied": "Copied!",
+      "agentRunning": "Agent is running...",
+      "promptGenerating": "Generating system prompt...",
+      "promptGenerated": "System prompt generated",
+      "promptFailed": "Prompt generation failed",
+      "status": {
+        "running": "Running",
+        "completed": "Completed",
+        "error": "Error",
+        "interrupted": "Interrupted"
+      }
+    }
   },
   "input": {
     "searchToolName": "Search tool name...",

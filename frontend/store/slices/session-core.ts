@@ -257,7 +257,7 @@ export function createSessionCoreActions(set: ImmerSet<any>, _get: StateGet<any>
       set((state: any) => {
         if (state.sessions[sessionId]) {
           state.sessions[sessionId].detailViewMode = mode;
-          if (mode !== "tool-detail") {
+          if (mode !== "tool-detail" && mode !== "sub-agent-detail") {
             state.sessions[sessionId].toolDetailRequestIds = null;
           }
         }

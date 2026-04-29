@@ -5,9 +5,10 @@
 //!
 //! | mode  | depth        | exposed tools                                    |
 //! |-------|--------------|---------------------------------------------------|
-//! | task  | 0 (primary)  | `update_plan` + knowledge tools + ask_human       |
-//! | task  | >0 (subtask) | full toolset minus `update_plan` + ask_human      |
-//! | chat  | any          | full toolset + ask_human                          |
+//! | task  | 0 (primary)  | `ask_human` + `sub_agent_*` delegation tools         |
+//! | task  | >0 (subtask) | full toolset minus `update_plan` (no ask_human)   |
+//! | chat  | 0            | full toolset + ask_human                          |
+//! | chat  | >0           | full toolset (no ask_human)                       |
 //!
 //! Sub-agent dispatch tools are appended whenever depth + 1 < `MAX_AGENT_DEPTH`.
 
@@ -26,20 +27,16 @@ pub(super) async fn build_tool_list(
     ctx: &AgenticLoopContext<'_>,
     sub_agent_context: &SubAgentContext,
 ) -> Vec<rig::completion::ToolDefinition> {
-    // Task mode: delegation-only (sub-agents + planning + ask_human) — matches
-    // PentAGI primary agent. Chat mode: full tool set (file, shell, web, ...).
+    // Task mode: primary is orchestration-only (sub-agents + ask_human),
+    // matching PentAGI primary. Chat mode: full tool set (file, shell, web, ...).
     let is_task_primary = ctx.execution_mode.is_task() && sub_agent_context.depth == 0;
     let is_task_subtask = ctx.execution_mode.is_task() && sub_agent_context.depth > 0;
 
     let mut tools: Vec<rig::completion::ToolDefinition> = if is_task_primary {
         tracing::info!(
-            "[Task mode] Primary agent: delegation-only tools (no direct environment access)"
+            "[Task mode] Primary agent: orchestration-only tools (sub-agents + ask_human)"
         );
-        // Only the planning tool from the static catalog
-        get_all_tool_definitions_with_config(ctx.tool_config)
-            .into_iter()
-            .filter(|t| t.name == "update_plan")
-            .collect::<Vec<_>>()
+        Vec::new()
     } else {
         // Chat mode or sub-agent execution: full tool set
         let mut t = get_all_tool_definitions_with_config(ctx.tool_config);
@@ -52,8 +49,11 @@ pub(super) async fn build_tool_list(
         t
     };
 
-    // Always add ask_human barrier tool (HITL: AI asks user for input)
-    tools.push(get_ask_human_tool_definition());
+    // Add ask_human barrier tool only for the primary agent (depth == 0).
+    // Sub-agents should operate autonomously without blocking on user input.
+    if sub_agent_context.depth == 0 {
+        tools.push(get_ask_human_tool_definition());
+    }
 
     if !is_task_primary {
         // Add any additional tools (e.g., SWE-bench test tool, MCP tools)
@@ -84,32 +84,25 @@ pub(super) async fn build_tool_list(
                 });
             }
         }
-    } else {
-        // Task-mode primary: add knowledge/memory tools for context retrieval
-        let registry = ctx.tool_registry.read().await;
-        let registry_tools = registry.get_tool_definitions();
-        drop(registry);
-
-        for tool in registry_tools {
-            let is_knowledge = tool.name == "search_knowledge_base"
-                || tool.name == "read_knowledge"
-                || tool.name == "search_memories"
-                || tool.name == "query_target_data";
-            if is_knowledge {
-                tools.push(rig::completion::ToolDefinition {
-                    name: tool.name,
-                    description: tool.description,
-                    parameters: sanitize_schema(tool.parameters),
-                });
-            }
-        }
     }
 
     // Add sub-agent dispatch tools when depth budget remains.
     // Sub-agents are controlled by the registry, not the tool config.
     if sub_agent_context.depth < MAX_AGENT_DEPTH - 1 {
         let registry = ctx.sub_agent_registry.read().await;
-        tools.extend(get_sub_agent_tool_definitions(&registry).await);
+        let mut sub_agent_tools = get_sub_agent_tool_definitions(&registry).await;
+        if is_task_primary {
+            sub_agent_tools.retain(|tool| {
+                !matches!(
+                    tool.name.as_str(),
+                    "sub_agent_orchestrator"
+                        | "sub_agent_planner"
+                        | "sub_agent_refiner"
+                        | "sub_agent_reflector"
+                )
+            });
+        }
+        tools.extend(sub_agent_tools);
     }
 
     tracing::debug!(

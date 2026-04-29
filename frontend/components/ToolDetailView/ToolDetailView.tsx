@@ -6,18 +6,17 @@ import {
   Loader2,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { PlanStepIcon } from "@/components/AIChatPanel/ChatSubComponents";
 import { PipelineProgressBlock } from "@/components/PipelineProgressBlock";
-import { SubAgentCard } from "@/components/SubAgentCard";
 import { ToolExecutionCard } from "@/components/ToolExecutionCard";
 import { cn } from "@/lib/utils";
-import type { ActiveSubAgent, AiToolExecution, PipelineExecution } from "@/store";
+import type { AiToolExecution, PipelineExecution } from "@/store";
 import type { PlanStep, RetiredPlan } from "@/store/store-types";
 import { useStore } from "@/store";
 
 type DetailItem =
   | { kind: "tool"; data: AiToolExecution }
-  | { kind: "sub_agent"; data: ActiveSubAgent }
   | { kind: "pipeline"; data: PipelineExecution; id: string };
 
 const EMPTY_RETIRED_PLANS: RetiredPlan[] = [];
@@ -31,6 +30,7 @@ const PlanStepGroup = memo(function PlanStepGroup({
   expandedCardId,
   onExpandCard,
   versionLabel,
+  sessionId,
 }: {
   step: PlanStep;
   items: DetailItem[];
@@ -38,6 +38,7 @@ const PlanStepGroup = memo(function PlanStepGroup({
   expandedCardId?: string | null;
   onExpandCard?: (id: string | null) => void;
   versionLabel?: string;
+  sessionId?: string | null;
 }) {
   const isCompleted = step.status === "completed";
   const isInProgress = step.status === "in_progress";
@@ -48,7 +49,6 @@ const PlanStepGroup = memo(function PlanStepGroup({
   const hasHighlight = items.some((item) => {
     if (!highlightSet) return false;
     if (item.kind === "tool") return highlightSet.has(item.data.requestId);
-    if (item.kind === "sub_agent") return highlightSet.has(item.data.parentRequestId);
     if (item.kind === "pipeline") return highlightSet.has(item.id);
     return false;
   });
@@ -137,15 +137,10 @@ const PlanStepGroup = memo(function PlanStepGroup({
                     highlighted={!!highlightSet?.has(item.data.requestId)}
                     isOpen={expandedCardId === item.data.requestId}
                     onToggle={() => onExpandCard?.(expandedCardId === item.data.requestId ? null : item.data.requestId)}
+                    sessionId={sessionId}
                   />
-                ) : item.kind === "pipeline" ? (
-                  <PipelineProgressBlock key={item.id} execution={item.data} />
                 ) : (
-                  <SubAgentCard
-                    key={item.data.parentRequestId}
-                    subAgent={item.data}
-                    highlighted={!!highlightSet?.has(item.data.parentRequestId)}
-                  />
+                  <PipelineProgressBlock key={item.id} execution={item.data} />
                 ),
               )}
             </div>
@@ -163,13 +158,16 @@ const RetiredPlanSection = memo(function RetiredPlanSection({
   highlightSet,
   expandedCardId,
   onExpandCard,
+  sessionId,
 }: {
   retiredPlans: RetiredPlan[];
   retiredStepItems: Map<string, DetailItem[]>;
   highlightSet?: Set<string> | null;
   expandedCardId?: string | null;
   onExpandCard?: (id: string | null) => void;
+  sessionId?: string | null;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const toggle = useCallback(() => setOpen((v) => !v), []);
 
@@ -197,8 +195,11 @@ const RetiredPlanSection = memo(function RetiredPlanSection({
         className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-muted-foreground/70 hover:text-muted-foreground hover:bg-accent/20 rounded transition-colors"
       >
         <History className="w-3.5 h-3.5" />
-        <span className="font-medium">Previous Plan Steps</span>
-        <span className="text-[10px] opacity-60">{stepsWithItems.length} steps{totalItems > 0 ? `, ${totalItems} executions` : ""}</span>
+        <span className="font-medium">{t("ai.toolDetail.previousPlanSteps")}</span>
+        <span className="text-[10px] opacity-60">
+          {t("ai.toolDetail.stepsLabel", { count: stepsWithItems.length })}
+          {totalItems > 0 ? `, ${t("ai.toolDetail.executionsLabel", { count: totalItems })}` : ""}
+        </span>
         <span className="ml-auto">
           {open ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
         </span>
@@ -218,6 +219,7 @@ const RetiredPlanSection = memo(function RetiredPlanSection({
                 expandedCardId={expandedCardId}
                 onExpandCard={onExpandCard}
                 versionLabel="Previous"
+                sessionId={sessionId}
               />
             ))}
           </div>
@@ -234,6 +236,7 @@ interface ToolDetailViewProps {
 export const ToolDetailView = memo(function ToolDetailView({
   sessionId,
 }: ToolDetailViewProps) {
+  const { t } = useTranslation();
   const setDetailViewMode = useStore((s) => s.setDetailViewMode);
   const timeline = useStore((s) => s.timelines[sessionId] ?? EMPTY_TIMELINE);
   const plan = useStore((s) => s.sessions[sessionId]?.plan ?? null);
@@ -262,13 +265,19 @@ export const ToolDetailView = memo(function ToolDetailView({
     const result: DetailItem[] = [];
     for (const block of timeline) {
       if (block.type === "ai_tool_execution") {
-        if (block.data.toolName === "update_plan" || block.data.toolName === "run_pipeline") continue;
+        const name = block.data.toolName;
+        // tool-detail 视图职责只显示「plan × 主 agent 调用的工具」。
+        // sub-agent 调用 / plan 更新 / pipeline 触发都剔除，让用户去对应的视图看：
+        //   - sub_agent_*       → agent-tree 视图
+        //   - update_plan       → plan 自身已经反映
+        //   - run_pipeline      → pipeline 块
+        if (name === "update_plan" || name === "run_pipeline") continue;
+        if (name.startsWith("sub_agent_")) continue;
         result.push({ kind: "tool", data: block.data });
-      } else if (block.type === "sub_agent_activity") {
-        result.push({ kind: "sub_agent", data: block.data });
       } else if (block.type === "pipeline_progress") {
         result.push({ kind: "pipeline", data: block.data, id: block.id });
       }
+      // sub_agent_activity 块在 tool-detail 里完全不渲染（去 agent-tree 看）
     }
     return result;
   }, [timeline]);
@@ -282,8 +291,6 @@ export const ToolDetailView = memo(function ToolDetailView({
         if (block.data.planStepIndex != null) indexMap.set(block.data.requestId, block.data.planStepIndex);
       } else if (block.type === "pipeline_progress" && block.planStepIndex != null) {
         indexMap.set(block.id, block.planStepIndex);
-      } else if (block.type === "sub_agent_activity" && block.planStepIndex != null) {
-        indexMap.set(block.data.parentRequestId, block.planStepIndex);
       }
     }
     return { idMap, indexMap };
@@ -320,8 +327,6 @@ export const ToolDetailView = memo(function ToolDetailView({
         idx = item.data.planStepIndex ?? planStepLookup.indexMap.get(item.data.requestId);
       } else if (item.kind === "pipeline") {
         idx = planStepLookup.indexMap.get(item.id);
-      } else if (item.kind === "sub_agent") {
-        idx = planStepLookup.indexMap.get(item.data.parentRequestId);
       }
 
       // Prefer grouping by step ID
@@ -346,11 +351,7 @@ export const ToolDetailView = memo(function ToolDetailView({
     return { stepItems: grouped, retiredStepItems: retiredGrouped, ungrouped: rest };
   }, [plan, allItems, planStepLookup, currentStepIds, retiredPlans]);
 
-  const runningCount = allItems.filter((item) => {
-    if (item.kind === "pipeline") return item.data.status === "running";
-    if (item.kind === "tool") return item.data.status === "running";
-    return item.data.status === "running";
-  }).length;
+  const runningCount = allItems.filter((item) => item.data.status === "running").length;
 
   const totalCount = plan ? plan.summary.total : allItems.length;
   const doneCount = plan
@@ -457,24 +458,25 @@ export const ToolDetailView = memo(function ToolDetailView({
           className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
         >
           <ArrowLeft className="w-3.5 h-3.5" />
-          Back to Terminal
+          {t("ai.toolDetail.backToTerminal")}
         </button>
         <div className="flex-1" />
         <span className="text-[10px] text-muted-foreground tabular-nums">
-          {doneCount}/{totalCount} done
+          {doneCount}/{totalCount} {t("ai.toolDetail.done")}
         </span>
       </div>
+
 
       {/* Execution list */}
       <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-3 py-2">
         {!hasContent ? (
           <div className="h-full flex items-center justify-center text-muted-foreground/50 text-sm">
-            No tool executions yet
+            {t("ai.toolDetail.noToolExecutions")}
           </div>
         ) : (
           <div ref={contentRef} className="space-y-0.5">
-            {/* Ungrouped items (pre-plan tool calls) rendered above the plan */}
-            {ungrouped.filter((i) => i.kind !== "sub_agent").length > 0 && (
+            {/* Ungrouped items (pre-plan tool calls / sub-agents) rendered above the plan */}
+            {ungrouped.length > 0 && (
               <div className={cn(plan && "mb-2 pb-2 border-b border-[var(--border-subtle)]")}>
                 {ungrouped.map((item) =>
                   item.kind === "tool" ? (
@@ -484,10 +486,11 @@ export const ToolDetailView = memo(function ToolDetailView({
                       highlighted={!!highlightSet?.has(item.data.requestId)}
                       isOpen={expandedCardId === item.data.requestId}
                       onToggle={() => setExpandedCardId(expandedCardId === item.data.requestId ? null : item.data.requestId)}
+                      sessionId={sessionId}
                     />
-                  ) : item.kind === "pipeline" ? (
+                  ) : (
                     <PipelineProgressBlock key={item.id} execution={item.data} />
-                  ) : null,
+                  ),
                 )}
               </div>
             )}
@@ -504,6 +507,7 @@ export const ToolDetailView = memo(function ToolDetailView({
                     highlightSet={highlightSet}
                     expandedCardId={expandedCardId}
                     onExpandCard={setExpandedCardId}
+                    sessionId={sessionId}
                   />
                 );
               })}
@@ -516,6 +520,7 @@ export const ToolDetailView = memo(function ToolDetailView({
                 highlightSet={highlightSet}
                 expandedCardId={expandedCardId}
                 onExpandCard={setExpandedCardId}
+                sessionId={sessionId}
               />
             )}
           </div>
@@ -528,7 +533,7 @@ export const ToolDetailView = memo(function ToolDetailView({
           <div className="flex items-center gap-2">
             <Loader2 className="w-3 h-3 text-accent animate-spin" />
             <span className="text-[11px] text-accent/80">
-              {runningCount} running...
+              {runningCount} {t("ai.toolDetail.running")}
             </span>
           </div>
         </div>

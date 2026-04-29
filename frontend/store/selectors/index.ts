@@ -5,6 +5,22 @@
  */
 
 export {
+  type AgentTree,
+  type AgentTreeAgentNode,
+  type AgentTreeStatus,
+  type AgentTreeToolNode,
+  clearAgentTreeCache,
+  selectAgentTree,
+  useAgentTree,
+} from "./agent-tree";
+export {
+  type AnchorMap,
+  clearAnchorCache,
+  selectAnchorMap,
+  useAnchorFor,
+  useAnchorMap,
+} from "./anchors";
+export {
   type AppState,
   clearAppStateCache,
   selectAppState,

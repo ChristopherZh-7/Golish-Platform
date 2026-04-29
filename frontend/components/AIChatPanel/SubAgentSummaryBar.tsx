@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   Bot, CheckCircle2, ChevronDown, Loader2, XCircle,
 } from "lucide-react";
+import { AnchorChip } from "@/components/ui/AnchorChip";
 import { getAgentIcon } from "@/lib/sub-agent-theme";
 import { formatDurationShort } from "@/lib/time";
 import { cn } from "@/lib/utils";
@@ -101,7 +102,7 @@ export function SubAgentSummaryBar() {
                   if (activeSessionId) {
                     const store = useStore.getState();
                     store.setToolDetailRequestIds(activeSessionId, [agent.parentRequestId]);
-                    store.setDetailViewMode(activeSessionId, "tool-detail");
+                    store.setDetailViewMode(activeSessionId, "sub-agent-detail");
                   }
                 }}
                 className={cn(
@@ -111,7 +112,7 @@ export function SubAgentSummaryBar() {
               >
                 <AgentIcon className="w-3.5 h-3.5 flex-shrink-0 text-muted-foreground" />
                 <span className={cn(
-                  "flex-1 truncate text-[11px] font-medium",
+                  "truncate text-[11px] font-medium",
                   isErr && "text-red-400",
                   isInt && "text-amber-400",
                   isDone && "text-foreground/80",
@@ -119,6 +120,8 @@ export function SubAgentSummaryBar() {
                 )}>
                   {agent.agentName || agent.agentId}
                 </span>
+                <AnchorChip sessionId={activeSessionId} requestId={agent.parentRequestId} />
+                <div className="flex-1" />
                 {isRun && (
                   <Loader2 className="w-3 h-3 animate-spin text-accent flex-shrink-0" />
                 )}

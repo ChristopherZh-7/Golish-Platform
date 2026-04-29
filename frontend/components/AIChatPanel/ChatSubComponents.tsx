@@ -5,9 +5,7 @@ export { WorkflowProgress, type WorkflowRunSnapshot } from "./WorkflowProgress";
 export { CompactionNotice } from "./CompactionNotice";
 export {
   PlanStepIcon,
-  TaskPlanCard,
   type TaskPlanViewModel,
   PlanUpdatedNotice,
-  StickyPlanProgress,
   usePlanNestedRequestIds,
 } from "./TaskPlan";

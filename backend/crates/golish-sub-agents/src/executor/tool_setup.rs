@@ -57,6 +57,14 @@ pub(super) async fn build_tool_definitions<P: ToolProvider>(
             let reg = registry.read().await;
             for delegate_id in &agent_def.delegatable_agents {
                 if let Some(delegate_def) = reg.get(delegate_id) {
+                    if delegate_def.pipeline_only {
+                        tracing::debug!(
+                            "[sub-agent:{}] Skipping pipeline-only agent: {}",
+                            agent_id,
+                            delegate_id
+                        );
+                        continue;
+                    }
                     tools.push(nested_delegation_tool_definition(delegate_id, delegate_def));
                     tracing::debug!(
                         "[sub-agent:{}] Added nested delegation tool: sub_agent_{}",

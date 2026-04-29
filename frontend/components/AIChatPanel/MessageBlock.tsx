@@ -7,13 +7,13 @@ import type { ChatToolCall } from "@/store/slices/conversation";
 
 import {
   CollapsibleToolCall,
-  PlanUpdatedNotice,
-  TaskPlanCard,
   type TaskPlanViewModel,
   ThinkingBlock,
   ToolCallSummary,
   usePlanNestedRequestIds,
 } from "./ChatSubComponents";
+import { InlinePlanCard } from "./InlinePlanCard";
+import { SubAgentInlineCard } from "./SubAgentInlineCard";
 
 /**
  * Strip XML-formatted tool call tags that some models (e.g. Mistral)
@@ -72,7 +72,10 @@ export const MessageBlock = memo(function MessageBlock({
       )}
 
       {(() => {
-        if (message.error) {
+        const hasContent = !!(message.content?.trim()) ||
+          (message.toolCalls && message.toolCalls.length > 0);
+
+        if (message.error && !hasContent) {
           return (
             <div className="flex items-start gap-2 text-[13px] text-destructive">
               <AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
@@ -245,7 +248,7 @@ export const MessageBlock = memo(function MessageBlock({
                           <Markdown content={before} />
                         </div>
                       )}
-                      <TaskPlanCard plan={taskPlan!} terminalId={terminalId} />
+                      <InlinePlanCard plan={taskPlan!} />
                       {after.trim() && (
                         <div className="text-[12px] text-foreground leading-[1.55]">
                           <Markdown content={after} />
@@ -265,13 +268,20 @@ export const MessageBlock = memo(function MessageBlock({
               if (seg.kind === "plan_marker") {
                 if (!planInserted && shouldShowPlan) {
                   planInserted = true;
-                  return <TaskPlanCard key={`seg-${idx}`} plan={taskPlan!} terminalId={terminalId} />;
+                  return <InlinePlanCard key={`seg-${idx}`} plan={taskPlan!} />;
                 }
                 return null;
               }
 
               if (seg.kind === "sub_agent") {
-                return null;
+                return (
+                  <SubAgentInlineCard
+                    key={`seg-${idx}`}
+                    requestId={seg.requestId}
+                    toolCall={seg.toolCall}
+                    sessionId={terminalId}
+                  />
+                );
               }
 
               // Tool segment
@@ -280,18 +290,83 @@ export const MessageBlock = memo(function MessageBlock({
                 <ToolCallSummary key={`seg-${idx}`} toolCalls={seg.calls} requestIds={seg.requestIds} isMessageComplete={messageComplete} />
               );
             })}
-            {shouldShowPlan && !planInserted && <TaskPlanCard plan={taskPlan!} terminalId={terminalId} />}
-            {!taskPlan && !isUser && message.toolCalls?.some((tc) => tc.name === "update_plan") && <PlanUpdatedNotice />}
+            {shouldShowPlan && !planInserted && <InlinePlanCard plan={taskPlan!} />}
+            {!taskPlan && !isUser && message.toolCalls?.some((tc) => tc.name === "update_plan") && (
+              <div className="mx-0 my-1.5 flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[var(--border-subtle)] bg-background/60 text-[11.5px] text-muted-foreground/50">
+                <Loader2 className="w-3 h-3 animate-spin text-accent flex-shrink-0" />
+                <span>Planning…</span>
+              </div>
+            )}
             {pendingCalls.length > 0 && renderPendingApprovalCards()}
+            {message.error && (
+              <div className="flex items-start gap-2 text-[13px] text-destructive mt-2">
+                <AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+                <span>{message.error}</span>
+              </div>
+            )}
           </div>
         );
       })()}
 
-      {message.isStreaming && (
-        <div className="flex items-center gap-1 mt-1">
-          <Loader2 className="w-3 h-3 animate-spin text-accent" />
-        </div>
-      )}
+      {message.isStreaming && (() => {
+        const lastPendingTool = message.toolCalls
+          ?.slice()
+          .reverse()
+          .find((tc) => tc.success === undefined);
+        let statusLabel = "Thinking";
+        if (lastPendingTool) {
+          const name = lastPendingTool.name;
+          if (name.startsWith("sub_agent_")) {
+            const agentName = name.replace("sub_agent_", "");
+            statusLabel = `Delegating to ${agentName}`;
+          } else if (name === "update_plan") {
+            statusLabel = "Planning";
+          } else if (name === "run_pty_cmd" || name === "run_command") {
+            try {
+              const args = JSON.parse(lastPendingTool.args || "{}");
+              const cmd = args.command as string | undefined;
+              statusLabel = cmd ? `Running ${cmd.length > 40 ? `${cmd.slice(0, 40)}…` : cmd}` : "Running command";
+            } catch { statusLabel = "Running command"; }
+          } else if (name === "pentest_run") {
+            try {
+              const args = JSON.parse(lastPendingTool.args || "{}");
+              statusLabel = args.tool_name ? `Running ${args.tool_name}` : "Running pentest tool";
+            } catch { statusLabel = "Running pentest tool"; }
+          } else if (name === "run_pipeline") {
+            statusLabel = "Running pipeline";
+          } else if (name === "read_file") {
+            try {
+              const args = JSON.parse(lastPendingTool.args || "{}");
+              const path = (args.path as string) || "";
+              const filename = path.split("/").pop() || path;
+              statusLabel = `Reading ${filename}`;
+            } catch { statusLabel = "Reading file"; }
+          } else if (name === "write_file" || name === "create_file" || name === "edit_file") {
+            statusLabel = "Writing file";
+          } else if (name === "search_memories") {
+            statusLabel = "Searching memories";
+          } else if (name === "manage_targets") {
+            statusLabel = "Managing targets";
+          } else if (name === "web_search" || name.startsWith("tavily_")) {
+            statusLabel = "Searching web";
+          } else {
+            statusLabel = `Running ${name.replace(/_/g, " ")}`;
+          }
+        } else if (message.thinking && !message.content) {
+          statusLabel = "Reasoning";
+        } else if (!message.content) {
+          statusLabel = "Thinking";
+        } else {
+          statusLabel = "Writing";
+        }
+
+        return (
+          <div className="flex items-center gap-2 mt-2 agent-loading-shimmer rounded py-1">
+            <Loader2 className="w-3 h-3 animate-spin text-accent flex-shrink-0" />
+            <span className="text-[11px] text-muted-foreground/70 truncate">{statusLabel}</span>
+          </div>
+        );
+      })()}
     </div>
   );
 });

@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import React from "react";
 import { createPortal } from "react-dom";
+import { TerminalRecordingControls } from "@/components/Terminal/TerminalRecordingControls";
 import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
@@ -44,13 +45,9 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
-import { shutdownAiSession } from "@/lib/ai";
 import { logger } from "@/lib/logger";
-import { ptyDestroy } from "@/lib/tauri";
-import { liveTerminalManager, TerminalInstanceManager } from "@/lib/terminal";
-import { TerminalRecordingControls } from "@/components/Terminal/TerminalRecordingControls";
 import { cn } from "@/lib/utils";
-import { useStore } from "@/store";
+import { closeTabAndCleanup, useStore } from "@/store";
 import { type TabItemState, useTabBarState } from "@/store/selectors/tab-bar";
 import { selectDisplaySettings } from "@/store/slices";
 
@@ -86,7 +83,10 @@ interface TabBarProps {
   showDropHint?: boolean;
 }
 
-export const TabBar = React.memo(function TabBar({ excludeTabIds, showDropHint }: TabBarProps = {}) {
+export const TabBar = React.memo(function TabBar({
+  excludeTabIds,
+  showDropHint,
+}: TabBarProps = {}) {
   // Use optimized selector that avoids subscribing to entire Record objects
   const { tabs: allTabs, activeSessionId } = useTabBarState();
 
@@ -123,8 +123,6 @@ export const TabBar = React.memo(function TabBar({ excludeTabIds, showDropHint }
 
   // These actions don't cause re-renders - we only call them, not subscribe to changes
   const setActiveSession = useStore((state) => state.setActiveSession);
-  const getTabSessionIds = useStore((state) => state.getTabSessionIds);
-  const closeTab = useStore((state) => state.closeTab);
   const moveTab = useStore((state) => state.moveTab);
   const reorderTab = useStore((state) => state.reorderTab);
   const moveTabToPane = useStore((state) => state.moveTabToPane);
@@ -257,7 +255,14 @@ export const TabBar = React.memo(function TabBar({ excludeTabIds, showDropHint }
       const rect = el?.getBoundingClientRect();
       const offsetX = rect ? e.clientX - rect.left : 0;
       const offsetY = rect ? e.clientY - rect.top : 0;
-      dragState.current = { draggedId: tabId, startX: e.clientX, startY: e.clientY, offsetX, offsetY, isDragging: false };
+      dragState.current = {
+        draggedId: tabId,
+        startX: e.clientX,
+        startY: e.clientY,
+        offsetX,
+        offsetY,
+        isDragging: false,
+      };
     },
     []
   );
@@ -311,13 +316,17 @@ export const TabBar = React.memo(function TabBar({ excludeTabIds, showDropHint }
       if (ds.isDragging && ds.draggedId) {
         const yDelta = e.clientY - ds.startY;
         const isOutsideWindow =
-          e.clientX < 0 || e.clientY < 0 ||
-          e.clientX > window.innerWidth || e.clientY > window.innerHeight;
+          e.clientX < 0 ||
+          e.clientY < 0 ||
+          e.clientX > window.innerWidth ||
+          e.clientY > window.innerHeight;
 
         if (isOutsideWindow) {
-          window.dispatchEvent(new CustomEvent("detach-tab", {
-            detail: { tabId: ds.draggedId, screenX: e.screenX, screenY: e.screenY },
-          }));
+          window.dispatchEvent(
+            new CustomEvent("detach-tab", {
+              detail: { tabId: ds.draggedId, screenX: e.screenX, screenY: e.screenY },
+            })
+          );
         } else if (yDelta > 60) {
           window.dispatchEvent(new CustomEvent("split-tab-right", { detail: ds.draggedId }));
         } else if (dropIndicator && Math.abs(yDelta) < 30) {
@@ -327,7 +336,14 @@ export const TabBar = React.memo(function TabBar({ excludeTabIds, showDropHint }
           }
         }
       }
-      dragState.current = { draggedId: null, startX: 0, startY: 0, offsetX: 0, offsetY: 0, isDragging: false };
+      dragState.current = {
+        draggedId: null,
+        startX: 0,
+        startY: 0,
+        offsetX: 0,
+        offsetY: 0,
+        isDragging: false,
+      };
       setDraggedTabId(null);
       setDropIndicator(null);
       document.documentElement.classList.remove("tab-dragging");
@@ -344,73 +360,13 @@ export const TabBar = React.memo(function TabBar({ excludeTabIds, showDropHint }
   const handleCloseTab = React.useCallback(
     async (e: React.MouseEvent, tabId: string, tabType: TabItemState["tabType"]) => {
       e.stopPropagation();
-
-      // Only perform PTY/AI cleanup for terminal tabs
-      if (tabType === "terminal") {
-        try {
-          // Get all session IDs for this tab (root + all pane sessions)
-          const sessionIds = getTabSessionIds(tabId);
-
-          // If no panes found, fall back to just the tabId (backward compatibility)
-          const idsToCleanup = sessionIds.length > 0 ? sessionIds : [tabId];
-
-          // Shutdown AI and PTY for ALL sessions in this tab (in parallel)
-          await Promise.all(
-            idsToCleanup.map(async (sessionId) => {
-              try {
-                await shutdownAiSession(sessionId);
-              } catch (err) {
-                logger.error(`Failed to shutdown AI session ${sessionId}:`, err);
-              }
-              try {
-                await ptyDestroy(sessionId);
-              } catch (err) {
-                logger.error(`Failed to destroy PTY ${sessionId}:`, err);
-              }
-              // Cleanup terminal instances
-              TerminalInstanceManager.dispose(sessionId);
-              liveTerminalManager.dispose(sessionId);
-            })
-          );
-        } catch (err) {
-          logger.error(`Error closing tab ${tabId}:`, err);
-        }
-      }
-
-      // Remove terminal from its conversation and auto-create a replacement
-      const store = useStore.getState();
-      const convId = store.getConversationForTerminal(tabId);
-      const oldDir = store.sessions[tabId]?.workingDirectory;
-      if (convId) {
-        store.removeTerminalFromConversation(convId, tabId);
-      }
-
-      // Remove all frontend state for the tab
-      closeTab(tabId);
-
-      // If the closed terminal was linked to a conversation, create a replacement
-      // so the 1:1 conversation-terminal binding is preserved
-      if (tabType === "terminal" && convId) {
-        const newId = await createTerminalTab(oldDir, true);
-        if (newId) {
-          const s = useStore.getState();
-          s.addTerminalToConversation(convId, newId);
-          s.setActiveSession(newId);
-        }
-      } else if (tabType === "terminal") {
-        const s = useStore.getState();
-        const hasTerminals = s.tabOrder.some(
-          (id) => (s.sessions[id]?.tabType ?? "terminal") === "terminal"
-        );
-        if (!hasTerminals) {
-          const newId = await createTerminalTab();
-          if (newId) {
-            s.setActiveSession(newId);
-          }
-        }
+      try {
+        await closeTabAndCleanup(tabId, { tabType, createTerminalTab });
+      } catch (err) {
+        logger.error(`Error closing tab ${tabId}:`, err);
       }
     },
-    [getTabSessionIds, closeTab, createTerminalTab]
+    [createTerminalTab]
   );
 
   return (
@@ -423,112 +379,113 @@ export const TabBar = React.memo(function TabBar({ excludeTabIds, showDropHint }
         onMouseLeave={() => setTabBarHovered(false)}
       >
         <div className="flex items-center h-[31px] pl-2 pr-2 gap-1">
-        <div
-          ref={tabScrollRef}
-          className="min-w-0 overflow-x-auto scrollbar-none"
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          <Tabs
-            value={activeSessionId || undefined}
-            onValueChange={setActiveSession}
-          >
-            <TabsList className="h-6 bg-transparent p-0 gap-1 w-max justify-start">
-              {tabs.map((tab, index) => {
-                const isActive = tab.id === activeSessionId;
-                const isBusy = tab.tabType === "terminal" && (tab.isRunning || tab.hasPendingCommand);
-                const hasNewActivity = tab.tabType === "terminal" && !isActive && tab.hasNewActivity;
-                const isHomeTab = tab.tabType === "home";
-                const homeVisible = display.showHomeTab;
-
-                if (isHomeTab && !homeVisible) return null;
-
-                return (
-                  <TabItem
-                    key={tab.id}
-                    tab={tab}
-                    isActive={isActive}
-                    isBusy={isBusy}
-                    onClose={(e) => handleCloseTab(e, tab.id, tab.tabType)}
-                    onDuplicateTab={createTerminalTab}
-                    canClose={tab.tabType !== "home"}
-                    canMoveLeft={index > 1}
-                    canMoveRight={tab.tabType !== "home" && index < tabs.length - 1}
-                    onMoveLeft={() => moveTab(tab.id, "left")}
-                    onMoveRight={() => moveTab(tab.id, "right")}
-                    onConvertToPane={() => {
-                      logger.info("[TabBar] convert-to-pane: open", { sourceTabId: tab.id });
-                      setConvertToPaneTab(tab.id);
-                    }}
-                    tabNumber={tabNumberById.get(tab.id)}
-                    showTabNumber={cmdKeyPressed}
-                    hasNewActivity={hasNewActivity}
-                    isBeingDragged={draggedTabId === tab.id}
-                    dropSide={
-                      dropIndicator?.targetId === tab.id && draggedTabId !== tab.id
-                        ? dropIndicator.side
-                        : null
-                    }
-                    onTabPointerDown={(e) => handleTabPointerDown(e, tab.id, tab.tabType)}
-                    tabRef={(el) => {
-                      if (el) tabRefs.current.set(tab.id, el);
-                      else tabRefs.current.delete(tab.id);
-                    }}
-                  />
-                );
-              })}
-              {showDropHint && (
-                <div className="h-6 px-2.5 flex items-center rounded-t-md border border-dashed border-accent/60 bg-accent/10 animate-in fade-in slide-in-from-right-2 duration-200">
-                  <span className="text-[10px] font-mono text-accent/70 whitespace-nowrap animate-pulse">Drop here</span>
-                </div>
-              )}
-            </TabsList>
-          </Tabs>
-        </div>
-
-        {/* New tab button */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="New tab"
-              title="New tab"
-              onClick={() => createTerminalTab()}
-              onMouseDown={(e) => e.stopPropagation()}
-              className="h-5 w-5 text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]"
-            >
-              <Plus className="size-icon-tab-bar" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">
-            <p>New tab (⌘T)</p>
-          </TooltipContent>
-        </Tooltip>
-
-        {/* Recording controls for active terminal tab */}
-        {(() => {
-          const at = tabs.find((t) => t.id === activeSessionId);
-          return at?.tabType === "terminal" ? (
-            <TerminalRecordingControls sessionId={at.id} cols={80} rows={24} />
-          ) : null;
-        })()}
-
-        {/* Active conversation label - shows which AI chat tab these terminals belong to */}
-        {activeConvTitle && (
           <div
-            className="flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] text-muted-foreground/60 select-none max-w-[140px]"
+            ref={tabScrollRef}
+            className="min-w-0 overflow-x-auto scrollbar-none"
             onMouseDown={(e) => e.stopPropagation()}
-            title={`Terminals for: ${activeConvTitle}`}
           >
-            <div className="w-1.5 h-1.5 rounded-full bg-accent/50 flex-shrink-0" />
-            <span className="truncate">{activeConvTitle}</span>
+            <Tabs value={activeSessionId || undefined} onValueChange={setActiveSession}>
+              <TabsList className="h-6 bg-transparent p-0 gap-1 w-max justify-start">
+                {tabs.map((tab, index) => {
+                  const isActive = tab.id === activeSessionId;
+                  const isBusy =
+                    tab.tabType === "terminal" && (tab.isRunning || tab.hasPendingCommand);
+                  const hasNewActivity =
+                    tab.tabType === "terminal" && !isActive && tab.hasNewActivity;
+                  const isHomeTab = tab.tabType === "home";
+                  const homeVisible = display.showHomeTab;
+
+                  if (isHomeTab && !homeVisible) return null;
+
+                  return (
+                    <TabItem
+                      key={tab.id}
+                      tab={tab}
+                      isActive={isActive}
+                      isBusy={isBusy}
+                      onClose={(e) => handleCloseTab(e, tab.id, tab.tabType)}
+                      onDuplicateTab={createTerminalTab}
+                      canClose={tab.tabType !== "home"}
+                      canMoveLeft={index > 1}
+                      canMoveRight={tab.tabType !== "home" && index < tabs.length - 1}
+                      onMoveLeft={() => moveTab(tab.id, "left")}
+                      onMoveRight={() => moveTab(tab.id, "right")}
+                      onConvertToPane={() => {
+                        logger.info("[TabBar] convert-to-pane: open", { sourceTabId: tab.id });
+                        setConvertToPaneTab(tab.id);
+                      }}
+                      tabNumber={tabNumberById.get(tab.id)}
+                      showTabNumber={cmdKeyPressed}
+                      hasNewActivity={hasNewActivity}
+                      isBeingDragged={draggedTabId === tab.id}
+                      dropSide={
+                        dropIndicator?.targetId === tab.id && draggedTabId !== tab.id
+                          ? dropIndicator.side
+                          : null
+                      }
+                      onTabPointerDown={(e) => handleTabPointerDown(e, tab.id, tab.tabType)}
+                      tabRef={(el) => {
+                        if (el) tabRefs.current.set(tab.id, el);
+                        else tabRefs.current.delete(tab.id);
+                      }}
+                    />
+                  );
+                })}
+                {showDropHint && (
+                  <div className="h-6 px-2.5 flex items-center rounded-t-md border border-dashed border-accent/60 bg-accent/10 animate-in fade-in slide-in-from-right-2 duration-200">
+                    <span className="text-[10px] font-mono text-accent/70 whitespace-nowrap animate-pulse">
+                      Drop here
+                    </span>
+                  </div>
+                )}
+              </TabsList>
+            </Tabs>
           </div>
-        )}
 
-        {/* Drag region - empty space extends to fill remaining width */}
-        <div className="flex-1 h-full min-w-[100px]" />
+          {/* New tab button */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="New tab"
+                title="New tab"
+                onClick={() => createTerminalTab()}
+                onMouseDown={(e) => e.stopPropagation()}
+                className="h-5 w-5 text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]"
+              >
+                <Plus className="size-icon-tab-bar" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              <p>New tab (⌘T)</p>
+            </TooltipContent>
+          </Tooltip>
 
-        {/* Right-side utility buttons hidden for cleaner layout */}
+          {/* Recording controls for active terminal tab */}
+          {(() => {
+            const at = tabs.find((t) => t.id === activeSessionId);
+            return at?.tabType === "terminal" ? (
+              <TerminalRecordingControls sessionId={at.id} cols={80} rows={24} />
+            ) : null;
+          })()}
+
+          {/* Active conversation label - shows which AI chat tab these terminals belong to */}
+          {activeConvTitle && (
+            <div
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] text-muted-foreground/60 select-none max-w-[140px]"
+              onMouseDown={(e) => e.stopPropagation()}
+              title={`Terminals for: ${activeConvTitle}`}
+            >
+              <div className="w-1.5 h-1.5 rounded-full bg-accent/50 flex-shrink-0" />
+              <span className="truncate">{activeConvTitle}</span>
+            </div>
+          )}
+
+          {/* Drag region - empty space extends to fill remaining width */}
+          <div className="flex-1 h-full min-w-[100px]" />
+
+          {/* Right-side utility buttons hidden for cleaner layout */}
         </div>
         {/* Custom scrollbar track */}
         {tabBarHovered && scrollThumb.visible && (
@@ -563,36 +520,45 @@ export const TabBar = React.memo(function TabBar({ excludeTabIds, showDropHint }
         />
       )}
       {/* Floating ghost tab that follows cursor during drag */}
-      {draggedTabId && (() => {
-        const draggedTab = tabs.find((t) => t.id === draggedTabId);
-        if (!draggedTab) return null;
-        const IconComp = draggedTab.tabType === "home" ? Home
-          : draggedTab.tabType === "settings" ? Settings
-          : draggedTab.tabType === "browser" ? Globe
-          : draggedTab.tabType === "security" ? Shield
-          : draggedTab.mode === "agent" ? Bot : Terminal;
-        const label = draggedTab.customName
-          || (draggedTab.tabType === "browser" ? "Browser" : null)
-          || (draggedTab.tabType === "security" ? "Security" : null)
-          || (draggedTab.tabType === "settings" ? draggedTab.name || "Settings" : null)
-          || draggedTab.processName
-          || draggedTab.workingDirectory.split(/[/\\]/).pop()
-          || "Tab";
-        return createPortal(
-          <div
-            className="fixed z-[9999] pointer-events-none flex items-center gap-1.5 px-3 py-1 rounded-md bg-muted/90 border border-accent text-foreground text-[11px] font-mono shadow-lg backdrop-blur-sm"
-            style={{
-              left: dragPos.x,
-              top: dragPos.y,
-              transform: "translate(-50%, -50%)",
-            }}
-          >
-            <IconComp className="w-3 h-3 text-accent flex-shrink-0" />
-            <span className="truncate max-w-[120px]">{label}</span>
-          </div>,
-          document.body
-        );
-      })()}
+      {draggedTabId &&
+        (() => {
+          const draggedTab = tabs.find((t) => t.id === draggedTabId);
+          if (!draggedTab) return null;
+          const IconComp =
+            draggedTab.tabType === "home"
+              ? Home
+              : draggedTab.tabType === "settings"
+                ? Settings
+                : draggedTab.tabType === "browser"
+                  ? Globe
+                  : draggedTab.tabType === "security"
+                    ? Shield
+                    : draggedTab.mode === "agent"
+                      ? Bot
+                      : Terminal;
+          const label =
+            draggedTab.customName ||
+            (draggedTab.tabType === "browser" ? "Browser" : null) ||
+            (draggedTab.tabType === "security" ? "Security" : null) ||
+            (draggedTab.tabType === "settings" ? draggedTab.name || "Settings" : null) ||
+            draggedTab.processName ||
+            draggedTab.workingDirectory.split(/[/\\]/).pop() ||
+            "Tab";
+          return createPortal(
+            <div
+              className="fixed z-[9999] pointer-events-none flex items-center gap-1.5 px-3 py-1 rounded-md bg-muted/90 border border-accent text-foreground text-[11px] font-mono shadow-lg backdrop-blur-sm"
+              style={{
+                left: dragPos.x,
+                top: dragPos.y,
+                transform: "translate(-50%, -50%)",
+              }}
+            >
+              <IconComp className="w-3 h-3 text-accent flex-shrink-0" />
+              <span className="truncate max-w-[120px]">{label}</span>
+            </div>,
+            document.body
+          );
+        })()}
     </TooltipProvider>
   );
 });
@@ -765,7 +731,8 @@ const TabItem = React.memo(function TabItem({
       ref={tabRef}
       className={cn(
         "relative",
-        isBeingDragged && "opacity-60 ring-2 ring-accent bg-accent/10 rounded-md scale-[0.92] transition-all duration-150"
+        isBeingDragged &&
+          "opacity-60 ring-2 ring-accent bg-accent/10 rounded-md scale-[0.92] transition-all duration-150"
       )}
       onPointerDown={onTabPointerDown}
     >
@@ -775,173 +742,185 @@ const TabItem = React.memo(function TabItem({
       {dropSide === "right" && (
         <div className="absolute right-0 top-1 bottom-1 w-0.5 bg-accent rounded-full z-20" />
       )}
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
-        <div className="group relative flex items-center">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <TabsTrigger
-                value={tab.id}
-                className={cn(
-                  "relative flex items-center gap-2 px-3 py-1 rounded-t-md min-w-0 max-w-[200px] text-[11px]",
-                  tabType === "terminal" && "font-mono",
-                  "data-[state=active]:bg-muted data-[state=active]:text-foreground data-[state=active]:shadow-none",
-                  "data-[state=inactive]:text-muted-foreground data-[state=inactive]:hover:bg-[var(--bg-hover)] data-[state=inactive]:hover:text-foreground",
-                  "border-none focus-visible:ring-0 focus-visible:ring-offset-0 transition-colors",
-                  canClose && "pr-7" // Add padding for close button
-                )}
-              >
-                {/* Active indicator underline */}
-                {isActive && <span className="absolute bottom-0 left-0 right-0 h-px bg-accent" />}
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <div className="group relative flex items-center">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <TabsTrigger
+                  value={tab.id}
+                  className={cn(
+                    "relative flex items-center gap-2 px-3 py-1 rounded-t-md min-w-0 max-w-[200px] text-[11px]",
+                    tabType === "terminal" && "font-mono",
+                    "data-[state=active]:bg-muted data-[state=active]:text-foreground data-[state=active]:shadow-none",
+                    "data-[state=inactive]:text-muted-foreground data-[state=inactive]:hover:bg-[var(--bg-hover)] data-[state=inactive]:hover:text-foreground",
+                    "border-none focus-visible:ring-0 focus-visible:ring-offset-0 transition-colors",
+                    canClose && "pr-7" // Add padding for close button
+                  )}
+                >
+                  {/* Active indicator underline */}
+                  {isActive && <span className="absolute bottom-0 left-0 right-0 h-px bg-accent" />}
 
-                {/* Busy spinner - only shown when tab is busy */}
-                {isBusy && (
-                  <Loader2
-                    className={cn(
-                      "size-icon-tab-bar flex-shrink-0 animate-spin",
-                      isActive ? "text-accent" : "text-muted-foreground"
-                    )}
-                  />
-                )}
-
-                {/* New activity indicator dot - shown when inactive tab has new activity */}
-                {hasNewActivity && !isBusy && (
-                  <span
-                    aria-hidden="true"
-                    className="activity-dot w-1.5 h-1.5 flex-shrink-0 rounded-full bg-[var(--ansi-yellow)]"
-                  />
-                )}
-
-                {/* Icon for non-terminal tabs (home, settings) - these don't have text labels */}
-                {tabType !== "terminal" && !isBusy && (
-                  <ModeIcon
-                    className={cn(
-                      "size-icon-tab-bar flex-shrink-0",
-                      isActive ? "text-accent" : "text-muted-foreground"
-                    )}
-                  />
-                )}
-
-                {/* Tab name or edit input - not rendered for home tab (icon only) */}
-                {tabType !== "home" &&
-                  (isEditing ? (
-                    <input
-                      ref={inputRef}
-                      type="text"
-                      value={editValue}
-                      onChange={(e) => setEditValue(e.target.value)}
-                      onBlur={handleSave}
-                      onKeyDown={handleKeyDown}
-                      onClick={(e) => e.stopPropagation()}
+                  {/* Busy spinner - only shown when tab is busy */}
+                  {isBusy && (
+                    <Loader2
                       className={cn(
-                        "truncate text-[11px] bg-transparent border-none outline-none",
-                        tabType === "terminal" && "font-mono",
-                        "focus:ring-1 focus:ring-accent rounded px-1 min-w-[60px] max-w-[140px]"
+                        "size-icon-tab-bar flex-shrink-0 animate-spin",
+                        isActive ? "text-accent" : "text-muted-foreground"
                       )}
                     />
-                  ) : (
-                    /* biome-ignore lint/a11y/noStaticElementInteractions: span is used for inline text with double-click rename */
+                  )}
+
+                  {/* New activity indicator dot - shown when inactive tab has new activity */}
+                  {hasNewActivity && !isBusy && (
                     <span
+                      aria-hidden="true"
+                      className="activity-dot w-1.5 h-1.5 flex-shrink-0 rounded-full bg-[var(--ansi-yellow)]"
+                    />
+                  )}
+
+                  {/* Icon for non-terminal tabs (home, settings) - these don't have text labels */}
+                  {tabType !== "terminal" && !isBusy && (
+                    <ModeIcon
                       className={cn(
-                        "truncate",
-                        tabType === "terminal" && "cursor-text",
-                        isProcessName && !hasNewActivity && "text-accent",
-                        hasNewActivity && "text-[var(--ansi-yellow)]"
+                        "size-icon-tab-bar flex-shrink-0",
+                        isActive ? "text-accent" : "text-muted-foreground"
                       )}
-                      onDoubleClick={handleDoubleClick}
-                    >
-                      {displayName}
+                    />
+                  )}
+
+                  {/* Tab name or edit input - not rendered for home tab (icon only) */}
+                  {tabType !== "home" &&
+                    (isEditing ? (
+                      <input
+                        ref={inputRef}
+                        type="text"
+                        value={editValue}
+                        onChange={(e) => setEditValue(e.target.value)}
+                        onBlur={handleSave}
+                        onKeyDown={handleKeyDown}
+                        onClick={(e) => e.stopPropagation()}
+                        className={cn(
+                          "truncate text-[11px] bg-transparent border-none outline-none",
+                          tabType === "terminal" && "font-mono",
+                          "focus:ring-1 focus:ring-accent rounded px-1 min-w-[60px] max-w-[140px]"
+                        )}
+                      />
+                    ) : (
+                      /* biome-ignore lint/a11y/noStaticElementInteractions: span is used for inline text with double-click rename */
+                      <span
+                        className={cn(
+                          "truncate",
+                          tabType === "terminal" && "cursor-text",
+                          isProcessName && !hasNewActivity && "text-accent",
+                          hasNewActivity && "text-[var(--ansi-yellow)]"
+                        )}
+                        onDoubleClick={handleDoubleClick}
+                      >
+                        {displayName}
+                      </span>
+                    ))}
+
+                  {/* Tab number badge - shown when Cmd is held */}
+                  {showTabNumber && tabNumber !== undefined && (
+                    <span className="flex-shrink-0 ml-1 px-1 min-w-[14px] h-[14px] flex items-center justify-center bg-accent text-accent-foreground text-[9px] font-semibold rounded">
+                      {tabNumber}
                     </span>
-                  ))}
+                  )}
+                </TabsTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="whitespace-pre-wrap">
+                <p className="text-xs">{tooltipText}</p>
+              </TooltipContent>
+            </Tooltip>
 
-                {/* Tab number badge - shown when Cmd is held */}
-                {showTabNumber && tabNumber !== undefined && (
-                  <span className="flex-shrink-0 ml-1 px-1 min-w-[14px] h-[14px] flex items-center justify-center bg-accent text-accent-foreground text-[9px] font-semibold rounded">
-                    {tabNumber}
-                  </span>
+            {/* Close button - positioned outside Tooltip to avoid event interference */}
+            {canClose && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onClose(e);
+                }}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+                className={cn(
+                  "absolute right-1 p-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity",
+                  "hover:bg-destructive/20 text-muted-foreground hover:text-destructive",
+                  "z-10"
                 )}
-              </TabsTrigger>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="whitespace-pre-wrap">
-              <p className="text-xs">{tooltipText}</p>
-            </TooltipContent>
-          </Tooltip>
-
-          {/* Close button - positioned outside Tooltip to avoid event interference */}
-          {canClose && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onClose(e);
-              }}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-              }}
-              className={cn(
-                "absolute right-1 p-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity",
-                "hover:bg-destructive/20 text-muted-foreground hover:text-destructive",
-                "z-10"
-              )}
-              title="Close tab"
+                title="Close tab"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          {/* Move left/right - available on all non-home tabs */}
+          <ContextMenuItem onClick={onMoveLeft} disabled={!canMoveLeft}>
+            <ArrowLeft className="size-icon-tab-bar" />
+            Move Left
+          </ContextMenuItem>
+          <ContextMenuItem onClick={onMoveRight} disabled={!canMoveRight}>
+            <ArrowRight className="size-icon-tab-bar" />
+            Move Right
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          {/* Split to right - available on all terminal tabs */}
+          {tabType === "terminal" && (
+            <ContextMenuItem
+              onClick={() =>
+                window.dispatchEvent(new CustomEvent("split-tab-right", { detail: tab.id }))
+              }
             >
-              <X className="w-3 h-3" />
-            </button>
+              <Columns className="size-icon-tab-bar" />
+              Split to Right
+            </ContextMenuItem>
           )}
-        </div>
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        {/* Move left/right - available on all non-home tabs */}
-        <ContextMenuItem onClick={onMoveLeft} disabled={!canMoveLeft}>
-          <ArrowLeft className="size-icon-tab-bar" />
-          Move Left
-        </ContextMenuItem>
-        <ContextMenuItem onClick={onMoveRight} disabled={!canMoveRight}>
-          <ArrowRight className="size-icon-tab-bar" />
-          Move Right
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        {/* Split to right - available on all terminal tabs */}
-        {tabType === "terminal" && (
-          <ContextMenuItem onClick={() => window.dispatchEvent(new CustomEvent("split-tab-right", { detail: tab.id }))}>
-            <Columns className="size-icon-tab-bar" />
-            Split to Right
-          </ContextMenuItem>
-        )}
-        {/* Convert to pane - only for terminal tabs */}
-        {tabType === "terminal" && (
-          <ContextMenuItem onClick={onConvertToPane}>
-            <PanelLeft className="size-icon-tab-bar" />
-            Convert to Pane
-          </ContextMenuItem>
-        )}
-        {(tabType === "terminal" || tabType === "security") && (
-          <ContextMenuItem onClick={() => {
-            window.dispatchEvent(new CustomEvent("detach-tab", {
-              detail: { tabId: tab.id, screenX: window.screenX + 100, screenY: window.screenY + 100 },
-            }));
-          }}>
-            <ExternalLink className="size-icon-tab-bar" />
-            Detach to Window
-          </ContextMenuItem>
-        )}
-        {tabType === "terminal" && (
-          <ContextMenuItem onClick={() => onDuplicateTab(tab.workingDirectory)}>
-            <Copy className="size-icon-tab-bar" />
-            Duplicate Tab
-          </ContextMenuItem>
-        )}
-        {tabType === "terminal" && canClose && <ContextMenuSeparator />}
-        {canClose && (
-          <ContextMenuItem variant="destructive" onClick={(e) => onClose(e)}>
-            <X className="size-icon-tab-bar" />
-            Close Tab
-          </ContextMenuItem>
-        )}
-      </ContextMenuContent>
-    </ContextMenu>
+          {/* Convert to pane - only for terminal tabs */}
+          {tabType === "terminal" && (
+            <ContextMenuItem onClick={onConvertToPane}>
+              <PanelLeft className="size-icon-tab-bar" />
+              Convert to Pane
+            </ContextMenuItem>
+          )}
+          {(tabType === "terminal" || tabType === "security") && (
+            <ContextMenuItem
+              onClick={() => {
+                window.dispatchEvent(
+                  new CustomEvent("detach-tab", {
+                    detail: {
+                      tabId: tab.id,
+                      screenX: window.screenX + 100,
+                      screenY: window.screenY + 100,
+                    },
+                  })
+                );
+              }}
+            >
+              <ExternalLink className="size-icon-tab-bar" />
+              Detach to Window
+            </ContextMenuItem>
+          )}
+          {tabType === "terminal" && (
+            <ContextMenuItem onClick={() => onDuplicateTab(tab.workingDirectory)}>
+              <Copy className="size-icon-tab-bar" />
+              Duplicate Tab
+            </ContextMenuItem>
+          )}
+          {tabType === "terminal" && canClose && <ContextMenuSeparator />}
+          {canClose && (
+            <ContextMenuItem variant="destructive" onClick={(e) => onClose(e)}>
+              <X className="size-icon-tab-bar" />
+              Close Tab
+            </ContextMenuItem>
+          )}
+        </ContextMenuContent>
+      </ContextMenu>
     </div>
   );
 });

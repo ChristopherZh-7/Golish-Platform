@@ -12,7 +12,7 @@ use crate::definition::SubAgentDefinition;
 use crate::file_loader::{agent_dirs, load_agents_from_dir, serialize_agent_to_md};
 
 /// IDs of system-level agents that cannot be deleted.
-const SYSTEM_AGENT_IDS: &[&str] = &["worker", "memorist", "reflector"];
+const SYSTEM_AGENT_IDS: &[&str] = &["worker", "memorist", "reflector", "orchestrator"];
 
 /// Discover all available agents by merging built-in defaults with file-based definitions.
 ///
@@ -87,6 +87,7 @@ mod tests {
         assert!(ids.contains(&"worker"));
         assert!(ids.contains(&"pentester"));
         assert!(ids.contains(&"memorist"));
+        assert!(ids.contains(&"orchestrator"));
     }
 
     #[test]
@@ -131,11 +132,13 @@ mod tests {
         let worker = agents.iter().find(|a| a.id == "worker").unwrap();
         let memorist = agents.iter().find(|a| a.id == "memorist").unwrap();
         let reflector = agents.iter().find(|a| a.id == "reflector").unwrap();
+        let orchestrator = agents.iter().find(|a| a.id == "orchestrator").unwrap();
         let pentester = agents.iter().find(|a| a.id == "pentester").unwrap();
 
         assert!(worker.is_system);
         assert!(memorist.is_system);
         assert!(reflector.is_system);
+        assert!(orchestrator.is_system);
         assert!(!pentester.is_system);
     }
 

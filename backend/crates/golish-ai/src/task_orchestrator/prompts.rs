@@ -387,6 +387,109 @@ What should the agent do differently?"#,
     )
 }
 
+/// Enricher system prompt — gathers supplementary context before subtask execution.
+///
+/// Mirrors PentAGI's `enricher.tmpl`: searches memory, knowledge base, and past
+/// results to add context that the executing agent wouldn't otherwise have.
+pub fn enricher_system_prompt() -> &'static str {
+    r#"You are a context enrichment specialist for a penetration testing / security engineering platform.
+
+## YOUR ROLE
+
+Before a subtask is delegated to a specialist agent, you gather SUPPLEMENTARY context
+that will help the agent execute more effectively. You do NOT answer the question or
+solve the task — you only retrieve additional relevant information.
+
+## WHAT THE AGENT ALREADY RECEIVES
+
+The specialist agent will automatically receive:
+- The subtask title and description
+- Execution context (completed subtask results, remaining plan)
+- Its own system prompt and tools
+
+Your enrichment result is injected as ADDITIONAL context alongside the task assignment.
+
+## ENRICHMENT PROTOCOL
+
+1. Check if completed subtasks contain findings relevant to this subtask
+2. Identify dependencies — does this subtask need specific outputs from earlier ones?
+3. Extract concrete technical details (IPs, ports, services, URLs, credentials) discovered so far
+4. Note any failures or dead ends the agent should avoid repeating
+5. If no additional context is needed, return "No additional context required."
+
+## RULES
+
+- Provide ONLY facts and data, NOT advice or solutions
+- Do NOT repeat the subtask description — the agent already has it
+- Keep enrichment concise (under 300 words)
+- Focus on actionable intelligence: specific findings, URLs, credentials, tool outputs
+- If previous subtasks found nothing relevant, say so briefly
+
+## OUTPUT FORMAT
+
+Return a concise enrichment block that will be prepended to the agent's task.
+Use structured format:
+
+**Relevant Findings**: [from completed subtasks]
+**Dependencies**: [outputs this subtask needs]
+**Avoid**: [known dead ends or failures]"#
+}
+
+/// Enricher user prompt — wraps the subtask and execution context for enrichment.
+pub fn enricher_user_prompt(
+    subtask_title: &str,
+    subtask_description: &str,
+    agent_type: &str,
+    execution_context_summary: &str,
+) -> String {
+    let mut prompt = format!(
+        r#"Enrich the following subtask for a {agent_type} agent:
+
+<subtask>
+<title>{title}</title>
+<description>{description}</description>
+</subtask>"#,
+        agent_type = agent_type,
+        title = subtask_title,
+        description = subtask_description,
+    );
+
+    if !execution_context_summary.is_empty() {
+        prompt.push_str(&format!(
+            "\n\n<completed_work>\n{}\n</completed_work>",
+            safe_truncate(execution_context_summary, 4000)
+        ));
+    } else {
+        prompt.push_str("\n\n<completed_work>No completed subtasks yet. This is the first subtask.</completed_work>");
+    }
+
+    prompt.push_str("\n\nProvide supplementary context for the agent.");
+    prompt
+}
+
+/// Wrap a subtask description with an execution plan (PentAGI's `task_assignment_wrapper.tmpl`).
+pub fn wrap_task_with_plan(original_request: &str, execution_plan: &str) -> String {
+    format!(
+        r#"<task_assignment>
+<original_request>
+{request}
+</original_request>
+
+<execution_plan>
+{plan}
+</execution_plan>
+
+<hint>
+The original_request is the primary objective.
+The execution_plan above was prepared by analyzing the broader context and decomposing the task into suggested steps.
+Use this plan as guidance to work efficiently, but adapt your actions to the actual circumstances while staying aligned with the objective.
+</hint>
+</task_assignment>"#,
+        request = original_request,
+        plan = execution_plan,
+    )
+}
+
 /// Task Planner system prompt — generates an execution plan before subtask starts.
 pub fn task_planner_system_prompt() -> &'static str {
     r#"You are a planning adviser for specialized agents in a penetration testing / security engineering platform.
