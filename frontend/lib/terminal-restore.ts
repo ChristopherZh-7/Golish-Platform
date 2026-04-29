@@ -80,7 +80,7 @@ function restoreRetiredPlans(
   });
 }
 
-/** Rebuild activeSubAgents from timeline sub_agent_activity blocks so SubAgentSummaryBar shows after restart. */
+/** Rebuild activeSubAgents from timeline sub_agent_activity blocks so subagent state is restored after restart. */
 function restoreActiveSubAgents(sessionId: string) {
   const state = useStore.getState();
   const timeline = state.timelines[sessionId];
