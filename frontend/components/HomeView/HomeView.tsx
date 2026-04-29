@@ -15,7 +15,6 @@ import {
   X,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { useDismissMenu } from "@/hooks/useDismissMenu";
 import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,6 +26,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
+import { useDismissMenu } from "@/hooks/useDismissMenu";
+import { clearSaveFingerprints } from "@/lib/conversation-db-sync";
 import {
   listProjectsForHome,
   listRecentDirectories,
@@ -42,16 +43,8 @@ import {
   saveProject,
 } from "@/lib/projects";
 import { deleteWorktree } from "@/lib/tauri";
-import {
-  loadWorkspaceState,
-  setLastProjectName,
-  toChatConversation,
-  type PersistedTerminalData,
-} from "@/lib/workspace-storage";
-import { clearSaveFingerprints, loadFromDb, markDbLoadSucceeded } from "@/lib/conversation-db-sync";
 import { disposeAllRuntimeTerminals } from "@/lib/terminal-restore";
-import { useStore } from "@/store";
-import { createNewConversation } from "@/store/slices/conversation";
+import { openProject, useStore } from "@/store";
 import { NewWorktreeModal } from "./NewWorktreeModal";
 import { SetupProjectModal } from "./SetupProjectModal";
 
@@ -195,7 +188,12 @@ export const ProjectRow = memo(function ProjectRow({
         role="button"
         tabIndex={0}
         onClick={onToggle}
-        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); } }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onToggle();
+          }
+        }}
         onContextMenu={onContextMenu}
         className="w-full flex items-center justify-between p-3 hover:bg-muted transition-colors group text-left cursor-pointer"
       >
@@ -473,93 +471,13 @@ export const HomeView = memo(function HomeView() {
       openingRef.current = true;
       setOpeningProject(projectName);
       try {
-        await disposeAllRuntimeTerminals();
-        clearSaveFingerprints();
-
-        useStore.getState().setCurrentProject(projectName, rootPath);
-        setLastProjectName(projectName);
-
-        const saved = await loadFromDb(rootPath);
-        if (saved && saved.conversations.length > 0) {
-          if (saved.aiModel) useStore.getState().setSelectedAiModel(saved.aiModel);
-          if (saved.approvalMode) useStore.getState().setApprovalMode(saved.approvalMode);
-
-          useStore.getState().restoreConversations(
-            saved.conversations,
-            saved.conversationOrder,
-            saved.activeConversationId,
-          );
-
-          if (Object.keys(saved.terminalData).length > 0) {
-            const termRestoreData: Record<string, PersistedTerminalData[]> = {};
-            for (const [convId, terminals] of Object.entries(saved.terminalData)) {
-              termRestoreData[convId] = terminals.map((t) => ({
-                logicalTerminalId: t.sessionId,
-                workingDirectory: t.workingDirectory,
-                scrollback: t.scrollback,
-                customName: t.customName ?? undefined,
-                planJson: t.planJson ?? undefined,
-                executionMode: t.executionMode ?? undefined,
-                useAgents: t.useAgents ?? undefined,
-                retiredPlansJson: t.retiredPlansJson ?? undefined,
-                timelineBlocks: t.timelineBlocks.map((b) => ({
-                  id: b.id,
-                  type: b.type as any,
-                  timestamp: b.timestamp ?? new Date().toISOString(),
-                  data: b.data as any,
-                  batchId: (b as { batchId?: string }).batchId,
-                })),
-              }));
-            }
-            useStore.getState().setPendingTerminalRestoreData(termRestoreData);
-          }
-        } else {
-          const legacy = await loadWorkspaceState(projectName);
-
-          if (legacy?.aiModel) useStore.getState().setSelectedAiModel(legacy.aiModel);
-          if (legacy?.approvalMode) useStore.getState().setApprovalMode(legacy.approvalMode);
-
-          if (legacy && legacy.conversations.length > 0) {
-            const restoredConvs = legacy.conversations.map(toChatConversation);
-            useStore.getState().restoreConversations(
-              restoredConvs,
-              legacy.conversationOrder,
-              legacy.activeConversationId,
-            );
-
-            if (legacy.conversationTerminalData) {
-              useStore.getState().setPendingTerminalRestoreData(legacy.conversationTerminalData);
-            }
-          } else {
-            const conv = createNewConversation();
-            useStore.getState().restoreConversations([conv], [conv.id], conv.id);
-          }
-        }
-
-        useStore.getState().setWorkspaceDataReady(true);
-        markDbLoadSucceeded();
-
-        // Always create at least one terminal so the UI transitions away from Home.
-        // If we have saved terminal data, the AIChatPanel effect will restore
-        // scrollback/timeline/plan into the terminal created here.
-        const activeConv = useStore.getState().activeConversationId;
-        const sessionId = await createTerminalTab(rootPath);
-        if (sessionId) {
-          if (activeConv) {
-            useStore.getState().addTerminalToConversation(activeConv, sessionId);
-          }
-          useStore.getState().setActiveSession(sessionId);
-        }
-        return sessionId;
-      } catch (error) {
-        logger.error("Failed to open project:", error);
-        return null;
+        return await openProject(projectName, rootPath, { createTerminalTab });
       } finally {
         openingRef.current = false;
         setOpeningProject(null);
       }
     },
-    [createTerminalTab],
+    [createTerminalTab]
   );
 
   const handleSetupNewProject = useCallback(() => {
@@ -568,7 +486,11 @@ export const HomeView = memo(function HomeView() {
 
   const handleOpenExistingProject = useCallback(async () => {
     let defaultPath: string | undefined;
-    try { defaultPath = (await homeDir()) + "golish-platform"; } catch { /* ignore */ }
+    try {
+      defaultPath = (await homeDir()) + "golish-platform";
+    } catch {
+      /* ignore */
+    }
     const selected = await openFolderDialog({
       directory: true,
       multiple: false,
@@ -655,7 +577,11 @@ export const HomeView = memo(function HomeView() {
   );
 
   if (isLoading) {
-    return <div className="h-full flex items-center justify-center text-muted-foreground">Loading...</div>;
+    return (
+      <div className="h-full flex items-center justify-center text-muted-foreground">
+        Loading...
+      </div>
+    );
   }
 
   return (
@@ -780,53 +706,60 @@ export const HomeView = memo(function HomeView() {
                   {savedProjects.map((proj) => {
                     const isOpening = openingProject === proj.name;
                     return (
-                    <div
-                      key={proj.name}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => { if (!openingProject) handleOpenProject(proj.name, proj.rootPath); }}
-                      onKeyDown={(e) => { if (!openingProject && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); handleOpenProject(proj.name, proj.rootPath); } }}
-                      className={`w-full flex items-center justify-between px-3 py-2.5 rounded-md transition-colors text-left group ${
-                        openingProject ? "cursor-wait" : "cursor-pointer hover:bg-card"
-                      } ${proj.name === currentProjectName ? "bg-card" : ""} ${
-                        isOpening ? "bg-card ring-1 ring-accent/30" : ""
-                      }`}
-                    >
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        {isOpening ? (
-                          <Loader2 size={14} className="text-accent animate-spin flex-shrink-0" />
-                        ) : null}
-                        <span className="text-sm text-foreground/90">{proj.name}</span>
-                        {proj.name === currentProjectName && !isOpening && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/20 text-primary">
-                            Active
+                      <div
+                        key={proj.name}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => {
+                          if (!openingProject) handleOpenProject(proj.name, proj.rootPath);
+                        }}
+                        onKeyDown={(e) => {
+                          if (!openingProject && (e.key === "Enter" || e.key === " ")) {
+                            e.preventDefault();
+                            handleOpenProject(proj.name, proj.rootPath);
+                          }
+                        }}
+                        className={`w-full flex items-center justify-between px-3 py-2.5 rounded-md transition-colors text-left group ${
+                          openingProject ? "cursor-wait" : "cursor-pointer hover:bg-card"
+                        } ${proj.name === currentProjectName ? "bg-card" : ""} ${
+                          isOpening ? "bg-card ring-1 ring-accent/30" : ""
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          {isOpening ? (
+                            <Loader2 size={14} className="text-accent animate-spin flex-shrink-0" />
+                          ) : null}
+                          <span className="text-sm text-foreground/90">{proj.name}</span>
+                          {proj.name === currentProjectName && !isOpening && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/20 text-primary">
+                              Active
+                            </span>
+                          )}
+                          {isOpening && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/20 text-accent">
+                              Loading...
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-muted-foreground/60 font-mono truncate max-w-[200px]">
+                            {proj.rootPath.replace(/^\/Users\/[^/]+/, "~")}
                           </span>
-                        )}
-                        {isOpening && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/20 text-accent">
-                            Loading...
-                          </span>
-                        )}
+                          {!isOpening && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDeleteConfirm({ name: proj.name, path: proj.rootPath });
+                              }}
+                              className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-muted transition-all"
+                              title="Delete project"
+                            >
+                              <X size={12} className="text-muted-foreground" />
+                            </button>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground/60 font-mono truncate max-w-[200px]">
-                          {proj.rootPath.replace(/^\/Users\/[^/]+/, "~")}
-                        </span>
-                        {!isOpening && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setDeleteConfirm({ name: proj.name, path: proj.rootPath });
-                          }}
-                          className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-muted transition-all"
-                          title="Delete project"
-                        >
-                          <X size={12} className="text-muted-foreground" />
-                        </button>
-                        )}
-                      </div>
-                    </div>
                     );
                   })}
                 </div>

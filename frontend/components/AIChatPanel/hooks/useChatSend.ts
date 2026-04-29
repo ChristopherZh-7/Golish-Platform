@@ -4,6 +4,7 @@ import {
   createTextPayload,
   sendPromptSession,
   sendPromptWithAttachments,
+  setExecutionMode as setExecutionModeBackend,
 } from "@/lib/ai";
 import { type ChatMessage, useStore } from "@/store";
 
@@ -119,6 +120,9 @@ export function useChatSend(opts: UseChatSendOptions) {
       const isTaskMode = chatExecutionModeRef.current === "task";
       if (isTaskMode) taskInProgressRef.current = true;
 
+      await setExecutionModeBackend(conv.aiSessionId, chatExecutionModeRef.current)
+        .catch(() => {});
+
       if (imageAttachments.length > 0) {
         const payload = createTextPayload(prompt);
         for (const img of imageAttachments) {
@@ -180,7 +184,34 @@ export function useChatSend(opts: UseChatSendOptions) {
     taskInProgressRef.current = false;
     cancelAiGeneration(conv.aiSessionId).catch(() => {});
     streamingMsgRef.current = null;
-    useStore.getState().finalizeStreamingMessage(conv.id);
+    const store = useStore.getState();
+    store.finalizeStreamingMessage(conv.id);
+
+    const terminals = store.conversationTerminals[conv.id];
+    if (terminals) {
+      for (const tid of terminals) {
+        store.finalizeRunningToolExecutions(tid);
+        store.setAgentThinking(tid, false);
+        store.setAgentResponding(tid, false);
+        store.clearActiveSubAgents(tid);
+
+        const plan = store.sessions[tid]?.plan;
+        if (plan && plan.summary.in_progress > 0) {
+          const updated = {
+            ...plan,
+            version: plan.version + 1,
+            steps: plan.steps.map((s: { status: string }) =>
+              s.status === "in_progress" ? { ...s, status: "cancelled" } : s
+            ),
+            summary: {
+              ...plan.summary,
+              in_progress: 0,
+            },
+          };
+          store.setPlan(tid, updated);
+        }
+      }
+    }
   }, [activeConvId, streamingMsgRef, taskInProgressRef]);
 
   return { handleSend, handleStop };

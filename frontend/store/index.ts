@@ -2,7 +2,7 @@ import { enableMapSet } from "immer";
 import { create } from "zustand";
 import { devtools } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
-import { type PaneId, type PaneNode, type SplitDirection, type TabLayout } from "@/lib/pane-utils";
+import type { PaneId, PaneNode, SplitDirection, TabLayout } from "@/lib/pane-utils";
 import {
   type AiSlice,
   type AppearanceSlice,
@@ -36,59 +36,65 @@ import {
   type WorkflowSlice,
 } from "./slices";
 
+// Re-export session-slice helpers used by other modules.
+export { _drainOutputBuffer, _drainOutputBufferSize } from "./slices/session";
 // Re-export all domain types from store-types
 export type {
   ActiveSubAgent,
   ActiveToolCall,
   ActiveWorkflow,
   AgentMessage,
+  AgentMode,
   AiConfig,
+  AiStatus,
   AiToolExecution,
+  ApprovalPattern,
   AskHumanRequest,
   CommandBlock,
   CompactionResult,
   DetailViewMode,
+  ExecutionMode,
   FinalizedStreamingBlock,
+  InputMode,
   PendingCommand,
   PipelineExecution,
   PipelineStepExecution,
   PipelineStepStatus,
   PipelineSubTarget,
-  Session,
-  StreamingBlock,
-  SubAgentEntry,
-  SubAgentToolCall,
-  TaskPlan,
-  ToolCall,
-  ToolCallSource,
-  UnifiedBlock,
-  WorkflowStep,
-} from "./store-types";
-export type {
-  AgentMode,
-  AiStatus,
-  ApprovalPattern,
-  ExecutionMode,
-  InputMode,
   PlanStep,
   PlanSummary,
   ReasoningEffort,
   RenderMode,
   RiskLevel,
+  Session,
   SessionMode,
   StepStatus,
+  StreamingBlock,
+  SubAgentEntry,
+  SubAgentToolCall,
   TabType,
+  TaskPlan,
+  ToolCall,
+  ToolCallSource,
+  UnifiedBlock,
   WorkflowStatus,
+  WorkflowStep,
 } from "./store-types";
 // Re-export pane types from the single source of truth
-export type { PaneId, PaneNode, SplitDirection, TabLayout };
 // Re-export conversation types
-export type { ChatConversation, ChatMessage, ChatToolCall };
 // Re-export slice types
-export type { ContextMetrics, Notification, NotificationType };
-
-// Re-export session-slice helpers used by other modules.
-export { _drainOutputBuffer, _drainOutputBufferSize } from "./slices/session";
+export type {
+  ChatConversation,
+  ChatMessage,
+  ChatToolCall,
+  ContextMetrics,
+  Notification,
+  NotificationType,
+  PaneId,
+  PaneNode,
+  SplitDirection,
+  TabLayout,
+};
 
 // Enable Immer support for Set and Map (needed for processedToolRequests)
 enableMapSet();
@@ -125,9 +131,12 @@ interface GolishState
   zapRunning: boolean;
   setZapRunning: (running: boolean) => void;
 
-  pendingTerminalRestoreData: Record<string, import("@/lib/workspace-storage").PersistedTerminalData[]> | null;
+  pendingTerminalRestoreData: Record<
+    string,
+    import("@/lib/workspace-storage").PersistedTerminalData[]
+  > | null;
   setPendingTerminalRestoreData: (
-    data: Record<string, import("@/lib/workspace-storage").PersistedTerminalData[]> | null,
+    data: Record<string, import("@/lib/workspace-storage").PersistedTerminalData[]> | null
   ) => void;
 
   chatPanelVisible: boolean;
@@ -218,33 +227,18 @@ export const useStore = create<GolishState>()(
           state.appIsVisible = visible;
         }),
     })),
-    { name: "golish" },
-  ),
+    { name: "golish" }
+  )
 );
 
-// Side-effect subscription: sync ZAP sidecar when active project changes.
-// Decoupled from the pure-state setCurrentProject action.
-let _prevProjectPath: string | null = null;
-useStore.subscribe((state) => {
-  const curPath = state.currentProjectPath;
-  if (curPath === _prevProjectPath) return;
-  const prev = _prevProjectPath;
-  _prevProjectPath = curPath;
-
-  if (prev && prev !== curPath) {
-    useStore.getState().setZapRunning(false);
-    import("@/lib/pentest/zap-api").then(({ zapStop, zapUpdateProject }) => {
-      zapStop(prev)
-        .catch(() => {})
-        .then(() => zapUpdateProject(curPath).catch(() => {}));
-    });
-  } else {
-    import("@/lib/pentest/zap-api").then(({ zapUpdateProject }) => {
-      zapUpdateProject(curPath).catch(() => {});
-    });
-  }
-});
-
+export {
+  type CloseTabAndCleanupOptions,
+  clearConversation,
+  closeTabAndCleanup,
+  type OpenProjectOptions,
+  openProject,
+  restoreSession,
+} from "./actions";
 // Re-export selector hooks from their dedicated module.
 // Keeps store/index.ts focused on slice composition.
 export {
@@ -285,7 +279,6 @@ export {
   useUseAgents,
 } from "./selectors/store-hooks";
 
-export { clearConversation, restoreSession } from "./actions";
-
 import { installDevTools } from "./dev-mock";
+
 installDevTools();

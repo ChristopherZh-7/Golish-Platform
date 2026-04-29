@@ -5,6 +5,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { AnchorChip } from "@/components/ui/AnchorChip";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { StatusIcon } from "@/components/ui/StatusIcon";
@@ -22,6 +23,8 @@ interface ToolExecutionCardProps {
   isOpen?: boolean;
   /** Called when the card's expand/collapse toggle is clicked (accordion mode). */
   onToggle?: () => void;
+  /** Session ID — needed to look up the anchor chip (T#) from the store. */
+  sessionId?: string | null;
 }
 
 function cleanTerminalOutput(raw: string): string {
@@ -146,6 +149,7 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
   highlighted = false,
   isOpen: controlledOpen,
   onToggle,
+  sessionId,
 }: ToolExecutionCardProps) {
   const [internalOpen, setInternalOpen] = useState(highlighted);
   const isExpanded = controlledOpen !== undefined ? controlledOpen : internalOpen;
@@ -228,6 +232,7 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
               style={{ color: toolColor }}
             />
             <span className={cn("font-medium truncate", compact ? "text-xs" : "text-sm")}>{toolLabel}</span>
+            <AnchorChip sessionId={sessionId} requestId={execution.requestId} />
 
             {execution.status === "running" && !compact && (
               <Badge

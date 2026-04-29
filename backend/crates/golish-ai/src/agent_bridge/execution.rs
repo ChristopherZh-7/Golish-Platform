@@ -51,13 +51,13 @@ impl AgentBridge {
             std::mem::take(&mut *guard)
         };
 
-        // depth=1 so the Task-mode tool isolation (which only restricts
-        // depth==0) does NOT apply to subtask execution. Subtasks need full
-        // tool access.
-        let mut subtask_ctx = SubAgentContext::default();
-        subtask_ctx.depth = 1;
+        // Use depth=0 so Task-mode primary executes with the same restricted
+        // orchestration-only tool set as PentAGI's primary agent.
+        let subtask_ctx = SubAgentContext::default();
 
-        let result = self.execute_with_context(prompt, subtask_ctx).await;
+        let result = self
+            .execute_with_context_inner(prompt, subtask_ctx, false)
+            .await;
 
         {
             let mut guard = self.session.conversation_history.write().await;
@@ -247,6 +247,15 @@ impl AgentBridge {
         prompt: &str,
         context: SubAgentContext,
     ) -> Result<String> {
+        self.execute_with_context_inner(prompt, context, true).await
+    }
+
+    async fn execute_with_context_inner(
+        &self,
+        prompt: &str,
+        context: SubAgentContext,
+        reset_top_level_cancel: bool,
+    ) -> Result<String> {
         if context.depth >= MAX_AGENT_DEPTH {
             return Err(anyhow::anyhow!(
                 "Maximum agent recursion depth ({}) exceeded",
@@ -257,7 +266,7 @@ impl AgentBridge {
         // Only reset at the top level; sub-agents share the same `cancelled`
         // flag and must not clear a cancellation the user triggered
         // mid-execution.
-        if context.depth == 0 {
+        if reset_top_level_cancel && context.depth == 0 {
             self.reset_cancelled();
         }
 

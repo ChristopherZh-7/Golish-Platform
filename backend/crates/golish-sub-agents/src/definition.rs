@@ -151,6 +151,12 @@ pub struct SubAgentDefinition {
     /// and handles recursive dispatch. Matches PentAGI's hierarchical pattern
     /// (e.g., pentester can delegate to coder, searcher).
     pub delegatable_agents: Vec<String>,
+
+    /// Pipeline-only agents are used internally by the task orchestrator
+    /// (e.g., reflector, refiner) and should NOT appear as delegatable
+    /// `sub_agent_*` tools. They still exist in the registry for prompt
+    /// and config lookup but are filtered from tool generation.
+    pub pipeline_only: bool,
 }
 
 impl SubAgentDefinition {
@@ -180,7 +186,14 @@ impl SubAgentDefinition {
             readonly: false,
             is_background: false,
             delegatable_agents: Vec::new(),
+            pipeline_only: false,
         }
+    }
+
+    /// Mark as pipeline-only (not exposed as `sub_agent_*` tool).
+    pub fn as_pipeline_only(mut self) -> Self {
+        self.pipeline_only = true;
+        self
     }
 
     /// Set which sub-agents this agent can delegate to (nested delegation).

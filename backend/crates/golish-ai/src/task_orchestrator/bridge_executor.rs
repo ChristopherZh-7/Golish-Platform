@@ -294,8 +294,14 @@ pub enum UserIntent {
 /// is not needed to determine intent, and large prompts can cause timeouts
 /// on some providers (e.g., Nvidia NIM).
 pub async fn classify_user_intent(bridge: &AgentBridge, prompt: &str) -> UserIntent {
-    // Only send a small prefix; intent is obvious from the first few hundred chars.
-    let truncated_prompt = truncate_to_char_boundary(prompt, 500);
+    // Extract the actual user message if the prompt has [User Message] wrapper
+    // (the frontend prepends [System Context]...[User Message] which confuses classification).
+    let user_message = prompt
+        .find("[User Message]\n")
+        .map(|idx| &prompt[idx + "[User Message]\n".len()..])
+        .unwrap_or(prompt);
+
+    let truncated_prompt = truncate_to_char_boundary(user_message, 500);
 
     tracing::info!(
         prompt_len = prompt.len(),
@@ -524,6 +530,150 @@ impl AgentExecutor for BridgeAgentExecutor {
             .context("Reflector LLM call failed")
     }
 
-    // plan_subtask and enrich removed: PentAGI-style flow delegates knowledge
-    // retrieval to agents themselves via their memory/search tools.
+    async fn enrich_subtask(
+        &self,
+        subtask_title: &str,
+        subtask_description: &str,
+        execution_context: &ExecutionContext,
+        agent_type: &str,
+    ) -> Result<Option<String>> {
+        if execution_context.completed_results.is_empty() {
+            return Ok(None);
+        }
+
+        tracing::info!(
+            "[TaskMode/Enricher] Enriching subtask '{}' for {} agent",
+            subtask_title,
+            agent_type
+        );
+
+        let user_msg = prompts::enricher_user_prompt(
+            subtask_title,
+            subtask_description,
+            agent_type,
+            &execution_context.summary(),
+        );
+
+        match self
+            .simple_completion_for_phase(
+                prompts::enricher_system_prompt(),
+                &user_msg,
+                Some("pipeline_enricher"),
+            )
+            .await
+        {
+            Ok(enrichment) => {
+                let trimmed = enrichment.trim();
+                if trimmed.is_empty()
+                    || trimmed.to_lowercase().contains("no additional context")
+                {
+                    tracing::debug!("[TaskMode/Enricher] No enrichment needed");
+                    Ok(None)
+                } else {
+                    tracing::info!(
+                        "[TaskMode/Enricher] Enrichment: {} chars",
+                        trimmed.len()
+                    );
+                    Ok(Some(trimmed.to_string()))
+                }
+            }
+            Err(e) => {
+                tracing::warn!("[TaskMode/Enricher] Failed (non-fatal): {}", e);
+                Ok(None)
+            }
+        }
+    }
+
+    async fn plan_subtask(
+        &self,
+        subtask_title: &str,
+        subtask_description: &str,
+        execution_context: &ExecutionContext,
+        agent_type: &str,
+    ) -> Result<Option<String>> {
+        tracing::info!(
+            "[TaskMode/Planner] Generating execution plan for '{}'",
+            subtask_title
+        );
+
+        let user_msg = prompts::task_planner_user_prompt(
+            agent_type,
+            subtask_title,
+            subtask_description,
+            &execution_context.summary(),
+        );
+
+        match self
+            .simple_completion_for_phase(
+                prompts::task_planner_system_prompt(),
+                &user_msg,
+                Some("pipeline_planner"),
+            )
+            .await
+        {
+            Ok(plan) => {
+                let trimmed = plan.trim();
+                if trimmed.is_empty() {
+                    Ok(None)
+                } else {
+                    tracing::info!(
+                        "[TaskMode/Planner] Plan generated: {} chars",
+                        trimmed.len()
+                    );
+                    Ok(Some(trimmed.to_string()))
+                }
+            }
+            Err(e) => {
+                tracing::warn!("[TaskMode/Planner] Failed (non-fatal): {}", e);
+                Ok(None)
+            }
+        }
+    }
+
+    async fn monitor_execution(
+        &self,
+        subtask_description: &str,
+        repeated_tool: &str,
+        repeat_count: usize,
+        recent_tool_calls: &str,
+    ) -> Result<Option<String>> {
+        tracing::info!(
+            "[TaskMode/Monitor] Tool '{}' called {} times, requesting advice",
+            repeated_tool,
+            repeat_count
+        );
+
+        let user_msg = prompts::mentor_user_prompt(
+            subtask_description,
+            repeated_tool,
+            repeat_count,
+            recent_tool_calls,
+        );
+
+        match self
+            .simple_completion_for_phase(
+                prompts::mentor_system_prompt(),
+                &user_msg,
+                Some("pipeline_monitor"),
+            )
+            .await
+        {
+            Ok(advice) => {
+                let trimmed = advice.trim();
+                if trimmed.is_empty() {
+                    Ok(None)
+                } else {
+                    tracing::info!(
+                        "[TaskMode/Monitor] Advice generated: {} chars",
+                        trimmed.len()
+                    );
+                    Ok(Some(trimmed.to_string()))
+                }
+            }
+            Err(e) => {
+                tracing::warn!("[TaskMode/Monitor] Failed (non-fatal): {}", e);
+                Ok(None)
+            }
+        }
+    }
 }

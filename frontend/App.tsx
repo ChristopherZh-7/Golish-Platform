@@ -1,8 +1,9 @@
 import { useCallback } from "react";
 import { AppShell, type AppShellProps } from "./App/AppShell";
+import { useActivityViewControls } from "./App/hooks/useActivityViewControls";
+import { useAppLifecycle } from "./App/hooks/useAppLifecycle";
 import { useAppRouting } from "./App/hooks/useAppRouting";
 import { useGlobalShortcuts } from "./App/hooks/useGlobalShortcuts";
-import { useAppLifecycle } from "./App/hooks/useAppLifecycle";
 import { useLayoutManager } from "./App/hooks/useLayoutManager";
 import { useCreateTerminalTab } from "./hooks/useCreateTerminalTab";
 import { usePaneControls } from "./hooks/usePaneControls";
@@ -54,6 +55,11 @@ export function App() {
   const { currentPage, setCurrentPage, activityView, setActivityView, visitedViews } =
     useAppRouting();
 
+  // Stable handlers for activity-view toggling (shared by shortcuts, command palette,
+  // and the activity bar — keeps the 15-line "switch to terminal tab or toggle bottom
+  // terminal" rule in a single place).
+  const activityControls = useActivityViewControls(setActivityView);
+
   // Lifecycle / startup side effects + isLoading / error flags
   const { isLoading, error } = useAppLifecycle({
     setRightPanelTabs: rightSplit.setRightPanelTabs,
@@ -85,33 +91,12 @@ export function App() {
     handleSplitPane,
     handleClosePane,
     handleNavigatePane,
-    openBrowserTab: () => setActivityView((v) => (v === "targets" ? null : "targets")),
-    openSecurityTab: () => setActivityView((v) => (v === "targets" ? null : "targets")),
-    toggleToolManager: () => setActivityView((v) => (v === "toolManage" ? null : "toolManage")),
-    toggleWiki: () => setActivityView((v) => (v === "wiki" ? null : "wiki")),
-    toggleBottomTerminal: () => {
-      setActivityView(null);
-      const s = useStore.getState();
-      const currentTabType = s.activeSessionId
-        ? (s.sessions[s.activeSessionId]?.tabType ?? "terminal")
-        : "terminal";
-      if (currentTabType !== "terminal") {
-        const termTab = s.tabOrder.find(
-          (id) => (s.sessions[id]?.tabType ?? "terminal") === "terminal"
-        );
-        if (termTab) {
-          s.setActiveSession(termTab);
-          return;
-        }
-      }
-      useStore.getState().toggleBottomTerminal();
-    },
-    focusAiChat: () => {
-      setActivityView(null);
-      requestAnimationFrame(() => {
-        document.querySelector<HTMLTextAreaElement>("[data-ai-chat-input]")?.focus();
-      });
-    },
+    openBrowserTab: () => activityControls.toggleView("targets"),
+    openSecurityTab: () => activityControls.toggleView("targets"),
+    toggleToolManager: () => activityControls.toggleView("toolManage"),
+    toggleWiki: () => activityControls.toggleView("wiki"),
+    toggleBottomTerminal: activityControls.toggleBottomTerminal,
+    focusAiChat: activityControls.focusAiChat,
     setCommandPaletteOpen,
     setQuickOpenDialogOpen,
     setSidecarPanelOpen: (open) => (open ? useStore.getState().openSidecarPanel() : closePanels()),
@@ -179,6 +164,7 @@ export function App() {
     setCurrentPage,
     activityView,
     setActivityView,
+    activityControls,
     visitedViews,
     commandPaletteOpen,
     setCommandPaletteOpen,
