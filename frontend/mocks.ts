@@ -1785,12 +1785,11 @@ export function cleanupMocks(): void {
  *  2. TaskPlanCard (active + retired iterations)
  *  3. ToolCallSummary / ToolCallCard (completed tools in message)
  *  5. SubAgentInlineCard (sub_agent_* tool in message)
- *  6. SubAgentSummaryBar (from activeSubAgents)
- *  7. WorkflowProgress
- *  8. CompactionNotice
- *  9. AskHumanInline
- * 10. CollapsibleToolCall (pending approval)
- * 11. PlanUpdatedNotice
+ *  6. WorkflowProgress
+ *  7. CompactionNotice
+ *  8. AskHumanInline
+ *  9. CollapsibleToolCall (pending approval)
+ * 10. PlanUpdatedNotice
  */
 export async function demoAllChatStyles(): Promise<void> {
   const { useStore } = await import("@/store/index");
@@ -1879,7 +1878,6 @@ export async function demoAllChatStyles(): Promise<void> {
   const subReq = reqId();
   await emit({ type: "tool_request", tool_name: "sub_agent_researcher", args: { task: "Search for JWT best practices" }, request_id: subReq });
 
-  // Sub-agent started (shows in SubAgentSummaryBar)
   await emit({ type: "sub_agent_started", agent_id: "researcher-demo", agent_name: "Researcher", task: "Search for JWT best practices", depth: 1, parent_request_id: subReq });
   await delay(300);
   await emit({ type: "sub_agent_completed", agent_id: "researcher-demo", response: "Found 3 relevant patterns for JWT refresh.", duration_ms: 2400, parent_request_id: subReq });
@@ -1942,12 +1940,11 @@ export async function demoAllChatStyles(): Promise<void> {
     "  2. ThinkingBlock (reasoning)\n" +
     "  3. TaskPlanCard (active v2 + retired v1)\n" +
     "  4. ToolCallCard (read_file, run_command)\n" +
-    "  6. SubAgentInlineCard (sub_agent_researcher)\n" +
-    "  7. SubAgentSummaryBar\n" +
-    "  8. WorkflowProgress (running)\n" +
-    "  9. CompactionNotice\n" +
-    " 10. AskHumanInline (confirmation)\n" +
-    " 11. CollapsibleToolCall (pending approval)\n"
+    "  5. SubAgentInlineCard (sub_agent_researcher)\n" +
+    "  6. WorkflowProgress (running)\n" +
+    "  7. CompactionNotice\n" +
+    "  8. AskHumanInline (confirmation)\n" +
+    "  9. CollapsibleToolCall (pending approval)\n"
   );
 }
 
