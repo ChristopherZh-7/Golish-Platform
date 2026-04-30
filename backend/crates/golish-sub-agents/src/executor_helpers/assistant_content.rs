@@ -121,6 +121,10 @@ pub(crate) fn serialize_chat_history(messages: &[Message]) -> serde_json::Value 
         .iter()
         .filter_map(|msg| {
             match msg {
+                Message::System { content } => Some(serde_json::json!({
+                    "role": "system",
+                    "content": content,
+                })),
                 Message::User { content } => {
                     let texts: Vec<String> = content
                         .iter()

@@ -138,6 +138,13 @@ pub(crate) fn build_request(
 /// requires that ordering.
 pub(crate) fn convert_message(msg: &Message) -> types::Message {
     match msg {
+        Message::System { content } => types::Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: content.clone(),
+                cache_control: None,
+            }],
+        },
         Message::User { content } => {
             let blocks: Vec<ContentBlock> = content
                 .iter()

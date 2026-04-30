@@ -78,6 +78,10 @@ impl CompletionModel {
     /// Convert rig's Message to Gemini Content format.
     fn convert_message(msg: &Message) -> Content {
         match msg {
+            Message::System { content } => Content {
+                role: Some("user".to_string()),
+                parts: vec![Part::text(content)],
+            },
             Message::User { content } => {
                 let parts: Vec<Part> = content
                     .iter()
@@ -315,6 +319,7 @@ impl CompletionModel {
                 output_tokens: u.candidates_token_count as u64,
                 total_tokens: u.total_token_count as u64,
                 cached_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             })
             .unwrap_or_default();
 
@@ -347,6 +352,7 @@ impl rig::completion::GetTokenUsage for StreamingCompletionResponseData {
             output_tokens: u.candidates_token_count as u64,
             total_tokens: u.total_token_count as u64,
             cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
         })
     }
 }

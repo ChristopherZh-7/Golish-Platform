@@ -71,6 +71,7 @@ pub(crate) fn convert_response(
             output_tokens: response.usage.output_tokens as u64,
             total_tokens: (response.usage.input_tokens + response.usage.output_tokens) as u64,
             cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
         },
         raw_response: response,
         message_id: None,
@@ -93,6 +94,7 @@ impl rig::completion::GetTokenUsage for StreamingCompletionResponseData {
             output_tokens: u.output_tokens as u64,
             total_tokens: (u.input_tokens + u.output_tokens) as u64,
             cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
         })
     }
 }

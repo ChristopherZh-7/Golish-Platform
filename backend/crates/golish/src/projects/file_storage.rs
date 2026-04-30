@@ -270,7 +270,8 @@ pub fn temp_dir(project_root: &Path) -> PathBuf {
 /// Compute SHA-256 hash prefix (first 8 hex chars) for a file's content.
 fn sha256_prefix(content: &[u8]) -> String {
     let hash = Sha256::digest(content);
-    format!("{:x}", hash)[..8].to_string()
+    let hex: String = hash.iter().map(|b| format!("{:02x}", b)).collect();
+    hex[..8].to_string()
 }
 
 /// Generate a filename with hash prefix: `{sha256_8}_{original_name}`

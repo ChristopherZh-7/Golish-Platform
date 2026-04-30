@@ -1,5 +1,5 @@
-import Ansi from "ansi-to-react";
 import { useEffect, useMemo, useRef } from "react";
+import { Ansi } from "@/components/Ansi";
 import { stripOscSequences } from "@/lib/ansi";
 import { cn } from "@/lib/utils";
 

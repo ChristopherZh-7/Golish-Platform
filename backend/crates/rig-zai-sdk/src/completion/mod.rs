@@ -79,6 +79,7 @@ impl rig::completion::GetTokenUsage for StreamingResponseData {
             output_tokens: u.completion_tokens as u64,
             total_tokens: u.total_tokens as u64,
             cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
         })
     }
 }

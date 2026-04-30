@@ -9,7 +9,7 @@ import {
   Download,
   FileText,
   FolderOpen,
-  Github,
+  GitFork,
   Grid3X3,
   List,
   Loader2,
@@ -324,7 +324,7 @@ export function ToolManager() {
                 title={t("toolManager.importGithub")}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
               >
-                <Github className="w-3.5 h-3.5" /> {t("toolManager.importGithub")}
+                <GitFork className="w-3.5 h-3.5" /> {t("toolManager.importGithub")}
               </button>
               <button
                 type="button"
