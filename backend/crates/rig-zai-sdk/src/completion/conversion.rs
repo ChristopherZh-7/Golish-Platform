@@ -23,6 +23,7 @@ impl CompletionModel {
     /// Convert rig's `Message` to Z.AI message format.
     pub(super) fn convert_message(msg: &Message) -> types::Message {
         match msg {
+            Message::System { content } => types::Message::system(content.clone()),
             Message::User { content } => {
                 let text = extract_user_text(content);
                 types::Message {
@@ -315,6 +316,7 @@ impl CompletionModel {
                 output_tokens: response.usage.completion_tokens as u64,
                 total_tokens: response.usage.total_tokens as u64,
                 cached_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             },
             raw_response: response,
             message_id: None,

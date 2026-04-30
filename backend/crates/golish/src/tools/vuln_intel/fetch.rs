@@ -260,7 +260,7 @@ pub(super) async fn fetch_rss(
             }
             Ok(quick_xml::events::Event::Text(ref e)) => {
                 if in_item {
-                    let text = e.unescape().unwrap_or_default().to_string();
+                    let text = e.decode().map(|s| s.to_string()).unwrap_or_default();
                     match current_tag.as_str() {
                         "title" => title.push_str(&text),
                         "link" => link.push_str(&text),
