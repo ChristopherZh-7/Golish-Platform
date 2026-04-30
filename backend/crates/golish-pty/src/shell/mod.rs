@@ -32,6 +32,8 @@ pub enum ShellType {
     Zsh,
     Bash,
     Fish,
+    PowerShell,
+    Cmd,
     Unknown,
 }
 
@@ -40,7 +42,8 @@ impl ShellType {
     pub fn login_args(&self) -> Vec<&'static str> {
         match self {
             ShellType::Zsh | ShellType::Bash | ShellType::Fish => vec!["-l"],
-            ShellType::Unknown => vec![],
+            ShellType::PowerShell => vec!["-NoLogo"],
+            ShellType::Cmd | ShellType::Unknown => vec![],
         }
     }
 }
@@ -73,12 +76,18 @@ impl ShellInfo {
 
     /// Detect shell type from path.
     fn detect_type(path: &Path) -> ShellType {
-        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let file_name = path
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_lowercase();
 
-        match file_name {
+        match file_name.as_str() {
             "zsh" => ShellType::Zsh,
             "bash" => ShellType::Bash,
             "fish" => ShellType::Fish,
+            "pwsh" | "powershell" => ShellType::PowerShell,
+            "cmd" => ShellType::Cmd,
             _ => ShellType::Unknown,
         }
     }
@@ -88,8 +97,8 @@ impl ShellInfo {
 ///
 /// Priority:
 /// 1. `settings.terminal.shell` (user override)
-/// 2. `shell_env` (`$SHELL` environment variable)
-/// 3. Fallback to `/bin/sh`
+/// 2. `shell_env` (`$SHELL` environment variable, Unix only)
+/// 3. Fallback: `/bin/sh` (Unix) or `powershell.exe` (Windows)
 pub fn detect_shell(settings: Option<&TerminalSettings>, shell_env: Option<&str>) -> ShellInfo {
     if let Some(settings) = settings {
         if let Some(ref shell) = settings.shell {
@@ -101,5 +110,9 @@ pub fn detect_shell(settings: Option<&TerminalSettings>, shell_env: Option<&str>
         return ShellInfo::new(shell);
     }
 
-    ShellInfo::new("/bin/sh")
+    if cfg!(windows) {
+        ShellInfo::new("powershell.exe")
+    } else {
+        ShellInfo::new("/bin/sh")
+    }
 }
