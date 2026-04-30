@@ -19,6 +19,7 @@ import { useTranslation } from "react-i18next";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { isWindows } from "@/lib/env";
 import { useSettingsNavigation, type SettingsSection } from "./hooks/useSettingsNavigation";
 
 const AdvancedSettings = lazy(() =>
@@ -325,8 +326,8 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
       >
         <DialogTitle className="sr-only">Settings</DialogTitle>
 
-        {/* Header - macOS traffic lights + title */}
-        <div className="flex items-center justify-between px-6 h-[38px] flex-shrink-0 titlebar-drag" data-tauri-drag-region>
+        {/* Header — window drag region */}
+        <div className={cn("flex items-center justify-between px-6 flex-shrink-0 titlebar-drag", isWindows() ? "h-[32px]" : "h-[38px]")} data-tauri-drag-region>
           <h2 className="text-[14px] font-semibold text-foreground titlebar-no-drag">Settings</h2>
           <button
             type="button"
