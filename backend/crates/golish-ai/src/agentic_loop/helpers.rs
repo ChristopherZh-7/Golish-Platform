@@ -17,6 +17,7 @@ use golish_core::events::AiEvent;
 /// Falls back to character-count heuristics for media content.
 pub(crate) fn estimate_message_tokens(message: &Message) -> usize {
     match message {
+        Message::System { content } => tokenx_rs::estimate_token_count(content),
         Message::User { content } => content
             .iter()
             .map(|c| match c {

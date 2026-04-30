@@ -1,6 +1,6 @@
-import Ansi from "ansi-to-react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { useMemo, useState } from "react";
+import { Ansi } from "@/components/Ansi";
 import { stripOscSequences } from "@/lib/ansi";
 import { truncateByLines } from "@/lib/text";
 import { cn } from "@/lib/utils";

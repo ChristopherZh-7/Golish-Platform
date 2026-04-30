@@ -96,6 +96,7 @@ impl GolishSessionMessage {
 impl From<&Message> for GolishSessionMessage {
     fn from(message: &Message) -> Self {
         match message {
+            Message::System { content } => Self::system(content.clone()),
             Message::User { content } => {
                 let text = content
                     .iter()
@@ -139,9 +140,10 @@ impl GolishSessionMessage {
                     text: self.content.clone(),
                 })),
             }),
-            // System and Tool messages cannot be directly represented in rig's Message enum
-            // for chat history, so we skip them (they were already processed)
-            GolishMessageRole::System | GolishMessageRole::Tool => None,
+            GolishMessageRole::System => Some(Message::System {
+                content: self.content.clone(),
+            }),
+            GolishMessageRole::Tool => None,
         }
     }
 }

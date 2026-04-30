@@ -29,6 +29,13 @@ pub(crate) fn build_request(
 
     for msg in request.chat_history.iter() {
         match msg {
+            Message::System { content } => {
+                input_items.push(InputItem::EasyMessage(EasyInputMessage {
+                    r#type: MessageType::Message,
+                    role: Role::Developer,
+                    content: EasyInputContent::Text(content.clone()),
+                }));
+            }
             Message::User { content } => {
                 let user_items = convert_user_content(content);
                 input_items.extend(user_items);

@@ -1,4 +1,3 @@
-import Ansi from "ansi-to-react";
 import {
   AlertTriangle,
   CheckCircle,
@@ -13,6 +12,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { Ansi } from "@/components/Ansi";
 import { DiffView } from "@/components/DiffView";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

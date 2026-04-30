@@ -163,6 +163,7 @@ impl ContextManager {
             let chars = estimate_message_chars(message);
             let tokens = chars / 4; // chars/4 heuristic, same as TokenBudgetManager::estimate_tokens
             match message {
+                Message::System { .. } => stats.system_prompt_tokens += tokens,
                 Message::User { content } => {
                     let has_tool_result = content
                         .iter()
@@ -366,6 +367,7 @@ pub(super) fn estimate_message_chars(message: &Message) -> usize {
     use rig::message::UserContent;
 
     match message {
+        Message::System { content } => content.len(),
         Message::User { content } => content
             .iter()
             .map(|c| match c {

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowUpCircle, Check, Copy, Download, ExternalLink,
-  FolderOpen, FileText, Github, Loader2, Trash2, X,
+  FolderOpen, FileText, GitFork, Loader2, Trash2, X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -380,7 +380,7 @@ export function GitHubImportDialog({ url, onUrlChange, analyzing, onImport, onCa
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onCancel}>
       <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-6 shadow-xl max-w-md w-full" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center gap-2 mb-4">
-          <Github className="w-5 h-5 text-accent" />
+          <GitFork className="w-5 h-5 text-accent" />
           <h2 className="text-[15px] font-semibold text-foreground">{t("toolManager.importGithub")}</h2>
         </div>
         <p className="text-[11px] text-muted-foreground/50 mb-3">{t("toolManager.importGithubHint")}</p>

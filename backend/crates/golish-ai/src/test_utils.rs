@@ -126,6 +126,7 @@ impl GetTokenUsage for MockStreamingResponseData {
             output_tokens: self.output_tokens,
             total_tokens: self.input_tokens + self.output_tokens,
             cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
         })
     }
 }
@@ -239,6 +240,7 @@ impl MockCompletionModel {
                 output_tokens: 50,
                 total_tokens: 150,
                 cached_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             },
             raw_response: MockStreamingResponseData::default(),
             message_id: None,
