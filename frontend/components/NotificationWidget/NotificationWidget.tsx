@@ -2,6 +2,7 @@ import { AlertTriangle, Bell, Check, CheckCircle2, Info, Trash2, X, XCircle } fr
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useShallow } from "zustand/react/shallow";
+import { isWindows } from "@/lib/env";
 import { formatRelativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { type Notification, type NotificationType, useStore } from "@/store";
@@ -14,11 +15,13 @@ import {
 const PREVIEW_DURATION_MS = 5000;
 const FADEOUT_DURATION_MS = 300;
 
+const TITLEBAR_HEIGHT = isWindows() ? "32px" : "38px";
+
 // Static style constants extracted to avoid recreation on each render
 const glowStyle = { backgroundColor: "var(--ansi-cyan)" } as const;
 
 const panelStyle = {
-  top: "38px",
+  top: TITLEBAR_HEIGHT,
   right: "8px",
   boxShadow: `
     0 0 0 1px rgba(0,0,0,0.1),
