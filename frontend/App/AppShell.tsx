@@ -2,6 +2,7 @@ import type React from "react";
 import { Suspense } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils";
+import { isWindows } from "@/lib/env";
 import { ActivityBar, type ActivityView } from "../components/ActivityBar/ActivityBar";
 import { AIChatPanel } from "../components/AIChatPanel/AIChatPanel";
 import { CommandPalette, type PageRoute } from "../components/CommandPalette";
@@ -286,8 +287,14 @@ export function AppShell(props: AppShellProps) {
           height: `calc(100vh / ${uiScale})`,
         }}
       >
-        {/* macOS traffic lights + window drag region */}
-        <div className="h-[38px] w-full titlebar-drag flex-shrink-0" data-tauri-drag-region />
+        {/* Window drag region — macOS traffic lights (left) / Windows controls (right) */}
+        <div
+          className={cn(
+            "w-full titlebar-drag flex-shrink-0",
+            isWindows() ? "h-[32px]" : "h-[38px]"
+          )}
+          data-tauri-drag-region
+        />
 
         {/* Content - floating panels */}
         <div className="flex-1 flex overflow-hidden gap-2 px-2 pb-2 min-h-0 relative">
