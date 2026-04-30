@@ -99,15 +99,14 @@ impl Tool for RunPtyCmdTool {
             }));
         }
 
-        // Determine shell and command to use.
-        let (shell, wrapped_command) = if cfg!(target_os = "windows") {
-            ("cmd".to_string(), command_str.to_string())
-        } else {
-            let (shell_path, shell_type, home) = get_shell_config(self.shell_override.as_deref());
-            shell_type.build_command(&shell_path, command_str, &home)
-        };
+        let (shell_path, shell_type, home) = get_shell_config(self.shell_override.as_deref());
+        let (shell, wrapped_command) = shell_type.build_command(&shell_path, command_str, &home);
 
-        let shell_arg = if cfg!(target_os = "windows") { "/c" } else { "-c" };
+        let shell_arg = match shell_type {
+            crate::shell::ShellType::Cmd => "/C",
+            crate::shell::ShellType::PowerShell => "-Command",
+            _ => "-c",
+        };
 
         debug!(
             shell = %shell,

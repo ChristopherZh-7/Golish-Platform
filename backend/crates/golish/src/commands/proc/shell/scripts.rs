@@ -289,7 +289,8 @@ pub fn get_integration_script(shell_type: ShellType) -> &'static str {
         ShellType::Zsh => INTEGRATION_SCRIPT_ZSH,
         ShellType::Bash => INTEGRATION_SCRIPT_BASH,
         ShellType::Fish => INTEGRATION_SCRIPT_FISH,
-        ShellType::Unknown => INTEGRATION_SCRIPT_ZSH, // Default to zsh for unknown
+        ShellType::PowerShell | ShellType::Cmd => "",
+        ShellType::Unknown => INTEGRATION_SCRIPT_ZSH,
     }
 }
 

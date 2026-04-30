@@ -470,8 +470,24 @@ fn shell_builtins(shell_type: ShellType) -> &'static [&'static str] {
             "wait",
             "while",
         ],
+        ShellType::PowerShell => &[
+            "Add-Content", "Clear-Content", "Clear-Host", "Clear-Item", "Copy-Item",
+            "ForEach-Object", "Get-ChildItem", "Get-Command", "Get-Content", "Get-Help",
+            "Get-Item", "Get-Location", "Get-Process", "Get-Service", "Invoke-Expression",
+            "Invoke-WebRequest", "Move-Item", "New-Item", "Out-File", "Remove-Item",
+            "Rename-Item", "Select-Object", "Set-Content", "Set-Item", "Set-Location",
+            "Sort-Object", "Start-Process", "Stop-Process", "Test-Path", "Where-Object",
+            "Write-Host", "Write-Output", "cd", "cls", "copy", "del", "dir", "echo",
+            "exit", "ls", "mkdir", "mv", "pwd", "rm", "type",
+        ],
+        ShellType::Cmd => &[
+            "assoc", "attrib", "break", "call", "cd", "chdir", "cls", "color", "copy",
+            "date", "del", "dir", "echo", "endlocal", "erase", "exit", "for", "ftype",
+            "goto", "if", "md", "mkdir", "mklink", "move", "path", "pause", "popd",
+            "prompt", "pushd", "rd", "rem", "ren", "rename", "rmdir", "set", "setlocal",
+            "shift", "start", "time", "title", "tree", "type", "ver", "vol",
+        ],
         ShellType::Unknown => &[
-            // Common POSIX builtins as fallback
             "alias", "bg", "cd", "command", "echo", "eval", "exec", "exit", "export", "false", "fc",
             "fg", "getopts", "hash", "jobs", "kill", "local", "popd", "printf", "pushd", "pwd",
             "read", "readonly", "return", "set", "shift", "source", "test", "times", "trap",
