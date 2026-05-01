@@ -46,22 +46,7 @@ pub(super) async fn handle_search(
 
     match pages {
         Ok(results) => {
-            let items: Vec<serde_json::Value> = results
-                .iter()
-                .map(|p| {
-                    json!({
-                        "path": p.path,
-                        "title": p.title,
-                        "category": p.category,
-                        "tags": p.tags,
-                        "status": p.status,
-                        "snippet": p.content.chars().take(500).collect::<String>(),
-                        "word_count": p.word_count,
-                    })
-                })
-                .collect();
-            let count = items.len();
-            (json!({ "results": items, "count": count, "query": query }), true)
+            (results, true)
         }
         Err(e) => error_result(format!("KB search failed: {}", e)),
     }

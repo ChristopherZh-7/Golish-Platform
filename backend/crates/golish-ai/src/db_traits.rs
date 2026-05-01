@@ -436,15 +436,15 @@ pub trait DbRepoProvider: Send + Sync {
     async fn api_endpoints_insert(
         &self,
         target_id: Uuid,
-        project_path: &str,
+        project_path: Option<&str>,
         url: &str,
         method: &str,
         path: &str,
-        params: Option<&str>,
-        status_code: Option<i32>,
-        response_type: Option<&str>,
-        auth_required: bool,
-        notes: Option<&str>,
+        params: &serde_json::Value,
+        raw_data: &serde_json::Value,
+        auth_type: Option<&str>,
+        source: &str,
+        risk_level: &str,
     ) -> anyhow::Result<serde_json::Value>;
 
     async fn js_analysis_insert(

@@ -11,9 +11,6 @@ golish-core = { workspace = true }
 golish-settings = { workspace = true }
 golish-tools = { workspace = true }
 
-# Infrastructure crates
-golish-db = { workspace = true }
-
 # Extracted AI subsystem crates
 golish-events = { path = "../golish-events" }
 golish-session = { workspace = true }
