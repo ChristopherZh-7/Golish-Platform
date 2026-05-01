@@ -52,7 +52,7 @@ pub(super) async fn handle_write(
     let refs_saved = cross_refs.len();
 
     if let Some(tracker) = db_tracker {
-        let page = golish_db::models::NewWikiPage {
+        let page = crate::db_traits::NewWikiPage {
             path: path.clone(),
             title: title.clone(),
             category: category.clone(),
@@ -60,22 +60,22 @@ pub(super) async fn handle_write(
             status: status.clone(),
             content: content.clone(),
         };
-        if let Err(e) = golish_db::repo::wiki_kb::upsert_page(tracker.pool(), &page).await {
+        if let Err(e) = crate::db_shim::wiki_kb::upsert_page(tracker.repo().unwrap(), &page).await {
             tracing::warn!("[kb] DB sync failed for {}: {}", path, e);
         }
 
         if let Some(ref cve) = cve_id_opt {
             if let Err(e) =
-                golish_db::repo::wiki_kb::link_cve_to_wiki(tracker.pool(), cve, &path).await
+                crate::db_shim::wiki_kb::link_cve_to_wiki(tracker.repo().unwrap(), cve, &path).await
             {
                 tracing::warn!("[kb] CVE link failed for {} -> {}: {}", cve, path, e);
             }
         }
 
         // Persist cross-references (replace all from this page).
-        let _ = golish_db::repo::wiki_kb::delete_refs_from(tracker.pool(), &path).await;
+        let _ = crate::db_shim::wiki_kb::delete_refs_from(tracker.repo().unwrap(), &path).await;
         for (target, ctx) in &cross_refs {
-            let _ = golish_db::repo::wiki_kb::upsert_page_ref(tracker.pool(), &path, target, ctx)
+            let _ = crate::db_shim::wiki_kb::upsert_page_ref(tracker.repo().unwrap(), &path, target, ctx)
                 .await;
         }
 
@@ -86,7 +86,7 @@ pub(super) async fn handle_write(
         } else {
             format!("Updated page: {}", title)
         };
-        let log_entry = golish_db::models::NewWikiChangelog {
+        let log_entry = crate::db_traits::NewWikiChangelog {
             page_path: path.clone(),
             action: action.to_string(),
             title: title.clone(),
@@ -94,7 +94,7 @@ pub(super) async fn handle_write(
             actor: "agent".to_string(),
             summary,
         };
-        if let Err(e) = golish_db::repo::wiki_kb::add_changelog(tracker.pool(), &log_entry).await {
+        if let Err(e) = crate::db_shim::wiki_kb::add_changelog(tracker.repo().unwrap(), &log_entry).await {
             tracing::warn!("[kb] changelog write failed: {}", e);
         }
     }
@@ -165,7 +165,7 @@ pub(super) async fn handle_ingest_cve(
 
     let mut cve_info = String::new();
     if let Some(tracker) = db_tracker {
-        match golish_db::repo::vuln_intel::search_entries(tracker.pool(), &cve_id, 1).await {
+        match crate::db_shim::vuln_intel::search_entries(tracker.repo().unwrap(), &cve_id, 1).await {
             Ok(entries) if !entries.is_empty() => {
                 let e = &entries[0];
                 cve_info = format!(
@@ -192,7 +192,7 @@ pub(super) async fn handle_ingest_cve(
         let existing = tokio::fs::read_to_string(&full).await.unwrap_or_default();
         if let Some(tracker) = db_tracker {
             let _ =
-                golish_db::repo::wiki_kb::link_cve_to_wiki(tracker.pool(), &cve_id, &path).await;
+                crate::db_shim::wiki_kb::link_cve_to_wiki(tracker.repo().unwrap(), &cve_id, &path).await;
         }
         return (
             json!({
@@ -241,7 +241,7 @@ pub(super) async fn handle_ingest_cve(
     }
 
     if let Some(tracker) = db_tracker {
-        let page = golish_db::models::NewWikiPage {
+        let page = crate::db_traits::NewWikiPage {
             path: path.clone(),
             title: format!("{} — {}", cve_id, product),
             category: "products".to_string(),
@@ -249,8 +249,8 @@ pub(super) async fn handle_ingest_cve(
             status: "draft".to_string(),
             content: page_content.clone(),
         };
-        let _ = golish_db::repo::wiki_kb::upsert_page(tracker.pool(), &page).await;
-        let _ = golish_db::repo::wiki_kb::link_cve_to_wiki(tracker.pool(), &cve_id, &path).await;
+        let _ = crate::db_shim::wiki_kb::upsert_page(tracker.repo().unwrap(), &page).await;
+        let _ = crate::db_shim::wiki_kb::link_cve_to_wiki(tracker.repo().unwrap(), &cve_id, &path).await;
     }
 
     (
@@ -299,7 +299,7 @@ pub(super) async fn handle_save_poc(
         .unwrap_or_default();
 
     if let Some(tracker) = db_tracker {
-        match golish_db::repo::wiki_kb::upsert_poc_full(
+        match crate::db_shim::wiki_kb::upsert_poc_full(
             tracker.pool(),
             &cve_id,
             &name,
