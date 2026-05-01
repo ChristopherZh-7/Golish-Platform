@@ -143,6 +143,13 @@ impl AgentBridge {
         self.services.settings_manager = Some(settings_manager);
     }
 
+    /// Set the database repository provider for trait-based DB access.
+    pub fn set_db_repo(&mut self, repo: Arc<dyn crate::db_traits::DbRepoProvider>) {
+        if let Some(ref mut tracker) = self.services.db_tracker {
+            tracker.set_repo(repo);
+        }
+    }
+
     /// Attach an embedder to the DB tracker for semantic memory operations.
     pub fn set_embedder(&mut self, embedder: Arc<dyn crate::db_traits::TextEmbedder>) {
         if let Some(ref mut tracker) = self.services.db_tracker {

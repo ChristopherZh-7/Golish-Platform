@@ -166,7 +166,9 @@ async fn execute_task_mode(
     });
 
     let start_time = std::time::Instant::now();
-    let mut orchestrator = TaskOrchestrator::new(pool, uuid_session_id, event_tx);
+    let db_repo: std::sync::Arc<dyn golish_ai::db_traits::DbRepoProvider> =
+        std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(pool.clone()));
+    let mut orchestrator = TaskOrchestrator::new(pool, db_repo, uuid_session_id, event_tx);
     let executor = BridgeAgentExecutor::new(bridge.clone());
 
     let result = orchestrator.run(prompt, &executor).await;
