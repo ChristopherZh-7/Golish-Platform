@@ -432,7 +432,7 @@ find backend/crates/golish/src/tools -name "*.rs" -not -name "mod.rs" | xargs wc
 - [x] `wiki/vuln_links.rs` (406) — SKIP: 纯 CRUD (14 个命令)
 - [x] `output_parser.rs` (397, golish-pentest 已有 output_parser) — SKIP: 薄封装
 - [x] `findings/crud.rs` (393) — SKIP: 纯 CRUD (10 个命令)
-- [ ] `pentest/zap/sync/capture.rs` (384, ZAP 数据同步/捕获)
+- [ ] `pentest/zap/sync/capture.rs` (384, pub(crate) 内部函数, 需拆分 SitemapStore/FileCapture/AuditLog 三个 trait, 未来迭代)
 
 ---
 
