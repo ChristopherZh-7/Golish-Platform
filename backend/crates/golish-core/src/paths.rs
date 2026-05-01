@@ -83,11 +83,25 @@ pub fn toolsconfig_dir() -> Option<PathBuf> {
     resolve_shared_dir("toolsconfig")
 }
 
+/// Wiki / vulnerability knowledge-base root.
+/// Resolves from `<project_root>/resources/wiki` first,
+/// then falls back to the per-machine app data directory.
+pub fn wiki_dir() -> Option<PathBuf> {
+    resolve_shared_dir("wiki")
+}
+
 /// Directory containing flow/pipeline template files.
 /// Resolves from `<project_root>/resources/flow-templates` first,
 /// then falls back to the per-machine app data directory.
 pub fn flow_templates_dir() -> Option<PathBuf> {
     resolve_shared_dir("flow-templates")
+}
+
+/// Per-tool skill/usage-guide Markdown files.
+/// Resolves from `<project_root>/resources/skills` first,
+/// then falls back to the per-machine app data directory.
+pub fn skills_dir() -> Option<PathBuf> {
+    resolve_shared_dir("skills")
 }
 
 /// Embedded PostgreSQL data directory.

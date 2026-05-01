@@ -7,7 +7,7 @@
 
 use anyhow::Result;
 use golish_llm_providers::LlmClient;
-use rig::completion::{CompletionModel as _, CompletionRequest, Message};
+use rig::completion::Message;
 use rig::message::{Text, UserContent};
 use rig::one_or_many::OneOrMany;
 use serde::{Deserialize, Serialize};
@@ -177,99 +177,35 @@ pub async fn generate_summary(client: &LlmClient, conversation: &str) -> Result<
     Ok(extract_summary_text(&response_text))
 }
 
-/// Internal helper that handles different LlmClient variants.
+/// Internal helper that delegates to [`LlmClient::one_shot_completion`].
 ///
-/// Uses a macro to reduce repetition across the many provider variants.
+/// The NVIDIA NIM workaround (system prompt as user message) is handled
+/// automatically by `one_shot_completion`.
 async fn call_summarizer_model(client: &LlmClient, user_message: Message) -> Result<String> {
-    // Helper to extract text from completion response
-    fn extract_text(
-        choice: &rig::one_or_many::OneOrMany<rig::completion::AssistantContent>,
-    ) -> String {
-        let mut text = String::new();
-        for content in choice.iter() {
-            if let rig::completion::AssistantContent::Text(t) = content {
-                text.push_str(&t.text);
-            }
-        }
-        text
+    if matches!(client, LlmClient::Mock) {
+        return Ok("<analysis>\nMock analysis.\n</analysis>\n\n<summary>\n## Original Request\nMock summary for testing.\n\n## Current State\nN/A\n\n## Key Decisions\nN/A\n\n## Pending Work\nN/A\n\n## Important Context\nN/A\n</summary>".to_string());
     }
 
-    // TODO: max tokens (output tokens) is model dependent
-
-    // Build the completion request
-    let request = CompletionRequest {
-        preamble: Some(SUMMARIZER_SYSTEM_PROMPT.to_string()),
-        chat_history: OneOrMany::one(user_message.clone()),
-        documents: vec![],
-        tools: vec![],            // No tools - this is a simple completion
-        temperature: Some(0.3),   // Low temperature for consistent output
-        max_tokens: Some(64_000), // Summaries can be longer than commit messages
-        tool_choice: None,
-        additional_params: None,
-        model: None,
-        output_schema: None,
+    let user_text = match &user_message {
+        Message::User { content } => {
+            content
+                .iter()
+                .filter_map(|c| {
+                    if let rig::message::UserContent::Text(t) = c {
+                        Some(t.text.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        _ => String::new(),
     };
 
-    // Macro to reduce repetition across provider variants
-    macro_rules! complete_with_model {
-        ($model:expr) => {{
-            let response = $model.completion(request).await?;
-            // Log token usage
-            tracing::info!(
-                "[summarizer] Token usage: input={}, output={}",
-                response.usage.input_tokens,
-                response.usage.output_tokens
-            );
-            Ok(extract_text(&response.choice))
-        }};
-    }
-
-    match client {
-        LlmClient::VertexAnthropic(model) => complete_with_model!(model),
-        LlmClient::RigOpenRouter(model) => complete_with_model!(model),
-        LlmClient::RigOpenAi(model) => complete_with_model!(model),
-        LlmClient::RigOpenAiResponses(model) => complete_with_model!(model),
-        LlmClient::OpenAiReasoning(model) => complete_with_model!(model),
-        LlmClient::RigAnthropic(model) => complete_with_model!(model),
-        LlmClient::RigOllama(model) => complete_with_model!(model),
-        LlmClient::RigGemini(model) => complete_with_model!(model),
-        LlmClient::RigGroq(model) => complete_with_model!(model),
-        LlmClient::RigXai(model) => complete_with_model!(model),
-        LlmClient::RigZaiSdk(model) => complete_with_model!(model),
-        LlmClient::RigNvidia(model) => {
-            let nvidia_history = vec![
-                Message::User {
-                    content: OneOrMany::one(UserContent::text(SUMMARIZER_SYSTEM_PROMPT)),
-                },
-                user_message.clone(),
-            ];
-            let nvidia_request = CompletionRequest {
-                preamble: None,
-                chat_history: OneOrMany::many(nvidia_history)
-                    .expect("nvidia_history always has 2 elements"),
-                documents: vec![],
-                tools: vec![],
-                temperature: Some(0.3),
-                max_tokens: Some(64_000),
-                tool_choice: None,
-                additional_params: None,
-                model: None,
-                output_schema: None,
-            };
-            let response = model.completion(nvidia_request).await?;
-            tracing::info!(
-                "[summarizer] Token usage: input={}, output={}",
-                response.usage.input_tokens,
-                response.usage.output_tokens
-            );
-            Ok(extract_text(&response.choice))
-        }
-        LlmClient::VertexGemini(model) => complete_with_model!(model),
-        LlmClient::Mock => {
-            // Return a mock response matching the expected <analysis>/<summary> format
-            Ok("<analysis>\nMock analysis.\n</analysis>\n\n<summary>\n## Original Request\nMock summary for testing.\n\n## Current State\nN/A\n\n## Key Decisions\nN/A\n\n## Pending Work\nN/A\n\n## Important Context\nN/A\n</summary>".to_string())
-        }
-    }
+    client
+        .one_shot_completion(SUMMARIZER_SYSTEM_PROMPT, &user_text, Some(0.3f64), Some(64_000))
+        .await
 }
 
 /// Extract the summary text from the summarizer's raw LLM response.

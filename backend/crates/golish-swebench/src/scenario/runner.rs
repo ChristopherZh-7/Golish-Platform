@@ -267,22 +267,26 @@ impl Scenario for SWEBenchScenario {
             vec![]
         };
 
-        // Create a custom executor that handles the run_swebench_test tool.
+        struct SwebenchTestExecutor;
+
+        #[async_trait::async_trait]
+        impl golish_ai::agentic_loop::McpToolExecutor for SwebenchTestExecutor {
+            async fn execute_tool(
+                &self,
+                tool_name: &str,
+                args: &serde_json::Value,
+            ) -> Option<(serde_json::Value, bool)> {
+                if tool_name == "run_swebench_test" {
+                    Some(execute_swebench_test_tool(args).await)
+                } else {
+                    None
+                }
+            }
+        }
+
         let custom_executor: Option<golish_ai::eval_support::CustomToolExecutor> =
             if container_name.is_some() {
-                Some(std::sync::Arc::new(
-                    |tool_name: &str, args: &serde_json::Value| {
-                        let tool_name = tool_name.to_string();
-                        let args = args.clone();
-                        Box::pin(async move {
-                            if tool_name == "run_swebench_test" {
-                                Some(execute_swebench_test_tool(&args).await)
-                            } else {
-                                None // Not handled by this executor.
-                            }
-                        })
-                    },
-                ))
+                Some(std::sync::Arc::new(SwebenchTestExecutor))
             } else {
                 None
             };

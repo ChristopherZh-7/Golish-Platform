@@ -111,7 +111,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 const mockPtyWrite = vi.fn().mockResolvedValue(undefined);
 const mockPtyResize = vi.fn().mockResolvedValue(undefined);
 
-vi.mock("../../lib/tauri", () => ({
+vi.mock("@/lib/api/pty", () => ({
   ptyWrite: (...args: unknown[]) => mockPtyWrite(...args),
   ptyResize: (...args: unknown[]) => mockPtyResize(...args),
 }));

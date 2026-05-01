@@ -26,7 +26,7 @@ export const ExecutionModePicker = memo(function ExecutionModePicker({
   onToggleSubAgents,
 }: ExecutionModePickerProps) {
   return (
-    <DropdownMenu>
+    <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"

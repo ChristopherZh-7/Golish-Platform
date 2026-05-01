@@ -1,0 +1,20 @@
+[package]
+name = "golish-events"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Event coordination and transcript system for Golish AI"
+
+[dependencies]
+golish-core = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

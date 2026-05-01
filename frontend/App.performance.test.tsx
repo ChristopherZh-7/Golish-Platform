@@ -18,13 +18,17 @@ vi.mock("@tauri-apps/api/event", () => ({
   emit: vi.fn(),
 }));
 
-vi.mock("@/lib/tauri", () => ({
+vi.mock("@/lib/api/pty", () => ({
   ptyCreate: vi.fn(),
   ptyDestroy: vi.fn(),
+  setActiveTerminalSession: vi.fn(() => Promise.resolve()),
+}));
+vi.mock("@/lib/api/git", () => ({
   getGitBranch: vi.fn(),
+}));
+vi.mock("@/lib/api/shell", () => ({
   shellIntegrationStatus: vi.fn(),
   shellIntegrationInstall: vi.fn(),
-  setActiveTerminalSession: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("@/lib/ai", () => ({

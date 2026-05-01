@@ -1,5 +1,5 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { vulnIntelApi } from "@/lib/vuln-intel";
 import {
   Bell, Crosshair, History, Loader2, Plus, RefreshCw,
   Search, Trash2, X,
@@ -41,7 +41,7 @@ export function VulnIntelPanel() {
 
   // Load all vuln links from PostgreSQL on mount
   useEffect(() => {
-    invoke<Record<string, DbVulnLinkFull>>("vuln_link_get_all")
+    vulnIntelApi.getAllLinks()
       .then((dbLinks) => {
         const mapped: Record<string, VulnLink> = {};
         for (const [cveId, dbLink] of Object.entries(dbLinks)) {
@@ -63,14 +63,14 @@ export function VulnIntelPanel() {
 
   const loadCached = useCallback(async () => {
     try {
-      const cached = await invoke<VulnEntry[]>("intel_get_cached");
+      const cached = await vulnIntelApi.getCached();
       setEntries(Array.isArray(cached) ? cached : []);
     } catch { /* ignore */ }
   }, []);
 
   const loadFeeds = useCallback(async () => {
     try {
-      const f = await invoke<VulnFeed[]>("intel_list_feeds");
+      const f = await vulnIntelApi.listFeeds();
       setFeeds(Array.isArray(f) ? f : []);
     } catch { /* ignore */ }
   }, []);
@@ -83,7 +83,7 @@ export function VulnIntelPanel() {
   const handleFetch = useCallback(async () => {
     setLoading(true);
     try {
-      const result = await invoke<VulnEntry[]>("intel_fetch");
+      const result = await vulnIntelApi.fetch();
       setEntries(Array.isArray(result) ? result : []);
       loadFeeds();
     } catch (e) {
@@ -140,17 +140,14 @@ export function VulnIntelPanel() {
     try {
       if (searchQuery.trim()) {
         const nextOffset = searchOffset + 50;
-        const moreResults = await invoke<VulnEntry[]>("intel_search_remote_page", {
-          query: searchQuery.trim(),
-          startIndex: nextOffset,
-        });
+        const moreResults = await vulnIntelApi.searchRemotePage(searchQuery.trim(), nextOffset);
         setEntries((prev) => {
           const ids = new Set(prev.map((e) => e.cve_id));
           return [...prev, ...moreResults.filter((r) => !ids.has(r.cve_id))];
         });
         setSearchOffset(nextOffset);
       } else {
-        const result = await invoke<VulnEntry[]>("intel_fetch_page", { page: loadMorePage });
+        const result = await vulnIntelApi.fetchPage(loadMorePage);
         setEntries(Array.isArray(result) ? result : []);
         setLoadMorePage((p) => p + 1);
       }
@@ -172,12 +169,12 @@ export function VulnIntelPanel() {
     setLoading(true);
     setSearchOffset(0);
     try {
-      const localResults = await invoke<VulnEntry[]>("intel_search", { query: q });
+      const localResults = await vulnIntelApi.search(q);
       const safeLocalResults = Array.isArray(localResults) ? localResults : [];
       if (safeLocalResults.length > 0) {
         setEntries(safeLocalResults);
       } else {
-        const remoteResults = await invoke<VulnEntry[]>("intel_search_remote", { query: q });
+        const remoteResults = await vulnIntelApi.searchRemote(q);
         setEntries(Array.isArray(remoteResults) ? remoteResults : []);
       }
     } catch { /* ignore */ }
@@ -187,9 +184,7 @@ export function VulnIntelPanel() {
   const handleMatchTargets = useCallback(async () => {
     setLoading(true);
     try {
-      const matched = await invoke<VulnEntry[]>("intel_match_targets", {
-        projectPath: getProjectPath(),
-      });
+      const matched = await vulnIntelApi.matchTargets(getProjectPath());
       setMatchedEntries(matched);
       setViewMode("matched");
     } catch (e) {
@@ -201,11 +196,7 @@ export function VulnIntelPanel() {
   const handleAddFeed = useCallback(async () => {
     if (!newFeed.name.trim() || !newFeed.url.trim()) return;
     try {
-      await invoke("intel_add_feed", {
-        name: newFeed.name.trim(),
-        feedType: newFeed.feed_type,
-        url: newFeed.url.trim(),
-      });
+      await vulnIntelApi.addFeed(newFeed.name.trim(), newFeed.feed_type, newFeed.url.trim());
       setNewFeed({ name: "", feed_type: "rss", url: "" });
       setShowAddFeed(false);
       loadFeeds();
@@ -213,12 +204,12 @@ export function VulnIntelPanel() {
   }, [newFeed, loadFeeds]);
 
   const handleToggleFeed = useCallback(async (id: string, enabled: boolean) => {
-    await invoke("intel_toggle_feed", { id, enabled });
+    await vulnIntelApi.toggleFeed(id, enabled);
     loadFeeds();
   }, [loadFeeds]);
 
   const handleDeleteFeed = useCallback(async (id: string) => {
-    await invoke("intel_delete_feed", { id });
+    await vulnIntelApi.deleteFeed(id);
     loadFeeds();
   }, [loadFeeds]);
 

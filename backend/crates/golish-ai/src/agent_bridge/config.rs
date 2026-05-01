@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use golish_core::{ApiRequestStats, PromptMatchedSkill, PromptSkillInfo};
-use golish_pty::PtyManager;
 use golish_sidecar::SidecarState;
 use golish_skills::SkillMetadata;
 use golish_sub_agents::SubAgentRegistry;
@@ -103,11 +102,6 @@ impl AgentBridge {
     // ========================================================================
     // Optional service wiring
     // ========================================================================
-
-    /// Set the PtyManager for executing commands in user's terminal
-    pub fn set_pty_manager(&mut self, pty_manager: Arc<PtyManager>) {
-        self.services.pty_manager = Some(pty_manager);
-    }
 
     /// Set the IndexerState for code analysis tools
     pub fn set_indexer_state(&mut self, indexer_state: Arc<IndexerState>) {
@@ -456,18 +450,9 @@ impl AgentBridge {
         self.mcp_tool_definitions.read().await.clone()
     }
 
-    #[allow(clippy::type_complexity)]
     pub async fn set_mcp_executor(
         &self,
-        executor: Arc<
-            dyn Fn(
-                    &str,
-                    &serde_json::Value,
-                ) -> std::pin::Pin<
-                    Box<dyn std::future::Future<Output = Option<(serde_json::Value, bool)>> + Send>,
-                > + Send
-                + Sync,
-        >,
+        executor: Arc<dyn crate::agentic_loop::McpToolExecutor>,
     ) {
         *self.mcp_tool_executor.write().await = Some(executor);
     }

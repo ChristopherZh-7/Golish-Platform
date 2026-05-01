@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/api/client";
 
 export interface ThemeInfo {
   name: string;

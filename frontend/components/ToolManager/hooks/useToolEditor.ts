@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/api/client";
 import { useTranslation } from "react-i18next";
 import type { ToolWithMeta } from "../OutputParserEditor";
 import { listSkills, type SkillFileInfo } from "@/lib/pentest/api";

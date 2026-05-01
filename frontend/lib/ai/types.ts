@@ -1,19 +1,5 @@
-import type { RiskLevel } from "../tools";
-
-export type { RiskLevel };
-
-export type AiProvider =
-  | "vertex_ai"
-  | "vertex_gemini"
-  | "openrouter"
-  | "openai"
-  | "anthropic"
-  | "ollama"
-  | "gemini"
-  | "groq"
-  | "xai"
-  | "zai_sdk"
-  | "nvidia";
+export type { RiskLevel } from "../generated/RiskLevel";
+export type { AiProvider } from "../generated/AiProvider";
 
 export interface ProjectSettings {
   provider: AiProvider | null;

@@ -9,7 +9,7 @@
  *   logger.error("failed:", error) // like console.error
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/api/client";
 import { isTauri } from "@/lib/env";
 
 type LogLevel = "debug" | "info" | "warn" | "error";

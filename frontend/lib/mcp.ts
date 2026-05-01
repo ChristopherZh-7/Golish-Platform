@@ -8,7 +8,7 @@
  * in the background during app startup.
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/api/client";
 
 // =============================================================================
 // Type Definitions

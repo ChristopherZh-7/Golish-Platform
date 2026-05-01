@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/api/client";
 import { listen } from "@tauri-apps/api/event";
 import type React from "react";
 import { useEffect, useState } from "react";
@@ -13,7 +13,7 @@ import { notify } from "../../lib/notify";
 import { updateConfig as updatePentestConfig } from "../../lib/pentest/api";
 import { getSettings } from "../../lib/settings";
 import { initSystemNotifications, listenForSettingsUpdates } from "../../lib/systemNotifications";
-import { shellIntegrationInstall, shellIntegrationStatus } from "../../lib/tauri";
+import { shellIntegrationInstall, shellIntegrationStatus } from "@/lib/api/shell";
 import {
   getLastProjectName,
   loadWorkspaceState,

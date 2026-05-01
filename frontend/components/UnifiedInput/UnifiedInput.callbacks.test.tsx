@@ -33,8 +33,10 @@ vi.mock("@/lib/ai", async (importOriginal) => {
   };
 });
 
-vi.mock("@/lib/tauri", () => ({
+vi.mock("@/lib/api/pty", () => ({
   ptyWrite: vi.fn(() => Promise.resolve()),
+}));
+vi.mock("@/lib/api/files", () => ({
   readPrompt: vi.fn(() => Promise.resolve("prompt content")),
   readSkillBody: vi.fn(() => Promise.resolve("skill content")),
   readFileAsBase64: vi.fn(() => Promise.resolve("base64data")),

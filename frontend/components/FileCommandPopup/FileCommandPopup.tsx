@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { FileInfo } from "@/lib/tauri";
+import type { FileInfo } from "@/lib/api/files";
 import { cn } from "@/lib/utils";
 
 interface FileCommandPopupProps {

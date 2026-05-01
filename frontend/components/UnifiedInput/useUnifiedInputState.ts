@@ -8,13 +8,10 @@ import { type SlashCommand, useSlashCommands } from "@/hooks/useSlashCommands";
 import { notify } from "@/lib/notify";
 import { useTranslation } from "react-i18next";
 import { type CaretSettings, DEFAULT_CARET_SETTINGS, getSettings } from "@/lib/settings";
-import {
-  type FileInfo,
-  type PathCompletion,
-  ptyWrite,
-  imeGetSource,
-  imeSetSource,
-} from "@/lib/tauri";
+import type { FileInfo } from "@/lib/api/files";
+import type { PathCompletion } from "@/lib/api/shell";
+import { imeGetSource, imeSetSource } from "@/lib/api/shell";
+import { ptyWrite } from "@/lib/api/pty";
 import { useToolSearch } from "@/hooks/useToolSearch";
 import type { ToolConfig } from "@/lib/pentest/types";
 import { usePendingCommand, useStore } from "@/store";

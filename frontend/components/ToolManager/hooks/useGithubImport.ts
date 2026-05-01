@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/api/client";
 import type { ToolWithMeta } from "../OutputParserEditor";
 
 interface UseGithubImportOptions {

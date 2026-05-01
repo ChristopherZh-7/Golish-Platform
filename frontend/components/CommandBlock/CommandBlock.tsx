@@ -1,12 +1,12 @@
 import { ChevronDown, ChevronRight, Clock, Maximize2, Minimize2 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { Ansi } from "@/components/Ansi/Ansi";
 import { CopyButton } from "@/components/Markdown/CopyButton";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { stripOscSequences } from "@/lib/ansi";
 import { formatDurationLong } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import type { CommandBlock as CommandBlockType } from "@/store";
-import { StaticTerminalOutput } from "./StaticTerminalOutput";
 
 // Static style constants extracted to avoid recreation on each render
 const codeStyle = {
@@ -103,11 +103,12 @@ export function CommandBlock({ block, sessionId, onToggleCollapse, source }: Com
               !outputExpanded && "max-h-[120px]",
             )}
           >
-            <StaticTerminalOutput
-              output={cleanOutput}
-              sessionId={sessionId}
-              workingDirectory={block.workingDirectory}
-            />
+            <pre
+              className="ansi-output whitespace-pre-wrap break-words m-0 text-muted-foreground"
+              style={codeStyle}
+            >
+              <Ansi useClasses>{cleanOutput}</Ansi>
+            </pre>
             {!outputExpanded && cleanOutput.length > 200 && (
               <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-card to-transparent pointer-events-none" />
             )}

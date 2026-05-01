@@ -5,7 +5,7 @@
  * from the backend model registry.
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/api/client";
 import type { AiProvider, ModelCapabilities, OwnedModelDefinition } from "./generated";
 
 // Re-export generated types for convenience

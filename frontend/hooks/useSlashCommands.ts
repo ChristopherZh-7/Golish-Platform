@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { logger } from "@/lib/logger";
-import { listPrompts, listSkills, type PromptInfo, type SkillInfo } from "@/lib/tauri";
+import { listPrompts, type PromptInfo, listSkills, type SkillInfo } from "@/lib/api/files";
 
 export type SlashCommandType = "prompt" | "skill" | "builtin";
 

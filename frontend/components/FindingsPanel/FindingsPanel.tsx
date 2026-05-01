@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { findingsApi, type Finding, type Evidence, type FindingsStore } from "@/lib/findings";
 import { logAudit } from "@/lib/audit";
 import {
   AlertTriangle, Bug, Check, ChevronDown, ChevronRight, Download, ExternalLink,
@@ -14,39 +14,6 @@ import { getProjectPath } from "@/lib/projects";
 
 type Severity = "critical" | "high" | "medium" | "low" | "info";
 type FindingStatus = "open" | "confirmed" | "falsePositive" | "resolved";
-
-interface Evidence {
-  id: string;
-  filename: string;
-  mime_type: string;
-  caption: string;
-  added_at: number;
-}
-
-interface Finding {
-  id: string;
-  title: string;
-  severity: Severity;
-  cvss?: number;
-  url: string;
-  target: string;
-  targetId?: string;
-  description: string;
-  steps: string;
-  remediation: string;
-  tags: string[];
-  tool: string;
-  template: string;
-  references: string[];
-  evidence: Evidence[];
-  status: FindingStatus;
-  created_at: number;
-  updated_at: number;
-}
-
-interface FindingsStore {
-  findings: Finding[];
-}
 
 import { SEV_TEXT, SEV_BADGE, SEV_LABELS } from "@/lib/severity";
 
@@ -82,7 +49,7 @@ export function FindingsPanel() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const store = await invoke<FindingsStore>("findings_list", { projectPath: getProjectPath() });
+      const store = await findingsApi.list(getProjectPath());
       setFindings(store?.findings || []);
     } catch {
       setFindings([]);
@@ -120,41 +87,35 @@ export function FindingsPanel() {
 
   const handleAdd = useCallback(async () => {
     if (!addForm.title.trim()) return;
-    await invoke("findings_add", {
-      finding: {
-        id: "",
-        title: addForm.title,
-        severity: addForm.severity,
-        url: addForm.url,
-        description: addForm.description,
-        steps: "",
-        remediation: "",
-        tags: [],
-        tool: "",
-        template: "",
-        references: [],
-        status: "open",
-        created_at: 0,
-        updated_at: 0,
-      },
-      projectPath: getProjectPath(),
-    });
+    await findingsApi.add({
+      id: "",
+      title: addForm.title,
+      severity: addForm.severity,
+      url: addForm.url,
+      description: addForm.description,
+      steps: "",
+      remediation: "",
+      tags: [],
+      tool: "",
+      template: "",
+      references: [],
+      status: "open",
+      created_at: 0,
+      updated_at: 0,
+    }, getProjectPath());
     setAddForm({ title: "", severity: "medium", url: "", description: "" });
     setShowAdd(false);
     load();
   }, [addForm, load]);
 
   const handleDelete = useCallback(async (id: string) => {
-    await invoke("findings_delete", { id, projectPath: getProjectPath() });
+    await findingsApi.delete(id, getProjectPath());
     load();
     logAudit({ action: "finding_deleted", category: "findings", details: id, entityType: "finding", entityId: id });
   }, [load]);
 
   const handleStatusChange = useCallback(async (finding: Finding, status: FindingStatus) => {
-    await invoke("findings_update", {
-      finding: { ...finding, status },
-      projectPath: getProjectPath(),
-    });
+    await findingsApi.update({ ...finding, status }, getProjectPath());
     load();
     logAudit({ action: "finding_status_changed", category: "findings", details: `${finding.title} → ${status}`, entityType: "finding", entityId: finding.id });
   }, [load]);
@@ -169,14 +130,10 @@ export function FindingsPanel() {
       const reader = new FileReader();
       reader.onload = async () => {
         const base64 = (reader.result as string).split(",")[1];
-        await invoke("findings_add_evidence", {
-          findingId,
-          filename: file.name,
-          mimeType: file.type || "application/octet-stream",
-          caption: "",
-          dataBase64: base64,
-          projectPath: getProjectPath(),
-        });
+        await findingsApi.addEvidence(
+          findingId, file.name, file.type || "application/octet-stream",
+          "", base64, getProjectPath(),
+        );
         load();
       };
       reader.readAsDataURL(file);
@@ -185,11 +142,7 @@ export function FindingsPanel() {
   }, [load]);
 
   const handleRemoveEvidence = useCallback(async (findingId: string, evidenceId: string) => {
-    await invoke("findings_remove_evidence", {
-      findingId,
-      evidenceId,
-      projectPath: getProjectPath(),
-    });
+    await findingsApi.removeEvidence(findingId, evidenceId, getProjectPath());
     load();
   }, [load]);
 
@@ -199,11 +152,7 @@ export function FindingsPanel() {
     const key = `${findingId}/${ev.id}`;
     if (evidencePaths[key]) return;
     try {
-      const path = await invoke<string>("findings_evidence_path", {
-        findingId,
-        evidenceId: ev.id,
-        projectPath: getProjectPath(),
-      });
+      const path = await findingsApi.evidencePath(findingId, ev.id, getProjectPath());
       setEvidencePaths((prev) => ({ ...prev, [key]: convertFileSrc(path) }));
     } catch { /* ignore */ }
   }, [evidencePaths]);
@@ -243,7 +192,7 @@ export function FindingsPanel() {
 
   const handleDedup = useCallback(async () => {
     try {
-      const removed = await invoke<number>("findings_deduplicate", { projectPath: getProjectPath() });
+      const removed = await findingsApi.deduplicate(getProjectPath());
       if (removed > 0) {
         load();
       }

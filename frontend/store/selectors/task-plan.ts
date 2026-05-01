@@ -17,7 +17,7 @@ import { useStore } from "../index";
 
 /**
  * Combined task plan state returned by the selector.
- * Contains all the state needed by InlineTaskPlan and related components.
+ * Contains all the state needed by task plan components.
  */
 export interface TaskPlanState {
   plan: TaskPlan | null;

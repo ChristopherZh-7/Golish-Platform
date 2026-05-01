@@ -48,7 +48,6 @@ mod bridge_hitl;
 mod bridge_policy;
 mod bridge_session;
 pub mod codex_prompt;
-pub mod event_coordinator;
 pub mod llm_client;
 pub mod memory_file;
 pub mod memory_gatekeeper;
@@ -59,7 +58,11 @@ pub mod tool_definitions;
 pub mod tool_execution;
 pub mod tool_executors;
 pub mod tool_provider_impl;
-pub mod transcript;
+
+// Internal use of golish-events modules.
+// External consumers should depend on golish-events directly.
+pub(crate) use golish_events::event_coordinator;
+pub(crate) use golish_events::transcript;
 
 // Evaluation support (for eval framework)
 pub mod eval_support;
@@ -74,7 +77,7 @@ pub mod test_utils;
 
 // Public API types from this crate
 pub use agent_mode::AgentMode;
-pub use event_coordinator::{CoordinatorHandle, CoordinatorState, EventCoordinator};
+pub use golish_events::{CoordinatorHandle, CoordinatorState, EventCoordinator};
 pub use llm_client::SharedComponentsConfig;
 pub use prompt_registry::PromptContributorRegistry;
 pub use summarizer::{
@@ -90,7 +93,7 @@ pub use tool_execution::{
 };
 pub use tool_provider_impl::DefaultToolProvider;
 pub use agentic_loop::{OutputClassifier, PostShellHook};
-pub use transcript::{
+pub use golish_events::{
     build_summarizer_input, format_for_summarizer, read_transcript, save_summarizer_input,
     save_summary, transcript_path, TranscriptEvent, TranscriptWriter,
 };

@@ -476,3 +476,170 @@
   cursor: grabbing !important;
   user-select: none !important;
 }
+
+/* ── Milkdown WYSIWYG overrides for skill editor ── */
+.milkdown-skill-editor .milkdown {
+  --crepe-color-background: transparent;
+  --crepe-color-on-background: var(--foreground);
+  --crepe-color-surface: var(--background);
+  --crepe-color-surface-low: var(--muted);
+  --crepe-color-on-surface: var(--foreground);
+  --crepe-color-on-surface-variant: var(--muted-foreground);
+  --crepe-color-outline: var(--border-medium);
+  --crepe-color-primary: var(--accent);
+  --crepe-color-secondary: var(--secondary);
+  --crepe-color-on-secondary: var(--secondary-foreground);
+  --crepe-color-inverse: var(--foreground);
+  --crepe-color-on-inverse: var(--background);
+  --crepe-color-inline-code: var(--accent);
+  --crepe-color-error: var(--destructive);
+  --crepe-color-hover: var(--bg-hover);
+  --crepe-color-selected: var(--accent-dim);
+  --crepe-color-inline-area: var(--muted);
+  --crepe-font-default: var(--font-sans);
+  --crepe-font-code: var(--font-mono);
+  --crepe-font-title: var(--font-sans);
+  --crepe-shadow-1: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --crepe-shadow-2: 0 2px 8px rgba(0, 0, 0, 0.5);
+  border-radius: 8px;
+}
+
+.milkdown-skill-editor .milkdown .ProseMirror {
+  padding: 20px 24px;
+  min-height: 100%;
+}
+
+.milkdown-skill-editor .milkdown .ProseMirror h1 {
+  font-size: 22px;
+  line-height: 30px;
+  font-weight: 600;
+  margin-top: 20px;
+}
+
+.milkdown-skill-editor .milkdown .ProseMirror h2 {
+  font-size: 18px;
+  line-height: 26px;
+  font-weight: 600;
+  margin-top: 16px;
+}
+
+.milkdown-skill-editor .milkdown .ProseMirror h3 {
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  margin-top: 14px;
+}
+
+.milkdown-skill-editor .milkdown .ProseMirror h4,
+.milkdown-skill-editor .milkdown .ProseMirror h5,
+.milkdown-skill-editor .milkdown .ProseMirror h6 {
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 600;
+  margin-top: 12px;
+}
+
+.milkdown-skill-editor .milkdown .ProseMirror p {
+  font-size: 13px;
+  line-height: 20px;
+  padding: 2px 0;
+}
+
+.milkdown-skill-editor .milkdown .ProseMirror code {
+  font-size: 12px;
+}
+
+.milkdown-skill-editor .milkdown .ProseMirror blockquote {
+  padding-left: 20px;
+}
+
+/* Code block overrides */
+.milkdown-skill-editor .milkdown .milkdown-code-block {
+  border-radius: 8px;
+  border: 1px solid var(--border-medium);
+  padding: 6px 12px 12px;
+  margin: 8px 0;
+  background: var(--background);
+  overflow: visible;
+}
+
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor {
+  background: var(--background) !important;
+  font-size: 12px;
+}
+
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-scroller {
+  font-family: var(--font-mono);
+}
+
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-gutters {
+  background: var(--background);
+  border-right: 1px solid var(--border-subtle);
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-content {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-activeLine {
+  background: var(--accent-glow);
+}
+
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-activeLineGutter {
+  background: var(--accent-glow);
+}
+
+.milkdown-skill-editor .milkdown .milkdown-code-block .tools .language-button {
+  background: var(--muted);
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 2px 6px 2px 8px;
+  opacity: 0.6;
+}
+
+.milkdown-skill-editor .milkdown .milkdown-code-block .tools .tools-button-group button {
+  background: var(--muted);
+  font-size: 11px;
+  border-radius: 4px;
+}
+
+.milkdown-skill-editor .milkdown .milkdown-code-block .language-list {
+  height: 120px;
+}
+
+.milkdown-skill-editor .milkdown .milkdown-code-block.selected {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* Vibrant syntax highlighting (Notion-like) */
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-keyword { color: #c678dd; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-controlKeyword { color: #c678dd; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-moduleKeyword { color: #c678dd; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-string { color: #98c379; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-string2 { color: #98c379; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-comment { color: #7f848e; font-style: italic; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-lineComment { color: #7f848e; font-style: italic; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-blockComment { color: #7f848e; font-style: italic; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-number { color: #d19a66; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-bool { color: #d19a66; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-variableName { color: #e06c75; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-definition { color: #61afef; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-function { color: #61afef; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-typeName { color: #e5c07b; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-className { color: #e5c07b; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-propertyName { color: #61afef; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-operator { color: #56b6c2; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-punctuation { color: #abb2bf; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-atom { color: #d19a66; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-meta { color: #e5c07b; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-tag { color: #e06c75; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-attributeName { color: #d19a66; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-attributeValue { color: #98c379; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-qualifier { color: #e5c07b; }
+.milkdown-skill-editor .milkdown .milkdown-code-block .cm-editor .cm-special { color: #56b6c2; }
+

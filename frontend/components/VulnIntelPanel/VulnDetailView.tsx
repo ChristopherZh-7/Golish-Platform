@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/api";
 import {
   AlertTriangle, BookOpen, Bot, Code, History, Loader2, MessageSquare, Shield, X,
 } from "lucide-react";

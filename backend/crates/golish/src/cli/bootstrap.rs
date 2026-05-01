@@ -243,7 +243,6 @@ pub async fn initialize(args: &Args) -> Result<CliContext> {
         &settings,
         args,
         runtime.clone(),
-        pty_manager.clone(),
         indexer_state.clone(),
         sidecar_state.clone(),
     )
@@ -277,7 +276,6 @@ async fn initialize_agent(
     settings: &GolishSettings,
     args: &Args,
     runtime: Arc<dyn GolishRuntime>,
-    pty_manager: Arc<PtyManager>,
     indexer_state: Arc<IndexerState>,
     sidecar_state: Arc<SidecarState>,
 ) -> Result<(AgentBridge, Option<Arc<golish_mcp::McpManager>>)> {
@@ -433,7 +431,6 @@ async fn initialize_agent(
     };
 
     // Inject dependencies (same as init_ai_agent command in Tauri)
-    bridge.set_pty_manager(pty_manager);
     bridge.set_indexer_state(indexer_state);
     bridge.set_sidecar_state(sidecar_state);
 
@@ -503,38 +500,9 @@ async fn initialize_mcp_integration(
         tool_definitions.len()
     );
 
-    // Create executor closure that routes MCP tool calls through the manager.
-    // Only handles tool names with the "mcp__" prefix; returns None for all
-    // other tools so they fall through to the regular tool registry.
-    let manager_clone = Arc::clone(&manager);
-    let executor = Arc::new(move |name: &str, args: &serde_json::Value| {
-        let manager = Arc::clone(&manager_clone);
-        let name = name.to_string();
-        let args = args.clone();
-        Box::pin(async move {
-            if !name.starts_with("mcp__") {
-                return None;
-            }
-            match manager.call_tool(&name, args).await {
-                Ok(result) => {
-                    let (value, success) = golish_mcp::convert_mcp_result_to_tool_result(result);
-                    Some((value, success))
-                }
-                Err(e) => {
-                    tracing::error!("[mcp] Tool call failed for '{}': {}", name, e);
-                    let error_result = serde_json::json!({
-                        "error": e.to_string(),
-                    });
-                    Some((error_result, false))
-                }
-            }
-        })
-            as std::pin::Pin<
-                Box<dyn std::future::Future<Output = Option<(serde_json::Value, bool)>> + Send>,
-            >
-    });
+    let executor: Arc<dyn golish_ai::agentic_loop::McpToolExecutor> =
+        Arc::new(crate::ai::commands::McpManagerToolExecutor::new(Arc::clone(&manager)));
 
-    // Set tools and executor on the bridge
     bridge.set_mcp_tools(tool_definitions).await;
     bridge.set_mcp_executor(executor).await;
 

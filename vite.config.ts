@@ -36,8 +36,17 @@ export default defineConfig(async () => ({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./frontend"),
+      "@codemirror/state": path.resolve(__dirname, "node_modules/@codemirror/state"),
+      "@codemirror/view": path.resolve(__dirname, "node_modules/@codemirror/view"),
+      "@codemirror/language": path.resolve(__dirname, "node_modules/@codemirror/language"),
     },
-    dedupe: ["react", "react-dom"],
+    dedupe: [
+      "react",
+      "react-dom",
+      "@codemirror/state",
+      "@codemirror/view",
+      "@codemirror/language",
+    ],
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
@@ -67,43 +76,27 @@ export default defineConfig(async () => ({
   build: {
     rollupOptions: {
       output: {
-        manualChunks: {
-          // React core - rarely changes, caches well
-          "react-vendor": ["react", "react-dom", "react/jsx-runtime"],
-          // State management
-          state: ["zustand", "immer"],
-          // Terminal - xterm.js and addons
-          xterm: [
-            "@xterm/xterm",
-            "@xterm/addon-fit",
-            "@xterm/addon-webgl",
-            "@xterm/addon-web-links",
-            "@xterm/addon-serialize",
-          ],
-          // Markdown rendering - large (~170KB for syntax highlighter)
-          markdown: ["react-markdown", "react-syntax-highlighter", "remark-gfm"],
-          // Radix UI primitives - used across many components
-          radix: [
-            "@radix-ui/react-dialog",
-            "@radix-ui/react-dropdown-menu",
-            "@radix-ui/react-scroll-area",
-            "@radix-ui/react-tabs",
-            "@radix-ui/react-tooltip",
-            "@radix-ui/react-popover",
-            "@radix-ui/react-select",
-            "@radix-ui/react-switch",
-            "@radix-ui/react-checkbox",
-            "@radix-ui/react-slot",
-          ],
-          // CodeMirror - loaded on demand by FileEditorSidebar
-          // Note: Individual language packages are dynamically imported
-          codemirror: [
-            "@codemirror/state",
-            "@codemirror/view",
-            "@codemirror/commands",
-            "@codemirror/language",
-            "@codemirror/search",
-          ],
+        manualChunks(id: string) {
+          if (id.includes("node_modules")) {
+            if (id.includes("react-dom") || id.includes("react/jsx-runtime") || id.match(/\/react\//)) {
+              return "react-vendor";
+            }
+            if (id.includes("zustand") || id.includes("immer")) {
+              return "state";
+            }
+            if (id.includes("@xterm/")) {
+              return "xterm";
+            }
+            if (id.includes("react-markdown") || id.includes("react-syntax-highlighter") || id.includes("remark-gfm")) {
+              return "markdown";
+            }
+            if (id.includes("@radix-ui/")) {
+              return "radix";
+            }
+            if (id.includes("@codemirror/")) {
+              return "codemirror";
+            }
+          }
         },
       },
     },

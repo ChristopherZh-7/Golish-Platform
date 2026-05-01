@@ -12,9 +12,6 @@
 
 use anyhow::Result;
 use golish_llm_providers::LlmClient;
-use rig::completion::{AssistantContent, CompletionModel as _, CompletionRequest, Message};
-use rig::message::{Text, UserContent};
-use rig::one_or_many::OneOrMany;
 
 const GATEKEEPER_PROMPT: &str = r#"You are a binary classifier. Given a user message from a penetration testing assistant, decide whether the assistant should search its long-term memory database before responding.
 
@@ -61,87 +58,15 @@ pub async fn should_search_memory(client: &LlmClient, user_message: &str) -> boo
 }
 
 async fn classify(client: &LlmClient, user_message: &str) -> Result<bool> {
-    let user_msg = Message::User {
-        content: OneOrMany::one(UserContent::Text(Text {
-            text: user_message.to_string(),
-        })),
-    };
+    if matches!(client, LlmClient::Mock) {
+        return Ok(false);
+    }
 
-    let response = call_gatekeeper_model(client, user_msg).await?;
+    let response = client
+        .one_shot_completion(GATEKEEPER_PROMPT, user_message, Some(0.0f64), Some(8))
+        .await?;
     let trimmed = response.trim().to_uppercase();
-
     Ok(trimmed.starts_with("YES"))
-}
-
-fn extract_text(choice: &OneOrMany<AssistantContent>) -> String {
-    let mut text = String::new();
-    for content in choice.iter() {
-        if let AssistantContent::Text(t) = content {
-            text.push_str(&t.text);
-        }
-    }
-    text
-}
-
-async fn call_gatekeeper_model(client: &LlmClient, user_message: Message) -> Result<String> {
-    let request = CompletionRequest {
-        preamble: Some(GATEKEEPER_PROMPT.to_string()),
-        chat_history: OneOrMany::one(user_message.clone()),
-        documents: vec![],
-        tools: vec![],
-        temperature: Some(0.0),
-        max_tokens: Some(8),
-        tool_choice: None,
-        additional_params: None,
-        model: None,
-        output_schema: None,
-    };
-
-    macro_rules! complete_with_model {
-        ($model:expr) => {{
-            let response = $model.completion(request).await?;
-            Ok(extract_text(&response.choice))
-        }};
-    }
-
-    match client {
-        LlmClient::VertexAnthropic(model) => complete_with_model!(model),
-        LlmClient::RigOpenRouter(model) => complete_with_model!(model),
-        LlmClient::RigOpenAi(model) => complete_with_model!(model),
-        LlmClient::RigOpenAiResponses(model) => complete_with_model!(model),
-        LlmClient::OpenAiReasoning(model) => complete_with_model!(model),
-        LlmClient::RigAnthropic(model) => complete_with_model!(model),
-        LlmClient::RigOllama(model) => complete_with_model!(model),
-        LlmClient::RigGemini(model) => complete_with_model!(model),
-        LlmClient::RigGroq(model) => complete_with_model!(model),
-        LlmClient::RigXai(model) => complete_with_model!(model),
-        LlmClient::RigZaiSdk(model) => complete_with_model!(model),
-        LlmClient::RigNvidia(model) => {
-            let nvidia_history = vec![
-                Message::User {
-                    content: OneOrMany::one(UserContent::text(GATEKEEPER_PROMPT)),
-                },
-                user_message.clone(),
-            ];
-            let nvidia_request = CompletionRequest {
-                preamble: None,
-                chat_history: OneOrMany::many(nvidia_history)
-                    .expect("nvidia_history always has 2 elements"),
-                documents: vec![],
-                tools: vec![],
-                temperature: Some(0.0),
-                max_tokens: Some(8),
-                tool_choice: None,
-                additional_params: None,
-                model: None,
-                output_schema: None,
-            };
-            let response = model.completion(nvidia_request).await?;
-            Ok(extract_text(&response.choice))
-        }
-        LlmClient::VertexGemini(model) => complete_with_model!(model),
-        LlmClient::Mock => Ok("NO".to_string()),
-    }
 }
 
 #[cfg(test)]

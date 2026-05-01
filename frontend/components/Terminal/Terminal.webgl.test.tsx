@@ -91,7 +91,7 @@ vi.mock("@tauri-apps/plugin-shell", () => ({
   open: vi.fn(),
 }));
 
-vi.mock("../../lib/tauri", () => ({
+vi.mock("@/lib/api/pty", () => ({
   ptyWrite: vi.fn().mockResolvedValue(undefined),
   ptyResize: vi.fn().mockResolvedValue(undefined),
 }));

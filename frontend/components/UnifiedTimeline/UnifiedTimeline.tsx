@@ -167,7 +167,7 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
 
   // Terminal view shows only manually typed commands.
   // AI-driven content (tool executions, pipeline progress, sub-agents) is shown
-  // in the ToolDetailView or the right AI chat panel instead.
+  // in the right AI chat panel instead.
   const filteredTimeline = useMemo(() => {
     const aiCmdSet = new Set<string>();
     for (const block of sortedTimeline) {

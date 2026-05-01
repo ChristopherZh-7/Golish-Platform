@@ -107,8 +107,19 @@ generate-types:
     echo "Generating TypeScript types from Rust..."
     cd backend && cargo test export_bindings -q
     mkdir -p ../frontend/lib/generated
-    cp crates/golish-models/bindings/generated/*.ts ../frontend/lib/generated/
-    cp crates/golish-settings/bindings/generated/*.ts ../frontend/lib/generated/
+    cp crates/golish-models/bindings/generated/*.ts ../frontend/lib/generated/ 2>/dev/null || true
+    cp crates/golish-settings/bindings/generated/*.ts ../frontend/lib/generated/ 2>/dev/null || true
+    cp crates/golish-core/bindings/generated/*.ts ../frontend/lib/generated/ 2>/dev/null || true
+    # Generate barrel index
+    cd ../frontend/lib/generated
+    echo "// This file was auto-generated. Do not edit manually." > index.ts
+    echo "// Run \`just generate-types\` to regenerate." >> index.ts
+    echo "" >> index.ts
+    for f in *.ts; do
+      [ "$f" = "index.ts" ] && continue
+      name="${f%.ts}"
+      echo "export type { ${name} } from \"./${name}\";" >> index.ts
+    done
     echo "✓ Types generated in frontend/lib/generated/"
 
 # ============================================

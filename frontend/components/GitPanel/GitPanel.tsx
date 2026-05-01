@@ -1,21 +1,15 @@
 import {
   ArrowDown,
   ArrowUp,
-  ChevronDown,
-  ChevronRight,
-  File,
   FileDiff,
   GitBranch,
   GitCommitHorizontal,
   Loader2,
-  Minus,
-  Pencil,
-  Plus,
   RefreshCcw,
   Sparkles,
   X,
 } from "lucide-react";
-import { memo, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { GitDiffView } from "@/components/DiffView";
 import { Button } from "@/components/ui/button";
 import {
@@ -41,11 +35,13 @@ import {
   gitPush,
   gitStage,
   gitUnstage,
-  readTextFile,
-} from "@/lib/tauri";
+} from "@/lib/api/git";
+import { readTextFile } from "@/lib/api/files";
 import { cn } from "@/lib/utils";
 import { useFocusedSessionId, useStore } from "@/store";
 import { useGitPanelState } from "@/store/selectors";
+import { FileTreeItem, buildFileTree } from "./FileTreeItem";
+import { CollapsibleSection } from "./CollapsibleSection";
 
 interface GitPanelProps {
   open: boolean;
@@ -53,262 +49,7 @@ interface GitPanelProps {
   onOpenFile?: (path: string) => void;
 }
 
-interface TreeNode {
-  name: string;
-  path: string;
-  isDirectory: boolean;
-  children: TreeNode[];
-  change?: GitChange;
-}
-
 const SUMMARY_MAX_LENGTH = 72;
-
-function buildFileTree(changes: GitChange[]): TreeNode[] {
-  const root: TreeNode[] = [];
-
-  for (const change of changes) {
-    const parts = change.path.split("/");
-    let currentLevel = root;
-
-    for (let i = 0; i < parts.length; i++) {
-      const part = parts[i];
-      const isFile = i === parts.length - 1;
-      const pathSoFar = parts.slice(0, i + 1).join("/");
-
-      let existing = currentLevel.find((n) => n.name === part);
-
-      if (!existing) {
-        existing = {
-          name: part,
-          path: pathSoFar,
-          isDirectory: !isFile,
-          children: [],
-          change: isFile ? change : undefined,
-        };
-        currentLevel.push(existing);
-      }
-
-      if (!isFile) {
-        currentLevel = existing.children;
-      }
-    }
-  }
-
-  // Compact single-child directory chains: backend/crates/golish → one node
-  const compactNodes = (nodes: TreeNode[]): TreeNode[] => {
-    return nodes.map((node) => {
-      if (!node.isDirectory) return node;
-
-      // Recursively compact children first
-      let compacted = { ...node, children: compactNodes(node.children) };
-
-      // While this directory has exactly one child that is also a directory, merge them
-      while (compacted.children.length === 1 && compacted.children[0].isDirectory) {
-        const child = compacted.children[0];
-        compacted = {
-          ...compacted,
-          name: `${compacted.name}/${child.name}`,
-          path: child.path,
-          children: child.children,
-        };
-      }
-
-      return compacted;
-    });
-  };
-
-  // Sort: directories first, then alphabetically
-  const sortNodes = (nodes: TreeNode[]): TreeNode[] => {
-    return nodes
-      .map((node) => ({
-        ...node,
-        children: sortNodes(node.children),
-      }))
-      .sort((a, b) => {
-        if (a.isDirectory && !b.isDirectory) return -1;
-        if (!a.isDirectory && b.isDirectory) return 1;
-        return a.name.localeCompare(b.name);
-      });
-  };
-
-  return sortNodes(compactNodes(root));
-}
-
-function FileTreeItem({
-  node,
-  depth,
-  onStage,
-  onUnstage,
-  onDiff,
-  actionLabel,
-  isStaged,
-}: {
-  node: TreeNode;
-  depth: number;
-  onStage?: (path: string) => void;
-  onUnstage?: (path: string) => void;
-  onDiff?: (change: GitChange) => void;
-  actionLabel: string;
-  isStaged: boolean;
-}) {
-  const [expanded, setExpanded] = useState(true);
-
-  // Get the appropriate icon based on change type
-  const StatusIcon = useMemo(() => {
-    if (!node.change) return { icon: File, className: "text-muted-foreground" };
-    switch (node.change.kind) {
-      case "added":
-      case "untracked":
-        return { icon: Plus, className: "text-emerald-400" };
-      case "deleted":
-        return { icon: Minus, className: "text-red-400" };
-      case "modified":
-      case "renamed":
-        return { icon: Pencil, className: "text-amber-400" };
-      case "conflict":
-        return { icon: File, className: "text-pink-400" };
-      default:
-        return { icon: File, className: "text-muted-foreground" };
-    }
-  }, [node.change]);
-
-  if (node.isDirectory) {
-    return (
-      <div>
-        <button
-          type="button"
-          className="w-full flex items-center gap-1 py-0.5 px-1 rounded hover:bg-muted/40 cursor-pointer select-none text-left"
-          style={{ paddingLeft: `${depth * 20 + 8}px` }}
-          onClick={() => setExpanded(!expanded)}
-        >
-          {expanded ? (
-            <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-          ) : (
-            <ChevronRight className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-          )}
-          <span className="text-xs text-foreground truncate">{node.name}</span>
-        </button>
-        {expanded &&
-          node.children.map((child) => (
-            <FileTreeItem
-              key={child.path}
-              node={child}
-              depth={depth + 1}
-              onStage={onStage}
-              onUnstage={onUnstage}
-              onDiff={onDiff}
-              actionLabel={actionLabel}
-              isStaged={isStaged}
-            />
-          ))}
-      </div>
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      className="w-full group flex items-center gap-1 py-0.5 px-1 rounded hover:bg-muted/40 cursor-pointer text-left"
-      style={{ paddingLeft: `${depth * 20 + 8}px` }}
-      onClick={() => node.change && onDiff?.(node.change)}
-    >
-      <StatusIcon.icon className={cn("w-3.5 h-3.5 shrink-0", StatusIcon.className)} />
-      <span className="text-xs text-foreground truncate flex-1">{node.name}</span>
-      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-        {isStaged && onUnstage && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-5 w-5"
-            onClick={(e) => {
-              e.stopPropagation();
-              onUnstage(node.path);
-            }}
-          >
-            <X className="w-3 h-3" />
-          </Button>
-        )}
-        {!isStaged && onStage && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-5 w-5 text-emerald-400"
-            onClick={(e) => {
-              e.stopPropagation();
-              onStage(node.path);
-            }}
-          >
-            <GitCommitHorizontal className="w-3 h-3" />
-          </Button>
-        )}
-      </div>
-    </button>
-  );
-}
-
-function CollapsibleSection({
-  title,
-  count,
-  children,
-  emptyText,
-  headerAction,
-  headerActionLabel,
-  defaultCollapsed = false,
-}: {
-  title: string;
-  count: number;
-  children: ReactNode;
-  emptyText: string;
-  headerAction?: () => void;
-  headerActionLabel?: string;
-  defaultCollapsed?: boolean;
-}) {
-  const [collapsed, setCollapsed] = useState(defaultCollapsed);
-
-  return (
-    <div className="border-b border-border last:border-b-0">
-      <button
-        type="button"
-        className="w-full flex items-center justify-between px-2 py-1.5 hover:bg-muted/30 cursor-pointer select-none text-left"
-        onClick={() => setCollapsed(!collapsed)}
-      >
-        <div className="flex items-center gap-1.5">
-          {collapsed ? (
-            <ChevronRight className="w-3.5 h-3.5 text-muted-foreground" />
-          ) : (
-            <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />
-          )}
-          <span className="text-xs font-medium text-foreground">{title}</span>
-          <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded-full">
-            {count}
-          </span>
-        </div>
-        {headerAction && headerActionLabel && count > 0 && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-5 text-[10px] px-1.5"
-            onClick={(e) => {
-              e.stopPropagation();
-              headerAction();
-            }}
-          >
-            {headerActionLabel}
-          </Button>
-        )}
-      </button>
-      {!collapsed && (
-        <div className="pb-1">
-          {count === 0 ? (
-            <div className="text-[11px] text-muted-foreground px-3 py-2 italic">{emptyText}</div>
-          ) : (
-            children
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 export const GitPanel = memo(function GitPanel({ open, onOpenChange, onOpenFile }: GitPanelProps) {
   const activeSessionId = useStore((state) => state.activeSessionId);

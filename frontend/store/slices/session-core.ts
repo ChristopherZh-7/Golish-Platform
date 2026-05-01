@@ -14,13 +14,14 @@ import type {
   SessionMode,
   TabType,
 } from "../store-types";
+import type { SessionStoreDraft } from "./session-draft-types";
 import { deleteOutputBuffer, purgeSessionStateInDraft } from "./session-helpers";
 import type { ImmerSet, StateGet } from "./types";
 
-export function createSessionCoreActions(set: ImmerSet<any>, _get: StateGet<any>) {
+export function createSessionCoreActions(set: ImmerSet<SessionStoreDraft>, _get: StateGet<SessionStoreDraft>) {
   return {
     addSession: (session: Session, options?: { isPaneSession?: boolean }) =>
-      set((state: any) => {
+      set((state) => {
         const isPaneSession = options?.isPaneSession ?? false;
 
         state.sessions[session.id] = {
@@ -39,7 +40,7 @@ export function createSessionCoreActions(set: ImmerSet<any>, _get: StateGet<any>
           state.tabActivationHistory.push(session.id);
 
           if ((session.tabType ?? "terminal") === "terminal") {
-            import("@/lib/tauri").then(({ setActiveTerminalSession }) => {
+            import("@/lib/api/pty").then(({ setActiveTerminalSession }) => {
               setActiveTerminalSession(session.id).catch(() => {});
             });
           }
@@ -117,7 +118,7 @@ export function createSessionCoreActions(set: ImmerSet<any>, _get: StateGet<any>
         resetSessionSequence(sessionId);
       });
 
-      set((state: any) => {
+      set((state) => {
         purgeSessionStateInDraft(state, sessionId);
         if (state.tabLayouts) delete state.tabLayouts[sessionId];
 
@@ -141,7 +142,7 @@ export function createSessionCoreActions(set: ImmerSet<any>, _get: StateGet<any>
     },
 
     setActiveSession: (sessionId: string) =>
-      set((state: any) => {
+      set((state) => {
         state.activeSessionId = sessionId;
         state.tabHasNewActivity[sessionId] = false;
         const idx = state.tabActivationHistory.indexOf(sessionId);
@@ -151,7 +152,7 @@ export function createSessionCoreActions(set: ImmerSet<any>, _get: StateGet<any>
         state.tabActivationHistory.push(sessionId);
 
         if (state.conversationTerminals) {
-          for (const [convId, terminals] of Object.entries<any>(state.conversationTerminals)) {
+          for (const [convId, terminals] of Object.entries(state.conversationTerminals)) {
             if (terminals.includes(sessionId) && state.activeConversationId !== convId) {
               state.activeConversationId = convId;
               break;
@@ -161,7 +162,7 @@ export function createSessionCoreActions(set: ImmerSet<any>, _get: StateGet<any>
 
         const session = state.sessions[sessionId];
         if (session && (session.tabType ?? "terminal") === "terminal") {
-          import("@/lib/tauri").then(({ setActiveTerminalSession }) => {
+          import("@/lib/api/pty").then(({ setActiveTerminalSession }) => {
             setActiveTerminalSession(sessionId).catch(() => {});
           });
         }
@@ -170,70 +171,70 @@ export function createSessionCoreActions(set: ImmerSet<any>, _get: StateGet<any>
     // --- Property setters ---
 
     updateWorkingDirectory: (sessionId: string, path: string) =>
-      set((state: any) => {
+      set((state) => {
         if (state.sessions[sessionId]) {
           state.sessions[sessionId].workingDirectory = path;
         }
       }),
 
     updateVirtualEnv: (sessionId: string, name: string | null) =>
-      set((state: any) => {
+      set((state) => {
         if (state.sessions[sessionId]) {
           state.sessions[sessionId].virtualEnv = name;
         }
       }),
 
     updateGitBranch: (sessionId: string, branch: string | null) =>
-      set((state: any) => {
+      set((state) => {
         if (state.sessions[sessionId]) {
           state.sessions[sessionId].gitBranch = branch;
         }
       }),
 
     setSessionMode: (sessionId: string, mode: SessionMode) =>
-      set((state: any) => {
+      set((state) => {
         if (state.sessions[sessionId]) {
           state.sessions[sessionId].mode = mode;
         }
       }),
 
     setInputMode: (sessionId: string, mode: InputMode) =>
-      set((state: any) => {
+      set((state) => {
         if (state.sessions[sessionId]) {
           state.sessions[sessionId].inputMode = mode;
         }
       }),
 
     setAgentMode: (sessionId: string, mode: AgentMode) =>
-      set((state: any) => {
+      set((state) => {
         if (state.sessions[sessionId]) {
           state.sessions[sessionId].agentMode = mode;
         }
       }),
 
     setUseAgents: (sessionId: string, enabled: boolean) =>
-      set((state: any) => {
+      set((state) => {
         if (state.sessions[sessionId]) {
           state.sessions[sessionId].useAgents = enabled;
         }
       }),
 
     setExecutionMode: (sessionId: string, mode: ExecutionMode) =>
-      set((state: any) => {
+      set((state) => {
         if (state.sessions[sessionId]) {
           state.sessions[sessionId].executionMode = mode;
         }
       }),
 
     setCustomTabName: (sessionId: string, customName: string | null) =>
-      set((state: any) => {
+      set((state) => {
         if (state.sessions[sessionId]) {
           state.sessions[sessionId].customName = customName ?? undefined;
         }
       }),
 
     setProcessName: (sessionId: string, processName: string | null) =>
-      set((state: any) => {
+      set((state) => {
         if (state.sessions[sessionId]) {
           if (!state.sessions[sessionId].customName) {
             state.sessions[sessionId].processName = processName ?? undefined;
@@ -242,7 +243,7 @@ export function createSessionCoreActions(set: ImmerSet<any>, _get: StateGet<any>
       }),
 
     setRenderMode: (sessionId: string, mode: RenderMode) =>
-      set((state: any) => {
+      set((state) => {
         if (state.sessions[sessionId]) {
           logger.info("[store] setRenderMode:", {
             sessionId,
@@ -254,7 +255,7 @@ export function createSessionCoreActions(set: ImmerSet<any>, _get: StateGet<any>
       }),
 
     setDetailViewMode: (sessionId: string, mode: DetailViewMode) =>
-      set((state: any) => {
+      set((state) => {
         if (state.sessions[sessionId]) {
           state.sessions[sessionId].detailViewMode = mode;
           if (mode !== "tool-detail" && mode !== "sub-agent-detail") {
@@ -264,7 +265,7 @@ export function createSessionCoreActions(set: ImmerSet<any>, _get: StateGet<any>
       }),
 
     setToolDetailRequestIds: (sessionId: string, requestIds: string[] | null) =>
-      set((state: any) => {
+      set((state) => {
         if (state.sessions[sessionId]) {
           state.sessions[sessionId].toolDetailRequestIds = requestIds;
         }

@@ -26,7 +26,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/api";
 import { save, open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   CommandDialog,

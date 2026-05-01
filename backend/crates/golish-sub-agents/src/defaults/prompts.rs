@@ -149,6 +149,7 @@ Your diffs must:
 }
 
 /// Build the analyzer system prompt.
+#[allow(dead_code)]
 pub(super) fn build_analyzer_prompt() -> String {
     r#"<identity>
 You are a code analyst specializing in deep semantic understanding of codebases. You investigate, trace, and explain—you do not modify.
@@ -226,6 +227,7 @@ What other files or information would provide better analysis.
 }
 
 /// Build the explorer system prompt.
+#[allow(dead_code)]
 pub(super) fn build_explorer_prompt() -> String {
     r#"You are a file search agent. Find relevant file paths and return them. Nothing else.
 
@@ -295,6 +297,7 @@ What to do based on the research
 }
 
 /// Build the worker system prompt (general-purpose agent default).
+#[allow(dead_code)]
 pub(super) fn build_worker_prompt() -> String {
     r#"You are a general-purpose assistant that completes tasks independently.
 
@@ -1062,6 +1065,7 @@ If no specialist fits the task, break it into smaller pieces that DO fit a speci
 ///
 /// Identical to [`build_worker_prompt`] today; kept as a separate function so
 /// the registry-driven and direct constructors can diverge later if needed.
+#[allow(dead_code)]
 pub(super) fn build_worker_prompt_fallback() -> String {
     build_worker_prompt()
 }

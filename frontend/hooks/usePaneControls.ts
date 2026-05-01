@@ -4,7 +4,8 @@ import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
 import { countLeafPanes, findPaneById } from "@/lib/pane-utils";
 import { getSettings } from "@/lib/settings";
-import { getGitBranch, ptyCreate } from "@/lib/tauri";
+import { getGitBranch } from "@/lib/api/git";
+import { ptyCreate } from "@/lib/api/pty";
 import { type SplitDirection, useStore } from "@/store";
 
 export function usePaneControls(activeSessionId: string | null) {
@@ -106,7 +107,7 @@ export function usePaneControls(activeSessionId: string | null) {
       }
 
       try {
-        const { ptyDestroy } = await import("@/lib/tauri");
+        const { ptyDestroy } = await import("@/lib/api/pty");
         await ptyDestroy(sessionIdToClose);
       } catch {
         // PTY may already be destroyed

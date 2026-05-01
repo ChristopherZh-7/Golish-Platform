@@ -11,6 +11,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// Maximum number of steps allowed in a plan.
 pub const MAX_PLAN_STEPS: usize = 12;
@@ -19,8 +20,9 @@ pub const MAX_PLAN_STEPS: usize = 12;
 pub const MIN_PLAN_STEPS: usize = 1;
 
 /// Status of a plan step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "generated/")]
 pub enum StepStatus {
     /// Step has not been started yet.
     #[default]
@@ -48,7 +50,8 @@ impl std::fmt::Display for StepStatus {
 }
 
 /// A single step in the plan.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "generated/")]
 pub struct PlanStep {
     /// Stable unique identifier for this step (UUID).
     /// Persists across plan updates so tool executions remain linked.
@@ -61,7 +64,8 @@ pub struct PlanStep {
 }
 
 /// Summary statistics for a plan.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "generated/")]
 pub struct PlanSummary {
     /// Total number of steps.
     pub total: usize,

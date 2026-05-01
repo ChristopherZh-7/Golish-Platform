@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { formatDurationShort } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { invoke } from "@tauri-apps/api/core";
+import { securityApi } from "@/lib/security";
 import { listen } from "@tauri-apps/api/event";
 import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import { getProjectPath } from "@/lib/projects";
@@ -125,7 +125,7 @@ function NucleiSection({ targetId, targetUrl }: { targetId: string; targetUrl: s
   }, [targetId, targetUrl, projectPath, opts]);
 
   const handleCancel = useCallback(async () => {
-    try { await invoke("nuclei_cancel"); } catch { /* ignore */ }
+    try { await securityApi.nucleiCancel(); } catch { /* ignore */ }
     setMatching(false);
     setScanning(false);
   }, []);
@@ -441,9 +441,7 @@ export function ScanToolsPanel({ initialTarget }: { initialTarget?: { id: string
     setSelectedTarget(null);
     (async () => {
       try {
-        const data = await invoke<{ targets: TargetOption[] }>("target_list", {
-          projectPath: getProjectPath(),
-        });
+        const data = await securityApi.targetList(getProjectPath()) as unknown as { targets: TargetOption[] };
         if (cancelled) return;
         const scannable = (data?.targets ?? []).filter(
           (t) => t.type === "url" || t.type === "domain" || t.type === "ip",

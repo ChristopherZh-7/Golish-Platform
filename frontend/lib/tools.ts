@@ -176,8 +176,7 @@ export function isEditFileResult(result: unknown): result is { diff: string; pat
   );
 }
 
-/** Risk level for tool operations */
-export type RiskLevel = "low" | "medium" | "high" | "critical";
+export type { RiskLevel } from "./generated/RiskLevel";
 
 /** Read-only tools that pose minimal risk */
 const READ_ONLY_TOOLS = [

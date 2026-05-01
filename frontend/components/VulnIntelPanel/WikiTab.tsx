@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/api";
 import {
   BookOpen, ChevronDown, ChevronRight, FileText,
   Link2, Loader2, Plus, Search, X,
@@ -7,6 +7,7 @@ import {
 import { cn } from "@/lib/utils";
 import type { VulnLink } from "./types";
 import { Markdown } from "@/components/Markdown";
+import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { wikiApi, type WikiPageInfo, type WikiBacklinkInfo, type WikiTreeNode } from "@/lib/wiki";
 
 export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: string; onUpdateLink: (updater: (l: VulnLink) => VulnLink) => void }) {
@@ -665,11 +666,10 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
                   <Loader2 className="w-4 h-4 animate-spin text-muted-foreground/20" />
                 </div>
               ) : isEditing ? (
-                <textarea
+                <MarkdownEditor
+                  editorKey={editingPath || ""}
                   value={editContent}
-                  onChange={(e) => setEditContent(e.target.value)}
-                  className="w-full h-full min-h-[200px] p-2 rounded bg-[var(--bg-hover)]/30 border border-border/15 text-[10px] font-mono text-foreground/80 resize-y outline-none focus:border-accent/40"
-                  spellCheck={false}
+                  onChange={setEditContent}
                 />
               ) : selectedBody ? (
                 <div className={proseClasses}>

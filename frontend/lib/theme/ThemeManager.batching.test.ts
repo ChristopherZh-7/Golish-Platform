@@ -12,7 +12,7 @@ vi.mock("@/lib/logger", () => ({
   },
 }));
 
-vi.mock("../themes", () => ({
+vi.mock("./api", () => ({
   getThemeAssetPath: vi.fn().mockResolvedValue("/mock/path"),
 }));
 

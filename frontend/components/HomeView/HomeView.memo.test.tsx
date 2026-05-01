@@ -17,7 +17,7 @@ vi.mock("@/lib/projects", () => ({
   saveProject: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@/lib/tauri", () => ({
+vi.mock("@/lib/api/git", () => ({
   deleteWorktree: vi.fn().mockResolvedValue(undefined),
 }));
 

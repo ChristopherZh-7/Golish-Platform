@@ -8,7 +8,8 @@ import { ToolSearchPopup } from "@/components/ToolSearchPopup/ToolSearchPopup";
 import type { HistoryMatch } from "@/hooks/useHistorySearch";
 import type { SlashCommand } from "@/hooks/useSlashCommands";
 import type { ToolConfig } from "@/lib/pentest/types";
-import type { FileInfo, PathCompletion } from "@/lib/tauri";
+import type { FileInfo } from "@/lib/api/files";
+import type { PathCompletion } from "@/lib/api/shell";
 
 interface InputPopupsProps {
   containerRef: React.RefObject<HTMLDivElement | null>;
