@@ -12,6 +12,7 @@
 //! - Layer 4 (Application): golish (main crate)
 
 // Module declarations (will be populated in next steps)
+pub mod agent_mode;
 pub mod api_request_stats;
 pub mod events;
 pub mod message;
@@ -20,23 +21,29 @@ pub mod session;
 pub mod tool;
 pub mod tool_name;
 
+pub mod event_emitter;
 pub mod hitl;
 pub mod jsonl;
 pub mod os;
 pub mod paths;
+pub mod pentest_context;
 pub mod plan;
 pub mod prompt;
 pub mod ready_gate;
 pub mod utils;
 pub mod session_manager;
 pub mod skill_provider;
+pub mod vault;
 pub mod web_fetch;
 
 // Re-exports
+pub use agent_mode::AgentMode;
 pub use api_request_stats::{
     ApiRequestStats, ApiRequestStatsSnapshot, ProviderRequestStatsSnapshot,
 };
+pub use event_emitter::{emit_opt, EventEmitter, EventEmitterHandle, NullEmitter};
 pub use events::*; // Re-export all event types
+pub use pentest_context::PentestEngineContext;
 pub use hitl::{
     ApprovalDecision, ApprovalPattern, RiskLevel, ToolApprovalConfig,
     HITL_AUTO_APPROVE_MIN_APPROVALS, HITL_AUTO_APPROVE_THRESHOLD,

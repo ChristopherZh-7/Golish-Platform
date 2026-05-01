@@ -13,6 +13,7 @@
 
 mod envelope;
 mod event;
+mod event_dispatch;
 mod tool_source;
 
 pub use envelope::AiEventEnvelope;
