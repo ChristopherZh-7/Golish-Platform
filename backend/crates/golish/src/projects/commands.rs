@@ -3,13 +3,13 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::{
+use golish_projects::{
     delete_project as storage_delete, list_projects as storage_list, load_project as storage_load,
-    save_project as storage_save, ProjectConfig,
+    save_project as storage_save, ProjectConfig, PentestProjectConfig,
+    load_workspace, save_workspace,
 };
-use super::file_storage::{self, PentestProjectConfig};
-use super::storage::{load_workspace, save_workspace};
-use crate::state::AppState;
+use golish_projects::file_storage;
+use crate::state::DbState;
 
 /// Project form data from the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,7 +58,7 @@ pub async fn save_project(form: ProjectFormData) -> Result<(), String> {
 /// Delete a project configuration by name, including associated DB records.
 #[tauri::command]
 pub async fn delete_project_config(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     name: String,
 ) -> Result<bool, String> {
     let project_path = storage_load(&name)
@@ -68,7 +68,7 @@ pub async fn delete_project_config(
         .map(|c| c.root_path.to_string_lossy().to_string());
 
     if let Some(ref path) = project_path {
-        let pool = &*state.db_pool;
+        let pool = state.pool();
         let tables_with_project_path = [
             "memories",
             "audit_log",

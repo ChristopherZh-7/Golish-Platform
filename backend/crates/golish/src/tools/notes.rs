@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::state::AppState;
+use crate::state::DbState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Note {
@@ -27,12 +27,12 @@ fn to_note(n: golish_db::models::Note) -> Note {
 
 #[tauri::command]
 pub async fn notes_list(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     entity_type: Option<String>,
     entity_id: Option<String>,
     project_path: Option<String>,
 ) -> Result<Vec<Note>, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let rows = golish_db::repo::notes::list_filtered(
         pool,
         entity_type.as_deref(),
@@ -46,14 +46,14 @@ pub async fn notes_list(
 
 #[tauri::command]
 pub async fn notes_add(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     entity_type: String,
     entity_id: String,
     content: String,
     color: Option<String>,
     project_path: Option<String>,
 ) -> Result<String, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let c = color.unwrap_or_else(|| "yellow".to_string());
     let note = golish_db::repo::notes::create(
         pool,
@@ -70,14 +70,14 @@ pub async fn notes_add(
 
 #[tauri::command]
 pub async fn notes_update(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     id: String,
     content: String,
     color: Option<String>,
     project_path: Option<String>,
 ) -> Result<(), String> {
     let _ = project_path;
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let uid: uuid::Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let c = color.unwrap_or_else(|| "yellow".to_string());
     golish_db::repo::notes::update(pool, uid, &content, &c)
@@ -87,12 +87,12 @@ pub async fn notes_update(
 
 #[tauri::command]
 pub async fn notes_delete(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     id: String,
     project_path: Option<String>,
 ) -> Result<(), String> {
     let _ = project_path;
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let uid: uuid::Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
     golish_db::repo::notes::delete(pool, uid)
         .await

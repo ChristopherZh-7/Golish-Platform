@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
-use crate::state::AppState;
+use crate::state::DbState;
 
 use super::{is_text_searchable, wiki_base_dir};
 
@@ -100,13 +100,13 @@ pub struct WikiSearchResultDb {
 
 #[tauri::command]
 pub async fn wiki_search_db(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     query: String,
     category: Option<String>,
     tag: Option<String>,
     limit: Option<i64>,
 ) -> Result<Vec<WikiSearchResultDb>, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let max = limit.unwrap_or(20);
 
     let pages = if let Some(cat) = category {
@@ -141,9 +141,9 @@ pub async fn wiki_search_db(
 
 #[tauri::command]
 pub async fn wiki_stats(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
 ) -> Result<serde_json::Value, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let count = golish_db::repo::wiki_kb::count_pages(pool)
         .await
         .map_err(|e| e.to_string())?;

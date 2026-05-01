@@ -139,7 +139,8 @@ find backend/crates/golish-ai/src -name "*.rs" | wc -l
 
 ### A2. 拆分 `AppState` god-object(17 字段)
 
-#### A2-1 - [ ] 把 `AppState` 拆成 7 个独立 manage<T>
+#### A2-1 - [x] 把 `AppState` 拆成 7 个独立 manage<T>
+> ✅ Done 2026-05-02: 创建 6 个子状态类型（DbState/PtyState/SidecarManaged/McpManaged/TelemetryState/PentestToolState）；27 个命令文件从 `tauri::State<'_, AppState>` 迁移到窄类型（DbState + Arc<SettingsManager> + Arc<ConfigManager>）；`grep "tauri::State<'_, AppState>"` 输出 0 行；AppState 保留为过渡 facade + 内部代码使用；`cargo check --workspace` 0 errors
 
 **检查命令**:
 ```bash
@@ -296,7 +297,8 @@ ls backend/crates/golish-pentest-domain 2>/dev/null && echo "EXISTS" || echo "NO
 
 ---
 
-#### B1-2 - [ ] `golish-vuln-intel` 同样拆分
+#### B1-2 - [x] `golish-vuln-intel` 同样拆分
+> ✅ Done 2026-05-02: `golish-vuln-intel-domain` crate 已创建，含 types(VulnFeed/VulnEntry/default_feeds/nvd_recent_url) + VulnIntelRepo trait；workspace 注册完成；`cargo check` 0 errors；零 I/O 依赖
 
 参考 B1-1,优先级稍低。
 

@@ -2,16 +2,16 @@
 
 use uuid::Uuid;
 
-use crate::state::AppState;
+use crate::state::DbState;
 
 use super::types::{detect_type, Target, TargetRow, TargetStatus, TargetStore, TargetType, Scope};
 
 #[tauri::command]
 pub async fn target_list(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     project_path: Option<String>,
 ) -> Result<TargetStore, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
 
     let pp = project_path.as_deref().filter(|s| !s.is_empty());
     let rows = sqlx::query_as::<_, TargetRow>(
@@ -34,7 +34,7 @@ pub async fn target_list(
 
 #[tauri::command]
 pub async fn target_add(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     name: String,
     value: String,
     target_type: Option<TargetType>,
@@ -45,7 +45,7 @@ pub async fn target_add(
     source: Option<String>,
     parent_id: Option<String>,
 ) -> Result<Target, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let tt = target_type.unwrap_or_else(|| detect_type(&value));
     let sc = scope.unwrap_or(Scope::InScope);
     let tags_json = serde_json::to_value(tags.unwrap_or_default()).unwrap_or_default();
@@ -80,11 +80,11 @@ pub async fn target_add(
 
 #[tauri::command]
 pub async fn target_batch_add(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     values: String,
     project_path: Option<String>,
 ) -> Result<Vec<Target>, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
 
     let existing: Vec<String> = sqlx::query_scalar(
         "SELECT value FROM targets WHERE project_path = $1",
@@ -126,7 +126,7 @@ pub async fn target_batch_add(
 
 #[tauri::command]
 pub async fn target_update(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     id: String,
     name: Option<String>,
     scope: Option<Scope>,
@@ -136,7 +136,7 @@ pub async fn target_update(
     ports: Option<Vec<serde_json::Value>>,
     project_path: Option<String>,
 ) -> Result<Target, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
@@ -208,11 +208,11 @@ pub async fn target_update(
 
 #[tauri::command]
 pub async fn target_delete(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     id: String,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
     sqlx::query("DELETE FROM targets WHERE id=$1")
@@ -225,10 +225,10 @@ pub async fn target_delete(
 
 #[tauri::command]
 pub async fn target_clear_all(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     sqlx::query("DELETE FROM targets WHERE project_path = $1")
         .bind(project_path.as_deref())
         .execute(pool)
@@ -239,12 +239,12 @@ pub async fn target_clear_all(
 
 #[tauri::command]
 pub async fn target_update_status(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     id: String,
     status: TargetStatus,
     project_path: Option<String>,
 ) -> Result<Target, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
 

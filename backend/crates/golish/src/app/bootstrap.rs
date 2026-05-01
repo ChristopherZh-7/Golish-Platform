@@ -146,8 +146,6 @@ pub(crate) fn init_telemetry_and_app_state() -> (Option<TelemetryGuard>, AppStat
         )
         .await;
 
-        // Apply proxy settings as environment variables so all HTTP clients
-        // (including rig-core's internal reqwest) automatically use them.
         {
             let settings = app_state.settings_manager.get().await;
             golish_settings::apply_proxy_env(&settings);

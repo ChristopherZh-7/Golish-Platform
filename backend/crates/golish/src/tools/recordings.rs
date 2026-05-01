@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::state::AppState;
+use crate::state::DbState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordingMeta {
@@ -82,11 +82,11 @@ impl From<RecordingRow> for Recording {
 
 #[tauri::command]
 pub async fn recording_save(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     recording: Recording,
     _project_path: Option<String>,
 ) -> Result<String, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let events_json = serde_json::to_value(&recording.events).map_err(|e| e.to_string())?;
 
     sqlx::query(
@@ -119,11 +119,11 @@ pub async fn recording_save(
 
 #[tauri::command]
 pub async fn recording_load(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     id: String,
     _project_path: Option<String>,
 ) -> Result<Recording, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let row: RecordingRow = sqlx::query_as(
         "SELECT id, title, session_id, width, height, duration_ms, event_count, events, created_at \
          FROM recordings WHERE id = $1",
@@ -139,10 +139,10 @@ pub async fn recording_load(
 
 #[tauri::command]
 pub async fn recording_list(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     _project_path: Option<String>,
 ) -> Result<Vec<RecordingMeta>, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let rows: Vec<MetaRow> = sqlx::query_as(
         "SELECT id, title, session_id, width, height, duration_ms, event_count, created_at \
          FROM recordings ORDER BY created_at DESC",
@@ -156,11 +156,11 @@ pub async fn recording_list(
 
 #[tauri::command]
 pub async fn recording_delete(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     id: String,
     _project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     sqlx::query("DELETE FROM recordings WHERE id = $1")
         .bind(&id)
         .execute(pool)
