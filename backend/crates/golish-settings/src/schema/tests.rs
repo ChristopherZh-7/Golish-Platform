@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn test_default_settings() {
     let settings = GolishSettings::default();
-    assert_eq!(settings.version, 1);
+    assert_eq!(settings.schema_version, SCHEMA_VERSION);
     assert_eq!(settings.ai.default_provider, AiProvider::VertexAi);
     assert_eq!(settings.ai.default_model, "claude-opus-4-5@20251101");
     assert_eq!(settings.ui.theme, Theme::Dark);
@@ -30,7 +30,7 @@ fn test_parse_minimal_toml() {
 fn test_serialize_settings() {
     let settings = GolishSettings::default();
     let toml_str = toml::to_string_pretty(&settings).unwrap();
-    assert!(toml_str.contains("version = 1"));
+    assert!(toml_str.contains("schema_version = 1"));
     assert!(toml_str.contains("[ai]"));
 }
 
