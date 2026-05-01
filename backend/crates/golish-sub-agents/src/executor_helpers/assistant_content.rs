@@ -4,10 +4,6 @@
 use rig::completion::{AssistantContent, Message};
 use rig::message::{Reasoning, Text, ToolCall, UserContent};
 
-use super::chain::deserialize_chat_history;
-
-
-
 /// Build assistant content for chat history with proper ordering.
 ///
 /// When thinking is enabled, thinking blocks MUST come first (required by Anthropic API).
@@ -68,51 +64,6 @@ pub(crate) fn agent_id_to_db_type(agent_id: &str) -> &'static str {
         "adviser" | "analyzer" => "adviser",
         _ => "primary",
     }
-}
-
-/// Restore an existing conversation chain from DB, or create a new one.
-/// Returns (chain_id, restored_messages) where restored_messages is empty for new chains.
-pub(crate) async fn restore_or_create_chain(
-    pool: &sqlx::PgPool,
-    session_id: uuid::Uuid,
-    task_id: Option<uuid::Uuid>,
-    agent_id: &str,
-) -> anyhow::Result<(uuid::Uuid, Vec<Message>)> {
-    let agent_type = agent_id_to_db_type(agent_id);
-
-    // Look for existing chain for this agent + session + task
-    let existing: Option<(uuid::Uuid, Option<serde_json::Value>)> = sqlx::query_as(
-        r#"SELECT id, chain FROM message_chains
-           WHERE session_id = $1 AND agent::text = $2
-             AND ($3::uuid IS NULL AND task_id IS NULL OR task_id = $3)
-           ORDER BY updated_at DESC LIMIT 1"#,
-    )
-    .bind(session_id)
-    .bind(agent_type)
-    .bind(task_id)
-    .fetch_optional(pool)
-    .await?;
-
-    if let Some((chain_id, chain_data)) = existing {
-        let messages = chain_data
-            .and_then(|v| deserialize_chat_history(&v))
-            .unwrap_or_default();
-        return Ok((chain_id, messages));
-    }
-
-    // Create new chain
-    let (chain_id,): (uuid::Uuid,) = sqlx::query_as(
-        r#"INSERT INTO message_chains (session_id, task_id, agent)
-           VALUES ($1, $2, $3::agent_type)
-           RETURNING id"#,
-    )
-    .bind(session_id)
-    .bind(task_id)
-    .bind(agent_type)
-    .fetch_one(pool)
-    .await?;
-
-    Ok((chain_id, Vec::new()))
 }
 
 /// Serialize rig Message history to JSON for DB storage.

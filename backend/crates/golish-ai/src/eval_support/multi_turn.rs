@@ -146,6 +146,7 @@ where
             tool_config: &tool_config,
             graph_backend: None,
             sidecar_state: None,
+            chain_persistence: None,
             plan_manager: &plan_manager,
             api_request_stats: &api_request_stats,
             additional_tool_definitions: vec![],

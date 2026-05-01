@@ -39,30 +39,26 @@ pub async fn execute_memory_tool(
                 .unwrap_or(10)
                 .min(50) as i64;
 
-            match tracker.search_memories_by_text(&query, category.as_deref(), limit).await {
-                Ok(memories) => {
-                    let results: Vec<serde_json::Value> = memories
-                        .iter()
-                        .map(|m| {
-                            json!({
-                                "content": m.content,
-                                "mem_type": m.mem_type,
-                                "metadata": m.metadata,
-                                "created_at": m.created_at.to_rfc3339(),
-                            })
-                        })
-                        .collect();
-                    Some((
-                        json!({
-                            "memories": results,
-                            "count": results.len(),
-                            "query": query,
-                        }),
-                        true,
-                    ))
-                }
-                Err(e) => Some(error_result(format!("Memory search failed: {}", e))),
-            }
+            let memories = tracker.search_memories_by_text(&query, category.as_deref(), limit).await;
+            let results: Vec<serde_json::Value> = memories
+                .iter()
+                .map(|m| {
+                    json!({
+                        "content": m.content,
+                        "mem_type": m.mem_type,
+                        "metadata": m.metadata,
+                        "created_at": m.created_at.to_rfc3339(),
+                    })
+                })
+                .collect();
+            Some((
+                json!({
+                    "memories": results,
+                    "count": results.len(),
+                    "query": query,
+                }),
+                true,
+            ))
         }
         "store_memory" => {
             let content = match args.get("content").and_then(|v| v.as_str()) {
@@ -120,32 +116,27 @@ pub async fn execute_memory_tool(
                 .unwrap_or(20)
                 .min(100) as i64;
 
-            match tracker.list_recent_memories(category.as_deref(), limit).await {
-                Ok(memories) => {
-                    let results: Vec<serde_json::Value> = memories
-                        .iter()
-                        .map(|m| {
-                            json!({
-                                "content": m.content,
-                                "mem_type": m.mem_type,
-                                "metadata": m.metadata,
-                                "created_at": m.created_at.to_rfc3339(),
-                            })
-                        })
-                        .collect();
-                    Some((
-                        json!({
-                            "memories": results,
-                            "count": results.len(),
-                        }),
-                        true,
-                    ))
-                }
-                Err(e) => Some(error_result(format!("Failed to list memories: {}", e))),
-            }
+            let memories = tracker.list_recent_memories(category.as_deref(), limit).await;
+            let results: Vec<serde_json::Value> = memories
+                .iter()
+                .map(|m| {
+                    json!({
+                        "content": m.content,
+                        "mem_type": m.mem_type,
+                        "metadata": m.metadata,
+                        "created_at": m.created_at.to_rfc3339(),
+                    })
+                })
+                .collect();
+            Some((
+                json!({
+                    "memories": results,
+                    "count": results.len(),
+                }),
+                true,
+            ))
         }
 
-        // --- Code Vector Store (PentAGI multi-store pattern) ---
         "search_code" => {
             let query = match extract_string_param(args, &["query", "search_query", "q"]) {
                 Some(q) if !q.is_empty() => q,
@@ -156,20 +147,16 @@ pub async fn execute_memory_tool(
             let lang = args.get("language").and_then(|v| v.as_str()).map(String::from);
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(5).min(20) as i64;
 
-            match tracker.search_memories_by_doc_type(&query, "code", lang.as_deref(), limit).await {
-                Ok(memories) => {
-                    let results: Vec<serde_json::Value> = memories.iter().map(|m| {
-                        json!({
-                            "content": m.content,
-                            "language": m.metadata.as_ref().and_then(|md| md.get("language")),
-                            "metadata": m.metadata,
-                            "created_at": m.created_at.to_rfc3339(),
-                        })
-                    }).collect();
-                    Some((json!({ "code_samples": results, "count": results.len(), "query": query }), true))
-                }
-                Err(e) => Some(error_result(format!("Code search failed: {}", e))),
-            }
+            let memories = tracker.search_memories_by_doc_type(&query, "code", lang.as_deref(), limit).await;
+            let results: Vec<serde_json::Value> = memories.iter().map(|m| {
+                json!({
+                    "content": m.content,
+                    "language": m.metadata.as_ref().and_then(|md| md.get("language")),
+                    "metadata": m.metadata,
+                    "created_at": m.created_at.to_rfc3339(),
+                })
+            }).collect();
+            Some((json!({ "code_samples": results, "count": results.len(), "query": query }), true))
         }
         "save_code" => {
             let content = match args.get("content").and_then(|v| v.as_str()) {
@@ -187,7 +174,6 @@ pub async fn execute_memory_tool(
             Some((json!({ "success": true, "message": "Code sample stored", "language": language }), true))
         }
 
-        // --- Guide Vector Store (PentAGI multi-store pattern) ---
         "search_guide" => {
             let query = match extract_string_param(args, &["query", "search_query", "q"]) {
                 Some(q) if !q.is_empty() => q,
@@ -198,20 +184,16 @@ pub async fn execute_memory_tool(
             let guide_type = args.get("type").and_then(|v| v.as_str()).map(String::from);
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(5).min(20) as i64;
 
-            match tracker.search_memories_by_doc_type(&query, "guide", guide_type.as_deref(), limit).await {
-                Ok(memories) => {
-                    let results: Vec<serde_json::Value> = memories.iter().map(|m| {
-                        json!({
-                            "content": m.content,
-                            "guide_type": m.metadata.as_ref().and_then(|md| md.get("guide_type")),
-                            "metadata": m.metadata,
-                            "created_at": m.created_at.to_rfc3339(),
-                        })
-                    }).collect();
-                    Some((json!({ "guides": results, "count": results.len(), "query": query }), true))
-                }
-                Err(e) => Some(error_result(format!("Guide search failed: {}", e))),
-            }
+            let memories = tracker.search_memories_by_doc_type(&query, "guide", guide_type.as_deref(), limit).await;
+            let results: Vec<serde_json::Value> = memories.iter().map(|m| {
+                json!({
+                    "content": m.content,
+                    "guide_type": m.metadata.as_ref().and_then(|md| md.get("guide_type")),
+                    "metadata": m.metadata,
+                    "created_at": m.created_at.to_rfc3339(),
+                })
+            }).collect();
+            Some((json!({ "guides": results, "count": results.len(), "query": query }), true))
         }
         "save_guide" => {
             let content = match args.get("content").and_then(|v| v.as_str()) {

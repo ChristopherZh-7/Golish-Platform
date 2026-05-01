@@ -1,6 +1,6 @@
-//! Thin shim that mirrors the `golish_db::repo::*` function signatures but
-//! delegates to the [`DbRepoProvider`] trait. This minimizes caller changes —
-//! files only need to update their imports and swap `pool` for `repo`.
+//! Thin shim that delegates to the [`DbRepoProvider`] trait. Provides a
+//! familiar module-per-domain API (`tasks::create`, `subtasks::list_by_task`,
+//! etc.) while keeping callers decoupled from any concrete DB crate.
 
 use crate::db_traits::*;
 use uuid::Uuid;

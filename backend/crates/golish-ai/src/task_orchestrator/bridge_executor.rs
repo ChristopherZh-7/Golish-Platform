@@ -102,7 +102,6 @@ impl BridgeAgentExecutor {
             crate::tool_provider_impl::DefaultToolProvider::with_db_tracker(
                 self.bridge.services.db_tracker.as_ref(),
             );
-        let db_pool_arc = self.bridge.db_pool();
 
         let sub_ctx = SubAgentExecutorContext {
             event_tx: &event_tx,
@@ -117,7 +116,7 @@ impl BridgeAgentExecutor {
             temperature_override: agent_def.temperature,
             max_tokens_override: agent_def.max_tokens,
             top_p_override: agent_def.top_p,
-            db_pool: db_pool_arc.as_ref(),
+            chain_persistence: self.bridge.services.chain_persistence.as_ref(),
             sub_agent_registry: Some(self.bridge.sub_agent_registry()),
             post_shell_hook: self.bridge.post_shell_hook.clone(),
         };

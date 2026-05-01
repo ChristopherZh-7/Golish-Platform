@@ -2307,7 +2307,7 @@ async fn test_sub_agent_context_inheritance() {
         temperature_override: None,
         max_tokens_override: None,
         top_p_override: None,
-        db_pool: None,
+        chain_persistence: None,
         sub_agent_registry: None,
         post_shell_hook: None,
     };
@@ -2413,7 +2413,7 @@ async fn test_sub_agent_result_propagation() {
         temperature_override: None,
         max_tokens_override: None,
         top_p_override: None,
-        db_pool: None,
+        chain_persistence: None,
         sub_agent_registry: None,
         post_shell_hook: None,
     };
@@ -2481,7 +2481,7 @@ async fn test_sub_agent_events_emitted() {
         temperature_override: None,
         max_tokens_override: None,
         top_p_override: None,
-        db_pool: None,
+        chain_persistence: None,
         sub_agent_registry: None,
         post_shell_hook: None,
     };
@@ -2587,7 +2587,7 @@ async fn test_sub_agent_error_handling() {
         temperature_override: None,
         max_tokens_override: None,
         top_p_override: None,
-        db_pool: None,
+        chain_persistence: None,
         sub_agent_registry: None,
         post_shell_hook: None,
     };
@@ -2672,7 +2672,7 @@ async fn test_sub_agent_tool_restrictions() {
         temperature_override: None,
         max_tokens_override: None,
         top_p_override: None,
-        db_pool: None,
+        chain_persistence: None,
         sub_agent_registry: None,
         post_shell_hook: None,
     };
@@ -2766,7 +2766,7 @@ async fn test_sub_agent_timeout_behavior() {
         temperature_override: None,
         max_tokens_override: None,
         top_p_override: None,
-        db_pool: None,
+        chain_persistence: None,
         sub_agent_registry: None,
         post_shell_hook: None,
     };

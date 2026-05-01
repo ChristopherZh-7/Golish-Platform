@@ -4,7 +4,9 @@ pub mod commands;
 pub mod db_bridge;
 pub mod embedder_bridge;
 pub mod graph_bridge;
+pub mod session_bridge;
 pub mod sidecar_bridge;
+pub mod tracking_bridge;
 
 // Re-export all golish-ai types and modules
 pub use golish_ai::*;

@@ -133,7 +133,7 @@ impl DbRepoProvider for GolishDbRepoProvider {
         source: &str, risk_level: &str,
     ) -> anyhow::Result<serde_json::Value> {
         let result = golish_db::repo::api_endpoints::insert(
-            &self.pool, target_id, project_path.unwrap_or(""), url, method, path,
+            &self.pool, target_id, project_path, url, method, path,
             params, raw_data, auth_type, source, risk_level,
         ).await?;
         Ok(serde_json::to_value(result)?)
@@ -141,10 +141,10 @@ impl DbRepoProvider for GolishDbRepoProvider {
 
     async fn js_analysis_insert(
         &self, target_id: Uuid, project_path: &str, url: &str,
-        filename: &str, analysis: &serde_json::Value,
+        filename: &str, _analysis: &serde_json::Value,
     ) -> anyhow::Result<serde_json::Value> {
         let result = golish_db::repo::js_analysis::insert(
-            &self.pool, target_id, project_path, url, filename,
+            &self.pool, target_id, Some(project_path), url, filename,
             None, None,
             &json!([]), &json!([]), &json!([]), &json!([]),
             &json!([]), false, "", &json!({}),
@@ -162,21 +162,21 @@ impl DbRepoProvider for GolishDbRepoProvider {
         name: &str, version: Option<&str>, confidence: f64,
         raw_data: Option<&serde_json::Value>,
     ) -> anyhow::Result<bool> {
-        let result = golish_db::repo::fingerprints::upsert(
-            &self.pool, target_id, project_path, category, name,
+        let _result = golish_db::repo::fingerprints::upsert(
+            &self.pool, target_id, Some(project_path), category, name,
             version, confidence as f32, raw_data.unwrap_or(&json!({})),
             None, "",
         ).await?;
-        Ok(result)
+        Ok(true)
     }
 
     async fn passive_scans_insert(
         &self, target_id: Uuid, project_path: &str, scan_type: &str,
-        tool_name: &str, findings: &serde_json::Value,
+        tool_name: &str, _findings: &serde_json::Value,
         raw_output: Option<&str>, severity: &str,
     ) -> anyhow::Result<serde_json::Value> {
         let result = golish_db::repo::passive_scans::insert(
-            &self.pool, target_id, project_path,
+            &self.pool, target_id, Some(project_path),
             scan_type, "", "", "", "", raw_output.unwrap_or(""),
             severity, tool_name, "ai", "", &json!({}),
         ).await?;
@@ -305,11 +305,11 @@ impl DbRepoProvider for GolishDbRepoProvider {
     // -- Message Chains --
     async fn message_chain_create(
         &self, session_id: Uuid, task_id: Option<Uuid>, subtask_id: Option<Uuid>,
-        agent_type: AgentType, parent_chain_id: Option<Uuid>, model: Option<&str>,
+        agent_type: AgentType, _parent_chain_id: Option<Uuid>, model: Option<&str>,
     ) -> anyhow::Result<MessageChainView> {
         let chain = golish_db::repo::message_chains::create(
             &self.pool, session_id, task_id, subtask_id,
-            convert_agent_type_back(agent_type), parent_chain_id, model,
+            convert_agent_type_back(agent_type), None, model,
         ).await?;
         Ok(MessageChainView { id: chain.id })
     }
@@ -419,6 +419,7 @@ fn convert_agent_type(a: golish_db::models::AgentType) -> AgentType {
         golish_db::models::AgentType::Reflector => AgentType::Reflector,
         golish_db::models::AgentType::Enricher => AgentType::Enricher,
         golish_db::models::AgentType::Installer => AgentType::Installer,
+        _ => AgentType::Primary,
     }
 }
 
