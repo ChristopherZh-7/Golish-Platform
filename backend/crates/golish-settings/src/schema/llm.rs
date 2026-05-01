@@ -3,13 +3,15 @@
 //! Ollama, Gemini, Groq, xAI, Z.AI SDK, and NVIDIA NIM.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use super::defaults::*;
 
 
 /// Vertex AI (Anthropic on Google Cloud) settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct VertexAiSettings {
     /// Path to service account JSON credentials
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -29,8 +31,9 @@ pub struct VertexAiSettings {
 }
 
 /// Vertex AI Gemini (native Google Gemini on Vertex AI) settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct VertexGeminiSettings {
     /// Path to service account JSON credentials
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,8 +57,9 @@ pub struct VertexGeminiSettings {
 }
 
 /// OpenRouter API settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct OpenRouterSettings {
     /// OpenRouter API key (supports $ENV_VAR syntax)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -90,8 +94,9 @@ fn provider_preferences_is_empty(prefs: &Option<OpenRouterProviderPreferences>) 
 /// <https://openrouter.ai/docs/guides/routing/provider-selection>
 ///
 /// All fields are optional. Only non-None fields are sent to the API.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct OpenRouterProviderPreferences {
     /// Provider priority ordering. Try these providers first, in order.
     /// Example: ["deepinfra", "deepseek"]
@@ -192,8 +197,9 @@ impl OpenRouterProviderPreferences {
 }
 
 /// Direct Anthropic API settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct AnthropicSettings {
     /// Anthropic API key (supports $ENV_VAR syntax)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -205,8 +211,9 @@ pub struct AnthropicSettings {
 }
 
 /// OpenAI API settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct OpenAiSettings {
     /// OpenAI API key (supports $ENV_VAR syntax)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -237,8 +244,9 @@ pub struct OpenAiSettings {
 }
 
 /// Ollama local LLM settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct OllamaSettings {
     /// Ollama server URL
     pub base_url: String,
@@ -249,8 +257,9 @@ pub struct OllamaSettings {
 }
 
 /// Gemini API settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct GeminiSettings {
     /// Gemini API key (supports $ENV_VAR syntax)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -266,8 +275,9 @@ pub struct GeminiSettings {
 }
 
 /// Groq API settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct GroqSettings {
     /// Groq API key (supports $ENV_VAR syntax)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -279,8 +289,9 @@ pub struct GroqSettings {
 }
 
 /// xAI (Grok) API settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct XaiSettings {
     /// xAI API key (supports $ENV_VAR syntax)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -296,8 +307,9 @@ pub struct XaiSettings {
 /// Uses the native Z.AI API via the rig-zai-sdk crate.
 /// Default endpoint: https://api.z.ai/api/paas/v4
 /// Coding endpoint: https://api.z.ai/api/coding/paas/v4 (for GLM Coding Plan)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct ZaiSdkSettings {
     /// Z.AI API key (supports $ENV_VAR syntax)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -320,8 +332,9 @@ pub struct ZaiSdkSettings {
 /// NVIDIA NIM API settings.
 ///
 /// Uses the OpenAI-compatible API at https://integrate.api.nvidia.com/v1
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct NvidiaSettings {
     /// NVIDIA API key (supports $ENV_VAR syntax)
     #[serde(skip_serializing_if = "Option::is_none")]

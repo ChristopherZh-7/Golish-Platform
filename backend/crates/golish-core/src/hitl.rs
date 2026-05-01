@@ -141,7 +141,8 @@ impl ApprovalPattern {
 }
 
 /// User's decision on an approval request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "generated/")]
 pub struct ApprovalDecision {
     /// The request ID this decision is for
     pub request_id: String,
@@ -156,7 +157,8 @@ pub struct ApprovalDecision {
 }
 
 /// Configuration for tool approval behavior.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "generated/")]
 pub struct ToolApprovalConfig {
     /// Tools that are always allowed without approval
     pub always_allow: Vec<String>,

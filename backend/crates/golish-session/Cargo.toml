@@ -16,6 +16,7 @@ tracing = { workspace = true }
 dirs = { workspace = true }
 uuid = { workspace = true }
 async-trait = { workspace = true }
+ts-rs = { workspace = true }
 
 [dev-dependencies]
 serial_test = { workspace = true }
