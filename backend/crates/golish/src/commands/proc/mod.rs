@@ -8,11 +8,11 @@
 //!
 //! All public items are re-exported at the parent [`crate::commands`] level.
 
-mod command_index;
-mod git;
-mod history;
+pub mod command_index;
+pub mod git;
+pub mod history;
 mod pty;
-mod shell;
+pub mod shell;
 
 pub use command_index::*;
 pub use git::*;

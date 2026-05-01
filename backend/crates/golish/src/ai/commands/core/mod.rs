@@ -1,9 +1,9 @@
 //! AI commands grouped by domain.
 
-mod chat;
-mod lifecycle;
-mod session;
-mod tools;
+pub mod chat;
+pub mod lifecycle;
+pub mod session;
+pub mod tools;
 
 pub use chat::*;
 pub use lifecycle::*;

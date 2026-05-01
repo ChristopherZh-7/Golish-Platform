@@ -19,11 +19,11 @@
 //! `indexer::commands::*` so `tauri::generate_handler!` continues to find
 //! every `#[tauri::command]` by its bare name.
 
-mod codebases;
-mod core;
-mod hidden_dirs;
-mod home_view;
-mod worktrees;
+pub mod codebases;
+pub mod core;
+pub mod hidden_dirs;
+pub mod home_view;
+pub mod worktrees;
 
 // Re-export every public surface so the glob `use indexer::commands::*;`
 // in lib.rs (used by the giant `tauri::generate_handler!` block) resolves
