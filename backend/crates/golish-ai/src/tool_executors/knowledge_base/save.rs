@@ -325,7 +325,7 @@ pub(super) async fn handle_save_poc(
             Ok(poc) => (
                 json!({
                     "success": true,
-                    "poc_id": poc.id.to_string(),
+                    "poc_id": poc.get("id").and_then(|v| v.as_str()).unwrap_or(""),
                     "source": source,
                     "severity": severity,
                     "message": format!("PoC '{}' saved for {} (source: {}, severity: {})", name, cve_id, source, severity),
