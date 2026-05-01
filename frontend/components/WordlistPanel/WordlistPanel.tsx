@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@/lib/api";
+import { wordlist } from "@/lib/api";
+import type { WordlistMeta } from "@/lib/api/wordlist";
 import { logAudit } from "@/lib/audit";
 import {
   BookText,
@@ -15,18 +16,6 @@ import {
 import { copyToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 import { CustomSelect } from "@/components/ui/custom-select";
-
-interface WordlistMeta {
-  id: string;
-  name: string;
-  category: string;
-  description: string;
-  line_count: number;
-  file_size: number;
-  filename: string;
-  tags: string[];
-  created_at: number;
-}
 
 const CATEGORIES = [
   "passwords", "directories", "subdomains", "usernames",
@@ -68,7 +57,7 @@ export function WordlistPanel() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await invoke<WordlistMeta[]>("wordlist_list");
+      const list = await wordlist.listWordlists();
       setWordlists(Array.isArray(list) ? list : []);
     } catch {
       setWordlists([]);
@@ -91,7 +80,7 @@ export function WordlistPanel() {
       reader.onload = async () => {
         const b64 = (reader.result as string).split(",")[1];
         try {
-          await invoke("wordlist_import", {
+          await wordlist.importWordlist({
             name: importForm.name.trim(),
             category: importForm.category,
             description: importForm.description,
@@ -114,14 +103,14 @@ export function WordlistPanel() {
 
   const handleDelete = useCallback(async (id: string) => {
     try {
-      await invoke("wordlist_delete", { id });
+      await wordlist.deleteWordlist(id);
       load();
     } catch { /* ignore */ }
   }, [load]);
 
   const handleDedup = useCallback(async (id: string) => {
     try {
-      const updated = await invoke<WordlistMeta>("wordlist_deduplicate", { id });
+      const updated = await wordlist.deduplicateWordlist(id);
       setWordlists((prev) => prev.map((w) => (w.id === id ? updated : w)));
     } catch (e) {
       console.error("Dedup failed:", e);
@@ -134,7 +123,7 @@ export function WordlistPanel() {
       return;
     }
     try {
-      const lines = await invoke<string[]>("wordlist_preview", { id, lines: 30 });
+      const lines = await wordlist.previewWordlist(id, 30);
       setPreviewLines(lines);
       setPreviewId(id);
     } catch { /* ignore */ }
@@ -142,7 +131,7 @@ export function WordlistPanel() {
 
   const handleCopyPath = useCallback(async (id: string) => {
     try {
-      const path = await invoke<string>("wordlist_path", { id });
+      const path = await wordlist.getWordlistPath(id);
       await copyToClipboard(path);
     } catch { /* ignore */ }
   }, []);
@@ -151,7 +140,7 @@ export function WordlistPanel() {
     if (mergeIds.size < 2 || !mergeName.trim()) return;
     setMerging(true);
     try {
-      await invoke("wordlist_merge", {
+      await wordlist.mergeWordlists({
         ids: Array.from(mergeIds),
         newName: mergeName.trim(),
         deduplicate: true,
