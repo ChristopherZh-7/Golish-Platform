@@ -120,6 +120,5 @@ export const createAppearanceSlice: SliceCreator<AppearanceSlice> = (set) => ({
 });
 
 // Selectors
-export const selectDisplaySettings = <T extends AppearanceState>(
-  state: T,
-): DisplaySettings => state.displaySettings;
+export const selectDisplaySettings = <T extends AppearanceState>(state: T): DisplaySettings =>
+  state.displaySettings;

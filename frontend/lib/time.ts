@@ -34,7 +34,7 @@ export type RelativeTimeFallback = "days" | "localeDate";
 
 export function formatRelativeTime(
   ts: string | number | undefined,
-  fallback: RelativeTimeFallback = "days",
+  fallback: RelativeTimeFallback = "days"
 ): string | null {
   if (ts == null) return null;
   const d = typeof ts === "string" ? new Date(ts) : new Date(ts);

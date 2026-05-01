@@ -1,10 +1,4 @@
-import {
-  Bot,
-  CheckCircle,
-  Loader2,
-  Maximize2,
-  XCircle,
-} from "lucide-react";
+import { Bot, CheckCircle, Loader2, Maximize2, XCircle } from "lucide-react";
 import { memo } from "react";
 import { StreamingOutput } from "@/components/StreamingOutput";
 import { TruncatedOutput } from "@/components/TruncatedOutput";
@@ -27,7 +21,6 @@ interface ToolItemProps {
   /** Callback when user clicks "View Details" button */
   onViewDetails?: (tool: AnyToolCall) => void;
 }
-
 
 /** Status configuration for badges and icons */
 const statusConfig: Record<

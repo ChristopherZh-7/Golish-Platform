@@ -1,5 +1,3 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@/lib/api";
 import { listen } from "@tauri-apps/api/event";
 import {
   Activity,
@@ -17,13 +15,15 @@ import {
   Terminal,
   Wrench,
 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { triggerAutoRecon } from "@/lib/ai";
+import { invoke } from "@/lib/api";
+import { logger } from "@/lib/logger";
+import type { Target as PentestTarget } from "@/lib/pentest/types";
+import { getProjectPath } from "@/lib/projects";
 import { formatDurationLong } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { triggerAutoRecon } from "@/lib/ai";
-import { logger } from "@/lib/logger";
 import { useStore } from "@/store";
-import { getProjectPath } from "@/lib/projects";
-import { type Target as PentestTarget } from "@/lib/pentest/types";
 
 declare global {
   interface Window {
@@ -44,10 +44,16 @@ interface TargetStore {
 /* ── Activity types ────────────────────────────────────────────────── */
 
 type ItemKind =
-  | "tool_start" | "tool_done" | "tool_error"
-  | "agent_thinking" | "agent_done"
-  | "sub_agent_start" | "sub_agent_done"
-  | "pipeline_start" | "pipeline_done" | "pipeline_error"
+  | "tool_start"
+  | "tool_done"
+  | "tool_error"
+  | "agent_thinking"
+  | "agent_done"
+  | "sub_agent_start"
+  | "sub_agent_done"
+  | "pipeline_start"
+  | "pipeline_done"
+  | "pipeline_error"
   | "info";
 
 interface ActivityItem {
@@ -69,9 +75,7 @@ interface StepGroup {
   children: ActivityItem[];
 }
 
-type FeedEntry =
-  | { type: "item"; data: ActivityItem }
-  | { type: "step"; data: StepGroup };
+type FeedEntry = { type: "item"; data: ActivityItem } | { type: "step"; data: StepGroup };
 
 interface PipelineProgress {
   status: "running" | "completed" | "failed";
@@ -125,22 +129,37 @@ function friendly(raw: string): string {
 const fmtDur = (ms: number) => formatDurationLong(ms) || "0ms";
 
 function fmtTime(ts: number): string {
-  return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return new Date(ts).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 function itemIcon(kind: ItemKind) {
   switch (kind) {
-    case "tool_start": return <Wrench className="w-3 h-3 text-blue-400 animate-pulse" />;
-    case "tool_done": return <CheckCircle2 className="w-3 h-3 text-green-400/70" />;
-    case "tool_error": return <AlertTriangle className="w-3 h-3 text-red-400" />;
-    case "agent_thinking": return <Bot className="w-3 h-3 text-purple-400 animate-pulse" />;
-    case "agent_done": return <Bot className="w-3 h-3 text-green-400/70" />;
-    case "sub_agent_start": return <Bot className="w-3 h-3 text-cyan-400 animate-pulse" />;
-    case "sub_agent_done": return <Bot className="w-3 h-3 text-cyan-300/70" />;
-    case "pipeline_start": return <Play className="w-3 h-3 text-blue-400" />;
-    case "pipeline_done": return <CheckCircle2 className="w-3 h-3 text-green-400" />;
-    case "pipeline_error": return <AlertTriangle className="w-3 h-3 text-red-400" />;
-    case "info": return <Activity className="w-3 h-3 text-muted-foreground/40" />;
+    case "tool_start":
+      return <Wrench className="w-3 h-3 text-blue-400 animate-pulse" />;
+    case "tool_done":
+      return <CheckCircle2 className="w-3 h-3 text-green-400/70" />;
+    case "tool_error":
+      return <AlertTriangle className="w-3 h-3 text-red-400" />;
+    case "agent_thinking":
+      return <Bot className="w-3 h-3 text-purple-400 animate-pulse" />;
+    case "agent_done":
+      return <Bot className="w-3 h-3 text-green-400/70" />;
+    case "sub_agent_start":
+      return <Bot className="w-3 h-3 text-cyan-400 animate-pulse" />;
+    case "sub_agent_done":
+      return <Bot className="w-3 h-3 text-cyan-300/70" />;
+    case "pipeline_start":
+      return <Play className="w-3 h-3 text-blue-400" />;
+    case "pipeline_done":
+      return <CheckCircle2 className="w-3 h-3 text-green-400" />;
+    case "pipeline_error":
+      return <AlertTriangle className="w-3 h-3 text-red-400" />;
+    case "info":
+      return <Activity className="w-3 h-3 text-muted-foreground/40" />;
   }
 }
 
@@ -177,18 +196,22 @@ function PipelineProgressBar({ progress }: { progress: PipelineProgress }) {
 
           return (
             <div key={name} className="flex flex-col items-center gap-1 flex-1 min-w-0">
-              <div className={cn(
-                "w-full h-1.5 rounded-full transition-all duration-500",
-                isDone && "bg-green-400/50",
-                isCurrent && "bg-blue-400/60 animate-pulse",
-                !isDone && !isCurrent && "bg-muted-foreground/10",
-              )} />
-              <span className={cn(
-                "text-[9px] font-medium truncate max-w-full",
-                isDone && "text-green-400/60",
-                isCurrent && "text-blue-300",
-                !isDone && !isCurrent && "text-muted-foreground/30",
-              )}>
+              <div
+                className={cn(
+                  "w-full h-1.5 rounded-full transition-all duration-500",
+                  isDone && "bg-green-400/50",
+                  isCurrent && "bg-blue-400/60 animate-pulse",
+                  !isDone && !isCurrent && "bg-muted-foreground/10"
+                )}
+              />
+              <span
+                className={cn(
+                  "text-[9px] font-medium truncate max-w-full",
+                  isDone && "text-green-400/60",
+                  isCurrent && "text-blue-300",
+                  !isDone && !isCurrent && "text-muted-foreground/30"
+                )}
+              >
                 {friendly(name)}
               </span>
             </div>
@@ -202,13 +225,16 @@ function PipelineProgressBar({ progress }: { progress: PipelineProgress }) {
 /* ── Render components ─────────────────────────────────────────────── */
 
 function ItemRow({ item, indent = false }: { item: ActivityItem; indent?: boolean }) {
-  const active = item.kind === "tool_start" || item.kind === "agent_thinking" || item.kind === "sub_agent_start";
+  const active =
+    item.kind === "tool_start" || item.kind === "agent_thinking" || item.kind === "sub_agent_start";
   return (
-    <div className={cn(
-      "flex items-start gap-2 py-1 px-3 transition-colors",
-      indent && "pl-8",
-      active && "bg-blue-500/[0.03]",
-    )}>
+    <div
+      className={cn(
+        "flex items-start gap-2 py-1 px-3 transition-colors",
+        indent && "pl-8",
+        active && "bg-blue-500/[0.03]"
+      )}
+    >
       <div className="mt-0.5 flex-shrink-0">{itemIcon(item.kind)}</div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
@@ -235,7 +261,15 @@ function ItemRow({ item, indent = false }: { item: ActivityItem; indent?: boolea
   );
 }
 
-function StepRow({ step, defaultOpen, dynamicDesc }: { step: StepGroup; defaultOpen: boolean; dynamicDesc?: string }) {
+function StepRow({
+  step,
+  defaultOpen,
+  dynamicDesc,
+}: {
+  step: StepGroup;
+  defaultOpen: boolean;
+  dynamicDesc?: string;
+}) {
   const [open, setOpen] = useState(defaultOpen);
   const { status, stepName, children, output, durationMs, startTs } = step;
   const desc = dynamicDesc || STEP_DESCRIPTIONS[stepName];
@@ -251,24 +285,28 @@ function StepRow({ step, defaultOpen, dynamicDesc }: { step: StepGroup; defaultO
         className={cn(
           "w-full flex items-start gap-2 py-2 px-3 text-left transition-colors",
           hasExpandable && "hover:bg-muted/10",
-          status === "running" && "bg-blue-500/[0.04]",
+          status === "running" && "bg-blue-500/[0.04]"
         )}
       >
         <div className="mt-0.5 flex-shrink-0">
-          {status === "pending" && <div className="w-3.5 h-3.5 rounded-full border border-muted-foreground/15" />}
+          {status === "pending" && (
+            <div className="w-3.5 h-3.5 rounded-full border border-muted-foreground/15" />
+          )}
           {status === "running" && <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin" />}
           {status === "completed" && <CheckCircle2 className="w-3.5 h-3.5 text-green-400" />}
           {status === "failed" && <AlertTriangle className="w-3.5 h-3.5 text-red-400" />}
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className={cn(
-              "text-xs font-medium truncate",
-              status === "pending" && "text-muted-foreground/30",
-              status === "running" && "text-blue-300",
-              status === "completed" && "text-foreground/60",
-              status === "failed" && "text-red-300",
-            )}>
+            <span
+              className={cn(
+                "text-xs font-medium truncate",
+                status === "pending" && "text-muted-foreground/30",
+                status === "running" && "text-blue-300",
+                status === "completed" && "text-foreground/60",
+                status === "failed" && "text-red-300"
+              )}
+            >
               {friendly(stepName)}
             </span>
             {hasChildren && (
@@ -296,14 +334,15 @@ function StepRow({ step, defaultOpen, dynamicDesc }: { step: StepGroup; defaultO
           )}
         </div>
         <div className="flex items-center gap-1.5 mt-0.5 flex-shrink-0">
-          {!isPending && <span className="text-[9px] text-muted-foreground/15">{fmtTime(startTs)}</span>}
-          {hasExpandable && (
-            open ? (
+          {!isPending && (
+            <span className="text-[9px] text-muted-foreground/15">{fmtTime(startTs)}</span>
+          )}
+          {hasExpandable &&
+            (open ? (
               <ChevronDown className="w-3 h-3 text-muted-foreground/25" />
             ) : (
               <ChevronRight className="w-3 h-3 text-muted-foreground/25" />
-            )
-          )}
+            ))}
         </div>
       </button>
       {open && hasChildren && (
@@ -326,7 +365,16 @@ function StepRow({ step, defaultOpen, dynamicDesc }: { step: StepGroup; defaultO
 
 const MAX_ENTRIES = 200;
 
-const RECON_STEPS = ["initialize", "tool_check", "tool_install", "dns_lookup", "http_probe", "port_scan", "tech_fingerprint", "summarize"];
+const RECON_STEPS = [
+  "initialize",
+  "tool_check",
+  "tool_install",
+  "dns_lookup",
+  "http_probe",
+  "port_scan",
+  "tech_fingerprint",
+  "summarize",
+];
 
 export function ProjectOverview({ sessionId }: { sessionId: string }) {
   const projectName = useStore((s) => s.currentProjectName);
@@ -343,83 +391,102 @@ export function ProjectOverview({ sessionId }: { sessionId: string }) {
 
   const nextId = useCallback(() => `e-${++seqRef.current}`, []);
 
-  const pushItem = useCallback((item: Omit<ActivityItem, "id">) => {
-    const id = nextId();
-    const entry: ActivityItem = { ...item, id };
-
-    setFeed((prev) => {
-      const activeStepId = activeStepRef.current;
-      if (activeStepId) {
-        return prev.map((e) => {
-          if (e.type === "step" && e.data.id === activeStepId) {
-            return { ...e, data: { ...e.data, children: [...e.data.children, entry] } };
-          }
-          return e;
-        });
-      }
-      const next = [...prev, { type: "item" as const, data: entry }];
-      return next.length > MAX_ENTRIES ? next.slice(-MAX_ENTRIES) : next;
-    });
-  }, [nextId]);
-
-  const pushStep = useCallback((stepName: string, stepIndex: number, totalSteps: number) => {
-    setFeed((prev) => {
-      // Find existing pending step and activate it
-      const idx = prev.findIndex(
-        (e) => e.type === "step" && e.data.stepName === stepName && e.data.status === "pending",
-      );
-      if (idx >= 0) {
-        const entry = prev[idx] as { type: "step"; data: StepGroup };
-        activeStepRef.current = entry.data.id;
-        const updated = [...prev];
-        updated[idx] = { type: "step", data: { ...entry.data, status: "running", startTs: Date.now() } };
-        return updated;
-      }
-      // Fallback: create new step if not pre-populated
+  const pushItem = useCallback(
+    (item: Omit<ActivityItem, "id">) => {
       const id = nextId();
-      activeStepRef.current = id;
-      const step: StepGroup = { id, stepName, status: "running", startTs: Date.now(), children: [] };
-      const next = [...prev, { type: "step" as const, data: step }];
-      return next.length > MAX_ENTRIES ? next.slice(-MAX_ENTRIES) : next;
-    });
+      const entry: ActivityItem = { ...item, id };
 
-    setProgress((prev) => {
-      const stepNames = prev?.stepNames ?? RECON_STEPS.slice(0, totalSteps);
-      return {
-        status: "running",
-        totalSteps,
-        completedSteps: stepIndex,
-        currentStepIndex: stepIndex,
-        currentStepName: stepName,
-        stepNames,
-      };
-    });
-  }, [nextId]);
+      setFeed((prev) => {
+        const activeStepId = activeStepRef.current;
+        if (activeStepId) {
+          return prev.map((e) => {
+            if (e.type === "step" && e.data.id === activeStepId) {
+              return { ...e, data: { ...e.data, children: [...e.data.children, entry] } };
+            }
+            return e;
+          });
+        }
+        const next = [...prev, { type: "item" as const, data: entry }];
+        return next.length > MAX_ENTRIES ? next.slice(-MAX_ENTRIES) : next;
+      });
+    },
+    [nextId]
+  );
+
+  const pushStep = useCallback(
+    (stepName: string, stepIndex: number, totalSteps: number) => {
+      setFeed((prev) => {
+        // Find existing pending step and activate it
+        const idx = prev.findIndex(
+          (e) => e.type === "step" && e.data.stepName === stepName && e.data.status === "pending"
+        );
+        if (idx >= 0) {
+          const entry = prev[idx] as { type: "step"; data: StepGroup };
+          activeStepRef.current = entry.data.id;
+          const updated = [...prev];
+          updated[idx] = {
+            type: "step",
+            data: { ...entry.data, status: "running", startTs: Date.now() },
+          };
+          return updated;
+        }
+        // Fallback: create new step if not pre-populated
+        const id = nextId();
+        activeStepRef.current = id;
+        const step: StepGroup = {
+          id,
+          stepName,
+          status: "running",
+          startTs: Date.now(),
+          children: [],
+        };
+        const next = [...prev, { type: "step" as const, data: step }];
+        return next.length > MAX_ENTRIES ? next.slice(-MAX_ENTRIES) : next;
+      });
+
+      setProgress((prev) => {
+        const stepNames = prev?.stepNames ?? RECON_STEPS.slice(0, totalSteps);
+        return {
+          status: "running",
+          totalSteps,
+          completedSteps: stepIndex,
+          currentStepIndex: stepIndex,
+          currentStepName: stepName,
+          stepNames,
+        };
+      });
+    },
+    [nextId]
+  );
 
   const completeStep = useCallback((stepName: string, output?: string, durationMs?: number) => {
     activeStepRef.current = null;
-    setFeed((prev) => prev.map((e) => {
-      if (e.type === "step" && e.data.stepName === stepName && e.data.status === "running") {
-        return { ...e, data: { ...e.data, status: "completed", output, durationMs } };
-      }
-      return e;
-    }));
-    setProgress((prev) => prev ? { ...prev, completedSteps: prev.completedSteps + 1 } : prev);
+    setFeed((prev) =>
+      prev.map((e) => {
+        if (e.type === "step" && e.data.stepName === stepName && e.data.status === "running") {
+          return { ...e, data: { ...e.data, status: "completed", output, durationMs } };
+        }
+        return e;
+      })
+    );
+    setProgress((prev) => (prev ? { ...prev, completedSteps: prev.completedSteps + 1 } : prev));
   }, []);
 
   const failStep = useCallback((stepName: string) => {
     activeStepRef.current = null;
-    setFeed((prev) => prev.map((e) => {
-      if (e.type === "step" && e.data.stepName === stepName && e.data.status === "running") {
-        return { ...e, data: { ...e.data, status: "failed" } };
-      }
-      return e;
-    }));
+    setFeed((prev) =>
+      prev.map((e) => {
+        if (e.type === "step" && e.data.stepName === stepName && e.data.status === "running") {
+          return { ...e, data: { ...e.data, status: "failed" } };
+        }
+        return e;
+      })
+    );
   }, []);
 
   useEffect(() => {
     feedEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [feed]);
+  }, []);
 
   const fetchTargets = useCallback(async () => {
     try {
@@ -458,7 +525,10 @@ export function ProjectOverview({ sessionId }: { sessionId: string }) {
       const u1 = await listen("targets-changed", () => {
         if (!cancelled) fetchTargets();
       });
-      if (cancelled) { u1(); return; }
+      if (cancelled) {
+        u1();
+        return;
+      }
       cleanups.push(u1);
 
       const u2 = await listen<Record<string, unknown>>("ai-event", (event) => {
@@ -489,24 +559,48 @@ export function ProjectOverview({ sessionId }: { sessionId: string }) {
             const ok = p.success as boolean;
             let detail: string | undefined;
             if (typeof p.result === "string") detail = (p.result as string).slice(0, 150);
-            pushItem({ kind: ok ? "tool_done" : "tool_error", label: `${name} ${ok ? "done" : "failed"}`, detail, ts: now });
+            pushItem({
+              kind: ok ? "tool_done" : "tool_error",
+              label: `${name} ${ok ? "done" : "failed"}`,
+              detail,
+              ts: now,
+            });
             break;
           }
 
           case "completed":
-            pushItem({ kind: "agent_done", label: "AI turn done", ts: now, durationMs: p.duration_ms as number | undefined });
+            pushItem({
+              kind: "agent_done",
+              label: "AI turn done",
+              ts: now,
+              durationMs: p.duration_ms as number | undefined,
+            });
             break;
 
           case "error":
-            pushItem({ kind: "tool_error", label: `Error: ${(p.message as string)?.slice(0, 80)}`, ts: now });
+            pushItem({
+              kind: "tool_error",
+              label: `Error: ${(p.message as string)?.slice(0, 80)}`,
+              ts: now,
+            });
             break;
 
           case "sub_agent_started":
-            pushItem({ kind: "sub_agent_start", label: `Sub-agent: ${p.agent_name}`, detail: p.task as string, ts: now });
+            pushItem({
+              kind: "sub_agent_start",
+              label: `Sub-agent: ${p.agent_name}`,
+              detail: p.task as string,
+              ts: now,
+            });
             break;
 
           case "sub_agent_completed":
-            pushItem({ kind: "sub_agent_done", label: "Sub-agent done", ts: now, durationMs: p.duration_ms as number | undefined });
+            pushItem({
+              kind: "sub_agent_done",
+              label: "Sub-agent done",
+              ts: now,
+              durationMs: p.duration_ms as number | undefined,
+            });
             break;
 
           case "workflow_started": {
@@ -530,7 +624,19 @@ export function ProjectOverview({ sessionId }: { sessionId: string }) {
                 children: [],
               },
             }));
-            setFeed((prev) => [...prev, { type: "item", data: { id: nextId(), kind: "pipeline_start", label: `Pipeline: ${p.workflow_name ?? "Recon"}`, ts: now } }, ...pendingSteps]);
+            setFeed((prev) => [
+              ...prev,
+              {
+                type: "item",
+                data: {
+                  id: nextId(),
+                  kind: "pipeline_start",
+                  label: `Pipeline: ${p.workflow_name ?? "Recon"}`,
+                  ts: now,
+                },
+              },
+              ...pendingSteps,
+            ]);
             break;
           }
 
@@ -538,7 +644,7 @@ export function ProjectOverview({ sessionId }: { sessionId: string }) {
             pushStep(
               p.step_name as string,
               (p.step_index as number) ?? 0,
-              (p.total_steps as number) ?? RECON_STEPS.length,
+              (p.total_steps as number) ?? RECON_STEPS.length
             );
             break;
 
@@ -546,23 +652,34 @@ export function ProjectOverview({ sessionId }: { sessionId: string }) {
             completeStep(
               p.step_name as string,
               (p.output as string | null) ?? undefined,
-              p.duration_ms as number | undefined,
+              p.duration_ms as number | undefined
             );
             break;
 
           case "workflow_completed":
             setPipelineActive(false);
-            setProgress((prev) => prev ? { ...prev, status: "completed", completedSteps: prev.totalSteps } : prev);
-            pushItem({ kind: "pipeline_done", label: "Pipeline complete", ts: now, durationMs: p.total_duration_ms as number | undefined });
+            setProgress((prev) =>
+              prev ? { ...prev, status: "completed", completedSteps: prev.totalSteps } : prev
+            );
+            pushItem({
+              kind: "pipeline_done",
+              label: "Pipeline complete",
+              ts: now,
+              durationMs: p.total_duration_ms as number | undefined,
+            });
             fetchTargets();
             break;
 
           case "workflow_error":
           case "workflow_failed":
             setPipelineActive(false);
-            setProgress((prev) => prev ? { ...prev, status: "failed" } : prev);
+            setProgress((prev) => (prev ? { ...prev, status: "failed" } : prev));
             if (activeStepRef.current) failStep((p.step_name as string) ?? "");
-            pushItem({ kind: "pipeline_error", label: `Pipeline error: ${(p.error as string)?.slice(0, 80) ?? "unknown"}`, ts: now });
+            pushItem({
+              kind: "pipeline_error",
+              label: `Pipeline error: ${(p.error as string)?.slice(0, 80) ?? "unknown"}`,
+              ts: now,
+            });
             break;
 
           case "server_tool_started":
@@ -574,19 +691,30 @@ export function ProjectOverview({ sessionId }: { sessionId: string }) {
             break;
 
           case "web_fetch_result":
-            pushItem({ kind: "tool_done", label: `Fetched: ${(p.url as string)?.slice(0, 80)}`, ts: now });
+            pushItem({
+              kind: "tool_done",
+              label: `Fetched: ${(p.url as string)?.slice(0, 80)}`,
+              ts: now,
+            });
             break;
         }
       });
-      if (cancelled) { u2(); return; }
+      if (cancelled) {
+        u2();
+        return;
+      }
       cleanups.push(u2);
 
       // Pick up pending recon from project creation (set by HomeView)
       const pending = window.__PENDING_RECON__;
       if (pending && !cancelled) {
         delete window.__PENDING_RECON__;
-        triggerAutoRecon(pending.sessionId, pending.targets, pending.projectName, pending.projectPath)
-          .catch((e) => logger.error("Failed to run pending recon:", e));
+        triggerAutoRecon(
+          pending.sessionId,
+          pending.targets,
+          pending.projectName,
+          pending.projectPath
+        ).catch((e) => logger.error("Failed to run pending recon:", e));
       }
     })();
 
@@ -594,7 +722,7 @@ export function ProjectOverview({ sessionId }: { sessionId: string }) {
       cancelled = true;
       cleanups.forEach((fn) => fn());
     };
-  }, [fetchTargets, pushItem, pushStep, completeStep, failStep]);
+  }, [fetchTargets, pushItem, pushStep, completeStep, failStep, nextId]);
 
   if (!projectName) return null;
 
@@ -624,13 +752,17 @@ export function ProjectOverview({ sessionId }: { sessionId: string }) {
               "flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors",
               hasInterruptedScan
                 ? "bg-yellow-500/10 text-yellow-300 hover:bg-yellow-500/20"
-                : "bg-accent/10 text-accent hover:bg-accent/20",
+                : "bg-accent/10 text-accent hover:bg-accent/20"
             )}
           >
             {hasInterruptedScan ? (
-              <><RefreshCw className="w-3 h-3" /> Restart</>
+              <>
+                <RefreshCw className="w-3 h-3" /> Restart
+              </>
             ) : (
-              <><Radar className="w-3 h-3" /> Start Recon</>
+              <>
+                <Radar className="w-3 h-3" /> Start Recon
+              </>
             )}
           </button>
         )}
@@ -648,14 +780,16 @@ export function ProjectOverview({ sessionId }: { sessionId: string }) {
                 let dynDesc: string | undefined;
                 if (entry.data.stepName === "tool_install" && entry.data.status === "running") {
                   const tcStep = feed.find(
-                    (e) => e.type === "step" && e.data.stepName === "tool_check" && e.data.output,
+                    (e) => e.type === "step" && e.data.stepName === "tool_check" && e.data.output
                   );
                   if (tcStep && tcStep.type === "step") {
                     const out = tcStep.data.output || "";
                     const allTools = ["nmap", "whatweb", "subfinder", "httpx"];
                     const match = out.match(/Tools available:\s*(.*)/i);
                     if (match) {
-                      const available = match[1].split(",").map((s: string) => s.trim().toLowerCase());
+                      const available = match[1]
+                        .split(",")
+                        .map((s: string) => s.trim().toLowerCase());
                       const missing = allTools.filter((t) => !available.includes(t));
                       if (missing.length > 0) {
                         dynDesc = `Installing: ${missing.join(", ")}`;
@@ -664,7 +798,12 @@ export function ProjectOverview({ sessionId }: { sessionId: string }) {
                   }
                 }
                 return (
-                  <StepRow key={entry.data.id} step={entry.data} defaultOpen={entry.data.status === "running"} dynamicDesc={dynDesc} />
+                  <StepRow
+                    key={entry.data.id}
+                    step={entry.data}
+                    defaultOpen={entry.data.status === "running"}
+                    dynamicDesc={dynDesc}
+                  />
                 );
               }
               return <ItemRow key={entry.data.id} item={entry.data} />;
@@ -679,13 +818,16 @@ export function ProjectOverview({ sessionId }: { sessionId: string }) {
               <>
                 <Radar className="w-8 h-8 text-muted-foreground/15" />
                 <p className="text-xs text-muted-foreground/30 text-center">
-                  Ready to scan. Click <span className="text-accent/60">Start Recon</span> or send a message to the AI.
+                  Ready to scan. Click <span className="text-accent/60">Start Recon</span> or send a
+                  message to the AI.
                 </p>
               </>
             ) : (
               <>
                 <Terminal className="w-8 h-8 text-muted-foreground/15" />
-                <p className="text-xs text-muted-foreground/30 text-center">Waiting for activity...</p>
+                <p className="text-xs text-muted-foreground/30 text-center">
+                  Waiting for activity...
+                </p>
               </>
             )}
           </div>

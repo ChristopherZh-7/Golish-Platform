@@ -1,3 +1,4 @@
+use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 
 use crate::state::DbState;
@@ -31,7 +32,7 @@ pub async fn notes_list(
     entity_type: Option<String>,
     entity_id: Option<String>,
     project_path: Option<String>,
-) -> Result<Vec<Note>, String> {
+) -> Result<Vec<Note>, GolishError> {
     let pool = state.pool_ready().await?;
     let rows = golish_db::repo::notes::list_filtered(
         pool,
@@ -40,7 +41,7 @@ pub async fn notes_list(
         project_path.as_deref(),
     )
     .await
-    .map_err(|e| e.to_string())?;
+?;
     Ok(rows.into_iter().map(to_note).collect())
 }
 
@@ -52,7 +53,7 @@ pub async fn notes_add(
     content: String,
     color: Option<String>,
     project_path: Option<String>,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     let pool = state.pool_ready().await?;
     let c = color.unwrap_or_else(|| "yellow".to_string());
     let note = golish_db::repo::notes::create(
@@ -64,7 +65,7 @@ pub async fn notes_add(
         project_path.as_deref(),
     )
     .await
-    .map_err(|e| e.to_string())?;
+?;
     Ok(note.id.to_string())
 }
 
@@ -75,14 +76,14 @@ pub async fn notes_update(
     content: String,
     color: Option<String>,
     project_path: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let _ = project_path;
     let pool = state.pool_ready().await?;
     let uid: uuid::Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let c = color.unwrap_or_else(|| "yellow".to_string());
     golish_db::repo::notes::update(pool, uid, &content, &c)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 #[tauri::command]
@@ -90,11 +91,11 @@ pub async fn notes_delete(
     state: tauri::State<'_, DbState>,
     id: String,
     project_path: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let _ = project_path;
     let pool = state.pool_ready().await?;
     let uid: uuid::Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
     golish_db::repo::notes::delete(pool, uid)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }

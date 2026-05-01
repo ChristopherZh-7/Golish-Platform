@@ -1,32 +1,48 @@
-import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  History, Globe, ShieldAlert, Send, Crosshair, Eye, KeyRound,
-  FileSearch, Loader2, Play, Shield, Square,
+  Crosshair,
+  Eye,
+  FileSearch,
+  Globe,
+  History,
+  KeyRound,
+  Loader2,
+  Play,
+  Send,
+  Shield,
+  ShieldAlert,
+  Square,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
-import {
-  zapStart, zapStop, zapStatus, zapDetectPath,
-} from "@/lib/pentest/zap-api";
-import type { ZapStatusInfo } from "@/lib/pentest/types";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import type { ZapStatusInfo } from "@/lib/pentest/types";
+import { zapDetectPath, zapStart, zapStatus, zapStop } from "@/lib/pentest/zap-api";
+import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
 
-import { lazy, Suspense } from "react";
 const VaultSettings = lazy(() =>
   import("@/components/Settings/VaultSettings").then((m) => ({ default: m.VaultSettings }))
 );
-import { IntruderPanel } from "@/components/SecurityView/IntruderPanel";
 
-import { StatusBadge, ZapNotInstalled, ZapNotRunning } from "./shared";
+import { IntruderPanel } from "@/components/SecurityView/IntruderPanel";
 import { HttpHistoryPanel } from "./HttpHistoryPanel";
-import { ScannerPanel } from "./ScannerPanel";
-import { RepeaterPanel } from "./RepeaterPanel";
-import { SiteMapPanel } from "./SiteMapPanel";
 import { PassiveScanPanel } from "./PassiveScanPanel";
+import { RepeaterPanel } from "./RepeaterPanel";
+import { ScannerPanel } from "./ScannerPanel";
 import { ScanToolsPanel } from "./ScanToolsPanel";
 import { SensitiveScanPanel } from "./SensitiveScanPanel";
+import { SiteMapPanel } from "./SiteMapPanel";
+import { StatusBadge, ZapNotInstalled, ZapNotRunning } from "./shared";
 
-export type SecurityTab = "history" | "sitemap" | "scanner" | "repeater" | "intruder" | "passive" | "vault" | "scantools" | "sensitive";
+export type SecurityTab =
+  | "history"
+  | "sitemap"
+  | "scanner"
+  | "repeater"
+  | "intruder"
+  | "passive"
+  | "vault"
+  | "scantools"
+  | "sensitive";
 
 export function SecurityView({
   standaloneTab,
@@ -39,12 +55,14 @@ export function SecurityView({
   const currentProjectPath = useStore((s) => s.currentProjectPath);
   const globalZapRunning = useStore((s) => s.zapRunning);
   const setGlobalZapRunning = useStore((s) => s.setZapRunning);
-  const [activeTab, setActiveTab] = useState<SecurityTab>(standaloneTab || (initialScanTarget ? "scantools" : "history"));
+  const [activeTab, setActiveTab] = useState<SecurityTab>(
+    standaloneTab || (initialScanTarget ? "scantools" : "history")
+  );
   const effectiveTab = standaloneTab || activeTab;
 
   useEffect(() => {
     if (initialScanTarget) setActiveTab("scantools");
-  }, [initialScanTarget?.id]);
+  }, [initialScanTarget?.id, initialScanTarget]);
 
   const [zapState, setZapState] = useState<ZapStatusInfo>({
     status: globalZapRunning ? "running" : "stopped",
@@ -93,12 +111,17 @@ export function SecurityView({
         setZapInstalled(status.status === "running" || path !== null);
         setGlobalZapRunning(status.status === "running");
       } catch {
-        if (!cancelled) { setZapInstalled(false); setGlobalZapRunning(false); }
+        if (!cancelled) {
+          setZapInstalled(false);
+          setGlobalZapRunning(false);
+        }
       } finally {
         if (!cancelled) setCheckingInstall(false);
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [setGlobalZapRunning]);
 
   const handleStart = useCallback(async () => {
@@ -143,7 +166,12 @@ export function SecurityView({
     { id: "vault", label: t("vault.title", "Credential Vault"), icon: KeyRound },
   ];
 
-  const tabDragRef = useRef<{ tabId: SecurityTab | null; startX: number; startY: number; isDragging: boolean }>({ tabId: null, startX: 0, startY: 0, isDragging: false });
+  const tabDragRef = useRef<{
+    tabId: SecurityTab | null;
+    startX: number;
+    startY: number;
+    isDragging: boolean;
+  }>({ tabId: null, startX: 0, startY: 0, isDragging: false });
 
   const handleTabPointerDown = useCallback((tabId: SecurityTab, e: React.PointerEvent) => {
     if (e.button !== 0) return;
@@ -154,7 +182,10 @@ export function SecurityView({
     const onMove = (e: PointerEvent) => {
       const d = tabDragRef.current;
       if (!d.tabId) return;
-      if (!d.isDragging && (Math.abs(e.clientX - d.startX) > 8 || Math.abs(e.clientY - d.startY) > 8)) {
+      if (
+        !d.isDragging &&
+        (Math.abs(e.clientX - d.startX) > 8 || Math.abs(e.clientY - d.startY) > 8)
+      ) {
         d.isDragging = true;
         document.body.style.cursor = "grabbing";
       }
@@ -164,12 +195,16 @@ export function SecurityView({
       if (d.isDragging && d.tabId) {
         document.body.style.cursor = "";
         const isOutside =
-          e.clientX < 0 || e.clientY < 0 ||
-          e.clientX > window.innerWidth || e.clientY > window.innerHeight;
+          e.clientX < 0 ||
+          e.clientY < 0 ||
+          e.clientX > window.innerWidth ||
+          e.clientY > window.innerHeight;
         if (isOutside) {
-          window.dispatchEvent(new CustomEvent("detach-security-tab", {
-            detail: { tabId: d.tabId, screenX: e.screenX, screenY: e.screenY },
-          }));
+          window.dispatchEvent(
+            new CustomEvent("detach-security-tab", {
+              detail: { tabId: d.tabId, screenX: e.screenX, screenY: e.screenY },
+            })
+          );
         }
       }
       tabDragRef.current = { tabId: null, startX: 0, startY: 0, isDragging: false };
@@ -185,7 +220,13 @@ export function SecurityView({
   const renderContent = (tab: SecurityTab) => {
     if (tab === "vault") {
       return (
-        <Suspense fallback={<div className="h-full flex items-center justify-center"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground/40" /></div>}>
+        <Suspense
+          fallback={
+            <div className="h-full flex items-center justify-center">
+              <Loader2 className="w-5 h-5 animate-spin text-muted-foreground/40" />
+            </div>
+          }
+        >
           <VaultSettings />
         </Suspense>
       );
@@ -205,26 +246,53 @@ export function SecurityView({
     }
     if (zapInstalled === false) {
       return (
-        <ZapNotInstalled onRetry={() => {
-          setCheckingInstall(true);
-          zapDetectPath().then((p) => {
-            setZapInstalled(p !== null);
-            setCheckingInstall(false);
-          }).catch(() => { setZapInstalled(false); setCheckingInstall(false); });
-        }} />
+        <ZapNotInstalled
+          onRetry={() => {
+            setCheckingInstall(true);
+            zapDetectPath()
+              .then((p) => {
+                setZapInstalled(p !== null);
+                setCheckingInstall(false);
+              })
+              .catch(() => {
+                setZapInstalled(false);
+                setCheckingInstall(false);
+              });
+          }}
+        />
       );
     }
     if (!isRunning) {
       return <ZapNotRunning onStart={handleStart} loading={loading} error={error} />;
     }
     switch (tab) {
-      case "sitemap": return <SiteMapPanel onSendToRepeater={handleSendToRepeater} onSendToIntruder={handleSendToIntruder} onActiveScan={handleActiveScan} onBatchScan={handleBatchActiveScan} />;
-      case "history": return <HttpHistoryPanel onSendToRepeater={handleSendToRepeater} onSendToIntruder={handleSendToIntruder} onActiveScan={handleActiveScan} />;
-      case "scanner": return null;
-      case "passive": return <PassiveScanPanel />;
-      case "repeater": return null;
-      case "intruder": return null;
-      default: return null;
+      case "sitemap":
+        return (
+          <SiteMapPanel
+            onSendToRepeater={handleSendToRepeater}
+            onSendToIntruder={handleSendToIntruder}
+            onActiveScan={handleActiveScan}
+            onBatchScan={handleBatchActiveScan}
+          />
+        );
+      case "history":
+        return (
+          <HttpHistoryPanel
+            onSendToRepeater={handleSendToRepeater}
+            onSendToIntruder={handleSendToIntruder}
+            onActiveScan={handleActiveScan}
+          />
+        );
+      case "scanner":
+        return null;
+      case "passive":
+        return <PassiveScanPanel />;
+      case "repeater":
+        return null;
+      case "intruder":
+        return null;
+      default:
+        return null;
     }
   };
 
@@ -234,9 +302,7 @@ export function SecurityView({
         <div className="flex items-center justify-between px-4 py-3 border-b border-border/15 flex-shrink-0">
           <div className="flex items-center gap-3">
             <Shield className="w-4 h-4 text-accent" />
-            <h1 className="text-[14px] font-semibold text-foreground">
-              {t("security.title")}
-            </h1>
+            <h1 className="text-[14px] font-semibold text-foreground">{t("security.title")}</h1>
             <StatusBadge status={zapState} />
           </div>
 
@@ -310,17 +376,50 @@ export function SecurityView({
 
       <div className="flex-1 overflow-hidden relative">
         {renderContent(effectiveTab)}
-        <div className={cn("absolute inset-0", effectiveTab === "repeater" && isRunning ? "" : "invisible pointer-events-none")}>
-          <RepeaterPanel injectedRequest={repeaterRequest} onInjectedConsumed={() => setRepeaterRequest(null)} />
+        <div
+          className={cn(
+            "absolute inset-0",
+            effectiveTab === "repeater" && isRunning ? "" : "invisible pointer-events-none"
+          )}
+        >
+          <RepeaterPanel
+            injectedRequest={repeaterRequest}
+            onInjectedConsumed={() => setRepeaterRequest(null)}
+          />
         </div>
-        <div className={cn("absolute inset-0", effectiveTab === "intruder" && isRunning ? "" : "invisible pointer-events-none")}>
-          <IntruderPanel injectedRequest={intruderRequest} onInjectedConsumed={() => setIntruderRequest(null)} />
+        <div
+          className={cn(
+            "absolute inset-0",
+            effectiveTab === "intruder" && isRunning ? "" : "invisible pointer-events-none"
+          )}
+        >
+          <IntruderPanel
+            injectedRequest={intruderRequest}
+            onInjectedConsumed={() => setIntruderRequest(null)}
+          />
         </div>
-        <div className={cn("absolute inset-0", effectiveTab === "scantools" ? "" : "invisible pointer-events-none")}>
+        <div
+          className={cn(
+            "absolute inset-0",
+            effectiveTab === "scantools" ? "" : "invisible pointer-events-none"
+          )}
+        >
           <ScanToolsPanel initialTarget={initialScanTarget} />
         </div>
-        <div className={cn("absolute inset-0", effectiveTab === "scanner" && isRunning ? "" : "invisible pointer-events-none")}>
-          <ScannerPanel initialUrl={pendingScanUrl} initialBatchUrls={pendingScanUrls} onUrlConsumed={() => { setPendingScanUrl(null); setPendingScanUrls([]); }} />
+        <div
+          className={cn(
+            "absolute inset-0",
+            effectiveTab === "scanner" && isRunning ? "" : "invisible pointer-events-none"
+          )}
+        >
+          <ScannerPanel
+            initialUrl={pendingScanUrl}
+            initialBatchUrls={pendingScanUrls}
+            onUrlConsumed={() => {
+              setPendingScanUrl(null);
+              setPendingScanUrls([]);
+            }}
+          />
         </div>
       </div>
     </div>

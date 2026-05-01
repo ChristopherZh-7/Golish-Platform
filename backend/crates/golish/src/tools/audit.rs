@@ -1,3 +1,4 @@
+use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 use crate::state::DbState;
 
@@ -52,7 +53,7 @@ pub async fn audit_log(
     entity_id: Option<String>,
     project_path: Option<String>,
     source: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     let src = source.unwrap_or_else(|| "manual".to_string());
     let pp = project_path.unwrap_or_default();
@@ -69,7 +70,7 @@ pub async fn audit_log(
     .bind(&src)
     .execute(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
     Ok(())
 }
 
@@ -79,7 +80,7 @@ pub async fn audit_list(
     limit: Option<i64>,
     category: Option<String>,
     project_path: Option<String>,
-) -> Result<Vec<AuditEntry>, String> {
+) -> Result<Vec<AuditEntry>, GolishError> {
     let pool = state.pool_ready().await?;
     let lim = limit.unwrap_or(500);
     let pp = project_path.unwrap_or_default();
@@ -95,7 +96,7 @@ pub async fn audit_list(
     .bind(lim)
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
     Ok(rows.into_iter().map(AuditEntry::from).collect())
 }
 
@@ -103,14 +104,14 @@ pub async fn audit_list(
 pub async fn audit_clear(
     state: tauri::State<'_, DbState>,
     project_path: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     let pp = project_path.unwrap_or_default();
     sqlx::query("DELETE FROM audit_log WHERE project_path = $1")
         .bind(&pp)
         .execute(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     Ok(())
 }
 
@@ -135,7 +136,7 @@ pub async fn passive_scans_global(
     state: tauri::State<'_, DbState>,
     project_path: Option<String>,
     limit: Option<i64>,
-) -> Result<Vec<PassiveScanRow>, String> {
+) -> Result<Vec<PassiveScanRow>, GolishError> {
     let pool = state.pool_ready().await?;
     let lim = limit.unwrap_or(200);
     let pp = project_path.unwrap_or_default();
@@ -147,7 +148,7 @@ pub async fn passive_scans_global(
     .bind(lim)
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
     Ok(rows)
 }
 
@@ -173,7 +174,7 @@ pub async fn agent_logs_list(
     state: tauri::State<'_, DbState>,
     project_path: Option<String>,
     limit: Option<i64>,
-) -> Result<Vec<AgentLogRow>, String> {
+) -> Result<Vec<AgentLogRow>, GolishError> {
     let pool = state.pool_ready().await?;
     let lim = limit.unwrap_or(200);
     let pp = project_path.unwrap_or_default();
@@ -185,7 +186,7 @@ pub async fn agent_logs_list(
     .bind(lim)
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
     Ok(rows)
 }
 
@@ -208,7 +209,7 @@ pub async fn terminal_logs_list(
     state: tauri::State<'_, DbState>,
     project_path: Option<String>,
     limit: Option<i64>,
-) -> Result<Vec<TerminalLogRow>, String> {
+) -> Result<Vec<TerminalLogRow>, GolishError> {
     let pool = state.pool_ready().await?;
     let lim = limit.unwrap_or(200);
     let pp = project_path.unwrap_or_default();
@@ -220,7 +221,7 @@ pub async fn terminal_logs_list(
     .bind(lim)
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
     Ok(rows)
 }
 
@@ -245,7 +246,7 @@ pub async fn search_logs_list(
     state: tauri::State<'_, DbState>,
     project_path: Option<String>,
     limit: Option<i64>,
-) -> Result<Vec<SearchLogRow>, String> {
+) -> Result<Vec<SearchLogRow>, GolishError> {
     let pool = state.pool_ready().await?;
     let lim = limit.unwrap_or(200);
     let pp = project_path.unwrap_or_default();
@@ -257,6 +258,6 @@ pub async fn search_logs_list(
     .bind(lim)
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
     Ok(rows)
 }

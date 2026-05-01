@@ -58,55 +58,73 @@ export const securityApi = {
     invoke("pentest_install_runtime", { runtimeType, proxyUrl }),
 
   // ZAP API
-  zapApiCall: <T = ZapJson>(component: string, actionType: string, method: string, params: Record<string, unknown>) =>
-    invoke<T>("zap_api_call", { component, actionType, method, params }),
+  zapApiCall: <T = ZapJson>(
+    component: string,
+    actionType: string,
+    method: string,
+    params: Record<string, unknown>
+  ) => invoke<T>("zap_api_call", { component, actionType, method, params }),
   zapListScanPolicies: () => invoke<string[]>("zap_list_scan_policies"),
   zapGetScanners: () =>
-    invoke<Array<{ id: string; name: string; enabled: boolean; quality: string }>>("zap_get_scanners"),
+    invoke<Array<{ id: string; name: string; enabled: boolean; quality: string }>>(
+      "zap_get_scanners"
+    ),
   zapSetScannersEnabled: (ids: string[], enabled: boolean) =>
     invoke("zap_set_scanners_enabled", { ids, enabled }),
-  zapScanMessageCount: (scanId: string) =>
-    invoke<number>("zap_scan_message_count", { scanId }),
+  zapScanMessageCount: (scanId: string) => invoke<number>("zap_scan_message_count", { scanId }),
 
   // Vault
-  vaultList: (projectPath: string) =>
-    invoke<VaultEntrySafe[]>("vault_list", { projectPath }),
-  vaultGetValue: (id: string, projectPath: string) =>
+  vaultList: (projectPath: string | null) => invoke<VaultEntrySafe[]>("vault_list", { projectPath }),
+  vaultGetValue: (id: string, projectPath: string | null) =>
     invoke<string>("vault_get_value", { id, projectPath }),
 
   // Passive scans
-  passiveScansByUrl: (url: string, limit: number) =>
-    invoke("passive_scans_by_url", { url, limit }),
-  customRulesList: (projectPath: string) =>
+  passiveScansByUrl: (url: string, limit: number) => invoke("passive_scans_by_url", { url, limit }),
+  customRulesList: (projectPath: string | null) =>
     invoke<CustomPassiveRule[]>("custom_rules_list", { projectPath }),
-  customRulesUpsert: (rule: CustomPassiveRule, projectPath: string) =>
+  customRulesUpsert: (rule: CustomPassiveRule, projectPath: string | null) =>
     invoke("custom_rules_upsert", { rule, projectPath }),
-  customRulesDelete: (id: string) =>
-    invoke("custom_rules_delete", { id }),
-  customRulesSaveAll: (rules: CustomPassiveRule[], projectPath: string) =>
+  customRulesDelete: (id: string) => invoke("custom_rules_delete", { id }),
+  customRulesSaveAll: (rules: CustomPassiveRule[], projectPath: string | null) =>
     invoke("custom_rules_save_all", { rules, projectPath }),
-  findingsImportParsed: (items: unknown[], toolName: string, projectPath: string) =>
+  findingsImportParsed: (items: unknown[], toolName: string, projectPath: string | null) =>
     invoke("findings_import_parsed", { items, toolName, projectPath }),
 
   // Sensitive scan
   wordlistList: () => invoke<WordlistOption[]>("wordlist_list"),
-  sensitiveScanResults: (projectPath: string, confirmedOnly: boolean) =>
+  sensitiveScanResults: (projectPath: string | null, confirmedOnly: boolean) =>
     invoke<SensitiveResult[]>("sensitive_scan_results", { projectPath, confirmedOnly }),
   sensitiveScanStatus: () => invoke<boolean>("sensitive_scan_status"),
-  sensitiveScanStart: (projectPath: string, baseUrl: string, wordlistId: string, ratePerSecond: number, useSitemapDirs: boolean) =>
-    invoke("sensitive_scan_start", { projectPath, baseUrl, wordlistId, ratePerSecond, useSitemapDirs }),
+  sensitiveScanStart: (
+    projectPath: string | null,
+    baseUrl: string,
+    wordlistId: string,
+    ratePerSecond: number,
+    useSitemapDirs: boolean
+  ) =>
+    invoke("sensitive_scan_start", {
+      projectPath,
+      baseUrl,
+      wordlistId,
+      ratePerSecond,
+      useSitemapDirs,
+    }),
   sensitiveScanStop: () => invoke("sensitive_scan_stop"),
-  sensitiveScanClear: (projectPath: string) =>
-    invoke("sensitive_scan_clear", { projectPath }),
+  sensitiveScanClear: (projectPath: string | null) => invoke("sensitive_scan_clear", { projectPath }),
   sensitiveScanConfirm: (ids: string[], confirmed: boolean) =>
     invoke("sensitive_scan_confirm", { ids, confirmed }),
-  sensitiveScanAiAnalyze: (projectPath: string) =>
-    invoke<{ analyzed: number; true_positives: number }>("sensitive_scan_ai_analyze", { projectPath }),
+  sensitiveScanAiAnalyze: (projectPath: string | null) =>
+    invoke<{ analyzed: number; true_positives: number }>("sensitive_scan_ai_analyze", {
+      projectPath,
+    }),
 
   // Nuclei
   nucleiCancel: () => invoke("nuclei_cancel"),
 
   // Targets
-  targetList: (projectPath: string) =>
-    invoke<{ targets: Array<{ id: string; value: string; type: string; scope: string }> }>("target_list", { projectPath }),
+  targetList: (projectPath: string | null) =>
+    invoke<{ targets: Array<{ id: string; value: string; type: string; scope: string }> }>(
+      "target_list",
+      { projectPath }
+    ),
 };

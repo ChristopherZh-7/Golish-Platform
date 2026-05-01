@@ -126,9 +126,7 @@ const createSession = (sessionId: string) => {
 
 const getSubmitButton = () => {
   const buttons = screen.getAllByRole("button");
-  return buttons.find(
-    (btn) => !btn.getAttribute("aria-label")?.includes("Switch")
-  );
+  return buttons.find((btn) => !btn.getAttribute("aria-label")?.includes("Switch"));
 };
 
 describe("UnifiedInput: typing while agent is busy", () => {

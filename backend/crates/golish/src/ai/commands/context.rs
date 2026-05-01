@@ -1,5 +1,6 @@
 // Context and token management commands.
 
+use crate::error::GolishError;
 use tauri::State;
 
 use super::ai_session_not_initialized_error;
@@ -12,7 +13,7 @@ use golish_context::{ContextSummary, ContextTrimConfig};
 pub async fn get_context_summary(
     state: State<'_, AppState>,
     session_id: Option<String>,
-) -> Result<ContextSummary, String> {
+) -> Result<ContextSummary, GolishError> {
     if let Some(ref sid) = session_id {
         let bridge = state.ai_state.get_session_bridge(sid).await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
@@ -27,7 +28,7 @@ pub async fn get_context_summary(
 pub async fn get_token_usage_stats(
     state: State<'_, AppState>,
     session_id: Option<String>,
-) -> Result<TokenUsageStats, String> {
+) -> Result<TokenUsageStats, GolishError> {
     if let Some(ref sid) = session_id {
         let bridge = state.ai_state.get_session_bridge(sid).await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
@@ -42,7 +43,7 @@ pub async fn get_token_usage_stats(
 pub async fn get_token_alert_level(
     state: State<'_, AppState>,
     session_id: Option<String>,
-) -> Result<TokenAlertLevel, String> {
+) -> Result<TokenAlertLevel, GolishError> {
     if let Some(ref sid) = session_id {
         let bridge = state.ai_state.get_session_bridge(sid).await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
@@ -57,7 +58,7 @@ pub async fn get_token_alert_level(
 pub async fn get_context_utilization(
     state: State<'_, AppState>,
     session_id: Option<String>,
-) -> Result<f64, String> {
+) -> Result<f64, GolishError> {
     if let Some(ref sid) = session_id {
         let bridge = state.ai_state.get_session_bridge(sid).await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
@@ -72,7 +73,7 @@ pub async fn get_context_utilization(
 pub async fn get_remaining_tokens(
     state: State<'_, AppState>,
     session_id: Option<String>,
-) -> Result<usize, String> {
+) -> Result<usize, GolishError> {
     if let Some(ref sid) = session_id {
         let bridge = state.ai_state.get_session_bridge(sid).await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
@@ -87,7 +88,7 @@ pub async fn get_remaining_tokens(
 pub async fn reset_context_manager(
     state: State<'_, AppState>,
     session_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     if let Some(ref sid) = session_id {
         let bridge = state.ai_state.get_session_bridge(sid).await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
@@ -104,7 +105,7 @@ pub async fn reset_context_manager(
 pub async fn get_context_trim_config(
     state: State<'_, AppState>,
     session_id: Option<String>,
-) -> Result<ContextTrimConfig, String> {
+) -> Result<ContextTrimConfig, GolishError> {
     if let Some(ref sid) = session_id {
         let bridge = state.ai_state.get_session_bridge(sid).await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
@@ -118,7 +119,7 @@ pub async fn get_context_trim_config(
 pub async fn is_context_management_enabled(
     state: State<'_, AppState>,
     session_id: Option<String>,
-) -> Result<bool, String> {
+) -> Result<bool, GolishError> {
     if let Some(ref sid) = session_id {
         let bridge = state.ai_state.get_session_bridge(sid).await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
@@ -132,7 +133,7 @@ pub async fn is_context_management_enabled(
 pub async fn retry_compaction(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let bridge = state
         .ai_state
         .get_session_bridge(&session_id)

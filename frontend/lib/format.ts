@@ -1,6 +1,6 @@
 export function formatBytes(
   bytes: number,
-  opts?: { compact?: boolean; zeroLabel?: string },
+  opts?: { compact?: boolean; zeroLabel?: string }
 ): string {
   const compact = opts?.compact ?? true;
   const zeroLabel = opts?.zeroLabel ?? "-";

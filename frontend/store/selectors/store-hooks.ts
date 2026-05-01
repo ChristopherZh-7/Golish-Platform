@@ -11,23 +11,14 @@
  */
 
 import { findPaneById, getAllLeafPanes } from "@/lib/pane-utils";
-import {
-  memoizedSelectAgentMessages,
-  memoizedSelectCommandBlocks,
-} from "@/lib/timeline/selectors";
-
+import { memoizedSelectAgentMessages, memoizedSelectCommandBlocks } from "@/lib/timeline/selectors";
+import { type ActiveToolCall, type StreamingBlock, type UnifiedBlock, useStore } from "../index";
 import {
   selectActiveConversation,
   selectActiveConversationTerminals,
   selectAllConversations,
   selectContextMetrics,
 } from "../slices";
-import {
-  type ActiveToolCall,
-  type StreamingBlock,
-  type UnifiedBlock,
-  useStore,
-} from "../index";
 
 // ─── Stable empty arrays ─────────────────────────────────────────────────
 //
@@ -158,11 +149,9 @@ export const useContextMetrics = (sessionId: string) =>
 
 // ─── Conversation ────────────────────────────────────────────────────────
 
-export const useActiveConversation = () =>
-  useStore((state) => selectActiveConversation(state));
+export const useActiveConversation = () => useStore((state) => selectActiveConversation(state));
 
-export const useAllConversations = () =>
-  useStore((state) => selectAllConversations(state));
+export const useAllConversations = () => useStore((state) => selectAllConversations(state));
 
 export const useActiveConversationTerminals = () =>
   useStore((state) => selectActiveConversationTerminals(state));

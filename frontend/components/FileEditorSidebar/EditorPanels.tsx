@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { FolderOpen, Plus } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { Markdown } from "@/components/Markdown/Markdown";
 import { Button } from "@/components/ui/button";
 

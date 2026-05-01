@@ -27,8 +27,7 @@ export const InputStatusRow = memo(function InputStatusRow({ sessionId }: InputS
   const display = useStore(selectDisplaySettings);
 
   const hideAiItems =
-    (display.hideAiSettingsInShellMode && inputMode === "terminal") ||
-    status === "disconnected";
+    (display.hideAiSettingsInShellMode && inputMode === "terminal") || status === "disconnected";
 
   const sessionWorkingDirectory = useStore((state) => state.sessions[sessionId]?.workingDirectory);
   const contextMetrics = useContextMetrics(sessionId);
@@ -43,35 +42,52 @@ export const InputStatusRow = memo(function InputStatusRow({ sessionId }: InputS
         {/* Mode segmented control */}
         {status === "disconnected" ? (
           <div className="p-0.5 border border-transparent rounded-lg">
-            <button type="button" aria-label="Terminal mode" title="Terminal"
-              className="h-6 w-6 flex items-center justify-center rounded-md bg-accent/15 text-accent shadow-[0_0_8px_rgba(var(--accent-rgb),0.3)]">
+            <button
+              type="button"
+              aria-label="Terminal mode"
+              title="Terminal"
+              className="h-6 w-6 flex items-center justify-center rounded-md bg-accent/15 text-accent shadow-[0_0_8px_rgba(var(--accent-rgb),0.3)]"
+            >
               <Terminal className="size-icon-status-bar" />
             </button>
           </div>
         ) : !display.showInputModeToggle && inputMode !== "auto" ? (
           <div className="p-0.5 border border-transparent rounded-lg">
-            <button type="button"
+            <button
+              type="button"
               aria-label={inputMode === "terminal" ? "Terminal mode" : "AI mode"}
               title={inputMode === "terminal" ? "Terminal" : "AI"}
-              className="h-6 w-6 flex items-center justify-center rounded-md bg-accent/15 text-accent shadow-[0_0_8px_rgba(var(--accent-rgb),0.3)]">
-              {inputMode === "terminal" ? <Terminal className="size-icon-status-bar" /> : <Bot className="size-icon-status-bar" />}
+              className="h-6 w-6 flex items-center justify-center rounded-md bg-accent/15 text-accent shadow-[0_0_8px_rgba(var(--accent-rgb),0.3)]"
+            >
+              {inputMode === "terminal" ? (
+                <Terminal className="size-icon-status-bar" />
+              ) : (
+                <Bot className="size-icon-status-bar" />
+              )}
             </button>
           </div>
         ) : (
           <div className="flex items-center rounded-lg bg-muted/50 p-0.5 border border-[var(--border-subtle)]/50">
-            <button type="button"
-              aria-label={inputMode === "terminal" ? "Switch to Auto mode" : "Switch to Terminal mode"}
+            <button
+              type="button"
+              aria-label={
+                inputMode === "terminal" ? "Switch to Auto mode" : "Switch to Terminal mode"
+              }
               title="Terminal"
-              onClick={() => setInputMode(sessionId, inputMode === "terminal" ? "auto" : "terminal")}
+              onClick={() =>
+                setInputMode(sessionId, inputMode === "terminal" ? "auto" : "terminal")
+              }
               className={cn(
                 "h-6 w-6 flex items-center justify-center rounded-md transition-all duration-200",
                 inputMode === "terminal"
                   ? "bg-accent/15 text-accent shadow-[0_0_8px_rgba(var(--accent-rgb),0.3)]"
                   : "text-muted-foreground hover:text-foreground hover:bg-muted"
-              )}>
+              )}
+            >
               <Terminal className="size-icon-status-bar" />
             </button>
-            <button type="button"
+            <button
+              type="button"
               aria-label={inputMode === "agent" ? "Switch to Auto mode" : "Switch to AI mode"}
               title="AI"
               onClick={() => setInputMode(sessionId, inputMode === "agent" ? "auto" : "agent")}
@@ -80,7 +96,8 @@ export const InputStatusRow = memo(function InputStatusRow({ sessionId }: InputS
                 inputMode === "agent"
                   ? "bg-accent/15 text-accent shadow-[0_0_8px_rgba(var(--accent-rgb),0.3)]"
                   : "text-muted-foreground hover:text-foreground hover:bg-muted"
-              )}>
+              )}
+            >
               <Bot className="size-icon-status-bar" />
             </button>
           </div>
@@ -118,24 +135,30 @@ export const InputStatusRow = memo(function InputStatusRow({ sessionId }: InputS
         {display.showMcpBadge && (
           <div className="ui-fade-width ml-2" data-visible={String(!hideAiItems)}>
             <div className="shrink-0">
-              <McpServersBadge sessionId={sessionId} sessionWorkingDirectory={sessionWorkingDirectory} />
+              <McpServersBadge
+                sessionId={sessionId}
+                sessionWorkingDirectory={sessionWorkingDirectory}
+              />
             </div>
           </div>
         )}
 
         {/* Debug panel (dev only) */}
-        {import.meta.env.DEV && !isMockBrowserMode() && (
-          <DebugPopover sessionId={sessionId} />
-        )}
+        {import.meta.env.DEV && !isMockBrowserMode() && <DebugPopover sessionId={sessionId} />}
       </div>
 
       {/* Right side */}
       <div className="flex items-center gap-2">
         {isMockBrowserMode() ? (
-          <span className="text-[var(--ansi-yellow)] text-[11px] truncate max-w-[200px]">Browser only mode</span>
+          <span className="text-[var(--ansi-yellow)] text-[11px] truncate max-w-[200px]">
+            Browser only mode
+          </span>
         ) : (
-          status === "error" && errorMessage && (
-            <span className="text-destructive text-[11px] truncate max-w-[200px]">({errorMessage})</span>
+          status === "error" &&
+          errorMessage && (
+            <span className="text-destructive text-[11px] truncate max-w-[200px]">
+              ({errorMessage})
+            </span>
           )
         )}
       </div>

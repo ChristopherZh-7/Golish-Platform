@@ -17,8 +17,8 @@ import {
   type PaneId,
   removePaneNode,
   type SplitDirection,
-  type TabLayout,
   splitPaneNode,
+  type TabLayout,
   updatePaneRatio,
 } from "@/lib/pane-utils";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
@@ -53,7 +53,7 @@ export interface PaneActions {
     paneId: PaneId,
     direction: SplitDirection,
     newPaneId: PaneId,
-    newSessionId: string,
+    newSessionId: string
   ) => void;
   closePane: (tabId: string, paneId: PaneId) => void;
   focusPane: (tabId: string, paneId: PaneId) => void;
@@ -64,10 +64,7 @@ export interface PaneActions {
   /** Cancel move mode */
   cancelPaneMove: () => void;
   /** Complete a pane move: relocate source pane relative to target pane */
-  completePaneMove: (
-    targetPaneId: PaneId,
-    direction: "top" | "right" | "bottom" | "left",
-  ) => void;
+  completePaneMove: (targetPaneId: PaneId, direction: "top" | "right" | "bottom" | "left") => void;
   /** Extract a pane into its own new tab (preserving its session) */
   movePaneToNewTab: (tabId: string, paneId: PaneId) => void;
 }
@@ -147,7 +144,7 @@ export const createPaneSlice: SliceCreator<PaneSlice, PaneStoreDraft> = (set, ge
         paneId,
         direction,
         newPaneId,
-        newSessionId,
+        newSessionId
       );
 
       // activeSessionId stays as the tab's root; only focusedPaneId moves.
@@ -257,12 +254,7 @@ export const createPaneSlice: SliceCreator<PaneSlice, PaneStoreDraft> = (set, ge
         id: sourcePaneId,
         sessionId: sourceSessionId,
       };
-      const newRoot = insertPaneAtPosition(
-        treeAfterRemove,
-        targetPaneId,
-        direction,
-        sourceLeaf,
-      );
+      const newRoot = insertPaneAtPosition(treeAfterRemove, targetPaneId, direction, sourceLeaf);
 
       state.tabLayouts[tabId].root = newRoot;
       state.tabLayouts[tabId].focusedPaneId = sourcePaneId;
@@ -313,7 +305,7 @@ export const createPaneSlice: SliceCreator<PaneSlice, PaneStoreDraft> = (set, ge
 
 export const selectTabLayout = <T extends PaneState>(
   state: T,
-  tabId: string,
+  tabId: string
 ): TabLayout | undefined => state.tabLayouts[tabId];
 
 export const selectPaneMoveState = <T extends PaneState>(state: T) => state.paneMoveState;

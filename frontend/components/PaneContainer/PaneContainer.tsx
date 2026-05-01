@@ -17,13 +17,14 @@ interface PaneContainerProps {
 export const PaneContainer = memo(function PaneContainer({ node, tabId }: PaneContainerProps) {
   const resizePane = useStore((state) => state.resizePane);
 
-  const handleLayout = useCallback(
-    (sizes: number[]) => {
-      if (node.type === "split" && sizes.length === 2) {
-        // Convert percentage to ratio (0-1)
-        const ratio = sizes[0] / 100;
-        resizePane(tabId, node.id, ratio);
-      }
+  const handleLayoutChange = useCallback(
+    (layout: Record<string, number>) => {
+      if (node.type !== "split") return;
+      const sizes = Object.values(layout);
+      if (sizes.length !== 2) return;
+      // Convert percentage to ratio (0-1).
+      const ratio = sizes[0] / 100;
+      resizePane(tabId, node.id, ratio);
     },
     [node, tabId, resizePane]
   );
@@ -48,7 +49,7 @@ export const PaneContainer = memo(function PaneContainer({ node, tabId }: PaneCo
     <ResizablePanelGroup
       key={groupKey}
       direction={panelDirection}
-      onLayout={handleLayout}
+      onLayoutChange={handleLayoutChange}
       className="h-full"
     >
       <ResizablePanel defaultSize={node.ratio * 100} minSize={10}>

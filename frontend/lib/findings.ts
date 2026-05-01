@@ -33,21 +33,36 @@ export interface Evidence {
   added_at: number;
 }
 
+// Tauri commands accept Option<String> for projectPath, so the frontend can
+// pass `null` directly without coercing to "" first.
+type ProjectPath = string | null;
+
 export const findingsApi = {
-  list: (projectPath: string) =>
-    invoke<FindingsStore>("findings_list", { projectPath }),
-  add: (finding: Record<string, unknown>, projectPath: string) =>
+  list: (projectPath: ProjectPath) => invoke<FindingsStore>("findings_list", { projectPath }),
+  add: (finding: Record<string, unknown>, projectPath: ProjectPath) =>
     invoke("findings_add", { finding, projectPath }),
-  delete: (id: string, projectPath: string) =>
-    invoke("findings_delete", { id, projectPath }),
-  update: (finding: Record<string, unknown>, projectPath: string) =>
+  delete: (id: string, projectPath: ProjectPath) => invoke("findings_delete", { id, projectPath }),
+  update: (finding: Record<string, unknown>, projectPath: ProjectPath) =>
     invoke("findings_update", { finding, projectPath }),
-  addEvidence: (findingId: string, filename: string, mimeType: string, caption: string, dataBase64: string, projectPath: string) =>
-    invoke("findings_add_evidence", { findingId, filename, mimeType, caption, dataBase64, projectPath }),
-  removeEvidence: (findingId: string, evidenceId: string, projectPath: string) =>
+  addEvidence: (
+    findingId: string,
+    filename: string,
+    mimeType: string,
+    caption: string,
+    dataBase64: string,
+    projectPath: ProjectPath
+  ) =>
+    invoke("findings_add_evidence", {
+      findingId,
+      filename,
+      mimeType,
+      caption,
+      dataBase64,
+      projectPath,
+    }),
+  removeEvidence: (findingId: string, evidenceId: string, projectPath: ProjectPath) =>
     invoke("findings_remove_evidence", { findingId, evidenceId, projectPath }),
-  evidencePath: (findingId: string, evidenceId: string, projectPath: string) =>
+  evidencePath: (findingId: string, evidenceId: string, projectPath: ProjectPath) =>
     invoke<string>("findings_evidence_path", { findingId, evidenceId, projectPath }),
-  deduplicate: (projectPath: string) =>
-    invoke<number>("findings_deduplicate", { projectPath }),
+  deduplicate: (projectPath: ProjectPath) => invoke<number>("findings_deduplicate", { projectPath }),
 };

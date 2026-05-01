@@ -312,6 +312,7 @@ macro_rules! record_llm_output {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::filter::should_filter_field;
 
     #[test]
     fn test_langfuse_config_default() {

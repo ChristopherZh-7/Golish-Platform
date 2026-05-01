@@ -13,11 +13,7 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
   const sessionState = useSessionState(sessionId);
 
   // Destructure for convenience (these are already stable references from the memoized selector)
-  const {
-    timeline,
-    pendingCommand,
-    workingDirectory,
-  } = sessionState;
+  const { timeline, pendingCommand, workingDirectory } = sessionState;
 
   // Terminal-only: just use timeline blocks directly (command blocks)
   const sortedTimeline = timeline;
@@ -139,12 +135,7 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
     if (isAtBottom && (grew || hasPendingCommand)) {
       scrollToBottom();
     }
-  }, [
-    scrollToBottom,
-    isAtBottom,
-    timeline.length,
-    hasPendingCommand,
-  ]);
+  }, [scrollToBottom, isAtBottom, timeline.length, hasPendingCommand]);
 
   // Cleanup pending scroll and live block timer on unmount
   useEffect(() => {

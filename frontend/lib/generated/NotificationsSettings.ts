@@ -3,18 +3,19 @@
 /**
  * Native OS notification settings.
  */
-export type NotificationsSettings = { 
-/**
- * Enable native OS notifications for agent/command completion
- */
-native_enabled: boolean, 
-/**
- * Enable in-app notification sounds (independent of OS notifications).
- * Defaults to true.
- */
-sound_enabled: boolean, 
-/**
- * Notification sound (macOS system sound name like "Blow" or "Ping").
- * If None, defaults to "Blow" on macOS and no sound on other platforms.
- */
-sound: string | null, };
+export type NotificationsSettings = {
+  /**
+   * Enable native OS notifications for agent/command completion
+   */
+  native_enabled: boolean;
+  /**
+   * Enable in-app notification sounds (independent of OS notifications).
+   * Defaults to true.
+   */
+  sound_enabled: boolean;
+  /**
+   * Notification sound (macOS system sound name like "Blow" or "Ping").
+   * If None, defaults to "Blow" on macOS and no sound on other platforms.
+   */
+  sound: string | null;
+};

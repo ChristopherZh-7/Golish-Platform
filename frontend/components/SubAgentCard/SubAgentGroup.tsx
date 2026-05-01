@@ -1,6 +1,6 @@
 import { memo } from "react";
-import type { ActiveSubAgent } from "@/store";
 import { TaskGroupShell } from "@/components/TaskGroupShell";
+import type { ActiveSubAgent } from "@/store";
 import { SubAgentCard } from "./SubAgentCard";
 
 interface SubAgentGroupProps {

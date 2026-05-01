@@ -1,8 +1,6 @@
 import { useCallback } from "react";
 import { Input } from "@/components/ui/input";
-import {
-  type TerminalSettings as TerminalSettingsType,
-} from "@/lib/settings";
+import type { TerminalSettings as TerminalSettingsType } from "@/lib/settings";
 
 interface TerminalSettingsProps {
   settings: TerminalSettingsType;

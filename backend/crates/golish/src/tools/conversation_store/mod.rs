@@ -1,6 +1,7 @@
 //! Tauri commands for frontend conversation & timeline persistence.
 //! Replaces workspace.json read/write with PostgreSQL-backed storage.
 
+use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 
 use crate::state::DbState;
@@ -78,7 +79,7 @@ pub struct WorkspacePreferences {
 pub async fn conv_save(
     state: tauri::State<'_, DbState>,
     conversation: ConversationRow,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     sqlx::query(
         r#"INSERT INTO conversations (id, title, ai_session_id, project_path, sort_order, created_at)
@@ -97,7 +98,7 @@ pub async fn conv_save(
     .bind(conversation.created_at as f64)
     .execute(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
     Ok(())
 }
 
@@ -105,13 +106,13 @@ pub async fn conv_save(
 pub async fn conv_delete(
     state: tauri::State<'_, DbState>,
     conversation_id: String,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     sqlx::query("DELETE FROM conversations WHERE id = $1")
         .bind(&conversation_id)
         .execute(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     Ok(())
 }
 
@@ -119,7 +120,7 @@ pub async fn conv_delete(
 pub async fn conv_list(
     state: tauri::State<'_, DbState>,
     project_path: Option<String>,
-) -> Result<Vec<ConversationRow>, String> {
+) -> Result<Vec<ConversationRow>, GolishError> {
     let pool = state.pool_ready().await?;
     let rows = sqlx::query_as::<_, (String, String, String, Option<String>, i32, chrono::DateTime<chrono::Utc>)>(
         r#"SELECT id, title, ai_session_id, project_path, sort_order, created_at
@@ -130,7 +131,7 @@ pub async fn conv_list(
     .bind(project_path.as_deref())
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     Ok(rows
         .into_iter()
@@ -154,17 +155,17 @@ pub async fn conv_save_messages(
     state: tauri::State<'_, DbState>,
     conversation_id: String,
     messages: Vec<ChatMessageRow>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
 
     // Delete existing messages for this conversation and re-insert
-    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    let mut tx = pool.begin().await?;
 
     sqlx::query("DELETE FROM chat_messages WHERE conversation_id = $1")
         .bind(&conversation_id)
         .execute(&mut *tx)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     for msg in &messages {
         sqlx::query(
@@ -185,10 +186,10 @@ pub async fn conv_save_messages(
         .bind(msg.created_at as f64)
         .execute(&mut *tx)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     }
 
-    tx.commit().await.map_err(|e| e.to_string())?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -196,7 +197,7 @@ pub async fn conv_save_messages(
 pub async fn conv_load_messages(
     state: tauri::State<'_, DbState>,
     conversation_id: String,
-) -> Result<Vec<ChatMessageRow>, String> {
+) -> Result<Vec<ChatMessageRow>, GolishError> {
     let pool = state.pool_ready().await?;
     let rows = sqlx::query_as::<_, (String, String, String, String, Option<String>, Option<String>, Option<serde_json::Value>, Option<i32>, Option<serde_json::Value>, i32, chrono::DateTime<chrono::Utc>)>(
         r#"SELECT id, conversation_id, role, content, thinking, error, tool_calls, tool_calls_content_offset, tool_call_offsets, sort_order, created_at
@@ -207,7 +208,7 @@ pub async fn conv_load_messages(
     .bind(&conversation_id)
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     Ok(rows
         .into_iter()
@@ -237,15 +238,15 @@ pub async fn conv_save_timeline(
     session_id: String,
     conversation_id: Option<String>,
     blocks: Vec<TimelineBlockRow>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
-    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    let mut tx = pool.begin().await?;
 
     sqlx::query("DELETE FROM timeline_blocks WHERE session_id = $1")
         .bind(&session_id)
         .execute(&mut *tx)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     for block in &blocks {
         sqlx::query(
@@ -263,10 +264,10 @@ pub async fn conv_save_timeline(
         .bind(&block.timestamp)
         .execute(&mut *tx)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     }
 
-    tx.commit().await.map_err(|e| e.to_string())?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -274,7 +275,7 @@ pub async fn conv_save_timeline(
 pub async fn conv_load_timeline(
     state: tauri::State<'_, DbState>,
     session_id: String,
-) -> Result<Vec<TimelineBlockRow>, String> {
+) -> Result<Vec<TimelineBlockRow>, GolishError> {
     let pool = state.pool_ready().await?;
     let rows = sqlx::query_as::<_, (String, String, Option<String>, String, serde_json::Value, Option<String>, i32, chrono::DateTime<chrono::Utc>)>(
         r#"SELECT id, session_id, conversation_id, block_type, data, batch_id, sort_order, created_at
@@ -285,7 +286,7 @@ pub async fn conv_load_timeline(
     .bind(&session_id)
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     Ok(rows
         .into_iter()
@@ -310,9 +311,9 @@ pub async fn conv_load_timeline(
 pub async fn conv_save_terminal_state(
     state: tauri::State<'_, DbState>,
     terminal: TerminalStateRow,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
-    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    let mut tx = pool.begin().await?;
 
     // Remove stale rows for this conversation (handles migration from
     // ephemeral PTY UUIDs to stable logical terminal IDs).
@@ -324,7 +325,7 @@ pub async fn conv_save_terminal_state(
         .bind(&terminal.session_id)
         .execute(&mut *tx)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     }
 
     sqlx::query(
@@ -353,9 +354,9 @@ pub async fn conv_save_terminal_state(
     .bind(&terminal.plan_message_id)
     .execute(&mut *tx)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
-    tx.commit().await.map_err(|e| e.to_string())?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -363,7 +364,7 @@ pub async fn conv_save_terminal_state(
 pub async fn conv_load_terminal_states(
     state: tauri::State<'_, DbState>,
     conversation_id: String,
-) -> Result<Vec<TerminalStateRow>, String> {
+) -> Result<Vec<TerminalStateRow>, GolishError> {
     let pool = state.pool_ready().await?;
     let rows = sqlx::query_as::<_, (String, Option<String>, String, String, Option<String>, Option<serde_json::Value>, Option<String>, Option<bool>, Option<serde_json::Value>, Option<String>)>(
         r#"SELECT session_id, conversation_id, working_directory, scrollback, custom_name, plan_json, execution_mode, use_agents, retired_plans_json, plan_message_id
@@ -373,7 +374,7 @@ pub async fn conv_load_terminal_states(
     .bind(&conversation_id)
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     Ok(rows
         .into_iter()
@@ -402,7 +403,7 @@ pub async fn conv_save_preferences(
     state: tauri::State<'_, DbState>,
     project_path: String,
     prefs: WorkspacePreferences,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     sqlx::query(
         r#"INSERT INTO workspace_preferences
@@ -422,7 +423,7 @@ pub async fn conv_save_preferences(
     .bind(&prefs.approval_patterns)
     .execute(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
     Ok(())
 }
 
@@ -430,7 +431,7 @@ pub async fn conv_save_preferences(
 pub async fn conv_load_preferences(
     state: tauri::State<'_, DbState>,
     project_path: String,
-) -> Result<Option<WorkspacePreferences>, String> {
+) -> Result<Option<WorkspacePreferences>, GolishError> {
     let pool = state.pool_ready().await?;
     let row = sqlx::query_as::<_, (Option<String>, Option<serde_json::Value>, Option<String>, Option<serde_json::Value>)>(
         r#"SELECT active_conversation_id, ai_model, approval_mode, approval_patterns
@@ -440,7 +441,7 @@ pub async fn conv_load_preferences(
     .bind(&project_path)
     .fetch_optional(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     Ok(row.map(|(active_conversation_id, ai_model, approval_mode, approval_patterns)| {
         WorkspacePreferences {

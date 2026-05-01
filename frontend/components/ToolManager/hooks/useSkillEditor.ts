@@ -3,8 +3,8 @@ import {
   deleteSkill,
   listSkills,
   readSkill,
-  writeSkill,
   type SkillFileInfo,
+  writeSkill,
 } from "@/lib/pentest/api";
 
 interface UseSkillEditorOptions {
@@ -38,7 +38,7 @@ export function useSkillEditor(opts: UseSkillEditorOptions) {
         setSkillDirty(false);
       }
     },
-    [toolName, setSkillDirty],
+    [toolName, setSkillDirty]
   );
 
   const handleSaveSkill = useCallback(async () => {
@@ -93,7 +93,7 @@ export function useSkillEditor(opts: UseSkillEditorOptions) {
         console.error("[Skills] Delete failed:", e);
       }
     },
-    [toolName, activeSkillId, setSkillsList, setSkillDirty],
+    [toolName, activeSkillId, setSkillsList, setSkillDirty]
   );
 
   const updateContent = useCallback(
@@ -101,7 +101,7 @@ export function useSkillEditor(opts: UseSkillEditorOptions) {
       setSkillContent(content);
       setSkillDirty(true);
     },
-    [setSkillDirty],
+    [setSkillDirty]
   );
 
   return {

@@ -1,25 +1,42 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { js_beautify as jsBeautify, css_beautify as cssBeautify } from "js-beautify";
+import { css_beautify as cssBeautify, js_beautify as jsBeautify } from "js-beautify";
 import {
-  ArrowDown, ArrowUp, Copy,
-  Loader2, RefreshCw, Search, Send, Trash2, X,
+  ArrowDown,
+  ArrowUp,
+  Copy,
+  Loader2,
+  RefreshCw,
+  Search,
+  Send,
+  Trash2,
+  X,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
-import {
-  zapGetHistory, zapGetHistoryCount, zapGetMessage,
-} from "@/lib/pentest/zap-api";
-import type { HttpHistoryEntry, HttpMessageDetail } from "@/lib/pentest/types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { copyToClipboard } from "@/lib/clipboard";
 import { formatBytes as formatSize } from "@/lib/format";
-import { ResizeHandle, methodColor, statusColor } from "./shared";
+import type { HttpHistoryEntry, HttpMessageDetail } from "@/lib/pentest/types";
+import { zapGetHistory, zapGetHistoryCount, zapGetMessage } from "@/lib/pentest/zap-api";
+import { cn } from "@/lib/utils";
+import { methodColor, ResizeHandle, statusColor } from "./shared";
 import { ZapContextMenu } from "./ZapContextMenu";
 
 export function buildRawRequest(detail: HttpMessageDetail): string {
   let headers = detail.request_headers;
   if (!headers.trim()) {
-    const path = (() => { try { return new URL(detail.url).pathname; } catch { return detail.url || "/"; } })();
-    headers = `${detail.method || "GET"} ${path} HTTP/1.1\nHost: ${(() => { try { return new URL(detail.url).host; } catch { return "localhost"; } })()}\n`;
+    const path = (() => {
+      try {
+        return new URL(detail.url).pathname;
+      } catch {
+        return detail.url || "/";
+      }
+    })();
+    headers = `${detail.method || "GET"} ${path} HTTP/1.1\nHost: ${(() => {
+      try {
+        return new URL(detail.url).host;
+      } catch {
+        return "localhost";
+      }
+    })()}\n`;
   }
   headers = headers.replace(/[\r\n]+$/, "");
   const body = detail.request_body || "";
@@ -28,7 +45,15 @@ export function buildRawRequest(detail: HttpMessageDetail): string {
 
 // ── HTTP History Panel ──
 
-export function HttpHistoryPanel({ onSendToRepeater, onSendToIntruder, onActiveScan }: { onSendToRepeater: (raw: string) => void; onSendToIntruder?: (raw: string) => void; onActiveScan?: (url: string) => void }) {
+export function HttpHistoryPanel({
+  onSendToRepeater,
+  onSendToIntruder,
+  onActiveScan,
+}: {
+  onSendToRepeater: (raw: string) => void;
+  onSendToIntruder?: (raw: string) => void;
+  onActiveScan?: (url: string) => void;
+}) {
   const { t } = useTranslation();
   const [allEntries, setAllEntries] = useState<HttpHistoryEntry[]>([]);
   const [totalCount, setTotalCount] = useState(0);
@@ -37,18 +62,20 @@ export function HttpHistoryPanel({ onSendToRepeater, onSendToIntruder, onActiveS
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [sortOrder, setSortOrder] = useState<"desc" | "asc">("desc");
-  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; entry: HttpHistoryEntry } | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; entry: HttpHistoryEntry } | null>(
+    null
+  );
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [hideBeforeId, setHideBeforeId] = useState(0);
 
-  const entries = useMemo(() => allEntries.filter((e) => e.id > hideBeforeId), [allEntries, hideBeforeId]);
+  const entries = useMemo(
+    () => allEntries.filter((e) => e.id > hideBeforeId),
+    [allEntries, hideBeforeId]
+  );
 
   const loadHistory = useCallback(async () => {
     try {
-      const [items, count] = await Promise.all([
-        zapGetHistory(0, 200),
-        zapGetHistoryCount(),
-      ]);
+      const [items, count] = await Promise.all([zapGetHistory(0, 200), zapGetHistoryCount()]);
       setAllEntries(items);
       setTotalCount(count);
     } catch {
@@ -60,7 +87,9 @@ export function HttpHistoryPanel({ onSendToRepeater, onSendToIntruder, onActiveS
     loadHistory();
     let unlisten: (() => void) | null = null;
     import("@tauri-apps/api/event").then(({ listen }) => {
-      listen("sitemap-updated", () => loadHistory()).then((fn) => { unlisten = fn; });
+      listen("sitemap-updated", () => loadHistory()).then((fn) => {
+        unlisten = fn;
+      });
     });
     intervalRef.current = setInterval(loadHistory, 15000);
     return () => {
@@ -69,27 +98,35 @@ export function HttpHistoryPanel({ onSendToRepeater, onSendToIntruder, onActiveS
     };
   }, [loadHistory]);
 
-  const handleSelect = useCallback(async (id: number) => {
-    setSelectedId(id);
-    setLoading(true);
-    try {
-      const url = allEntries.find((e) => e.id === id)?.url;
-      const msg = await zapGetMessage(id, url);
-      setDetail(msg);
-    } catch {
-      setDetail(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [allEntries]);
+  const handleSelect = useCallback(
+    async (id: number) => {
+      setSelectedId(id);
+      setLoading(true);
+      try {
+        const url = allEntries.find((e) => e.id === id)?.url;
+        const msg = await zapGetMessage(id, url);
+        setDetail(msg);
+      } catch {
+        setDetail(null);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [allEntries]
+  );
 
-  const handleSendToRepeater = useCallback(async (id: number) => {
-    try {
-      const url = allEntries.find((e) => e.id === id)?.url;
-      const msg = await zapGetMessage(id, url);
-      onSendToRepeater(buildRawRequest(msg));
-    } catch { /* ignore */ }
-  }, [allEntries, onSendToRepeater]);
+  const handleSendToRepeater = useCallback(
+    async (id: number) => {
+      try {
+        const url = allEntries.find((e) => e.id === id)?.url;
+        const msg = await zapGetMessage(id, url);
+        onSendToRepeater(buildRawRequest(msg));
+      } catch {
+        /* ignore */
+      }
+    },
+    [allEntries, onSendToRepeater]
+  );
 
   const handleClearHistory = useCallback(() => {
     if (!confirm(t("security.clearHistoryConfirm"))) return;
@@ -138,11 +175,15 @@ export function HttpHistoryPanel({ onSendToRepeater, onSendToIntruder, onActiveS
         </span>
         <button
           type="button"
-          onClick={() => setSortOrder((s) => s === "desc" ? "asc" : "desc")}
+          onClick={() => setSortOrder((s) => (s === "desc" ? "asc" : "desc"))}
           title={sortOrder === "desc" ? t("security.newestFirst") : t("security.oldestFirst")}
           className="flex items-center gap-1 p-1.5 rounded-md text-muted-foreground/40 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors"
         >
-          {sortOrder === "desc" ? <ArrowDown className="w-3 h-3" /> : <ArrowUp className="w-3 h-3" />}
+          {sortOrder === "desc" ? (
+            <ArrowDown className="w-3 h-3" />
+          ) : (
+            <ArrowUp className="w-3 h-3" />
+          )}
         </button>
         <button
           type="button"
@@ -171,7 +212,10 @@ export function HttpHistoryPanel({ onSendToRepeater, onSendToIntruder, onActiveS
         onSendToRepeater={handleSendToRepeater}
         onSendDetailToRepeater={(d) => onSendToRepeater(buildRawRequest(d))}
         onCtxMenu={(x, y, entry) => setCtxMenu({ x, y, entry })}
-        onClose={() => { setSelectedId(null); setDetail(null); }}
+        onClose={() => {
+          setSelectedId(null);
+          setDetail(null);
+        }}
       />
       {ctxMenu && (
         <ZapContextMenu
@@ -180,9 +224,18 @@ export function HttpHistoryPanel({ onSendToRepeater, onSendToIntruder, onActiveS
           entry={ctxMenu.entry}
           onClose={() => setCtxMenu(null)}
           onSendToRepeater={(e) => handleSendToRepeater(e.id)}
-          onSendToIntruder={onSendToIntruder ? async (e) => {
-            try { const msg = await zapGetMessage(e.id, e.url); onSendToIntruder(buildRawRequest(msg)); } catch { /* ignore */ }
-          } : undefined}
+          onSendToIntruder={
+            onSendToIntruder
+              ? async (e) => {
+                  try {
+                    const msg = await zapGetMessage(e.id, e.url);
+                    onSendToIntruder(buildRawRequest(msg));
+                  } catch {
+                    /* ignore */
+                  }
+                }
+              : undefined
+          }
           onActiveScan={onActiveScan}
         />
       )}
@@ -191,12 +244,24 @@ export function HttpHistoryPanel({ onSendToRepeater, onSendToIntruder, onActiveS
 }
 
 function HistoryBodyPanel({
-  filtered, entries, selectedId, detail, loading,
-  onSelect, onSendToRepeater, onSendDetailToRepeater, onCtxMenu, onClose,
+  filtered,
+  entries,
+  selectedId,
+  detail,
+  loading,
+  onSelect,
+  onSendToRepeater,
+  onSendDetailToRepeater,
+  onCtxMenu,
+  onClose,
 }: {
-  filtered: HttpHistoryEntry[]; entries: HttpHistoryEntry[];
-  selectedId: number | null; detail: HttpMessageDetail | null; loading: boolean;
-  onSelect: (id: number) => void; onSendToRepeater: (id: number) => void;
+  filtered: HttpHistoryEntry[];
+  entries: HttpHistoryEntry[];
+  selectedId: number | null;
+  detail: HttpMessageDetail | null;
+  loading: boolean;
+  onSelect: (id: number) => void;
+  onSendToRepeater: (id: number) => void;
   onSendDetailToRepeater: (d: HttpMessageDetail) => void;
   onCtxMenu: (x: number, y: number, entry: HttpHistoryEntry) => void;
   onClose: () => void;
@@ -238,24 +303,42 @@ function HistoryBodyPanel({
               <tr
                 key={entry.id}
                 onClick={() => onSelect(entry.id)}
-                onContextMenu={(e) => { e.preventDefault(); onCtxMenu(e.clientX, e.clientY, entry); }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  onCtxMenu(e.clientX, e.clientY, entry);
+                }}
                 className={cn(
                   "cursor-pointer transition-colors border-b border-border/5 group",
                   selectedId === entry.id ? "bg-accent/10" : "hover:bg-[var(--bg-hover)]/40"
                 )}
               >
                 <td className="px-3 py-1.5 text-muted-foreground/50 font-mono">{entry.id}</td>
-                <td className={cn("px-3 py-1.5 font-mono font-medium", methodColor(entry.method))}>{entry.method}</td>
-                <td className="px-3 py-1.5 text-foreground/80 truncate max-w-[400px] font-mono">
-                  {entry.host}<span className="text-muted-foreground/40">{entry.path}</span>
+                <td className={cn("px-3 py-1.5 font-mono font-medium", methodColor(entry.method))}>
+                  {entry.method}
                 </td>
-                <td className={cn("px-3 py-1.5 font-mono", statusColor(entry.status_code))}>{entry.status_code || "-"}</td>
-                <td className="px-3 py-1.5 text-muted-foreground/40 font-mono">{formatSize(entry.content_length)}</td>
-                <td className="px-3 py-1.5 text-muted-foreground/40 font-mono">{entry.time_ms ? `${entry.time_ms}ms` : "-"}</td>
+                <td className="px-3 py-1.5 text-foreground/80 truncate max-w-[400px] font-mono">
+                  {entry.host}
+                  <span className="text-muted-foreground/40">{entry.path}</span>
+                </td>
+                <td className={cn("px-3 py-1.5 font-mono", statusColor(entry.status_code))}>
+                  {entry.status_code || "-"}
+                </td>
+                <td className="px-3 py-1.5 text-muted-foreground/40 font-mono">
+                  {formatSize(entry.content_length)}
+                </td>
+                <td className="px-3 py-1.5 text-muted-foreground/40 font-mono">
+                  {entry.time_ms ? `${entry.time_ms}ms` : "-"}
+                </td>
                 <td className="px-1.5 py-1.5">
-                  <button type="button" title={t("security.sendToRepeater")}
-                    onClick={(e) => { e.stopPropagation(); onSendToRepeater(entry.id); }}
-                    className="p-1 rounded text-muted-foreground/0 group-hover:text-muted-foreground/40 hover:!text-accent hover:bg-accent/10 transition-colors">
+                  <button
+                    type="button"
+                    title={t("security.sendToRepeater")}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSendToRepeater(entry.id);
+                    }}
+                    className="p-1 rounded text-muted-foreground/0 group-hover:text-muted-foreground/40 hover:!text-accent hover:bg-accent/10 transition-colors"
+                  >
                     <Send className="w-3 h-3" />
                   </button>
                 </td>
@@ -275,20 +358,31 @@ function HistoryBodyPanel({
       {selectedId !== null && (
         <>
           <ResizeHandle onResize={handleResize} />
-          <div ref={detailRef} className="flex-shrink-0 flex flex-col overflow-hidden" style={{ width: detailWidth ?? 480 }}>
+          <div
+            ref={detailRef}
+            className="flex-shrink-0 flex flex-col overflow-hidden"
+            style={{ width: detailWidth ?? 480 }}
+          >
             <div className="flex items-center justify-between px-3 py-2 border-b border-border/10">
               <span className="text-[11px] font-medium text-muted-foreground/60">
                 #{selectedId} {t("security.detail")}
               </span>
               <div className="flex items-center gap-1">
                 {detail && (
-                  <button type="button" onClick={() => onSendDetailToRepeater(detail)}
-                    className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium text-muted-foreground/60 hover:text-accent hover:bg-accent/10 transition-colors">
-                    <Send className="w-3 h-3" />{t("security.sendToRepeater")}
+                  <button
+                    type="button"
+                    onClick={() => onSendDetailToRepeater(detail)}
+                    className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium text-muted-foreground/60 hover:text-accent hover:bg-accent/10 transition-colors"
+                  >
+                    <Send className="w-3 h-3" />
+                    {t("security.sendToRepeater")}
                   </button>
                 )}
-                <button type="button" onClick={onClose}
-                  className="p-1 rounded text-muted-foreground/30 hover:text-foreground transition-colors">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="p-1 rounded text-muted-foreground/30 hover:text-foreground transition-colors"
+                >
                   <X className="w-3 h-3" />
                 </button>
               </div>
@@ -315,10 +409,18 @@ function prettyPrintBody(content: string, headers?: string): string {
   if (!content || !content.trim()) return content;
   const ct = (headers || "").toLowerCase();
   if (ct.includes("application/json") || ct.includes("+json")) {
-    try { return JSON.stringify(JSON.parse(content), null, 2); } catch { /* not valid JSON */ }
+    try {
+      return JSON.stringify(JSON.parse(content), null, 2);
+    } catch {
+      /* not valid JSON */
+    }
   }
   if (/^\s*[{[]/.test(content)) {
-    try { return JSON.stringify(JSON.parse(content), null, 2); } catch { /* not valid JSON */ }
+    try {
+      return JSON.stringify(JSON.parse(content), null, 2);
+    } catch {
+      /* not valid JSON */
+    }
   }
   if (ct.includes("text/html") || ct.includes("application/xhtml")) {
     try {
@@ -330,12 +432,17 @@ function prettyPrintBody(content: string, headers?: string): string {
         if (!trimmed) continue;
         if (/^<\//.test(trimmed)) depth = Math.max(0, depth - 1);
         lines.push("  ".repeat(depth) + trimmed);
-        if (/^<[^/!][^>]*[^/]>$/.test(trimmed) && !/<(br|hr|img|input|meta|link|col|area|base|embed|source|track|wbr)[\s/>]/i.test(trimmed)) {
+        if (
+          /^<[^/!][^>]*[^/]>$/.test(trimmed) &&
+          !/<(br|hr|img|input|meta|link|col|area|base|embed|source|track|wbr)[\s/>]/i.test(trimmed)
+        ) {
           depth++;
         }
       }
       return lines.join("\n");
-    } catch { /* fallback to raw */ }
+    } catch {
+      /* fallback to raw */
+    }
   }
   if (ct.includes("javascript") || ct.includes("text/css")) {
     try {
@@ -344,11 +451,12 @@ function prettyPrintBody(content: string, headers?: string): string {
         return cssBeautify(content, { indent_size: 2 });
       }
       return jsBeautify(content, { indent_size: 2, space_in_empty_paren: false });
-    } catch { /* fallback to raw */ }
+    } catch {
+      /* fallback to raw */
+    }
   }
   return content;
 }
-
 
 function parseHeaders(raw: string): { firstLine: string; headers: [string, string][] } {
   const lines = raw.split("\n").map((l) => l.replace(/\r$/, ""));
@@ -367,7 +475,8 @@ function parseHeaders(raw: string): { firstLine: string; headers: [string, strin
 
 function syntaxHighlightJson(json: string): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
-  const re = /("(?:[^"\\]|\\.)*")\s*:|("(?:[^"\\]|\\.)*")|(-?\d+\.?\d*(?:[eE][+-]?\d+)?)|(\btrue\b|\bfalse\b)|(\bnull\b)/g;
+  const re =
+    /("(?:[^"\\]|\\.)*")\s*:|("(?:[^"\\]|\\.)*")|(-?\d+\.?\d*(?:[eE][+-]?\d+)?)|(\btrue\b|\bfalse\b)|(\bnull\b)/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   let key = 0;
@@ -376,16 +485,40 @@ function syntaxHighlightJson(json: string): React.ReactNode[] {
       nodes.push(json.substring(lastIndex, match.index));
     }
     if (match[1]) {
-      nodes.push(<span key={key++} className="text-purple-400">{match[1]}</span>);
-      nodes.push(<span key={key++} className="text-foreground/40">:</span>);
+      nodes.push(
+        <span key={key++} className="text-purple-400">
+          {match[1]}
+        </span>
+      );
+      nodes.push(
+        <span key={key++} className="text-foreground/40">
+          :
+        </span>
+      );
     } else if (match[2]) {
-      nodes.push(<span key={key++} className="text-green-400">{match[2]}</span>);
+      nodes.push(
+        <span key={key++} className="text-green-400">
+          {match[2]}
+        </span>
+      );
     } else if (match[3]) {
-      nodes.push(<span key={key++} className="text-blue-400">{match[3]}</span>);
+      nodes.push(
+        <span key={key++} className="text-blue-400">
+          {match[3]}
+        </span>
+      );
     } else if (match[4]) {
-      nodes.push(<span key={key++} className="text-orange-400">{match[4]}</span>);
+      nodes.push(
+        <span key={key++} className="text-orange-400">
+          {match[4]}
+        </span>
+      );
     } else if (match[5]) {
-      nodes.push(<span key={key++} className="text-red-400/70">{match[5]}</span>);
+      nodes.push(
+        <span key={key++} className="text-red-400/70">
+          {match[5]}
+        </span>
+      );
     }
     lastIndex = match.index + match[0].length;
   }
@@ -397,7 +530,8 @@ function syntaxHighlightJson(json: string): React.ReactNode[] {
 
 function HeaderTable({ raw }: { raw: string }) {
   const { firstLine, headers } = useMemo(() => parseHeaders(raw), [raw]);
-  if (!raw.trim()) return <div className="px-3 py-2 text-[10px] text-muted-foreground/50">(empty)</div>;
+  if (!raw.trim())
+    return <div className="px-3 py-2 text-[10px] text-muted-foreground/50">(empty)</div>;
 
   return (
     <div className="text-[10px]">
@@ -407,8 +541,13 @@ function HeaderTable({ raw }: { raw: string }) {
       <table className="w-full">
         <tbody>
           {headers.map(([k, v], i) => (
-            <tr key={i} className="border-b border-border/[0.03] hover:bg-[var(--bg-hover)]/20 transition-colors">
-              <td className="px-3 py-1 font-mono font-medium text-accent/70 whitespace-nowrap align-top w-[1%]">{k}</td>
+            <tr
+              key={i}
+              className="border-b border-border/[0.03] hover:bg-[var(--bg-hover)]/20 transition-colors"
+            >
+              <td className="px-3 py-1 font-mono font-medium text-accent/70 whitespace-nowrap align-top w-[1%]">
+                {k}
+              </td>
               <td className="px-2 py-1 font-mono text-foreground/60 break-all">{v}</td>
             </tr>
           ))}
@@ -421,10 +560,18 @@ function HeaderTable({ raw }: { raw: string }) {
 function BodyView({ content, headers }: { content: string; headers?: string }) {
   const formatted = useMemo(() => prettyPrintBody(content, headers), [content, headers]);
   const isJson = useMemo(() => {
-    try { JSON.parse(content); return true; } catch { return false; }
+    try {
+      JSON.parse(content);
+      return true;
+    } catch {
+      return false;
+    }
   }, [content]);
 
-  if (!content || !content.trim()) return <div className="px-3 py-4 text-[10px] text-muted-foreground/50 text-center">(empty)</div>;
+  if (!content || !content.trim())
+    return (
+      <div className="px-3 py-4 text-[10px] text-muted-foreground/50 text-center">(empty)</div>
+    );
 
   return (
     <div className="relative group">
@@ -457,18 +604,22 @@ export function DetailTabs({ detail }: { detail: HttpMessageDetail }) {
             onClick={() => setTab(id)}
             className={cn(
               "px-3 py-1.5 text-[10px] font-medium transition-colors relative",
-              tab === id
-                ? "text-accent"
-                : "text-muted-foreground/40 hover:text-foreground"
+              tab === id ? "text-accent" : "text-muted-foreground/40 hover:text-foreground"
             )}
           >
-            {id === "request" ? t("security.request", "Request") : t("security.response", "Response")}
-            {tab === id && <div className="absolute bottom-0 left-1 right-1 h-[1.5px] bg-accent rounded-full" />}
+            {id === "request"
+              ? t("security.request", "Request")
+              : t("security.response", "Response")}
+            {tab === id && (
+              <div className="absolute bottom-0 left-1 right-1 h-[1.5px] bg-accent rounded-full" />
+            )}
           </button>
         ))}
         <div className="flex-1" />
         <span className="text-[9px] text-muted-foreground/25 font-mono mr-1">
-          {tab === "response" && detail.response_body ? `${(detail.response_body.length / 1024).toFixed(1)} KB` : ""}
+          {tab === "response" && detail.response_body
+            ? `${(detail.response_body.length / 1024).toFixed(1)} KB`
+            : ""}
         </span>
       </div>
       <div className="flex-1 overflow-y-auto">
@@ -497,5 +648,3 @@ export function DetailTabs({ detail }: { detail: HttpMessageDetail }) {
     </div>
   );
 }
-
-

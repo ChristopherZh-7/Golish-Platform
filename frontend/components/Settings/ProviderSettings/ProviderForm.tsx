@@ -2,7 +2,11 @@ import { ChevronRight, ExternalLink } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import type { AiSettings, OpenRouterProviderPreferences } from "@/lib/settings";
@@ -12,7 +16,10 @@ export function OpenRouterProviderPreferencesSection({
   updatePref,
 }: {
   settings: AiSettings;
-  updatePref: <K extends keyof OpenRouterProviderPreferences>(field: K, value: OpenRouterProviderPreferences[K]) => void;
+  updatePref: <K extends keyof OpenRouterProviderPreferences>(
+    field: K,
+    value: OpenRouterProviderPreferences[K]
+  ) => void;
 }) {
   const prefs = settings.openrouter.provider_preferences;
 
@@ -63,7 +70,9 @@ export function OpenRouterProviderPreferencesSection({
             placeholder="deepinfra, deepseek"
             className="text-[12px] bg-foreground/[0.03] border-foreground/[0.06]"
           />
-          <p className="text-[10px] text-muted-foreground/35">Comma-separated. Try these providers first, in order.</p>
+          <p className="text-[10px] text-muted-foreground/35">
+            Comma-separated. Try these providers first, in order.
+          </p>
         </div>
 
         <div className="space-y-1.5">
@@ -103,7 +112,10 @@ export function OpenRouterProviderPreferencesSection({
               value={prefs?.sort || "__none__"}
               onValueChange={(value) => updatePref("sort", value === "__none__" ? null : value)}
             >
-              <SelectTrigger id="or-sort" className="w-full text-[12px] bg-foreground/[0.03] border-foreground/[0.06]">
+              <SelectTrigger
+                id="or-sort"
+                className="w-full text-[12px] bg-foreground/[0.03] border-foreground/[0.06]"
+              >
                 <SelectValue placeholder="Default" />
               </SelectTrigger>
               <SelectContent>
@@ -121,9 +133,14 @@ export function OpenRouterProviderPreferencesSection({
             </label>
             <Select
               value={prefs?.data_collection || "__none__"}
-              onValueChange={(value) => updatePref("data_collection", value === "__none__" ? null : value)}
+              onValueChange={(value) =>
+                updatePref("data_collection", value === "__none__" ? null : value)
+              }
             >
-              <SelectTrigger id="or-data" className="w-full text-[12px] bg-foreground/[0.03] border-foreground/[0.06]">
+              <SelectTrigger
+                id="or-data"
+                className="w-full text-[12px] bg-foreground/[0.03] border-foreground/[0.06]"
+              >
                 <SelectValue placeholder="Default" />
               </SelectTrigger>
               <SelectContent>

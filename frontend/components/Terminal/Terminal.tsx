@@ -5,13 +5,13 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { ptyResize, ptyWrite } from "@/lib/api/pty";
 import { logger } from "@/lib/logger";
+import { appendRecordingData } from "@/lib/terminal/recording";
 import { SyncOutputBuffer } from "@/lib/terminal/SyncOutputBuffer";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
-import { appendRecordingData } from "@/lib/terminal/recording";
 import { ThemeManager } from "@/lib/theme";
 import { useRenderMode, useTerminalClearRequest } from "@/store";
-import { ptyResize, ptyWrite } from "@/lib/api/pty";
 import "@xterm/xterm/css/xterm.css";
 
 interface TerminalProps {
@@ -286,7 +286,9 @@ export function Terminal({ sessionId }: TerminalProps) {
       // Restore saved scrollback if available (written before PTY output starts streaming)
       const savedScrollback = TerminalInstanceManager.consumePendingScrollback(sessionId);
       if (savedScrollback) {
-        console.log(`[Terminal] Restoring scrollback for ${sessionId.slice(0,8)}: ${savedScrollback.length} chars`);
+        console.log(
+          `[Terminal] Restoring scrollback for ${sessionId.slice(0, 8)}: ${savedScrollback.length} chars`
+        );
         terminal.write(savedScrollback);
       }
     }

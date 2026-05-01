@@ -53,11 +53,26 @@ export { SEV_BADGE as SEV_COLORS, SEV_DOT } from "@/lib/severity";
 export interface DbVulnLinkFull {
   wiki_paths: string[];
   poc_templates: Array<{
-    id: string; name: string; type: string; language: string; content: string;
-    source: string; source_url: string; severity: string; verified: boolean;
-    description: string; tags: string[]; created: number;
+    id: string;
+    name: string;
+    type: string;
+    language: string;
+    content: string;
+    source: string;
+    source_url: string;
+    severity: string;
+    verified: boolean;
+    description: string;
+    tags: string[];
+    created: number;
   }>;
-  scan_history: Array<{ id: string; target: string; date: number; result: string; details?: string }>;
+  scan_history: Array<{
+    id: string;
+    target: string;
+    date: number;
+    result: string;
+    details?: string;
+  }>;
 }
 
 export function dbToVulnLink(db: DbVulnLinkFull): VulnLink {

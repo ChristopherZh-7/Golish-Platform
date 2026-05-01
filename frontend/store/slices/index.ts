@@ -5,6 +5,37 @@
  * for composition in the main store.
  */
 
+// AI slice
+export {
+  type AiActions,
+  type AiSlice,
+  type AiState,
+  createAiSlice,
+  initialAiState,
+  selectActiveToolCalls,
+  selectAiConfig,
+  selectIsAgentResponding,
+  selectIsAgentThinking,
+} from "./ai";
+// App-shell slice (root-level app state: focus, project, chat-panel, ZAP flag…)
+export {
+  type AppShellActions,
+  type AppShellSlice,
+  type AppShellState,
+  createAppShellSlice,
+  initialAppShellState,
+} from "./app-shell";
+// Appearance slice
+export {
+  type AppearanceActions,
+  type AppearanceSlice,
+  type AppearanceState,
+  createAppearanceSlice,
+  type DisplaySettings,
+  defaultDisplaySettings,
+  initialAppearanceState,
+  selectDisplaySettings,
+} from "./appearance";
 // Context slice
 export {
   type ContextActions,
@@ -20,7 +51,30 @@ export {
   selectIsSessionDead,
   selectSessionTokenUsage,
 } from "./context";
-
+// Conversation slice
+export {
+  type ChatConversation,
+  type ChatMessage,
+  type ChatToolCall,
+  type ConversationActions,
+  type ConversationSlice,
+  type ConversationState,
+  createConversationSlice,
+  createNewConversation,
+  initialConversationState,
+  selectActiveConversation,
+  selectActiveConversationTerminals,
+  selectAllConversations,
+  selectConversationTerminals,
+} from "./conversation";
+// Dialog slice
+export {
+  createDialogSlice,
+  type DialogActions,
+  type DialogSlice,
+  type DialogState,
+  initialDialogState,
+} from "./dialog";
 // Git slice
 export {
   createGitSlice,
@@ -32,7 +86,17 @@ export {
   selectGitStatus,
   selectGitStatusLoading,
 } from "./git";
-
+// HITL slice
+export {
+  createHitlSlice,
+  type HitlActions,
+  type HitlSlice,
+  type HitlState,
+  initialHitlState,
+  selectApprovalMode,
+  selectPendingAskHuman,
+  selectPendingToolApproval,
+} from "./hitl";
 // Notification slice
 export {
   createNotificationSlice,
@@ -47,18 +111,16 @@ export {
   selectUnreadNotificationCount,
 } from "./notification";
 
-// Appearance slice
+// Pane slice
 export {
-  createAppearanceSlice,
-  defaultDisplaySettings,
-  initialAppearanceState,
-  type AppearanceActions,
-  type AppearanceSlice,
-  type AppearanceState,
-  type DisplaySettings,
-  selectDisplaySettings,
-} from "./appearance";
-
+  createPaneSlice,
+  initialPaneState,
+  type PaneActions,
+  type PaneSlice,
+  type PaneState,
+  selectPaneMoveState,
+  selectTabLayout,
+} from "./pane";
 // Panel slice
 export {
   createPanelSlice,
@@ -72,51 +134,21 @@ export {
   selectSessionBrowserOpen,
   selectSidecarPanelOpen,
 } from "./panel";
-
-// Conversation slice
-export {
-  createConversationSlice,
-  createNewConversation,
-  initialConversationState,
-  type ChatConversation,
-  type ChatMessage,
-  type ChatToolCall,
-  type ConversationActions,
-  type ConversationSlice,
-  type ConversationState,
-  selectActiveConversation,
-  selectActiveConversationTerminals,
-  selectAllConversations,
-  selectConversationTerminals,
-} from "./conversation";
-
 // Session slice
 export {
   _drainOutputBuffer,
   _drainOutputBufferSize,
   createSessionSlice,
   initialSessionState,
-  selectActiveSessionId,
-  selectSession,
-  selectTabOrder,
   type SessionActions,
   type SessionSlice,
   type SessionState,
+  selectActiveSessionId,
+  selectSession,
+  selectTabOrder,
 } from "./session";
-
-// AI slice
-export {
-  createAiSlice,
-  initialAiState,
-  selectActiveToolCalls,
-  selectAiConfig,
-  selectIsAgentResponding,
-  selectIsAgentThinking,
-  type AiActions,
-  type AiSlice,
-  type AiState,
-} from "./ai";
-
+// Types
+export type { ImmerSet, SliceCreator, StateGet } from "./types";
 // Workflow slice
 export {
   createWorkflowSlice,
@@ -127,38 +159,3 @@ export {
   type WorkflowSlice,
   type WorkflowState,
 } from "./workflow";
-
-// Pane slice
-export {
-  createPaneSlice,
-  initialPaneState,
-  selectPaneMoveState,
-  selectTabLayout,
-  type PaneActions,
-  type PaneSlice,
-  type PaneState,
-} from "./pane";
-
-// HITL slice
-export {
-  createHitlSlice,
-  initialHitlState,
-  selectApprovalMode,
-  selectPendingAskHuman,
-  selectPendingToolApproval,
-  type HitlActions,
-  type HitlSlice,
-  type HitlState,
-} from "./hitl";
-
-// Dialog slice
-export {
-  createDialogSlice,
-  initialDialogState,
-  type DialogActions,
-  type DialogSlice,
-  type DialogState,
-} from "./dialog";
-
-// Types
-export type { ImmerSet, SliceCreator, StateGet } from "./types";

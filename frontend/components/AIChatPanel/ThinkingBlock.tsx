@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 
 export function ThinkingBlock({ content, isActive }: { content: string; isActive: boolean }) {
   const [expanded, setExpanded] = useState(false);
-  const preview = content.length > 80 ? content.slice(0, 80) + "..." : content;
+  const preview = content.length > 80 ? `${content.slice(0, 80)}...` : content;
 
   return (
     <div className="mb-2">

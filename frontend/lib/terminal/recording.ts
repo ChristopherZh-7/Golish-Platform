@@ -22,7 +22,7 @@ export interface Recording {
   events: [number, string][];
 }
 
-let activeRecordings: Map<
+const activeRecordings: Map<
   string,
   { startTime: number; events: RecordingEvent[]; title: string }
 > = new Map();
@@ -49,7 +49,7 @@ export function appendRecordingData(sessionId: string, data: string) {
 export async function stopRecording(
   sessionId: string,
   width: number,
-  height: number,
+  height: number
 ): Promise<string | null> {
   const rec = activeRecordings.get(sessionId);
   if (!rec) return null;

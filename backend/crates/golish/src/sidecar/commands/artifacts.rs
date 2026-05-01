@@ -1,5 +1,6 @@
 //! L3: Project artifact commands (list / get / preview / discard / apply / regenerate).
 
+use crate::error::GolishError;
 use crate::state::AppState;
 use tauri::State;
 
@@ -9,7 +10,7 @@ use super::super::session::Session;
 use golish_artifacts::{ArtifactFile, ArtifactManager};
 
 /// Resolve git_root from session meta, falling back to `git rev-parse --show-toplevel`.
-fn resolve_git_root(session: &Session) -> Result<std::path::PathBuf, String> {
+fn resolve_git_root(session: &Session) -> Result<std::path::PathBuf, GolishError> {
     session
         .meta()
         .git_root
@@ -33,14 +34,14 @@ fn resolve_git_root(session: &Session) -> Result<std::path::PathBuf, String> {
 pub async fn sidecar_get_pending_artifacts(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<Vec<ArtifactFile>, String> {
+) -> Result<Vec<ArtifactFile>, GolishError> {
     let sessions_dir = state.sidecar_state.config().sessions_dir();
     let session = Session::load(&sessions_dir, &session_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let manager = ArtifactManager::new(session.dir().to_path_buf());
-    manager.list_pending().await.map_err(|e| e.to_string())
+    manager.list_pending().await.map_err(GolishError::from)
 }
 
 /// Get all applied artifacts for a session
@@ -48,14 +49,14 @@ pub async fn sidecar_get_pending_artifacts(
 pub async fn sidecar_get_applied_artifacts(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<Vec<ArtifactFile>, String> {
+) -> Result<Vec<ArtifactFile>, GolishError> {
     let sessions_dir = state.sidecar_state.config().sessions_dir();
     let session = Session::load(&sessions_dir, &session_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let manager = ArtifactManager::new(session.dir().to_path_buf());
-    manager.list_applied().await.map_err(|e| e.to_string())
+    manager.list_applied().await.map_err(GolishError::from)
 }
 
 /// Get a specific pending artifact by filename
@@ -64,17 +65,17 @@ pub async fn sidecar_get_artifact(
     state: State<'_, AppState>,
     session_id: String,
     filename: String,
-) -> Result<Option<ArtifactFile>, String> {
+) -> Result<Option<ArtifactFile>, GolishError> {
     let sessions_dir = state.sidecar_state.config().sessions_dir();
     let session = Session::load(&sessions_dir, &session_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let manager = ArtifactManager::new(session.dir().to_path_buf());
     manager
         .get_pending(&filename)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// Discard a pending artifact
@@ -83,17 +84,17 @@ pub async fn sidecar_discard_artifact(
     state: State<'_, AppState>,
     session_id: String,
     filename: String,
-) -> Result<bool, String> {
+) -> Result<bool, GolishError> {
     let sessions_dir = state.sidecar_state.config().sessions_dir();
     let session = Session::load(&sessions_dir, &session_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let manager = ArtifactManager::new(session.dir().to_path_buf());
     let discarded = manager
         .discard_artifact(&filename)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     if discarded {
         state
@@ -113,36 +114,36 @@ pub async fn sidecar_preview_artifact(
     state: State<'_, AppState>,
     session_id: String,
     filename: String,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     let sessions_dir = state.sidecar_state.config().sessions_dir();
     let session = Session::load(&sessions_dir, &session_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let manager = ArtifactManager::new(session.dir().to_path_buf());
     manager
         .preview_artifact(&filename)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// Get pending artifacts for the current session
 #[tauri::command]
 pub async fn sidecar_get_current_pending_artifacts(
     state: State<'_, AppState>,
-) -> Result<Vec<ArtifactFile>, String> {
+) -> Result<Vec<ArtifactFile>, GolishError> {
     let session_id = state
         .sidecar_state
         .current_session_id()
-        .ok_or_else(|| "No active session".to_string())?;
+        .ok_or_else(|| GolishError::Internal("No active session".into()))?;
 
     let sessions_dir = state.sidecar_state.config().sessions_dir();
     let session = Session::load(&sessions_dir, &session_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let manager = ArtifactManager::new(session.dir().to_path_buf());
-    manager.list_pending().await.map_err(|e| e.to_string())
+    manager.list_pending().await.map_err(GolishError::from)
 }
 
 /// Apply a pending artifact (copy to target, git add, move to applied)
@@ -151,11 +152,11 @@ pub async fn sidecar_apply_artifact(
     state: State<'_, AppState>,
     session_id: String,
     filename: String,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     let sessions_dir = state.sidecar_state.config().sessions_dir();
     let session = Session::load(&sessions_dir, &session_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let git_root = resolve_git_root(&session)?;
 
@@ -163,7 +164,7 @@ pub async fn sidecar_apply_artifact(
     let target_path = manager
         .apply_artifact(&filename, &git_root)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     state
         .sidecar_state
@@ -181,11 +182,11 @@ pub async fn sidecar_apply_artifact(
 pub async fn sidecar_apply_all_artifacts(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<Vec<(String, String)>, String> {
+) -> Result<Vec<(String, String)>, GolishError> {
     let sessions_dir = state.sidecar_state.config().sessions_dir();
     let session = Session::load(&sessions_dir, &session_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let git_root = resolve_git_root(&session)?;
 
@@ -193,7 +194,7 @@ pub async fn sidecar_apply_all_artifacts(
     let results = manager
         .apply_all_artifacts(&git_root)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     for (filename, path) in &results {
         state
@@ -224,13 +225,13 @@ pub async fn sidecar_regenerate_artifacts(
     state: State<'_, AppState>,
     session_id: String,
     backend_override: Option<String>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, GolishError> {
     use golish_artifacts::{ArtifactSynthesisBackend, ArtifactSynthesisConfig};
 
     let sessions_dir = state.sidecar_state.config().sessions_dir();
     let session = Session::load(&sessions_dir, &session_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let git_root = resolve_git_root(&session)?;
 
@@ -240,7 +241,7 @@ pub async fn sidecar_regenerate_artifacts(
     let applied_patches = patch_manager
         .list_applied()
         .await
-        .map_err(|e| e.to_string())?;
+?;
     let patch_subjects: Vec<String> = applied_patches.iter().map(|p| p.subject.clone()).collect();
 
     let settings = state.settings_manager.get().await;
@@ -249,14 +250,14 @@ pub async fn sidecar_regenerate_artifacts(
     if let Some(backend_str) = backend_override {
         config.backend = backend_str
             .parse::<ArtifactSynthesisBackend>()
-            .map_err(|e| e.to_string())?;
+?;
     }
 
     let artifact_manager = ArtifactManager::new(session.dir().to_path_buf());
     let created = artifact_manager
         .regenerate_from_patches_with_config(&git_root, &patch_subjects, &session_context, &config)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     // Load pending artifacts to emit ArtifactCreated events
     let pending_artifacts = artifact_manager.list_pending().await.unwrap_or_default();

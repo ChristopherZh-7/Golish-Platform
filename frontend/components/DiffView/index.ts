@@ -1,7 +1,7 @@
 export { DiffView, type DiffViewProps } from "./DiffView";
 export {
-  GitDiffView,
   type GitDiffLine,
+  GitDiffView,
   type GitDiffViewProps,
   parseGitDiff,
 } from "./GitDiffView";

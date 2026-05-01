@@ -3,6 +3,7 @@
 // This module provides Tauri command handlers for the AI agent system,
 // organized into logical submodules for maintainability.
 
+use crate::error::GolishError;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -137,7 +138,7 @@ impl AiState {
     /// DEPRECATED: Use `resolve_bridge(Some(session_id))` instead.
     pub async fn get_bridge(
         &self,
-    ) -> Result<tokio::sync::RwLockReadGuard<'_, Option<AgentBridge>>, String> {
+    ) -> Result<tokio::sync::RwLockReadGuard<'_, Option<AgentBridge>>, GolishError> {
         let guard = self.bridge.read().await;
         if guard.is_none() {
             return Err(AI_NOT_INITIALIZED_ERROR.to_string());
@@ -146,7 +147,7 @@ impl AiState {
     }
 
     /// DEPRECATED: Use `resolve_bridge(Some(session_id))` instead.
-    pub async fn with_bridge<F, T>(&self, f: F) -> Result<T, String>
+    pub async fn with_bridge<F, T>(&self, f: F) -> Result<T, GolishError>
     where
         F: FnOnce(&AgentBridge) -> T,
     {

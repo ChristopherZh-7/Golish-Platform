@@ -37,6 +37,7 @@ function createMockSession(overrides: Partial<SessionListingInfo> = {}): Session
     first_prompt_preview: "Test prompt preview",
     first_reply_preview: "Test reply preview",
     status: "completed",
+    title: null,
     ...overrides,
   };
 }

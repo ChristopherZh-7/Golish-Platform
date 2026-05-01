@@ -17,8 +17,8 @@ export function convertToolSource(source?: ToolSource): ToolCallSource | undefin
       type: "workflow",
       workflowId: source.workflow_id,
       workflowName: source.workflow_name,
-      stepName: source.step_name,
-      stepIndex: source.step_index,
+      stepName: source.step_name ?? undefined,
+      stepIndex: source.step_index ?? undefined,
     };
   }
   return undefined;

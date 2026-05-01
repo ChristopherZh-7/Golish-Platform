@@ -1,12 +1,4 @@
-import {
-  Bot,
-  Code2,
-  FileText,
-  Search,
-  Settings2,
-  Shield,
-  Terminal,
-} from "lucide-react";
+import { Bot, Code2, FileText, Search, Settings2, Shield, Terminal } from "lucide-react";
 
 const AGENT_COLORS: Record<string, string> = {
   planner: "var(--ansi-blue)",

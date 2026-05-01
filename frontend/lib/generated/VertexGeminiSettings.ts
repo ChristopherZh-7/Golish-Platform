@@ -3,24 +3,25 @@
 /**
  * Vertex AI Gemini (native Google Gemini on Vertex AI) settings.
  */
-export type VertexGeminiSettings = { 
-/**
- * Path to service account JSON credentials
- */
-credentials_path: string | null, 
-/**
- * Google Cloud project ID
- */
-project_id: string | null, 
-/**
- * Vertex AI region (e.g., "us-central1")
- */
-location: string | null, 
-/**
- * Whether to show this provider's models in the model selector
- */
-show_in_selector: boolean, 
-/**
- * Whether to include thoughts in the response (for thinking models)
- */
-include_thoughts: boolean, };
+export type VertexGeminiSettings = {
+  /**
+   * Path to service account JSON credentials
+   */
+  credentials_path: string | null;
+  /**
+   * Google Cloud project ID
+   */
+  project_id: string | null;
+  /**
+   * Vertex AI region (e.g., "us-central1")
+   */
+  location: string | null;
+  /**
+   * Whether to show this provider's models in the model selector
+   */
+  show_in_selector: boolean;
+  /**
+   * Whether to include thoughts in the response (for thinking models)
+   */
+  include_thoughts: boolean;
+};

@@ -18,9 +18,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { logger } from "@/lib/logger";
-import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import * as mcp from "@/lib/mcp";
 import { notify } from "@/lib/notify";
+import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 
 interface McpSettingsProps {
   workspacePath?: string;
@@ -277,7 +277,10 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
                           {server.transport}
                         </Badge>
                         {server.source === "builtin" && (
-                          <Badge variant="secondary" className="text-[10px] px-1.5 py-0 bg-blue-500/15 text-blue-400 border-blue-500/30">
+                          <Badge
+                            variant="secondary"
+                            className="text-[10px] px-1.5 py-0 bg-blue-500/15 text-blue-400 border-blue-500/30"
+                          >
                             built-in
                           </Badge>
                         )}

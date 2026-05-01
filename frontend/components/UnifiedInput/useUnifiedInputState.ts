@@ -1,19 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { filterCommands } from "@/components/SlashCommandPopup";
 import { useCommandHistory } from "@/hooks/useCommandHistory";
 import { useFileCommands } from "@/hooks/useFileCommands";
 import { type HistoryMatch, useHistorySearch } from "@/hooks/useHistorySearch";
 import { usePathCompletion } from "@/hooks/usePathCompletion";
 import { type SlashCommand, useSlashCommands } from "@/hooks/useSlashCommands";
-import { notify } from "@/lib/notify";
-import { useTranslation } from "react-i18next";
-import { type CaretSettings, DEFAULT_CARET_SETTINGS, getSettings } from "@/lib/settings";
+import { useToolSearch } from "@/hooks/useToolSearch";
 import type { FileInfo } from "@/lib/api/files";
+import { ptyWrite } from "@/lib/api/pty";
 import type { PathCompletion } from "@/lib/api/shell";
 import { imeGetSource, imeSetSource } from "@/lib/api/shell";
-import { ptyWrite } from "@/lib/api/pty";
-import { useToolSearch } from "@/hooks/useToolSearch";
+import { notify } from "@/lib/notify";
 import type { ToolConfig } from "@/lib/pentest/types";
+import { type CaretSettings, DEFAULT_CARET_SETTINGS, getSettings } from "@/lib/settings";
 import { usePendingCommand, useStore } from "@/store";
 import { useUnifiedInputState as useStoreInputState } from "@/store/selectors/unified-input";
 
@@ -30,7 +30,7 @@ export interface ToolParam {
 
 export function extractWordAtCursor(
   input: string,
-  cursorPos: number,
+  cursorPos: number
 ): { word: string; startIndex: number } {
   const beforeCursor = input.slice(0, cursorPos);
   const match = beforeCursor.match(/[^\s|;&]+$/);
@@ -141,7 +141,7 @@ export function useInputState({ sessionId }: { sessionId: string }) {
     slashSpaceIndex === -1 ? slashInput : slashInput.slice(0, slashSpaceIndex);
   const filteredSlashCommands = useMemo(
     () => filterCommands(commands, slashCommandName),
-    [commands, slashCommandName],
+    [commands, slashCommandName]
   );
 
   const atMatch = input.match(/@([^\s@]*)$/);
@@ -308,24 +308,21 @@ export function useInputState({ sessionId }: { sessionId: string }) {
     addToHistory(historyEntry);
     setLastSentCommand(sessionId, historyEntry);
     ptyWrite(sessionId, `${fullCmd}\n`).catch((err) =>
-      console.error("[UnifiedInput] ptyWrite failed:", err),
+      console.error("[UnifiedInput] ptyWrite failed:", err)
     );
   }, [sessionId, addToHistory, resetHistory, setLastSentCommand, clearToolMode]);
 
-  const handleSlashSelect = useCallback(
-    async (command: SlashCommand, _args?: string) => {
-      if (command.type === "builtin" && command.name === "t") {
-        setShowSlashPopup(false);
-        setInput("/t ");
-        requestAnimationFrame(() => textareaRef.current?.focus());
-        return;
-      }
+  const handleSlashSelect = useCallback(async (command: SlashCommand, _args?: string) => {
+    if (command.type === "builtin" && command.name === "t") {
       setShowSlashPopup(false);
-      setInput("");
-      notify.info("Slash commands with AI are available in the AI Chat panel (right sidebar).");
-    },
-    [],
-  );
+      setInput("/t ");
+      requestAnimationFrame(() => textareaRef.current?.focus());
+      return;
+    }
+    setShowSlashPopup(false);
+    setInput("");
+    notify.info("Slash commands with AI are available in the AI Chat panel (right sidebar).");
+  }, []);
 
   const handleFileSelect = useCallback(
     (file: FileInfo) => {
@@ -334,7 +331,7 @@ export function useInputState({ sessionId }: { sessionId: string }) {
       setInput(newInput);
       setFileSelectedIndex(0);
     },
-    [input],
+    [input]
   );
 
   const handlePathSelect = useCallback((completion: PathCompletion) => {
@@ -421,7 +418,7 @@ export function useInputState({ sessionId }: { sessionId: string }) {
       setInput("");
       requestAnimationFrame(() => textareaRef.current?.focus());
     },
-    [t],
+    [t]
   );
 
   // onChange handler — reads dynamic values from stateRef for callback stability
@@ -491,7 +488,7 @@ export function useInputState({ sessionId }: { sessionId: string }) {
         }
       }
     },
-    [resetHistory],
+    [resetHistory]
   );
 
   const handleFocus = useCallback(() => {

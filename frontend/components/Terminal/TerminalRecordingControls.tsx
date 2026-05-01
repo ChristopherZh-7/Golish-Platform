@@ -1,11 +1,7 @@
+import { Circle, Clock, Square } from "lucide-react";
 import { memo, useCallback, useEffect, useState } from "react";
-import { Circle, Square, Clock } from "lucide-react";
+import { isRecording, startRecording, stopRecording } from "@/lib/terminal/recording";
 import { cn } from "@/lib/utils";
-import {
-  isRecording,
-  startRecording,
-  stopRecording,
-} from "@/lib/terminal/recording";
 
 interface Props {
   sessionId: string;
@@ -41,9 +37,7 @@ export const TerminalRecordingControls = memo(function TerminalRecordingControls
       const id = await stopRecording(sessionId, cols, rows);
       setRecording(false);
       if (id) {
-        window.dispatchEvent(
-          new CustomEvent("recording-saved", { detail: { id } }),
-        );
+        window.dispatchEvent(new CustomEvent("recording-saved", { detail: { id } }));
       }
     } else {
       startRecording(sessionId);
@@ -64,7 +58,7 @@ export const TerminalRecordingControls = memo(function TerminalRecordingControls
         "flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition-all",
         recording
           ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
-          : "bg-muted/20 text-muted-foreground/50 hover:bg-muted/30 hover:text-muted-foreground/80",
+          : "bg-muted/20 text-muted-foreground/50 hover:bg-muted/30 hover:text-muted-foreground/80"
       )}
       title={recording ? "Stop recording" : "Start recording"}
     >

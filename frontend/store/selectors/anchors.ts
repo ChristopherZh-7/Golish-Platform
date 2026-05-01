@@ -58,7 +58,7 @@ export function clearAnchorCache(sessionId?: string) {
 
 function computeAnchorMap(
   state: ReturnType<typeof useStore.getState>,
-  sessionId: string,
+  sessionId: string
 ): AnchorMap {
   const timeline = state.timelines[sessionId];
   if (!timeline || timeline.length === 0) return EMPTY_MAP;
@@ -121,7 +121,7 @@ function computeAnchorMap(
  */
 export function selectAnchorMap(
   state: ReturnType<typeof useStore.getState>,
-  sessionId: string,
+  sessionId: string
 ): AnchorMap {
   const timeline = state.timelines[sessionId];
   const cached = cache.get(sessionId);
@@ -151,7 +151,7 @@ export function useAnchorMap(sessionId: string | null | undefined): AnchorMap {
  */
 export function useAnchorFor(
   sessionId: string | null | undefined,
-  requestId: string | null | undefined,
+  requestId: string | null | undefined
 ): string | null {
   return useStore((state) => {
     if (!sessionId || !requestId) return null;

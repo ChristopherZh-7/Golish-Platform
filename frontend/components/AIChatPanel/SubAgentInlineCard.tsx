@@ -70,7 +70,7 @@ function deriveFallback(tc: ChatToolCall): ResolvedSubAgent {
 function useResolvedSubAgent(
   sessionId: string | null | undefined,
   requestId: string,
-  tc: ChatToolCall,
+  tc: ChatToolCall
 ): ResolvedSubAgent {
   const activeAgent = useStore((s) => {
     if (!sessionId) return null;
@@ -198,10 +198,11 @@ export const SubAgentInlineCard = memo(function SubAgentInlineCard({
       onClick={handleClick}
       className={cn(
         "rounded-lg border bg-background/50 p-2.5 transition-colors hover:border-accent/40 cursor-pointer group text-left w-full",
-        resolved.status === "running" && "border-l-2 animate-[pulse-border_2s_ease-in-out_infinite]",
+        resolved.status === "running" &&
+          "border-l-2 animate-[pulse-border_2s_ease-in-out_infinite]",
         resolved.status === "error" && "border-red-500/30",
         resolved.status === "completed" && "border-border/30",
-        resolved.status === "interrupted" && "border-amber-500/30",
+        resolved.status === "interrupted" && "border-amber-500/30"
       )}
       style={resolved.status === "running" ? { borderLeftColor: color } : undefined}
     >
@@ -215,7 +216,7 @@ export const SubAgentInlineCard = memo(function SubAgentInlineCard({
             resolved.status === "completed" && "text-foreground/85",
             resolved.status === "running" && "text-accent",
             resolved.status === "error" && "text-red-400/90",
-            resolved.status === "interrupted" && "text-amber-400/90",
+            resolved.status === "interrupted" && "text-amber-400/90"
           )}
         >
           {resolved.agentName}
@@ -249,9 +250,7 @@ export const SubAgentInlineCard = memo(function SubAgentInlineCard({
             </span>
           )}
           {resolved.error && resolved.toolCount > 0 && <span>·</span>}
-          {resolved.error && (
-            <span className="text-red-400/70 truncate">{resolved.error}</span>
-          )}
+          {resolved.error && <span className="text-red-400/70 truncate">{resolved.error}</span>}
         </div>
       )}
     </button>

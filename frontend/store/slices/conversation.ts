@@ -74,7 +74,12 @@ export interface ConversationActions {
   /** Add a tool call to the last assistant message */
   addMessageToolCall: (convId: string, toolCall: ChatToolCall) => void;
   /** Update a tool call result on the last assistant message */
-  updateMessageToolResult: (convId: string, toolName: string, result: string, success: boolean) => void;
+  updateMessageToolResult: (
+    convId: string,
+    toolName: string,
+    result: string,
+    success: boolean
+  ) => void;
   /** Finalize the last streaming message */
   finalizeStreamingMessage: (convId: string, response?: string, reasoning?: string) => void;
   /** Set error on the last streaming message or add an error message */
@@ -91,7 +96,7 @@ export interface ConversationActions {
   restoreConversations: (
     convs: ChatConversation[],
     order: string[],
-    activeId: string | null,
+    activeId: string | null
   ) => void;
 }
 
@@ -125,7 +130,10 @@ export function createNewConversation(): ChatConversation {
 /**
  * Creates the conversation slice.
  */
-export const createConversationSlice: SliceCreator<ConversationSlice, ConversationStoreDraft> = (set, get) => ({
+export const createConversationSlice: SliceCreator<ConversationSlice, ConversationStoreDraft> = (
+  set,
+  get
+) => ({
   ...initialConversationState,
 
   addConversation: (conv) =>
@@ -146,8 +154,7 @@ export const createConversationSlice: SliceCreator<ConversationSlice, Conversati
       }
       if (state.activeConversationId === convId) {
         const remaining = state.conversationOrder;
-        state.activeConversationId =
-          remaining.length > 0 ? remaining[remaining.length - 1] : null;
+        state.activeConversationId = remaining.length > 0 ? remaining[remaining.length - 1] : null;
       }
     }),
 
@@ -343,9 +350,7 @@ export const createConversationSlice: SliceCreator<ConversationSlice, Conversati
       }
       state.conversationOrder = order.filter((id) => state.conversations[id]);
       state.activeConversationId =
-        activeId && state.conversations[activeId]
-          ? activeId
-          : state.conversationOrder[0] ?? null;
+        activeId && state.conversations[activeId] ? activeId : (state.conversationOrder[0] ?? null);
     }),
 });
 
@@ -354,7 +359,7 @@ export const selectActiveConversation = <T extends ConversationState>(
   state: T
 ): ChatConversation | null => {
   const convId = state.activeConversationId;
-  return convId ? state.conversations[convId] ?? null : null;
+  return convId ? (state.conversations[convId] ?? null) : null;
 };
 
 export const selectConversationTerminals = <T extends ConversationState>(

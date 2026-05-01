@@ -3,12 +3,13 @@
 /**
  * Ollama local LLM settings.
  */
-export type OllamaSettings = { 
-/**
- * Ollama server URL
- */
-base_url: string, 
-/**
- * Whether to show this provider's models in the model selector
- */
-show_in_selector: boolean, };
+export type OllamaSettings = {
+  /**
+   * Ollama server URL
+   */
+  base_url: string;
+  /**
+   * Whether to show this provider's models in the model selector
+   */
+  show_in_selector: boolean;
+};

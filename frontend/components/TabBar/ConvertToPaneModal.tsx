@@ -24,7 +24,12 @@ interface ConvertToPaneModalProps {
   onConfirm: (destTabId: string, location: "left" | "right" | "top" | "bottom") => void;
 }
 
-export function ConvertToPaneModal({ sourceTabId, tabs, onClose, onConfirm }: ConvertToPaneModalProps) {
+export function ConvertToPaneModal({
+  sourceTabId,
+  tabs,
+  onClose,
+  onConfirm,
+}: ConvertToPaneModalProps) {
   const destTabs = tabs
     .map((t, index) => ({ tab: t, index }))
     .filter(({ tab }) => tab.tabType === "terminal" && tab.id !== sourceTabId);

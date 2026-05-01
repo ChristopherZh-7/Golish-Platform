@@ -1,11 +1,11 @@
 import { useCallback } from "react";
 import { buildProviderConfig, initAiSession } from "@/lib/ai";
+import { getGitBranch } from "@/lib/api/git";
+import { ptyCreate } from "@/lib/api/pty";
 import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
 import { countLeafPanes, findPaneById } from "@/lib/pane-utils";
 import { getSettings } from "@/lib/settings";
-import { getGitBranch } from "@/lib/api/git";
-import { ptyCreate } from "@/lib/api/pty";
 import { type SplitDirection, useStore } from "@/store";
 
 export function usePaneControls(activeSessionId: string | null) {

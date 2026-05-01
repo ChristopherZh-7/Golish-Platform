@@ -18,7 +18,7 @@ export interface ChatTabsScrollbarState {
   handleThumbDragStart: (e: React.MouseEvent) => void;
 }
 
-export function useChatTabsScrollbar(conversationCount: number): ChatTabsScrollbarState {
+export function useChatTabsScrollbar(_conversationCount: number): ChatTabsScrollbarState {
   const tabsRef = useRef<HTMLDivElement | null>(null);
   const [tabsHovered, setTabsHovered] = useState(false);
   const [scrollThumb, setScrollThumb] = useState({ left: 0, width: 0, visible: false });
@@ -50,7 +50,7 @@ export function useChatTabsScrollbar(conversationCount: number): ChatTabsScrollb
       el.removeEventListener("scroll", updateScrollThumb);
       observer.disconnect();
     };
-  }, [updateScrollThumb, conversationCount]);
+  }, [updateScrollThumb]);
 
   // Mouse wheel -> horizontal scroll
   useEffect(() => {

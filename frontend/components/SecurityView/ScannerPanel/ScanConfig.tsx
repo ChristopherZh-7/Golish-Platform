@@ -1,10 +1,18 @@
-import { useEffect, useRef, useState } from "react";
 import { ChevronDown, KeyRound, ShieldAlert } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { VaultEntrySafe } from "@/lib/security";
+import { cn } from "@/lib/utils";
 
-export function PolicyDropdown({ value, onChange, options }: { value: string; onChange: (v: string) => void; options: { value: string; label: string }[] }) {
+export function PolicyDropdown({
+  value,
+  onChange,
+  options,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: { value: string; label: string }[];
+}) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const selected = options.find((o) => o.value === value);
@@ -26,13 +34,18 @@ export function PolicyDropdown({ value, onChange, options }: { value: string; on
           "flex items-center gap-1.5 px-2 py-1 text-[10px] rounded-md border transition-colors",
           "bg-[var(--bg-hover)]/20 border-border/20 text-muted-foreground/60",
           "hover:bg-[var(--bg-hover)]/40 hover:border-border/40 hover:text-muted-foreground/80",
-          open && "border-accent/30 bg-[var(--bg-hover)]/30",
+          open && "border-accent/30 bg-[var(--bg-hover)]/30"
         )}
         onClick={() => setOpen(!open)}
       >
         <ShieldAlert className="w-3 h-3 flex-shrink-0" />
         <span className="truncate max-w-[120px]">{selected?.label ?? value}</span>
-        <ChevronDown className={cn("w-2.5 h-2.5 text-muted-foreground/40 transition-transform", open && "rotate-180")} />
+        <ChevronDown
+          className={cn(
+            "w-2.5 h-2.5 text-muted-foreground/40 transition-transform",
+            open && "rotate-180"
+          )}
+        />
       </button>
       {open && (
         <div className="absolute top-full left-0 mt-1 min-w-[180px] max-h-48 overflow-y-auto rounded-lg border border-border/30 bg-card shadow-lg z-50 py-1">
@@ -43,9 +56,12 @@ export function PolicyDropdown({ value, onChange, options }: { value: string; on
               className={cn(
                 "w-full text-left px-3 py-1.5 text-[10px] transition-colors",
                 "hover:bg-[var(--bg-hover)]/60",
-                opt.value === value && "text-accent bg-accent/5 font-medium",
+                opt.value === value && "text-accent bg-accent/5 font-medium"
               )}
-              onClick={() => { onChange(opt.value); setOpen(false); }}
+              onClick={() => {
+                onChange(opt.value);
+                setOpen(false);
+              }}
             >
               {opt.label}
             </button>
@@ -56,7 +72,13 @@ export function PolicyDropdown({ value, onChange, options }: { value: string; on
   );
 }
 
-export function CredentialDropdown({ value, onChange, open, onToggle, entries }: {
+export function CredentialDropdown({
+  value,
+  onChange,
+  open,
+  onToggle,
+  entries,
+}: {
   value: string;
   onChange: (v: string) => void;
   open: boolean;
@@ -66,7 +88,9 @@ export function CredentialDropdown({ value, onChange, open, onToggle, entries }:
   const { t } = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
   const selected = entries.find((e) => e.id === value);
-  const filtered = entries.filter((e) => ["password", "token", "cookie", "apiKey"].includes(e.entry_type));
+  const filtered = entries.filter((e) =>
+    ["password", "token", "cookie", "apiKey"].includes(e.entry_type)
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -85,13 +109,20 @@ export function CredentialDropdown({ value, onChange, open, onToggle, entries }:
           "flex items-center gap-1.5 px-2 py-1 text-[10px] rounded-md border transition-colors",
           "bg-[var(--bg-hover)]/20 border-border/20 text-muted-foreground/60",
           "hover:bg-[var(--bg-hover)]/40 hover:border-border/40 hover:text-muted-foreground/80",
-          open && "border-accent/30 bg-[var(--bg-hover)]/30",
+          open && "border-accent/30 bg-[var(--bg-hover)]/30"
         )}
         onClick={onToggle}
       >
         <KeyRound className="w-3 h-3 flex-shrink-0" />
-        <span className="truncate max-w-[140px]">{selected ? selected.name : t("security.noCredential", "No credential (unauthenticated)")}</span>
-        <ChevronDown className={cn("w-2.5 h-2.5 text-muted-foreground/40 transition-transform", open && "rotate-180")} />
+        <span className="truncate max-w-[140px]">
+          {selected ? selected.name : t("security.noCredential", "No credential (unauthenticated)")}
+        </span>
+        <ChevronDown
+          className={cn(
+            "w-2.5 h-2.5 text-muted-foreground/40 transition-transform",
+            open && "rotate-180"
+          )}
+        />
       </button>
       {open && (
         <div className="absolute top-full left-0 mt-1 min-w-[200px] max-h-48 overflow-y-auto rounded-lg border border-border/30 bg-card shadow-lg z-50 py-1">
@@ -99,9 +130,12 @@ export function CredentialDropdown({ value, onChange, open, onToggle, entries }:
             type="button"
             className={cn(
               "w-full text-left px-3 py-1.5 text-[10px] transition-colors hover:bg-[var(--bg-hover)]/60",
-              !value && "text-accent bg-accent/5 font-medium",
+              !value && "text-accent bg-accent/5 font-medium"
             )}
-            onClick={() => { onChange(""); onToggle(); }}
+            onClick={() => {
+              onChange("");
+              onToggle();
+            }}
           >
             {t("security.noCredential", "No credential (unauthenticated)")}
           </button>
@@ -111,13 +145,18 @@ export function CredentialDropdown({ value, onChange, open, onToggle, entries }:
               type="button"
               className={cn(
                 "w-full text-left px-3 py-1.5 text-[10px] transition-colors hover:bg-[var(--bg-hover)]/60 flex items-center gap-2",
-                value === entry.id && "text-accent bg-accent/5 font-medium",
+                value === entry.id && "text-accent bg-accent/5 font-medium"
               )}
-              onClick={() => { onChange(entry.id); onToggle(); }}
+              onClick={() => {
+                onChange(entry.id);
+                onToggle();
+              }}
             >
               <KeyRound className="w-2.5 h-2.5 flex-shrink-0" />
               <span className="truncate">{entry.name}</span>
-              <span className="text-muted-foreground/40 text-[8px] ml-auto">{entry.entry_type}</span>
+              <span className="text-muted-foreground/40 text-[8px] ml-auto">
+                {entry.entry_type}
+              </span>
             </button>
           ))}
         </div>

@@ -113,17 +113,11 @@ export interface SecurityOverview {
 
 // ─── Operation / Audit Log ─────────────────────────────────────────────
 
-export async function oplogList(
-  projectPath: string,
-  limit?: number
-): Promise<AuditRow[]> {
+export async function oplogList(projectPath: string, limit?: number): Promise<AuditRow[]> {
   return invoke("oplog_list", { projectPath, limit });
 }
 
-export async function oplogListByTarget(
-  targetId: string,
-  limit?: number
-): Promise<AuditRow[]> {
+export async function oplogListByTarget(targetId: string, limit?: number): Promise<AuditRow[]> {
   return invoke("oplog_list_by_target", { targetId, limit });
 }
 
@@ -149,33 +143,23 @@ export async function oplogCount(projectPath: string): Promise<number> {
 
 // ─── Target Security Data ──────────────────────────────────────────────
 
-export async function targetAssetsList(
-  targetId: string
-): Promise<TargetAsset[]> {
+export async function targetAssetsList(targetId: string): Promise<TargetAsset[]> {
   return invoke("target_assets_list", { targetId });
 }
 
-export async function apiEndpointsList(
-  targetId: string
-): Promise<ApiEndpoint[]> {
+export async function apiEndpointsList(targetId: string): Promise<ApiEndpoint[]> {
   return invoke("api_endpoints_list", { targetId });
 }
 
-export async function apiEndpointsUntested(
-  targetId: string
-): Promise<ApiEndpoint[]> {
+export async function apiEndpointsUntested(targetId: string): Promise<ApiEndpoint[]> {
   return invoke("api_endpoints_untested", { targetId });
 }
 
-export async function fingerprintsList(
-  targetId: string
-): Promise<Fingerprint[]> {
+export async function fingerprintsList(targetId: string): Promise<Fingerprint[]> {
   return invoke("fingerprints_list", { targetId });
 }
 
-export async function jsAnalysisList(
-  targetId: string
-): Promise<JsAnalysisResult[]> {
+export async function jsAnalysisList(targetId: string): Promise<JsAnalysisResult[]> {
   return invoke("js_analysis_list", { targetId });
 }
 
@@ -186,20 +170,14 @@ export async function passiveScansList(
   return invoke("passive_scans_list", { targetId, limit });
 }
 
-export async function passiveScansVulnerable(
-  targetId: string
-): Promise<PassiveScanLog[]> {
+export async function passiveScansVulnerable(targetId: string): Promise<PassiveScanLog[]> {
   return invoke("passive_scans_vulnerable", { targetId });
 }
 
-export async function passiveScansStats(
-  targetId: string
-): Promise<Record<string, number>> {
+export async function passiveScansStats(targetId: string): Promise<Record<string, number>> {
   return invoke("passive_scans_stats", { targetId });
 }
 
-export async function targetSecurityOverview(
-  targetId: string
-): Promise<SecurityOverview> {
+export async function targetSecurityOverview(targetId: string): Promise<SecurityOverview> {
   return invoke("target_security_overview", { targetId });
 }

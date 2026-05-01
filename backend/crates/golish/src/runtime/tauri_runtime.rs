@@ -1,3 +1,4 @@
+use crate::error::GolishError;
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use golish_core::events::{AiEvent, AiEventEnvelope};
@@ -48,7 +49,7 @@ impl TauriRuntime {
     ///     app_state: tauri::State<'_, crate::state::AppState>,
     ///     request_id: String,
     ///     approved: bool,
-    /// ) -> Result<(), String> {
+    /// ) -> Result<(), GolishError> {
     ///     let decision = if approved {
     ///         ApprovalResult::Approved
     ///     } else {

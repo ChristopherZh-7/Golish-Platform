@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -561,7 +562,7 @@ export function useToolInstall(
       }));
       setError(null);
       try {
-        const proxyUrl = await getProxy();
+        await getProxy();
         await installDepFile(toolDir, fileName);
         setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.depInstallDone") }));
         await new Promise((r) => setTimeout(r, 1500));

@@ -176,6 +176,7 @@ export function useChatAiEvents({
                 respondToToolApproval(event.session_id, {
                   request_id: event.request_id,
                   approved: true,
+                  reason: null,
                   remember: false,
                   always_allow: false,
                 }).catch(console.error);
@@ -209,7 +210,7 @@ export function useChatAiEvents({
             }
 
             case "completed": {
-              store.finalizeStreamingMessage(convId, event.response, event.reasoning);
+              store.finalizeStreamingMessage(convId, event.response, event.reasoning ?? undefined);
               streamingMsgRef.current = null;
               // Keep the stop button visible during task-mode execution:
               // finalizeStreamingMessage clears isStreaming, but the Tauri call
@@ -298,7 +299,7 @@ export function useChatAiEvents({
                         {
                           name: event.step_name,
                           output: event.output ?? undefined,
-                          durationMs: event.duration_ms,
+                          durationMs: Number(event.duration_ms),
                         },
                       ],
                     }
@@ -312,7 +313,7 @@ export function useChatAiEvents({
                   ? {
                       ...prev,
                       status: "completed" as const,
-                      totalDurationMs: event.total_duration_ms,
+                      totalDurationMs: Number(event.total_duration_ms),
                     }
                   : prev
               );
@@ -368,11 +369,11 @@ export function useChatAiEvents({
 
             // Compaction events
             case "compaction_started": {
-              setCompactionState({ active: true, tokensBefore: event.tokens_before });
+              setCompactionState({ active: true, tokensBefore: Number(event.tokens_before) });
               break;
             }
             case "compaction_completed": {
-              setCompactionState({ active: false, tokensBefore: event.tokens_before });
+              setCompactionState({ active: false, tokensBefore: Number(event.tokens_before) });
               setTimeout(() => setCompactionState(null), 5000);
               break;
             }
@@ -402,7 +403,7 @@ export function useChatAiEvents({
       unlisten = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [generateTitleRef.current]);
 
   const handleToolApprove = useCallback((requestId: string) => {
     const pa = pendingApprovalRef.current;
@@ -410,6 +411,7 @@ export function useChatAiEvents({
     respondToToolApproval(pa.sessionId, {
       request_id: requestId,
       approved: true,
+      reason: null,
       remember: false,
       always_allow: false,
     }).catch(console.error);
@@ -422,6 +424,7 @@ export function useChatAiEvents({
     respondToToolApproval(pa.sessionId, {
       request_id: requestId,
       approved: false,
+      reason: null,
       remember: false,
       always_allow: false,
     }).catch(console.error);
@@ -453,7 +456,7 @@ export function useChatAiEvents({
       await respondToToolApproval(askHumanRequest.sessionId, {
         request_id: askHumanRequest.requestId,
         approved: false,
-        reason: undefined,
+        reason: null,
         remember: false,
         always_allow: false,
       });

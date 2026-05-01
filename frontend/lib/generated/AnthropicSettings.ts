@@ -3,12 +3,13 @@
 /**
  * Direct Anthropic API settings.
  */
-export type AnthropicSettings = { 
-/**
- * Anthropic API key (supports $ENV_VAR syntax)
- */
-api_key: string | null, 
-/**
- * Whether to show this provider's models in the model selector
- */
-show_in_selector: boolean, };
+export type AnthropicSettings = {
+  /**
+   * Anthropic API key (supports $ENV_VAR syntax)
+   */
+  api_key: string | null;
+  /**
+   * Whether to show this provider's models in the model selector
+   */
+  show_in_selector: boolean;
+};

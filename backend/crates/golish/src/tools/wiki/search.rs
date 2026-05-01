@@ -10,6 +10,7 @@
 //! - [`wiki_stats`]     — small count + recent-pages summary used by the
 //!   home dashboard.
 
+use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
@@ -26,7 +27,7 @@ pub struct WikiSearchResult {
 }
 
 #[tauri::command]
-pub async fn wiki_search(query: String) -> Result<Vec<WikiSearchResult>, String> {
+pub async fn wiki_search(query: String) -> Result<Vec<WikiSearchResult>, GolishError> {
     let base = wiki_base_dir();
     if !base.exists() {
         return Ok(Vec::new());
@@ -105,22 +106,22 @@ pub async fn wiki_search_db(
     category: Option<String>,
     tag: Option<String>,
     limit: Option<i64>,
-) -> Result<Vec<WikiSearchResultDb>, String> {
+) -> Result<Vec<WikiSearchResultDb>, GolishError> {
     let pool = state.pool_ready().await?;
     let max = limit.unwrap_or(20);
 
     let pages = if let Some(cat) = category {
         golish_db::repo::wiki_kb::search_by_category(pool, &cat, max)
             .await
-            .map_err(|e| e.to_string())?
+?
     } else if let Some(t) = tag {
         golish_db::repo::wiki_kb::search_by_tag(pool, &t, max)
             .await
-            .map_err(|e| e.to_string())?
+?
     } else {
         golish_db::repo::wiki_kb::search_fts(pool, &query, max)
             .await
-            .map_err(|e| e.to_string())?
+?
     };
 
     Ok(pages
@@ -142,14 +143,14 @@ pub async fn wiki_search_db(
 #[tauri::command]
 pub async fn wiki_stats(
     state: tauri::State<'_, DbState>,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, GolishError> {
     let pool = state.pool_ready().await?;
     let count = golish_db::repo::wiki_kb::count_pages(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     let recent = golish_db::repo::wiki_kb::list_recent(pool, 5)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     let recent_paths: Vec<String> = recent.into_iter().map(|p| p.path).collect();
     Ok(serde_json::json!({
         "total_pages": count,

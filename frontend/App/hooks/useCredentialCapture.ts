@@ -1,8 +1,8 @@
-import { invoke } from "@/lib/api/client";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
-import { getProjectPath } from "@/lib/projects";
+import { invoke } from "@/lib/api/client";
 import { notify } from "@/lib/notify";
+import { getProjectPath } from "@/lib/projects";
 
 interface DetectedCredential {
   source_url: string;

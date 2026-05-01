@@ -3,6 +3,7 @@
 //! These commands allow the frontend to get and set the agent mode for
 //! a specific session, controlling how tool approvals are handled.
 
+use crate::error::GolishError;
 use golish_settings::ProjectSettingsManager;
 use std::path::PathBuf;
 use tauri::State;
@@ -24,7 +25,7 @@ pub async fn set_agent_mode(
     mode: AgentMode,
     workspace: Option<PathBuf>,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let bridges = state.ai_state.bridges.read().await;
     let bridge = bridges
         .get(&session_id)
@@ -38,7 +39,7 @@ pub async fn set_agent_mode(
         project_settings
             .set_agent_mode(mode.to_string())
             .await
-            .map_err(|e| e.to_string())?;
+?;
     }
 
     Ok(())
@@ -50,12 +51,12 @@ pub async fn set_agent_mode(
 /// * `workspace` - The workspace path to save settings to
 /// * `mode` - The agent mode to save
 #[tauri::command]
-pub async fn save_project_agent_mode(workspace: PathBuf, mode: AgentMode) -> Result<(), String> {
+pub async fn save_project_agent_mode(workspace: PathBuf, mode: AgentMode) -> Result<(), GolishError> {
     let project_settings = ProjectSettingsManager::new(&workspace).await;
     project_settings
         .set_agent_mode(mode.to_string())
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// Get the current agent mode for a session.
@@ -69,7 +70,7 @@ pub async fn save_project_agent_mode(workspace: PathBuf, mode: AgentMode) -> Res
 pub async fn get_agent_mode(
     session_id: String,
     state: State<'_, AppState>,
-) -> Result<AgentMode, String> {
+) -> Result<AgentMode, GolishError> {
     let bridges = state.ai_state.bridges.read().await;
     let bridge = bridges
         .get(&session_id)
@@ -87,7 +88,7 @@ pub async fn set_use_agents(
     session_id: String,
     enabled: bool,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let bridges = state.ai_state.bridges.read().await;
     let bridge = bridges
         .get(&session_id)
@@ -102,7 +103,7 @@ pub async fn set_use_agents(
 pub async fn get_use_agents(
     session_id: String,
     state: State<'_, AppState>,
-) -> Result<bool, String> {
+) -> Result<bool, GolishError> {
     let bridges = state.ai_state.bridges.read().await;
     let bridge = bridges
         .get(&session_id)
@@ -120,7 +121,7 @@ pub async fn set_execution_mode(
     session_id: String,
     mode: String,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let bridges = state.ai_state.bridges.read().await;
     let bridge = bridges
         .get(&session_id)
@@ -139,7 +140,7 @@ pub async fn set_execution_mode(
 pub async fn get_execution_mode(
     session_id: String,
     state: State<'_, AppState>,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     let bridges = state.ai_state.bridges.read().await;
     let bridge = bridges
         .get(&session_id)

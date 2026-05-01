@@ -1,8 +1,8 @@
 import type React from "react";
 import { Suspense } from "react";
 import { createPortal } from "react-dom";
-import { cn } from "@/lib/utils";
 import { isWindows } from "@/lib/env";
+import { cn } from "@/lib/utils";
 import { ActivityBar, type ActivityView } from "../components/ActivityBar/ActivityBar";
 import { AIChatPanel } from "../components/AIChatPanel/AIChatPanel";
 import { CommandPalette, type PageRoute } from "../components/CommandPalette";
@@ -14,6 +14,10 @@ import { TerminalPortalProvider } from "../hooks/useTerminalPortal";
 import { useStore } from "../store";
 import { useAppState } from "../store/selectors";
 import { createNewConversation } from "../store/slices/conversation";
+import { AppErrorFallback, AppLoadingSkeleton } from "./components/AppLoadingSkeleton";
+import { SplitColumn, SplitDropZone } from "./components/SplitColumn";
+import type { ActivityViewControls } from "./hooks/useActivityViewControls";
+import { useSplitTabDrag } from "./hooks/useSplitTabDrag";
 import {
   AuditLogPanelView,
   ComponentTestbed,
@@ -38,11 +42,6 @@ import {
   WikiPanelView,
   WordlistPanelView,
 } from "./lazyRegistry";
-import { AppErrorFallback, AppLoadingSkeleton } from "./components/AppLoadingSkeleton";
-import { SplitColumn, SplitDropZone } from "./components/SplitColumn";
-import type { ActivityViewControls } from "./hooks/useActivityViewControls";
-import { useSplitTabDrag } from "./hooks/useSplitTabDrag";
-
 
 const FULLSCREEN_OVERLAYS: Array<{
   view: NonNullable<ActivityView>;
@@ -331,40 +330,45 @@ export function AppShell(props: AppShellProps) {
             >
               <div className="flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float">
                 <Suspense fallback={null}>
-                  <SettingsContent
-                    activeSection={settingsSection}
-                  />
+                  <SettingsContent activeSection={settingsSection} />
                 </Suspense>
               </div>
             </div>
           )}
 
           {/* Fullscreen activity view overlays */}
-          {FULLSCREEN_OVERLAYS.map(({ view, Component, innerClassName }) =>
-            visitedViews.has(view) && (
-              <div
-                key={view}
-                className={cn(
-                  "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
-                  activityView === view
-                    ? "opacity-100 pointer-events-auto z-10"
-                    : "opacity-0 pointer-events-none z-0"
-                )}
-              >
-                <div className={cn("flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float", innerClassName)}>
-                  <Suspense fallback={null}>
-                    <Component />
-                  </Suspense>
+          {FULLSCREEN_OVERLAYS.map(
+            ({ view, Component, innerClassName }) =>
+              visitedViews.has(view) && (
+                <div
+                  key={view}
+                  className={cn(
+                    "absolute inset-0 left-[64px] flex transition-opacity duration-150 ease-out pr-2 pb-2 pt-0",
+                    activityView === view
+                      ? "opacity-100 pointer-events-auto z-10"
+                      : "opacity-0 pointer-events-none z-0"
+                  )}
+                >
+                  <div
+                    className={cn(
+                      "flex-1 min-w-0 flex flex-col overflow-hidden rounded-xl bg-card panel-float",
+                      innerClassName
+                    )}
+                  >
+                    <Suspense fallback={null}>
+                      <Component />
+                    </Suspense>
+                  </div>
                 </div>
-              </div>
-            )
+              )
           )}
 
           {/* Normal view - center + right panels */}
           <div
             className={cn(
               "flex-1 flex gap-1 min-w-0 transition-opacity duration-150 ease-out",
-              activityView === "settings" || FULLSCREEN_OVERLAYS.some((o) => o.view === activityView)
+              activityView === "settings" ||
+                FULLSCREEN_OVERLAYS.some((o) => o.view === activityView)
                 ? "opacity-0 pointer-events-none"
                 : "opacity-100 pointer-events-auto"
             )}

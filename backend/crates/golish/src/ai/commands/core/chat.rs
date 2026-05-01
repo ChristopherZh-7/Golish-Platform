@@ -1,6 +1,7 @@
 //! AI chat commands: send prompt (with attachments), clear conv, signal ready,
 //! cancel, vision capabilities.
 
+use crate::error::GolishError;
 use std::sync::Arc;
 
 use tauri::State;
@@ -26,7 +27,7 @@ pub async fn send_ai_prompt_session(
     state: State<'_, AppState>,
     session_id: String,
     prompt: String,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     tracing::info!(
         message = "[send_ai_prompt_session] Received prompt",
         session_id = %session_id,
@@ -191,7 +192,7 @@ async fn execute_task_mode(
 pub async fn get_vision_capabilities(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<golish_llm_providers::VisionCapabilities, String> {
+) -> Result<golish_llm_providers::VisionCapabilities, GolishError> {
     let bridges = state.ai_state.get_bridges().await;
     let bridge = bridges
         .get(&session_id)
@@ -217,7 +218,7 @@ pub async fn send_ai_prompt_with_attachments(
     state: State<'_, AppState>,
     session_id: String,
     payload: golish_core::PromptPayload,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     use golish_core::PromptPart;
     use rig::message::{ImageMediaType, Text, UserContent};
 
@@ -288,7 +289,7 @@ pub async fn send_ai_prompt_with_attachments(
     bridge
         .execute_with_content(content_parts)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// Clear the conversation history for a specific session.
@@ -299,7 +300,7 @@ pub async fn send_ai_prompt_with_attachments(
 pub async fn clear_ai_conversation_session(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let bridge = state
         .ai_state
         .get_session_bridge(&session_id)
@@ -318,7 +319,7 @@ pub async fn clear_ai_conversation_session(
 pub async fn get_ai_conversation_length_session(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<usize, String> {
+) -> Result<usize, GolishError> {
     let bridge = state
         .ai_state
         .get_session_bridge(&session_id)
@@ -342,7 +343,7 @@ pub async fn get_ai_conversation_length_session(
 pub async fn signal_frontend_ready(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     tracing::info!(
         message = "[signal_frontend_ready] Frontend signaling ready",
         session_id = %session_id,

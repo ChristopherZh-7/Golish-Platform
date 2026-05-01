@@ -1,7 +1,7 @@
 import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { CustomSelect } from "@/components/ui/custom-select";
+import { Input } from "@/components/ui/input";
 import type { AiProvider, SubAgentModelConfig } from "@/lib/settings";
 
 export const PROVIDER_OPTIONS: { value: AiProvider; label: string }[] = [
@@ -63,7 +63,12 @@ interface ModelOverridePanelProps {
   onUpdate: (config: SubAgentModelConfig | null) => void;
 }
 
-export function ModelOverridePanel({ agentId, modelConfig, hasOverride, onUpdate }: ModelOverridePanelProps) {
+export function ModelOverridePanel({
+  agentId,
+  modelConfig,
+  hasOverride,
+  onUpdate,
+}: ModelOverridePanelProps) {
   return (
     <div className="space-y-2 p-3 rounded bg-background border border-[var(--border-medium)]">
       <div className="flex items-center justify-between">
@@ -98,9 +103,7 @@ export function ModelOverridePanel({ agentId, modelConfig, hasOverride, onUpdate
           <div className="relative">
             <Input
               value={modelConfig.model || ""}
-              onChange={(e) =>
-                onUpdate({ ...modelConfig, model: e.target.value })
-              }
+              onChange={(e) => onUpdate({ ...modelConfig, model: e.target.value })}
               placeholder="Enter model name"
               list={`override-${agentId}-models`}
               className="bg-background border-border h-9 text-xs"
@@ -112,7 +115,11 @@ export function ModelOverridePanel({ agentId, modelConfig, hasOverride, onUpdate
             </datalist>
           </div>
         ) : (
-          <Input disabled placeholder="Select provider first" className="bg-muted border-border h-9 text-xs" />
+          <Input
+            disabled
+            placeholder="Select provider first"
+            className="bg-muted border-border h-9 text-xs"
+          />
         )}
       </div>
       {hasOverride && (

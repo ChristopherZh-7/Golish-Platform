@@ -1,10 +1,10 @@
-import { invoke } from "@/lib/api/client";
 import { listen } from "@tauri-apps/api/event";
 import type React from "react";
 import { useEffect } from "react";
-import { getProjectPath } from "@/lib/projects";
+import { invoke } from "@/lib/api/client";
 import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
+import { getProjectPath } from "@/lib/projects";
 import { useStore } from "../../store";
 
 interface UseTabSplitEventsProps {
@@ -34,7 +34,7 @@ export function useTabSplitEvents({
             (id) =>
               id !== tabId &&
               !prev.includes(id) &&
-              (s.sessions[id]?.tabType ?? "terminal") !== "home",
+              (s.sessions[id]?.tabType ?? "terminal") !== "home"
           );
           if (other) s.setActiveSession(other);
         }
@@ -49,8 +49,7 @@ export function useTabSplitEvents({
       setRightActiveTab(null);
     };
 
-    const handleDragHint = (e: Event) =>
-      setShowSplitDropZone((e as CustomEvent<boolean>).detail);
+    const handleDragHint = (e: Event) => setShowSplitDropZone((e as CustomEvent<boolean>).detail);
 
     const handleToolOutput = async (e: Event) => {
       if (localStorage.getItem("golish-auto-detect-output") === "false") return;
@@ -157,7 +156,7 @@ export function useTabSplitEvents({
         }
 
         const other = s.tabOrder.find(
-          (id) => id !== tabId && (s.sessions[id]?.tabType ?? "terminal") !== "home",
+          (id) => id !== tabId && (s.sessions[id]?.tabType ?? "terminal") !== "home"
         );
         if (other) s.setActiveSession(other);
         notify.info(`"${title}" detached to floating window`);

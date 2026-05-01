@@ -6,11 +6,7 @@
  * timeline, pendingCommand, and workingDirectory.
  */
 
-import {
-  type PendingCommand,
-  type UnifiedBlock,
-  useStore,
-} from "../index";
+import { type PendingCommand, type UnifiedBlock, useStore } from "../index";
 
 export interface SessionState {
   timeline: UnifiedBlock[];

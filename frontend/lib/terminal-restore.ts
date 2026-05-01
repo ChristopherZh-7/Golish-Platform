@@ -10,8 +10,8 @@
  * so a clean project switch can proceed without leaking resources.
  */
 
-import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import { getAllLeafPanes } from "@/lib/pane-utils";
+import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import type { PersistedTerminalData, PersistedTimelineBlock } from "@/lib/workspace-storage";
 import { useStore } from "@/store";
 import type { ActiveSubAgent } from "@/store/store-types";
@@ -20,7 +20,7 @@ type CreateTerminalFn = (
   workingDirectory?: string,
   skipConversationLink?: boolean,
   scrollback?: string,
-  logicalTerminalId?: string,
+  logicalTerminalId?: string
 ) => Promise<string | null>;
 
 /**
@@ -28,10 +28,7 @@ type CreateTerminalFn = (
  * Prefers the explicitly persisted fields; falls back to the legacy
  * planJson heuristic for databases that haven't been migrated yet.
  */
-function restoreSessionMode(
-  sessionId: string,
-  termInfo: PersistedTerminalData,
-) {
+function restoreSessionMode(sessionId: string, termInfo: PersistedTerminalData) {
   const hasExplicitMode = termInfo.executionMode != null || termInfo.useAgents != null;
 
   if (hasExplicitMode) {
@@ -48,10 +45,7 @@ function restoreSessionMode(
 }
 
 /** Restore retired plan iterations so TaskPlanCard history renders after restart. */
-function restoreRetiredPlans(
-  sessionId: string,
-  termInfo: PersistedTerminalData,
-) {
+function restoreRetiredPlans(sessionId: string, termInfo: PersistedTerminalData) {
   if (!termInfo.retiredPlansJson || !Array.isArray(termInfo.retiredPlansJson)) return;
   if (termInfo.retiredPlansJson.length === 0) return;
   useStore.setState((state) => {
@@ -67,7 +61,7 @@ function restoreRetiredPlans(
             steps: rp.plan.steps.map((s: any) =>
               s.status === "in_progress" || s.status === "pending"
                 ? { ...s, status: "cancelled" }
-                : s,
+                : s
             ),
           },
         };
@@ -102,7 +96,7 @@ function restoreActiveSubAgents(sessionId: string) {
 /** Restore persisted timeline blocks into a runtime session's timeline (idempotent). */
 function restoreTimelineBlocks(
   blocks: PersistedTimelineBlock[] | undefined,
-  targetSessionId: string,
+  targetSessionId: string
 ) {
   if (!blocks || blocks.length === 0) return;
   useStore.setState((state) => {
@@ -117,7 +111,7 @@ function restoreTimelineBlocks(
         sanitized.data = { ...sanitized.data, status: "interrupted" };
         if (Array.isArray(sanitized.data.steps)) {
           sanitized.data.steps = sanitized.data.steps.map((s: any) =>
-            s.status === "running" || s.status === "pending" ? { ...s, status: "interrupted" } : s,
+            s.status === "running" || s.status === "pending" ? { ...s, status: "interrupted" } : s
           );
         }
       }
@@ -176,7 +170,7 @@ export async function restoreTerminalForConv(
   convId: string,
   termInfo: PersistedTerminalData,
   isActiveConv: boolean,
-  createTerminalTab: CreateTerminalFn,
+  createTerminalTab: CreateTerminalFn
 ): Promise<void> {
   const existing = useStore.getState().conversationTerminals[convId] ?? [];
   if (existing.length > 0) {
@@ -209,13 +203,12 @@ export async function restoreTerminalForConv(
     termInfo.workingDirectory,
     true,
     termInfo.scrollback,
-    termInfo.logicalTerminalId,
+    termInfo.logicalTerminalId
   );
   if (!termId) return;
   useStore.getState().addTerminalToConversation(convId, termId);
   if (isActiveConv) useStore.getState().setActiveSession(termId);
-  if (termInfo.customName)
-    useStore.getState().setCustomTabName(termId, termInfo.customName);
+  if (termInfo.customName) useStore.getState().setCustomTabName(termId, termInfo.customName);
   if (termInfo.planJson) {
     useStore.getState().setPlan(termId, termInfo.planJson as any);
   }
@@ -232,7 +225,7 @@ export async function restoreTerminalForConv(
  */
 export async function restoreBatchTerminals(
   termData: Record<string, PersistedTerminalData[]>,
-  createTerminalTab: CreateTerminalFn,
+  createTerminalTab: CreateTerminalFn
 ): Promise<void> {
   if (useStore.getState().terminalRestoreInProgress) return;
 
@@ -249,7 +242,7 @@ export async function restoreBatchTerminals(
 
     const otherConvs = Object.entries(termData).filter(
       ([convId, terminals]) =>
-        convId !== activeId && useStore.getState().conversations[convId] && terminals.length > 0,
+        convId !== activeId && useStore.getState().conversations[convId] && terminals.length > 0
     );
     for (const [convId, savedTerms] of otherConvs) {
       const existing = useStore.getState().conversationTerminals[convId] ?? [];

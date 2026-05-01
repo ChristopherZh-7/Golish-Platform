@@ -1,5 +1,6 @@
 // Debug commands for AI sessions.
 
+use crate::error::GolishError;
 use tauri::State;
 
 use crate::ai::commands::ai_session_not_initialized_error;
@@ -11,7 +12,7 @@ use golish_core::ApiRequestStatsSnapshot;
 pub async fn get_api_request_stats(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<ApiRequestStatsSnapshot, String> {
+) -> Result<ApiRequestStatsSnapshot, GolishError> {
     let bridge = state
         .ai_state
         .get_session_bridge(&session_id)

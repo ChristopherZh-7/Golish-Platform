@@ -1,12 +1,5 @@
-import {
-  Bot,
-  CheckCircle2,
-  ChevronDown,
-  ChevronUp,
-  Loader2,
-  XCircle,
-} from "lucide-react";
-import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Bot, CheckCircle2, ChevronDown, ChevronUp, Loader2, XCircle } from "lucide-react";
+import { memo, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { formatDurationLong } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
@@ -62,7 +55,7 @@ export const TaskGroupShell = memo(function TaskGroupShell({
         className={cn(
           "w-full flex items-center gap-2 px-3 py-2 rounded-t-lg text-xs transition-all duration-300",
           "bg-card hover:bg-muted/50 border border-b-0 border-border",
-          isCollapsed && "rounded-b-lg border-b",
+          isCollapsed && "rounded-b-lg border-b"
         )}
       >
         <Bot className="w-3.5 h-3.5 text-muted-foreground/60" />
@@ -113,7 +106,7 @@ export const TaskGroupShell = memo(function TaskGroupShell({
               <div
                 className={cn(
                   "h-full transition-all duration-500 ease-out",
-                  hasFailure ? "bg-red-400" : "bg-[var(--ansi-green)]",
+                  hasFailure ? "bg-red-400" : "bg-[var(--ansi-green)]"
                 )}
                 style={{ width: `${progress}%` }}
               />
@@ -121,9 +114,7 @@ export const TaskGroupShell = memo(function TaskGroupShell({
           )}
 
           {/* Content */}
-          <div className="border border-t-0 border-border rounded-b-lg bg-card/50">
-            {children}
-          </div>
+          <div className="border border-t-0 border-border rounded-b-lg bg-card/50">{children}</div>
         </div>
       </div>
     </div>

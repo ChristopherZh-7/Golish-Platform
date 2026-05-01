@@ -535,8 +535,20 @@ export type AiEventType =
   | { type: "started"; turn_id: string }
   | { type: "text_delta"; delta: string; accumulated: string }
   | { type: "tool_request"; tool_name: string; args: unknown; request_id: string }
-  | { type: "tool_auto_approved"; tool_name: string; args: unknown; request_id: string; reason: string }
-  | { type: "tool_approval_request"; tool_name: string; args: unknown; request_id: string; risk_level?: string }
+  | {
+      type: "tool_auto_approved";
+      tool_name: string;
+      args: unknown;
+      request_id: string;
+      reason: string;
+    }
+  | {
+      type: "tool_approval_request";
+      tool_name: string;
+      args: unknown;
+      request_id: string;
+      risk_level?: string;
+    }
   | {
       type: "tool_result";
       tool_name: string;
@@ -544,7 +556,13 @@ export type AiEventType =
       success: boolean;
       request_id: string;
     }
-  | { type: "tool_output_chunk"; tool_name: string; request_id: string; chunk: string; stream: string }
+  | {
+      type: "tool_output_chunk";
+      tool_name: string;
+      request_id: string;
+      chunk: string;
+      stream: string;
+    }
   | {
       type: "completed";
       response: string;
@@ -554,8 +572,21 @@ export type AiEventType =
       output_tokens?: number;
     }
   | { type: "error"; message: string; error_type: string }
-  | { type: "sub_agent_started"; agent_id: string; agent_name: string; task: string; depth: number; parent_request_id?: string }
-  | { type: "sub_agent_text_delta"; agent_id: string; delta: string; accumulated: string; parent_request_id?: string }
+  | {
+      type: "sub_agent_started";
+      agent_id: string;
+      agent_name: string;
+      task: string;
+      depth: number;
+      parent_request_id?: string;
+    }
+  | {
+      type: "sub_agent_text_delta";
+      agent_id: string;
+      delta: string;
+      accumulated: string;
+      parent_request_id?: string;
+    }
   | {
       type: "sub_agent_tool_request";
       agent_id: string;
@@ -573,7 +604,13 @@ export type AiEventType =
       request_id: string;
       parent_request_id?: string;
     }
-  | { type: "sub_agent_completed"; agent_id: string; response: string; duration_ms: number; parent_request_id?: string }
+  | {
+      type: "sub_agent_completed";
+      agent_id: string;
+      response: string;
+      duration_ms: number;
+      parent_request_id?: string;
+    }
   | { type: "sub_agent_error"; agent_id: string; error: string; parent_request_id?: string };
 
 // =============================================================================
@@ -870,12 +907,28 @@ export async function simulateJsHarvest(): Promise<void> {
   const harvesterReqId = `mock-sub-req-harvest-${Date.now()}`;
   const analyzerReqId = `mock-sub-req-analyze-${Date.now()}`;
   const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  const emitSubAgentTools = async (agentId: string, tools: { name: string; args: Record<string, unknown>; result: string }[]) => {
+  const emitSubAgentTools = async (
+    agentId: string,
+    tools: { name: string; args: Record<string, unknown>; result: string }[]
+  ) => {
     for (const tool of tools) {
       const reqId = `mock-req-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      await emitAiEvent({ type: "sub_agent_tool_request", agent_id: agentId, tool_name: tool.name, args: tool.args, request_id: reqId });
+      await emitAiEvent({
+        type: "sub_agent_tool_request",
+        agent_id: agentId,
+        tool_name: tool.name,
+        args: tool.args,
+        request_id: reqId,
+      });
       await delay(600);
-      await emitAiEvent({ type: "sub_agent_tool_result", agent_id: agentId, tool_name: tool.name, result: tool.result, success: true, request_id: reqId });
+      await emitAiEvent({
+        type: "sub_agent_tool_result",
+        agent_id: agentId,
+        tool_name: tool.name,
+        result: tool.result,
+        success: true,
+        request_id: reqId,
+      });
       await delay(300);
     }
   };
@@ -883,47 +936,165 @@ export async function simulateJsHarvest(): Promise<void> {
   await emitAiEvent({ type: "started", turn_id: turnId });
   await delay(200);
 
-  await emitAiEvent({ type: "text_delta", delta: "I'll collect all JavaScript files from example.com and then analyze them for security issues.\n\n", accumulated: "I'll collect all JavaScript files from example.com and then analyze them for security issues.\n\n" });
+  await emitAiEvent({
+    type: "text_delta",
+    delta:
+      "I'll collect all JavaScript files from example.com and then analyze them for security issues.\n\n",
+    accumulated:
+      "I'll collect all JavaScript files from example.com and then analyze them for security issues.\n\n",
+  });
   await delay(300);
 
   // === Phase 1: Pentester — JS Collection ===
-  await emitAiEvent({ type: "tool_request", tool_name: "sub_agent_pentester", args: { task: "Collect ALL JS files from https://example.com" }, request_id: harvesterReqId });
+  await emitAiEvent({
+    type: "tool_request",
+    tool_name: "sub_agent_pentester",
+    args: { task: "Collect ALL JS files from https://example.com" },
+    request_id: harvesterReqId,
+  });
   await delay(200);
-  await emitAiEvent({ type: "sub_agent_started", agent_id: harvesterId, agent_name: "Pentester", task: "Collect ALL JS files from https://example.com", depth: 1, parent_request_id: harvesterReqId });
+  await emitAiEvent({
+    type: "sub_agent_started",
+    agent_id: harvesterId,
+    agent_name: "Pentester",
+    task: "Collect ALL JS files from https://example.com",
+    depth: 1,
+    parent_request_id: harvesterReqId,
+  });
   await delay(300);
-  await emitAiEvent({ type: "sub_agent_text_delta", agent_id: harvesterId, delta: "Probing target for bundler type...", accumulated: "Probing target for bundler type...", parent_request_id: harvesterReqId });
+  await emitAiEvent({
+    type: "sub_agent_text_delta",
+    agent_id: harvesterId,
+    delta: "Probing target for bundler type...",
+    accumulated: "Probing target for bundler type...",
+    parent_request_id: harvesterReqId,
+  });
   await delay(200);
 
   await emitSubAgentTools(harvesterId, [
-    { name: "run_pty_cmd", args: { command: "curl -sLk -D- https://example.com" }, result: "HTTP/2 200\nserver: nginx\ncontent-type: text/html\n\n<!DOCTYPE html>...<script type=\"module\" src=\"/assets/index-BjK2xfA.js\">" },
-    { name: "run_pty_cmd", args: { command: "curl -sLk -w '%{http_code}' -o /dev/null https://example.com/.vite/manifest.json" }, result: "404" },
-    { name: "run_pty_cmd", args: { command: "curl -sLk -w '%{http_code}' -o /dev/null https://example.com/asset-manifest.json" }, result: "404" },
-    { name: "run_pty_cmd", args: { command: "curl -sLk https://example.com/assets/index-BjK2xfA.js | head -5" }, result: "import{c as createApp}from\"./chunk-framework-De4f.js\";const routes=[...]" },
-    { name: "write_file", args: { path: "/tmp/js_harvest.sh", content: "#!/bin/bash\nBASE=https://example.com/assets ..." }, result: "File written: /tmp/js_harvest.sh" },
-    { name: "run_pty_cmd", args: { command: "bash /tmp/js_harvest.sh" }, result: "Downloading index-BjK2xfA.js... OK\nDownloading vendor-Ca3dR2p.js... OK\n... (50 files from main bundle)\nRecursive pass 1: found 5 new refs in system.js\nRecursive pass 2: found 3 new refs in project.js\nRecursive pass 3: 0 new files\nTOTAL: 58 files downloaded (2.8MB)" },
-    { name: "run_pty_cmd", args: { command: "for f in .golish/js-assets/example.com/*.js; do curl -sLk -w '%{http_code}' -o \"${f}.map\" \"https://example.com/assets/$(basename $f).map\"; done | grep 200 | wc -l" }, result: "6 source maps found" },
-    { name: "write_file", args: { path: ".golish/js-assets/example.com/index.json", content: "{...manifest...}" }, result: "Manifest updated: 58 files, 6 sourcemaps, 2 failed (auth_required)" },
+    {
+      name: "run_pty_cmd",
+      args: { command: "curl -sLk -D- https://example.com" },
+      result:
+        'HTTP/2 200\nserver: nginx\ncontent-type: text/html\n\n<!DOCTYPE html>...<script type="module" src="/assets/index-BjK2xfA.js">',
+    },
+    {
+      name: "run_pty_cmd",
+      args: {
+        command: "curl -sLk -w '%{http_code}' -o /dev/null https://example.com/.vite/manifest.json",
+      },
+      result: "404",
+    },
+    {
+      name: "run_pty_cmd",
+      args: {
+        command: "curl -sLk -w '%{http_code}' -o /dev/null https://example.com/asset-manifest.json",
+      },
+      result: "404",
+    },
+    {
+      name: "run_pty_cmd",
+      args: { command: "curl -sLk https://example.com/assets/index-BjK2xfA.js | head -5" },
+      result: 'import{c as createApp}from"./chunk-framework-De4f.js";const routes=[...]',
+    },
+    {
+      name: "write_file",
+      args: {
+        path: "/tmp/js_harvest.sh",
+        content: "#!/bin/bash\nBASE=https://example.com/assets ...",
+      },
+      result: "File written: /tmp/js_harvest.sh",
+    },
+    {
+      name: "run_pty_cmd",
+      args: { command: "bash /tmp/js_harvest.sh" },
+      result:
+        "Downloading index-BjK2xfA.js... OK\nDownloading vendor-Ca3dR2p.js... OK\n... (50 files from main bundle)\nRecursive pass 1: found 5 new refs in system.js\nRecursive pass 2: found 3 new refs in project.js\nRecursive pass 3: 0 new files\nTOTAL: 58 files downloaded (2.8MB)",
+    },
+    {
+      name: "run_pty_cmd",
+      args: {
+        command:
+          'for f in .golish/js-assets/example.com/*.js; do curl -sLk -w \'%{http_code}\' -o "${f}.map" "https://example.com/assets/$(basename $f).map"; done | grep 200 | wc -l',
+      },
+      result: "6 source maps found",
+    },
+    {
+      name: "write_file",
+      args: { path: ".golish/js-assets/example.com/index.json", content: "{...manifest...}" },
+      result: "Manifest updated: 58 files, 6 sourcemaps, 2 failed (auth_required)",
+    },
   ]);
 
-  const harvesterResponse = "Collection complete: 58 JS files (2.8MB) + 6 source maps. Strategy: recursive script (no manifest found). 2 files require authentication.";
-  await emitAiEvent({ type: "sub_agent_completed", agent_id: harvesterId, response: harvesterResponse, duration_ms: 8500, parent_request_id: harvesterReqId });
+  const harvesterResponse =
+    "Collection complete: 58 JS files (2.8MB) + 6 source maps. Strategy: recursive script (no manifest found). 2 files require authentication.";
+  await emitAiEvent({
+    type: "sub_agent_completed",
+    agent_id: harvesterId,
+    response: harvesterResponse,
+    duration_ms: 8500,
+    parent_request_id: harvesterReqId,
+  });
   await delay(200);
-  await emitAiEvent({ type: "tool_result", tool_name: "sub_agent_pentester", result: harvesterResponse, success: true, request_id: harvesterReqId });
+  await emitAiEvent({
+    type: "tool_result",
+    tool_name: "sub_agent_pentester",
+    result: harvesterResponse,
+    success: true,
+    request_id: harvesterReqId,
+  });
   await delay(400);
 
   // === Phase 2: Pentester — JS Security Analysis ===
-  await emitAiEvent({ type: "tool_request", tool_name: "sub_agent_pentester", args: { task: "Analyze collected JS in .golish/js-assets/example.com/ for security issues" }, request_id: analyzerReqId });
+  await emitAiEvent({
+    type: "tool_request",
+    tool_name: "sub_agent_pentester",
+    args: { task: "Analyze collected JS in .golish/js-assets/example.com/ for security issues" },
+    request_id: analyzerReqId,
+  });
   await delay(200);
-  await emitAiEvent({ type: "sub_agent_started", agent_id: analyzerId, agent_name: "Pentester", task: "Security analysis of 58 collected JS files", depth: 1, parent_request_id: analyzerReqId });
+  await emitAiEvent({
+    type: "sub_agent_started",
+    agent_id: analyzerId,
+    agent_name: "Pentester",
+    task: "Security analysis of 58 collected JS files",
+    depth: 1,
+    parent_request_id: analyzerReqId,
+  });
   await delay(300);
-  await emitAiEvent({ type: "sub_agent_text_delta", agent_id: analyzerId, delta: "Scanning for API endpoints and secrets...", accumulated: "Scanning for API endpoints and secrets...", parent_request_id: analyzerReqId });
+  await emitAiEvent({
+    type: "sub_agent_text_delta",
+    agent_id: analyzerId,
+    delta: "Scanning for API endpoints and secrets...",
+    accumulated: "Scanning for API endpoints and secrets...",
+    parent_request_id: analyzerReqId,
+  });
   await delay(200);
 
   await emitSubAgentTools(analyzerId, [
-    { name: "read_file", args: { path: ".golish/js-assets/example.com/index.json" }, result: '{"bundler":"vite","stats":{"total_files":58,"source_maps":6}}' },
-    { name: "grep_file", args: { pattern: "/api/v[0-9]", path: ".golish/js-assets/example.com/" }, result: "5 API endpoints found across 4 files" },
-    { name: "grep_file", args: { pattern: "(api_key|secret|token|password|pk_live)", path: ".golish/js-assets/example.com/" }, result: "3 secrets found in vendor-Ca3dR2p.js and index-BjK2xfA.js" },
-    { name: "read_file", args: { path: ".golish/js-assets/example.com/Debug-Qr9s.js" }, result: "window.__DEBUG__={env:process.env,dump:()=>...} // no auth check" },
+    {
+      name: "read_file",
+      args: { path: ".golish/js-assets/example.com/index.json" },
+      result: '{"bundler":"vite","stats":{"total_files":58,"source_maps":6}}',
+    },
+    {
+      name: "grep_file",
+      args: { pattern: "/api/v[0-9]", path: ".golish/js-assets/example.com/" },
+      result: "5 API endpoints found across 4 files",
+    },
+    {
+      name: "grep_file",
+      args: {
+        pattern: "(api_key|secret|token|password|pk_live)",
+        path: ".golish/js-assets/example.com/",
+      },
+      result: "3 secrets found in vendor-Ca3dR2p.js and index-BjK2xfA.js",
+    },
+    {
+      name: "read_file",
+      args: { path: ".golish/js-assets/example.com/Debug-Qr9s.js" },
+      result: "window.__DEBUG__={env:process.env,dump:()=>...} // no auth check",
+    },
   ]);
 
   const analyzerResponse = `**API Endpoints**: 5 found (POST /auth/login, GET /users/me, POST /payments/charge, DELETE /admin/users/:id, GET /config)
@@ -931,13 +1102,26 @@ export async function simulateJsHarvest(): Promise<void> {
 **Hidden Routes**: /debug (NO AUTH — env dump), /admin (DELETE endpoint)
 **Vulnerable**: lodash@4.17.15, axios@0.21.0`;
 
-  await emitAiEvent({ type: "sub_agent_completed", agent_id: analyzerId, response: analyzerResponse, duration_ms: 6200, parent_request_id: analyzerReqId });
+  await emitAiEvent({
+    type: "sub_agent_completed",
+    agent_id: analyzerId,
+    response: analyzerResponse,
+    duration_ms: 6200,
+    parent_request_id: analyzerReqId,
+  });
   await delay(200);
-  await emitAiEvent({ type: "tool_result", tool_name: "sub_agent_pentester", result: analyzerResponse, success: true, request_id: analyzerReqId });
+  await emitAiEvent({
+    type: "tool_result",
+    tool_name: "sub_agent_pentester",
+    result: analyzerResponse,
+    success: true,
+    request_id: analyzerReqId,
+  });
   await delay(400);
 
   // === Final summary in main chat ===
-  const finalResponse = "JS 收集与分析完成。\n\n**收集**: 58 个文件 (2.8MB) + 6 个 source maps, Vite bundler\n**发现**:\n1. 5 个 API endpoints (含支付、管理员删除接口)\n2. 3 个硬编码密钥 (Stripe, 内网 API, AWS)\n3. /debug 路由无认证 — 可直接访问环境变量\n4. 2 个已知漏洞依赖\n\n优先处理: /debug 环境变量泄露 + Stripe 密钥硬编码。";
+  const finalResponse =
+    "JS 收集与分析完成。\n\n**收集**: 58 个文件 (2.8MB) + 6 个 source maps, Vite bundler\n**发现**:\n1. 5 个 API endpoints (含支付、管理员删除接口)\n2. 3 个硬编码密钥 (Stripe, 内网 API, AWS)\n3. /debug 路由无认证 — 可直接访问环境变量\n4. 2 个已知漏洞依赖\n\n优先处理: /debug 环境变量泄露 + Stripe 密钥硬编码。";
   const words = finalResponse.split(" ");
   let accumulated = "";
   for (const word of words) {
@@ -947,7 +1131,14 @@ export async function simulateJsHarvest(): Promise<void> {
     await delay(30);
   }
 
-  await emitAiEvent({ type: "completed", response: accumulated, tokens_used: 2400, duration_ms: 18000, input_tokens: 4800, output_tokens: 520 });
+  await emitAiEvent({
+    type: "completed",
+    response: accumulated,
+    tokens_used: 2400,
+    duration_ms: 18000,
+    input_tokens: 4800,
+    output_tokens: 520,
+  });
 }
 
 // =============================================================================
@@ -963,7 +1154,10 @@ export async function mockCommandBlock(): Promise<void> {
   const { useStore } = await import("@/store/index");
   const state = useStore.getState();
   const sessionId = state.activeSessionId ?? Object.keys(state.sessions)[0];
-  if (!sessionId) { console.error("[mockCommandBlock] No active session"); return; }
+  if (!sessionId) {
+    console.error("[mockCommandBlock] No active session");
+    return;
+  }
 
   useStore.setState((s) => {
     if (!s.timelines[sessionId]) s.timelines[sessionId] = [];
@@ -1008,7 +1202,10 @@ export async function mockPipelineProgressBlock(): Promise<void> {
   const { useStore } = await import("@/store/index");
   const state = useStore.getState();
   const sessionId = state.activeSessionId ?? Object.keys(state.sessions)[0];
-  if (!sessionId) { console.error("[mockPipelineBlock] No active session"); return; }
+  if (!sessionId) {
+    console.error("[mockPipelineBlock] No active session");
+    return;
+  }
 
   const now = new Date().toISOString();
 
@@ -1018,42 +1215,97 @@ export async function mockPipelineProgressBlock(): Promise<void> {
     target: "target.example.com",
     steps: [
       {
-        stepId: "dns", name: "DNS Lookup", command: "dig +short target.example.com",
-        status: "success", output: "93.184.216.34\n2606:2800:220:1:248:1893:25c8:1946",
-        exitCode: 0, startedAt: now, durationMs: 820,
+        stepId: "dns",
+        name: "DNS Lookup",
+        command: "dig +short target.example.com",
+        status: "success",
+        output: "93.184.216.34\n2606:2800:220:1:248:1893:25c8:1946",
+        exitCode: 0,
+        startedAt: now,
+        durationMs: 820,
       },
       {
-        stepId: "subfinder", name: "Subdomain Enum", command: "subfinder -d target.example.com -silent",
+        stepId: "subfinder",
+        name: "Subdomain Enum",
+        command: "subfinder -d target.example.com -silent",
         status: "success",
-        output: "api.target.example.com\nstaging.target.example.com\ndev.target.example.com\nadmin.target.example.com",
-        exitCode: 0, startedAt: now, durationMs: 5200,
-        discoveredTargets: ["api.target.example.com", "staging.target.example.com", "dev.target.example.com", "admin.target.example.com"],
-      },
-      {
-        stepId: "httpx", name: "HTTP Probe", command: "httpx -l subdomains.txt -sc -title -tech-detect -silent",
-        status: "success",
-        output: "https://api.target.example.com [200] [API Gateway] [Nginx,Express]\nhttps://staging.target.example.com [403] [Forbidden]\nhttps://admin.target.example.com [200] [Admin Panel] [React,Nginx]",
-        exitCode: 0, startedAt: now, durationMs: 3100,
-        subTargets: [
-          { target: "api.target.example.com", status: "success", output: "[200] API Gateway", durationMs: 800 },
-          { target: "staging.target.example.com", status: "success", output: "[403] Forbidden", durationMs: 600 },
-          { target: "dev.target.example.com", status: "failed", output: "Connection refused", exitCode: 1, durationMs: 3000 },
-          { target: "admin.target.example.com", status: "success", output: "[200] Admin Panel", durationMs: 700 },
+        output:
+          "api.target.example.com\nstaging.target.example.com\ndev.target.example.com\nadmin.target.example.com",
+        exitCode: 0,
+        startedAt: now,
+        durationMs: 5200,
+        discoveredTargets: [
+          "api.target.example.com",
+          "staging.target.example.com",
+          "dev.target.example.com",
+          "admin.target.example.com",
         ],
       },
       {
-        stepId: "nmap", name: "Port Scan", command: "nmap -sV --top-ports 1000 {target}",
-        status: "success", exitCode: 0, startedAt: now, durationMs: 12400,
-        output: "PORT    STATE SERVICE\n80/tcp  open  http\n443/tcp open  https\n8080/tcp open  http-proxy",
+        stepId: "httpx",
+        name: "HTTP Probe",
+        command: "httpx -l subdomains.txt -sc -title -tech-detect -silent",
+        status: "success",
+        output:
+          "https://api.target.example.com [200] [API Gateway] [Nginx,Express]\nhttps://staging.target.example.com [403] [Forbidden]\nhttps://admin.target.example.com [200] [Admin Panel] [React,Nginx]",
+        exitCode: 0,
+        startedAt: now,
+        durationMs: 3100,
+        subTargets: [
+          {
+            target: "api.target.example.com",
+            status: "success",
+            output: "[200] API Gateway",
+            durationMs: 800,
+          },
+          {
+            target: "staging.target.example.com",
+            status: "success",
+            output: "[403] Forbidden",
+            durationMs: 600,
+          },
+          {
+            target: "dev.target.example.com",
+            status: "failed",
+            output: "Connection refused",
+            exitCode: 1,
+            durationMs: 3000,
+          },
+          {
+            target: "admin.target.example.com",
+            status: "success",
+            output: "[200] Admin Panel",
+            durationMs: 700,
+          },
+        ],
       },
       {
-        stepId: "whatweb", name: "Tech Fingerprint", command: "whatweb {target} --color=never",
-        status: "success", exitCode: 0, startedAt: now, durationMs: 2100,
+        stepId: "nmap",
+        name: "Port Scan",
+        command: "nmap -sV --top-ports 1000 {target}",
+        status: "success",
+        exitCode: 0,
+        startedAt: now,
+        durationMs: 12400,
+        output:
+          "PORT    STATE SERVICE\n80/tcp  open  http\n443/tcp open  https\n8080/tcp open  http-proxy",
+      },
+      {
+        stepId: "whatweb",
+        name: "Tech Fingerprint",
+        command: "whatweb {target} --color=never",
+        status: "success",
+        exitCode: 0,
+        startedAt: now,
+        durationMs: 2100,
         output: "https://target.example.com [200 OK] Nginx[1.21.6], React",
       },
       {
-        stepId: "js_harvest", name: "JS Harvest (AI)", command: "AI: js_harvest {target}",
-        status: "running", startedAt: now,
+        stepId: "js_harvest",
+        name: "JS Harvest (AI)",
+        command: "AI: js_harvest {target}",
+        status: "running",
+        startedAt: now,
         subAgents: [
           {
             agentId: "pentester_js_001",
@@ -1063,9 +1315,33 @@ export async function mockPipelineProgressBlock(): Promise<void> {
             depth: 1,
             status: "completed",
             toolCalls: [
-              { id: "tc1", name: "run_pty_cmd", args: { command: "curl -sL https://admin.target.example.com/" }, status: "completed", result: "<html>...</html>", startedAt: now, completedAt: now },
-              { id: "tc2", name: "write_file", args: { path: ".golish/js-assets/manifest.json" }, status: "completed", result: "Written 12KB", startedAt: now, completedAt: now },
-              { id: "tc3", name: "run_pty_cmd", args: { command: "bash collect.sh https://admin.target.example.com/assets" }, status: "completed", result: "TOTAL: 42 files collected (1.8MB)", startedAt: now, completedAt: now },
+              {
+                id: "tc1",
+                name: "run_pty_cmd",
+                args: { command: "curl -sL https://admin.target.example.com/" },
+                status: "completed",
+                result: "<html>...</html>",
+                startedAt: now,
+                completedAt: now,
+              },
+              {
+                id: "tc2",
+                name: "write_file",
+                args: { path: ".golish/js-assets/manifest.json" },
+                status: "completed",
+                result: "Written 12KB",
+                startedAt: now,
+                completedAt: now,
+              },
+              {
+                id: "tc3",
+                name: "run_pty_cmd",
+                args: { command: "bash collect.sh https://admin.target.example.com/assets" },
+                status: "completed",
+                result: "TOTAL: 42 files collected (1.8MB)",
+                startedAt: now,
+                completedAt: now,
+              },
             ],
             entries: [
               { kind: "text", text: "Starting JS collection from target..." },
@@ -1074,7 +1350,8 @@ export async function mockPipelineProgressBlock(): Promise<void> {
               { kind: "tool_call", toolCallId: "tc2" },
               { kind: "tool_call", toolCallId: "tc3" },
             ],
-            response: "Collection complete: 42 JS files (1.8MB) + 3 source maps. Strategy: manifest-based (Vite detected).",
+            response:
+              "Collection complete: 42 JS files (1.8MB) + 3 source maps. Strategy: manifest-based (Vite detected).",
             startedAt: new Date(Date.now() - 8500).toISOString(),
             completedAt: now,
             durationMs: 8500,
@@ -1087,13 +1364,30 @@ export async function mockPipelineProgressBlock(): Promise<void> {
             depth: 1,
             status: "running",
             toolCalls: [
-              { id: "tc4", name: "list_files", args: { pattern: ".golish/js-assets/**/*.js" }, status: "completed", result: "42 files found", startedAt: now, completedAt: now },
-              { id: "tc5", name: "grep_file", args: { pattern: "api[_-]?key|secret|token", path: ".golish/js-assets/" }, status: "running", startedAt: now },
+              {
+                id: "tc4",
+                name: "list_files",
+                args: { pattern: ".golish/js-assets/**/*.js" },
+                status: "completed",
+                result: "42 files found",
+                startedAt: now,
+                completedAt: now,
+              },
+              {
+                id: "tc5",
+                name: "grep_file",
+                args: { pattern: "api[_-]?key|secret|token", path: ".golish/js-assets/" },
+                status: "running",
+                startedAt: now,
+              },
             ],
             entries: [
               { kind: "text", text: "Listing all collected JS files..." },
               { kind: "tool_call", toolCallId: "tc4" },
-              { kind: "text", text: "Scanning for API endpoints and hardcoded secrets across 42 files..." },
+              {
+                kind: "text",
+                text: "Scanning for API endpoints and hardcoded secrets across 42 files...",
+              },
               { kind: "tool_call", toolCallId: "tc5" },
             ],
             streamingText: "Scanning for API endpoints and hardcoded secrets across 42 files...",
@@ -1105,7 +1399,9 @@ export async function mockPipelineProgressBlock(): Promise<void> {
     status: "running",
     startedAt: now,
   });
-  console.log("[mockPipelineBlock] Injected pipeline block with nested sub-agents in JS Harvest step");
+  console.log(
+    "[mockPipelineBlock] Injected pipeline block with nested sub-agents in JS Harvest step"
+  );
 }
 
 /**
@@ -1116,7 +1412,10 @@ export async function mockSubAgentBlocks(): Promise<void> {
   const { useStore } = await import("@/store/index");
   const state = useStore.getState();
   const sessionId = state.activeSessionId ?? Object.keys(state.sessions)[0];
-  if (!sessionId) { console.error("[mockSubAgentBlocks] No active session"); return; }
+  if (!sessionId) {
+    console.error("[mockSubAgentBlocks] No active session");
+    return;
+  }
 
   const now = new Date().toISOString();
   const batchId = `batch-mock-${Date.now()}`;
@@ -1138,9 +1437,33 @@ export async function mockSubAgentBlocks(): Promise<void> {
         depth: 1,
         status: "completed",
         toolCalls: [
-          { id: "tc1", name: "run_pty_cmd", args: { command: "curl -sL https://admin.target.example.com/" }, status: "completed", result: "<html>...</html>", startedAt: now, completedAt: now },
-          { id: "tc2", name: "write_file", args: { path: ".golish/js-assets/manifest.json" }, status: "completed", result: "Written 12KB", startedAt: now, completedAt: now },
-          { id: "tc3", name: "run_pty_cmd", args: { command: "bash collect.sh https://admin.target.example.com/assets" }, status: "completed", result: "TOTAL: 42 files collected (1.8MB)", startedAt: now, completedAt: now },
+          {
+            id: "tc1",
+            name: "run_pty_cmd",
+            args: { command: "curl -sL https://admin.target.example.com/" },
+            status: "completed",
+            result: "<html>...</html>",
+            startedAt: now,
+            completedAt: now,
+          },
+          {
+            id: "tc2",
+            name: "write_file",
+            args: { path: ".golish/js-assets/manifest.json" },
+            status: "completed",
+            result: "Written 12KB",
+            startedAt: now,
+            completedAt: now,
+          },
+          {
+            id: "tc3",
+            name: "run_pty_cmd",
+            args: { command: "bash collect.sh https://admin.target.example.com/assets" },
+            status: "completed",
+            result: "TOTAL: 42 files collected (1.8MB)",
+            startedAt: now,
+            completedAt: now,
+          },
         ],
         entries: [
           { kind: "text", text: "Starting JS collection from target..." },
@@ -1149,7 +1472,8 @@ export async function mockSubAgentBlocks(): Promise<void> {
           { kind: "tool_call", toolCallId: "tc2" },
           { kind: "tool_call", toolCallId: "tc3" },
         ],
-        response: "Collection complete: 42 JS files (1.8MB) + 3 source maps. Strategy: manifest-based (Vite detected).",
+        response:
+          "Collection complete: 42 JS files (1.8MB) + 3 source maps. Strategy: manifest-based (Vite detected).",
         startedAt: new Date(Date.now() - 8500).toISOString(),
         completedAt: now,
         durationMs: 8500,
@@ -1170,13 +1494,30 @@ export async function mockSubAgentBlocks(): Promise<void> {
         depth: 1,
         status: "running",
         toolCalls: [
-          { id: "tc4", name: "list_files", args: { pattern: ".golish/js-assets/**/*.js" }, status: "completed", result: "42 files found", startedAt: now, completedAt: now },
-          { id: "tc5", name: "grep_file", args: { pattern: "api[_-]?key|secret|token", path: ".golish/js-assets/" }, status: "running", startedAt: now },
+          {
+            id: "tc4",
+            name: "list_files",
+            args: { pattern: ".golish/js-assets/**/*.js" },
+            status: "completed",
+            result: "42 files found",
+            startedAt: now,
+            completedAt: now,
+          },
+          {
+            id: "tc5",
+            name: "grep_file",
+            args: { pattern: "api[_-]?key|secret|token", path: ".golish/js-assets/" },
+            status: "running",
+            startedAt: now,
+          },
         ],
         entries: [
           { kind: "text", text: "Listing all collected JS files..." },
           { kind: "tool_call", toolCallId: "tc4" },
-          { kind: "text", text: "Scanning for API endpoints and hardcoded secrets across 42 files..." },
+          {
+            kind: "text",
+            text: "Scanning for API endpoints and hardcoded secrets across 42 files...",
+          },
           { kind: "tool_call", toolCallId: "tc5" },
         ],
         streamingText: "Scanning for API endpoints and hardcoded secrets across 42 files...",
@@ -1195,7 +1536,10 @@ export async function mockToolExecutionBlocks(): Promise<void> {
   const { useStore } = await import("@/store/index");
   const state = useStore.getState();
   const sessionId = state.activeSessionId ?? Object.keys(state.sessions)[0];
-  if (!sessionId) { console.error("[mockToolExecutionBlocks] No active session"); return; }
+  if (!sessionId) {
+    console.error("[mockToolExecutionBlocks] No active session");
+    return;
+  }
 
   const now = new Date().toISOString();
 
@@ -1212,7 +1556,8 @@ export async function mockToolExecutionBlocks(): Promise<void> {
         toolName: "run_command",
         args: { command: "subfinder -d target.example.com -silent | httpx -sc -title" },
         status: "completed",
-        result: "https://api.target.example.com [200] [API Gateway]\nhttps://admin.target.example.com [200] [Admin Panel]\nhttps://staging.target.example.com [403] [Forbidden]",
+        result:
+          "https://api.target.example.com [200] [API Gateway]\nhttps://admin.target.example.com [200] [Admin Panel]\nhttps://staging.target.example.com [403] [Forbidden]",
         startedAt: new Date(Date.now() - 6300).toISOString(),
         completedAt: now,
         durationMs: 6300,
@@ -1231,7 +1576,8 @@ export async function mockToolExecutionBlocks(): Promise<void> {
         toolName: "read_file",
         args: { file_path: ".golish/js-assets/manifest.json" },
         status: "completed",
-        result: '{"entries":{"main.js":"assets/main-a1b2c3.js","vendor.js":"assets/vendor-d4e5f6.js"}}',
+        result:
+          '{"entries":{"main.js":"assets/main-a1b2c3.js","vendor.js":"assets/vendor-d4e5f6.js"}}',
         startedAt: new Date(Date.now() - 120).toISOString(),
         completedAt: now,
         durationMs: 120,
@@ -1248,7 +1594,10 @@ export async function mockToolExecutionBlocks(): Promise<void> {
       data: {
         requestId: `mock-tool-edit-${Date.now()}`,
         toolName: "edit_file",
-        args: { file_path: "src/config/targets.json", changes: "Add admin.target.example.com to scope" },
+        args: {
+          file_path: "src/config/targets.json",
+          changes: "Add admin.target.example.com to scope",
+        },
         status: "running",
         startedAt: now,
         riskLevel: "medium",
@@ -1273,7 +1622,9 @@ export async function mockToolExecutionBlocks(): Promise<void> {
       },
     });
   });
-  console.log("[mockToolExecutionBlocks] Injected 4 tool execution blocks (completed, read, running, error)");
+  console.log(
+    "[mockToolExecutionBlocks] Injected 4 tool execution blocks (completed, read, running, error)"
+  );
 }
 
 /**
@@ -1285,7 +1636,10 @@ export async function mockPlanPipeline(): Promise<void> {
   const { useStore } = await import("@/store/index");
   const state = useStore.getState();
   const sessionId = state.activeSessionId ?? Object.keys(state.sessions)[0];
-  if (!sessionId) { console.error("[mockPlanPipeline] No active session"); return; }
+  if (!sessionId) {
+    console.error("[mockPlanPipeline] No active session");
+    return;
+  }
 
   useStore.getState().syncPlanToPipeline(sessionId, {
     version: 1,
@@ -1293,8 +1647,16 @@ export async function mockPlanPipeline(): Promise<void> {
     summary: { total: 6, completed: 3, in_progress: 1, pending: 2 },
     steps: [
       { id: "step-dns", step: "DNS Lookup — dig +short target.example.com", status: "completed" },
-      { id: "step-sub", step: "Subdomain Enum — subfinder -d target.example.com", status: "completed" },
-      { id: "step-http", step: "HTTP Probe — httpx -l subdomains.txt -sc -title", status: "completed" },
+      {
+        id: "step-sub",
+        step: "Subdomain Enum — subfinder -d target.example.com",
+        status: "completed",
+      },
+      {
+        id: "step-http",
+        step: "HTTP Probe — httpx -l subdomains.txt -sc -title",
+        status: "completed",
+      },
       { id: "step-port", step: "Port Scan — nmap -sV --top-ports 1000", status: "in_progress" },
       { id: "step-tech", step: "Tech Fingerprint — whatweb", status: "pending" },
       { id: "step-js", step: "JS Harvest (AI) — js_harvest {target}", status: "pending" },
@@ -1341,14 +1703,20 @@ export async function mockFullPlanExecution(): Promise<void> {
     return;
   }
 
-  console.log("[mockFullPlan] Starting with AI session:", aiSessionId, "terminal:", terminalSessionId);
+  console.log(
+    "[mockFullPlan] Starting with AI session:",
+    aiSessionId,
+    "terminal:",
+    terminalSessionId
+  );
 
   // Helper to emit AI event with proper session_id
   const emit = (event: AiEventType) =>
     dispatchMockEvent("ai-event", { ...event, session_id: aiSessionId });
 
   const turnId = `mock-plan-${Date.now()}`;
-  const reqId = (name: string) => `mock-${name}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const reqId = (name: string) =>
+    `mock-${name}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
   // --- 1. AI turn starts ---
   await emit({ type: "started", turn_id: turnId });
@@ -1361,28 +1729,82 @@ export async function mockFullPlanExecution(): Promise<void> {
 
   // --- 3. AI calls update_plan to create the plan (step 1 in_progress) ---
   const planReqId1 = reqId("update-plan-1");
-  await emit({ type: "tool_request", tool_name: "update_plan", args: { explanation: "System reconnaissance", steps: [{ step: "Check system information", status: "in_progress" }, { step: "List files in workspace", status: "pending" }, { step: "Show network configuration", status: "pending" }] }, request_id: planReqId1 });
+  await emit({
+    type: "tool_request",
+    tool_name: "update_plan",
+    args: {
+      explanation: "System reconnaissance",
+      steps: [
+        { step: "Check system information", status: "in_progress" },
+        { step: "List files in workspace", status: "pending" },
+        { step: "Show network configuration", status: "pending" },
+      ],
+    },
+    request_id: planReqId1,
+  });
   await delay(200);
 
   // plan_updated event (emitted by the backend when update_plan runs)
-  dispatchMockEvent("ai-event", { type: "plan_updated", session_id: aiSessionId, version: 1, explanation: "System reconnaissance", steps: [{ id: "step-sysinfo", step: "Check system information", status: "in_progress" }, { id: "step-listfiles", step: "List files in workspace", status: "pending" }, { id: "step-network", step: "Show network configuration", status: "pending" }], summary: { total: 3, completed: 0, in_progress: 1, pending: 2 } });
+  dispatchMockEvent("ai-event", {
+    type: "plan_updated",
+    session_id: aiSessionId,
+    version: 1,
+    explanation: "System reconnaissance",
+    steps: [
+      { id: "step-sysinfo", step: "Check system information", status: "in_progress" },
+      { id: "step-listfiles", step: "List files in workspace", status: "pending" },
+      { id: "step-network", step: "Show network configuration", status: "pending" },
+    ],
+    summary: { total: 3, completed: 0, in_progress: 1, pending: 2 },
+  });
   await delay(100);
 
-  await emit({ type: "tool_result", tool_name: "update_plan", result: "Plan created with 3 steps", success: true, request_id: planReqId1 });
+  await emit({
+    type: "tool_result",
+    tool_name: "update_plan",
+    result: "Plan created with 3 steps",
+    success: true,
+    request_id: planReqId1,
+  });
   await delay(300);
 
   // --- 4. Step 1: run_command uname -a ---
   const cmdReqId1 = reqId("run-cmd-1");
-  await emit({ type: "tool_request", tool_name: "run_command", args: { command: "uname -a && sw_vers" }, request_id: cmdReqId1 });
+  await emit({
+    type: "tool_request",
+    tool_name: "run_command",
+    args: { command: "uname -a && sw_vers" },
+    request_id: cmdReqId1,
+  });
   await delay(500);
 
   // Streaming output
-  dispatchMockEvent("ai-event", { type: "tool_output_chunk", session_id: aiSessionId, request_id: cmdReqId1, tool_name: "run_command", chunk: "Darwin MacBook-Pro.local 24.4.0 Darwin Kernel Version 24.4.0\n", stream: "stdout" });
+  dispatchMockEvent("ai-event", {
+    type: "tool_output_chunk",
+    session_id: aiSessionId,
+    request_id: cmdReqId1,
+    tool_name: "run_command",
+    chunk: "Darwin MacBook-Pro.local 24.4.0 Darwin Kernel Version 24.4.0\n",
+    stream: "stdout",
+  });
   await delay(300);
-  dispatchMockEvent("ai-event", { type: "tool_output_chunk", session_id: aiSessionId, request_id: cmdReqId1, tool_name: "run_command", chunk: "ProductName:    macOS\nProductVersion: 15.4\nBuildVersion:   24E5238a\n", stream: "stdout" });
+  dispatchMockEvent("ai-event", {
+    type: "tool_output_chunk",
+    session_id: aiSessionId,
+    request_id: cmdReqId1,
+    tool_name: "run_command",
+    chunk: "ProductName:    macOS\nProductVersion: 15.4\nBuildVersion:   24E5238a\n",
+    stream: "stdout",
+  });
   await delay(300);
 
-  await emit({ type: "tool_result", tool_name: "run_command", result: "Darwin MacBook-Pro.local 24.4.0 ...", success: true, request_id: cmdReqId1 });
+  await emit({
+    type: "tool_result",
+    tool_name: "run_command",
+    result: "Darwin MacBook-Pro.local 24.4.0 ...",
+    success: true,
+    request_id: cmdReqId1,
+  });
   await delay(200);
 
   // --- 5. Mark step 1 complete, step 2 in_progress ---
@@ -1390,18 +1812,46 @@ export async function mockFullPlanExecution(): Promise<void> {
   await emit({ type: "tool_request", tool_name: "update_plan", args: {}, request_id: planReqId2 });
   await delay(100);
 
-  dispatchMockEvent("ai-event", { type: "plan_updated", session_id: aiSessionId, version: 2, explanation: "System reconnaissance", steps: [{ id: "step-sysinfo", step: "Check system information", status: "completed" }, { id: "step-listfiles", step: "List files in workspace", status: "in_progress" }, { id: "step-network", step: "Show network configuration", status: "pending" }], summary: { total: 3, completed: 1, in_progress: 1, pending: 1 } });
+  dispatchMockEvent("ai-event", {
+    type: "plan_updated",
+    session_id: aiSessionId,
+    version: 2,
+    explanation: "System reconnaissance",
+    steps: [
+      { id: "step-sysinfo", step: "Check system information", status: "completed" },
+      { id: "step-listfiles", step: "List files in workspace", status: "in_progress" },
+      { id: "step-network", step: "Show network configuration", status: "pending" },
+    ],
+    summary: { total: 3, completed: 1, in_progress: 1, pending: 1 },
+  });
   await delay(100);
 
-  await emit({ type: "tool_result", tool_name: "update_plan", result: "Plan updated", success: true, request_id: planReqId2 });
+  await emit({
+    type: "tool_result",
+    tool_name: "update_plan",
+    result: "Plan updated",
+    success: true,
+    request_id: planReqId2,
+  });
   await delay(300);
 
   // --- 6. Step 2: list_files ---
   const listReqId = reqId("list-files");
-  await emit({ type: "tool_request", tool_name: "list_files", args: { path: "." }, request_id: listReqId });
+  await emit({
+    type: "tool_request",
+    tool_name: "list_files",
+    args: { path: "." },
+    request_id: listReqId,
+  });
   await delay(600);
 
-  await emit({ type: "tool_result", tool_name: "list_files", result: "backend/\nfrontend/\npackage.json\nCargo.toml\nREADME.md\njustfile\n... (196 entries)", success: true, request_id: listReqId });
+  await emit({
+    type: "tool_result",
+    tool_name: "list_files",
+    result: "backend/\nfrontend/\npackage.json\nCargo.toml\nREADME.md\njustfile\n... (196 entries)",
+    success: true,
+    request_id: listReqId,
+  });
   await delay(200);
 
   // --- 7. Mark step 2 complete, step 3 in_progress ---
@@ -1409,21 +1859,57 @@ export async function mockFullPlanExecution(): Promise<void> {
   await emit({ type: "tool_request", tool_name: "update_plan", args: {}, request_id: planReqId3 });
   await delay(100);
 
-  dispatchMockEvent("ai-event", { type: "plan_updated", session_id: aiSessionId, version: 3, explanation: "System reconnaissance", steps: [{ id: "step-sysinfo", step: "Check system information", status: "completed" }, { id: "step-listfiles", step: "List files in workspace", status: "completed" }, { id: "step-network", step: "Show network configuration", status: "in_progress" }], summary: { total: 3, completed: 2, in_progress: 1, pending: 0 } });
+  dispatchMockEvent("ai-event", {
+    type: "plan_updated",
+    session_id: aiSessionId,
+    version: 3,
+    explanation: "System reconnaissance",
+    steps: [
+      { id: "step-sysinfo", step: "Check system information", status: "completed" },
+      { id: "step-listfiles", step: "List files in workspace", status: "completed" },
+      { id: "step-network", step: "Show network configuration", status: "in_progress" },
+    ],
+    summary: { total: 3, completed: 2, in_progress: 1, pending: 0 },
+  });
   await delay(100);
 
-  await emit({ type: "tool_result", tool_name: "update_plan", result: "Plan updated", success: true, request_id: planReqId3 });
+  await emit({
+    type: "tool_result",
+    tool_name: "update_plan",
+    result: "Plan updated",
+    success: true,
+    request_id: planReqId3,
+  });
   await delay(300);
 
   // --- 8. Step 3: run_command ifconfig ---
   const cmdReqId2 = reqId("run-cmd-2");
-  await emit({ type: "tool_request", tool_name: "run_command", args: { command: "ifconfig en0" }, request_id: cmdReqId2 });
+  await emit({
+    type: "tool_request",
+    tool_name: "run_command",
+    args: { command: "ifconfig en0" },
+    request_id: cmdReqId2,
+  });
   await delay(500);
 
-  dispatchMockEvent("ai-event", { type: "tool_output_chunk", session_id: aiSessionId, request_id: cmdReqId2, tool_name: "run_command", chunk: "en0: flags=8863<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n\tinet 192.168.0.69 netmask 0xffffff00 broadcast 192.168.0.255\n", stream: "stdout" });
+  dispatchMockEvent("ai-event", {
+    type: "tool_output_chunk",
+    session_id: aiSessionId,
+    request_id: cmdReqId2,
+    tool_name: "run_command",
+    chunk:
+      "en0: flags=8863<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n\tinet 192.168.0.69 netmask 0xffffff00 broadcast 192.168.0.255\n",
+    stream: "stdout",
+  });
   await delay(300);
 
-  await emit({ type: "tool_result", tool_name: "run_command", result: "en0: flags=8863 ... inet 192.168.0.69", success: true, request_id: cmdReqId2 });
+  await emit({
+    type: "tool_result",
+    tool_name: "run_command",
+    result: "en0: flags=8863 ... inet 192.168.0.69",
+    success: true,
+    request_id: cmdReqId2,
+  });
   await delay(200);
 
   // --- 9. Mark all steps complete ---
@@ -1431,14 +1917,32 @@ export async function mockFullPlanExecution(): Promise<void> {
   await emit({ type: "tool_request", tool_name: "update_plan", args: {}, request_id: planReqId4 });
   await delay(100);
 
-  dispatchMockEvent("ai-event", { type: "plan_updated", session_id: aiSessionId, version: 4, explanation: "System reconnaissance", steps: [{ id: "step-sysinfo", step: "Check system information", status: "completed" }, { id: "step-listfiles", step: "List files in workspace", status: "completed" }, { id: "step-network", step: "Show network configuration", status: "completed" }], summary: { total: 3, completed: 3, in_progress: 0, pending: 0 } });
+  dispatchMockEvent("ai-event", {
+    type: "plan_updated",
+    session_id: aiSessionId,
+    version: 4,
+    explanation: "System reconnaissance",
+    steps: [
+      { id: "step-sysinfo", step: "Check system information", status: "completed" },
+      { id: "step-listfiles", step: "List files in workspace", status: "completed" },
+      { id: "step-network", step: "Show network configuration", status: "completed" },
+    ],
+    summary: { total: 3, completed: 3, in_progress: 0, pending: 0 },
+  });
   await delay(100);
 
-  await emit({ type: "tool_result", tool_name: "update_plan", result: "All steps completed", success: true, request_id: planReqId4 });
+  await emit({
+    type: "tool_result",
+    tool_name: "update_plan",
+    result: "All steps completed",
+    success: true,
+    request_id: planReqId4,
+  });
   await delay(300);
 
   // --- 10. AI sends summary text ---
-  const summary = "All 3 steps completed:\n\n1. **System Info**: macOS 15.4 (Darwin 24.4.0)\n2. **Files**: 196 entries in workspace (Rust + React project)\n3. **Network**: en0 active at 192.168.0.69";
+  const summary =
+    "All 3 steps completed:\n\n1. **System Info**: macOS 15.4 (Darwin 24.4.0)\n2. **Files**: 196 entries in workspace (Rust + React project)\n3. **Network**: en0 active at 192.168.0.69";
   const words = summary.split(" ");
   let accumulated = planText;
   for (const word of words) {
@@ -1450,9 +1954,18 @@ export async function mockFullPlanExecution(): Promise<void> {
   await delay(200);
 
   // --- 11. Turn complete ---
-  await emit({ type: "completed", response: accumulated, tokens_used: 3200, duration_ms: 12000, input_tokens: 6400, output_tokens: 800 });
+  await emit({
+    type: "completed",
+    response: accumulated,
+    tokens_used: 3200,
+    duration_ms: 12000,
+    input_tokens: 6400,
+    output_tokens: 800,
+  });
 
-  console.log("[mockFullPlan] Complete! Check right chat for plan card, click it to see left pane detail.");
+  console.log(
+    "[mockFullPlan] Complete! Check right chat for plan card, click it to see left pane detail."
+  );
 }
 
 // =============================================================================
@@ -1486,7 +1999,8 @@ export async function mockRunCommandApproval(): Promise<void> {
     dispatchMockEvent("ai-event", { ...event, session_id: aiSessionId });
 
   const turnId = `mock-runcmd-${Date.now()}`;
-  const reqId = (name: string) => `mock-${name}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const reqId = (name: string) =>
+    `mock-${name}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
   // 1. AI turn starts
   await emit({ type: "started", turn_id: turnId });
@@ -1519,7 +2033,8 @@ export async function mockRunCommandApproval(): Promise<void> {
     session_id: aiSessionId,
     request_id: cmd1Id,
     tool_name: "run_command",
-    chunk: "Darwin MacBook-Pro.local 24.4.0 Darwin Kernel Version 24.4.0: root:xnu-11417.401.54~1/RELEASE_ARM64_T6031 arm64\n",
+    chunk:
+      "Darwin MacBook-Pro.local 24.4.0 Darwin Kernel Version 24.4.0: root:xnu-11417.401.54~1/RELEASE_ARM64_T6031 arm64\n",
     stream: "stdout",
   });
   await delay(300);
@@ -1568,7 +2083,8 @@ export async function mockRunCommandApproval(): Promise<void> {
     session_id: aiSessionId,
     request_id: cmd2Id,
     tool_name: "run_command",
-    chunk: "Filesystem       Size   Used  Avail Capacity  Mounted on\n/dev/disk3s1s1  460Gi  320Gi  140Gi    70%    /\n",
+    chunk:
+      "Filesystem       Size   Used  Avail Capacity  Mounted on\n/dev/disk3s1s1  460Gi  320Gi  140Gi    70%    /\n",
     stream: "stdout",
   });
   await delay(200);
@@ -1577,13 +2093,15 @@ export async function mockRunCommandApproval(): Promise<void> {
     type: "tool_result",
     request_id: cmd2Id,
     tool_name: "run_command",
-    result: "Filesystem       Size   Used  Avail Capacity  Mounted on\n/dev/disk3s1s1  460Gi  320Gi  140Gi    70%    /",
+    result:
+      "Filesystem       Size   Used  Avail Capacity  Mounted on\n/dev/disk3s1s1  460Gi  320Gi  140Gi    70%    /",
     success: true,
   });
   await delay(200);
 
   // 6. AI summary text
-  const summary = "\n\nYour system is running macOS on Apple Silicon (arm64). Disk usage is at 70%.";
+  const summary =
+    "\n\nYour system is running macOS on Apple Silicon (arm64). Disk usage is at 70%.";
   for (const word of summary.split(" ")) {
     const delta = accumulated.length > 0 ? ` ${word}` : word;
     accumulated += delta;
@@ -1600,7 +2118,9 @@ export async function mockRunCommandApproval(): Promise<void> {
     output_tokens: 200,
   });
 
-  console.log("[mockRunCommand] Done! You should see tool badges (Shell, Read, Shell) in the right chat. Click them to open the tool detail panel in the center.");
+  console.log(
+    "[mockRunCommand] Done! You should see tool badges (Shell, Read, Shell) in the right chat. Click them to open the tool detail panel in the center."
+  );
 }
 
 // =============================================================================
@@ -1617,13 +2137,22 @@ export async function simulatePipelineFanOut(): Promise<void> {
   const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
   const sessionId = state.activeSessionId ?? Object.keys(state.sessions)[0];
-  if (!sessionId) { console.error("[mockPipelineFanOut] No active session found. Sessions:", Object.keys(state.sessions)); return; }
+  if (!sessionId) {
+    console.error(
+      "[mockPipelineFanOut] No active session found. Sessions:",
+      Object.keys(state.sessions)
+    );
+    return;
+  }
   console.log("[mockPipelineFanOut] Using session:", sessionId);
 
   const now = () => new Date().toISOString();
 
   const mkStep = (id: string, name: string, cmd: string) => ({
-    stepId: id, name, command: cmd, status: "pending" as const,
+    stepId: id,
+    name,
+    command: cmd,
+    status: "pending" as const,
   });
 
   const execution = {
@@ -1645,7 +2174,14 @@ export async function simulatePipelineFanOut(): Promise<void> {
   state.startPipelineExecution(sessionId, execution);
   const tl = useStore.getState().timelines[sessionId] ?? [];
   const blockId = tl[tl.length - 1]?.id ?? "";
-  console.log("[mockPipelineFanOut] Block ID:", blockId, "Timeline length:", tl.length, "Last block type:", tl[tl.length - 1]?.type);
+  console.log(
+    "[mockPipelineFanOut] Block ID:",
+    blockId,
+    "Timeline length:",
+    tl.length,
+    "Last block type:",
+    tl[tl.length - 1]?.type
+  );
 
   const up = (stepId: string, u: Record<string, unknown>) =>
     useStore.getState().updatePipelineStep(sessionId, blockId, stepId, u);
@@ -1653,14 +2189,21 @@ export async function simulatePipelineFanOut(): Promise<void> {
   // Step 1: DNS
   up("s1", { status: "running", startedAt: now() });
   await delay(600);
-  up("s1", { status: "success", finishedAt: now(), durationMs: 580, output: "93.184.216.34\n2606:2800:220:1:248:1893:25c8:1946" });
+  up("s1", {
+    status: "success",
+    finishedAt: now(),
+    durationMs: 580,
+    output: "93.184.216.34\n2606:2800:220:1:248:1893:25c8:1946",
+  });
 
   // Step 2: Subdomain Enum — discovers 4 subs
   up("s2", { status: "running", startedAt: now() });
   await delay(1200);
   const subs = ["www.example.com", "api.example.com", "cdn.example.com", "admin.example.com"];
   up("s2", {
-    status: "success", finishedAt: now(), durationMs: 3200,
+    status: "success",
+    finishedAt: now(),
+    durationMs: 3200,
     output: subs.join("\n"),
     discoveredTargets: subs,
   });
@@ -1668,9 +2211,15 @@ export async function simulatePipelineFanOut(): Promise<void> {
   // Step 3: HTTP Probe — fans out on subs, discovers live hosts
   up("s3", { status: "running", startedAt: now(), discoveredTargets: subs });
   await delay(800);
-  const liveHosts = ["https://www.example.com", "https://api.example.com", "https://admin.example.com"];
+  const liveHosts = [
+    "https://www.example.com",
+    "https://api.example.com",
+    "https://admin.example.com",
+  ];
   up("s3", {
-    status: "success", finishedAt: now(), durationMs: 2100,
+    status: "success",
+    finishedAt: now(),
+    durationMs: 2100,
     output: liveHosts.join("\n"),
     discoveredTargets: liveHosts,
     subTargets: [
@@ -1685,7 +2234,9 @@ export async function simulatePipelineFanOut(): Promise<void> {
   up("s4", { status: "running", startedAt: now(), discoveredTargets: liveHosts });
   await delay(1500);
   up("s4", {
-    status: "success", finishedAt: now(), durationMs: 12400,
+    status: "success",
+    finishedAt: now(),
+    durationMs: 12400,
     output: "www: 80,443\napi: 80,443,8080\nadmin: 443",
     subTargets: [
       { target: "https://www.example.com", status: "success" as const, durationMs: 4200 },
@@ -1698,7 +2249,9 @@ export async function simulatePipelineFanOut(): Promise<void> {
   up("s5", { status: "running", startedAt: now() });
   await delay(900);
   up("s5", {
-    status: "success", finishedAt: now(), durationMs: 5600,
+    status: "success",
+    finishedAt: now(),
+    durationMs: 5600,
     output: "www: Nginx, React, Vite\napi: Nginx, Express, Node.js\nadmin: Nginx, Vue.js",
     subTargets: [
       { target: "https://www.example.com", status: "success" as const, durationMs: 1800 },
@@ -1711,7 +2264,9 @@ export async function simulatePipelineFanOut(): Promise<void> {
   up("s6", { status: "running", startedAt: now() });
   await delay(2000);
   up("s6", {
-    status: "success", finishedAt: now(), durationMs: 18500,
+    status: "success",
+    finishedAt: now(),
+    durationMs: 18500,
     output: "[AI] Collected 58 JS files (2.8MB) + 6 source maps across 3 targets",
     subTargets: [
       { target: "https://www.example.com", status: "success" as const, durationMs: 8500 },
@@ -1818,7 +2373,11 @@ export async function demoAllChatStyles(): Promise<void> {
   await delay(200);
 
   // Thinking/reasoning
-  await emit({ type: "reasoning", content: "Let me analyze the codebase structure first. I need to understand the authentication patterns before making changes. The current implementation uses session-based auth, but the user wants JWT..." });
+  await emit({
+    type: "reasoning",
+    content:
+      "Let me analyze the codebase structure first. I need to understand the authentication patterns before making changes. The current implementation uses session-based auth, but the user wants JWT...",
+  });
   await delay(200);
 
   // Text
@@ -1828,10 +2387,23 @@ export async function demoAllChatStyles(): Promise<void> {
 
   // Plan v1
   const planReq1 = reqId();
-  await emit({ type: "tool_request", tool_name: "update_plan", args: { explanation: "JWT migration" }, request_id: planReq1 });
-  await emit({ type: "tool_result", tool_name: "update_plan", result: "ok", success: true, request_id: planReq1 });
   await emit({
-    type: "plan_updated", version: 1, explanation: "JWT migration plan",
+    type: "tool_request",
+    tool_name: "update_plan",
+    args: { explanation: "JWT migration" },
+    request_id: planReq1,
+  });
+  await emit({
+    type: "tool_result",
+    tool_name: "update_plan",
+    result: "ok",
+    success: true,
+    request_id: planReq1,
+  });
+  await emit({
+    type: "plan_updated",
+    version: 1,
+    explanation: "JWT migration plan",
     steps: [
       { id: "step-auth-analyze", step: "Analyze current auth patterns", status: "completed" },
       { id: "step-jwt-middleware", step: "Create JWT middleware", status: "completed" },
@@ -1843,14 +2415,36 @@ export async function demoAllChatStyles(): Promise<void> {
 
   // Tool calls (read_file + run_command)
   const toolReq1 = reqId();
-  await emit({ type: "tool_request", tool_name: "read_file", args: { path: "src/middleware/session.ts" }, request_id: toolReq1 });
+  await emit({
+    type: "tool_request",
+    tool_name: "read_file",
+    args: { path: "src/middleware/session.ts" },
+    request_id: toolReq1,
+  });
   await delay(100);
-  await emit({ type: "tool_result", tool_name: "read_file", result: "export function sessionAuth() { ... }", success: true, request_id: toolReq1 });
+  await emit({
+    type: "tool_result",
+    tool_name: "read_file",
+    result: "export function sessionAuth() { ... }",
+    success: true,
+    request_id: toolReq1,
+  });
 
   const toolReq2 = reqId();
-  await emit({ type: "tool_request", tool_name: "run_command", args: { command: "npm test -- auth" }, request_id: toolReq2 });
+  await emit({
+    type: "tool_request",
+    tool_name: "run_command",
+    args: { command: "npm test -- auth" },
+    request_id: toolReq2,
+  });
   await delay(100);
-  await emit({ type: "tool_result", tool_name: "run_command", result: { stdout: "12 tests passed", exit_code: 0 }, success: true, request_id: toolReq2 });
+  await emit({
+    type: "tool_result",
+    tool_name: "run_command",
+    result: { stdout: "12 tests passed", exit_code: 0 },
+    success: true,
+    request_id: toolReq2,
+  });
 
   // More text
   const text2 = "\n\nAll auth tests pass. Now updating the plan with additional steps.\n\n";
@@ -1859,10 +2453,23 @@ export async function demoAllChatStyles(): Promise<void> {
 
   // Plan v2 (triggers v1 retirement)
   const planReq2 = reqId();
-  await emit({ type: "tool_request", tool_name: "update_plan", args: { explanation: "Extended plan" }, request_id: planReq2 });
-  await emit({ type: "tool_result", tool_name: "update_plan", result: "ok", success: true, request_id: planReq2 });
   await emit({
-    type: "plan_updated", version: 2, explanation: "Extended JWT plan",
+    type: "tool_request",
+    tool_name: "update_plan",
+    args: { explanation: "Extended plan" },
+    request_id: planReq2,
+  });
+  await emit({
+    type: "tool_result",
+    tool_name: "update_plan",
+    result: "ok",
+    success: true,
+    request_id: planReq2,
+  });
+  await emit({
+    type: "plan_updated",
+    version: 2,
+    explanation: "Extended JWT plan",
     steps: [
       { id: "step-auth-analyze", step: "Analyze current auth patterns", status: "completed" },
       { id: "step-jwt-middleware", step: "Create JWT middleware", status: "completed" },
@@ -1876,42 +2483,97 @@ export async function demoAllChatStyles(): Promise<void> {
 
   // Sub-agent tool call (shows SubAgentInlineCard in message)
   const subReq = reqId();
-  await emit({ type: "tool_request", tool_name: "sub_agent_researcher", args: { task: "Search for JWT best practices" }, request_id: subReq });
+  await emit({
+    type: "tool_request",
+    tool_name: "sub_agent_researcher",
+    args: { task: "Search for JWT best practices" },
+    request_id: subReq,
+  });
 
-  await emit({ type: "sub_agent_started", agent_id: "researcher-demo", agent_name: "Researcher", task: "Search for JWT best practices", depth: 1, parent_request_id: subReq });
+  await emit({
+    type: "sub_agent_started",
+    agent_id: "researcher-demo",
+    agent_name: "Researcher",
+    task: "Search for JWT best practices",
+    depth: 1,
+    parent_request_id: subReq,
+  });
   await delay(300);
-  await emit({ type: "sub_agent_completed", agent_id: "researcher-demo", response: "Found 3 relevant patterns for JWT refresh.", duration_ms: 2400, parent_request_id: subReq });
-  await emit({ type: "tool_result", tool_name: "sub_agent_researcher", result: "Found patterns", success: true, request_id: subReq });
+  await emit({
+    type: "sub_agent_completed",
+    agent_id: "researcher-demo",
+    response: "Found 3 relevant patterns for JWT refresh.",
+    duration_ms: 2400,
+    parent_request_id: subReq,
+  });
+  await emit({
+    type: "tool_result",
+    tool_name: "sub_agent_researcher",
+    result: "Found patterns",
+    success: true,
+    request_id: subReq,
+  });
 
   // Complete turn 1
   await emit({
     type: "completed",
-    response: text1 + text2 + "Research complete. Starting implementation phase.",
-    input_tokens: 4200, output_tokens: 1800, duration_ms: 12000,
+    response: `${text1 + text2}Research complete. Starting implementation phase.`,
+    input_tokens: 4200,
+    output_tokens: 1800,
+    duration_ms: 12000,
   });
   await delay(500);
 
   // === 2. Workflow ===
   const wfId = `wf-${Date.now()}`;
-  await emit({ type: "workflow_started", workflow_id: wfId, workflow_name: "JWT Migration Pipeline" });
+  await emit({
+    type: "workflow_started",
+    workflow_id: wfId,
+    workflow_name: "JWT Migration Pipeline",
+  });
   await delay(300);
-  await emit({ type: "workflow_step_started", workflow_id: wfId, step_name: "Generate middleware", step_index: 0, total_steps: 3 });
+  await emit({
+    type: "workflow_step_started",
+    workflow_id: wfId,
+    step_name: "Generate middleware",
+    step_index: 0,
+    total_steps: 3,
+  });
   await delay(200);
-  await emit({ type: "workflow_step_completed", workflow_id: wfId, step_name: "Generate middleware", output: "Created auth.ts", duration_ms: 1200 });
-  await emit({ type: "workflow_step_started", workflow_id: wfId, step_name: "Run tests", step_index: 1, total_steps: 3 });
+  await emit({
+    type: "workflow_step_completed",
+    workflow_id: wfId,
+    step_name: "Generate middleware",
+    output: "Created auth.ts",
+    duration_ms: 1200,
+  });
+  await emit({
+    type: "workflow_step_started",
+    workflow_id: wfId,
+    step_name: "Run tests",
+    step_index: 1,
+    total_steps: 3,
+  });
   await delay(200);
 
   // === 3. Compaction notice ===
   await emit({ type: "compaction_started", tokens_before: 128000, messages_before: 42 });
   await delay(500);
-  await emit({ type: "compaction_completed", tokens_before: 128000, messages_before: 42, messages_after: 8, summary_length: 2400 });
+  await emit({
+    type: "compaction_completed",
+    tokens_before: 128000,
+    messages_before: 42,
+    messages_after: 8,
+    summary_length: 2400,
+  });
 
   // === 4. Ask Human ===
   await delay(300);
   await emit({
     type: "ask_human_request",
     request_id: `ask-${Date.now()}`,
-    question: "The target https://api.example.com is not registered. Do you want to add it before scanning?",
+    question:
+      "The target https://api.example.com is not registered. Do you want to add it before scanning?",
     input_type: "confirmation",
     options: [],
     context: "Required before running vulnerability scan on unregistered targets.",
@@ -1935,16 +2597,17 @@ export async function demoAllChatStyles(): Promise<void> {
     suggestion: null,
   });
 
-  console.log("[demoAllChatStyles] Done! Components shown:\n" +
-    "  1. MessageBlock (user+assistant)\n" +
-    "  2. ThinkingBlock (reasoning)\n" +
-    "  3. TaskPlanCard (active v2 + retired v1)\n" +
-    "  4. ToolCallCard (read_file, run_command)\n" +
-    "  5. SubAgentInlineCard (sub_agent_researcher)\n" +
-    "  6. WorkflowProgress (running)\n" +
-    "  7. CompactionNotice\n" +
-    "  8. AskHumanInline (confirmation)\n" +
-    "  9. CollapsibleToolCall (pending approval)\n"
+  console.log(
+    "[demoAllChatStyles] Done! Components shown:\n" +
+      "  1. MessageBlock (user+assistant)\n" +
+      "  2. ThinkingBlock (reasoning)\n" +
+      "  3. TaskPlanCard (active v2 + retired v1)\n" +
+      "  4. ToolCallCard (read_file, run_command)\n" +
+      "  5. SubAgentInlineCard (sub_agent_researcher)\n" +
+      "  6. WorkflowProgress (running)\n" +
+      "  7. CompactionNotice\n" +
+      "  8. AskHumanInline (confirmation)\n" +
+      "  9. CollapsibleToolCall (pending approval)\n"
   );
 }
 
@@ -1956,25 +2619,44 @@ export async function demoSubAgentStyleShowcase(): Promise<void> {
   const { useStore } = await import("@/store/index");
   const state = useStore.getState();
   const sessionId = state.activeSessionId ?? Object.keys(state.sessions)[0];
-  if (!sessionId) { console.error("[demoSubAgentStyles] No active session"); return; }
+  if (!sessionId) {
+    console.error("[demoSubAgentStyles] No active session");
+    return;
+  }
   const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-  const _now = new Date().toISOString(); void _now;
+  const _now = new Date().toISOString();
+  void _now;
 
   useStore.getState().setAgentResponding(sessionId, true);
-  useStore.getState().updateAgentStreaming(sessionId, "Coordinating multiple agents with nesting...\n\n");
+  useStore
+    .getState()
+    .updateAgentStreaming(sessionId, "Coordinating multiple agents with nesting...\n\n");
 
   // Agent 1: Researcher (depth 1, completed)
   useStore.getState().startSubAgent(sessionId, {
-    agentId: "researcher-001", agentName: "Researcher",
-    parentRequestId: "demo-style-researcher", task: "Analyze authentication patterns across the codebase", depth: 1,
+    agentId: "researcher-001",
+    agentName: "Researcher",
+    parentRequestId: "demo-style-researcher",
+    task: "Analyze authentication patterns across the codebase",
+    depth: 1,
   });
   await delay(300);
   useStore.getState().addSubAgentToolCall(sessionId, "demo-style-researcher", {
-    id: "t-r-1", name: "semantic_search", args: { query: "JWT auth middleware" },
+    id: "t-r-1",
+    name: "semantic_search",
+    args: { query: "JWT auth middleware" },
   });
   await delay(500);
-  useStore.getState().completeSubAgentToolCall(sessionId, "demo-style-researcher", "t-r-1", true, "Found 5 relevant files");
+  useStore
+    .getState()
+    .completeSubAgentToolCall(
+      sessionId,
+      "demo-style-researcher",
+      "t-r-1",
+      true,
+      "Found 5 relevant files"
+    );
   useStore.getState().completeSubAgent(sessionId, "demo-style-researcher", {
     response: "Found JWT patterns in 5 files. Recommending middleware refactor.",
     durationMs: 3200,
@@ -1982,24 +2664,42 @@ export async function demoSubAgentStyleShowcase(): Promise<void> {
 
   // Agent 2: Coder (depth 1, running with nested child)
   useStore.getState().startSubAgent(sessionId, {
-    agentId: "coder-001", agentName: "Coder",
-    parentRequestId: "demo-style-coder", task: "Implement JWT middleware with refresh token logic", depth: 1,
+    agentId: "coder-001",
+    agentName: "Coder",
+    parentRequestId: "demo-style-coder",
+    task: "Implement JWT middleware with refresh token logic",
+    depth: 1,
   });
   await delay(300);
   useStore.getState().addSubAgentToolCall(sessionId, "demo-style-coder", {
-    id: "t-c-1", name: "write_file", args: { path: "src/middleware/auth.ts", content: "..." },
+    id: "t-c-1",
+    name: "write_file",
+    args: { path: "src/middleware/auth.ts", content: "..." },
   });
 
   // Agent 2a: Sub-coder (depth 2, completed — nested under Coder)
   useStore.getState().startSubAgent(sessionId, {
-    agentId: "coder-sub-001", agentName: "Coder",
-    parentRequestId: "demo-style-coder-sub", task: "Generate unit tests for auth middleware", depth: 2,
+    agentId: "coder-sub-001",
+    agentName: "Coder",
+    parentRequestId: "demo-style-coder-sub",
+    task: "Generate unit tests for auth middleware",
+    depth: 2,
   });
   await delay(400);
   useStore.getState().addSubAgentToolCall(sessionId, "demo-style-coder-sub", {
-    id: "t-cs-1", name: "write_file", args: { path: "src/middleware/__tests__/auth.test.ts" },
+    id: "t-cs-1",
+    name: "write_file",
+    args: { path: "src/middleware/__tests__/auth.test.ts" },
   });
-  useStore.getState().completeSubAgentToolCall(sessionId, "demo-style-coder-sub", "t-cs-1", true, "12 tests created");
+  useStore
+    .getState()
+    .completeSubAgentToolCall(
+      sessionId,
+      "demo-style-coder-sub",
+      "t-cs-1",
+      true,
+      "12 tests created"
+    );
   useStore.getState().completeSubAgent(sessionId, "demo-style-coder-sub", {
     response: "Created 12 unit tests. All passing.",
     durationMs: 2100,
@@ -2008,21 +2708,31 @@ export async function demoSubAgentStyleShowcase(): Promise<void> {
   // Agent 2b: Deep nested (depth 3, running)
   await delay(200);
   useStore.getState().startSubAgent(sessionId, {
-    agentId: "explorer-deep-001", agentName: "Explorer",
-    parentRequestId: "demo-style-explorer-deep", task: "Scan integration test coverage for auth module", depth: 3,
+    agentId: "explorer-deep-001",
+    agentName: "Explorer",
+    parentRequestId: "demo-style-explorer-deep",
+    task: "Scan integration test coverage for auth module",
+    depth: 3,
   });
   useStore.getState().addSubAgentToolCall(sessionId, "demo-style-explorer-deep", {
-    id: "t-ed-1", name: "list_files", args: { pattern: "**/*.integration.test.ts" },
+    id: "t-ed-1",
+    name: "list_files",
+    args: { pattern: "**/*.integration.test.ts" },
   });
 
   // Agent 3: Reviewer (depth 1, interrupted)
   useStore.getState().startSubAgent(sessionId, {
-    agentId: "reviewer-001", agentName: "Reviewer",
-    parentRequestId: "demo-style-reviewer", task: "Security review of auth implementation", depth: 1,
+    agentId: "reviewer-001",
+    agentName: "Reviewer",
+    parentRequestId: "demo-style-reviewer",
+    task: "Security review of auth implementation",
+    depth: 1,
   });
   await delay(300);
   useStore.getState().addSubAgentToolCall(sessionId, "demo-style-reviewer", {
-    id: "t-rv-1", name: "read_file", args: { path: "src/middleware/auth.ts" },
+    id: "t-rv-1",
+    name: "read_file",
+    args: { path: "src/middleware/auth.ts" },
   });
   // Mark as interrupted via direct state mutation
   useStore.setState((s) => {
@@ -2049,16 +2759,29 @@ export async function demoSubAgentStyleShowcase(): Promise<void> {
 
   // Agent 4: Pentester (depth 1, error)
   useStore.getState().startSubAgent(sessionId, {
-    agentId: "pentester-001", agentName: "Pentester",
-    parentRequestId: "demo-style-pentester", task: "Scan for OWASP vulnerabilities in auth endpoints", depth: 1,
+    agentId: "pentester-001",
+    agentName: "Pentester",
+    parentRequestId: "demo-style-pentester",
+    task: "Scan for OWASP vulnerabilities in auth endpoints",
+    depth: 1,
   });
   await delay(200);
   useStore.getState().addSubAgentToolCall(sessionId, "demo-style-pentester", {
-    id: "t-p-1", name: "run_pty_cmd", args: { command: "nuclei -t cves/ -u https://api.example.com/auth" },
+    id: "t-p-1",
+    name: "run_pty_cmd",
+    args: { command: "nuclei -t cves/ -u https://api.example.com/auth" },
   });
-  useStore.getState().failSubAgent(sessionId, "demo-style-pentester", "ETIMEDOUT: Target unreachable after 5 retries");
+  useStore
+    .getState()
+    .failSubAgent(
+      sessionId,
+      "demo-style-pentester",
+      "ETIMEDOUT: Target unreachable after 5 retries"
+    );
 
-  console.log("[demoSubAgentStyles] Injected 6 agents: completed(d1), running(d1)+completed(d2)+running(d3), interrupted(d1), error(d1)");
+  console.log(
+    "[demoSubAgentStyles] Injected 6 agents: completed(d1), running(d1)+completed(d2)+running(d3), interrupted(d1), error(d1)"
+  );
 }
 
 /**
@@ -2069,54 +2792,69 @@ export async function demoTaskPlanStyleShowcase(): Promise<void> {
   const { useStore } = await import("@/store/index");
   const state = useStore.getState();
   const sessionId = state.activeSessionId ?? Object.keys(state.sessions)[0];
-  if (!sessionId) { console.error("[demoTaskPlanStyles] No active session"); return; }
+  if (!sessionId) {
+    console.error("[demoTaskPlanStyles] No active session");
+    return;
+  }
   const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
   useStore.getState().setExecutionMode(sessionId, "task");
 
   // Version 1 plan (will become retired)
-  useStore.getState().setPlan(sessionId, {
-    version: 1,
-    explanation: "Initial reconnaissance plan",
-    summary: { total: 3, completed: 3, in_progress: 0, pending: 0 },
-    steps: [
-      { id: "step-dns", step: "DNS lookup and subdomain enumeration", status: "completed" },
-      { id: "step-http", step: "HTTP probing on discovered hosts", status: "completed" },
-      { id: "step-tech", step: "Technology fingerprinting", status: "completed" },
-    ],
-    updated_at: new Date(Date.now() - 480000).toISOString(),
-  }, "msg-plan-v1");
+  useStore.getState().setPlan(
+    sessionId,
+    {
+      version: 1,
+      explanation: "Initial reconnaissance plan",
+      summary: { total: 3, completed: 3, in_progress: 0, pending: 0 },
+      steps: [
+        { id: "step-dns", step: "DNS lookup and subdomain enumeration", status: "completed" },
+        { id: "step-http", step: "HTTP probing on discovered hosts", status: "completed" },
+        { id: "step-tech", step: "Technology fingerprinting", status: "completed" },
+      ],
+      updated_at: new Date(Date.now() - 480000).toISOString(),
+    },
+    "msg-plan-v1"
+  );
   await delay(600);
 
   // Version 2 (triggers retire of v1, then this becomes retired)
-  useStore.getState().setPlan(sessionId, {
-    version: 2,
-    explanation: "Extended plan: adding port scan and JS harvest",
-    summary: { total: 5, completed: 2, in_progress: 0, pending: 3 },
-    steps: [
-      { id: "step-dns", step: "DNS lookup and subdomain enumeration", status: "completed" },
-      { id: "step-http", step: "HTTP probing on discovered hosts", status: "completed" },
-      { id: "step-port", step: "Port scan top-1000 ports", status: "cancelled" },
-      { id: "step-js", step: "JavaScript file harvest", status: "pending" },
-      { id: "step-api", step: "API endpoint extraction", status: "pending" },
-    ],
-    updated_at: new Date(Date.now() - 180000).toISOString(),
-  }, "msg-plan-v2");
+  useStore.getState().setPlan(
+    sessionId,
+    {
+      version: 2,
+      explanation: "Extended plan: adding port scan and JS harvest",
+      summary: { total: 5, completed: 2, in_progress: 0, pending: 3 },
+      steps: [
+        { id: "step-dns", step: "DNS lookup and subdomain enumeration", status: "completed" },
+        { id: "step-http", step: "HTTP probing on discovered hosts", status: "completed" },
+        { id: "step-port", step: "Port scan top-1000 ports", status: "cancelled" },
+        { id: "step-js", step: "JavaScript file harvest", status: "pending" },
+        { id: "step-api", step: "API endpoint extraction", status: "pending" },
+      ],
+      updated_at: new Date(Date.now() - 180000).toISOString(),
+    },
+    "msg-plan-v2"
+  );
   await delay(600);
 
   // Version 3 (current active) — triggers retire of v2
-  useStore.getState().setPlan(sessionId, {
-    version: 3,
-    explanation: "Final plan: focused JS analysis + vulnerability scan",
-    summary: { total: 4, completed: 1, in_progress: 1, pending: 2 },
-    steps: [
-      { id: "step-harvest", step: "Harvest all JS assets from target", status: "completed" },
-      { id: "step-analyze", step: "Analyze JS for API keys and secrets", status: "in_progress" },
-      { id: "step-map", step: "Map API endpoints from JS routes", status: "pending" },
-      { id: "step-vuln", step: "Automated vulnerability scan", status: "pending" },
-    ],
-    updated_at: new Date().toISOString(),
-  }, "msg-plan-v3");
+  useStore.getState().setPlan(
+    sessionId,
+    {
+      version: 3,
+      explanation: "Final plan: focused JS analysis + vulnerability scan",
+      summary: { total: 4, completed: 1, in_progress: 1, pending: 2 },
+      steps: [
+        { id: "step-harvest", step: "Harvest all JS assets from target", status: "completed" },
+        { id: "step-analyze", step: "Analyze JS for API keys and secrets", status: "in_progress" },
+        { id: "step-map", step: "Map API endpoints from JS routes", status: "pending" },
+        { id: "step-vuln", step: "Automated vulnerability scan", status: "pending" },
+      ],
+      updated_at: new Date().toISOString(),
+    },
+    "msg-plan-v3"
+  );
 
   console.log("[demoTaskPlanStyles] Injected 3 plan versions (2 retired + 1 active)");
 }
@@ -2213,24 +2951,41 @@ export function setupMocks(): void {
     ).__mockPipelineFanOut = simulatePipelineFanOut;
 
     // Expose per-block-type mock functions for visual QA
-    (window as unknown as {
-      __mockShowAllBlocks?: typeof mockShowAllBlocks;
-      __mockCommandBlock?: typeof mockCommandBlock;
-      __mockPipelineBlock?: typeof mockPipelineProgressBlock;
-      __mockSubAgentBlocks?: typeof mockSubAgentBlocks;
-      __mockToolExecutionBlocks?: typeof mockToolExecutionBlocks;
-      __mockPlanPipeline?: typeof mockPlanPipeline;
-    }).__mockShowAllBlocks = mockShowAllBlocks;
-    (window as unknown as { __mockCommandBlock?: typeof mockCommandBlock }).__mockCommandBlock = mockCommandBlock;
-    (window as unknown as { __mockPipelineBlock?: typeof mockPipelineProgressBlock }).__mockPipelineBlock = mockPipelineProgressBlock;
-    (window as unknown as { __mockPlanPipeline?: typeof mockPlanPipeline }).__mockPlanPipeline = mockPlanPipeline;
-    (window as unknown as { __mockSubAgentBlocks?: typeof mockSubAgentBlocks }).__mockSubAgentBlocks = mockSubAgentBlocks;
-    (window as unknown as { __mockToolExecutionBlocks?: typeof mockToolExecutionBlocks }).__mockToolExecutionBlocks = mockToolExecutionBlocks;
-    (window as unknown as { __mockFullPlan?: typeof mockFullPlanExecution }).__mockFullPlan = mockFullPlanExecution;
-    (window as unknown as { __mockRunCommand?: typeof mockRunCommandApproval }).__mockRunCommand = mockRunCommandApproval;
-    (window as unknown as { __demoSubAgentStyles?: typeof demoSubAgentStyleShowcase }).__demoSubAgentStyles = demoSubAgentStyleShowcase;
-    (window as unknown as { __demoTaskPlanStyles?: typeof demoTaskPlanStyleShowcase }).__demoTaskPlanStyles = demoTaskPlanStyleShowcase;
-    (window as unknown as { __demoAllChatStyles?: typeof demoAllChatStyles }).__demoAllChatStyles = demoAllChatStyles;
+    (
+      window as unknown as {
+        __mockShowAllBlocks?: typeof mockShowAllBlocks;
+        __mockCommandBlock?: typeof mockCommandBlock;
+        __mockPipelineBlock?: typeof mockPipelineProgressBlock;
+        __mockSubAgentBlocks?: typeof mockSubAgentBlocks;
+        __mockToolExecutionBlocks?: typeof mockToolExecutionBlocks;
+        __mockPlanPipeline?: typeof mockPlanPipeline;
+      }
+    ).__mockShowAllBlocks = mockShowAllBlocks;
+    (window as unknown as { __mockCommandBlock?: typeof mockCommandBlock }).__mockCommandBlock =
+      mockCommandBlock;
+    (
+      window as unknown as { __mockPipelineBlock?: typeof mockPipelineProgressBlock }
+    ).__mockPipelineBlock = mockPipelineProgressBlock;
+    (window as unknown as { __mockPlanPipeline?: typeof mockPlanPipeline }).__mockPlanPipeline =
+      mockPlanPipeline;
+    (
+      window as unknown as { __mockSubAgentBlocks?: typeof mockSubAgentBlocks }
+    ).__mockSubAgentBlocks = mockSubAgentBlocks;
+    (
+      window as unknown as { __mockToolExecutionBlocks?: typeof mockToolExecutionBlocks }
+    ).__mockToolExecutionBlocks = mockToolExecutionBlocks;
+    (window as unknown as { __mockFullPlan?: typeof mockFullPlanExecution }).__mockFullPlan =
+      mockFullPlanExecution;
+    (window as unknown as { __mockRunCommand?: typeof mockRunCommandApproval }).__mockRunCommand =
+      mockRunCommandApproval;
+    (
+      window as unknown as { __demoSubAgentStyles?: typeof demoSubAgentStyleShowcase }
+    ).__demoSubAgentStyles = demoSubAgentStyleShowcase;
+    (
+      window as unknown as { __demoTaskPlanStyles?: typeof demoTaskPlanStyleShowcase }
+    ).__demoTaskPlanStyles = demoTaskPlanStyleShowcase;
+    (window as unknown as { __demoAllChatStyles?: typeof demoAllChatStyles }).__demoAllChatStyles =
+      demoAllChatStyles;
 
     // Expose command simulation functions for e2e testing
     (
@@ -2598,7 +3353,11 @@ export function setupMocks(): void {
           state.conversationLength += 2;
         }
         const promptLower = (payload.prompt || "").toLowerCase();
-        if (promptLower.includes("js") || promptLower.includes("javascript") || promptLower.includes("analyze")) {
+        if (
+          promptLower.includes("js") ||
+          promptLower.includes("javascript") ||
+          promptLower.includes("analyze")
+        ) {
           setTimeout(() => simulateJsHarvest(), 300);
         } else {
           setTimeout(() => {
@@ -3095,11 +3854,36 @@ export function setupMocks(): void {
             name: "Basic Reconnaissance",
             description: "DNS, subdomains, HTTP probe, ports, tech detection, JS harvest",
             steps: [
-              { id: "dns_lookup", command_template: "dig +short {target}", tool_name: "dig", args: [] },
-              { id: "subdomain_enum", command_template: "subfinder -d {target} -silent", tool_name: "subfinder", args: [] },
-              { id: "http_probe", command_template: "echo {target} | httpx -silent", tool_name: "httpx", args: [] },
-              { id: "port_scan", command_template: "nmap -sV -T4 {target}", tool_name: "nmap", args: [] },
-              { id: "tech_detect", command_template: "whatweb {target}", tool_name: "whatweb", args: [] },
+              {
+                id: "dns_lookup",
+                command_template: "dig +short {target}",
+                tool_name: "dig",
+                args: [],
+              },
+              {
+                id: "subdomain_enum",
+                command_template: "subfinder -d {target} -silent",
+                tool_name: "subfinder",
+                args: [],
+              },
+              {
+                id: "http_probe",
+                command_template: "echo {target} | httpx -silent",
+                tool_name: "httpx",
+                args: [],
+              },
+              {
+                id: "port_scan",
+                command_template: "nmap -sV -T4 {target}",
+                tool_name: "nmap",
+                args: [],
+              },
+              {
+                id: "tech_detect",
+                command_template: "whatweb {target}",
+                tool_name: "whatweb",
+                args: [],
+              },
               { id: "js_harvest", command_template: "", tool_name: "js_harvest", args: [] },
             ],
           },
@@ -3228,7 +4012,7 @@ export function setupMocks(): void {
       const runId = demoRunCount;
 
       const convId = store.activeConversationId;
-      const getConv = () => convId ? useStore.getState().conversations[convId] : null;
+      const getConv = () => (convId ? useStore.getState().conversations[convId] : null);
 
       const addUserMsg = (text: string) => {
         const conv = getConv();
@@ -3250,89 +4034,178 @@ export function setupMocks(): void {
 
       const taskSets = [
         [
-          { id: "researcher", name: "Researcher", task: "Searching codebase for authentication patterns and JWT usage" },
-          { id: "coder", name: "Coder", task: "Implementing JWT token validation middleware with refresh logic" },
-          { id: "reviewer", name: "Reviewer", task: "Reviewing code changes for security vulnerabilities" },
+          {
+            id: "researcher",
+            name: "Researcher",
+            task: "Searching codebase for authentication patterns and JWT usage",
+          },
+          {
+            id: "coder",
+            name: "Coder",
+            task: "Implementing JWT token validation middleware with refresh logic",
+          },
+          {
+            id: "reviewer",
+            name: "Reviewer",
+            task: "Reviewing code changes for security vulnerabilities",
+          },
         ],
         [
-          { id: "analyst", name: "Analyst", task: "Analyzing API endpoint performance bottlenecks" },
-          { id: "coder", name: "Coder", task: "Optimizing database queries and adding connection pooling" },
+          {
+            id: "analyst",
+            name: "Analyst",
+            task: "Analyzing API endpoint performance bottlenecks",
+          },
+          {
+            id: "coder",
+            name: "Coder",
+            task: "Optimizing database queries and adding connection pooling",
+          },
         ],
         [
-          { id: "researcher", name: "Researcher", task: "Investigating memory leak in worker threads" },
+          {
+            id: "researcher",
+            name: "Researcher",
+            task: "Investigating memory leak in worker threads",
+          },
           { id: "coder", name: "Coder", task: "Fixing resource cleanup in async handlers" },
-          { id: "explorer", name: "Explorer", task: "Scanning for similar patterns in related modules" },
+          {
+            id: "explorer",
+            name: "Explorer",
+            task: "Scanning for similar patterns in related modules",
+          },
           { id: "reviewer", name: "Reviewer", task: "Verifying fix doesn't introduce regressions" },
         ],
       ];
       const agents = taskSets[(runId - 1) % taskSets.length];
 
-      const tasks = ["Help me add JWT authentication to the API endpoints", "Optimize the database layer for better performance", "Fix the memory leak in the worker pool"];
-      console.log(`[Demo] Run #${runId} - Starting ${agents.length} sub-agents for session:`, sessionId);
+      const tasks = [
+        "Help me add JWT authentication to the API endpoints",
+        "Optimize the database layer for better performance",
+        "Fix the memory leak in the worker pool",
+      ];
+      console.log(
+        `[Demo] Run #${runId} - Starting ${agents.length} sub-agents for session:`,
+        sessionId
+      );
 
       addUserMsg(tasks[(runId - 1) % tasks.length]);
 
       setTimeout(() => {
-        useStore.getState().updateAgentStreaming(sessionId, "I'll help you implement JWT authentication. Let me coordinate multiple agents to handle this efficiently.\n\n");
+        useStore
+          .getState()
+          .updateAgentStreaming(
+            sessionId,
+            "I'll help you implement JWT authentication. Let me coordinate multiple agents to handle this efficiently.\n\n"
+          );
         useStore.getState().setAgentResponding(sessionId, true);
       }, 500);
 
       agents.forEach((a, i) => {
-        setTimeout(() => {
-          useStore.getState().startSubAgent(sessionId, {
-            agentId: a.id,
-            agentName: a.name,
-            parentRequestId: `demo-req-${runId}-${a.id}`,
-            task: a.task,
-            depth: 1,
-          });
-          console.log(`[Demo] Started: ${a.name}`);
-        }, 1000 + i * 1200);
+        setTimeout(
+          () => {
+            useStore.getState().startSubAgent(sessionId, {
+              agentId: a.id,
+              agentName: a.name,
+              parentRequestId: `demo-req-${runId}-${a.id}`,
+              task: a.task,
+              depth: 1,
+            });
+            console.log(`[Demo] Started: ${a.name}`);
+          },
+          1000 + i * 1200
+        );
 
-        setTimeout(() => {
-          useStore.getState().addSubAgentToolCall(sessionId, `demo-req-${runId}-${a.id}`, {
-            id: `tool-${runId}-${a.id}-1`,
-            name: a.id === "researcher" ? "semantic_search" : a.id === "coder" ? "write_file" : "read_file",
-            args: a.id === "researcher"
-              ? { query: "JWT authentication middleware patterns" }
-              : a.id === "coder"
-                ? { path: "src/middleware/auth.ts", content: "..." }
-                : { path: "src/middleware/auth.ts" },
-          });
-        }, 1000 + i * 1200 + 1500);
+        setTimeout(
+          () => {
+            useStore.getState().addSubAgentToolCall(sessionId, `demo-req-${runId}-${a.id}`, {
+              id: `tool-${runId}-${a.id}-1`,
+              name:
+                a.id === "researcher"
+                  ? "semantic_search"
+                  : a.id === "coder"
+                    ? "write_file"
+                    : "read_file",
+              args:
+                a.id === "researcher"
+                  ? { query: "JWT authentication middleware patterns" }
+                  : a.id === "coder"
+                    ? { path: "src/middleware/auth.ts", content: "..." }
+                    : { path: "src/middleware/auth.ts" },
+            });
+          },
+          1000 + i * 1200 + 1500
+        );
 
-        setTimeout(() => {
-          useStore.getState().addSubAgentToolCall(sessionId, `demo-req-${runId}-${a.id}`, {
-            id: `tool-${runId}-${a.id}-2`,
-            name: a.id === "researcher" ? "read_file" : a.id === "coder" ? "run_command" : "semantic_search",
-            args: a.id === "researcher"
-              ? { path: "src/config/auth.ts" }
-              : a.id === "coder"
-                ? { command: "npm test -- auth" }
-                : { query: "common JWT security pitfalls" },
-          });
-        }, 1000 + i * 1200 + 2500);
+        setTimeout(
+          () => {
+            useStore.getState().addSubAgentToolCall(sessionId, `demo-req-${runId}-${a.id}`, {
+              id: `tool-${runId}-${a.id}-2`,
+              name:
+                a.id === "researcher"
+                  ? "read_file"
+                  : a.id === "coder"
+                    ? "run_command"
+                    : "semantic_search",
+              args:
+                a.id === "researcher"
+                  ? { path: "src/config/auth.ts" }
+                  : a.id === "coder"
+                    ? { command: "npm test -- auth" }
+                    : { query: "common JWT security pitfalls" },
+            });
+          },
+          1000 + i * 1200 + 2500
+        );
 
-        setTimeout(() => {
-          useStore.getState().completeSubAgentToolCall(sessionId, `demo-req-${runId}-${a.id}`, `tool-${runId}-${a.id}-1`, true, "Success");
-          useStore.getState().completeSubAgentToolCall(sessionId, `demo-req-${runId}-${a.id}`, `tool-${runId}-${a.id}-2`, true, "Success");
-        }, 1000 + i * 1200 + 3500);
+        setTimeout(
+          () => {
+            useStore
+              .getState()
+              .completeSubAgentToolCall(
+                sessionId,
+                `demo-req-${runId}-${a.id}`,
+                `tool-${runId}-${a.id}-1`,
+                true,
+                "Success"
+              );
+            useStore
+              .getState()
+              .completeSubAgentToolCall(
+                sessionId,
+                `demo-req-${runId}-${a.id}`,
+                `tool-${runId}-${a.id}-2`,
+                true,
+                "Success"
+              );
+          },
+          1000 + i * 1200 + 3500
+        );
 
-        setTimeout(() => {
-          useStore.getState().completeSubAgent(sessionId, `demo-req-${runId}-${a.id}`, {
-            response: a.id === "researcher"
-              ? "Found 5 files with authentication patterns. Current implementation uses session-based auth in src/middleware/session.ts."
-              : a.id === "coder"
-                ? "Created JWT middleware in src/middleware/auth.ts with access/refresh token support. All 12 tests passing."
-                : "Code review passed. No security vulnerabilities found. Recommended adding rate limiting to token refresh endpoint.",
-            durationMs: 4000 + i * 800,
-          });
-          console.log(`[Demo] Completed: ${a.name}`);
-        }, 1000 + i * 1200 + 5000);
+        setTimeout(
+          () => {
+            useStore.getState().completeSubAgent(sessionId, `demo-req-${runId}-${a.id}`, {
+              response:
+                a.id === "researcher"
+                  ? "Found 5 files with authentication patterns. Current implementation uses session-based auth in src/middleware/session.ts."
+                  : a.id === "coder"
+                    ? "Created JWT middleware in src/middleware/auth.ts with access/refresh token support. All 12 tests passing."
+                    : "Code review passed. No security vulnerabilities found. Recommended adding rate limiting to token refresh endpoint.",
+              durationMs: 4000 + i * 800,
+            });
+            console.log(`[Demo] Completed: ${a.name}`);
+          },
+          1000 + i * 1200 + 5000
+        );
       });
 
       setTimeout(() => {
-        useStore.getState().updateAgentStreaming(sessionId, "\n\nAll agents have completed their tasks. Here's a summary:\n\n- **Researcher**: Analyzed existing auth patterns across 5 files\n- **Coder**: Implemented JWT middleware with access/refresh tokens (12 tests passing)\n- **Reviewer**: Security review passed, suggested rate limiting for token refresh\n\nThe JWT authentication is now integrated into your API endpoints.");
+        useStore
+          .getState()
+          .updateAgentStreaming(
+            sessionId,
+            "\n\nAll agents have completed their tasks. Here's a summary:\n\n- **Researcher**: Analyzed existing auth patterns across 5 files\n- **Coder**: Implemented JWT middleware with access/refresh tokens (12 tests passing)\n- **Reviewer**: Security review passed, suggested rate limiting for token refresh\n\nThe JWT authentication is now integrated into your API endpoints."
+          );
         useStore.getState().setAgentResponding(sessionId, false);
       }, 9000);
     });

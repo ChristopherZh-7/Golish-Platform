@@ -1,5 +1,5 @@
+import { BookOpen, Bot, FileText, Settings2 } from "lucide-react";
 import { useState } from "react";
-import { Bot, BookOpen, FileText, Settings2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import type {
@@ -7,10 +7,10 @@ import type {
   SubAgentModelConfig,
   ToolsSettings,
 } from "@/lib/settings";
-import { SubAgentSettings } from "./SubAgentSettings";
-import { SkillsSettings } from "./SkillsSettings";
-import { RulesSettings } from "./RulesSettings";
 import { cn } from "@/lib/utils";
+import { RulesSettings } from "./RulesSettings";
+import { SkillsSettings } from "./SkillsSettings";
+import { SubAgentSettings } from "./SubAgentSettings";
 
 interface AgentSettingsProps {
   settings: AgentSettingsType;
@@ -91,7 +91,10 @@ export function AgentSettings({
           </div>
 
           <div className="space-y-2">
-            <label htmlFor="agent-session-retention" className="text-sm font-medium text-foreground">
+            <label
+              htmlFor="agent-session-retention"
+              className="text-sm font-medium text-foreground"
+            >
               Session Retention (days)
             </label>
             <Input
@@ -100,7 +103,9 @@ export function AgentSettings({
               min={0}
               max={365}
               value={settings.session_retention_days}
-              onChange={(e) => updateField("session_retention_days", parseInt(e.target.value, 10) || 0)}
+              onChange={(e) =>
+                updateField("session_retention_days", parseInt(e.target.value, 10) || 0)
+              }
               className="w-24"
             />
             <p className="text-xs text-muted-foreground">
@@ -110,10 +115,15 @@ export function AgentSettings({
 
           <div className="flex items-center justify-between">
             <div className="space-y-1">
-              <label htmlFor="agent-pattern-learning" className="text-sm font-medium text-foreground">
+              <label
+                htmlFor="agent-pattern-learning"
+                className="text-sm font-medium text-foreground"
+              >
                 Pattern Learning
               </label>
-              <p className="text-xs text-muted-foreground">Learn from approvals for auto-approval</p>
+              <p className="text-xs text-muted-foreground">
+                Learn from approvals for auto-approval
+              </p>
             </div>
             <Switch
               id="agent-pattern-learning"
@@ -132,7 +142,9 @@ export function AgentSettings({
               min={1}
               max={10}
               value={settings.min_approvals_for_auto}
-              onChange={(e) => updateField("min_approvals_for_auto", parseInt(e.target.value, 10) || 3)}
+              onChange={(e) =>
+                updateField("min_approvals_for_auto", parseInt(e.target.value, 10) || 3)
+              }
               className="w-24"
             />
             <p className="text-xs text-muted-foreground">
@@ -141,7 +153,10 @@ export function AgentSettings({
           </div>
 
           <div className="space-y-2">
-            <label htmlFor="agent-approval-threshold" className="text-sm font-medium text-foreground">
+            <label
+              htmlFor="agent-approval-threshold"
+              className="text-sm font-medium text-foreground"
+            >
               Approval Threshold: {(settings.approval_threshold * 100).toFixed(0)}%
             </label>
             <input
@@ -150,10 +165,14 @@ export function AgentSettings({
               min={0}
               max={100}
               value={settings.approval_threshold * 100}
-              onChange={(e) => updateField("approval_threshold", parseInt(e.target.value, 10) / 100)}
+              onChange={(e) =>
+                updateField("approval_threshold", parseInt(e.target.value, 10) / 100)
+              }
               className="w-full h-2 bg-muted rounded-lg appearance-none cursor-pointer accent-accent"
             />
-            <p className="text-xs text-muted-foreground">Required approval rate for auto-approval</p>
+            <p className="text-xs text-muted-foreground">
+              Required approval rate for auto-approval
+            </p>
           </div>
 
           <div className="border-t border-[var(--border-medium)]" />

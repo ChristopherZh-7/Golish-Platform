@@ -1,15 +1,20 @@
 import { useEffect, useRef } from "react";
 import { type AiEvent, onAiEvent, signalFrontendReady } from "@/lib/ai";
-import { logger } from "@/lib/logger";
-import { useStore } from "@/store";
-import { dispatchEvent, type EventHandlerContext } from "@/services/ai-events";
 import {
   pendingTextBatches,
-  scheduledTextBatchFlush,
   runTextBatchFlush,
+  scheduledTextBatchFlush,
   scheduleTextBatchFlush,
 } from "@/lib/ai/streaming-buffer";
-export { discardPendingBatchedDeltasForAiSession, discardAllPendingBatchedDeltas } from "@/lib/ai/streaming-buffer";
+import { logger } from "@/lib/logger";
+import { dispatchEvent, type EventHandlerContext } from "@/services/ai-events";
+import { useStore } from "@/store";
+
+export {
+  discardAllPendingBatchedDeltas,
+  discardPendingBatchedDeltasForAiSession,
+} from "@/lib/ai/streaming-buffer";
+
 import { convertToolSource } from "@/lib/ai/tool-source";
 
 /**

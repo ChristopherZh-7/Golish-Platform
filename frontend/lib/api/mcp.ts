@@ -2,17 +2,17 @@
  * MCP API — re-exports through the unified client.
  */
 export {
-  type McpServerStatus,
-  type McpServerInfo,
-  type McpToolInfo,
-  type McpServerConfig,
-  type McpEvent,
-  listServers,
   connect,
   disconnect,
-  listTools,
   getConfig,
   hasProjectConfig,
   isProjectTrusted,
+  listServers,
+  listTools,
+  type McpEvent,
+  type McpServerConfig,
+  type McpServerInfo,
+  type McpServerStatus,
+  type McpToolInfo,
   trustProjectConfig,
 } from "../mcp";

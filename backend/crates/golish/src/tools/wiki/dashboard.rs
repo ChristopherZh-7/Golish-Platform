@@ -10,6 +10,7 @@
 //! - [`wiki_orphan_pages`]    — pages with no inbound links, sorted by
 //!   age so they bubble up for cleanup.
 
+use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 
 use crate::state::DbState;
@@ -42,11 +43,11 @@ fn summary_to_info(s: golish_db::models::WikiPageSummary) -> WikiPageInfo {
 #[tauri::command]
 pub async fn wiki_pages_grouped(
     state: tauri::State<'_, DbState>,
-) -> Result<Vec<WikiPageInfo>, String> {
+) -> Result<Vec<WikiPageInfo>, GolishError> {
     let pool = state.pool_ready().await?;
     let pages = golish_db::repo::wiki_kb::list_pages_grouped_by_category(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     Ok(pages.into_iter().map(summary_to_info).collect())
 }
 
@@ -54,11 +55,11 @@ pub async fn wiki_pages_grouped(
 pub async fn wiki_pages_for_paths(
     state: tauri::State<'_, DbState>,
     paths: Vec<String>,
-) -> Result<Vec<WikiPageInfo>, String> {
+) -> Result<Vec<WikiPageInfo>, GolishError> {
     let pool = state.pool_ready().await?;
     let pages = golish_db::repo::wiki_kb::list_pages_for_paths(pool, &paths)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     Ok(pages.into_iter().map(summary_to_info).collect())
 }
 
@@ -67,11 +68,11 @@ pub async fn wiki_suggest_for_cve(
     state: tauri::State<'_, DbState>,
     cve_id: String,
     limit: Option<i64>,
-) -> Result<Vec<WikiPageInfo>, String> {
+) -> Result<Vec<WikiPageInfo>, GolishError> {
     let pool = state.pool_ready().await?;
     let pages = golish_db::repo::wiki_kb::suggest_pages_for_cve(pool, &cve_id, limit.unwrap_or(10))
         .await
-        .map_err(|e| e.to_string())?;
+?;
     Ok(pages.into_iter().map(summary_to_info).collect())
 }
 
@@ -91,11 +92,11 @@ pub struct WikiChangelogEntry {
 pub async fn wiki_changelog_list(
     state: tauri::State<'_, DbState>,
     limit: Option<i64>,
-) -> Result<Vec<WikiChangelogEntry>, String> {
+) -> Result<Vec<WikiChangelogEntry>, GolishError> {
     let pool = state.pool_ready().await?;
     let entries = golish_db::repo::wiki_kb::list_changelog(pool, limit.unwrap_or(50))
         .await
-        .map_err(|e| e.to_string())?;
+?;
     Ok(entries
         .into_iter()
         .map(|e| WikiChangelogEntry {
@@ -121,11 +122,11 @@ pub struct WikiBacklink {
 pub async fn wiki_backlinks(
     state: tauri::State<'_, DbState>,
     path: String,
-) -> Result<Vec<WikiBacklink>, String> {
+) -> Result<Vec<WikiBacklink>, GolishError> {
     let pool = state.pool_ready().await?;
     let refs = golish_db::repo::wiki_kb::get_backlinks(pool, &path)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     Ok(refs
         .into_iter()
         .map(|r| WikiBacklink {
@@ -138,21 +139,21 @@ pub async fn wiki_backlinks(
 #[tauri::command]
 pub async fn wiki_stats_full(
     state: tauri::State<'_, DbState>,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, GolishError> {
     let pool = state.pool_ready().await?;
     golish_db::repo::wiki_kb::wiki_stats_full(pool)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 #[tauri::command]
 pub async fn wiki_orphan_pages(
     state: tauri::State<'_, DbState>,
     limit: Option<i64>,
-) -> Result<Vec<WikiPageInfo>, String> {
+) -> Result<Vec<WikiPageInfo>, GolishError> {
     let pool = state.pool_ready().await?;
     let pages = golish_db::repo::wiki_kb::list_orphan_pages(pool, limit.unwrap_or(20))
         .await
-        .map_err(|e| e.to_string())?;
+?;
     Ok(pages.into_iter().map(summary_to_info).collect())
 }

@@ -1,3 +1,4 @@
+use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -40,7 +41,7 @@ fn add_directory_to_zip(
     dir: &std::path::Path,
     prefix: &str,
     count: &mut usize,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     if !dir.exists() {
         return Ok(());
     }
@@ -51,14 +52,14 @@ fn add_directory_to_zip(
         .filter_map(|e| e.ok());
     for entry in walker {
         let path = entry.path();
-        let rel = path.strip_prefix(dir).map_err(|e| e.to_string())?;
+        let rel = path.strip_prefix(dir)?;
         let archive_path = format!("{}/{}", prefix, rel.to_string_lossy());
         if path.is_dir() {
-            zip.add_directory(&archive_path, options).map_err(|e| e.to_string())?;
+            zip.add_directory(&archive_path, options)?;
         } else {
-            zip.start_file(&archive_path, options).map_err(|e| e.to_string())?;
-            let data = std::fs::read(path).map_err(|e| e.to_string())?;
-            zip.write_all(&data).map_err(|e| e.to_string())?;
+            zip.start_file(&archive_path, options)?;
+            let data = std::fs::read(path)?;
+            zip.write_all(&data)?;
             *count += 1;
         }
     }
@@ -70,14 +71,14 @@ fn add_json_to_zip(
     archive_name: &str,
     json: &[u8],
     count: &mut usize,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     if json == b"[]" || json == b"null" {
         return Ok(());
     }
     let options =
         SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    zip.start_file(archive_name, options).map_err(|e| e.to_string())?;
-    zip.write_all(json).map_err(|e| e.to_string())?;
+    zip.start_file(archive_name, options)?;
+    zip.write_all(json)?;
     *count += 1;
     Ok(())
 }
@@ -85,12 +86,12 @@ fn add_json_to_zip(
 async fn export_table_as_json(
     pool: &sqlx::PgPool,
     query: &str,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, GolishError> {
     let rows: Vec<serde_json::Value> = sqlx::query_scalar(query)
         .fetch_all(pool)
         .await
-        .map_err(|e| e.to_string())?;
-    serde_json::to_vec_pretty(&rows).map_err(|e| e.to_string())
+?;
+    serde_json::to_vec_pretty(&rows).map_err(GolishError::from)
 }
 
 #[tauri::command]
@@ -98,13 +99,13 @@ pub async fn project_export(
     state: tauri::State<'_, DbState>,
     output_path: String,
     project_path: Option<String>,
-) -> Result<ExportResult, String> {
+) -> Result<ExportResult, GolishError> {
     let base = app_data_dir();
     let golish_dir = resolve_project_golish_dir(project_path.as_deref());
     let output = PathBuf::from(&output_path);
     let pool = state.pool_ready().await?;
 
-    let file = std::fs::File::create(&output).map_err(|e| e.to_string())?;
+    let file = std::fs::File::create(&output)?;
     let mut zip = zip::ZipWriter::new(file);
     let mut count = 0usize;
 
@@ -156,8 +157,8 @@ pub async fn project_export(
         add_directory_to_zip(&mut zip, &gd.join("evidence"), "golish/evidence", &mut count)?;
     }
 
-    zip.finish().map_err(|e| e.to_string())?;
-    let meta = std::fs::metadata(&output).map_err(|e| e.to_string())?;
+    zip.finish()?;
+    let meta = std::fs::metadata(&output)?;
     debug!("[project_export] Exported {} files to {}", count, output_path);
 
     Ok(ExportResult {
@@ -171,16 +172,16 @@ async fn import_json_rows(
     pool: &sqlx::PgPool,
     table: &str,
     json_data: &[u8],
-) -> Result<usize, String> {
+) -> Result<usize, GolishError> {
     let rows: Vec<serde_json::Value> =
-        serde_json::from_slice(json_data).map_err(|e| e.to_string())?;
+        serde_json::from_slice(json_data)?;
     if rows.is_empty() {
         return Ok(0);
     }
 
     let mut imported = 0usize;
     for row in &rows {
-        let obj = row.as_object().ok_or("Expected JSON object")?;
+        let obj = row.as_object().ok_or_else(|| GolishError::Internal("Expected JSON object".into()))?;
         let columns: Vec<&String> = obj.keys().collect();
         let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("${i}")).collect();
 
@@ -220,23 +221,23 @@ pub async fn project_import(
     zip_path: String,
     overwrite: bool,
     project_path: Option<String>,
-) -> Result<ImportResult, String> {
+) -> Result<ImportResult, GolishError> {
     let base = app_data_dir();
     let golish_dir = resolve_project_golish_dir(project_path.as_deref());
     let pool = state.pool_ready().await?;
 
     // Phase 1: read entire zip synchronously (ZipFile is not Send)
     let entries = {
-        let file = std::fs::File::open(&zip_path).map_err(|e| e.to_string())?;
-        let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+        let file = std::fs::File::open(&zip_path)?;
+        let mut archive = zip::ZipArchive::new(file)?;
         let mut out = Vec::with_capacity(archive.len());
         for i in 0..archive.len() {
-            let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+            let mut entry = archive.by_index(i)?;
             let name = entry.name().to_string();
             let is_dir = entry.is_dir();
             let mut data = Vec::new();
             if !is_dir {
-                entry.read_to_end(&mut data).map_err(|e| e.to_string())?;
+                entry.read_to_end(&mut data)?;
             }
             out.push(ExtractedEntry { name, is_dir, data });
         }
@@ -274,7 +275,7 @@ pub async fn project_import(
     for entry in &entries {
         if entry.is_dir {
             if let Some(d) = resolve_import_path(&entry.name, &base, golish_dir.as_ref()) {
-                std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+                std::fs::create_dir_all(&d)?;
             }
             continue;
         }
@@ -308,10 +309,10 @@ pub async fn project_import(
         }
 
         if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(parent)?;
         }
 
-        std::fs::write(&target, &entry.data).map_err(|e| e.to_string())?;
+        std::fs::write(&target, &entry.data)?;
         result.files_count += 1;
 
         if entry.name.starts_with("wiki/") {

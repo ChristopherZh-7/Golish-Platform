@@ -14,13 +14,14 @@ use golish_pipeline::{
 };
 use uuid::Uuid;
 
+use crate::error::GolishError;
 use crate::event_emitter::TauriEventEmitter;
 use crate::state::DbState;
 
 use super::storage::MainStorage;
 
 #[tauri::command]
-pub async fn pipeline_cancel() -> Result<(), String> {
+pub async fn pipeline_cancel() -> Result<(), GolishError> {
     PIPELINE_CANCELLED.store(true, Ordering::SeqCst);
     Ok(())
 }
@@ -33,7 +34,7 @@ pub async fn pipeline_execute(
     pipeline: Pipeline,
     target: String,
     project_path: Option<String>,
-) -> Result<PipelineRunResult, String> {
+) -> Result<PipelineRunResult, GolishError> {
     PIPELINE_CANCELLED.store(false, Ordering::SeqCst);
 
     let pool = state.pool_ready().await?;
@@ -49,18 +50,17 @@ pub async fn pipeline_execute(
         &storage,
         Some(&emitter),
     )
-    .await
-    .map_err(|e| e.to_string());
+    .await?;
 
     PIPELINE_CANCELLED.store(false, Ordering::SeqCst);
-    result
+    Ok(result)
 }
 
 #[tauri::command]
 pub async fn pipeline_list(
     state: tauri::State<'_, DbState>,
     project_path: Option<String>,
-) -> Result<Vec<Pipeline>, String> {
+) -> Result<Vec<Pipeline>, GolishError> {
     let pool = state.pool_ready().await?;
     let rows: Vec<serde_json::Value> = sqlx::query_scalar(
         "SELECT data FROM pipelines WHERE project_path = $1 ORDER BY updated_at DESC",
@@ -68,7 +68,7 @@ pub async fn pipeline_list(
     .bind(project_path.as_deref())
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+    ?;
 
     let items: Vec<Pipeline> = rows
         .into_iter()
@@ -97,7 +97,7 @@ pub async fn pipeline_save(
     state: tauri::State<'_, DbState>,
     pipeline: Pipeline,
     project_path: Option<String>,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     let pool = state.pool_ready().await?;
     let id = if pipeline.id.is_empty() || pipeline.id.parse::<Uuid>().is_err() {
         Uuid::new_v4().to_string()
@@ -115,7 +115,7 @@ pub async fn pipeline_save(
         },
         ..pipeline
     };
-    let json = serde_json::to_value(&entry).map_err(|e| e.to_string())?;
+    let json = serde_json::to_value(&entry)?;
     let uid: Uuid = id.parse().unwrap();
     sqlx::query(
         r#"INSERT INTO pipelines (id, data, project_path)
@@ -127,7 +127,7 @@ pub async fn pipeline_save(
     .bind(project_path.as_deref())
     .execute(pool)
     .await
-    .map_err(|e| e.to_string())?;
+    ?;
     Ok(id)
 }
 
@@ -136,7 +136,7 @@ pub async fn pipeline_delete(
     state: tauri::State<'_, DbState>,
     id: String,
     project_path: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     let _ = project_path;
     let Ok(uid) = id.parse::<Uuid>() else {
@@ -146,7 +146,7 @@ pub async fn pipeline_delete(
         .bind(uid)
         .execute(pool)
         .await
-        .map_err(|e| e.to_string())?;
+        ?;
     Ok(())
 }
 
@@ -155,20 +155,19 @@ pub async fn pipeline_load(
     state: tauri::State<'_, DbState>,
     id: String,
     project_path: Option<String>,
-) -> Result<Pipeline, String> {
+) -> Result<Pipeline, GolishError> {
     let pool = state.pool_ready().await?;
     let _ = project_path;
-    let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let uid: Uuid = id.parse().map_err(|e: uuid::Error| GolishError::Validation(e.to_string()))?;
     let data: serde_json::Value = sqlx::query_scalar("SELECT data FROM pipelines WHERE id=$1")
         .bind(uid)
         .fetch_one(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-    serde_json::from_value(data).map_err(|e| e.to_string())
+        .await?;
+    Ok(serde_json::from_value(data)?)
 }
 
 #[tauri::command]
-pub async fn pipeline_list_templates() -> Result<Vec<Pipeline>, String> {
+pub async fn pipeline_list_templates() -> Result<Vec<Pipeline>, GolishError> {
     let mut all = builtin_templates();
     for p in &mut all {
         p.is_template = true;
@@ -177,9 +176,9 @@ pub async fn pipeline_list_templates() -> Result<Vec<Pipeline>, String> {
 }
 
 /// Save a pipeline as a JSON template file (non-async, for use from AI tools).
-pub fn pipeline_save_template_inner(pipeline: &Pipeline) -> Result<String, String> {
+pub fn pipeline_save_template_inner(pipeline: &Pipeline) -> Result<String, GolishError> {
     let dir = templates_dir().ok_or("Cannot determine app data directory")?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir)?;
     let id = if pipeline.id.is_empty() {
         Uuid::new_v4().to_string()
     } else {
@@ -199,8 +198,8 @@ pub fn pipeline_save_template_inner(pipeline: &Pipeline) -> Result<String, Strin
     };
     let filename = format!("{}.json", entry.name.to_lowercase().replace(' ', "_"));
     let path = dir.join(&filename);
-    let json = serde_json::to_string_pretty(&entry).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string_pretty(&entry)?;
+    std::fs::write(&path, json)?;
     tracing::info!(
         "[pipeline] Saved template '{}' to {}",
         entry.name,
@@ -210,12 +209,12 @@ pub fn pipeline_save_template_inner(pipeline: &Pipeline) -> Result<String, Strin
 }
 
 #[tauri::command]
-pub async fn pipeline_save_template(pipeline: Pipeline) -> Result<String, String> {
+pub async fn pipeline_save_template(pipeline: Pipeline) -> Result<String, GolishError> {
     pipeline_save_template_inner(&pipeline)
 }
 
 #[tauri::command]
-pub async fn pipeline_delete_template(id: String) -> Result<(), String> {
+pub async fn pipeline_delete_template(id: String) -> Result<(), GolishError> {
     let dir = templates_dir().ok_or("Cannot determine app data directory")?;
     if !dir.exists() {
         return Ok(());
@@ -227,7 +226,7 @@ pub async fn pipeline_delete_template(id: String) -> Result<(), String> {
                 if let Ok(data) = std::fs::read_to_string(&path) {
                     if let Ok(p) = serde_json::from_str::<Pipeline>(&data) {
                         if p.id == id {
-                            std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+                            std::fs::remove_file(&path)?;
                             tracing::info!(
                                 "[pipeline] Deleted template '{}' at {}",
                                 id,

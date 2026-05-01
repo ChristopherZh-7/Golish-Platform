@@ -1,5 +1,5 @@
 import type { ReasoningEffort } from "@/lib/ai";
-import type { TaskPlan, RetiredPlan } from "./plan";
+import type { RetiredPlan, TaskPlan } from "./plan";
 
 export type SessionMode = "terminal" | "agent";
 export type InputMode = "terminal" | "agent" | "auto";

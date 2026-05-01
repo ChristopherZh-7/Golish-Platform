@@ -5,6 +5,7 @@
  * completed, error.
  */
 
+import type { JsonValue } from "@/lib/serde_json/JsonValue";
 import type { EventHandler } from "./types";
 
 /**
@@ -32,16 +33,16 @@ export const handlePromptGenerationCompleted: EventHandler<{
   type: "prompt_generation_completed";
   agent_id: string;
   parent_request_id: string;
-  generated_prompt?: string;
+  generated_prompt: string | null;
   success: boolean;
-  duration_ms: number;
+  duration_ms: bigint;
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
   ctx.getState().completePromptGeneration(ctx.sessionId, event.agent_id, event.parent_request_id, {
-    generatedPrompt: event.generated_prompt,
+    generatedPrompt: event.generated_prompt ?? undefined,
     success: event.success,
-    durationMs: event.duration_ms,
+    durationMs: Number(event.duration_ms),
   });
 };
 
@@ -78,7 +79,7 @@ export const handleSubAgentToolRequest: EventHandler<{
   type: "sub_agent_tool_request";
   agent_id: string;
   tool_name: string;
-  args: unknown;
+  args: JsonValue;
   request_id: string;
   parent_request_id: string;
   session_id: string;
@@ -99,7 +100,7 @@ export const handleSubAgentToolResult: EventHandler<{
   agent_id: string;
   tool_name: string;
   success: boolean;
-  result: unknown;
+  result: JsonValue;
   request_id: string;
   parent_request_id: string;
   session_id: string;
@@ -128,11 +129,9 @@ export const handleSubAgentTextDelta: EventHandler<{
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
-  ctx.getState().updateSubAgentStreamingText(
-    ctx.sessionId,
-    event.parent_request_id,
-    event.accumulated,
-  );
+  ctx
+    .getState()
+    .updateSubAgentStreamingText(ctx.sessionId, event.parent_request_id, event.accumulated);
 };
 
 /**
@@ -142,7 +141,7 @@ export const handleSubAgentCompleted: EventHandler<{
   type: "sub_agent_completed";
   agent_id: string;
   response: string;
-  duration_ms: number;
+  duration_ms: bigint;
   parent_request_id: string;
   session_id: string;
   seq?: number;
@@ -153,12 +152,12 @@ export const handleSubAgentCompleted: EventHandler<{
   if (event.agent_id === "coder") {
     // Flush pending text deltas to ensure correct ordering
     ctx.flushSessionDeltas(ctx.sessionId);
-    state.addUdiffResultBlock(ctx.sessionId, event.response, event.duration_ms);
+    state.addUdiffResultBlock(ctx.sessionId, event.response, Number(event.duration_ms));
   }
 
   state.completeSubAgent(ctx.sessionId, event.parent_request_id, {
     response: event.response,
-    durationMs: event.duration_ms,
+    durationMs: Number(event.duration_ms),
   });
 };
 

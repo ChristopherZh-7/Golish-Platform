@@ -3,20 +3,21 @@
 /**
  * Vertex AI settings for sidecar synthesis.
  */
-export type SynthesisVertexSettings = { 
-/**
- * Google Cloud project ID (falls back to ai.vertex_ai.project_id if not set)
- */
-project_id: string | null, 
-/**
- * Vertex AI region (falls back to ai.vertex_ai.location if not set)
- */
-location: string | null, 
-/**
- * Model to use for synthesis (default: claude-sonnet-4-20250514)
- */
-model: string, 
-/**
- * Path to credentials (falls back to ai.vertex_ai.credentials_path if not set)
- */
-credentials_path: string | null, };
+export type SynthesisVertexSettings = {
+  /**
+   * Google Cloud project ID (falls back to ai.vertex_ai.project_id if not set)
+   */
+  project_id: string | null;
+  /**
+   * Vertex AI region (falls back to ai.vertex_ai.location if not set)
+   */
+  location: string | null;
+  /**
+   * Model to use for synthesis (default: claude-sonnet-4-20250514)
+   */
+  model: string;
+  /**
+   * Path to credentials (falls back to ai.vertex_ai.credentials_path if not set)
+   */
+  credentials_path: string | null;
+};

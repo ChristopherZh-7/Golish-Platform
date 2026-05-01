@@ -1,9 +1,9 @@
 //! Executor helper tests.
 
 use super::*;
-use super::*;
 use golish_llm_providers::ModelCapabilities;
-use rig::message::{ReasoningContent, ToolFunction};
+use rig::completion::AssistantContent;
+use rig::message::{ReasoningContent, ToolCall, ToolFunction};
 
 fn make_tool_call(id: &str, name: &str) -> ToolCall {
     ToolCall {

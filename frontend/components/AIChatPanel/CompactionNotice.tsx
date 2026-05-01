@@ -1,6 +1,12 @@
 import { Loader2, Zap } from "lucide-react";
 
-export function CompactionNotice({ active, tokensBefore }: { active: boolean; tokensBefore?: number }) {
+export function CompactionNotice({
+  active,
+  tokensBefore,
+}: {
+  active: boolean;
+  tokensBefore?: number;
+}) {
   return (
     <div className="mx-4 my-2 flex items-center gap-2 rounded-md bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground/70">
       {active ? (

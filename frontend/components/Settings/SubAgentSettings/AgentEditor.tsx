@@ -1,9 +1,9 @@
-import { Loader2, Save, X, Globe, FolderOpen } from "lucide-react";
+import { FolderOpen, Globe, Loader2, Save, X } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 
 export interface EditingAgent {
   id: string;
@@ -56,7 +56,13 @@ interface AgentEditorProps {
 }
 
 export function AgentEditor({
-  editingAgent, setEditingAgent, onSave, onCancel, savingId, toolInput, setToolInput,
+  editingAgent,
+  setEditingAgent,
+  onSave,
+  onCancel,
+  savingId,
+  toolInput,
+  setToolInput,
 }: AgentEditorProps) {
   const addTool = () => {
     if (!toolInput.trim()) return;
@@ -110,7 +116,8 @@ export function AgentEditor({
             <Input
               value={editingAgent.id}
               onChange={(e) =>
-                editingAgent.isNew && setEditingAgent({ ...editingAgent, id: e.target.value.replace(/[^a-z0-9_-]/g, "") })
+                editingAgent.isNew &&
+                setEditingAgent({ ...editingAgent, id: e.target.value.replace(/[^a-z0-9_-]/g, "") })
               }
               readOnly={!editingAgent.isNew}
               placeholder="my-agent"
@@ -199,9 +206,7 @@ export function AgentEditor({
             </Badge>
           ))}
           {editingAgent.allowedTools.length === 0 && (
-            <span className="text-xs text-muted-foreground italic">
-              Empty = all tools allowed
-            </span>
+            <span className="text-xs text-muted-foreground italic">Empty = all tools allowed</span>
           )}
         </div>
         <div className="flex gap-2">
@@ -230,7 +235,10 @@ export function AgentEditor({
               max={200}
               value={editingAgent.maxIterations}
               onChange={(e) =>
-                setEditingAgent({ ...editingAgent, maxIterations: parseInt(e.target.value) || 50 })
+                setEditingAgent({
+                  ...editingAgent,
+                  maxIterations: parseInt(e.target.value, 10) || 50,
+                })
               }
               className="bg-background border-border h-8 text-xs"
             />
@@ -244,7 +252,7 @@ export function AgentEditor({
               onChange={(e) =>
                 setEditingAgent({
                   ...editingAgent,
-                  timeoutSecs: e.target.value ? parseInt(e.target.value) : null,
+                  timeoutSecs: e.target.value ? parseInt(e.target.value, 10) : null,
                 })
               }
               placeholder="600"
@@ -260,7 +268,7 @@ export function AgentEditor({
               onChange={(e) =>
                 setEditingAgent({
                   ...editingAgent,
-                  idleTimeoutSecs: e.target.value ? parseInt(e.target.value) : null,
+                  idleTimeoutSecs: e.target.value ? parseInt(e.target.value, 10) : null,
                 })
               }
               placeholder="180"
@@ -333,7 +341,7 @@ export function AgentEditor({
               onChange={(e) =>
                 setEditingAgent({
                   ...editingAgent,
-                  maxTokens: e.target.value ? parseInt(e.target.value) : null,
+                  maxTokens: e.target.value ? parseInt(e.target.value, 10) : null,
                 })
               }
               placeholder="default"

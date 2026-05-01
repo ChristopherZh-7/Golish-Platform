@@ -83,8 +83,9 @@ mod tests {
         let agents = discover_agents(None);
         assert!(!agents.is_empty());
 
+        // Worker was retired from the default catalogue (see `defaults/builder.rs`);
+        // pentester, memorist and orchestrator are still always present.
         let ids: Vec<_> = agents.iter().map(|a| a.id.as_str()).collect();
-        assert!(ids.contains(&"worker"));
         assert!(ids.contains(&"pentester"));
         assert!(ids.contains(&"memorist"));
         assert!(ids.contains(&"orchestrator"));
@@ -129,13 +130,14 @@ mod tests {
     #[test]
     fn test_system_agents_flagged() {
         let agents = discover_agents(None);
-        let worker = agents.iter().find(|a| a.id == "worker").unwrap();
+        // Worker was retired from defaults; pentester remains user-facing
+        // (not flagged as system). The other three core agents must still
+        // be flagged when discovered.
         let memorist = agents.iter().find(|a| a.id == "memorist").unwrap();
         let reflector = agents.iter().find(|a| a.id == "reflector").unwrap();
         let orchestrator = agents.iter().find(|a| a.id == "orchestrator").unwrap();
         let pentester = agents.iter().find(|a| a.id == "pentester").unwrap();
 
-        assert!(worker.is_system);
         assert!(memorist.is_system);
         assert!(reflector.is_system);
         assert!(orchestrator.is_system);

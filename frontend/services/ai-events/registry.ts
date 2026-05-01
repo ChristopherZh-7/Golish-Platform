@@ -38,6 +38,15 @@ import {
   handleSubAgentToolResult,
 } from "./sub-agent-handlers";
 import {
+  handleEnricherResult,
+  handleSubtaskCompleted,
+  handleSubtaskCreated,
+  handleSubtaskUserInput,
+  handleSubtaskWaitingForInput,
+  handleTaskProgress,
+  handleTaskResumed,
+} from "./task-handlers";
+import {
   handleAskHumanRequest,
   handleAskHumanResponse,
   handleToolApprovalRequest,
@@ -47,15 +56,6 @@ import {
   handleToolResult,
 } from "./tool-handlers";
 import type { EventHandler, EventHandlerContext, EventHandlerRegistry } from "./types";
-import {
-  handleEnricherResult,
-  handleSubtaskCompleted,
-  handleSubtaskCreated,
-  handleSubtaskUserInput,
-  handleSubtaskWaitingForInput,
-  handleTaskProgress,
-  handleTaskResumed,
-} from "./task-handlers";
 import {
   handleWorkflowCompleted,
   handleWorkflowError,

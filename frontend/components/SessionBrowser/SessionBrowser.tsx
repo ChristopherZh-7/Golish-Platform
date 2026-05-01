@@ -63,7 +63,7 @@ const statusConfig = {
   },
 } as const;
 
-function StatusDot({ status }: { status?: string }) {
+function StatusDot({ status }: { status?: string | null }) {
   if (!status || !(status in statusConfig)) return null;
   const config = statusConfig[status as keyof typeof statusConfig];
   return (
@@ -71,7 +71,7 @@ function StatusDot({ status }: { status?: string }) {
   );
 }
 
-function StatusBadge({ status }: { status?: string }) {
+function StatusBadge({ status }: { status?: string | null }) {
   if (!status || !(status in statusConfig)) return null;
   const config = statusConfig[status as keyof typeof statusConfig];
   const Icon = config.icon;
@@ -99,7 +99,9 @@ const virtualItemBaseStyle = {
 interface SessionMessage {
   role: string;
   content: string;
-  tool_name?: string;
+  tool_name?: string | null;
+  tool_call_id?: string | null;
+  tokens_used?: number | null;
 }
 
 interface VirtualizedMessagesListProps {

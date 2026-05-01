@@ -3,6 +3,7 @@
 //! These commands expose the model registry to the frontend, allowing
 //! the UI to dynamically fetch available models and their capabilities.
 
+use crate::error::GolishError;
 use golish_models::{
     get_all_models_owned, get_all_provider_info, get_model_capabilities, get_model_owned,
     get_models_for_provider_owned, AiProvider, ModelCapabilities, OwnedModelDefinition,
@@ -13,7 +14,7 @@ use golish_models::{
 #[tauri::command]
 pub async fn get_available_models(
     provider: Option<AiProvider>,
-) -> Result<Vec<OwnedModelDefinition>, String> {
+) -> Result<Vec<OwnedModelDefinition>, GolishError> {
     match provider {
         Some(p) => Ok(get_models_for_provider_owned(p)),
         None => Ok(get_all_models_owned()),
@@ -22,7 +23,7 @@ pub async fn get_available_models(
 
 /// Get a specific model by ID.
 #[tauri::command]
-pub async fn get_model_by_id(model_id: String) -> Result<Option<OwnedModelDefinition>, String> {
+pub async fn get_model_by_id(model_id: String) -> Result<Option<OwnedModelDefinition>, GolishError> {
     Ok(get_model_owned(&model_id))
 }
 
@@ -34,12 +35,12 @@ pub async fn get_model_by_id(model_id: String) -> Result<Option<OwnedModelDefini
 pub async fn get_model_capabilities_command(
     provider: AiProvider,
     model_id: String,
-) -> Result<ModelCapabilities, String> {
+) -> Result<ModelCapabilities, GolishError> {
     Ok(get_model_capabilities(provider, &model_id))
 }
 
 /// Get information about all available providers.
 #[tauri::command]
-pub async fn get_providers() -> Result<Vec<ProviderInfo>, String> {
+pub async fn get_providers() -> Result<Vec<ProviderInfo>, GolishError> {
     Ok(get_all_provider_info())
 }

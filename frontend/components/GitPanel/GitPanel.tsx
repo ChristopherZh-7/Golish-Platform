@@ -24,9 +24,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { generateCommitMessage } from "@/lib/ai";
-import { type GitChange, mapStatusEntries, splitChanges } from "@/lib/git";
-import { logger } from "@/lib/logger";
-import { notify } from "@/lib/notify";
+import { readTextFile } from "@/lib/api/files";
 import {
   gitStatus as fetchGitStatus,
   gitCommit,
@@ -36,12 +34,14 @@ import {
   gitStage,
   gitUnstage,
 } from "@/lib/api/git";
-import { readTextFile } from "@/lib/api/files";
+import { type GitChange, mapStatusEntries, splitChanges } from "@/lib/git";
+import { logger } from "@/lib/logger";
+import { notify } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 import { useFocusedSessionId, useStore } from "@/store";
 import { useGitPanelState } from "@/store/selectors";
-import { FileTreeItem, buildFileTree } from "./FileTreeItem";
 import { CollapsibleSection } from "./CollapsibleSection";
+import { buildFileTree, FileTreeItem } from "./FileTreeItem";
 
 interface GitPanelProps {
   open: boolean;

@@ -24,18 +24,18 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { listIndexedCodebases } from "@/lib/indexer";
 import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
+import { updateConfig as updatePentestConfig } from "@/lib/pentest/api";
 import {
   type CodebaseConfig,
-  getSettings,
   type GolishSettings,
+  getSettings,
   updateSettings,
 } from "@/lib/settings";
-import { updateConfig as updatePentestConfig } from "@/lib/pentest/api";
 import { cn } from "@/lib/utils";
-import { AppearanceSettings } from "./AppearanceSettings";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { AgentSettings } from "./AgentSettings";
 import { AiSettings } from "./AiSettings";
+import { AppearanceSettings } from "./AppearanceSettings";
 import { CodebasesSettings } from "./CodebasesSettings";
 import { EditorSettings } from "./EditorSettings";
 import { McpSettings } from "./McpSettings";
@@ -344,7 +344,14 @@ export function SettingsTabContent() {
         {/* Main Content */}
         <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
           <ScrollArea className="h-full">
-            <div className={cn("p-6", (activeSection === "pentest" || activeSection === "providers") ? "" : "max-w-3xl")}>{renderContent()}</div>
+            <div
+              className={cn(
+                "p-6",
+                activeSection === "pentest" || activeSection === "providers" ? "" : "max-w-3xl"
+              )}
+            >
+              {renderContent()}
+            </div>
           </ScrollArea>
         </div>
       </div>

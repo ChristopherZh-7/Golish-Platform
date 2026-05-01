@@ -47,13 +47,13 @@ export function useChatSessionInit(opts: UseChatSessionInitOptions) {
           selectedModel.provider,
           selectedModel.model,
           titleWorkspace,
-          settings,
+          settings
         );
         if (!providerConfig) return;
         await initAiSession(titleSessionId, providerConfig);
         const title = await sendPromptSession(
           titleSessionId,
-          `Generate a concise 3-5 word title for this chat message. Output ONLY the title, nothing else. No quotes, no punctuation at the end.\n\nMessage: "${firstMessage.slice(0, 200)}"`,
+          `Generate a concise 3-5 word title for this chat message. Output ONLY the title, nothing else. No quotes, no punctuation at the end.\n\nMessage: "${firstMessage.slice(0, 200)}"`
         );
         const cleaned = title
           .trim()
@@ -68,7 +68,7 @@ export function useChatSessionInit(opts: UseChatSessionInitOptions) {
         shutdownAiSession(titleSessionId).catch(() => {});
       }
     },
-    [selectedModel],
+    [selectedModel]
   );
   generateTitleRef.current = generateTitle;
 
@@ -84,7 +84,7 @@ export function useChatSessionInit(opts: UseChatSessionInitOptions) {
           selectedModel.provider,
           selectedModel.model,
           workspace,
-          settings,
+          settings
         );
         if (!providerConfig) return false;
 
@@ -134,7 +134,14 @@ export function useChatSessionInit(opts: UseChatSessionInitOptions) {
         return false;
       }
     },
-    [selectedModel, updateConv, chatExecutionModeRef, chatUseSubAgentsRef, setChatExecutionMode, setChatUseSubAgents],
+    [
+      selectedModel,
+      updateConv,
+      chatExecutionModeRef,
+      chatUseSubAgentsRef,
+      setChatExecutionMode,
+      setChatUseSubAgents,
+    ]
   );
 
   return { initializeSession, generateTitle, generateTitleRef };

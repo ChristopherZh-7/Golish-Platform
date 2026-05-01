@@ -64,40 +64,28 @@ describe("AppearanceSettings", () => {
   describe("caret section", () => {
     it("should render the Input Caret heading", () => {
       render(
-        <AppearanceSettings
-          terminalSettings={baseTerminalSettings}
-          onTerminalChange={vi.fn()}
-        />
+        <AppearanceSettings terminalSettings={baseTerminalSettings} onTerminalChange={vi.fn()} />
       );
       expect(screen.getByText("Input Caret")).toBeInTheDocument();
     });
 
     it("should render the Preview via CaretPreview", () => {
       render(
-        <AppearanceSettings
-          terminalSettings={baseTerminalSettings}
-          onTerminalChange={vi.fn()}
-        />
+        <AppearanceSettings terminalSettings={baseTerminalSettings} onTerminalChange={vi.fn()} />
       );
       expect(screen.getByText("Preview")).toBeInTheDocument();
     });
 
     it("should render the Style selector", () => {
       render(
-        <AppearanceSettings
-          terminalSettings={baseTerminalSettings}
-          onTerminalChange={vi.fn()}
-        />
+        <AppearanceSettings terminalSettings={baseTerminalSettings} onTerminalChange={vi.fn()} />
       );
       expect(screen.getByText("Style")).toBeInTheDocument();
     });
 
     it("should not show block-specific controls when style is default", () => {
       render(
-        <AppearanceSettings
-          terminalSettings={baseTerminalSettings}
-          onTerminalChange={vi.fn()}
-        />
+        <AppearanceSettings terminalSettings={baseTerminalSettings} onTerminalChange={vi.fn()} />
       );
       expect(screen.queryByText("Width")).not.toBeInTheDocument();
       expect(screen.queryByText("Blink Speed")).not.toBeInTheDocument();
@@ -142,9 +130,7 @@ describe("AppearanceSettings", () => {
         ...blockCaretTerminalSettings,
         caret: { ...blockCaretTerminalSettings.caret, blink_speed: 0 },
       };
-      render(
-        <AppearanceSettings terminalSettings={settings} onTerminalChange={vi.fn()} />
-      );
+      render(<AppearanceSettings terminalSettings={settings} onTerminalChange={vi.fn()} />);
       expect(screen.getByText("No blink")).toBeInTheDocument();
     });
 
@@ -163,9 +149,7 @@ describe("AppearanceSettings", () => {
         ...blockCaretTerminalSettings,
         caret: { ...blockCaretTerminalSettings.caret, color: "#ff0000" },
       };
-      render(
-        <AppearanceSettings terminalSettings={settings} onTerminalChange={vi.fn()} />
-      );
+      render(<AppearanceSettings terminalSettings={settings} onTerminalChange={vi.fn()} />);
       expect(screen.getByText("Reset to theme default")).toBeInTheDocument();
     });
 
@@ -239,9 +223,7 @@ describe("AppearanceSettings", () => {
       const settings = { ...baseTerminalSettings } as TerminalSettingsType;
       // @ts-expect-error Testing backward compat with missing caret
       delete settings.caret;
-      render(
-        <AppearanceSettings terminalSettings={settings} onTerminalChange={vi.fn()} />
-      );
+      render(<AppearanceSettings terminalSettings={settings} onTerminalChange={vi.fn()} />);
       // Should still render without crashing
       expect(screen.getByText("Input Caret")).toBeInTheDocument();
     });

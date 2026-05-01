@@ -19,7 +19,7 @@ import type { EventPayloadMap } from "./payloads";
  */
 export async function onEvent<K extends keyof EventPayloadMap>(
   channel: K,
-  handler: (payload: EventPayloadMap[K]) => void,
+  handler: (payload: EventPayloadMap[K]) => void
 ): Promise<UnlistenFn> {
   return rawListen<EventPayloadMap[K]>(channel, (event) => handler(event.payload));
 }
@@ -30,7 +30,7 @@ export async function onEvent<K extends keyof EventPayloadMap>(
  */
 export async function onCustomEvent<T = unknown>(
   channel: string,
-  handler: (payload: T) => void,
+  handler: (payload: T) => void
 ): Promise<UnlistenFn> {
   return rawListen<T>(channel, (event) => handler(event.payload));
 }

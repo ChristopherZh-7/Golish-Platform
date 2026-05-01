@@ -1,4 +1,4 @@
-import { useCallback, type MutableRefObject } from "react";
+import { type MutableRefObject, useCallback } from "react";
 import {
   cancelAiGeneration,
   createTextPayload,
@@ -22,7 +22,11 @@ interface UseChatSendOptions {
   streamingMsgRef: MutableRefObject<string | null>;
   chatExecutionModeRef: MutableRefObject<"chat" | "task">;
   taskInProgressRef: MutableRefObject<boolean>;
-  initializeSession: (conv: { id: string; aiSessionId: string; aiInitialized: boolean }) => Promise<boolean>;
+  initializeSession: (conv: {
+    id: string;
+    aiSessionId: string;
+    aiInitialized: boolean;
+  }) => Promise<boolean>;
   buildPentestSystemPrompt: () => string;
   createTerminalTab: (dir?: string, skip?: boolean) => Promise<string | null>;
   t: (key: string, fallback?: string) => string;
@@ -30,12 +34,21 @@ interface UseChatSendOptions {
 
 export function useChatSend(opts: UseChatSendOptions) {
   const {
-    input, setInput, isStreaming, activeConvId,
-    imageAttachments, setImageAttachments,
-    textareaRef, userScrolledUpRef, streamingMsgRef,
-    chatExecutionModeRef, taskInProgressRef,
-    initializeSession, buildPentestSystemPrompt,
-    createTerminalTab, t,
+    input,
+    setInput,
+    isStreaming,
+    activeConvId,
+    imageAttachments,
+    setImageAttachments,
+    textareaRef,
+    userScrolledUpRef,
+    streamingMsgRef,
+    chatExecutionModeRef,
+    taskInProgressRef,
+    initializeSession,
+    buildPentestSystemPrompt,
+    createTerminalTab,
+    t,
   } = opts;
 
   const handleSend = useCallback(async () => {
@@ -95,15 +108,19 @@ export function useChatSend(opts: UseChatSendOptions) {
       try {
         const { setActiveTerminalSession } = await import("@/lib/api/pty");
         await setActiveTerminalSession(activeTermId);
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
 
     const initialized = await initializeSession(conv);
     if (!initialized) {
-      useStore.getState().setMessageError(
-        conv.id,
-        t("ai.noModelSelected", "Please select a model first (bottom-left dropdown)"),
-      );
+      useStore
+        .getState()
+        .setMessageError(
+          conv.id,
+          t("ai.noModelSelected", "Please select a model first (bottom-left dropdown)")
+        );
       return;
     }
 
@@ -120,8 +137,7 @@ export function useChatSend(opts: UseChatSendOptions) {
       const isTaskMode = chatExecutionModeRef.current === "task";
       if (isTaskMode) taskInProgressRef.current = true;
 
-      await setExecutionModeBackend(conv.aiSessionId, chatExecutionModeRef.current)
-        .catch(() => {});
+      await setExecutionModeBackend(conv.aiSessionId, chatExecutionModeRef.current).catch(() => {});
 
       if (imageAttachments.length > 0) {
         const payload = createTextPayload(prompt);
@@ -147,7 +163,10 @@ export function useChatSend(opts: UseChatSendOptions) {
       const checkInterval = setInterval(() => {
         const s = useStore.getState();
         const c = s.conversations[convId];
-        if (!c?.isStreaming) { clearInterval(checkInterval); return; }
+        if (!c?.isStreaming) {
+          clearInterval(checkInterval);
+          return;
+        }
         const lastMsg = c.messages[c.messages.length - 1];
         const currentLength = lastMsg?.content?.length ?? 0;
         const currentToolCount = lastMsg?.toolCalls?.length ?? 0;
@@ -172,9 +191,20 @@ export function useChatSend(opts: UseChatSendOptions) {
       useStore.getState().setMessageError(conv.id, errMsg);
     }
   }, [
-    input, isStreaming, activeConvId, initializeSession, buildPentestSystemPrompt,
-    imageAttachments, setImageAttachments, setInput, textareaRef, userScrolledUpRef,
-    streamingMsgRef, chatExecutionModeRef, taskInProgressRef, createTerminalTab, t,
+    input,
+    isStreaming,
+    activeConvId,
+    initializeSession,
+    buildPentestSystemPrompt,
+    imageAttachments,
+    setImageAttachments,
+    setInput,
+    textareaRef,
+    userScrolledUpRef,
+    chatExecutionModeRef,
+    taskInProgressRef,
+    createTerminalTab,
+    t,
   ]);
 
   const handleStop = useCallback(() => {
@@ -197,10 +227,10 @@ export function useChatSend(opts: UseChatSendOptions) {
 
         const plan = store.sessions[tid]?.plan;
         if (plan && plan.summary.in_progress > 0) {
-          const updated = {
+          const updated: typeof plan = {
             ...plan,
             version: plan.version + 1,
-            steps: plan.steps.map((s: { status: string }) =>
+            steps: plan.steps.map((s) =>
               s.status === "in_progress" ? { ...s, status: "cancelled" } : s
             ),
             summary: {

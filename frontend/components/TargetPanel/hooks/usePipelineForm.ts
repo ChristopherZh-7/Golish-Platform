@@ -1,15 +1,16 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { targets } from "@/lib/api";
-import { listen } from "@tauri-apps/api/event";
+import type { PipelineSummary } from "@/lib/pentest/pipeline-types";
 import { getProjectPath } from "@/lib/projects";
 import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
-import { type PipelineSummary } from "@/lib/pentest/pipeline-types";
 import {
-  type StepDetail,
-  type PipelineSummary as PipelineSummaryResult,
-  ensureStepsLength,
   appendOutput,
   computeSummary,
+  ensureStepsLength,
+  type PipelineSummary as PipelineSummaryResult,
+  type StepDetail,
 } from "../pipelineValidation";
 
 export function usePipelineForm(targetValue: string) {
@@ -17,7 +18,9 @@ export function usePipelineForm(targetValue: string) {
   const [pipelines, setPipelines] = useState<PipelineSummary[]>([]);
   const [selected, setSelected] = useState<PipelineSummary | null>(null);
   const [running, setRunning] = useState(false);
-  const [progress, setProgress] = useState<{ step: number; total: number; tool: string } | null>(null);
+  const [progress, setProgress] = useState<{ step: number; total: number; tool: string } | null>(
+    null
+  );
   const [steps, setSteps] = useState<StepDetail[]>([]);
   const [summary, setSummary] = useState<PipelineSummaryResult | null>(null);
   const activeRunId = useRef<string | null>(null);
@@ -38,8 +41,10 @@ export function usePipelineForm(targetValue: string) {
         if (!cancelled) setPipelines([]);
       }
     })();
-    return () => { cancelled = true; };
-  }, [expanded]);
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, selected]);
 
   useEffect(() => {
     const unlistenPromise = listen<{
@@ -48,7 +53,12 @@ export function usePipelineForm(targetValue: string) {
       total_steps: number;
       tool_name: string;
       status: string;
-      store_stats?: { stored_count: number; parsed_count: number; skipped_count: number; errors: string[] };
+      store_stats?: {
+        stored_count: number;
+        parsed_count: number;
+        skipped_count: number;
+        errors: string[];
+      };
       message?: string;
       output?: string;
       duration_ms?: number;
@@ -62,12 +72,14 @@ export function usePipelineForm(targetValue: string) {
       if (p.status === "started" && p.all_steps) {
         if (p.target !== targetValue) return;
         activeRunId.current = p.run_id;
-        setSteps(p.all_steps.map((s) => ({
-          tool_name: s.tool_name,
-          status: "pending",
-          stored: 0,
-          command: s.command_template,
-        })));
+        setSteps(
+          p.all_steps.map((s) => ({
+            tool_name: s.tool_name,
+            status: "pending",
+            stored: 0,
+            command: s.command_template,
+          }))
+        );
         setRunning(true);
         setSummary(null);
         return;
@@ -114,11 +126,13 @@ export function usePipelineForm(targetValue: string) {
       if (p.status === "cancelled") {
         setRunning(false);
         setProgress(null);
-        setSteps((prev) => prev.map((s) =>
-          s.status === "running" || s.status === "pending"
-            ? { ...s, status: "skipped" as const, message: "Cancelled" }
-            : s,
-        ));
+        setSteps((prev) =>
+          prev.map((s) =>
+            s.status === "running" || s.status === "pending"
+              ? { ...s, status: "skipped" as const, message: "Cancelled" }
+              : s
+          )
+        );
         setSummary({ total_stored: 0, success: false });
         return;
       }
@@ -147,7 +161,9 @@ export function usePipelineForm(targetValue: string) {
         }
       }
     });
-    return () => { runTauriUnlistenFromPromise(unlistenPromise); };
+    return () => {
+      runTauriUnlistenFromPromise(unlistenPromise);
+    };
   }, [targetValue]);
 
   const runPipeline = useCallback(async () => {
@@ -169,7 +185,11 @@ export function usePipelineForm(targetValue: string) {
   }, [selected, targetValue, running]);
 
   const cancelPipeline = useCallback(async () => {
-    try { await targets.cancelPipeline(); } catch { /* ignore */ }
+    try {
+      await targets.cancelPipeline();
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   return {

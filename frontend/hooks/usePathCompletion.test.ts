@@ -17,8 +17,8 @@ vi.mock("@/lib/logger", () => ({
   },
 }));
 
-import { logger } from "@/lib/logger";
 import { listPathCompletions } from "@/lib/api/shell";
+import { logger } from "@/lib/logger";
 
 const mockListPathCompletions = vi.mocked(listPathCompletions);
 

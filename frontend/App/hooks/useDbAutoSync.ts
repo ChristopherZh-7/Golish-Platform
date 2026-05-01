@@ -1,6 +1,6 @@
-import { invoke } from "@/lib/api/client";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
+import { invoke } from "@/lib/api/client";
 import { createDbAutoSaver } from "../../lib/conversation-db-sync";
 import { useStore } from "../../store";
 

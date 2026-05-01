@@ -1,5 +1,6 @@
 // Tool policy management commands.
 
+use crate::error::GolishError;
 use tauri::State;
 
 use super::ai_session_not_initialized_error;
@@ -11,7 +12,7 @@ use golish_ai::tool_policy::{ToolPolicy, ToolPolicyConfig};
 pub async fn get_tool_policy_config(
     state: State<'_, AppState>,
     session_id: Option<String>,
-) -> Result<ToolPolicyConfig, String> {
+) -> Result<ToolPolicyConfig, GolishError> {
     if let Some(ref sid) = session_id {
         let bridge = state.ai_state.get_session_bridge(sid).await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
@@ -27,14 +28,14 @@ pub async fn set_tool_policy_config(
     state: State<'_, AppState>,
     config: ToolPolicyConfig,
     session_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     if let Some(ref sid) = session_id {
         let bridge = state.ai_state.get_session_bridge(sid).await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        return bridge.set_tool_policy_config(config).await.map_err(|e| e.to_string());
+        return bridge.set_tool_policy_config(config).await.map_err(GolishError::from);
     }
     let guard = state.ai_state.get_bridge().await?;
-    guard.as_ref().unwrap().set_tool_policy_config(config).await.map_err(|e| e.to_string())
+    guard.as_ref().unwrap().set_tool_policy_config(config).await.map_err(GolishError::from)
 }
 
 /// Get the policy for a specific tool.
@@ -43,7 +44,7 @@ pub async fn get_tool_policy(
     state: State<'_, AppState>,
     tool_name: String,
     session_id: Option<String>,
-) -> Result<ToolPolicy, String> {
+) -> Result<ToolPolicy, GolishError> {
     if let Some(ref sid) = session_id {
         let bridge = state.ai_state.get_session_bridge(sid).await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
@@ -60,14 +61,14 @@ pub async fn set_tool_policy(
     tool_name: String,
     policy: ToolPolicy,
     session_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     if let Some(ref sid) = session_id {
         let bridge = state.ai_state.get_session_bridge(sid).await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        return bridge.set_tool_policy(&tool_name, policy).await.map_err(|e| e.to_string());
+        return bridge.set_tool_policy(&tool_name, policy).await.map_err(GolishError::from);
     }
     let guard = state.ai_state.get_bridge().await?;
-    guard.as_ref().unwrap().set_tool_policy(&tool_name, policy).await.map_err(|e| e.to_string())
+    guard.as_ref().unwrap().set_tool_policy(&tool_name, policy).await.map_err(GolishError::from)
 }
 
 /// Reset tool policies to defaults.
@@ -75,14 +76,14 @@ pub async fn set_tool_policy(
 pub async fn reset_tool_policies(
     state: State<'_, AppState>,
     session_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     if let Some(ref sid) = session_id {
         let bridge = state.ai_state.get_session_bridge(sid).await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        return bridge.reset_tool_policies().await.map_err(|e| e.to_string());
+        return bridge.reset_tool_policies().await.map_err(GolishError::from);
     }
     let guard = state.ai_state.get_bridge().await?;
-    guard.as_ref().unwrap().reset_tool_policies().await.map_err(|e| e.to_string())
+    guard.as_ref().unwrap().reset_tool_policies().await.map_err(GolishError::from)
 }
 
 /// Enable full-auto mode for tool execution.
@@ -91,7 +92,7 @@ pub async fn enable_full_auto_mode(
     state: State<'_, AppState>,
     allowed_tools: Vec<String>,
     session_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     if let Some(ref sid) = session_id {
         let bridge = state.ai_state.get_session_bridge(sid).await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
@@ -108,7 +109,7 @@ pub async fn enable_full_auto_mode(
 pub async fn disable_full_auto_mode(
     state: State<'_, AppState>,
     session_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     if let Some(ref sid) = session_id {
         let bridge = state.ai_state.get_session_bridge(sid).await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
@@ -125,7 +126,7 @@ pub async fn disable_full_auto_mode(
 pub async fn is_full_auto_mode_enabled(
     state: State<'_, AppState>,
     session_id: Option<String>,
-) -> Result<bool, String> {
+) -> Result<bool, GolishError> {
     if let Some(ref sid) = session_id {
         let bridge = state.ai_state.get_session_bridge(sid).await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;

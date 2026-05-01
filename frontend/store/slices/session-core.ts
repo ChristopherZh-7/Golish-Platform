@@ -18,7 +18,10 @@ import type { SessionStoreDraft } from "./session-draft-types";
 import { deleteOutputBuffer, purgeSessionStateInDraft } from "./session-helpers";
 import type { ImmerSet, StateGet } from "./types";
 
-export function createSessionCoreActions(set: ImmerSet<SessionStoreDraft>, _get: StateGet<SessionStoreDraft>) {
+export function createSessionCoreActions(
+  set: ImmerSet<SessionStoreDraft>,
+  _get: StateGet<SessionStoreDraft>
+) {
   return {
     addSession: (session: Session, options?: { isPaneSession?: boolean }) =>
       set((state) => {
@@ -129,13 +132,13 @@ export function createSessionCoreActions(set: ImmerSet<SessionStoreDraft>, _get:
 
         if (state.activeSessionId === sessionId) {
           state.tabActivationHistory = state.tabActivationHistory.filter(
-            (id: string) => id !== sessionId,
+            (id: string) => id !== sessionId
           );
           state.activeSessionId =
             state.tabActivationHistory[state.tabActivationHistory.length - 1] ?? null;
         } else {
           state.tabActivationHistory = state.tabActivationHistory.filter(
-            (id: string) => id !== sessionId,
+            (id: string) => id !== sessionId
           );
         }
       });

@@ -1,8 +1,15 @@
-import { memo } from "react";
 import {
-  ChevronDown, ChevronRight, File, FolderOpen,
-  GitBranch, Minus, Plus, TreePine, X,
+  ChevronDown,
+  ChevronRight,
+  File,
+  FolderOpen,
+  GitBranch,
+  Minus,
+  Plus,
+  TreePine,
+  X,
 } from "lucide-react";
+import { memo } from "react";
 import type { ProjectInfo, RecentDirectory } from "@/lib/indexer";
 
 const StatsBadge = memo(function StatsBadge({

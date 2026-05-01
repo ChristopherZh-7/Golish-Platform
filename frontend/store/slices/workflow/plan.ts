@@ -1,3 +1,4 @@
+import { planStepsStructurallyChanged } from "@/lib/plan-structural-change";
 import type {
   PipelineExecution,
   PipelineStepExecution,
@@ -7,7 +8,6 @@ import type {
 } from "../../store-types";
 import type { ImmerSet } from "../types";
 import type { WorkflowStoreDraft } from "./types";
-import { planStepsStructurallyChanged } from "@/lib/plan-structural-change";
 
 export function createPlanActions(set: ImmerSet<WorkflowStoreDraft>) {
   return {
@@ -15,7 +15,7 @@ export function createPlanActions(set: ImmerSet<WorkflowStoreDraft>) {
       sessionId: string,
       plan: TaskPlan,
       currentMessageId?: string | null,
-      newMessageId?: string | null,
+      newMessageId?: string | null
     ) =>
       set((state) => {
         if (!state.sessions[sessionId]) {
@@ -43,9 +43,9 @@ export function createPlanActions(set: ImmerSet<WorkflowStoreDraft>) {
             const retiredSteps = prev.steps.map((s) =>
               s.status === "in_progress" || s.status === "pending"
                 ? { ...s, status: "cancelled" as const }
-                : { ...s },
+                : { ...s }
             );
-            state.sessions[sessionId].retiredPlans!.push({
+            state.sessions[sessionId].retiredPlans?.push({
               plan: { ...prev, steps: retiredSteps },
               messageId: msgId,
               retiredAt: new Date().toISOString(),
@@ -62,7 +62,7 @@ export function createPlanActions(set: ImmerSet<WorkflowStoreDraft>) {
         if (timeline) {
           const firstInProgress = plan.steps.findIndex((s) => s.status === "in_progress");
           if (firstInProgress >= 0) {
-            const stepId = plan.steps[firstInProgress].id;
+            const stepId = plan.steps[firstInProgress].id ?? undefined;
             for (const block of timeline) {
               if (
                 block.type === "ai_tool_execution" &&

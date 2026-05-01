@@ -18,9 +18,9 @@ import { lazy, Suspense, useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { cn } from "@/lib/utils";
 import { isWindows } from "@/lib/env";
-import { useSettingsNavigation, type SettingsSection } from "./hooks/useSettingsNavigation";
+import { cn } from "@/lib/utils";
+import { type SettingsSection, useSettingsNavigation } from "./hooks/useSettingsNavigation";
 
 const AdvancedSettings = lazy(() =>
   import("./AdvancedSettings").then((m) => ({ default: m.AdvancedSettings }))
@@ -68,18 +68,78 @@ interface NavItemDef {
 }
 
 const NAV_ITEM_DEFS: NavItemDef[] = [
-  { id: "pentest", labelKey: "settings.environment", icon: <Wrench className="w-4 h-4" />, descKey: "settings.envDescription" },
-  { id: "providers", labelKey: "settings.providers", icon: <Server className="w-4 h-4" />, descKey: "settings.providersDesc" },
-  { id: "ai", labelKey: "settings.aiModels", icon: <Bot className="w-4 h-4" />, descKey: "settings.aiModelsDesc" },
-  { id: "terminal", labelKey: "settings.terminal", icon: <Terminal className="w-4 h-4" />, descKey: "settings.terminal" },
-  { id: "editor", labelKey: "settings.editor", icon: <FileCode className="w-4 h-4" />, descKey: "settings.editor" },
-  { id: "agent", labelKey: "settings.agent", icon: <Cog className="w-4 h-4" />, descKey: "settings.agent" },
-  { id: "mcp", labelKey: "settings.mcp", icon: <Puzzle className="w-4 h-4" />, descKey: "settings.mcp" },
-  { id: "codebases", labelKey: "settings.codebases", icon: <FolderCode className="w-4 h-4" />, descKey: "settings.codebases" },
-  { id: "network", labelKey: "settings.network", icon: <Globe className="w-4 h-4" />, descKey: "settings.network" },
-  { id: "notifications", labelKey: "settings.notifications", icon: <Bell className="w-4 h-4" />, descKey: "settings.notifications" },
-  { id: "appearance", labelKey: "settings.appearance", icon: <Paintbrush className="w-4 h-4" />, descKey: "settings.appearance" },
-  { id: "advanced", labelKey: "settings.advanced", icon: <Shield className="w-4 h-4" />, descKey: "settings.advanced" },
+  {
+    id: "pentest",
+    labelKey: "settings.environment",
+    icon: <Wrench className="w-4 h-4" />,
+    descKey: "settings.envDescription",
+  },
+  {
+    id: "providers",
+    labelKey: "settings.providers",
+    icon: <Server className="w-4 h-4" />,
+    descKey: "settings.providersDesc",
+  },
+  {
+    id: "ai",
+    labelKey: "settings.aiModels",
+    icon: <Bot className="w-4 h-4" />,
+    descKey: "settings.aiModelsDesc",
+  },
+  {
+    id: "terminal",
+    labelKey: "settings.terminal",
+    icon: <Terminal className="w-4 h-4" />,
+    descKey: "settings.terminal",
+  },
+  {
+    id: "editor",
+    labelKey: "settings.editor",
+    icon: <FileCode className="w-4 h-4" />,
+    descKey: "settings.editor",
+  },
+  {
+    id: "agent",
+    labelKey: "settings.agent",
+    icon: <Cog className="w-4 h-4" />,
+    descKey: "settings.agent",
+  },
+  {
+    id: "mcp",
+    labelKey: "settings.mcp",
+    icon: <Puzzle className="w-4 h-4" />,
+    descKey: "settings.mcp",
+  },
+  {
+    id: "codebases",
+    labelKey: "settings.codebases",
+    icon: <FolderCode className="w-4 h-4" />,
+    descKey: "settings.codebases",
+  },
+  {
+    id: "network",
+    labelKey: "settings.network",
+    icon: <Globe className="w-4 h-4" />,
+    descKey: "settings.network",
+  },
+  {
+    id: "notifications",
+    labelKey: "settings.notifications",
+    icon: <Bell className="w-4 h-4" />,
+    descKey: "settings.notifications",
+  },
+  {
+    id: "appearance",
+    labelKey: "settings.appearance",
+    icon: <Paintbrush className="w-4 h-4" />,
+    descKey: "settings.appearance",
+  },
+  {
+    id: "advanced",
+    labelKey: "settings.advanced",
+    icon: <Shield className="w-4 h-4" />,
+    descKey: "settings.advanced",
+  },
 ];
 
 export function SettingsNav({
@@ -93,7 +153,9 @@ export function SettingsNav({
   return (
     <div className="flex flex-col h-full">
       <div className="h-[34px] flex items-center px-3 flex-shrink-0">
-        <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">{t("settings.title")}</span>
+        <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+          {t("settings.title")}
+        </span>
       </div>
       <div className="flex-1 overflow-y-auto px-1.5 py-1">
         {NAV_ITEM_DEFS.map((item) => (
@@ -108,9 +170,7 @@ export function SettingsNav({
                 : "text-muted-foreground hover:bg-[var(--bg-hover)] hover:text-foreground"
             )}
           >
-            <span className={cn(activeSection === item.id ? "text-accent" : "")}>
-              {item.icon}
-            </span>
+            <span className={cn(activeSection === item.id ? "text-accent" : "")}>{item.icon}</span>
             <span className="text-[12px] font-medium">{t(item.labelKey)}</span>
           </button>
         ))}
@@ -119,17 +179,13 @@ export function SettingsNav({
   );
 }
 
-export function SettingsContent({
-  activeSection: activeSectionProp,
-}: {
-  activeSection?: string;
-}) {
-  const {
-    settings, activeSection, isLoading, loadSettings,
-    updateSection, handleNetworkChange,
-  } = useSettingsNavigation(activeSectionProp);
+export function SettingsContent({ activeSection: activeSectionProp }: { activeSection?: string }) {
+  const { settings, activeSection, isLoading, loadSettings, updateSection, handleNetworkChange } =
+    useSettingsNavigation(activeSectionProp);
 
-  useEffect(() => { loadSettings(); }, [loadSettings]);
+  useEffect(() => {
+    loadSettings();
+  }, [loadSettings]);
 
   const renderContent = useCallback(() => {
     if (activeSection === "pentest") {
@@ -138,7 +194,9 @@ export function SettingsContent({
     if (!settings) return null;
     switch (activeSection) {
       case "providers":
-        return <ProviderSettings settings={settings.ai} onChange={(ai) => updateSection("ai", ai)} />;
+        return (
+          <ProviderSettings settings={settings.ai} onChange={(ai) => updateSection("ai", ai)} />
+        );
       case "ai":
         return (
           <AiSettings
@@ -149,7 +207,12 @@ export function SettingsContent({
           />
         );
       case "terminal":
-        return <TerminalSettings settings={settings.terminal} onChange={(terminal) => updateSection("terminal", terminal)} />;
+        return (
+          <TerminalSettings
+            settings={settings.terminal}
+            onChange={(terminal) => updateSection("terminal", terminal)}
+          />
+        );
       case "editor":
         return <EditorSettings />;
       case "agent":
@@ -160,7 +223,9 @@ export function SettingsContent({
             subAgentModels={settings.ai.sub_agent_models || {}}
             onChange={(agent) => updateSection("agent", agent)}
             onToolsChange={(tools) => updateSection("tools", tools)}
-            onSubAgentModelsChange={(models) => updateSection("ai", { ...settings.ai, sub_agent_models: models })}
+            onSubAgentModelsChange={(models) =>
+              updateSection("ai", { ...settings.ai, sub_agent_models: models })
+            }
           />
         );
       case "mcp":
@@ -170,9 +235,19 @@ export function SettingsContent({
       case "network":
         return <NetworkSettings settings={settings.network} onChange={handleNetworkChange} />;
       case "notifications":
-        return <NotificationsSettings settings={settings.notifications} onChange={(notifications) => updateSection("notifications", notifications)} />;
+        return (
+          <NotificationsSettings
+            settings={settings.notifications}
+            onChange={(notifications) => updateSection("notifications", notifications)}
+          />
+        );
       case "appearance":
-        return <AppearanceSettings terminalSettings={settings.terminal} onTerminalChange={(terminal) => updateSection("terminal", terminal)} />;
+        return (
+          <AppearanceSettings
+            terminalSettings={settings.terminal}
+            onTerminalChange={(terminal) => updateSection("terminal", terminal)}
+          />
+        );
       case "advanced":
         return (
           <AdvancedSettings
@@ -203,7 +278,12 @@ export function SettingsContent({
 
   return (
     <ScrollArea className="h-full">
-      <div className={cn("p-6", (activeSection === "pentest" || activeSection === "providers") ? "" : "max-w-3xl")}>
+      <div
+        className={cn(
+          "p-6",
+          activeSection === "pentest" || activeSection === "providers" ? "" : "max-w-3xl"
+        )}
+      >
         <Suspense
           fallback={
             <div className="flex items-center justify-center py-8">
@@ -218,7 +298,13 @@ export function SettingsContent({
   );
 }
 
-function SettingsDialogNav({ activeSection, onSectionChange }: { activeSection: SettingsSection; onSectionChange: (s: SettingsSection) => void }) {
+function SettingsDialogNav({
+  activeSection,
+  onSectionChange,
+}: {
+  activeSection: SettingsSection;
+  onSectionChange: (s: SettingsSection) => void;
+}) {
   const { t } = useTranslation();
   return (
     <nav className="w-52 bg-card rounded-xl flex flex-col flex-shrink-0 panel-float overflow-hidden">
@@ -251,8 +337,13 @@ function SettingsDialogNav({ activeSection, onSectionChange }: { activeSection: 
 
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const {
-    settings, activeSection, setActiveSection, isLoading,
-    loadSettings, updateSection, handleNetworkChange,
+    settings,
+    activeSection,
+    setActiveSection,
+    isLoading,
+    loadSettings,
+    updateSection,
+    handleNetworkChange,
   } = useSettingsNavigation();
 
   useEffect(() => {
@@ -271,7 +362,9 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
 
     switch (activeSection) {
       case "providers":
-        return <ProviderSettings settings={settings.ai} onChange={(ai) => updateSection("ai", ai)} />;
+        return (
+          <ProviderSettings settings={settings.ai} onChange={(ai) => updateSection("ai", ai)} />
+        );
       case "ai":
         return (
           <AiSettings
@@ -282,7 +375,12 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
           />
         );
       case "terminal":
-        return <TerminalSettings settings={settings.terminal} onChange={(terminal) => updateSection("terminal", terminal)} />;
+        return (
+          <TerminalSettings
+            settings={settings.terminal}
+            onChange={(terminal) => updateSection("terminal", terminal)}
+          />
+        );
       case "editor":
         return <EditorSettings />;
       case "agent":
@@ -293,7 +391,9 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             subAgentModels={settings.ai.sub_agent_models || {}}
             onChange={(agent) => updateSection("agent", agent)}
             onToolsChange={(tools) => updateSection("tools", tools)}
-            onSubAgentModelsChange={(models) => updateSection("ai", { ...settings.ai, sub_agent_models: models })}
+            onSubAgentModelsChange={(models) =>
+              updateSection("ai", { ...settings.ai, sub_agent_models: models })
+            }
           />
         );
       case "mcp":
@@ -303,9 +403,19 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
       case "network":
         return <NetworkSettings settings={settings.network} onChange={handleNetworkChange} />;
       case "notifications":
-        return <NotificationsSettings settings={settings.notifications} onChange={(notifications) => updateSection("notifications", notifications)} />;
+        return (
+          <NotificationsSettings
+            settings={settings.notifications}
+            onChange={(notifications) => updateSection("notifications", notifications)}
+          />
+        );
       case "appearance":
-        return <AppearanceSettings terminalSettings={settings.terminal} onTerminalChange={(terminal) => updateSection("terminal", terminal)} />;
+        return (
+          <AppearanceSettings
+            terminalSettings={settings.terminal}
+            onTerminalChange={(terminal) => updateSection("terminal", terminal)}
+          />
+        );
       case "advanced":
         return (
           <AdvancedSettings
@@ -327,7 +437,13 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         <DialogTitle className="sr-only">Settings</DialogTitle>
 
         {/* Header — window drag region */}
-        <div className={cn("flex items-center justify-between px-6 flex-shrink-0 titlebar-drag", isWindows() ? "h-[32px]" : "h-[38px]")} data-tauri-drag-region>
+        <div
+          className={cn(
+            "flex items-center justify-between px-6 flex-shrink-0 titlebar-drag",
+            isWindows() ? "h-[32px]" : "h-[38px]"
+          )}
+          data-tauri-drag-region
+        >
           <h2 className="text-[14px] font-semibold text-foreground titlebar-no-drag">Settings</h2>
           <button
             type="button"
@@ -350,7 +466,12 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             {/* Main Content */}
             <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden bg-card rounded-xl panel-float">
               <ScrollArea className="h-full">
-                <div className={cn("p-6", (activeSection === "pentest" || activeSection === "providers") ? "" : "max-w-3xl")}>
+                <div
+                  className={cn(
+                    "p-6",
+                    activeSection === "pentest" || activeSection === "providers" ? "" : "max-w-3xl"
+                  )}
+                >
                   <Suspense
                     fallback={
                       <div className="flex items-center justify-center py-8">

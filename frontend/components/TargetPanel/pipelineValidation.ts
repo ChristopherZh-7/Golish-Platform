@@ -31,7 +31,11 @@ export function computeSummary(steps: StepDetail[]): PipelineSummary {
   return { total_stored: totalStored, success: allOk };
 }
 
-export function appendOutput(existing: string | undefined, newOutput: string, isStderr: boolean): string {
+export function appendOutput(
+  existing: string | undefined,
+  newOutput: string,
+  isStderr: boolean
+): string {
   const prefix = isStderr ? `[stderr] ${newOutput}` : newOutput;
   const MAX_LIVE = 8192;
   let updated = (existing ?? "") + prefix;

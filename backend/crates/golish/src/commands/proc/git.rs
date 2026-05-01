@@ -1,3 +1,4 @@
+use crate::error::GolishError;
 use serde::Serialize;
 use std::process::Command;
 
@@ -28,7 +29,7 @@ pub struct GitDiffResult {
     pub diff: String,
 }
 
-fn run_git_command(args: &[&str], working_directory: &str) -> Result<std::process::Output, String> {
+fn run_git_command(args: &[&str], working_directory: &str) -> Result<std::process::Output, GolishError> {
     Command::new("git")
         .args(args)
         .current_dir(working_directory)
@@ -138,7 +139,7 @@ fn parse_diff_numstat(output: &str) -> (i32, i32) {
 }
 
 #[tauri::command]
-pub async fn git_status(working_directory: String) -> Result<GitStatusSummary, String> {
+pub async fn git_status(working_directory: String) -> Result<GitStatusSummary, GolishError> {
     let output = run_git_command(&["status", "--porcelain", "--branch"], &working_directory)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
 
@@ -199,7 +200,7 @@ pub async fn git_diff(
     working_directory: String,
     file: String,
     staged: Option<bool>,
-) -> Result<GitDiffResult, String> {
+) -> Result<GitDiffResult, GolishError> {
     let mut args = vec!["diff", "--no-color"];
     if staged.unwrap_or(false) {
         args.push("--cached");
@@ -224,14 +225,14 @@ pub async fn git_diff(
 /// Get the combined diff for all staged changes.
 /// This is useful for generating commit messages.
 #[tauri::command]
-pub async fn git_diff_staged(working_directory: String) -> Result<String, String> {
+pub async fn git_diff_staged(working_directory: String) -> Result<String, GolishError> {
     let args = vec!["diff", "--cached", "--no-color"];
     let output = run_git_command(&args, &working_directory)?;
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 #[tauri::command]
-pub async fn git_stage(working_directory: String, files: Vec<String>) -> Result<(), String> {
+pub async fn git_stage(working_directory: String, files: Vec<String>) -> Result<(), GolishError> {
     if files.is_empty() {
         return Ok(());
     }
@@ -243,7 +244,7 @@ pub async fn git_stage(working_directory: String, files: Vec<String>) -> Result<
 }
 
 #[tauri::command]
-pub async fn git_unstage(working_directory: String, files: Vec<String>) -> Result<(), String> {
+pub async fn git_unstage(working_directory: String, files: Vec<String>) -> Result<(), GolishError> {
     if files.is_empty() {
         return Ok(());
     }
@@ -259,7 +260,7 @@ pub async fn git_commit(
     message: String,
     sign_off: Option<bool>,
     amend: Option<bool>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let mut args = vec!["commit", "-m", &message];
     if sign_off.unwrap_or(false) {
         args.push("--signoff");
@@ -277,7 +278,7 @@ pub async fn git_push(
     working_directory: String,
     force: Option<bool>,
     set_upstream: Option<bool>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let mut args = vec!["push"];
     if force.unwrap_or(false) {
         args.push("--force");
@@ -295,7 +296,7 @@ pub async fn git_delete_worktree(
     working_directory: String,
     worktree_path: String,
     force: Option<bool>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let mut args = vec!["worktree", "remove", &worktree_path];
     if force.unwrap_or(false) {
         args.push("--force");

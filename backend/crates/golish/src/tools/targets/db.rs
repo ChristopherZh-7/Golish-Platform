@@ -2,6 +2,7 @@
 //! Used by the `#[tauri::command]` wrappers in `cmds.rs` and by other modules
 //! that need to write through directly.
 
+use crate::error::GolishError;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -21,7 +22,7 @@ pub async fn db_target_add(
     project_path: Option<&str>,
     source: &str,
     parent_id: Option<Uuid>,
-) -> Result<Target, String> {
+) -> Result<Target, GolishError> {
     let tt = target_type.map(TargetType::from_str).unwrap_or_else(|| detect_type(value));
     let n = if name.is_empty() { value } else { name };
 
@@ -36,7 +37,7 @@ pub async fn db_target_add(
     .bind(project_path)
     .fetch_optional(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     if let Some(r) = existing {
         return Ok(Target::from(r));
@@ -58,7 +59,7 @@ pub async fn db_target_add(
     .bind(parent_id)
     .fetch_one(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     Ok(Target::from(row))
 }
@@ -66,7 +67,7 @@ pub async fn db_target_add(
 pub async fn db_target_list(
     pool: &PgPool,
     project_path: Option<&str>,
-) -> Result<Vec<Target>, String> {
+) -> Result<Vec<Target>, GolishError> {
     let rows = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
                   status::text, source, parent_id, ports,
@@ -78,7 +79,7 @@ pub async fn db_target_list(
     .bind(project_path)
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     Ok(rows.into_iter().map(Target::from).collect())
 }
@@ -87,13 +88,13 @@ pub async fn db_target_update_status(
     pool: &PgPool,
     id: Uuid,
     status: &str,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     sqlx::query("UPDATE targets SET status=$1::target_status, updated_at=NOW() WHERE id=$2")
         .bind(status)
         .bind(id)
         .execute(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     Ok(())
 }
 
@@ -101,7 +102,7 @@ pub async fn db_target_update_recon(
     pool: &PgPool,
     id: Uuid,
     ports: &serde_json::Value,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     sqlx::query(
         "UPDATE targets SET ports=$1, updated_at=NOW() WHERE id=$2",
     )
@@ -109,7 +110,7 @@ pub async fn db_target_update_recon(
     .bind(id)
     .execute(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
     Ok(())
 }
 
@@ -119,7 +120,7 @@ pub async fn db_target_update_recon_extended(
     pool: &PgPool,
     id: Uuid,
     updates: &ReconUpdate,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     sqlx::query(
         r#"UPDATE targets SET
             real_ip       = CASE WHEN $1 != '' THEN $1 ELSE real_ip END,
@@ -169,6 +170,6 @@ pub async fn db_target_update_recon_extended(
     .bind(id)
     .execute(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
     Ok(())
 }

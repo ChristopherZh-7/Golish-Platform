@@ -1,8 +1,8 @@
-import { useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import { getSettings } from "@/lib/settings";
-import { restoreBatchTerminals } from "@/lib/terminal-restore";
+import { type Dispatch, type MutableRefObject, type SetStateAction, useEffect } from "react";
 import { scanTools } from "@/lib/pentest/api";
 import type { ToolConfig } from "@/lib/pentest/types";
+import { getSettings } from "@/lib/settings";
+import { restoreBatchTerminals } from "@/lib/terminal-restore";
 import { useStore } from "@/store";
 import { getConfiguredProviders } from "../providerConfig";
 
@@ -82,7 +82,10 @@ export function useChatStreamingSync(opts: UseChatStreamingSyncOptions): void {
     if (!workspaceDataReady || !pendingTermData) return;
     const data = pendingTermData;
     useStore.getState().setPendingTerminalRestoreData(null);
-    void restoreBatchTerminals(data as Parameters<typeof restoreBatchTerminals>[0], createTerminalTab);
+    void restoreBatchTerminals(
+      data as Parameters<typeof restoreBatchTerminals>[0],
+      createTerminalTab
+    );
   }, [pendingTermData, workspaceDataReady, createTerminalTab]);
 
   // Load installed pentest tools once on mount.
@@ -146,5 +149,11 @@ export function useChatStreamingSync(opts: UseChatStreamingSyncOptions): void {
       setChatExecutionMode("chat");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeConvId, terminalRestoreInProgress]);
+  }, [
+    activeConvId,
+    terminalRestoreInProgress,
+    chatUseSubAgents,
+    setChatExecutionMode,
+    setChatUseSubAgents,
+  ]);
 }

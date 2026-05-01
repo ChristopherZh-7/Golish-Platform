@@ -1,8 +1,8 @@
 import { Loader2, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { CustomSelect } from "@/components/ui/custom-select";
 import { createGitWorktree, listGitBranches } from "@/lib/indexer";
 import { logger } from "@/lib/logger";
-import { CustomSelect } from "@/components/ui/custom-select";
 
 export interface NewWorktreeModalProps {
   isOpen: boolean;

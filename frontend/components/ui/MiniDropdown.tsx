@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
 type Variant = "compact" | "standard";
@@ -58,7 +58,11 @@ export function MiniDropdown({
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className={cn(btnStyles[variant], open && variant === "standard" && "border-accent/40 bg-[var(--bg-hover)]/50", buttonClassName)}
+        className={cn(
+          btnStyles[variant],
+          open && variant === "standard" && "border-accent/40 bg-[var(--bg-hover)]/50",
+          buttonClassName
+        )}
       >
         <span className="flex-1 text-left truncate">{selected?.label ?? value}</span>
         <ChevronDown className={cn(chevronStyles[variant], open && "rotate-180")} />
@@ -78,12 +82,14 @@ export function MiniDropdown({
                 variant === "compact"
                   ? cn(
                       "px-2 py-1 text-[10px]",
-                      o.value === value ? "bg-accent/15 text-accent" : "text-foreground/60 hover:bg-white/[0.05] hover:text-foreground",
+                      o.value === value
+                        ? "bg-accent/15 text-accent"
+                        : "text-foreground/60 hover:bg-white/[0.05] hover:text-foreground"
                     )
                   : cn(
                       "px-3 py-1.5 text-[10px] hover:bg-[var(--bg-hover)]/60",
-                      o.value === value && "text-accent bg-accent/5 font-medium",
-                    ),
+                      o.value === value && "text-accent bg-accent/5 font-medium"
+                    )
               )}
             >
               {o.label}

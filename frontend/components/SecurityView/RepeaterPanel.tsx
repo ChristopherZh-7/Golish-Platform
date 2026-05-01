@@ -1,15 +1,25 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity, ArrowRight, Check, Loader2, Send,
-  ShieldAlert, Square, X, Zap,
+  Activity,
+  ArrowRight,
+  Check,
+  Loader2,
+  Send,
+  ShieldAlert,
+  Square,
+  X,
+  Zap,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
-import {
-  zapSendRequest, zapStartScan, zapScanProgress, zapStopScan,
-  zapGetAlerts,
-} from "@/lib/pentest/zap-api";
-import type { ZapAlert, ManualRequestResult } from "@/lib/pentest/types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import type { ManualRequestResult, ZapAlert } from "@/lib/pentest/types";
+import {
+  zapGetAlerts,
+  zapScanProgress,
+  zapSendRequest,
+  zapStartScan,
+  zapStopScan,
+} from "@/lib/pentest/zap-api";
+import { cn } from "@/lib/utils";
 import { ScanResultsView } from "./AlertsPanel";
 import { DetailSection } from "./shared";
 
@@ -24,7 +34,11 @@ const DEFAULT_SCRIPT = `// Pre-send script: modify \`req\` before sending.
 //   req.headers['X-Signature'] = hmacSHA256('secret-key', req.body + ts);
 `;
 
-function parseRawRequest(raw: string): { firstLine: string; headers: Record<string, string>; body: string } {
+function parseRawRequest(raw: string): {
+  firstLine: string;
+  headers: Record<string, string>;
+  body: string;
+} {
   const idx = raw.indexOf("\n\n");
   const headerPart = idx >= 0 ? raw.slice(0, idx) : raw;
   const body = idx >= 0 ? raw.slice(idx + 2) : "";
@@ -38,7 +52,11 @@ function parseRawRequest(raw: string): { firstLine: string; headers: Record<stri
   return { firstLine, headers, body };
 }
 
-function rebuildRawRequest(firstLine: string, headers: Record<string, string>, body: string): string {
+function rebuildRawRequest(
+  firstLine: string,
+  headers: Record<string, string>,
+  body: string
+): string {
   const hLines = Object.entries(headers).map(([k, v]) => `${k}: ${v}`);
   return [firstLine, ...hLines, "", body].join("\n");
 }
@@ -53,7 +71,10 @@ async function applyScript(raw: string, script: string): Promise<string> {
 
   const builtins = {
     timestamp: () => String(Math.floor(Date.now() / 1000)),
-    randomHex: (len: number) => Array.from(crypto.getRandomValues(new Uint8Array(len)), (b) => b.toString(16).padStart(2, "0")).join(""),
+    randomHex: (len: number) =>
+      Array.from(crypto.getRandomValues(new Uint8Array(len)), (b) =>
+        b.toString(16).padStart(2, "0")
+      ).join(""),
     base64: (data: string) => btoa(data),
     md5: async (data: string) => {
       const buf = await subtle.digest("SHA-256", enc.encode(data));
@@ -64,7 +85,13 @@ async function applyScript(raw: string, script: string): Promise<string> {
       return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, "0")).join("");
     },
     hmacSHA256: async (key: string, data: string) => {
-      const cryptoKey = await subtle.importKey("raw", enc.encode(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+      const cryptoKey = await subtle.importKey(
+        "raw",
+        enc.encode(key),
+        { name: "HMAC", hash: "SHA-256" },
+        false,
+        ["sign"]
+      );
       const sig = await subtle.sign("HMAC", cryptoKey, enc.encode(data));
       return Array.from(new Uint8Array(sig), (b) => b.toString(16).padStart(2, "0")).join("");
     },
@@ -79,7 +106,11 @@ function prettyFormatBody(body: string, contentType: string): string {
   if (!body.trim()) return body;
   const ct = contentType.toLowerCase();
   if (ct.includes("json") || ct.includes("javascript")) {
-    try { return JSON.stringify(JSON.parse(body), null, 2); } catch { return body; }
+    try {
+      return JSON.stringify(JSON.parse(body), null, 2);
+    } catch {
+      return body;
+    }
   }
   if (ct.includes("html") || ct.includes("xml") || body.trimStart().startsWith("<")) {
     try {
@@ -90,13 +121,17 @@ function prettyFormatBody(body: string, contentType: string): string {
         const line = raw.trim();
         if (!line) continue;
         const isClosing = /^<\//.test(line);
-        const isSelfClosing = /\/>$/.test(line) || /^<(meta|link|br|hr|img|input|!doctype)\b/i.test(line);
+        const isSelfClosing =
+          /\/>$/.test(line) || /^<(meta|link|br|hr|img|input|!doctype)\b/i.test(line);
         if (isClosing) indent = Math.max(0, indent - 1);
         lines.push("  ".repeat(indent) + line);
-        if (!isClosing && !isSelfClosing && /^<[a-zA-Z]/.test(line) && !line.includes("</")) indent++;
+        if (!isClosing && !isSelfClosing && /^<[a-zA-Z]/.test(line) && !line.includes("</"))
+          indent++;
       }
       return lines.join("\n");
-    } catch { return body; }
+    } catch {
+      return body;
+    }
   }
   return body;
 }
@@ -178,11 +213,23 @@ function repeaterTabLabel(raw: string): string {
   let host = "";
   const hostMatch = raw.match(/^host:\s*(.+)/im);
   if (hostMatch) host = hostMatch[1].trim();
-  else if (parts[1]) { try { host = new URL(parts[1]).host; } catch { host = parts[1].split("/")[0]; } }
+  else if (parts[1]) {
+    try {
+      host = new URL(parts[1]).host;
+    } catch {
+      host = parts[1].split("/")[0];
+    }
+  }
   return host ? `${method} ${host}` : method;
 }
 
-export function RepeaterPanel({ injectedRequest, onInjectedConsumed }: { injectedRequest: string | null; onInjectedConsumed: () => void }) {
+export function RepeaterPanel({
+  injectedRequest,
+  onInjectedConsumed,
+}: {
+  injectedRequest: string | null;
+  onInjectedConsumed: () => void;
+}) {
   const { t } = useTranslation();
   const [tabs, setTabs] = useState<RepeaterTab[]>(() => [createRepeaterTab()]);
   const [activeTabId, setActiveTabId] = useState(() => tabs[0]?.id ?? "");
@@ -194,7 +241,7 @@ export function RepeaterPanel({ injectedRequest, onInjectedConsumed }: { injecte
   const sending = activeTab?.sending ?? false;
 
   const updateTab = useCallback((id: string, patch: Partial<RepeaterTab>) => {
-    setTabs((prev) => prev.map((t) => t.id === id ? { ...t, ...patch } : t));
+    setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
   }, []);
 
   useEffect(() => {
@@ -236,21 +283,24 @@ export function RepeaterPanel({ injectedRequest, onInjectedConsumed }: { injecte
     setActiveTabId(newTab.id);
   }, []);
 
-  const handleCloseTab = useCallback((id: string) => {
-    setTabs((prev) => {
-      const next = prev.filter((t) => t.id !== id);
-      if (next.length === 0) {
-        const fresh = createRepeaterTab();
-        setActiveTabId(fresh.id);
-        return [fresh];
-      }
-      if (activeTabId === id) {
-        const idx = prev.findIndex((t) => t.id === id);
-        setActiveTabId(next[Math.min(idx, next.length - 1)].id);
-      }
-      return next;
-    });
-  }, [activeTabId]);
+  const handleCloseTab = useCallback(
+    (id: string) => {
+      setTabs((prev) => {
+        const next = prev.filter((t) => t.id !== id);
+        if (next.length === 0) {
+          const fresh = createRepeaterTab();
+          setActiveTabId(fresh.id);
+          return [fresh];
+        }
+        if (activeTabId === id) {
+          const idx = prev.findIndex((t) => t.id === id);
+          setActiveTabId(next[Math.min(idx, next.length - 1)].id);
+        }
+        return next;
+      });
+    },
+    [activeTabId]
+  );
 
   const scanPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -286,7 +336,7 @@ export function RepeaterPanel({ injectedRequest, onInjectedConsumed }: { injecte
       const scanId = await zapStartScan(
         url,
         method !== "GET" ? method : undefined,
-        body.trim() ? body : undefined,
+        body.trim() ? body : undefined
       );
       updateTab(activeTab.id, { scanId });
 
@@ -316,7 +366,9 @@ export function RepeaterPanel({ injectedRequest, onInjectedConsumed }: { injecte
     stopScanPolling();
     try {
       await zapStopScan(activeTab.scanId);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     updateTab(activeTab.id, { scanState: "stopped" });
   }, [activeTab, updateTab, stopScanPolling]);
 
@@ -325,7 +377,12 @@ export function RepeaterPanel({ injectedRequest, onInjectedConsumed }: { injecte
   const formattedBody = useMemo(() => {
     if (!activeTab?.response?.response_body) return "(empty body)";
     if (!prettyMode) return activeTab.response.response_body;
-    return prettyFormatBody(activeTab.response.response_body, extractContentType(activeTab.response.response_header)) || "(empty body)";
+    return (
+      prettyFormatBody(
+        activeTab.response.response_body,
+        extractContentType(activeTab.response.response_header)
+      ) || "(empty body)"
+    );
   }, [activeTab?.response, prettyMode]);
 
   const response = activeTab?.response ?? null;
@@ -347,17 +404,25 @@ export function RepeaterPanel({ injectedRequest, onInjectedConsumed }: { injecte
           >
             <span className="truncate flex-1">{tab.name}</span>
             {tab.response && (
-              <span className={cn(
-                "text-[8px] px-1 rounded flex-shrink-0",
-                tab.response.status_code >= 200 && tab.response.status_code < 300
-                  ? "text-green-400" : tab.response.status_code >= 400 ? "text-red-400" : "text-yellow-400"
-              )}>
+              <span
+                className={cn(
+                  "text-[8px] px-1 rounded flex-shrink-0",
+                  tab.response.status_code >= 200 && tab.response.status_code < 300
+                    ? "text-green-400"
+                    : tab.response.status_code >= 400
+                      ? "text-red-400"
+                      : "text-yellow-400"
+                )}
+              >
                 {tab.response.status_code}
               </span>
             )}
             <button
               type="button"
-              onClick={(e) => { e.stopPropagation(); handleCloseTab(tab.id); }}
+              onClick={(e) => {
+                e.stopPropagation();
+                handleCloseTab(tab.id);
+              }}
               className="p-0.5 rounded text-muted-foreground/0 group-hover:text-muted-foreground/40 hover:!text-foreground transition-colors flex-shrink-0"
             >
               <X className="w-2.5 h-2.5" />
@@ -388,7 +453,9 @@ export function RepeaterPanel({ injectedRequest, onInjectedConsumed }: { injecte
                   onClick={() => setShowScript(!showScript)}
                   className={cn(
                     "flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-md transition-colors",
-                    showScript ? "bg-accent/15 text-accent" : "text-muted-foreground/40 hover:text-foreground hover:bg-[var(--bg-hover)]"
+                    showScript
+                      ? "bg-accent/15 text-accent"
+                      : "text-muted-foreground/40 hover:text-foreground hover:bg-[var(--bg-hover)]"
                   )}
                 >
                   <Activity className="w-3 h-3" />
@@ -458,8 +525,11 @@ export function RepeaterPanel({ injectedRequest, onInjectedConsumed }: { injecte
                     <div
                       className={cn(
                         "h-full rounded-full transition-all duration-300",
-                        activeTab.scanState === "running" ? "bg-orange-400" :
-                        activeTab.scanState === "completed" ? "bg-green-400" : "bg-muted-foreground/30"
+                        activeTab.scanState === "running"
+                          ? "bg-orange-400"
+                          : activeTab.scanState === "completed"
+                            ? "bg-green-400"
+                            : "bg-muted-foreground/30"
                       )}
                       style={{ width: `${activeTab.scanProgress}%` }}
                     />
@@ -474,9 +544,13 @@ export function RepeaterPanel({ injectedRequest, onInjectedConsumed }: { injecte
                       {activeTab.scanAlerts.length}
                     </button>
                   )}
-                  {activeTab.scanState !== "running" && activeTab.scanAlerts.length === 0 && activeTab.scanState === "completed" && (
-                    <span className="text-[10px] text-green-400/60">{t("security.scanNoResults")}</span>
-                  )}
+                  {activeTab.scanState !== "running" &&
+                    activeTab.scanAlerts.length === 0 &&
+                    activeTab.scanState === "completed" && (
+                      <span className="text-[10px] text-green-400/60">
+                        {t("security.scanNoResults")}
+                      </span>
+                    )}
                 </div>
               </div>
             )}
@@ -484,21 +558,34 @@ export function RepeaterPanel({ injectedRequest, onInjectedConsumed }: { injecte
             {showScript && (
               <div className="border-b border-border/10 flex-shrink-0">
                 <div className="flex items-center gap-2 px-3 py-1.5 bg-muted/5">
-                  <span className="text-[10px] text-muted-foreground/40 font-medium">Pre-send Script</span>
+                  <span className="text-[10px] text-muted-foreground/40 font-medium">
+                    Pre-send Script
+                  </span>
                   <div className="flex-1" />
                   <button
                     type="button"
-                    onClick={() => updateTab(activeTab.id, { scriptEnabled: !activeTab.scriptEnabled })}
+                    onClick={() =>
+                      updateTab(activeTab.id, { scriptEnabled: !activeTab.scriptEnabled })
+                    }
                     className={cn(
                       "w-7 h-4 rounded-full transition-colors flex items-center px-0.5",
                       activeTab.scriptEnabled ? "bg-green-500/30" : "bg-muted/30"
                     )}
                   >
-                    <div className={cn("w-3 h-3 rounded-full transition-all", activeTab.scriptEnabled ? "bg-green-400 ml-3" : "bg-muted-foreground/40 ml-0")} />
+                    <div
+                      className={cn(
+                        "w-3 h-3 rounded-full transition-all",
+                        activeTab.scriptEnabled
+                          ? "bg-green-400 ml-3"
+                          : "bg-muted-foreground/40 ml-0"
+                      )}
+                    />
                   </button>
                 </div>
                 {scriptError && (
-                  <div className="px-3 py-1 text-[10px] text-red-400 bg-red-500/5">{scriptError}</div>
+                  <div className="px-3 py-1 text-[10px] text-red-400 bg-red-500/5">
+                    {scriptError}
+                  </div>
                 )}
                 <textarea
                   value={activeTab.script}
@@ -513,7 +600,12 @@ export function RepeaterPanel({ injectedRequest, onInjectedConsumed }: { injecte
 
             <textarea
               value={activeTab.request}
-              onChange={(e) => updateTab(activeTab.id, { request: e.target.value, name: repeaterTabLabel(e.target.value) })}
+              onChange={(e) =>
+                updateTab(activeTab.id, {
+                  request: e.target.value,
+                  name: repeaterTabLabel(e.target.value),
+                })
+              }
               spellCheck={false}
               className="flex-1 w-full px-4 py-3 text-[11px] font-mono leading-[1.6] bg-transparent text-foreground outline-none resize-none"
               style={{ tabSize: 2 }}
@@ -527,7 +619,9 @@ export function RepeaterPanel({ injectedRequest, onInjectedConsumed }: { injecte
                 onClick={() => setShowScanResults(false)}
                 className={cn(
                   "text-[11px] font-medium transition-colors",
-                  !showScanResults ? "text-accent" : "text-muted-foreground/40 hover:text-foreground"
+                  !showScanResults
+                    ? "text-accent"
+                    : "text-muted-foreground/40 hover:text-foreground"
                 )}
               >
                 {t("security.response")}
@@ -538,7 +632,9 @@ export function RepeaterPanel({ injectedRequest, onInjectedConsumed }: { injecte
                   onClick={() => setShowScanResults(true)}
                   className={cn(
                     "flex items-center gap-1 text-[11px] font-medium transition-colors",
-                    showScanResults ? "text-red-400" : "text-muted-foreground/40 hover:text-foreground"
+                    showScanResults
+                      ? "text-red-400"
+                      : "text-muted-foreground/40 hover:text-foreground"
                   )}
                 >
                   <ShieldAlert className="w-3 h-3" />
@@ -579,7 +675,10 @@ export function RepeaterPanel({ injectedRequest, onInjectedConsumed }: { injecte
               <ScanResultsView alerts={activeTab.scanAlerts} />
             ) : response ? (
               <div className="flex-1 overflow-y-auto">
-                <DetailSection title={t("security.responseHeaders")} content={response.response_header} />
+                <DetailSection
+                  title={t("security.responseHeaders")}
+                  content={response.response_header}
+                />
                 <pre className="px-4 py-3 text-[11px] font-mono leading-[1.6] text-foreground/70 whitespace-pre-wrap break-all">
                   {formattedBody}
                 </pre>
@@ -600,5 +699,3 @@ export function RepeaterPanel({ injectedRequest, onInjectedConsumed }: { injecte
 }
 
 // ── Scan Results View ──
-
-

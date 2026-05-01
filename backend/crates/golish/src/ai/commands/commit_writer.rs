@@ -5,6 +5,7 @@
 //! be called by any other agent and has no tools. It simply takes a diff and
 //! generates a commit message.
 
+use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -82,7 +83,7 @@ pub async fn generate_commit_message(
     session_id: String,
     diff: String,
     file_summary: Option<String>,
-) -> Result<CommitMessageResponse, String> {
+) -> Result<CommitMessageResponse, GolishError> {
     // Get Arc clone and release map lock immediately
     let bridge = state
         .ai_state
@@ -114,7 +115,7 @@ pub async fn generate_commit_message(
 }
 
 /// Parse the LLM response into a CommitMessageResponse.
-fn parse_commit_response(response: &str) -> Result<CommitMessageResponse, String> {
+fn parse_commit_response(response: &str) -> Result<CommitMessageResponse, GolishError> {
     // Try to parse as JSON first
     let trimmed = response.trim();
 
@@ -147,7 +148,7 @@ fn parse_commit_response(response: &str) -> Result<CommitMessageResponse, String
             // Try to extract something useful
             let lines: Vec<&str> = trimmed.lines().collect();
             if lines.is_empty() {
-                return Err("Empty response from LLM".to_string());
+                return Err(GolishError::Internal("Empty response from LLM".into()));
             }
 
             // Use first non-empty line as summary, rest as description

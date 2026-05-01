@@ -6,25 +6,26 @@
  */
 
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { onEvent } from "@/lib/events";
-import { getGitBranch, gitStatus, ptyGetForegroundProcess } from "@/lib/api/pty";
+import {
+  BUILTIN_FULLTERM_COMMANDS,
+  extractProcessName,
+  GIT_STATUS_POLL_INTERVAL_MS,
+  isFastCommand,
+  PROCESS_DETECTION_DELAY_MS,
+  SHELL_PROCESSES,
+  shouldRefreshGitInfo,
+} from "@/hooks/tauri-event-types";
 import { isAiSessionInitialized, updateAiWorkspace } from "@/lib/ai";
+import { getGitBranch, gitStatus } from "@/lib/api/git";
+import { ptyGetForegroundProcess } from "@/lib/api/pty";
+import { onEvent } from "@/lib/events";
 import { addCommandHistory } from "@/lib/history";
-import { getSettings } from "@/lib/settings";
 import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
 import { runTauriUnlistenFn } from "@/lib/run-tauri-unlisten";
+import { getSettings } from "@/lib/settings";
 import { liveTerminalManager, virtualTerminalManager } from "@/lib/terminal";
-import { useStore, _drainOutputBufferSize } from "@/store";
-import {
-  BUILTIN_FULLTERM_COMMANDS,
-  GIT_STATUS_POLL_INTERVAL_MS,
-  PROCESS_DETECTION_DELAY_MS,
-  SHELL_PROCESSES,
-  extractProcessName,
-  isFastCommand,
-  shouldRefreshGitInfo,
-} from "@/hooks/tauri-event-types";
+import { useStore } from "@/store";
 
 export interface TerminalEventServiceState {
   isActive: boolean;
@@ -57,10 +58,7 @@ export function createTerminalEventService() {
 
     void (async () => {
       try {
-        const [branch, status] = await Promise.all([
-          getGitBranch(cwd),
-          gitStatus(cwd),
-        ]);
+        const [branch, status] = await Promise.all([getGitBranch(cwd), gitStatus(cwd)]);
         if (!isLatest()) return;
         state.updateGitBranch(sessionId, branch);
         state.setGitStatus(sessionId, status);
@@ -176,7 +174,10 @@ export function createTerminalEventService() {
 
           case "command_end": {
             const commandText =
-              command ?? lastStartedCommand.get(session_id) ?? state.pendingCommand[session_id]?.command ?? null;
+              command ??
+              lastStartedCommand.get(session_id) ??
+              state.pendingCommand[session_id]?.command ??
+              null;
 
             if (exit_code !== null) {
               const wasFulltermApp = usedAlternateScreen.get(session_id) ?? false;
@@ -207,7 +208,9 @@ export function createTerminalEventService() {
             }
 
             const commandForRefresh =
-              command ?? lastStartedCommand.get(session_id) ?? state.pendingCommand[session_id]?.command;
+              command ??
+              lastStartedCommand.get(session_id) ??
+              state.pendingCommand[session_id]?.command;
 
             if (exit_code === 0 && shouldRefreshGitInfo(commandForRefresh ?? null)) {
               const cwd = state.sessions[session_id]?.workingDirectory;
@@ -219,7 +222,7 @@ export function createTerminalEventService() {
             break;
           }
         }
-      }),
+      })
     );
 
     unlisteners.push(
@@ -229,7 +232,7 @@ export function createTerminalEventService() {
         virtualTerminalManager.write(session_id, data);
         liveTerminalManager.write(session_id, data);
         store.getState().appendOutput(session_id, data);
-      }),
+      })
     );
 
     unlisteners.push(
@@ -256,21 +259,21 @@ export function createTerminalEventService() {
         } catch (error) {
           logger.error("Error updating AI workspace:", error);
         }
-      }),
+      })
     );
 
     unlisteners.push(
       onEvent("virtual_env_changed", (payload) => {
         if (isStale()) return;
         store.getState().updateVirtualEnv(payload.session_id, payload.name);
-      }),
+      })
     );
 
     unlisteners.push(
       onEvent("session_ended", (payload) => {
         if (isStale()) return;
         store.getState().removeSession(payload.sessionId);
-      }),
+      })
     );
 
     unlisteners.push(
@@ -279,7 +282,7 @@ export function createTerminalEventService() {
         const { session_id, enabled } = payload;
         store.getState().setRenderMode(session_id, enabled ? "fullterm" : "timeline");
         if (enabled) usedAlternateScreen.set(session_id, true);
-      }),
+      })
     );
 
     gitStatusPollInterval = setInterval(() => {
@@ -300,8 +303,8 @@ export function createTerminalEventService() {
         unlisteners.map((p) =>
           p.then((unlisten) => {
             runTauriUnlistenFn(unlisten);
-          }),
-        ),
+          })
+        )
       ).catch((err) => {
         logger.warn("Failed to unlisten from some events:", err);
       });

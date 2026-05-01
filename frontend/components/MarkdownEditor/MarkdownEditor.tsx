@@ -1,16 +1,16 @@
-import { memo, useEffect, useRef } from "react";
-import { Milkdown, MilkdownProvider, useEditor } from "@milkdown/react";
-import { CrepeBuilder } from "@milkdown/crepe";
-import { toolbar } from "@milkdown/crepe/feature/toolbar";
-import { blockEdit } from "@milkdown/crepe/feature/block-edit";
-import { placeholder } from "@milkdown/crepe/feature/placeholder";
-import { listItem } from "@milkdown/crepe/feature/list-item";
-import { linkTooltip } from "@milkdown/crepe/feature/link-tooltip";
-import { cursor } from "@milkdown/crepe/feature/cursor";
-import { codeMirror } from "@milkdown/crepe/feature/code-mirror";
-import { table } from "@milkdown/crepe/feature/table";
-import { vscodeDark } from "@uiw/codemirror-theme-vscode";
 import { languages } from "@codemirror/language-data";
+import { CrepeBuilder } from "@milkdown/crepe";
+import { blockEdit } from "@milkdown/crepe/feature/block-edit";
+import { codeMirror } from "@milkdown/crepe/feature/code-mirror";
+import { cursor } from "@milkdown/crepe/feature/cursor";
+import { linkTooltip } from "@milkdown/crepe/feature/link-tooltip";
+import { listItem } from "@milkdown/crepe/feature/list-item";
+import { placeholder } from "@milkdown/crepe/feature/placeholder";
+import { table } from "@milkdown/crepe/feature/table";
+import { toolbar } from "@milkdown/crepe/feature/toolbar";
+import { Milkdown, MilkdownProvider, useEditor } from "@milkdown/react";
+import { vscodeDark } from "@uiw/codemirror-theme-vscode";
+import { memo, useEffect, useRef } from "react";
 
 import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/classic-dark.css";
@@ -25,7 +25,10 @@ interface MarkdownEditorProps {
 function MilkdownEditorInner({
   value,
   onChange,
-}: { value: string; onChange: (v: string) => void }) {
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 

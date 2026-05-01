@@ -11,7 +11,10 @@ export async function getApprovalPatterns(sessionId?: string): Promise<ApprovalP
   return invoke("get_approval_patterns", { sessionId });
 }
 
-export async function getToolApprovalPattern(toolName: string, sessionId?: string): Promise<ApprovalPattern | null> {
+export async function getToolApprovalPattern(
+  toolName: string,
+  sessionId?: string
+): Promise<ApprovalPattern | null> {
   return invoke("get_tool_approval_pattern", { toolName, sessionId });
 }
 
@@ -67,10 +70,7 @@ export async function setUseAgents(sessionId: string, enabled: boolean): Promise
   return invoke("set_use_agents", { sessionId, enabled });
 }
 
-export async function setExecutionMode(
-  sessionId: string,
-  mode: "chat" | "task"
-): Promise<void> {
+export async function setExecutionMode(sessionId: string, mode: "chat" | "task"): Promise<void> {
   return invoke("set_execution_mode", { sessionId, mode });
 }
 

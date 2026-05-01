@@ -3,8 +3,9 @@
 /**
  * Tool enablement settings.
  */
-export type ToolsSettings = { 
-/**
- * Enable web search tools (Tavily)
- */
-web_search: boolean, };
+export type ToolsSettings = {
+  /**
+   * Enable web search tools (Tavily)
+   */
+  web_search: boolean;
+};

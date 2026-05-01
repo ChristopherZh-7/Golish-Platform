@@ -1,19 +1,12 @@
-import {
-  CheckCircle2,
-  ChevronDown,
-  Clock,
-  Loader2,
-  Wrench,
-  XCircle,
-} from "lucide-react";
+import { CheckCircle2, ChevronDown, Clock, Loader2, Wrench, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
+import { AnchorChip } from "@/components/ui/AnchorChip";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { AnchorChip } from "@/components/ui/AnchorChip";
 import { getToolColor, getToolLabel, getToolPrimaryArg } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
@@ -22,7 +15,9 @@ export function parseToolPrimary(name: string, argsStr?: string): string | null 
   if (!argsStr) return null;
   try {
     return getToolPrimaryArg(name, JSON.parse(argsStr));
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 function ToolCallCard({
@@ -51,7 +46,9 @@ function ToolCallCard({
           .replace(/\b\w/g, (c: string) => c.toUpperCase());
         label = name;
       }
-    } catch { /* keep default */ }
+    } catch {
+      /* keep default */
+    }
   }
   const color = getToolColor(tc.name);
   const isNoResult = tc.success === undefined;
@@ -74,12 +71,15 @@ function ToolCallCard({
             ? "border-l-2 animate-[pulse-border_2s_ease-in-out_infinite]"
             : isError
               ? "border-red-500/30 hover:border-red-500/50"
-              : "border-border/30 hover:border-accent/40",
+              : "border-border/30 hover:border-accent/40"
       )}
       style={isRunning ? { borderLeftColor: color } : undefined}
     >
       <div className="flex items-center gap-2">
-        <Wrench className="w-3.5 h-3.5 flex-shrink-0" style={{ color: isExpired ? "var(--muted-foreground)" : color }} />
+        <Wrench
+          className="w-3.5 h-3.5 flex-shrink-0"
+          style={{ color: isExpired ? "var(--muted-foreground)" : color }}
+        />
         <span className="text-[11px] font-medium text-foreground/80">{label}</span>
         <AnchorChip sessionId={sessionId} requestId={requestId} />
         <div className="ml-auto flex items-center gap-1.5">
@@ -107,7 +107,7 @@ function ToolCallCard({
             "mt-1.5 text-[10px] font-mono truncate px-1.5 py-0.5 rounded",
             isShell
               ? "bg-[var(--ansi-black)]/30 text-[var(--ansi-green)]/80"
-              : "bg-muted/30 text-muted-foreground/70",
+              : "bg-muted/30 text-muted-foreground/70"
           )}
         >
           {isShell && <span className="text-muted-foreground/60 mr-1">$</span>}
@@ -259,7 +259,13 @@ export function ToolCallSummary({
   requestIds,
   isMessageComplete,
 }: {
-  toolCalls: Array<{ name: string; args?: string; result?: string; success?: boolean; requestId?: string }>;
+  toolCalls: Array<{
+    name: string;
+    args?: string;
+    result?: string;
+    success?: boolean;
+    requestId?: string;
+  }>;
   requestIds?: string[];
   isMessageComplete?: boolean;
 }) {
@@ -284,12 +290,17 @@ export function ToolCallSummary({
 
   if (toolCalls.length === 0) return null;
 
-  const backfillTimeline = (state: ReturnType<typeof useStore.getState>, sessionId: string, calls: typeof toolCalls) => {
+  const backfillTimeline = (
+    state: ReturnType<typeof useStore.getState>,
+    sessionId: string,
+    calls: typeof toolCalls
+  ) => {
     const timeline = state.timelines[sessionId] ?? [];
     const existingIds = new Set(
       timeline
-        .filter((b): b is { type: "ai_tool_execution"; data: { requestId: string } } & typeof b =>
-          b.type === "ai_tool_execution"
+        .filter(
+          (b): b is { type: "ai_tool_execution"; data: { requestId: string } } & typeof b =>
+            b.type === "ai_tool_execution"
         )
         .map((b) => b.data.requestId)
     );
@@ -302,7 +313,9 @@ export function ToolCallSummary({
       let parsedArgs: Record<string, unknown> = {};
       try {
         if (tc.args) parsedArgs = JSON.parse(tc.args);
-      } catch { /* keep empty */ }
+      } catch {
+        /* keep empty */
+      }
 
       state.addToolExecutionBlock(sessionId, {
         requestId: tc.requestId,
@@ -335,7 +348,6 @@ export function ToolCallSummary({
     state.setDetailViewMode(sessionId, "tool-detail");
     backfillTimeline(state, sessionId, toolCalls);
   };
-
 
   const sessionId = useStore((s) => s.activeSessionId);
 

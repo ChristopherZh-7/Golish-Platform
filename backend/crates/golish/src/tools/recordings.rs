@@ -1,3 +1,4 @@
+use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 
 use crate::state::DbState;
@@ -85,9 +86,9 @@ pub async fn recording_save(
     state: tauri::State<'_, DbState>,
     recording: Recording,
     _project_path: Option<String>,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     let pool = state.pool_ready().await?;
-    let events_json = serde_json::to_value(&recording.events).map_err(|e| e.to_string())?;
+    let events_json = serde_json::to_value(&recording.events)?;
 
     sqlx::query(
         "INSERT INTO recordings (id, title, session_id, width, height, duration_ms, event_count, events, project_path) \
@@ -107,7 +108,7 @@ pub async fn recording_save(
     .bind(&_project_path)
     .execute(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     tracing::debug!(
         "[recording_save] Saved recording {} ({} events)",
@@ -122,7 +123,7 @@ pub async fn recording_load(
     state: tauri::State<'_, DbState>,
     id: String,
     _project_path: Option<String>,
-) -> Result<Recording, String> {
+) -> Result<Recording, GolishError> {
     let pool = state.pool_ready().await?;
     let row: RecordingRow = sqlx::query_as(
         "SELECT id, title, session_id, width, height, duration_ms, event_count, events, created_at \
@@ -131,7 +132,7 @@ pub async fn recording_load(
     .bind(&id)
     .fetch_optional(pool)
     .await
-    .map_err(|e| e.to_string())?
+?
     .ok_or_else(|| format!("Recording {id} not found"))?;
 
     Ok(Recording::from(row))
@@ -141,7 +142,7 @@ pub async fn recording_load(
 pub async fn recording_list(
     state: tauri::State<'_, DbState>,
     _project_path: Option<String>,
-) -> Result<Vec<RecordingMeta>, String> {
+) -> Result<Vec<RecordingMeta>, GolishError> {
     let pool = state.pool_ready().await?;
     let rows: Vec<MetaRow> = sqlx::query_as(
         "SELECT id, title, session_id, width, height, duration_ms, event_count, created_at \
@@ -149,7 +150,7 @@ pub async fn recording_list(
     )
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     Ok(rows.into_iter().map(RecordingMeta::from).collect())
 }
@@ -159,13 +160,13 @@ pub async fn recording_delete(
     state: tauri::State<'_, DbState>,
     id: String,
     _project_path: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     sqlx::query("DELETE FROM recordings WHERE id = $1")
         .bind(&id)
         .execute(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     tracing::debug!("[recording_delete] Deleted recording {id}");
     Ok(())
 }

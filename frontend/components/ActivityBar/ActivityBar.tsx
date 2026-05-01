@@ -1,36 +1,54 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
-  Home,
+  AlertTriangle,
+  BookText,
   Bug,
+  ChevronRight,
   ClipboardList,
   Crosshair,
+  FolderOpen,
   GitBranch,
+  Hammer,
+  Home,
   Layers,
-  Wrench,
+  type LucideIcon,
+  MoreHorizontal,
+  ScrollText,
   Settings,
   Terminal,
-  ScrollText,
-  BookText,
-  AlertTriangle,
-  FolderOpen,
-  Hammer,
-  MoreHorizontal,
-  ChevronRight,
-  type LucideIcon,
+  Wrench,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 
-export type ActivityView = "dashboard" | "wiki" | "targets" | "methodology" | "findings" | "pipelines" | "auditLog" | "wordlists" | "vulnIntel" | "toolManage" | "settings" | null;
+export type ActivityView =
+  | "dashboard"
+  | "wiki"
+  | "targets"
+  | "methodology"
+  | "findings"
+  | "pipelines"
+  | "auditLog"
+  | "wordlists"
+  | "vulnIntel"
+  | "toolManage"
+  | "settings"
+  | null;
 
-type BarItemId = "dashboard" | "targets" | "findings" | "pipelines" | "auditLog" | "wordlists" | "vulnIntel" | "terminal" | "wiki" | "methodology" | "toolManage";
+type BarItemId =
+  | "dashboard"
+  | "targets"
+  | "findings"
+  | "pipelines"
+  | "auditLog"
+  | "wordlists"
+  | "vulnIntel"
+  | "terminal"
+  | "wiki"
+  | "methodology"
+  | "toolManage";
 
 interface BarItem {
   id: BarItemId;
@@ -76,9 +94,7 @@ const LOWER_GROUPS: BarGroup[] = [
     id: "system",
     icon: MoreHorizontal,
     label: "activity.system",
-    items: [
-      { id: "auditLog", icon: ScrollText, label: "activity.auditLog" },
-    ],
+    items: [{ id: "auditLog", icon: ScrollText, label: "activity.auditLog" }],
   },
 ];
 
@@ -110,7 +126,18 @@ interface ActivityBarProps {
   onOpenSettings?: () => void;
 }
 
-const VIEW_ITEMS: BarItemId[] = ["dashboard", "targets", "findings", "pipelines", "auditLog", "wordlists", "vulnIntel", "wiki", "methodology", "toolManage"];
+const VIEW_ITEMS: BarItemId[] = [
+  "dashboard",
+  "targets",
+  "findings",
+  "pipelines",
+  "auditLog",
+  "wordlists",
+  "vulnIntel",
+  "wiki",
+  "methodology",
+  "toolManage",
+];
 
 export const ActivityBar = memo(function ActivityBar({
   activeView,
@@ -133,7 +160,13 @@ export const ActivityBar = memo(function ActivityBar({
     item: BarItem;
   } | null>(null);
 
-  const dragStartRef = useRef<{ section: "upper"; index: number; startX: number; startY: number; moved: boolean } | null>(null);
+  const dragStartRef = useRef<{
+    section: "upper";
+    index: number;
+    startX: number;
+    startY: number;
+    moved: boolean;
+  } | null>(null);
   const hoverIndexRef = useRef(0);
   const itemRefsUpper = useRef<(HTMLButtonElement | null)[]>([]);
 
@@ -150,138 +183,163 @@ export const ActivityBar = memo(function ActivityBar({
     return () => document.removeEventListener("mousedown", handler);
   }, [expandedGroup]);
 
-  const handleClick = useCallback((item: BarItem) => {
-    if (VIEW_ITEMS.includes(item.id)) {
-      const viewId = item.id as ActivityView;
-      onViewChange(activeView === viewId ? null : viewId);
-      setExpandedGroup(null);
-    } else if (item.id === "terminal") {
-      onToggleTerminal?.();
-    }
-  }, [activeView, onViewChange, onToggleTerminal]);
-
-  const getItemActive = useCallback((item: BarItem) => {
-    if (VIEW_ITEMS.includes(item.id)) return activeView === item.id;
-    if (item.id === "terminal") return !!terminalOpen;
-    return false;
-  }, [activeView, terminalOpen]);
-
-  const isGroupActive = useCallback((group: BarGroup) => {
-    return group.items.some((item) => getItemActive(item));
-  }, [getItemActive]);
-
-  const handlePointerDown = useCallback((
-    e: React.PointerEvent,
-    index: number,
-  ) => {
-    dragStartRef.current = { section: "upper", index, startX: e.clientX, startY: e.clientY, moved: false };
-
-    const items = upperItems;
-    const item = items[index];
-    const el = itemRefsUpper.current[index];
-    if (!el || !item) return;
-
-    const rect = el.getBoundingClientRect();
-    const offsetY = e.clientY - rect.top;
-
-    const onMove = (ev: PointerEvent) => {
-      if (!dragStartRef.current) return;
-      const dx = ev.clientX - dragStartRef.current.startX;
-      const dy = ev.clientY - dragStartRef.current.startY;
-      if (!dragStartRef.current.moved && Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return;
-      dragStartRef.current.moved = true;
-
-      const delta = ev.clientY - dragStartRef.current.startY;
-      const steps = Math.round(delta / ITEM_HEIGHT);
-      const hoverIdx = Math.max(0, Math.min(items.length - 1, index + steps));
-      hoverIndexRef.current = hoverIdx;
-
-      setDrag({
-        section: "upper",
-        fromIndex: index,
-        hoverIndex: hoverIdx,
-        ghostX: rect.left,
-        ghostY: ev.clientY - offsetY,
-        item,
-      });
-    };
-
-    const onUp = () => {
-      document.removeEventListener("pointermove", onMove);
-      document.removeEventListener("pointerup", onUp);
-
-      if (dragStartRef.current?.moved) {
-        const targetIdx = hoverIndexRef.current;
-        if (targetIdx !== index) {
-          setUpperItems((prev) => {
-            const next = [...prev];
-            const [moved] = next.splice(index, 1);
-            next.splice(targetIdx, 0, moved);
-            try {
-              localStorage.setItem(ACTIVITY_ORDER_KEY, JSON.stringify(next.map((i) => i.id)));
-            } catch { /* ignore */ }
-            return next;
-          });
-        }
-      } else if (dragStartRef.current && !dragStartRef.current.moved) {
-        handleClick(item);
+  const handleClick = useCallback(
+    (item: BarItem) => {
+      if (VIEW_ITEMS.includes(item.id)) {
+        const viewId = item.id as ActivityView;
+        onViewChange(activeView === viewId ? null : viewId);
+        setExpandedGroup(null);
+      } else if (item.id === "terminal") {
+        onToggleTerminal?.();
       }
+    },
+    [activeView, onViewChange, onToggleTerminal]
+  );
 
-      dragStartRef.current = null;
-      setDrag(null);
-    };
+  const getItemActive = useCallback(
+    (item: BarItem) => {
+      if (VIEW_ITEMS.includes(item.id)) return activeView === item.id;
+      if (item.id === "terminal") return !!terminalOpen;
+      return false;
+    },
+    [activeView, terminalOpen]
+  );
 
-    document.addEventListener("pointermove", onMove);
-    document.addEventListener("pointerup", onUp);
-    e.preventDefault();
-  }, [upperItems, handleClick]);
+  const isGroupActive = useCallback(
+    (group: BarGroup) => {
+      return group.items.some((item) => getItemActive(item));
+    },
+    [getItemActive]
+  );
 
-  const getTranslateY = useCallback((index: number) => {
-    if (!drag || drag.section !== "upper") return 0;
-    if (index === drag.fromIndex) return 0;
-    const from = drag.fromIndex;
-    const hover = drag.hoverIndex;
-    if (from < hover && index > from && index <= hover) return -ITEM_HEIGHT;
-    if (from > hover && index < from && index >= hover) return ITEM_HEIGHT;
-    return 0;
-  }, [drag]);
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent, index: number) => {
+      dragStartRef.current = {
+        section: "upper",
+        index,
+        startX: e.clientX,
+        startY: e.clientY,
+        moved: false,
+      };
 
-  const renderUpperItem = useCallback((item: BarItem, index: number) => {
-    const active = getItemActive(item);
-    const isDragging = drag?.section === "upper" && drag.fromIndex === index;
-    const ty = getTranslateY(index);
+      const items = upperItems;
+      const item = items[index];
+      const el = itemRefsUpper.current[index];
+      if (!el || !item) return;
 
-    return (
-      <Tooltip key={item.id}>
-        <TooltipTrigger asChild>
-          <button
-            ref={(el) => { itemRefsUpper.current[index] = el; }}
-            type="button"
-            className={cn(
-              "relative w-10 h-10 flex items-center justify-center rounded-md",
-              "cursor-pointer select-none",
-              active
-                ? "text-foreground bg-[var(--bg-hover)]"
-                : "text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]",
-              isDragging ? "opacity-0" : "transition-transform duration-200 ease-out",
-            )}
-            style={{ transform: isDragging ? undefined : `translateY(${ty}px)` }}
-            onPointerDown={(e) => handlePointerDown(e, index)}
-          >
-            <item.icon className="w-[18px] h-[18px]" />
-            {active && !isDragging && (
-              <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[2px] h-5 bg-accent rounded-r" />
-            )}
-          </button>
-        </TooltipTrigger>
-        {!drag && (
-          <TooltipContent side="right" sideOffset={8}>
-            <p className="text-xs">{t(item.label)}</p>
-          </TooltipContent>
-        )}
-      </Tooltip>
-    );
-  }, [getItemActive, drag, getTranslateY, handlePointerDown, t]);
+      const rect = el.getBoundingClientRect();
+      const offsetY = e.clientY - rect.top;
+
+      const onMove = (ev: PointerEvent) => {
+        if (!dragStartRef.current) return;
+        const dx = ev.clientX - dragStartRef.current.startX;
+        const dy = ev.clientY - dragStartRef.current.startY;
+        if (!dragStartRef.current.moved && Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return;
+        dragStartRef.current.moved = true;
+
+        const delta = ev.clientY - dragStartRef.current.startY;
+        const steps = Math.round(delta / ITEM_HEIGHT);
+        const hoverIdx = Math.max(0, Math.min(items.length - 1, index + steps));
+        hoverIndexRef.current = hoverIdx;
+
+        setDrag({
+          section: "upper",
+          fromIndex: index,
+          hoverIndex: hoverIdx,
+          ghostX: rect.left,
+          ghostY: ev.clientY - offsetY,
+          item,
+        });
+      };
+
+      const onUp = () => {
+        document.removeEventListener("pointermove", onMove);
+        document.removeEventListener("pointerup", onUp);
+
+        if (dragStartRef.current?.moved) {
+          const targetIdx = hoverIndexRef.current;
+          if (targetIdx !== index) {
+            setUpperItems((prev) => {
+              const next = [...prev];
+              const [moved] = next.splice(index, 1);
+              next.splice(targetIdx, 0, moved);
+              try {
+                localStorage.setItem(ACTIVITY_ORDER_KEY, JSON.stringify(next.map((i) => i.id)));
+              } catch {
+                /* ignore */
+              }
+              return next;
+            });
+          }
+        } else if (dragStartRef.current && !dragStartRef.current.moved) {
+          handleClick(item);
+        }
+
+        dragStartRef.current = null;
+        setDrag(null);
+      };
+
+      document.addEventListener("pointermove", onMove);
+      document.addEventListener("pointerup", onUp);
+      e.preventDefault();
+    },
+    [upperItems, handleClick]
+  );
+
+  const getTranslateY = useCallback(
+    (index: number) => {
+      if (!drag || drag.section !== "upper") return 0;
+      if (index === drag.fromIndex) return 0;
+      const from = drag.fromIndex;
+      const hover = drag.hoverIndex;
+      if (from < hover && index > from && index <= hover) return -ITEM_HEIGHT;
+      if (from > hover && index < from && index >= hover) return ITEM_HEIGHT;
+      return 0;
+    },
+    [drag]
+  );
+
+  const renderUpperItem = useCallback(
+    (item: BarItem, index: number) => {
+      const active = getItemActive(item);
+      const isDragging = drag?.section === "upper" && drag.fromIndex === index;
+      const ty = getTranslateY(index);
+
+      return (
+        <Tooltip key={item.id}>
+          <TooltipTrigger asChild>
+            <button
+              ref={(el) => {
+                itemRefsUpper.current[index] = el;
+              }}
+              type="button"
+              className={cn(
+                "relative w-10 h-10 flex items-center justify-center rounded-md",
+                "cursor-pointer select-none",
+                active
+                  ? "text-foreground bg-[var(--bg-hover)]"
+                  : "text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]",
+                isDragging ? "opacity-0" : "transition-transform duration-200 ease-out"
+              )}
+              style={{ transform: isDragging ? undefined : `translateY(${ty}px)` }}
+              onPointerDown={(e) => handlePointerDown(e, index)}
+            >
+              <item.icon className="w-[18px] h-[18px]" />
+              {active && !isDragging && (
+                <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[2px] h-5 bg-accent rounded-r" />
+              )}
+            </button>
+          </TooltipTrigger>
+          {!drag && (
+            <TooltipContent side="right" sideOffset={8}>
+              <p className="text-xs">{t(item.label)}</p>
+            </TooltipContent>
+          )}
+        </Tooltip>
+      );
+    },
+    [getItemActive, drag, getTranslateY, handlePointerDown, t]
+  );
 
   const toggleGroup = useCallback((groupId: string) => {
     setExpandedGroup((prev) => (prev === groupId ? null : groupId));
@@ -308,7 +366,7 @@ export const ActivityBar = memo(function ActivityBar({
                   "transition-colors cursor-pointer",
                   activeView === null
                     ? "text-foreground bg-[var(--bg-hover)]"
-                    : "text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]",
+                    : "text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]"
                 )}
                 onClick={() => onViewChange(null)}
               >
@@ -337,14 +395,16 @@ export const ActivityBar = memo(function ActivityBar({
               <Tooltip key={group.id}>
                 <TooltipTrigger asChild>
                   <button
-                    ref={(el) => { groupRefs.current[group.id] = el; }}
+                    ref={(el) => {
+                      groupRefs.current[group.id] = el;
+                    }}
                     type="button"
                     className={cn(
                       "relative w-10 h-10 flex items-center justify-center rounded-md",
                       "transition-colors cursor-pointer",
                       active || expanded
                         ? "text-foreground bg-[var(--bg-hover)]"
-                        : "text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]",
+                        : "text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]"
                     )}
                     onClick={() => toggleGroup(group.id)}
                   >
@@ -377,7 +437,7 @@ export const ActivityBar = memo(function ActivityBar({
                   "transition-colors cursor-pointer",
                   activeView === "settings"
                     ? "text-foreground bg-[var(--bg-hover)]"
-                    : "text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]",
+                    : "text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]"
                 )}
                 onClick={() => onViewChange(activeView === "settings" ? null : "settings")}
               >
@@ -395,69 +455,73 @@ export const ActivityBar = memo(function ActivityBar({
       </div>
 
       {/* Flyout panel for expanded group */}
-      {expandedGroup && createPortal(
-        (() => {
-          const group = LOWER_GROUPS.find((g) => g.id === expandedGroup);
-          if (!group) return null;
-          const pos = getFlyoutPosition(expandedGroup);
-          return (
-            <div
-              ref={flyoutRef}
-              className="fixed z-[9999] animate-in fade-in-0 slide-in-from-left-2 duration-150"
-              style={{ top: pos.top - 8, left: pos.left }}
-            >
-              <div className="rounded-xl border border-border/20 bg-popover shadow-2xl py-1.5 px-1 min-w-[160px]">
-                <div className="px-2 py-1 text-[9px] text-muted-foreground/60 font-medium uppercase tracking-wide">
-                  {t(group.label)}
+      {expandedGroup &&
+        createPortal(
+          (() => {
+            const group = LOWER_GROUPS.find((g) => g.id === expandedGroup);
+            if (!group) return null;
+            const pos = getFlyoutPosition(expandedGroup);
+            return (
+              <div
+                ref={flyoutRef}
+                className="fixed z-[9999] animate-in fade-in-0 slide-in-from-left-2 duration-150"
+                style={{ top: pos.top - 8, left: pos.left }}
+              >
+                <div className="rounded-xl border border-border/20 bg-popover shadow-2xl py-1.5 px-1 min-w-[160px]">
+                  <div className="px-2 py-1 text-[9px] text-muted-foreground/60 font-medium uppercase tracking-wide">
+                    {t(group.label)}
+                  </div>
+                  {group.items.map((item) => {
+                    const active = getItemActive(item);
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className={cn(
+                          "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg transition-colors",
+                          active
+                            ? "text-accent bg-accent/10"
+                            : "text-foreground/70 hover:text-foreground hover:bg-muted/10"
+                        )}
+                        onClick={() => handleClick(item)}
+                      >
+                        <item.icon className="w-4 h-4 flex-shrink-0" />
+                        <span className="text-[11px] font-medium">{t(item.label)}</span>
+                        {active && <ChevronRight className="w-3 h-3 ml-auto text-accent/50" />}
+                      </button>
+                    );
+                  })}
                 </div>
-                {group.items.map((item) => {
-                  const active = getItemActive(item);
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className={cn(
-                        "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg transition-colors",
-                        active
-                          ? "text-accent bg-accent/10"
-                          : "text-foreground/70 hover:text-foreground hover:bg-muted/10",
-                      )}
-                      onClick={() => handleClick(item)}
-                    >
-                      <item.icon className="w-4 h-4 flex-shrink-0" />
-                      <span className="text-[11px] font-medium">{t(item.label)}</span>
-                      {active && <ChevronRight className="w-3 h-3 ml-auto text-accent/50" />}
-                    </button>
-                  );
-                })}
               </div>
-            </div>
-          );
-        })(),
-        document.body,
-      )}
+            );
+          })(),
+          document.body
+        )}
 
       {/* Floating ghost during drag */}
-      {drag && createPortal(
-        <div
-          className="fixed z-[9999] pointer-events-none"
-          style={{
-            left: drag.ghostX,
-            top: drag.ghostY,
-            width: 40,
-            height: 40,
-          }}
-        >
-          <div className={cn(
-            "w-10 h-10 flex items-center justify-center rounded-md",
-            "bg-card border border-accent/30 shadow-lg shadow-accent/10",
-            "text-foreground",
-          )}>
-            <drag.item.icon className="w-[18px] h-[18px]" />
-          </div>
-        </div>,
-        document.body,
-      )}
+      {drag &&
+        createPortal(
+          <div
+            className="fixed z-[9999] pointer-events-none"
+            style={{
+              left: drag.ghostX,
+              top: drag.ghostY,
+              width: 40,
+              height: 40,
+            }}
+          >
+            <div
+              className={cn(
+                "w-10 h-10 flex items-center justify-center rounded-md",
+                "bg-card border border-accent/30 shadow-lg shadow-accent/10",
+                "text-foreground"
+              )}
+            >
+              <drag.item.icon className="w-[18px] h-[18px]" />
+            </div>
+          </div>,
+          document.body
+        )}
     </TooltipProvider>
   );
 });

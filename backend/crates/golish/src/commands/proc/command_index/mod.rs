@@ -9,6 +9,7 @@
 //! - [`shell_builtins`] — `$SHELL` detection plus the per-shell builtin
 //!   tables (zsh/bash/fish/PowerShell/cmd/POSIX-fallback).
 
+use crate::error::GolishError;
 use std::collections::HashSet;
 use std::sync::RwLock;
 
@@ -181,7 +182,7 @@ impl CommandIndex {
 pub async fn classify_input(
     state: tauri::State<'_, crate::state::AppState>,
     input: String,
-) -> Result<ClassifyResult, String> {
+) -> Result<ClassifyResult, GolishError> {
     Ok(state.command_index.classify(&input))
 }
 
