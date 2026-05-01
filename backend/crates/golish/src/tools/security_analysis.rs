@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::state::AppState;
+use crate::state::DbState;
 
 fn non_empty(s: &str) -> Option<&str> {
     if s.is_empty() { None } else { Some(s) }
@@ -51,11 +51,11 @@ impl From<golish_db::models::AuditEntry> for AuditRow {
 
 #[tauri::command]
 pub async fn oplog_list(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     project_path: String,
     limit: Option<i64>,
 ) -> Result<Vec<AuditRow>, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let rows = golish_db::repo::audit::list(pool, non_empty(&project_path), limit.unwrap_or(100))
         .await
         .map_err(|e| e.to_string())?;
@@ -64,11 +64,11 @@ pub async fn oplog_list(
 
 #[tauri::command]
 pub async fn oplog_list_by_target(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     target_id: String,
     limit: Option<i64>,
 ) -> Result<Vec<AuditRow>, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id).map_err(|e| e.to_string())?;
     let rows = golish_db::repo::audit::list_by_target(pool, tid, limit.unwrap_or(100))
         .await
@@ -78,12 +78,12 @@ pub async fn oplog_list_by_target(
 
 #[tauri::command]
 pub async fn oplog_list_by_type(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     project_path: String,
     op_type: String,
     limit: Option<i64>,
 ) -> Result<Vec<AuditRow>, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let rows = golish_db::repo::audit::list_by_category(
         pool,
         &op_type,
@@ -97,12 +97,12 @@ pub async fn oplog_list_by_type(
 
 #[tauri::command]
 pub async fn oplog_search(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     project_path: String,
     query: String,
     limit: Option<i64>,
 ) -> Result<Vec<AuditRow>, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let rows = golish_db::repo::audit::search(
         pool,
         non_empty(&project_path),
@@ -116,10 +116,10 @@ pub async fn oplog_search(
 
 #[tauri::command]
 pub async fn oplog_count(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     project_path: String,
 ) -> Result<i64, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     golish_db::repo::audit::count(pool, non_empty(&project_path))
         .await
         .map_err(|e| e.to_string())
@@ -129,10 +129,10 @@ pub async fn oplog_count(
 
 #[tauri::command]
 pub async fn target_assets_list(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     target_id: String,
 ) -> Result<serde_json::Value, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id).map_err(|e| e.to_string())?;
     let rows = golish_db::repo::target_assets::list_by_target(pool, tid)
         .await
@@ -144,10 +144,10 @@ pub async fn target_assets_list(
 
 #[tauri::command]
 pub async fn api_endpoints_list(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     target_id: String,
 ) -> Result<serde_json::Value, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id).map_err(|e| e.to_string())?;
     let rows = golish_db::repo::api_endpoints::list_by_target(pool, tid)
         .await
@@ -157,10 +157,10 @@ pub async fn api_endpoints_list(
 
 #[tauri::command]
 pub async fn api_endpoints_untested(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     target_id: String,
 ) -> Result<serde_json::Value, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id).map_err(|e| e.to_string())?;
     let rows = golish_db::repo::api_endpoints::list_untested(pool, tid)
         .await
@@ -172,10 +172,10 @@ pub async fn api_endpoints_untested(
 
 #[tauri::command]
 pub async fn fingerprints_list(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     target_id: String,
 ) -> Result<serde_json::Value, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id).map_err(|e| e.to_string())?;
     let rows = golish_db::repo::fingerprints::list_by_target(pool, tid)
         .await
@@ -187,10 +187,10 @@ pub async fn fingerprints_list(
 
 #[tauri::command]
 pub async fn js_analysis_list(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     target_id: String,
 ) -> Result<serde_json::Value, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id).map_err(|e| e.to_string())?;
     let rows = golish_db::repo::js_analysis::list_by_target(pool, tid)
         .await
@@ -202,11 +202,11 @@ pub async fn js_analysis_list(
 
 #[tauri::command]
 pub async fn passive_scans_list(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     target_id: String,
     limit: Option<i64>,
 ) -> Result<serde_json::Value, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id).map_err(|e| e.to_string())?;
     let rows = golish_db::repo::passive_scans::list_by_target(pool, tid, limit.unwrap_or(100))
         .await
@@ -216,11 +216,11 @@ pub async fn passive_scans_list(
 
 #[tauri::command]
 pub async fn passive_scans_by_url(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     url: String,
     limit: Option<i64>,
 ) -> Result<serde_json::Value, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let rows = golish_db::repo::passive_scans::list_by_url(pool, &url, limit.unwrap_or(500))
         .await
         .map_err(|e| e.to_string())?;
@@ -229,10 +229,10 @@ pub async fn passive_scans_by_url(
 
 #[tauri::command]
 pub async fn passive_scans_vulnerable(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     target_id: String,
 ) -> Result<serde_json::Value, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id).map_err(|e| e.to_string())?;
     let rows = golish_db::repo::passive_scans::list_vulnerable(pool, tid)
         .await
@@ -242,10 +242,10 @@ pub async fn passive_scans_vulnerable(
 
 #[tauri::command]
 pub async fn passive_scans_stats(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     target_id: String,
 ) -> Result<serde_json::Value, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id).map_err(|e| e.to_string())?;
     golish_db::repo::passive_scans::stats_by_target(pool, tid)
         .await
@@ -256,10 +256,10 @@ pub async fn passive_scans_stats(
 
 #[tauri::command]
 pub async fn target_security_overview(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     target_id: String,
 ) -> Result<serde_json::Value, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id).map_err(|e| e.to_string())?;
 
     let assets_count = golish_db::repo::target_assets::count_by_target(pool, tid)

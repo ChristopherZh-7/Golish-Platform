@@ -45,7 +45,7 @@ impl TauriRuntime {
     /// ```rust,ignore
     /// #[tauri::command]
     /// pub async fn respond_to_tool_approval(
-    ///     app_state: tauri::State<'_, AppState>,
+    ///     app_state: tauri::State<'_, crate::state::AppState>,
     ///     request_id: String,
     ///     approved: bool,
     /// ) -> Result<(), String> {

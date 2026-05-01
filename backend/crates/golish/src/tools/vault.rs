@@ -2,7 +2,7 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::state::AppState;
+use crate::state::DbState;
 
 fn derive_key() -> Vec<u8> {
     let seed = format!(
@@ -172,10 +172,10 @@ impl From<VaultRow> for VaultEntrySafe {
 
 #[tauri::command]
 pub async fn vault_list(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     project_path: Option<String>,
 ) -> Result<Vec<VaultEntrySafe>, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let rows: Vec<VaultRow> = sqlx::query_as(
         "SELECT id, name, entry_type::TEXT, username, notes, project, tags, status, source_url, last_validated_at, created_at, updated_at \
          FROM vault_entries WHERE project_path = $1 ORDER BY created_at DESC",
@@ -190,7 +190,7 @@ pub async fn vault_list(
 
 #[tauri::command]
 pub async fn vault_add(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     name: String,
     entry_type: VaultEntryType,
     value: String,
@@ -201,7 +201,7 @@ pub async fn vault_add(
     source_url: Option<String>,
     project_path: Option<String>,
 ) -> Result<VaultEntrySafe, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let ts = now_ts();
     let id = Uuid::new_v4();
     let short_id = id.to_string()[..8].to_string();
@@ -249,11 +249,11 @@ pub async fn vault_add(
 
 #[tauri::command]
 pub async fn vault_get_value(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     id: String,
     project_path: Option<String>,
 ) -> Result<String, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let enc: String = sqlx::query_scalar("SELECT value FROM vault_entries WHERE id = $1")
@@ -266,7 +266,7 @@ pub async fn vault_get_value(
 
 #[tauri::command]
 pub async fn vault_update(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     id: String,
     name: Option<String>,
     value: Option<String>,
@@ -276,7 +276,7 @@ pub async fn vault_update(
     tags: Option<Vec<String>>,
     project_path: Option<String>,
 ) -> Result<VaultEntrySafe, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let _ = &project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
@@ -320,12 +320,12 @@ pub async fn vault_update(
 
 #[tauri::command]
 pub async fn vault_update_status(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     id: String,
     status: String,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let _ = &project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
     sqlx::query("UPDATE vault_entries SET status=$1, last_validated_at=NOW() WHERE id=$2")
@@ -339,11 +339,11 @@ pub async fn vault_update_status(
 
 #[tauri::command]
 pub async fn vault_validate(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     id: String,
     project_path: Option<String>,
 ) -> Result<String, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let _ = &project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
@@ -414,11 +414,11 @@ pub async fn vault_validate(
 
 #[tauri::command]
 pub async fn vault_delete(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     id: String,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
     sqlx::query("DELETE FROM vault_entries WHERE id = $1")
@@ -431,11 +431,11 @@ pub async fn vault_delete(
 
 #[tauri::command]
 pub async fn vault_resolve(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     reference: String,
     project_path: Option<String>,
 ) -> Result<String, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let name = reference.trim_start_matches("{{vault:").trim_end_matches("}}");
     let enc: String = if let Some(ref pp) = project_path {
         sqlx::query_scalar(

@@ -4,7 +4,7 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::state::AppState;
+use crate::state::DbState;
 
 use super::recon::{DirectoryEntry, DirEntryRow};
 
@@ -78,11 +78,11 @@ pub async fn db_directory_entries_list(
 
 #[tauri::command]
 pub async fn directory_entry_list(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     target_id: Option<String>,
     project_path: Option<String>,
 ) -> Result<Vec<DirectoryEntry>, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let tid: Option<Uuid> = target_id.and_then(|s| s.parse().ok());
     db_directory_entries_list(pool, tid, project_path.as_deref()).await
 }

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use crate::state::AppState;
+use crate::state::DbState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
@@ -44,7 +44,7 @@ impl From<AuditRow> for AuditEntry {
 
 #[tauri::command]
 pub async fn audit_log(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     action: String,
     category: String,
     details: String,
@@ -53,7 +53,7 @@ pub async fn audit_log(
     project_path: Option<String>,
     source: Option<String>,
 ) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let src = source.unwrap_or_else(|| "manual".to_string());
     let pp = project_path.unwrap_or_default();
     sqlx::query(
@@ -75,12 +75,12 @@ pub async fn audit_log(
 
 #[tauri::command]
 pub async fn audit_list(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     limit: Option<i64>,
     category: Option<String>,
     project_path: Option<String>,
 ) -> Result<Vec<AuditEntry>, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let lim = limit.unwrap_or(500);
     let pp = project_path.unwrap_or_default();
     let rows = sqlx::query_as::<_, AuditRow>(
@@ -101,10 +101,10 @@ pub async fn audit_list(
 
 #[tauri::command]
 pub async fn audit_clear(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let pp = project_path.unwrap_or_default();
     sqlx::query("DELETE FROM audit_log WHERE project_path = $1")
         .bind(&pp)
@@ -132,11 +132,11 @@ pub struct PassiveScanRow {
 
 #[tauri::command]
 pub async fn passive_scans_global(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     project_path: Option<String>,
     limit: Option<i64>,
 ) -> Result<Vec<PassiveScanRow>, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let lim = limit.unwrap_or(200);
     let pp = project_path.unwrap_or_default();
     let rows = sqlx::query_as::<_, PassiveScanRow>(
@@ -170,11 +170,11 @@ pub struct AgentLogRow {
 
 #[tauri::command]
 pub async fn agent_logs_list(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     project_path: Option<String>,
     limit: Option<i64>,
 ) -> Result<Vec<AgentLogRow>, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let lim = limit.unwrap_or(200);
     let pp = project_path.unwrap_or_default();
     let rows = sqlx::query_as::<_, AgentLogRow>(
@@ -205,11 +205,11 @@ pub struct TerminalLogRow {
 
 #[tauri::command]
 pub async fn terminal_logs_list(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     project_path: Option<String>,
     limit: Option<i64>,
 ) -> Result<Vec<TerminalLogRow>, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let lim = limit.unwrap_or(200);
     let pp = project_path.unwrap_or_default();
     let rows = sqlx::query_as::<_, TerminalLogRow>(
@@ -242,11 +242,11 @@ pub struct SearchLogRow {
 
 #[tauri::command]
 pub async fn search_logs_list(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     project_path: Option<String>,
     limit: Option<i64>,
 ) -> Result<Vec<SearchLogRow>, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let lim = limit.unwrap_or(200);
     let pp = project_path.unwrap_or_default();
     let rows = sqlx::query_as::<_, SearchLogRow>(

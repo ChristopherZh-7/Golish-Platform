@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::state::AppState;
+use crate::state::DbState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomPassiveRule {
@@ -27,10 +27,10 @@ fn default_true() -> bool {
 
 #[tauri::command]
 pub async fn custom_rules_list(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     project_path: Option<String>,
 ) -> Result<Vec<CustomPassiveRule>, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let rows: Vec<(String, String, String, String, String, bool)> = sqlx::query_as(
         "SELECT id, name, pattern, scope, severity, enabled \
          FROM custom_passive_rules WHERE project_path = $1 \
@@ -56,11 +56,11 @@ pub async fn custom_rules_list(
 
 #[tauri::command]
 pub async fn custom_rules_upsert(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     rule: CustomPassiveRule,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     sqlx::query(
         r#"INSERT INTO custom_passive_rules (id, name, pattern, scope, severity, enabled, project_path)
            VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -87,11 +87,11 @@ pub async fn custom_rules_upsert(
 
 #[tauri::command]
 pub async fn custom_rules_save_all(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     rules: Vec<CustomPassiveRule>,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
 
     sqlx::query("DELETE FROM custom_passive_rules WHERE project_path = $1")
         .bind(project_path.as_deref())
@@ -121,10 +121,10 @@ pub async fn custom_rules_save_all(
 
 #[tauri::command]
 pub async fn custom_rules_delete(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     id: String,
 ) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     sqlx::query("DELETE FROM custom_passive_rules WHERE id = $1")
         .bind(&id)
         .execute(pool)

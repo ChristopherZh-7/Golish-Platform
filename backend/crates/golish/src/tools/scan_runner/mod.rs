@@ -1,37 +1,159 @@
-//! Scan-runner subsystem: dispatch table for the various pentest scanners
-//! invoked from the GUI/AI.
+//! Tauri command wrappers for scan-runner operations.
 //!
-//! - [`whatweb`]: WhatWeb fingerprinting.
-//! - [`nuclei`]: Nuclei targeted scan + fingerprint → PoC matching engine.
-//! - [`feroxbuster`]: directory busting over ZAP-discovered paths.
-//! - [`helpers`]: shared progress emission, audit logging, command lookup.
-//! - [`types`]: small DTOs (`ScanProgress`, `ScanResult`, `PocMatch`).
-
-mod feroxbuster;
-mod helpers;
-mod nuclei;
-mod types;
-mod whatweb;
-
-pub use feroxbuster::{get_zap_discovered_paths, scan_feroxbuster, FeroxScanOptions};
-pub use nuclei::{match_pocs_for_target, scan_nuclei_targeted, NucleiScanOptions};
-pub use types::{PocMatch, ScanProgress, ScanResult};
-pub use whatweb::{scan_whatweb, WhatWebOptions};
-
-// Re-export Tauri command macro items so `tauri::generate_handler!` in lib.rs
-// resolves `scan_runner::__cmd__X` correctly even though `X` lives in a
-// submodule.
-#[doc(hidden)]
-pub use feroxbuster::{__cmd__get_zap_discovered_paths, __cmd__scan_feroxbuster};
-#[doc(hidden)]
-pub use nuclei::{__cmd__match_pocs_for_target, __cmd__scan_nuclei_targeted};
-#[doc(hidden)]
-pub use whatweb::__cmd__scan_whatweb;
+//! The pure business logic (WhatWeb, Nuclei, feroxbuster runners) now lives
+//! in the `golish-scan-runner` crate. This module provides thin
+//! `#[tauri::command]` wrappers that adapt `AppState` to the library's API.
 
 use std::sync::atomic::Ordering;
 
+use async_trait::async_trait;
+use golish_scan_runner as runner;
+use uuid::Uuid;
+
+use crate::event_emitter::TauriEventEmitter;
+use crate::state::DbState;
+
+pub use runner::{FeroxScanOptions, NucleiScanOptions, PocMatch, ScanProgress, ScanResult, WhatWebOptions};
+
+/// Main-crate adapter: maps the scan-runner's storage callbacks to
+/// `crate::tools::targets::db_directory_entry_add`.
+struct MainScanStorage;
+
+#[async_trait]
+impl runner::ScanStorage for MainScanStorage {
+    async fn store_directory_entry(
+        &self,
+        pool: &sqlx::PgPool,
+        target_id: Option<Uuid>,
+        url: &str,
+        status_code: Option<i32>,
+        content_length: Option<i32>,
+        lines: Option<i32>,
+        words: Option<i32>,
+        tool: &str,
+        project_path: Option<&str>,
+    ) -> runner::ScanRunnerResult<()> {
+        crate::tools::targets::db_directory_entry_add(
+            pool,
+            target_id,
+            url,
+            status_code,
+            content_length,
+            lines,
+            words,
+            tool,
+            project_path,
+        )
+        .await
+        .map(|_| ())
+        .map_err(runner::ScanRunnerError::Storage)
+    }
+}
+
 #[tauri::command]
 pub async fn nuclei_cancel() -> Result<(), String> {
-    helpers::NUCLEI_CANCELLED.store(true, Ordering::SeqCst);
+    runner::NUCLEI_CANCELLED.store(true, Ordering::SeqCst);
     Ok(())
+}
+
+#[tauri::command]
+pub async fn scan_whatweb(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DbState>,
+    target_url: String,
+    target_id: String,
+    project_path: Option<String>,
+    options: Option<WhatWebOptions>,
+) -> Result<ScanResult, String> {
+    let pool = state.pool_ready().await?;
+    let tid = Uuid::parse_str(&target_id).map_err(|e| e.to_string())?;
+    let emitter = TauriEventEmitter::handle(app);
+    runner::run_whatweb(
+        pool,
+        Some(&emitter),
+        &target_url,
+        tid,
+        project_path.as_deref(),
+        options,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn match_pocs_for_target(
+    state: tauri::State<'_, DbState>,
+    target_id: String,
+) -> Result<Vec<PocMatch>, String> {
+    let pool = state.pool_ready().await?;
+    let tid = Uuid::parse_str(&target_id).map_err(|e| e.to_string())?;
+    runner::match_pocs_for_target(pool, tid)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn scan_nuclei_targeted(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DbState>,
+    target_url: String,
+    target_id: String,
+    project_path: Option<String>,
+    template_ids: Vec<String>,
+    severity_filter: Option<Vec<String>>,
+    options: Option<NucleiScanOptions>,
+) -> Result<ScanResult, String> {
+    let pool = state.pool_ready().await?;
+    let tid = Uuid::parse_str(&target_id).map_err(|e| e.to_string())?;
+    let emitter = TauriEventEmitter::handle(app);
+    runner::run_nuclei_targeted(
+        pool,
+        Some(&emitter),
+        &target_url,
+        tid,
+        project_path.as_deref(),
+        &template_ids,
+        severity_filter.as_deref(),
+        options,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn scan_feroxbuster(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DbState>,
+    target_url: String,
+    target_id: String,
+    project_path: Option<String>,
+    base_paths: Vec<String>,
+    options: Option<FeroxScanOptions>,
+) -> Result<ScanResult, String> {
+    let pool = state.pool_ready().await?;
+    let tid = Uuid::parse_str(&target_id).map_err(|e| e.to_string())?;
+    let emitter = TauriEventEmitter::handle(app);
+    runner::run_feroxbuster(
+        pool,
+        &MainScanStorage,
+        Some(&emitter),
+        &target_url,
+        tid,
+        project_path.as_deref(),
+        &base_paths,
+        options,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_zap_discovered_paths(
+    state: tauri::State<'_, DbState>,
+    target_host: String,
+) -> Result<Vec<String>, String> {
+    let pool = state.pool_ready().await?;
+    runner::get_zap_discovered_paths(pool, &target_host)
+        .await
+        .map_err(|e| e.to_string())
 }
