@@ -206,9 +206,16 @@ async fn configure_core_services(bridge: &mut AgentBridge, state: &AppState) {
     if let Err(e) = sidecar_state.initialize(workspace_path).await {
         tracing::warn!("Failed to initialize per-session sidecar: {}", e);
     }
-    bridge.set_sidecar_state(sidecar_state);
+    let sidecar_backend: std::sync::Arc<dyn golish_ai::sidecar_trait::SessionCaptureBackend> =
+        std::sync::Arc::new(crate::ai::sidecar_bridge::SidecarCaptureBackend::new(sidecar_state));
+    bridge.set_sidecar_state(sidecar_backend);
     bridge.set_settings_manager(state.settings_manager.clone());
     bridge.set_db_pool(state.db_pool.clone(), state.db_ready.clone());
+
+    let graph_backend = std::sync::Arc::new(
+        crate::ai::graph_bridge::GraphClientBackend::new(state.db_pool.clone()),
+    );
+    bridge.set_graph_backend(graph_backend);
 }
 
 fn configure_domain_hooks(bridge: &mut AgentBridge) {

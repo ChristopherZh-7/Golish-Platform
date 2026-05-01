@@ -22,8 +22,8 @@ pub trait McpToolExecutor: Send + Sync {
     ) -> Option<(serde_json::Value, bool)>;
 }
 use golish_context::{CompactionState, ContextManager};
-use golish_sidecar::{CaptureContext, SidecarState};
 use crate::event_coordinator::CoordinatorHandle;
+use crate::sidecar_trait::{SessionCaptureBackend, AiEventProcessor};
 use crate::hitl::ApprovalRecorder;
 use crate::indexer::IndexerState;
 use crate::loop_detection::LoopDetector;
@@ -136,7 +136,8 @@ pub struct AgenticLoopContext<'a> {
     pub context_manager: &'a Arc<ContextManager>,
     pub compaction_state: &'a Arc<RwLock<CompactionState>>,
     pub tool_config: &'a ToolConfig,
-    pub sidecar_state: Option<&'a Arc<SidecarState>>,
+    pub graph_backend: Option<Arc<dyn crate::tool_executors::graph_trait::GraphKnowledgeBase>>,
+    pub sidecar_state: Option<&'a Arc<dyn SessionCaptureBackend>>,
     pub plan_manager: &'a Arc<crate::planner::PlanManager>,
     pub api_request_stats: &'a Arc<ApiRequestStats>,
     pub additional_tool_definitions: Vec<rig::completion::ToolDefinition>,
@@ -167,20 +168,21 @@ pub struct ToolExecutionResult {
     pub success: bool,
 }
 
-/// Wrapper for capture context that persists across the loop
+/// Wrapper for capture context that persists across the loop.
+///
+/// Uses the `AiEventProcessor` trait to decouple from the concrete
+/// `golish-sidecar` crate.
 pub struct LoopCaptureContext {
-    inner: Option<std::sync::Mutex<CaptureContext>>,
+    inner: Option<std::sync::Mutex<Box<dyn AiEventProcessor>>>,
 }
 
 impl LoopCaptureContext {
-    /// Create a new loop capture context
-    pub fn new(sidecar: Option<&Arc<SidecarState>>) -> Self {
+    pub fn new(backend: Option<&Arc<dyn SessionCaptureBackend>>) -> Self {
         Self {
-            inner: sidecar.map(|s| std::sync::Mutex::new(CaptureContext::new(s.clone()))),
+            inner: backend.map(|b| std::sync::Mutex::new(b.create_event_processor())),
         }
     }
 
-    /// Process an event if capture is enabled
     pub fn process(&self, event: &AiEvent) {
         if let Some(ref capture) = self.inner {
             if let Ok(mut guard) = capture.lock() {
@@ -233,7 +235,6 @@ pub(super) fn emit_event(ctx: &AgenticLoopContext<'_>, event: AiEvent) {
     let _ = ctx.events.event_tx.send(event.clone());
 
     if let Some(sidecar) = ctx.sidecar_state {
-        let mut capture = CaptureContext::new(sidecar.clone());
-        capture.process(&event);
+        sidecar.capture_event(&event);
     }
 }

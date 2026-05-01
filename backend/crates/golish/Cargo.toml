@@ -36,6 +36,8 @@ golish-skills = { path = "../golish-skills" }
 golish-mcp = { path = "../golish-mcp" }
 golish-pentest = { path = "../golish-pentest" }
 golish-db = { path = "../golish-db" }
+golish-graphiti = { path = "../golish-graphiti" }
+vtcode-indexer = { workspace = true }
 
 # Domain crates
 golish-ai = { path = "../golish-ai" }
