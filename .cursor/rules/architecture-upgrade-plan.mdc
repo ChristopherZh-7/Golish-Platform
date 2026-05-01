@@ -224,7 +224,8 @@ impl serde::Serialize for IpcError { /* String */ }
 
 ### A4. Tauri 命令按域 facade 重组(244 → 8 域 facade)
 
-#### A4-1 - [ ] 创建按域分组的命令 facade
+#### A4-1 - [x] 创建按域分组的命令 facade
+> ✅ Done 2026-05-02: `commands_facade/` 目录创建（9 个域文件：ai/pentest/pipeline/vuln_intel/settings/sidecar/indexer/git_pty/workspace）；commands_registry.rs 从 493 行降到 184 行（-62%）；use 语句按域组织；因 Tauri generate_handler! 约束，handler 列表仍需逐个列出
 
 **检查命令**:
 ```bash
