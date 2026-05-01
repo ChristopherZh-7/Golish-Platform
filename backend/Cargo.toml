@@ -17,6 +17,7 @@ members = [
     "crates/golish-llm-providers",
     "crates/golish-ai",
     "crates/golish-agent-loop",
+    "crates/golish-agent-bridge",
     "crates/golish-events",
     "crates/golish-sub-agents",
     "crates/golish-web",
@@ -31,6 +32,7 @@ members = [
     "crates/golish-json-repair",
     "crates/golish-mcp",
     "crates/golish-pentest",
+    "crates/golish-pentest-domain",
     "crates/golish-pentest-mcp",
     "crates/golish-pipeline",
     "crates/golish-vuln-intel",
@@ -57,6 +59,7 @@ default-members = [
     "crates/golish-llm-providers",
     "crates/golish-ai",
     "crates/golish-agent-loop",
+    "crates/golish-agent-bridge",
     "crates/golish-events",
     "crates/golish-sub-agents",
     "crates/golish-web",
@@ -69,6 +72,7 @@ default-members = [
     "crates/golish-json-repair",
     "crates/golish-mcp",
     "crates/golish-pentest",
+    "crates/golish-pentest-domain",
     "crates/golish-pentest-mcp",
     "crates/golish-pipeline",
     "crates/golish-vuln-intel",
@@ -104,6 +108,7 @@ golish-session = { path = "crates/golish-session" }
 golish-context = { path = "crates/golish-context" }
 golish-ai = { path = "crates/golish-ai" }
 golish-agent-loop = { path = "crates/golish-agent-loop" }
+golish-agent-bridge = { path = "crates/golish-agent-bridge" }
 golish-events = { path = "crates/golish-events" }
 golish-sub-agents = { path = "crates/golish-sub-agents" }
 golish-llm-providers = { path = "crates/golish-llm-providers" }
@@ -116,6 +121,7 @@ golish-swebench = { path = "crates/golish-swebench" }
 rig-zai-sdk = { path = "crates/rig-zai-sdk" }
 rig-gemini-vertex = { path = "crates/rig-gemini-vertex" }
 golish-pentest = { path = "crates/golish-pentest" }
+golish-pentest-domain = { path = "crates/golish-pentest-domain" }
 golish-pentest-mcp = { path = "crates/golish-pentest-mcp" }
 golish-pipeline = { path = "crates/golish-pipeline" }
 golish-vuln-intel = { path = "crates/golish-vuln-intel" }
