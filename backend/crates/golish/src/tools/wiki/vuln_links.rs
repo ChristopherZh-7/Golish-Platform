@@ -20,7 +20,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::state::AppState;
+use crate::state::DbState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VulnLinkFull {
@@ -78,9 +78,9 @@ fn poc_to_entry(p: golish_db::models::VulnKbPoc) -> VulnPocEntry {
 
 #[tauri::command]
 pub async fn vuln_link_get_all(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
 ) -> Result<HashMap<String, VulnLinkFull>, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let mut result: HashMap<String, VulnLinkFull> = HashMap::new();
 
     // Load all wiki links
@@ -148,10 +148,10 @@ pub async fn vuln_link_get_all(
 
 #[tauri::command]
 pub async fn vuln_link_get(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     cve_id: String,
 ) -> Result<VulnLinkFull, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
 
     let links = golish_db::repo::wiki_kb::get_links_for_cve(pool, &cve_id)
         .await
@@ -186,11 +186,11 @@ pub async fn vuln_link_get(
 
 #[tauri::command]
 pub async fn vuln_link_add_wiki(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     cve_id: String,
     wiki_path: String,
 ) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     golish_db::repo::wiki_kb::link_cve_to_wiki(pool, &cve_id, &wiki_path)
         .await
         .map_err(|e| e.to_string())?;
@@ -199,11 +199,11 @@ pub async fn vuln_link_add_wiki(
 
 #[tauri::command]
 pub async fn vuln_link_remove_wiki(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     cve_id: String,
     wiki_path: String,
 ) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     sqlx::query("DELETE FROM vuln_kb_links WHERE cve_id = $1 AND wiki_path = $2")
         .bind(&cve_id)
         .bind(&wiki_path)
@@ -215,14 +215,14 @@ pub async fn vuln_link_remove_wiki(
 
 #[tauri::command]
 pub async fn vuln_link_add_poc(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     cve_id: String,
     name: String,
     poc_type: String,
     language: String,
     content: String,
 ) -> Result<VulnPocEntry, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let poc = golish_db::repo::wiki_kb::upsert_poc(pool, &cve_id, &name, &poc_type, &language, &content)
         .await
         .map_err(|e| e.to_string())?;
@@ -231,12 +231,12 @@ pub async fn vuln_link_add_poc(
 
 #[tauri::command]
 pub async fn vuln_link_update_poc(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     poc_id: String,
     name: String,
     content: String,
 ) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let id: uuid::Uuid = poc_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     sqlx::query("UPDATE vuln_kb_pocs SET name = $2, content = $3, updated_at = NOW() WHERE id = $1")
         .bind(id)
@@ -250,10 +250,10 @@ pub async fn vuln_link_update_poc(
 
 #[tauri::command]
 pub async fn vuln_link_remove_poc(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     poc_id: String,
 ) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let id: uuid::Uuid = poc_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     golish_db::repo::wiki_kb::delete_poc(pool, id)
         .await
@@ -263,13 +263,13 @@ pub async fn vuln_link_remove_poc(
 
 #[tauri::command]
 pub async fn vuln_link_add_scan(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     cve_id: String,
     target: String,
     result: String,
     details: Option<String>,
 ) -> Result<VulnScanEntry, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let scan = golish_db::repo::vuln_scan::add_scan(
         pool, &cve_id, &target, &result, details.as_deref(),
     )
@@ -286,10 +286,10 @@ pub async fn vuln_link_add_scan(
 
 #[tauri::command]
 pub async fn vuln_link_remove_scan(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     scan_id: String,
 ) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let id: uuid::Uuid = scan_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     golish_db::repo::vuln_scan::delete_scan(pool, id)
         .await
@@ -303,7 +303,7 @@ pub async fn vuln_link_remove_scan(
 
 #[tauri::command]
 pub async fn vuln_link_add_poc_full(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     cve_id: String,
     name: String,
     poc_type: String,
@@ -315,7 +315,7 @@ pub async fn vuln_link_add_poc_full(
     description: String,
     tags: Vec<String>,
 ) -> Result<VulnPocEntry, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let poc = golish_db::repo::wiki_kb::upsert_poc_full(
         pool, &cve_id, &name, &poc_type, &language, &content,
         &source, &source_url, &severity, &description, &tags,
@@ -337,9 +337,9 @@ pub struct CvePocSummaryResponse {
 
 #[tauri::command]
 pub async fn vuln_poc_list_cves(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
 ) -> Result<Vec<CvePocSummaryResponse>, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let rows = golish_db::repo::wiki_kb::list_cves_with_pocs(pool)
         .await
         .map_err(|e| e.to_string())?;
@@ -358,10 +358,10 @@ pub async fn vuln_poc_list_cves(
 
 #[tauri::command]
 pub async fn vuln_poc_list_unresearched(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     limit: Option<i64>,
 ) -> Result<Vec<CvePocSummaryResponse>, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let rows = golish_db::repo::wiki_kb::list_unresearched_cves(pool, limit.unwrap_or(20))
         .await
         .map_err(|e| e.to_string())?;
@@ -380,9 +380,9 @@ pub async fn vuln_poc_list_unresearched(
 
 #[tauri::command]
 pub async fn vuln_poc_stats(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
 ) -> Result<serde_json::Value, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     golish_db::repo::wiki_kb::poc_stats(pool)
         .await
         .map_err(|e| e.to_string())
@@ -390,11 +390,11 @@ pub async fn vuln_poc_stats(
 
 #[tauri::command]
 pub async fn vuln_poc_set_verified(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     poc_id: String,
     verified: bool,
 ) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let id: uuid::Uuid = poc_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     sqlx::query("UPDATE vuln_kb_pocs SET verified = $2, updated_at = NOW() WHERE id = $1")
         .bind(id)

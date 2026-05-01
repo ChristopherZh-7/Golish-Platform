@@ -276,7 +276,7 @@ pub async fn output_detect_tool(
 // Storage functions are shared from golish_pentest::output_store.
 // ============================================================================
 
-use crate::state::AppState;
+use crate::state::DbState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreStats {
@@ -296,7 +296,7 @@ pub struct ParseAndStoreResult {
 
 #[tauri::command]
 pub async fn output_parse_and_store(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     raw_output: String,
     config: OutputParserConfig,
     tool_id: Option<String>,
@@ -335,7 +335,7 @@ pub async fn output_parse_and_store(
         });
     };
 
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let pp = project_path.as_deref();
     let tname = tool_name.as_deref().unwrap_or("unknown");
 
@@ -363,7 +363,7 @@ pub async fn output_parse_and_store(
             Ok(()) => stored_count += 1,
             Err(e) => {
                 skipped_count += 1;
-                errors.push(e);
+                errors.push(e.to_string());
             }
         }
     }

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::state::AppState;
+use crate::state::DbState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanEndpoint {
@@ -26,10 +26,10 @@ fn default_status() -> String {
 
 #[tauri::command]
 pub async fn scan_queue_list(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     project_path: Option<String>,
 ) -> Result<Vec<ScanEndpoint>, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let rows: Vec<(String, String, Option<String>, i32, String, serde_json::Value, i64)> =
         sqlx::query_as(
             "SELECT id::text, url, scan_id, progress, status, alerts, added_at \
@@ -57,11 +57,11 @@ pub async fn scan_queue_list(
 
 #[tauri::command]
 pub async fn scan_queue_upsert(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     endpoint: ScanEndpoint,
     project_path: Option<String>,
 ) -> Result<String, String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     let id: Uuid = endpoint
         .id
         .as_deref()
@@ -95,11 +95,11 @@ pub async fn scan_queue_upsert(
 
 #[tauri::command]
 pub async fn scan_queue_save_all(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     endpoints: Vec<ScanEndpoint>,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
 
     // Delete existing entries for this project, then re-insert
     sqlx::query("DELETE FROM scan_queue WHERE project_path = $1")
@@ -137,11 +137,11 @@ pub async fn scan_queue_save_all(
 
 #[tauri::command]
 pub async fn scan_queue_remove(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     url: String,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     sqlx::query(
         "DELETE FROM scan_queue WHERE url = $1 AND project_path = $2",
     )
@@ -155,10 +155,10 @@ pub async fn scan_queue_remove(
 
 #[tauri::command]
 pub async fn scan_queue_clear_completed(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     project_path: Option<String>,
 ) -> Result<(), String> {
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
     sqlx::query(
         "DELETE FROM scan_queue WHERE status = 'complete' AND project_path = $1",
     )

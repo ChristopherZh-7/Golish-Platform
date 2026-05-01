@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use tracing::debug;
 use zip::write::SimpleFileOptions;
 
-use crate::state::AppState;
+use crate::state::DbState;
 
 fn app_data_dir() -> PathBuf {
     golish_core::paths::app_data_base().expect("cannot resolve home directory")
@@ -95,14 +95,14 @@ async fn export_table_as_json(
 
 #[tauri::command]
 pub async fn project_export(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     output_path: String,
     project_path: Option<String>,
 ) -> Result<ExportResult, String> {
     let base = app_data_dir();
     let golish_dir = resolve_project_golish_dir(project_path.as_deref());
     let output = PathBuf::from(&output_path);
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
 
     let file = std::fs::File::create(&output).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipWriter::new(file);
@@ -216,14 +216,14 @@ struct ExtractedEntry {
 
 #[tauri::command]
 pub async fn project_import(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DbState>,
     zip_path: String,
     overwrite: bool,
     project_path: Option<String>,
 ) -> Result<ImportResult, String> {
     let base = app_data_dir();
     let golish_dir = resolve_project_golish_dir(project_path.as_deref());
-    let pool = state.db_pool_ready().await?;
+    let pool = state.pool_ready().await?;
 
     // Phase 1: read entire zip synchronously (ZipFile is not Send)
     let entries = {
