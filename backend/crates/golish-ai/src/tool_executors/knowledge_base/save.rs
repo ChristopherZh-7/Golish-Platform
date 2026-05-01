@@ -165,21 +165,26 @@ pub(super) async fn handle_ingest_cve(
 
     let mut cve_info = String::new();
     if let Some(tracker) = db_tracker {
-        match crate::db_shim::vuln_intel::search_entries(tracker.repo().unwrap(), &cve_id, 1).await {
-            Ok(entries) if !entries.is_empty() => {
-                let e = &entries[0];
-                cve_info = format!(
-                    "Title: {}\nSeverity: {}\nCVSS: {}\nPublished: {}\nDescription: {}\nAffected: {}\nReferences: {}",
-                    e.title,
-                    e.sev,
-                    e.cvss_score.map_or("N/A".to_string(), |s| s.to_string()),
-                    e.published,
-                    e.description,
-                    e.affected_products,
-                    e.refs,
-                );
+        if let Some(repo) = tracker.repo() {
+            match crate::db_shim::vuln_intel::search_entries(repo, &cve_id, 1).await {
+                Ok(entries) => {
+                    if let Some(arr) = entries.as_array() {
+                        if let Some(e) = arr.first() {
+                            let title = e.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                            let sev = e.get("sev").and_then(|v| v.as_str()).unwrap_or("unknown");
+                            let cvss = e.get("cvss_score").and_then(|v| v.as_f64()).map(|s| s.to_string()).unwrap_or("N/A".into());
+                            let published = e.get("published").and_then(|v| v.as_str()).unwrap_or("");
+                            let desc = e.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                            let affected = e.get("affected_products").and_then(|v| v.as_str()).unwrap_or("");
+                            let refs = e.get("refs").and_then(|v| v.as_str()).unwrap_or("");
+                            cve_info = format!(
+                                "Title: {title}\nSeverity: {sev}\nCVSS: {cvss}\nPublished: {published}\nDescription: {desc}\nAffected: {affected}\nReferences: {refs}",
+                            );
+                        }
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
 
@@ -299,8 +304,11 @@ pub(super) async fn handle_save_poc(
         .unwrap_or_default();
 
     if let Some(tracker) = db_tracker {
+        let Some(repo) = tracker.repo() else {
+            return error_result("Database repository not available");
+        };
         match crate::db_shim::wiki_kb::upsert_poc_full(
-            tracker.pool(),
+            repo,
             &cve_id,
             &name,
             &poc_type,
