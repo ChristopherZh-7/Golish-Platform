@@ -1,0 +1,452 @@
+---
+description: Golish 架构升级实施计划(高级架构师视角,带 checkpoint + 勾选协议)
+globs:
+alwaysApply: false
+---
+
+# Golish 架构升级实施计划(A → S+)
+
+> 起点 A(7.5/10) · 目标 S+(9.5/10) · 配套文档:`refactor-roadmap.mdc`(策略)+ 本文件(实施)
+
+---
+
+## ⚠️ 三条执行铁律(违反任何一条 = 任务失败)
+
+### 铁律一:**绝对禁止使用任何 subagent / Task tool**
+- 不允许调用 `Task` 工具开 generalPurpose / explore / shell / cursor-guide / best-of-n-runner 任何子代理
+- 必须由当前会话直接执行所有读、写、搜索、构建、测试操作
+- 工具仅可用:`Read` / `Write` / `StrReplace` / `Glob` / `Grep` / `Shell` / `ReadLints` / `Delete`
+
+### 铁律二:**执行前必须先 Checkpoint**
+任何一项任务开始前,**必须先用对应的「检查命令」核实当前进度**。**严禁仅凭印象/记忆判定**。
+
+### 铁律三:**已勾选 → 跳过;未勾选 → 检查后再勾上**
+- 任务项前面有 `[x]` = 已完成 → 直接跳过,不重复实施
+- 任务项前面有 `[ ]` = 未完成 → 先跑「检查命令」核实
+  - 若实际已完成:**修改本文件把 `[ ]` 改成 `[x]` 并写下检测证据**,然后跳过
+  - 若确实未完成:进入「执行步骤」,完成后**修改本文件把 `[ ]` 改成 `[x]`**
+
+---
+
+## Checkpoint 操作流程(每个任务项的标准动作)
+
+```
+1. 读取本文件,定位目标任务项编号 (如 A3-1)
+2. 看复选框状态:
+   - [x] → STOP,跳到下一项
+   - [ ] → 继续步骤 3
+3. 跑该任务的「检查命令」(下文每项都给了)
+4. 判定:
+   - 实际已完成 → 用 StrReplace 把 `[ ]` 改为 `[x]`,在该项末尾追加
+     `> ✅ Verified <YYYY-MM-DD>: <一行检测证据>`
+     然后跳到下一项
+   - 实际未完成 → 跑「执行步骤」,做完后把 `[ ]` 改为 `[x]`,追加
+     `> ✅ Done <YYYY-MM-DD>: <一行结果摘要>`
+5. 每完成一项:`cd backend && cargo check --workspace`
+   再 `cd frontend && npx tsc --noEmit`,必须 0 errors / 0 warnings 才能继续下一项
+```
+
+---
+
+## 第一阶段:A 类(架构主债,P0)
+
+### A1. 拆分 `golish-ai` megacrate(34.5K LOC)→ 4 个子 crate
+
+#### A1-1 - [ ] 抽 `golish-prompts`(叶子最深、依赖最少)
+
+**检查命令**:
+```bash
+ls backend/crates/golish-prompts 2>/dev/null && echo "EXISTS" || echo "NOT_YET"
+grep "^golish-prompts" backend/Cargo.toml
+```
+
+**判定**:输出 `EXISTS` 且 `Cargo.toml` 已注册 → 标记 `[x]`
+
+**执行步骤**(若未完成):
+1. `mkdir -p backend/crates/golish-prompts/src`
+2. 创建 `Cargo.toml`,依赖:`golish-core`、`tera`、`serde`、`serde_json`、`anyhow`、`tracing`
+3. 把以下模块从 `golish-ai/src/` 迁入 `golish-prompts/src/`:
+   - `contributors/`、`prompt_registry.rs`、`system_prompt/`、`codex_prompt.rs`、`summarizer.rs`
+4. 在 `golish-ai/src/lib.rs` 改成 `pub use golish_prompts::*;` 加 `#[deprecated]`
+5. 在 `backend/Cargo.toml` `[workspace.dependencies]` 注册 `golish-prompts`
+6. 在 `backend/Cargo.toml` `members` + `default-members` 注册
+7. `cargo check --workspace` 必须绿
+
+**完成判据**:
+- `wc -l backend/crates/golish-prompts/src/lib.rs` ≤ 200
+- `cargo check -p golish-prompts` 单独可编译
+- 无下游 crate 因 `pub use` 出错
+
+---
+
+#### A1-2 - [ ] 抽 `golish-agent-loop`(依赖 prompts + tools)
+
+**检查命令**:
+```bash
+ls backend/crates/golish-agent-loop 2>/dev/null && echo "EXISTS" || echo "NOT_YET"
+```
+
+**执行步骤**(若未完成):
+1. 前置依赖:必须 A1-1 已勾选
+2. 迁移以下 `golish-ai/src/` 子目录到新 crate:
+   - `agentic_loop/`、`task_orchestrator/`、`tool_execution/`、`tool_executors/`、`loop_detection/`、`tool_definitions.rs`、`tool_provider_impl.rs`
+3. 依赖:`golish-core`、`golish-prompts`、`golish-tools`、`golish-context`、`golish-events`
+4. `golish-ai` 改 `pub use golish_agent_loop::*;` 加 `#[deprecated]`
+
+**完成判据**:
+- `cargo check -p golish-agent-loop` ≤ 8s 增量
+- `wc -l backend/crates/golish-agent-loop/src/lib.rs` ≤ 200
+
+---
+
+#### A1-3 - [ ] 抽 `golish-agent-bridge`(依赖 agent-loop)
+
+**检查命令**:
+```bash
+ls backend/crates/golish-agent-bridge 2>/dev/null && echo "EXISTS" || echo "NOT_YET"
+```
+
+**执行步骤**:
+1. 前置:A1-2 已勾选
+2. 迁移:`agent_bridge/`、`bridge_*.rs`、`agent_mode.rs`、`execution_mode.rs`、`db_traits/`、`db_tracking/`、`db_shim.rs`、`sidecar_trait.rs`、`hitl/`
+3. 依赖:`golish-agent-loop`、`golish-events`、`golish-session`
+
+**完成判据**:`golish-ai` 真正变成元 crate(全是 `pub use`)。
+
+---
+
+#### A1-4 - [ ] `golish-ai` 元 crate 化
+
+**检查命令**:
+```bash
+wc -l backend/crates/golish-ai/src/lib.rs
+find backend/crates/golish-ai/src -name "*.rs" | wc -l
+```
+
+**判定**:`lib.rs ≤ 50 行` 且 src 文件数 ≤ 5 → `[x]`
+
+**执行步骤**:把 `golish-ai/src/` 仅留下 `lib.rs` 全是 `pub use`,加 `#[deprecated(note = "use golish-{prompts,agent-loop,agent-bridge}")]`。
+
+**完成判据**:
+- `wc -l backend/crates/golish-ai/src/lib.rs` ≤ 50
+- 所有外部 import 仍然能跑(向后兼容)
+
+---
+
+### A2. 拆分 `AppState` god-object(17 字段)
+
+#### A2-1 - [ ] 把 `AppState` 拆成 7 个独立 manage<T>
+
+**检查命令**:
+```bash
+grep -c "tauri::State<'_, AppState>" backend/crates/golish/src
+grep -c "pub struct AppState" backend/crates/golish/src/state.rs
+```
+
+**判定**:第一条命令输出 `0` 且第二条输出 `0` → `[x]`
+
+**执行步骤**:
+1. 创建 `backend/crates/golish/src/state/{pty,ai,indexer,sidecar,mcp,db,pentest,settings,telemetry}.rs`
+2. 把 `state.rs` 17 字段按域归位
+3. `app/tauri_app.rs` 由 `.manage(AppState{..})` 改成 7 次 `.manage(PtyState::new())` 等
+4. 命令签名从 `state: tauri::State<'_, AppState>` 收窄为它实际需要的子状态
+5. 删除 `AppState` 与 `state.rs`(或保留为聚合 facade,但不再用作 `manage`)
+
+**完成判据**:`grep "tauri::State<'_, AppState>" backend/crates/golish/src -r` 输出 0 行。
+
+---
+
+### A3. 统一错误模型(消灭 437 处 `Result<_, String>`)
+
+#### A3-1 - [ ] 域 crate 引入 `thiserror` 错误枚举
+
+**检查命令**(执行前先看现状):
+```bash
+grep -rE "Result<[^>]*, String>" backend/crates --include="*.rs" | wc -l
+grep -rE "use thiserror" backend/crates --include="*.rs" | wc -l
+```
+
+**判定**:第一条 ≤ 50 → `[x]`(允许 Tauri 命令边界保留)
+
+**执行步骤**(每个 Layer 3 域 crate 独立 PR):
+1. 在每个域 crate 新建 `src/error.rs`:
+```rust
+#[derive(Debug, thiserror::Error)]
+pub enum PentestError {
+    #[error("preflight failed: {0}")]
+    Preflight(String),
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("db: {0}")]
+    Db(#[from] sqlx::Error),
+}
+pub type PentestResult<T> = Result<T, PentestError>;
+```
+2. 全 crate 用 `sed`/codemod 把 `Result<T, String>` 替换为 `Result<T, PentestError>`
+3. `lib.rs` `pub use error::*;`
+
+**目标顺序**:`golish-pentest` → `golish-vuln-intel` → `golish-pipeline` → `golish-scan-runner` → `golish-projects` → `golish-indexer` → `golish-mcp` → `golish-sub-agents`
+
+---
+
+#### A3-2 - [ ] 主 crate 引入 `IpcError` 边界类型
+
+**检查命令**:
+```bash
+grep -c "pub enum IpcError\|pub struct IpcError" backend/crates/golish/src/error.rs
+```
+
+**判定**:输出 ≥ 1 → `[x]`
+
+**执行步骤**:
+1. `backend/crates/golish/src/error.rs` 加:
+```rust
+#[derive(Debug, thiserror::Error)]
+pub enum IpcError {
+    #[error("{0}")]
+    Pentest(#[from] golish_pentest::PentestError),
+    // ... 其他域错误
+}
+impl serde::Serialize for IpcError { /* String */ }
+```
+2. 所有 `#[tauri::command]` 改返回 `Result<T, IpcError>` 不再返回 `Result<T, String>`
+
+**完成判据**:`grep "Result<[^>]*, String>" backend/crates/golish/src/**/commands/**/*.rs` 输出 0 行(主 crate 命令层零裸 String)。
+
+---
+
+### A4. Tauri 命令按域 facade 重组(244 → 8 域 facade)
+
+#### A4-1 - [ ] 创建按域分组的命令 facade
+
+**检查命令**:
+```bash
+ls backend/crates/golish/src/commands_facade 2>/dev/null && echo "EXISTS" || echo "NOT_YET"
+grep -c "^\s*[a-z_]\+,$" backend/crates/golish/src/commands_registry.rs
+```
+
+**判定**:第一条 `EXISTS` 且第二条 ≤ 50 → `[x]`
+
+**执行步骤**:
+1. 新建 `backend/crates/golish/src/commands_facade/{ai,pentest,pipeline,vuln_intel,settings,sidecar,indexer,git_pty}.rs`
+2. 每个 facade 文件聚合该域的 30~50 个命令
+3. `commands_registry.rs` 改成只 import facade,然后 `tauri::generate_handler![ai_facade::*, pentest_facade::*, ...]`
+4. 前端 `frontend/lib/api/{ai,pentest,...}.ts` 镜像后端 facade 边界
+
+**完成判据**:`commands_registry.rs` 行数从 573 降至 ≤ 100。
+
+---
+
+### A5. 事件总线统一 Schema 契约
+
+#### A5-1 - [ ] 引入 `DomainEvent` 顶级 enum + `event_dispatch` 单一出口
+
+**检查命令**:
+```bash
+ls backend/crates/golish-core/src/events/event_dispatch.rs 2>/dev/null && echo "EXISTS" || echo "NOT_YET"
+grep -c "pub enum DomainEvent" backend/crates/golish-events/src 2>/dev/null
+```
+
+**判定**:`EXISTS` 且 `DomainEvent` 枚举存在 → `[x]`
+
+**执行步骤**:
+1. 在 `golish-events/src/` 新建 `domain_event.rs`:
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub enum DomainEvent {
+    Ai(AiEvent),
+    Pentest(PentestEvent),
+    Pipeline(PipelineEvent),
+    Indexer(IndexerEvent),
+    Sidecar(SidecarEvent),
+}
+```
+2. 所有 `event_emitter::emit*` 强制传 `DomainEvent`(不再裸 `serde_json::Value`)
+3. 前端 `services/events.ts` 单一类型化订阅入口
+
+**完成判据**:`grep "emit_to_frontend" backend/crates -r` 调用点全部接受 `DomainEvent` 类型。
+
+---
+
+## 第二阶段:B 类(高级架构,P1)
+
+### B1. Hexagonal / Ports & Adapters 边界
+
+#### B1-1 - [ ] `golish-pentest` 拆 `pentest-domain` + `pentest-adapters`
+
+**检查命令**:
+```bash
+ls backend/crates/golish-pentest-domain 2>/dev/null && echo "EXISTS" || echo "NOT_YET"
+```
+
+**执行步骤**:
+1. 新建 `golish-pentest-domain`:仅放 `models.rs`、`scan_types.rs`、纯函数 `command_builder/`、trait 定义(`PentestRepo`、`ProcessAdapter`、`OutputParser`)
+2. `golish-pentest` 重命名/保留为 `golish-pentest-adapters`:`reqwest`、`sqlx`、`process_manager`、`zap` 实现
+3. 业务规则不引用任何 I/O 库
+
+**完成判据**:`grep "use reqwest\|use sqlx" backend/crates/golish-pentest-domain/src -r` 输出 0 行。
+
+---
+
+#### B1-2 - [ ] `golish-vuln-intel` 同样拆分
+
+参考 B1-1,优先级稍低。
+
+---
+
+### B2. ADR(架构决策记录)
+
+#### B2-1 - [x] 建立 `docs/adr/` 目录,补 8 篇基础 ADR
+> ✅ Done 2026-05-02: 8 篇 ADR 已创建（0001-tauri2 ~ 0008-mcp），Michael Nygard 模板，`ls docs/adr | wc -l` = 8
+
+**检查命令**:
+```bash
+ls docs/adr 2>/dev/null && echo "EXISTS" || echo "NOT_YET"
+ls docs/adr 2>/dev/null | wc -l
+```
+
+**判定**:存在且 ≥ 8 篇 → `[x]`
+
+**执行步骤**:创建以下 ADR(每篇 ≤ 2 页,Michael Nygard 模板):
+1. `0001-tauri2-vs-electron.md`
+2. `0002-rig-core-vs-langchain-rs.md`
+3. `0003-graph-flow-for-multi-agent.md`
+4. `0004-embedded-postgres-vs-sqlite.md`
+5. `0005-vtcode-indexer-choice.md`
+6. `0006-zustand-immer-state.md`
+7. `0007-langfuse-observability.md`
+8. `0008-mcp-integration-strategy.md`
+
+模板:
+```markdown
+# ADR-NNNN: <标题>
+## Status: Accepted | Superseded by ADR-X | Deprecated
+## Context
+## Decision
+## Consequences (positive / negative)
+## Alternatives considered
+```
+
+---
+
+### B3. 前端 Service Layer 分层
+
+#### B3-1 - [ ] `frontend/lib/` 三层化
+
+**检查命令**:
+```bash
+ls frontend/lib/transport 2>/dev/null && ls frontend/lib/services 2>/dev/null && ls frontend/lib/ui-state 2>/dev/null && echo "ALL_EXIST" || echo "NOT_YET"
+```
+
+**执行步骤**:
+1. 新建 `frontend/lib/transport/`:Tauri `invoke` 包装,统一错误处理、超时、retry
+2. 新建 `frontend/lib/services/`:领域服务(`pentest.service.ts`、`ai.service.ts`),内含缓存/ETag/dedupe
+3. `frontend/lib/ui-state/`:视图模型,可被 Zustand 消费
+4. 现有 `frontend/lib/{ai.ts,pentest.ts,vuln-intel.ts,...}` 渐进迁移
+
+**完成判据**:大组件(ToolManager.tsx 1044 行)不再直接 `invoke()`,通过 `services/*` 调用。
+
+---
+
+### B4. Settings Schema 版本化
+
+#### B4-1 - [ ] 加 `schema_version` 字段 + migration 链
+
+**检查命令**:
+```bash
+grep -c "schema_version\|SCHEMA_VERSION" backend/crates/golish-settings/src
+```
+
+**执行步骤**:
+1. `golish-settings/src/schema/mod.rs` 顶层加 `schema_version: u32`(default = 1)
+2. `loader.rs` 加 `migrate_settings(toml: &mut Value, from: u32) -> Result<()>`
+3. 每次 schema 变更 +1,写一个 migration 函数
+
+**完成判据**:启动旧版 settings.toml 自动迁移成功不报错。
+
+---
+
+### B5. 集成测试 + 契约测试
+
+#### B5-1 - [ ] 每个 Layer 3 域 crate 加 `tests/api_contract.rs`
+
+**检查命令**:
+```bash
+for c in golish-pentest golish-pipeline golish-vuln-intel golish-scan-runner golish-projects golish-indexer; do
+  ls backend/crates/$c/tests/api_contract.rs 2>/dev/null
+done | wc -l
+```
+
+**判定**:输出 6 → `[x]`
+
+**执行步骤**:每个域 crate 写一个测试断言公开 trait/类型签名:
+```rust
+#[test]
+fn public_api_stable() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<dyn PentestRepo>();
+    // ...
+}
+```
+
+---
+
+### B6. 主 crate 业务下沉
+
+#### B6-1 - [ ] `golish/src/tools/` 业务规则下沉到 Layer 3
+
+**检查命令**:
+```bash
+find backend/crates/golish/src/tools -name "*.rs" -not -name "mod.rs" | xargs wc -l 2>/dev/null | sort -rn | head -5
+```
+
+**判定**:Top 5 文件全部 ≤ 100 行(只剩 Tauri 绑定 + 错误转换)→ `[x]`
+
+**执行步骤**:
+1. `golish/src/tools/pentest/zap/scan.rs`(493 行)→ 业务规则迁到 `golish-pentest/src/zap/scan_runner.rs`
+2. `golish/src/tools/sensitive_scan.rs`(471 行)→ 迁到 `golish-pentest`
+3. 主 crate 命令文件应只有 `state.use_x().scan(args).await.map_err(IpcError::from)` 这种 1-3 行调用
+
+---
+
+## 量化对照(每完成一阶段更新)
+
+| 指标 | 当前 | A 阶段后目标 | B 阶段后目标 |
+|---|---|---|---|
+| `golish-ai` LOC | 34.5K | ≤ 6K | ≤ 6K |
+| `Result<_,String>` 数 | 437 | ≤ 50 | ≤ 50 |
+| Tauri 命令 facade 数 | 1(244 散) | 8(分域) | 8 |
+| `tauri::State<'_, AppState>` | N | 0 | 0 |
+| 主 crate LOC | 36.5K | ≤ 20K | ≤ 12K |
+| ADR 篇数 | 0 | 0 | ≥ 8 |
+| 域 crate 契约测试 | 0 | 0 | 6 |
+| 综合评分 | A(7.5) | A+(8.5) | S(9.0) |
+
+---
+
+## 强制守门(每 commit 必须满足)
+
+```bash
+cd backend && cargo check --workspace          # 0 errors / 0 warnings
+cd backend && cargo test --workspace            # 全绿
+cd frontend && npx tsc --noEmit                  # 0 errors
+cd frontend && npm run lint                       # 0 errors
+```
+
+任何一个红 → **回滚当前 commit,不允许带病推进下一项**。
+
+---
+
+## 完成节奏建议
+
+| 周次 | 任务 |
+|---|---|
+| W1 | A1-1(prompts)+ A3-1(pentest 错误统一) |
+| W2 | A1-2(agent-loop) |
+| W3 | A1-3(agent-bridge)+ A1-4(元 crate) |
+| W4 | A2(AppState 拆 7 状态)+ A3-2(IpcError) |
+| W5 | A4(命令 facade)+ A5(事件 schema) |
+| W6+ | B1-B6 按业务节奏插入 |
+
+每完成一项 → `git commit` 单独提交 → 本文件勾选项更新 → 进入下一项。
