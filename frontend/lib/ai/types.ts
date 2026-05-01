@@ -103,16 +103,7 @@ export interface ApiRequestStatsSnapshot {
   providers: Record<string, ProviderRequestStats>;
 }
 
-export type ToolSource =
-  | { type: "main" }
-  | { type: "sub_agent"; agent_id: string; agent_name: string }
-  | {
-      type: "workflow";
-      workflow_id: string;
-      workflow_name: string;
-      step_name?: string;
-      step_index?: number;
-    };
+export type { ToolSource } from "@/lib/generated";
 
 interface AiEventBase {
   session_id: string;
