@@ -201,6 +201,7 @@ pub struct SubtaskView {
 #[derive(Debug, Clone)]
 pub struct TaskView {
     pub id: Uuid,
+    pub input: String,
     pub status: TaskStatus,
     pub result: Option<String>,
 }
@@ -397,12 +398,15 @@ pub trait DbRepoProvider: Send + Sync {
     async fn wiki_upsert_poc_full(
         &self,
         cve_id: &str,
+        name: &str,
+        poc_type: &str,
+        language: &str,
+        content: &str,
         source: &str,
-        url: &str,
+        source_url: &str,
+        severity: &str,
         description: &str,
-        language: Option<&str>,
-        severity: Option<&str>,
-        content: Option<&str>,
+        tags: &[String],
     ) -> anyhow::Result<serde_json::Value>;
 
     // -- Vuln Intel -------------------------------------------------------
@@ -509,6 +513,7 @@ pub trait DbRepoProvider: Send + Sync {
     async fn subtask_set_result(&self, id: Uuid, result: &str) -> anyhow::Result<()>;
     async fn subtask_next_pending(&self, task_id: Uuid) -> anyhow::Result<Option<SubtaskView>>;
     async fn subtask_list_by_task(&self, task_id: Uuid) -> anyhow::Result<Vec<SubtaskView>>;
+    async fn subtask_delete_pending(&self, task_id: Uuid) -> anyhow::Result<()>;
 
     // -- Message Chains ---------------------------------------------------
 
@@ -531,8 +536,12 @@ pub trait DbRepoProvider: Send + Sync {
     async fn message_chain_update_usage(
         &self,
         id: Uuid,
-        input_tokens: i64,
-        output_tokens: i64,
+        input_tokens: i32,
+        output_tokens: i32,
+        cache_read_tokens: i32,
+        input_cost: f64,
+        output_cost: f64,
+        duration_ms: i32,
     ) -> anyhow::Result<()>;
 
     // -- Execution Plans --------------------------------------------------

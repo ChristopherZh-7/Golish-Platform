@@ -91,6 +91,13 @@ pub mod subtasks {
     ) -> anyhow::Result<Vec<SubtaskView>> {
         repo.subtask_list_by_task(task_id).await
     }
+
+    pub async fn delete_pending(
+        repo: &dyn DbRepoProvider,
+        task_id: Uuid,
+    ) -> anyhow::Result<()> {
+        repo.subtask_delete_pending(task_id).await
+    }
 }
 
 pub mod message_chains {
@@ -127,11 +134,23 @@ pub mod message_chains {
     pub async fn update_usage(
         repo: &dyn DbRepoProvider,
         id: Uuid,
-        input_tokens: i64,
-        output_tokens: i64,
+        input_tokens: i32,
+        output_tokens: i32,
+        cache_read_tokens: i32,
+        input_cost: f64,
+        output_cost: f64,
+        duration_ms: i32,
     ) -> anyhow::Result<()> {
-        repo.message_chain_update_usage(id, input_tokens, output_tokens)
-            .await
+        repo.message_chain_update_usage(
+            id,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            input_cost,
+            output_cost,
+            duration_ms,
+        )
+        .await
     }
 }
 
@@ -251,15 +270,21 @@ pub mod wiki_kb {
     pub async fn upsert_poc_full(
         repo: &dyn DbRepoProvider,
         cve_id: &str,
+        name: &str,
+        poc_type: &str,
+        language: &str,
+        content: &str,
         source: &str,
-        url: &str,
+        source_url: &str,
+        severity: &str,
         description: &str,
-        language: Option<&str>,
-        severity: Option<&str>,
-        content: Option<&str>,
+        tags: &[String],
     ) -> anyhow::Result<serde_json::Value> {
-        repo.wiki_upsert_poc_full(cve_id, source, url, description, language, severity, content)
-            .await
+        repo.wiki_upsert_poc_full(
+            cve_id, name, poc_type, language, content, source, source_url,
+            severity, description, tags,
+        )
+        .await
     }
 }
 
