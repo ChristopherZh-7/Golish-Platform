@@ -1,4 +1,3 @@
-use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -6,102 +5,13 @@ use tauri::{Emitter, State};
 use uuid::Uuid;
 
 use crate::state::AppState;
-
-const DEFAULT_SENSITIVE_PATHS: &[&str] = &[
-    ".env", ".env.local", ".env.production", ".env.backup",
-    ".git/config", ".git/HEAD", ".gitignore",
-    ".svn/entries", ".svn/wc.db",
-    ".DS_Store", "Thumbs.db",
-    ".htaccess", ".htpasswd",
-    "web.config", "crossdomain.xml",
-    "robots.txt", "sitemap.xml", "security.txt", ".well-known/security.txt",
-    "wp-config.php", "wp-config.php.bak", "wp-login.php",
-    "config.php", "config.inc.php", "config.yml", "config.json",
-    "database.yml", "settings.py", "application.yml", "application.properties",
-    "composer.json", "package.json", "Gemfile", "requirements.txt", "go.mod",
-    "phpinfo.php", "info.php", "test.php",
-    "backup.sql", "dump.sql", "database.sql", "db.sql",
-    "backup.zip", "backup.tar.gz", "backup.rar",
-    "server-status", "server-info",
-    ".bash_history", ".ssh/id_rsa", ".ssh/id_rsa.pub",
-    "id_rsa", "id_dsa",
-    "admin/", "administrator/", "admin.php", "login.php",
-    "phpmyadmin/", "pma/", "adminer.php",
-    "swagger-ui.html", "swagger.json", "api-docs", "openapi.json",
-    "actuator", "actuator/health", "actuator/env",
-    "debug/", "trace/", "console/",
-    "graphql", "graphiql",
-    ".dockerenv", "Dockerfile", "docker-compose.yml",
-    "Makefile", "Rakefile", "Vagrantfile",
-    "error_log", "access_log", "debug.log",
-    "xmlrpc.php", "wp-cron.php",
-    "CHANGELOG.md", "CHANGELOG.txt", "VERSION", "README.md",
-    "license.txt", "LICENSE",
-];
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SensitiveScanConfig {
-    pub target_url: String,
-    pub wordlist_id: Option<String>,
-    pub rate_per_second: u32,
-    pub use_sitemap_dirs: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SensitiveScanResult {
-    pub id: String,
-    pub base_url: String,
-    pub probe_path: String,
-    pub full_url: String,
-    pub status_code: i32,
-    pub content_length: i32,
-    pub content_type: String,
-    pub is_confirmed: bool,
-    pub ai_verdict: Option<String>,
-    pub created_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScanProgress {
-    pub total: usize,
-    pub completed: usize,
-    pub hits: usize,
-    pub current_url: String,
-    pub running: bool,
-    pub dirs_found: usize,
-}
+pub use golish_pentest::sensitive_scan::{
+    extract_dirs_from_sitemap, ScanProgress, SensitiveScanConfig, SensitiveScanResult,
+    DEFAULT_SENSITIVE_PATHS,
+};
 
 static SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
 static SCAN_CANCELLED: AtomicBool = AtomicBool::new(false);
-
-fn extract_dirs_from_sitemap(data: &serde_json::Value) -> Vec<String> {
-    let entries = match data.as_array() {
-        Some(a) => a,
-        None => return vec![],
-    };
-    let mut dirs = std::collections::BTreeSet::new();
-    for entry in entries {
-        let url_str = entry.get("url").or_else(|| entry.get("uri"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if let Ok(parsed) = url::Url::parse(url_str) {
-            let base = format!("{}://{}", parsed.scheme(), parsed.authority());
-            let path = parsed.path();
-            let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-            dirs.insert(format!("{}/", base));
-            let mut accum = String::new();
-            for seg in &segments[..segments.len().saturating_sub(1)] {
-                accum.push_str(seg);
-                accum.push('/');
-                dirs.insert(format!("{}/{}", base, accum));
-            }
-        }
-    }
-    dirs.into_iter().collect()
-}
 
 async fn load_wordlist_lines(wordlist_id: &str) -> Result<Vec<String>, String> {
     let path = super::wordlists::wordlist_path(wordlist_id.to_string()).await?;
