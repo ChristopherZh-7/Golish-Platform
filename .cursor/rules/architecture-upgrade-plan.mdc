@@ -52,7 +52,8 @@ alwaysApply: false
 
 ### A1. 拆分 `golish-ai` megacrate(34.5K LOC)→ 4 个子 crate
 
-#### A1-1 - [ ] 抽 `golish-prompts`(叶子最深、依赖最少)
+#### A1-1 - [x] 抽 `golish-prompts`(叶子最深、依赖最少)
+> ✅ Verified 2026-05-02: crate 存在且注册在 workspace，lib.rs 49 行，`cargo check -p golish-prompts` 通过（补了 dirs 依赖）
 
 **检查命令**:
 ```bash
