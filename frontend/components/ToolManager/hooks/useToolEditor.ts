@@ -1,8 +1,7 @@
 import { useCallback, useRef, useState } from "react";
-import { invoke } from "@/lib/api/client";
 import { useTranslation } from "react-i18next";
 import type { ToolWithMeta } from "../OutputParserEditor";
-import { listSkills, type SkillFileInfo } from "@/lib/pentest/api";
+import { listSkills, readToolConfig, saveToolConfig, type SkillFileInfo } from "@/lib/pentest/api";
 import {
   RUNTIME_VERSION_MAP,
   VALID_RUNTIMES, VALID_LAUNCH_MODES, VALID_TIERS, VALID_INSTALL_METHODS, VALID_PARAM_TYPES,
@@ -80,9 +79,7 @@ export function useToolEditor(loadData: (silent?: boolean) => Promise<void>, set
     setEditorLoading(true);
     requestAnimationFrame(() => setEditorVisible(true));
     try {
-      const content: string = await invoke("pentest_read_tool_config", {
-        toolId: tool.id,
-      });
+      const content: string = await readToolConfig(tool.id);
       originalJsonRef.current = content;
       setRawJson(content);
       const parsed = JSON.parse(content) as { tool?: Record<string, unknown> };
@@ -206,7 +203,7 @@ export function useToolEditor(loadData: (silent?: boolean) => Promise<void>, set
       const content = JSON.stringify({ tool: data }, null, 2);
       const toolId = (data.id as string) || editingTool.id;
 
-      await invoke("pentest_save_tool_config", { toolId, content });
+      await saveToolConfig(toolId, content);
       setEditorDirty(false);
       if (editorMode === "raw") {
         setRawJson(content);
