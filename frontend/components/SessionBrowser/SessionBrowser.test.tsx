@@ -59,6 +59,7 @@ function createMockSnapshot(messageCount: number): SessionSnapshot {
     distinct_tools: ["read_file"],
     transcript: [],
     messages,
+    sidecar_session_id: null,
   };
 }
 

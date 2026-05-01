@@ -56,7 +56,7 @@ export const MethodologyPanelView = lazy(() =>
 );
 
 export const DashboardPanelView = lazy(() =>
-  import("../components/DashboardPanel/DashboardPanel").then((m) => ({
+  import("../components/DashboardPanel").then((m) => ({
     default: m.DashboardPanel,
   }))
 );
@@ -74,7 +74,7 @@ export const PipelinePanelView = lazy(() =>
 );
 
 export const AuditLogPanelView = lazy(() =>
-  import("../components/AuditLogPanel/AuditLogPanel").then((m) => ({
+  import("../components/AuditLogPanel").then((m) => ({
     default: m.AuditLogPanel,
   }))
 );

@@ -26,6 +26,8 @@ mod chain_persist;
 mod final_summary;
 mod inner;
 mod prompt_assembly;
+mod response_parsing;
+mod stream_processing;
 mod tool_setup;
 
 /// Execute a sub-agent with the given task and context.
