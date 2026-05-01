@@ -1,0 +1,15 @@
+[package]
+name = "golish-cli-output"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "CLI output formatting and event rendering for Golish"
+
+[dependencies]
+golish-core = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]

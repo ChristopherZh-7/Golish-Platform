@@ -1,5 +1,5 @@
 pub mod ai;
-pub mod cli_output;
+pub use golish_cli_output as cli_output;
 pub mod compat;
 mod error;
 pub mod history;

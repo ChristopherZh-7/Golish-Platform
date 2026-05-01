@@ -293,8 +293,13 @@ pub async fn restore_ai_session(
             )
         })?;
 
-    // Restore the messages to the agent's conversation history
-    bridge.restore_session(session.messages.clone()).await;
+    // Convert session messages to rig messages and restore
+    let rig_messages: Vec<rig::completion::Message> = session
+        .messages
+        .iter()
+        .filter_map(|m| m.to_rig_message())
+        .collect();
+    bridge.restore_session_from_messages(rig_messages).await;
 
     // Restore the agent mode if it was saved with the session
     if let Some(ref mode_str) = session.agent_mode {
