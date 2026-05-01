@@ -1,3 +1,4 @@
+use crate::error::GolishError;
 use std::sync::Arc;
 
 use golish_db::DbReadyGate;
@@ -18,19 +19,19 @@ impl DbState {
     }
 
     /// Block (with timeout) until the embedded PG is ready, then return the pool.
-    pub async fn pool_ready(&self) -> Result<&PgPool, String> {
+    pub async fn pool_ready(&self) -> Result<&PgPool, GolishError> {
         if self.ready.is_ready() {
             return Ok(&self.pool);
         }
         if self.ready.is_failed() {
-            return Err("Database failed to start".to_string());
+            return Err(GolishError::Internal("Database failed to start".into()));
         }
         if !self
             .ready
             .wait_timeout(std::time::Duration::from_secs(15))
             .await
         {
-            return Err("Database is still starting up, please retry".to_string());
+            return Err(GolishError::Internal("Database is still starting up, please retry".into()));
         }
         Ok(&self.pool)
     }

@@ -1,9 +1,5 @@
 import type { ReasoningEffort } from "../ai";
-import type {
-  ModelCapabilities,
-  OwnedModelDefinition,
-  ProviderInfo,
-} from "../model-registry";
+import type { ModelCapabilities, OwnedModelDefinition, ProviderInfo } from "../model-registry";
 import type { AiProvider } from "../settings";
 
 export interface ModelInfo {

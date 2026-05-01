@@ -1,5 +1,6 @@
 // Session and conversation management commands.
 
+use crate::error::GolishError;
 use tauri::State;
 
 use crate::ai::agent_mode::AgentMode;
@@ -15,7 +16,7 @@ use golish_session::{self as golish_sess, GolishMessageRole, GolishSessionSnapsh
 pub async fn clear_ai_conversation(
     state: State<'_, AppState>,
     session_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     if let Some(ref sid) = session_id {
         let bridge = state.ai_state.get_session_bridge(sid).await
             .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
@@ -53,7 +54,7 @@ pub async fn restore_ai_conversation(
     state: State<'_, AppState>,
     session_id: String,
     messages: Vec<(String, String)>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let bridge = state
         .ai_state
         .get_session_bridge(&session_id)
@@ -81,7 +82,7 @@ pub async fn restore_ai_conversation(
 pub async fn get_ai_conversation_length(
     state: State<'_, AppState>,
     session_id: Option<String>,
-) -> Result<usize, String> {
+) -> Result<usize, GolishError> {
     if let Some(ref sid) = session_id {
         let bridge = state.ai_state.get_session_bridge(sid).await
             .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
@@ -100,14 +101,14 @@ pub async fn get_ai_conversation_length(
 pub async fn list_ai_sessions(
     state: State<'_, AppState>,
     limit: Option<usize>,
-) -> Result<Vec<SessionListingInfo>, String> {
+) -> Result<Vec<SessionListingInfo>, GolishError> {
     let lim = limit.unwrap_or(20);
     let persistence = crate::ai::session_bridge::PgSessionPersistence::new(state.db_pool.clone());
     match persistence.list_sessions(lim).await {
         Ok(sessions) if !sessions.is_empty() => Ok(sessions),
         _ => golish_sess::list_recent_sessions(lim)
             .await
-            .map_err(|e| e.to_string()),
+            .map_err(GolishError::from),
     }
 }
 
@@ -120,13 +121,13 @@ pub async fn list_ai_sessions(
 pub async fn find_ai_session(
     state: State<'_, AppState>,
     identifier: String,
-) -> Result<Option<SessionListingInfo>, String> {
+) -> Result<Option<SessionListingInfo>, GolishError> {
     let persistence = crate::ai::session_bridge::PgSessionPersistence::new(state.db_pool.clone());
     match persistence.find_session(&identifier).await {
         Ok(Some(session)) => Ok(Some(session)),
         _ => golish_sess::find_session(&identifier)
             .await
-            .map_err(|e| e.to_string()),
+            .map_err(GolishError::from),
     }
 }
 
@@ -139,13 +140,13 @@ pub async fn find_ai_session(
 pub async fn load_ai_session(
     state: State<'_, AppState>,
     identifier: String,
-) -> Result<Option<GolishSessionSnapshot>, String> {
+) -> Result<Option<GolishSessionSnapshot>, GolishError> {
     let persistence = crate::ai::session_bridge::PgSessionPersistence::new(state.db_pool.clone());
     match persistence.load_session(&identifier).await {
         Ok(Some(session)) => Ok(Some(session)),
         _ => golish_sess::load_session(&identifier)
             .await
-            .map_err(|e| e.to_string()),
+            .map_err(GolishError::from),
     }
 }
 
@@ -157,7 +158,7 @@ pub async fn set_ai_session_persistence(
     state: State<'_, AppState>,
     enabled: bool,
     session_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     if let Some(ref sid) = session_id {
         let bridge = state.ai_state.get_session_bridge(sid).await
             .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
@@ -174,7 +175,7 @@ pub async fn set_ai_session_persistence(
 pub async fn is_ai_session_persistence_enabled(
     state: State<'_, AppState>,
     session_id: Option<String>,
-) -> Result<bool, String> {
+) -> Result<bool, GolishError> {
     if let Some(ref sid) = session_id {
         let bridge = state.ai_state.get_session_bridge(sid).await
             .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
@@ -189,7 +190,7 @@ pub async fn is_ai_session_persistence_enabled(
 pub async fn finalize_ai_session(
     state: State<'_, AppState>,
     session_id: Option<String>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, GolishError> {
     if let Some(ref sid) = session_id {
         let bridge = state.ai_state.get_session_bridge(sid).await
             .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
@@ -211,13 +212,13 @@ pub async fn export_ai_session_transcript(
     state: State<'_, AppState>,
     identifier: String,
     output_path: String,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let persistence = crate::ai::session_bridge::PgSessionPersistence::new(state.db_pool.clone());
     let session = match persistence.load_session(&identifier).await {
         Ok(Some(s)) => s,
         _ => golish_sess::load_session(&identifier)
             .await
-            .map_err(|e| e.to_string())?
+?
             .ok_or_else(|| format!("Session '{}' not found", identifier))?,
     };
 
@@ -271,13 +272,13 @@ pub async fn restore_ai_session(
     state: State<'_, AppState>,
     session_id: String,
     identifier: String,
-) -> Result<GolishSessionSnapshot, String> {
+) -> Result<GolishSessionSnapshot, GolishError> {
     let persistence = crate::ai::session_bridge::PgSessionPersistence::new(state.db_pool.clone());
     let session = match persistence.load_session(&identifier).await {
         Ok(Some(s)) => s,
         _ => golish_sess::load_session(&identifier)
             .await
-            .map_err(|e| e.to_string())?
+?
             .ok_or_else(|| format!("Session '{}' not found", identifier))?,
     };
 

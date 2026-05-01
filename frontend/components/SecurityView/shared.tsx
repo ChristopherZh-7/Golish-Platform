@@ -1,15 +1,30 @@
-import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Check, ChevronDown, ChevronRight, Copy, Download, Loader2, Play,
-  RefreshCw, Shield, ShieldCheck, ShieldX,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Download,
+  Loader2,
+  Play,
+  RefreshCw,
+  Shield,
+  ShieldCheck,
+  ShieldX,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
-import type { ZapStatusInfo } from "@/lib/pentest/types";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useZapProxyCert } from "@/hooks/useZapProxyCert";
+import type { ZapStatusInfo } from "@/lib/pentest/types";
+import { cn } from "@/lib/utils";
 
-export function StyledSelect({ value, onChange, options, className }: {
-  value: string; onChange: (v: string) => void;
+export function StyledSelect({
+  value,
+  onChange,
+  options,
+  className,
+}: {
+  value: string;
+  onChange: (v: string) => void;
   options: { value: string; label: string }[];
   className?: string;
 }) {
@@ -19,24 +34,44 @@ export function StyledSelect({ value, onChange, options, className }: {
 
   useEffect(() => {
     if (!open) return;
-    const handler = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
   return (
     <div ref={ref} className={cn("relative", className)}>
-      <button type="button" onClick={() => setOpen(!open)}
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
         className="flex items-center gap-1 w-full h-full px-2.5 text-[10px] rounded-lg bg-white/[0.03] border border-white/[0.06] hover:border-white/[0.12] text-foreground/70 transition-colors cursor-pointer"
       >
         <span className="flex-1 text-left truncate">{selected?.label}</span>
-        <ChevronDown className={cn("w-2.5 h-2.5 text-muted-foreground/30 transition-transform flex-shrink-0", open && "rotate-180")} />
+        <ChevronDown
+          className={cn(
+            "w-2.5 h-2.5 text-muted-foreground/30 transition-transform flex-shrink-0",
+            open && "rotate-180"
+          )}
+        />
       </button>
       {open && (
         <div className="absolute z-50 mt-0.5 w-full min-w-[100px] rounded-lg border border-border/20 bg-popover shadow-xl py-0.5 max-h-[200px] overflow-y-auto">
           {options.map((o) => (
-            <button key={o.value} type="button" onClick={() => { onChange(o.value); setOpen(false); }}
-              className={cn("w-full text-left px-2.5 py-1.5 text-[10px] transition-colors", o.value === value ? "bg-accent/15 text-accent" : "text-foreground/60 hover:bg-white/[0.05] hover:text-foreground")}
+            <button
+              key={o.value}
+              type="button"
+              onClick={() => {
+                onChange(o.value);
+                setOpen(false);
+              }}
+              className={cn(
+                "w-full text-left px-2.5 py-1.5 text-[10px] transition-colors",
+                o.value === value
+                  ? "bg-accent/15 text-accent"
+                  : "text-foreground/60 hover:bg-white/[0.05] hover:text-foreground"
+              )}
             >
               {o.label}
             </button>
@@ -98,7 +133,9 @@ export function ZapNotInstalled({ onRetry }: { onRetry: () => void }) {
     <div className="h-full flex flex-col items-center justify-center gap-5">
       <ShieldX className="w-16 h-16 text-destructive/40" />
       <div className="text-center">
-        <p className="text-[15px] font-semibold text-foreground/80">{t("security.zapNotInstalled")}</p>
+        <p className="text-[15px] font-semibold text-foreground/80">
+          {t("security.zapNotInstalled")}
+        </p>
         <p className="text-[12px] text-muted-foreground/50 max-w-md mt-1.5 leading-relaxed">
           {t("security.zapNotInstalledHint")}
         </p>
@@ -133,9 +170,7 @@ export function ZapNotInstalled({ onRetry }: { onRetry: () => void }) {
       </div>
 
       <div className="max-w-md mt-2 text-center">
-        <p className="text-[11px] text-muted-foreground/40">
-          {t("security.manualInstallHint")}
-        </p>
+        <p className="text-[11px] text-muted-foreground/40">{t("security.manualInstallHint")}</p>
         <code className="text-[12px] text-foreground/60 bg-muted/30 px-3 py-1 rounded mt-1.5 inline-block font-mono">
           brew install --cask zap
         </code>
@@ -144,7 +179,15 @@ export function ZapNotInstalled({ onRetry }: { onRetry: () => void }) {
   );
 }
 
-export function ZapNotRunning({ onStart, loading, error }: { onStart: () => void; loading: boolean; error: string | null }) {
+export function ZapNotRunning({
+  onStart,
+  loading,
+  error,
+}: {
+  onStart: () => void;
+  loading: boolean;
+  error: string | null;
+}) {
   const { t } = useTranslation();
   const proxyAddr = "127.0.0.1:8090";
   const { copied, certLoading, certResult, copyProxy, handleDownloadCert, handleInstallCert } =
@@ -155,14 +198,14 @@ export function ZapNotRunning({ onStart, loading, error }: { onStart: () => void
       <div className="flex flex-col items-center gap-6 px-8 py-10 max-w-lg mx-auto">
         <Shield className="w-14 h-14 text-accent/30" />
         <div className="text-center">
-          <p className="text-[15px] font-semibold text-foreground/80">{t("security.zapNotRunning")}</p>
+          <p className="text-[15px] font-semibold text-foreground/80">
+            {t("security.zapNotRunning")}
+          </p>
           <p className="text-[12px] text-muted-foreground/50 mt-1.5 leading-relaxed">
             {t("security.zapNotRunningHint")}
           </p>
         </div>
-        {error && (
-          <p className="text-[11px] text-destructive max-w-sm text-center">{error}</p>
-        )}
+        {error && <p className="text-[11px] text-destructive max-w-sm text-center">{error}</p>}
         <button
           type="button"
           onClick={onStart}
@@ -174,7 +217,9 @@ export function ZapNotRunning({ onStart, loading, error }: { onStart: () => void
         </button>
 
         <div className="w-full border-t border-border/15 pt-5 mt-2 space-y-4">
-          <h3 className="text-[12px] font-semibold text-foreground/70 text-center">{t("browser.proxyConfig", "Proxy & Certificate Setup")}</h3>
+          <h3 className="text-[12px] font-semibold text-foreground/70 text-center">
+            {t("browser.proxyConfig", "Proxy & Certificate Setup")}
+          </h3>
 
           <div className="rounded-lg border border-border/15 bg-[var(--bg-hover)]/15 p-3.5">
             <span className="text-[10px] font-medium text-foreground/50 block mb-2">
@@ -182,12 +227,22 @@ export function ZapNotRunning({ onStart, loading, error }: { onStart: () => void
             </span>
             <div className="flex items-center gap-2 bg-background/50 rounded-md px-3 py-2 border border-border/10">
               <code className="text-[12px] font-mono text-accent/80 flex-1">{proxyAddr}</code>
-              <button onClick={copyProxy} className="p-1 rounded text-muted-foreground/40 hover:text-foreground transition-colors">
-                {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+              <button
+                onClick={copyProxy}
+                className="p-1 rounded text-muted-foreground/40 hover:text-foreground transition-colors"
+              >
+                {copied ? (
+                  <Check className="w-3 h-3 text-green-400" />
+                ) : (
+                  <Copy className="w-3 h-3" />
+                )}
               </button>
             </div>
             <p className="text-[10px] text-muted-foreground/40 mt-2 leading-relaxed">
-              {t("browser.proxyManualHint", "Configure this proxy in your browser (e.g. FoxyProxy) to route traffic through ZAP.")}
+              {t(
+                "browser.proxyManualHint",
+                "Configure this proxy in your browser (e.g. FoxyProxy) to route traffic through ZAP."
+              )}
             </p>
           </div>
 
@@ -196,24 +251,46 @@ export function ZapNotRunning({ onStart, loading, error }: { onStart: () => void
               {t("browser.sslCert", "HTTPS Certificate")}
             </span>
             <p className="text-[10px] text-muted-foreground/40 mb-3 leading-relaxed">
-              {t("browser.sslCertHint", "Install ZAP's root CA certificate to intercept HTTPS traffic without warnings.")}
+              {t(
+                "browser.sslCertHint",
+                "Install ZAP's root CA certificate to intercept HTTPS traffic without warnings."
+              )}
             </p>
             <div className="flex items-center gap-2">
-              <button onClick={handleDownloadCert} disabled={certLoading}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-medium bg-[var(--bg-hover)]/50 text-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50">
-                {certLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+              <button
+                onClick={handleDownloadCert}
+                disabled={certLoading}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-medium bg-[var(--bg-hover)]/50 text-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50"
+              >
+                {certLoading ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <Download className="w-3 h-3" />
+                )}
                 {t("browser.downloadCert", "Download")}
               </button>
-              <button onClick={handleInstallCert} disabled={certLoading}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors disabled:opacity-50">
-                {certLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3" />}
+              <button
+                onClick={handleInstallCert}
+                disabled={certLoading}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors disabled:opacity-50"
+              >
+                {certLoading ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <ShieldCheck className="w-3 h-3" />
+                )}
                 {t("browser.installCert", "Install to Keychain")}
               </button>
             </div>
             {certResult && (
-              <div className={cn("mt-2 px-3 py-1.5 rounded-md text-[10px] font-mono break-all",
-                certResult.ok ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"
-              )}>{certResult.msg}</div>
+              <div
+                className={cn(
+                  "mt-2 px-3 py-1.5 rounded-md text-[10px] font-mono break-all",
+                  certResult.ok ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"
+                )}
+              >
+                {certResult.msg}
+              </div>
             )}
           </div>
         </div>
@@ -222,7 +299,10 @@ export function ZapNotRunning({ onStart, loading, error }: { onStart: () => void
   );
 }
 
-export function ResizeHandle({ onResize, direction = "horizontal" }: {
+export function ResizeHandle({
+  onResize,
+  direction = "horizontal",
+}: {
   onResize: (delta: number) => void;
   direction?: "horizontal" | "vertical";
 }) {
@@ -272,19 +352,24 @@ export function ResizeHandle({ onResize, direction = "horizontal" }: {
         "transition-colors duration-100"
       )}
     >
-      <div className={cn(
-        "absolute bg-accent/40 opacity-0 group-hover:opacity-100 group-active:opacity-100 transition-opacity duration-100",
-        isHorizontal ? "top-0 bottom-0 left-[2px] w-[1px]" : "left-0 right-0 top-[2px] h-[1px]"
-      )} />
+      <div
+        className={cn(
+          "absolute bg-accent/40 opacity-0 group-hover:opacity-100 group-active:opacity-100 transition-opacity duration-100",
+          isHorizontal ? "top-0 bottom-0 left-[2px] w-[1px]" : "left-0 right-0 top-[2px] h-[1px]"
+        )}
+      />
     </div>
   );
 }
 
-
 export function methodColor(m: string): string {
   const c: Record<string, string> = {
-    GET: "text-green-400", POST: "text-blue-400", PUT: "text-yellow-400",
-    DELETE: "text-red-400", PATCH: "text-purple-400", OPTIONS: "text-zinc-400",
+    GET: "text-green-400",
+    POST: "text-blue-400",
+    PUT: "text-yellow-400",
+    DELETE: "text-red-400",
+    PATCH: "text-purple-400",
+    OPTIONS: "text-zinc-400",
     HEAD: "text-cyan-400",
   };
   return c[m] || "text-muted-foreground";
@@ -314,9 +399,16 @@ export function DetailSection({ title, content }: { title: string; content: stri
 
   return (
     <div className="border-b border-border/5">
-      <button type="button" onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-medium text-muted-foreground/40 hover:text-foreground transition-colors">
-        {expanded ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-medium text-muted-foreground/40 hover:text-foreground transition-colors"
+      >
+        {expanded ? (
+          <ChevronDown className="w-2.5 h-2.5" />
+        ) : (
+          <ChevronRight className="w-2.5 h-2.5" />
+        )}
         {title}
       </button>
       {expanded && (
@@ -329,8 +421,13 @@ export function DetailSection({ title, content }: { title: string; content: stri
           <table className="w-full">
             <tbody>
               {headers.map(([k, v], i) => (
-                <tr key={i} className="border-b border-border/[0.03] hover:bg-[var(--bg-hover)]/20 transition-colors">
-                  <td className="px-3 py-1 font-mono font-medium text-accent/70 whitespace-nowrap align-top w-[1%]">{k}</td>
+                <tr
+                  key={i}
+                  className="border-b border-border/[0.03] hover:bg-[var(--bg-hover)]/20 transition-colors"
+                >
+                  <td className="px-3 py-1 font-mono font-medium text-accent/70 whitespace-nowrap align-top w-[1%]">
+                    {k}
+                  </td>
                   <td className="px-2 py-1 font-mono text-foreground/60 break-all">{v}</td>
                 </tr>
               ))}

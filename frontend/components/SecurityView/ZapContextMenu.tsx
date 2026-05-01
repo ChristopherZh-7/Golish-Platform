@@ -1,7 +1,7 @@
-import { createPortal } from "react-dom";
 import { Copy, Crosshair, Send, Zap } from "lucide-react";
-import { copyToClipboard } from "@/lib/clipboard";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { copyToClipboard } from "@/lib/clipboard";
 
 export interface ZapContextMenuEntry {
   id: number;
@@ -40,7 +40,10 @@ export function ZapContextMenu({
       <button
         type="button"
         className={btnClass}
-        onClick={() => { onSendToRepeater(entry); onClose(); }}
+        onClick={() => {
+          onSendToRepeater(entry);
+          onClose();
+        }}
       >
         <Send className="w-3 h-3 text-accent" />
         {t("security.sendToRepeater")}
@@ -49,7 +52,10 @@ export function ZapContextMenu({
         <button
           type="button"
           className={btnClass}
-          onClick={() => { onSendToIntruder(entry); onClose(); }}
+          onClick={() => {
+            onSendToIntruder(entry);
+            onClose();
+          }}
         >
           <Crosshair className="w-3 h-3 text-orange-400" />
           Send to Intruder
@@ -59,7 +65,10 @@ export function ZapContextMenu({
         <button
           type="button"
           className={btnClass}
-          onClick={() => { onActiveScan(entry.url); onClose(); }}
+          onClick={() => {
+            onActiveScan(entry.url);
+            onClose();
+          }}
         >
           <Zap className="w-3 h-3 text-orange-400" />
           {t("security.activeScan")}
@@ -68,12 +77,15 @@ export function ZapContextMenu({
       <button
         type="button"
         className={btnClass}
-        onClick={() => { copyToClipboard(entry.url); onClose(); }}
+        onClick={() => {
+          copyToClipboard(entry.url);
+          onClose();
+        }}
       >
         <Copy className="w-3 h-3 text-muted-foreground/50" />
         {t("security.copyUrl")}
       </button>
     </div>,
-    document.body,
+    document.body
   );
 }

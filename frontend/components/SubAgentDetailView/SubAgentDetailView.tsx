@@ -20,25 +20,28 @@ import { memo, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Markdown } from "@/components/Markdown";
 import { AnchorChip } from "@/components/ui/AnchorChip";
-import { StatusIcon } from "@/components/ui/StatusIcon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { StatusIcon } from "@/components/ui/StatusIcon";
 import { stripAllAnsi } from "@/lib/ansi";
 import { copyToClipboard } from "@/lib/clipboard";
 import { getAgentColor, getAgentIcon } from "@/lib/sub-agent-theme";
 import { formatDurationShort } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import type { ActiveSubAgent, SubAgentEntry, SubAgentToolCall } from "@/store";
+import type { ActiveSubAgent, SubAgentToolCall } from "@/store";
 import { useStore } from "@/store";
 
 function stripAgentXmlTags(text: string): string {
   return stripAllAnsi(
     text
-      .replace(/<\/?(task_assignment|original_request|execution_plan|execution_context|prior_knowledge)>/gi, "")
+      .replace(
+        /<\/?(task_assignment|original_request|execution_plan|execution_context|prior_knowledge)>/gi,
+        ""
+      )
       .replace(/<function=[^>]*>[\s\S]*?(?:<\/function>|$)/g, "")
       .replace(/<parameter=[^>]*>[\s\S]*?<\/parameter>/g, "")
-      .replace(/<\/?(?:function|parameter)[^>]*>/g, ""),
+      .replace(/<\/?(?:function|parameter)[^>]*>/g, "")
   ).trim();
 }
 
@@ -51,7 +54,9 @@ function AgentOutputBlock({ text }: { text: string }) {
     <div className="px-4 py-3 border-l-2 border-accent/25 bg-[var(--bg-hover)]/60">
       <div className="flex items-center gap-1.5 mb-1.5">
         <Wand2 className="w-2.5 h-2.5 text-accent/50" />
-        <span className="text-[9px] font-medium text-accent/50 uppercase tracking-wider">Agent Output</span>
+        <span className="text-[9px] font-medium text-accent/50 uppercase tracking-wider">
+          Agent Output
+        </span>
       </div>
       <div className="text-[12.5px] text-foreground leading-[1.7] [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:my-1.5 [&_ol]:my-1.5 [&_pre]:my-2 [&_blockquote]:my-2 [&_h1]:mt-3 [&_h2]:mt-2.5 [&_h3]:mt-2">
         <Markdown content={cleaned} />
@@ -72,8 +77,13 @@ function ToolArgsTable({ args }: { args: Record<string, unknown> }) {
         const strValue = typeof value === "string" ? value : JSON.stringify(value, null, 2);
         const isLong = strValue.length > 120 || strValue.includes("\n");
         return (
-          <div key={key} className={cn("px-3", isLong ? "py-2" : "py-1.5 flex items-baseline gap-3")}>
-            <span className="text-[10px] font-mono text-[var(--ansi-cyan)]/70 flex-shrink-0">{key}</span>
+          <div
+            key={key}
+            className={cn("px-3", isLong ? "py-2" : "py-1.5 flex items-baseline gap-3")}
+          >
+            <span className="text-[10px] font-mono text-[var(--ansi-cyan)]/70 flex-shrink-0">
+              {key}
+            </span>
             {isLong ? (
               <pre className="mt-1 text-[11px] font-mono text-foreground/80 whitespace-pre-wrap break-all max-h-32 overflow-auto leading-relaxed">
                 {strValue}
@@ -96,7 +106,10 @@ function ToolResultDisplay({ result }: { result: unknown }) {
   const strResult = typeof result === "string" ? result : JSON.stringify(result, null, 2);
   const isMarkdownLike =
     typeof result === "string" &&
-    (/^#{1,3}\s/m.test(result) || /\*\*/.test(result) || /^[-*]\s/m.test(result) || /```/.test(result));
+    (/^#{1,3}\s/m.test(result) ||
+      /\*\*/.test(result) ||
+      /^[-*]\s/m.test(result) ||
+      /```/.test(result));
 
   if (isMarkdownLike) {
     return (
@@ -133,7 +146,7 @@ function AgentToolCallBlock({ tool }: { tool: SubAgentToolCall }) {
     if (isStreaming && preRef.current) {
       preRef.current.scrollTop = preRef.current.scrollHeight;
     }
-  }, [isStreaming, tool.streamingOutput]);
+  }, [isStreaming]);
 
   const summaryArg = (() => {
     const args = tool.args;
@@ -169,14 +182,12 @@ function AgentToolCallBlock({ tool }: { tool: SubAgentToolCall }) {
           {isShellCmd ? (
             <Terminal className="h-3 w-3 text-[var(--ansi-green)] flex-shrink-0" />
           ) : null}
-          <span className="font-mono text-[var(--ansi-cyan)]">
-            {isShellCmd ? "" : tool.name}
-          </span>
+          <span className="font-mono text-[var(--ansi-cyan)]">{isShellCmd ? "" : tool.name}</span>
           {summaryArg && (
             <span
               className={cn(
                 "truncate font-mono",
-                isShellCmd ? "text-[var(--ansi-green)]/80" : "text-muted-foreground",
+                isShellCmd ? "text-[var(--ansi-green)]/80" : "text-muted-foreground"
               )}
               title={summaryArg}
             >
@@ -188,7 +199,7 @@ function AgentToolCallBlock({ tool }: { tool: SubAgentToolCall }) {
           {tool.completedAt && (
             <span className="text-[10px] text-muted-foreground tabular-nums flex-shrink-0">
               {formatDurationShort(
-                new Date(tool.completedAt).getTime() - new Date(tool.startedAt).getTime(),
+                new Date(tool.completedAt).getTime() - new Date(tool.startedAt).getTime()
               )}
             </span>
           )}
@@ -200,7 +211,7 @@ function AgentToolCallBlock({ tool }: { tool: SubAgentToolCall }) {
                 ref={preRef}
                 className={cn(
                   "max-h-60 overflow-auto whitespace-pre-wrap rounded bg-[var(--ansi-black)]/20 px-3 py-2 text-[11px] font-mono text-foreground/80",
-                  isStreaming && "border-l-2 border-[var(--ansi-blue)]",
+                  isStreaming && "border-l-2 border-[var(--ansi-blue)]"
                 )}
               >
                 {shellOutput.length > 5000
@@ -213,7 +224,9 @@ function AgentToolCallBlock({ tool }: { tool: SubAgentToolCall }) {
               <div className="overflow-hidden">
                 <div className="flex items-center gap-1.5 mb-1.5">
                   <ChevronRight className="w-2.5 h-2.5 text-[var(--ansi-cyan)]/50" />
-                  <span className="text-[9px] font-semibold text-muted-foreground/70 uppercase tracking-wider">Input</span>
+                  <span className="text-[9px] font-semibold text-muted-foreground/70 uppercase tracking-wider">
+                    Input
+                  </span>
                 </div>
                 <div className="rounded-md bg-muted/40 border border-border/20 overflow-hidden">
                   <ToolArgsTable args={tool.args as Record<string, unknown>} />
@@ -225,16 +238,18 @@ function AgentToolCallBlock({ tool }: { tool: SubAgentToolCall }) {
               <div className="overflow-hidden">
                 <div className="flex items-center gap-1.5 mb-1.5">
                   <CheckCircle2 className="w-2.5 h-2.5 text-[var(--ansi-green)]/50" />
-                  <span className="text-[9px] font-semibold text-muted-foreground/70 uppercase tracking-wider">Output</span>
+                  <span className="text-[9px] font-semibold text-muted-foreground/70 uppercase tracking-wider">
+                    Output
+                  </span>
                 </div>
                 <ToolResultDisplay result={tool.result} />
               </div>
             )}
 
             {isShellCmd &&
-              tool.result &&
+              !!tool.result &&
               typeof tool.result === "object" &&
-              (tool.result as Record<string, unknown>).error && (
+              !!(tool.result as Record<string, unknown>).error && (
                 <div className="flex items-start gap-2 rounded-md bg-[var(--ansi-red)]/10 px-3 py-2 text-[11px] text-[var(--ansi-red)]">
                   <XCircle className="w-3 h-3 mt-0.5 flex-shrink-0" />
                   <span>{String((tool.result as Record<string, unknown>).error)}</span>
@@ -290,7 +305,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
     if (isRunning && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [isRunning, subAgent?.entries.length, subAgent?.streamingText]);
+  }, [isRunning]);
 
   const handleCopy = async (content: string, section: string) => {
     if (await copyToClipboard(content)) {
@@ -378,7 +393,9 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
                 className="h-5 text-[10px] px-1.5 opacity-60 hover:opacity-100 transition-opacity"
               >
                 <Copy className="w-2.5 h-2.5 mr-0.5" />
-                {copiedSection === "task" ? t("ai.subAgentDetail.copied") : t("ai.subAgentDetail.copy")}
+                {copiedSection === "task"
+                  ? t("ai.subAgentDetail.copied")
+                  : t("ai.subAgentDetail.copy")}
               </Button>
             </div>
             <div className="text-[12.5px] text-foreground leading-[1.7] [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:my-1.5 [&_ol]:my-1.5">
@@ -434,22 +451,20 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
 
         {/* Interleaved timeline entries: text blocks + tool calls */}
         <div className="divide-y divide-border/10">
-          {hasEntries ? (
-            subAgent.entries.map((entry, i) => {
-              if (entry.kind === "text" && entry.text) {
-                return <AgentOutputBlock key={`entry-${i}`} text={entry.text} />;
-              }
-              if (entry.kind === "tool_call" && entry.toolCallId) {
-                const tool = toolMap.get(entry.toolCallId);
-                if (tool) return <AgentToolCallBlock key={tool.id} tool={tool} />;
-              }
-              return null;
-            })
-          ) : subAgent.toolCalls.length > 0 ? (
-            subAgent.toolCalls.map((tool) => (
-              <AgentToolCallBlock key={tool.id} tool={tool} />
-            ))
-          ) : null}
+          {hasEntries
+            ? subAgent.entries.map((entry, i) => {
+                if (entry.kind === "text" && entry.text) {
+                  return <AgentOutputBlock key={`entry-${i}`} text={entry.text} />;
+                }
+                if (entry.kind === "tool_call" && entry.toolCallId) {
+                  const tool = toolMap.get(entry.toolCallId);
+                  if (tool) return <AgentToolCallBlock key={tool.id} tool={tool} />;
+                }
+                return null;
+              })
+            : subAgent.toolCalls.length > 0
+              ? subAgent.toolCalls.map((tool) => <AgentToolCallBlock key={tool.id} tool={tool} />)
+              : null}
         </div>
 
         {/* Streaming text (live AI output while running) */}
@@ -460,7 +475,9 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
             </div>
             <div className="mt-2.5 flex items-center gap-1.5">
               <Loader2 className="w-3 h-3 animate-spin text-accent" />
-              <span className="text-[10px] text-accent/70 font-medium">{t("ai.subAgentDetail.liveOutput")}</span>
+              <span className="text-[10px] text-accent/70 font-medium">
+                {t("ai.subAgentDetail.liveOutput")}
+              </span>
             </div>
           </div>
         )}
@@ -480,7 +497,9 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
                 className="h-5 text-[10px] px-1.5 opacity-60 hover:opacity-100 transition-opacity"
               >
                 <Copy className="w-2.5 h-2.5 mr-0.5" />
-                {copiedSection === "response" ? t("ai.subAgentDetail.copied") : t("ai.subAgentDetail.copy")}
+                {copiedSection === "response"
+                  ? t("ai.subAgentDetail.copied")
+                  : t("ai.subAgentDetail.copy")}
               </Button>
             </div>
             <div className="text-[12.5px] text-foreground leading-[1.7] [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:my-1.5 [&_ol]:my-1.5 [&_pre]:my-2 [&_blockquote]:my-2">
@@ -506,9 +525,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
       {isRunning && (
         <div className="px-3 py-2 border-t border-[var(--border-subtle)] bg-accent/5 flex items-center gap-2 flex-shrink-0">
           <Loader2 className="w-3 h-3 text-accent animate-spin" />
-          <span className="text-[11px] text-accent/80">
-            {t("ai.subAgentDetail.agentRunning")}
-          </span>
+          <span className="text-[11px] text-accent/80">{t("ai.subAgentDetail.agentRunning")}</span>
         </div>
       )}
     </div>

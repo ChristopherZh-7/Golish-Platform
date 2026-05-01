@@ -3,8 +3,8 @@
  * operations.
  */
 
-import { sendNotification } from "@/lib/systemNotifications";
 import { logger } from "@/lib/logger";
+import { sendNotification } from "@/lib/systemNotifications";
 import type { CommandBlock } from "../store-types";
 import type { SessionStoreDraft } from "./session-draft-types";
 import {
@@ -12,13 +12,16 @@ import {
   deleteOutputBuffer,
   getOutputBuffer,
   getOwningTabIdFromState,
-  markTabNewActivityInDraft,
   MAX_OUTPUT_BUFFER_BYTES,
+  markTabNewActivityInDraft,
   setOutputBuffer,
 } from "./session-helpers";
 import type { ImmerSet, StateGet } from "./types";
 
-export function createSessionTerminalActions(set: ImmerSet<SessionStoreDraft>, get: StateGet<SessionStoreDraft>) {
+export function createSessionTerminalActions(
+  set: ImmerSet<SessionStoreDraft>,
+  get: StateGet<SessionStoreDraft>
+) {
   return {
     handlePromptStart: (sessionId: string) => {
       const drainedOutput = _drainOutputBuffer(sessionId);
@@ -47,9 +50,7 @@ export function createSessionTerminalActions(set: ImmerSet<SessionStoreDraft>, g
           if (!state.timelines[sessionId]) {
             state.timelines[sessionId] = [];
           }
-          const source = state.pipelineCommandSource[sessionId]
-            ? ("pipeline" as const)
-            : undefined;
+          const source = state.pipelineCommandSource[sessionId] ? ("pipeline" as const) : undefined;
           state.timelines[sessionId].push({
             id: blockId,
             type: "command",
@@ -153,13 +154,13 @@ export function createSessionTerminalActions(set: ImmerSet<SessionStoreDraft>, g
         window.dispatchEvent(
           new CustomEvent("tool-output-completed", {
             detail: { command, output: pending.output, sessionId },
-          }),
+          })
         );
       }
     },
 
     appendOutput: (sessionId: string, data: string) => {
-      let current = (getOutputBuffer(sessionId)) + data;
+      let current = getOutputBuffer(sessionId) + data;
       if (current.length > MAX_OUTPUT_BUFFER_BYTES * 2) {
         current = current.slice(current.length - MAX_OUTPUT_BUFFER_BYTES);
       }
@@ -185,9 +186,7 @@ export function createSessionTerminalActions(set: ImmerSet<SessionStoreDraft>, g
     toggleBlockCollapse: (blockId: string) =>
       set((state) => {
         for (const timeline of Object.values(state.timelines)) {
-          const unifiedBlock = timeline.find(
-            (b) => b.type === "command" && b.id === blockId,
-          );
+          const unifiedBlock = timeline.find((b) => b.type === "command" && b.id === blockId);
           if (unifiedBlock && unifiedBlock.type === "command") {
             unifiedBlock.data.isCollapsed = !unifiedBlock.data.isCollapsed;
             break;
@@ -205,9 +204,7 @@ export function createSessionTerminalActions(set: ImmerSet<SessionStoreDraft>, g
       set((state) => {
         const timeline = state.timelines[sessionId];
         if (timeline) {
-          state.timelines[sessionId] = timeline.filter(
-            (block) => block.type !== "command",
-          );
+          state.timelines[sessionId] = timeline.filter((block) => block.type !== "command");
         }
         state.pendingCommand[sessionId] = null;
       });
@@ -215,8 +212,7 @@ export function createSessionTerminalActions(set: ImmerSet<SessionStoreDraft>, g
 
     requestTerminalClear: (sessionId: string) =>
       set((state) => {
-        state.terminalClearRequest[sessionId] =
-          (state.terminalClearRequest[sessionId] ?? 0) + 1;
+        state.terminalClearRequest[sessionId] = (state.terminalClearRequest[sessionId] ?? 0) + 1;
       }),
 
     setPipelineCommandSource: (sessionId: string, isPipeline: boolean) =>

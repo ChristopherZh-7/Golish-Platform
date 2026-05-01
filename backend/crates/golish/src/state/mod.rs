@@ -17,6 +17,7 @@ pub use pty::PtyState;
 pub use sidecar::SidecarManaged;
 pub use telemetry::TelemetryState;
 
+use crate::error::GolishError;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -88,19 +89,19 @@ impl AppState {
         }
     }
 
-    pub async fn db_pool_ready(&self) -> Result<&PgPool, String> {
+    pub async fn db_pool_ready(&self) -> Result<&PgPool, GolishError> {
         if self.db_ready.is_ready() {
             return Ok(&self.db_pool);
         }
         if self.db_ready.is_failed() {
-            return Err("Database failed to start".to_string());
+            return Err(GolishError::Internal("Database failed to start".into()));
         }
         if !self
             .db_ready
             .wait_timeout(std::time::Duration::from_secs(15))
             .await
         {
-            return Err("Database is still starting up, please retry".to_string());
+            return Err(GolishError::Internal("Database is still starting up, please retry".into()));
         }
         Ok(&self.db_pool)
     }

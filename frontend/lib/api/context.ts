@@ -72,7 +72,7 @@ export async function getLoopProtectionConfig(sessionId: string): Promise<LoopPr
 
 export async function setLoopProtectionConfig(
   sessionId: string,
-  config: LoopProtectionConfig,
+  config: LoopProtectionConfig
 ): Promise<void> {
   return invoke("set_loop_protection_config", { sessionId, config });
 }

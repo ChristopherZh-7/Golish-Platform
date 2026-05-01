@@ -1,14 +1,14 @@
-export { EventChannels, type EventChannel } from "./channels";
+export { type EventChannel, EventChannels } from "./channels";
+export { onCustomEvent, onEvent } from "./listener";
 export type {
-  TerminalOutputPayload,
+  AlternateScreenPayload,
   CommandBlockPayload,
   DirectoryChangedPayload,
-  VirtualEnvChangedPayload,
-  SessionEndedPayload,
-  AlternateScreenPayload,
+  EventPayloadMap,
   FileChangedPayload,
   McpEventPayload,
+  SessionEndedPayload,
   SidecarEventPayload,
-  EventPayloadMap,
+  TerminalOutputPayload,
+  VirtualEnvChangedPayload,
 } from "./payloads";
-export { onEvent, onCustomEvent } from "./listener";

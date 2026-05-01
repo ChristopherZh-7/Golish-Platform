@@ -1,28 +1,51 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { findingsApi, type Finding, type Evidence, type FindingsStore } from "@/lib/findings";
-import { logAudit } from "@/lib/audit";
-import {
-  AlertTriangle, Bug, Check, ChevronDown, ChevronRight, Download, ExternalLink,
-  Image, Info, Loader2, Merge, Paperclip, Plus, Search, Shield, ShieldAlert, Trash2, X,
-} from "lucide-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { QuickNotes } from "@/components/QuickNotes/QuickNotes";
-import { cn } from "@/lib/utils";
+import {
+  AlertTriangle,
+  Bug,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Download,
+  ExternalLink,
+  Image,
+  Info,
+  Loader2,
+  Merge,
+  Paperclip,
+  Plus,
+  Search,
+  Shield,
+  ShieldAlert,
+  Trash2,
+  X,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useStore } from "@/store";
+import { QuickNotes } from "@/components/QuickNotes/QuickNotes";
+import { logAudit } from "@/lib/audit";
+import { type Evidence, type Finding, findingsApi } from "@/lib/findings";
 import { getProjectPath } from "@/lib/projects";
+import { cn } from "@/lib/utils";
 
 type Severity = "critical" | "high" | "medium" | "low" | "info";
 type FindingStatus = "open" | "confirmed" | "falsePositive" | "resolved";
 
-import { SEV_TEXT, SEV_BADGE, SEV_LABELS } from "@/lib/severity";
+import { SEV_BADGE, SEV_LABELS, SEV_TEXT } from "@/lib/severity";
 
-const SEVERITY_CONFIG: Record<Severity, { color: string; bg: string; icon: typeof ShieldAlert; label: string }> = {
-  critical: { color: SEV_TEXT.critical, bg: SEV_BADGE.critical, icon: ShieldAlert, label: SEV_LABELS.critical },
-  high:     { color: SEV_TEXT.high, bg: SEV_BADGE.high, icon: AlertTriangle, label: SEV_LABELS.high },
-  medium:   { color: SEV_TEXT.medium, bg: SEV_BADGE.medium, icon: Shield, label: SEV_LABELS.medium },
-  low:      { color: SEV_TEXT.low, bg: SEV_BADGE.low, icon: Info, label: SEV_LABELS.low },
-  info:     { color: SEV_TEXT.info, bg: SEV_BADGE.info, icon: Info, label: SEV_LABELS.info },
+const SEVERITY_CONFIG: Record<
+  Severity,
+  { color: string; bg: string; icon: typeof ShieldAlert; label: string }
+> = {
+  critical: {
+    color: SEV_TEXT.critical,
+    bg: SEV_BADGE.critical,
+    icon: ShieldAlert,
+    label: SEV_LABELS.critical,
+  },
+  high: { color: SEV_TEXT.high, bg: SEV_BADGE.high, icon: AlertTriangle, label: SEV_LABELS.high },
+  medium: { color: SEV_TEXT.medium, bg: SEV_BADGE.medium, icon: Shield, label: SEV_LABELS.medium },
+  low: { color: SEV_TEXT.low, bg: SEV_BADGE.low, icon: Info, label: SEV_LABELS.low },
+  info: { color: SEV_TEXT.info, bg: SEV_BADGE.info, icon: Info, label: SEV_LABELS.info },
 };
 
 const STATUS_LABELS: Record<FindingStatus, string> = {
@@ -36,7 +59,6 @@ import { MiniDropdown } from "@/components/ui/MiniDropdown";
 
 export function FindingsPanel() {
   const { t } = useTranslation();
-  const currentProjectPath = useStore((s) => s.currentProjectPath);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -44,7 +66,12 @@ export function FindingsPanel() {
   const [statusFilter, setStatusFilter] = useState<FindingStatus | "all">("all");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
-  const [addForm, setAddForm] = useState({ title: "", severity: "medium" as Severity, url: "", description: "" });
+  const [addForm, setAddForm] = useState({
+    title: "",
+    severity: "medium" as Severity,
+    url: "",
+    description: "",
+  });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -58,7 +85,9 @@ export function FindingsPanel() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load, currentProjectPath]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const safeFindings = findings ?? [];
   const filtered = useMemo(() => {
@@ -67,126 +96,168 @@ export function FindingsPanel() {
     if (statusFilter !== "all") list = list.filter((f) => f.status === statusFilter);
     if (search.trim()) {
       const q = search.toLowerCase();
-      list = list.filter((f) =>
-        f.title.toLowerCase().includes(q) ||
-        f.url.toLowerCase().includes(q) ||
-        f.tool.toLowerCase().includes(q) ||
-        f.template.toLowerCase().includes(q)
+      list = list.filter(
+        (f) =>
+          f.title.toLowerCase().includes(q) ||
+          f.url.toLowerCase().includes(q) ||
+          f.tool.toLowerCase().includes(q) ||
+          f.template.toLowerCase().includes(q)
       );
     }
     return list.sort((a, b) => {
       const order: Severity[] = ["critical", "high", "medium", "low", "info"];
-      return order.indexOf(a.severity) - order.indexOf(b.severity);
+      return order.indexOf(a.severity as Severity) - order.indexOf(b.severity as Severity);
     });
   }, [safeFindings, severityFilter, statusFilter, search]);
   const stats = useMemo(() => {
     const s = { critical: 0, high: 0, medium: 0, low: 0, info: 0, total: safeFindings.length };
-    for (const f of safeFindings) s[f.severity]++;
+    for (const f of safeFindings) s[f.severity as Severity]++;
     return s;
   }, [safeFindings]);
 
   const handleAdd = useCallback(async () => {
     if (!addForm.title.trim()) return;
-    await findingsApi.add({
-      id: "",
-      title: addForm.title,
-      severity: addForm.severity,
-      url: addForm.url,
-      description: addForm.description,
-      steps: "",
-      remediation: "",
-      tags: [],
-      tool: "",
-      template: "",
-      references: [],
-      status: "open",
-      created_at: 0,
-      updated_at: 0,
-    }, getProjectPath());
+    await findingsApi.add(
+      {
+        id: "",
+        title: addForm.title,
+        severity: addForm.severity,
+        url: addForm.url,
+        description: addForm.description,
+        steps: "",
+        remediation: "",
+        tags: [],
+        tool: "",
+        template: "",
+        references: [],
+        status: "open",
+        created_at: 0,
+        updated_at: 0,
+      },
+      getProjectPath()
+    );
     setAddForm({ title: "", severity: "medium", url: "", description: "" });
     setShowAdd(false);
     load();
   }, [addForm, load]);
 
-  const handleDelete = useCallback(async (id: string) => {
-    await findingsApi.delete(id, getProjectPath());
-    load();
-    logAudit({ action: "finding_deleted", category: "findings", details: id, entityType: "finding", entityId: id });
-  }, [load]);
+  const handleDelete = useCallback(
+    async (id: string) => {
+      await findingsApi.delete(id, getProjectPath());
+      load();
+      logAudit({
+        action: "finding_deleted",
+        category: "findings",
+        details: id,
+        entityType: "finding",
+        entityId: id,
+      });
+    },
+    [load]
+  );
 
-  const handleStatusChange = useCallback(async (finding: Finding, status: FindingStatus) => {
-    await findingsApi.update({ ...finding, status }, getProjectPath());
-    load();
-    logAudit({ action: "finding_status_changed", category: "findings", details: `${finding.title} → ${status}`, entityType: "finding", entityId: finding.id });
-  }, [load]);
+  const handleStatusChange = useCallback(
+    async (finding: Finding, status: FindingStatus) => {
+      await findingsApi.update({ ...finding, status }, getProjectPath());
+      load();
+      logAudit({
+        action: "finding_status_changed",
+        category: "findings",
+        details: `${finding.title} → ${status}`,
+        entityType: "finding",
+        entityId: finding.id,
+      });
+    },
+    [load]
+  );
 
-  const handleAddEvidence = useCallback(async (findingId: string) => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*,.pdf,.txt,.json,.xml,.html";
-    input.onchange = async () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const base64 = (reader.result as string).split(",")[1];
-        await findingsApi.addEvidence(
-          findingId, file.name, file.type || "application/octet-stream",
-          "", base64, getProjectPath(),
-        );
-        load();
+  const handleAddEvidence = useCallback(
+    async (findingId: string) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/*,.pdf,.txt,.json,.xml,.html";
+      input.onchange = async () => {
+        const file = input.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = async () => {
+          const base64 = (reader.result as string).split(",")[1];
+          await findingsApi.addEvidence(
+            findingId,
+            file.name,
+            file.type || "application/octet-stream",
+            "",
+            base64,
+            getProjectPath()
+          );
+          load();
+        };
+        reader.readAsDataURL(file);
       };
-      reader.readAsDataURL(file);
-    };
-    input.click();
-  }, [load]);
+      input.click();
+    },
+    [load]
+  );
 
-  const handleRemoveEvidence = useCallback(async (findingId: string, evidenceId: string) => {
-    await findingsApi.removeEvidence(findingId, evidenceId, getProjectPath());
-    load();
-  }, [load]);
+  const handleRemoveEvidence = useCallback(
+    async (findingId: string, evidenceId: string) => {
+      await findingsApi.removeEvidence(findingId, evidenceId, getProjectPath());
+      load();
+    },
+    [load]
+  );
 
   const [evidencePaths, setEvidencePaths] = useState<Record<string, string>>({});
 
-  const loadEvidencePath = useCallback(async (findingId: string, ev: Evidence) => {
-    const key = `${findingId}/${ev.id}`;
-    if (evidencePaths[key]) return;
-    try {
-      const path = await findingsApi.evidencePath(findingId, ev.id, getProjectPath());
-      setEvidencePaths((prev) => ({ ...prev, [key]: convertFileSrc(path) }));
-    } catch { /* ignore */ }
-  }, [evidencePaths]);
+  const loadEvidencePath = useCallback(
+    async (findingId: string, ev: Evidence) => {
+      const key = `${findingId}/${ev.id}`;
+      if (evidencePaths[key]) return;
+      try {
+        const path = await findingsApi.evidencePath(findingId, ev.id, getProjectPath());
+        setEvidencePaths((prev) => ({ ...prev, [key]: convertFileSrc(path) }));
+      } catch {
+        /* ignore */
+      }
+    },
+    [evidencePaths]
+  );
 
-  const exportFindings = useCallback((format: "json" | "csv") => {
-    const data = filtered.length > 0 ? filtered : findings;
-    let blob: Blob;
-    let filename: string;
+  const exportFindings = useCallback(
+    (format: "json" | "csv") => {
+      const data = filtered.length > 0 ? filtered : findings;
+      let blob: Blob;
+      let filename: string;
 
-    if (format === "json") {
-      blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-      filename = "findings.json";
-    } else {
-      const headers = ["Title", "Severity", "Status", "Tool", "Target", "Description", "Created"];
-      const rows = data.map((f) => [
-        `"${(f.title || "").replace(/"/g, '""')}"`,
-        f.severity,
-        f.status,
-        f.tool || "",
-        f.target || "",
-        `"${(f.description || "").replace(/"/g, '""')}"`,
-        f.created_at,
-      ]);
-      blob = new Blob([headers.join(",") + "\n" + rows.map((r) => r.join(",")).join("\n")], { type: "text/csv" });
-      filename = "findings.csv";
-    }
+      if (format === "json") {
+        blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        filename = "findings.json";
+      } else {
+        const headers = ["Title", "Severity", "Status", "Tool", "Target", "Description", "Created"];
+        const rows = data.map((f) => [
+          `"${(f.title || "").replace(/"/g, '""')}"`,
+          f.severity,
+          f.status,
+          f.tool || "",
+          f.target || "",
+          `"${(f.description || "").replace(/"/g, '""')}"`,
+          f.created_at,
+        ]);
+        blob = new Blob([`${headers.join(",")}\n${rows.map((r) => r.join(",")).join("\n")}`], {
+          type: "text/csv",
+        });
+        filename = "findings.csv";
+      }
 
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
-  }, [filtered, findings]);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+    [filtered, findings]
+  );
 
   const [showExportMenu, setShowExportMenu] = useState(false);
 
@@ -196,7 +267,9 @@ export function FindingsPanel() {
       if (removed > 0) {
         load();
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }, [load]);
 
   return (
@@ -232,12 +305,22 @@ export function FindingsPanel() {
               </button>
               {showExportMenu && (
                 <div className="absolute right-0 top-full mt-1 bg-popover border border-border/20 rounded-lg shadow-xl z-50 min-w-[100px] overflow-hidden">
-                  <button onClick={() => { exportFindings("json"); setShowExportMenu(false); }}
-                    className="w-full px-3 py-1.5 text-[10px] text-left text-foreground/80 hover:bg-accent/10 transition-colors">
+                  <button
+                    onClick={() => {
+                      exportFindings("json");
+                      setShowExportMenu(false);
+                    }}
+                    className="w-full px-3 py-1.5 text-[10px] text-left text-foreground/80 hover:bg-accent/10 transition-colors"
+                  >
                     JSON
                   </button>
-                  <button onClick={() => { exportFindings("csv"); setShowExportMenu(false); }}
-                    className="w-full px-3 py-1.5 text-[10px] text-left text-foreground/80 hover:bg-accent/10 transition-colors">
+                  <button
+                    onClick={() => {
+                      exportFindings("csv");
+                      setShowExportMenu(false);
+                    }}
+                    className="w-full px-3 py-1.5 text-[10px] text-left text-foreground/80 hover:bg-accent/10 transition-colors"
+                  >
                     CSV
                   </button>
                 </div>
@@ -263,7 +346,9 @@ export function FindingsPanel() {
                 onClick={() => setSeverityFilter(severityFilter === sev ? "all" : sev)}
                 className={cn(
                   "flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-medium border transition-colors",
-                  severityFilter === sev ? cfg.bg : "border-transparent text-muted-foreground/60 hover:text-muted-foreground/80"
+                  severityFilter === sev
+                    ? cfg.bg
+                    : "border-transparent text-muted-foreground/60 hover:text-muted-foreground/80"
                 )}
               >
                 <span className={cfg.color}>{stats[sev]}</span>
@@ -304,7 +389,6 @@ export function FindingsPanel() {
             onChange={(e) => setAddForm((p) => ({ ...p, title: e.target.value }))}
             placeholder="Finding title"
             className="w-full px-2 py-1.5 text-[11px] rounded-md bg-transparent border border-border/20 text-foreground placeholder:text-muted-foreground/20 outline-none"
-            autoFocus
           />
           <div className="flex gap-2">
             <MiniDropdown
@@ -312,7 +396,8 @@ export function FindingsPanel() {
               value={addForm.severity}
               onChange={(v) => setAddForm((p) => ({ ...p, severity: v as Severity }))}
               options={(["critical", "high", "medium", "low", "info"] as Severity[]).map((s) => ({
-                value: s, label: SEVERITY_CONFIG[s].label,
+                value: s,
+                label: SEVERITY_CONFIG[s].label,
               }))}
             />
             <input
@@ -330,13 +415,22 @@ export function FindingsPanel() {
             className="w-full px-2 py-1.5 text-[10px] rounded-md bg-transparent border border-border/20 text-foreground placeholder:text-muted-foreground/20 outline-none resize-none"
           />
           <div className="flex justify-end gap-2">
-            <button onClick={() => setShowAdd(false)}
-              className="px-2.5 py-1 text-[10px] rounded-md text-muted-foreground/50 hover:text-foreground transition-colors">
+            <button
+              onClick={() => setShowAdd(false)}
+              className="px-2.5 py-1 text-[10px] rounded-md text-muted-foreground/50 hover:text-foreground transition-colors"
+            >
               Cancel
             </button>
-            <button onClick={handleAdd} disabled={!addForm.title.trim()}
-              className={cn("px-2.5 py-1 text-[10px] rounded-md font-medium transition-colors",
-                addForm.title.trim() ? "bg-accent text-accent-foreground hover:bg-accent/90" : "bg-muted/30 text-muted-foreground/30 cursor-not-allowed")}>
+            <button
+              onClick={handleAdd}
+              disabled={!addForm.title.trim()}
+              className={cn(
+                "px-2.5 py-1 text-[10px] rounded-md font-medium transition-colors",
+                addForm.title.trim()
+                  ? "bg-accent text-accent-foreground hover:bg-accent/90"
+                  : "bg-muted/30 text-muted-foreground/30 cursor-not-allowed"
+              )}
+            >
               Add Finding
             </button>
           </div>
@@ -352,12 +446,16 @@ export function FindingsPanel() {
         ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-32 gap-2 text-muted-foreground/50">
             <Bug className="w-8 h-8" />
-            <p className="text-[11px]">{search || severityFilter !== "all" || statusFilter !== "all" ? "No matching findings" : "No findings yet"}</p>
+            <p className="text-[11px]">
+              {search || severityFilter !== "all" || statusFilter !== "all"
+                ? "No matching findings"
+                : "No findings yet"}
+            </p>
           </div>
         ) : (
           <div className="divide-y divide-border/10">
             {filtered.map((finding) => {
-              const cfg = SEVERITY_CONFIG[finding.severity];
+              const cfg = SEVERITY_CONFIG[finding.severity as Severity];
               const isExpanded = expanded === finding.id;
               const SevIcon = cfg.icon;
               return (
@@ -366,7 +464,11 @@ export function FindingsPanel() {
                     onClick={() => setExpanded(isExpanded ? null : finding.id)}
                     className="w-full flex items-center gap-2 px-4 py-2.5 text-left hover:bg-muted/10 transition-colors"
                   >
-                    {isExpanded ? <ChevronDown className="w-3 h-3 text-muted-foreground/60 flex-shrink-0" /> : <ChevronRight className="w-3 h-3 text-muted-foreground/60 flex-shrink-0" />}
+                    {isExpanded ? (
+                      <ChevronDown className="w-3 h-3 text-muted-foreground/60 flex-shrink-0" />
+                    ) : (
+                      <ChevronRight className="w-3 h-3 text-muted-foreground/60 flex-shrink-0" />
+                    )}
                     <span className={cn("flex-shrink-0", cfg.color)}>
                       <SevIcon className="w-3.5 h-3.5" />
                     </span>
@@ -376,14 +478,19 @@ export function FindingsPanel() {
                         {finding.tool}
                       </span>
                     )}
-                    <span className={cn(
-                      "text-[9px] px-1.5 py-0.5 rounded flex-shrink-0",
-                      finding.status === "open" ? "text-yellow-400 bg-yellow-500/10" :
-                      finding.status === "confirmed" ? "text-red-400 bg-red-500/10" :
-                      finding.status === "resolved" ? "text-emerald-400 bg-emerald-500/10" :
-                      "text-muted-foreground/60 bg-muted/10"
-                    )}>
-                      {STATUS_LABELS[finding.status]}
+                    <span
+                      className={cn(
+                        "text-[9px] px-1.5 py-0.5 rounded flex-shrink-0",
+                        finding.status === "open"
+                          ? "text-yellow-400 bg-yellow-500/10"
+                          : finding.status === "confirmed"
+                            ? "text-red-400 bg-red-500/10"
+                            : finding.status === "resolved"
+                              ? "text-emerald-400 bg-emerald-500/10"
+                              : "text-muted-foreground/60 bg-muted/10"
+                      )}
+                    >
+                      {STATUS_LABELS[finding.status as FindingStatus]}
                     </span>
                   </button>
                   {isExpanded && (
@@ -391,11 +498,15 @@ export function FindingsPanel() {
                       {finding.url && (
                         <div className="flex items-center gap-1.5">
                           <ExternalLink className="w-3 h-3 text-muted-foreground/50" />
-                          <span className="text-[10px] font-mono text-accent/70 truncate">{finding.url}</span>
+                          <span className="text-[10px] font-mono text-accent/70 truncate">
+                            {finding.url}
+                          </span>
                         </div>
                       )}
                       {finding.description && (
-                        <p className="text-[10px] text-muted-foreground/60 leading-relaxed">{finding.description}</p>
+                        <p className="text-[10px] text-muted-foreground/60 leading-relaxed">
+                          {finding.description}
+                        </p>
                       )}
                       {finding.template && (
                         <div className="text-[9px] text-muted-foreground/60">
@@ -404,8 +515,17 @@ export function FindingsPanel() {
                       )}
                       {finding.references.length > 0 && (
                         <div className="text-[9px] text-muted-foreground/60">
-                          Refs: {finding.references.map((r, i) => (
-                            <a key={i} href={r} target="_blank" rel="noopener" className="text-primary/70 hover:text-primary underline decoration-primary/30 mr-1.5">{r}</a>
+                          Refs:{" "}
+                          {finding.references.map((r, i) => (
+                            <a
+                              key={i}
+                              href={r}
+                              target="_blank"
+                              rel="noopener"
+                              className="text-primary/70 hover:text-primary underline decoration-primary/30 mr-1.5"
+                            >
+                              {r}
+                            </a>
                           ))}
                         </div>
                       )}
@@ -469,7 +589,9 @@ export function FindingsPanel() {
                       </div>
 
                       <div className="flex items-center gap-2 pt-1">
-                        {(["open", "confirmed", "falsePositive", "resolved"] as FindingStatus[]).map((s) => (
+                        {(
+                          ["open", "confirmed", "falsePositive", "resolved"] as FindingStatus[]
+                        ).map((s) => (
                           <button
                             key={s}
                             onClick={() => handleStatusChange(finding, s)}

@@ -1,6 +1,5 @@
-import { memo } from "react";
 import { ChevronDown, MessageSquare, Users, Zap } from "lucide-react";
-import type { AgentMode } from "@/lib/ai";
+import { memo } from "react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -8,6 +7,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import type { AgentMode } from "@/lib/ai";
 import { cn } from "@/lib/utils";
 
 interface ExecutionModePickerProps {
@@ -34,7 +34,7 @@ export const ExecutionModePicker = memo(function ExecutionModePicker({
             "flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors",
             chatExecutionMode === "task"
               ? "bg-[var(--ansi-magenta)]/10 text-[var(--ansi-magenta)] hover:bg-[var(--ansi-magenta)]/20"
-              : "bg-muted text-foreground hover:bg-[var(--bg-hover)]",
+              : "bg-muted text-foreground hover:bg-[var(--bg-hover)]"
           )}
         >
           {chatExecutionMode === "task" ? (
@@ -60,7 +60,7 @@ export const ExecutionModePicker = memo(function ExecutionModePicker({
             "text-xs cursor-pointer flex items-start gap-2 py-2.5",
             chatExecutionMode === "chat"
               ? "text-accent bg-[var(--accent-dim)]"
-              : "text-foreground hover:text-accent",
+              : "text-foreground hover:text-accent"
           )}
         >
           <MessageSquare className="w-4 h-4 mt-0.5 shrink-0" />
@@ -80,7 +80,7 @@ export const ExecutionModePicker = memo(function ExecutionModePicker({
             "text-xs cursor-pointer flex items-start gap-2 py-2.5",
             chatExecutionMode === "task"
               ? "text-[var(--ansi-magenta)] bg-[var(--ansi-magenta)]/10"
-              : "text-foreground hover:text-accent",
+              : "text-foreground hover:text-accent"
           )}
         >
           <Zap className="w-4 h-4 mt-0.5 shrink-0" />
@@ -102,7 +102,7 @@ export const ExecutionModePicker = memo(function ExecutionModePicker({
           <Users
             className={cn(
               "w-4 h-4 shrink-0",
-              chatUseSubAgents ? "text-[var(--ansi-green)]" : "text-muted-foreground",
+              chatUseSubAgents ? "text-[var(--ansi-green)]" : "text-muted-foreground"
             )}
           />
           <div className="flex flex-col flex-1">
@@ -114,13 +114,13 @@ export const ExecutionModePicker = memo(function ExecutionModePicker({
           <div
             className={cn(
               "w-7 h-4 rounded-full transition-colors duration-200 flex items-center shrink-0",
-              chatUseSubAgents ? "bg-[var(--ansi-green)]/30 justify-end" : "bg-muted justify-start",
+              chatUseSubAgents ? "bg-[var(--ansi-green)]/30 justify-end" : "bg-muted justify-start"
             )}
           >
             <div
               className={cn(
                 "w-3 h-3 rounded-full mx-0.5 transition-colors duration-200",
-                chatUseSubAgents ? "bg-[var(--ansi-green)]" : "bg-muted-foreground/50",
+                chatUseSubAgents ? "bg-[var(--ansi-green)]" : "bg-muted-foreground/50"
               )}
             />
           </div>

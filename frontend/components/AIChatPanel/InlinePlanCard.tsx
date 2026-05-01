@@ -41,7 +41,7 @@ function StepRow({ step, index }: { step: { step: string; status: string }; inde
     <div
       className={cn(
         "flex items-center gap-2 py-1 px-2 rounded text-[11.5px]",
-        isInProgress && "bg-accent/[0.06]",
+        isInProgress && "bg-accent/[0.06]"
       )}
     >
       <StepIcon status={step.status} index={index} />
@@ -51,7 +51,7 @@ function StepRow({ step, index }: { step: { step: string; status: string }; inde
           isCompleted && "text-muted-foreground/70",
           isInProgress && "font-semibold text-foreground",
           isFailed && "line-through text-red-400/70",
-          !isCompleted && !isInProgress && !isFailed && "text-muted-foreground/50",
+          !isCompleted && !isInProgress && !isFailed && "text-muted-foreground/50"
         )}
       >
         {step.step}
@@ -60,11 +60,7 @@ function StepRow({ step, index }: { step: { step: string; status: string }; inde
   );
 }
 
-export const InlinePlanCard = memo(function InlinePlanCard({
-  plan,
-}: {
-  plan: TaskPlanViewModel;
-}) {
+export const InlinePlanCard = memo(function InlinePlanCard({ plan }: { plan: TaskPlanViewModel }) {
   const [expanded, setExpanded] = useState(false);
   const toggle = useCallback(() => setExpanded((v) => !v), []);
 
@@ -72,10 +68,7 @@ export const InlinePlanCard = memo(function InlinePlanCard({
   const { total, completed } = summary;
   const isDone = total > 0 && completed === total;
 
-  const lastCompletedIdx = steps.reduce(
-    (acc, s, i) => (s.status === "completed" ? i : acc),
-    -1,
-  );
+  const lastCompletedIdx = steps.reduce((acc, s, i) => (s.status === "completed" ? i : acc), -1);
   const currentIdx = steps.findIndex((s) => s.status === "in_progress");
 
   const visibleIndices: number[] = [];
@@ -88,9 +81,7 @@ export const InlinePlanCard = memo(function InlinePlanCard({
   }
 
   const beforeCount = expanded ? 0 : Math.max(0, Math.min(...visibleIndices));
-  const afterCount = expanded
-    ? 0
-    : Math.max(0, steps.length - 1 - Math.max(...visibleIndices));
+  const afterCount = expanded ? 0 : Math.max(0, steps.length - 1 - Math.max(...visibleIndices));
 
   return (
     <div className="mx-0 my-1.5 rounded-lg border border-[var(--border-subtle)] bg-background/60 overflow-hidden">
@@ -111,7 +102,7 @@ export const InlinePlanCard = memo(function InlinePlanCard({
         <ChevronRight
           className={cn(
             "w-3 h-3 text-muted-foreground/50 transition-transform flex-shrink-0",
-            expanded && "rotate-90",
+            expanded && "rotate-90"
           )}
         />
       </button>

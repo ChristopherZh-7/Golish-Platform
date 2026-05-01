@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
 export interface CustomSelectOption {
@@ -16,7 +16,14 @@ interface CustomSelectProps {
   size?: "xs" | "sm" | "default";
 }
 
-export function CustomSelect({ value, onChange, options, className, placeholder, size = "default" }: CustomSelectProps) {
+export function CustomSelect({
+  value,
+  onChange,
+  options,
+  className,
+  placeholder,
+  size = "default",
+}: CustomSelectProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const selected = options.find((o) => o.value === value);
@@ -49,13 +56,18 @@ export function CustomSelect({ value, onChange, options, className, placeholder,
         onClick={() => setOpen(!open)}
         className={cn(
           "flex items-center gap-1 w-full rounded-lg bg-white/[0.03] border border-white/[0.06] hover:border-white/[0.12] text-foreground/70 transition-colors cursor-pointer",
-          sizeClasses[size],
+          sizeClasses[size]
         )}
       >
         <span className="flex-1 text-left truncate">
           {selected?.label ?? placeholder ?? "Select..."}
         </span>
-        <ChevronDown className={cn("w-2.5 h-2.5 text-muted-foreground/30 transition-transform flex-shrink-0", open && "rotate-180")} />
+        <ChevronDown
+          className={cn(
+            "w-2.5 h-2.5 text-muted-foreground/30 transition-transform flex-shrink-0",
+            open && "rotate-180"
+          )}
+        />
       </button>
       {open && (
         <div className="absolute z-50 mt-0.5 w-full min-w-[100px] rounded-lg border border-border/20 bg-popover shadow-xl py-0.5 max-h-[200px] overflow-y-auto">
@@ -63,13 +75,16 @@ export function CustomSelect({ value, onChange, options, className, placeholder,
             <button
               key={o.value}
               type="button"
-              onClick={() => { onChange(o.value); setOpen(false); }}
+              onClick={() => {
+                onChange(o.value);
+                setOpen(false);
+              }}
               className={cn(
                 "w-full text-left transition-colors",
                 itemSizeClasses[size],
                 o.value === value
                   ? "bg-accent/15 text-accent"
-                  : "text-foreground/60 hover:bg-white/[0.05] hover:text-foreground",
+                  : "text-foreground/60 hover:bg-white/[0.05] hover:text-foreground"
               )}
             >
               {o.label}

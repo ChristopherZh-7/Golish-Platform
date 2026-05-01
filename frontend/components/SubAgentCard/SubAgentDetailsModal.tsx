@@ -32,7 +32,10 @@ import type { ActiveSubAgent, SubAgentToolCall } from "@/store";
 function cleanSubAgentText(text: string): string {
   return stripAllAnsi(
     text
-      .replace(/<\/?(task_assignment|original_request|execution_plan|execution_context|prior_knowledge)>/gi, "")
+      .replace(
+        /<\/?(task_assignment|original_request|execution_plan|execution_context|prior_knowledge)>/gi,
+        ""
+      )
       .replace(/<function=[^>]*>[\s\S]*?(?:<\/function>|$)/g, "")
       .replace(/<parameter=[^>]*>[\s\S]*?<\/parameter>/g, "")
       .replace(/<\/?(?:function|parameter)[^>]*>/g, "")
@@ -187,7 +190,8 @@ export function SubAgentDetailsModal({ subAgent, onClose }: SubAgentDetailsModal
                 </DialogTitle>
                 <DialogDescription className="text-sm text-muted-foreground mt-1">
                   {subAgent.toolCalls.length} tool call{subAgent.toolCalls.length !== 1 ? "s" : ""}
-                  {subAgent.durationMs !== undefined && ` • ${formatDurationShort(subAgent.durationMs)}`}
+                  {subAgent.durationMs !== undefined &&
+                    ` • ${formatDurationShort(subAgent.durationMs)}`}
                 </DialogDescription>
               </div>
             </div>

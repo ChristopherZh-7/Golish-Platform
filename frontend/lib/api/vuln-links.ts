@@ -16,6 +16,10 @@ export async function removeWikiLink(cveId: string, wikiPath: string): Promise<v
   await invoke("vuln_link_remove_wiki", { cveId, wikiPath });
 }
 
-export async function addScan(params: { cveId: string; target: string; [key: string]: unknown }): Promise<void> {
+export async function addScan(params: {
+  cveId: string;
+  target: string;
+  [key: string]: unknown;
+}): Promise<void> {
   await invoke("vuln_link_add_scan", params);
 }

@@ -16,13 +16,7 @@ export interface ToolCall {
   id: string;
   name: string;
   args: Record<string, unknown>;
-  status:
-    | "pending"
-    | "approved"
-    | "denied"
-    | "running"
-    | "completed"
-    | "error";
+  status: "pending" | "approved" | "denied" | "running" | "completed" | "error";
   result?: unknown;
   executedByAgent?: boolean;
   riskLevel?: RiskLevel;

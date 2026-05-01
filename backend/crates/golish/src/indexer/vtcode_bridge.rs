@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use golish_ai::indexer::{
+use golish_indexer::{
     compute_index_dir, find_existing_index_dir, CodeSearchResult, IndexerBackend, IndexerState,
 };
 use golish_settings::schema::IndexLocation;

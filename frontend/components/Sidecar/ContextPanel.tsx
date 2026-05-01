@@ -1,18 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import {
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Clock,
-  FileCode,
-  FileText,
-  GitCommit,
-  GripVertical,
-  Package,
-  RefreshCw,
-  ScrollText,
-  X,
-} from "lucide-react";
+import { FileText, GitCommit, GripVertical, Package, RefreshCw, ScrollText, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Markdown } from "@/components/Markdown/Markdown";
 import { Button } from "@/components/ui/button";
@@ -29,10 +16,11 @@ import {
   getStagedPatches,
   previewArtifact,
   type SidecarEventType,
+  type StagedPatch,
 } from "@/lib/sidecar";
 import { cn } from "@/lib/utils";
-import { type PatchWithStatus, PatchesView } from "./PatchViews";
 import { ArtifactsView } from "./ArtifactViews";
+import { PatchesView } from "./PatchViews";
 
 interface ContextPanelProps {
   /** Session ID to show context for (uses current session if not provided) */
@@ -359,4 +347,3 @@ export function ContextPanel({ sessionId, open, onOpenChange }: ContextPanelProp
     </div>
   );
 }
-

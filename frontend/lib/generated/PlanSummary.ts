@@ -3,20 +3,21 @@
 /**
  * Summary statistics for a plan.
  */
-export type PlanSummary = { 
-/**
- * Total number of steps.
- */
-total: number, 
-/**
- * Number of completed steps.
- */
-completed: number, 
-/**
- * Number of in-progress steps.
- */
-in_progress: number, 
-/**
- * Number of pending steps.
- */
-pending: number, };
+export type PlanSummary = {
+  /**
+   * Total number of steps.
+   */
+  total: number;
+  /**
+   * Number of completed steps.
+   */
+  completed: number;
+  /**
+   * Number of in-progress steps.
+   */
+  in_progress: number;
+  /**
+   * Number of pending steps.
+   */
+  pending: number;
+};

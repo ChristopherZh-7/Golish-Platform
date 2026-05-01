@@ -7,8 +7,8 @@
  * - When all steps are done: mark the pipeline block as completed/failed.
  */
 
-import { useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { useEffect, useRef } from "react";
 import type { PipelineExecution, PipelineStepExecution } from "@/store";
 import { useStore } from "@/store";
 
@@ -36,9 +36,7 @@ interface PipelineEventPayload {
 }
 
 function humanizeId(id: string): string {
-  return id
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
+  return id.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 /**
@@ -81,7 +79,12 @@ export function usePipelineEvents() {
         const p = event.payload;
         const state = useStore.getState();
 
-        console.log("[usePipelineEvents] Received pipeline-event:", p.status, p.pipeline_id, p.tool_name);
+        console.log(
+          "[usePipelineEvents] Received pipeline-event:",
+          p.status,
+          p.pipeline_id,
+          p.tool_name
+        );
 
         const sessionId = resolveSessionForPipeline();
         if (!sessionId) {
@@ -116,12 +119,24 @@ export function usePipelineEvents() {
             startedAt: new Date().toISOString(),
           };
 
-          console.log("[usePipelineEvents] Creating pipeline block:", blockId, "steps:", steps.length, "session:", sessionId);
+          console.log(
+            "[usePipelineEvents] Creating pipeline block:",
+            blockId,
+            "steps:",
+            steps.length,
+            "session:",
+            sessionId
+          );
           state.startPipelineExecution(sessionId, execution, blockId);
 
           // Verify it was added
           const verifyTimeline = useStore.getState().timelines[sessionId];
-          console.log("[usePipelineEvents] Timeline after add:", verifyTimeline?.length, "blocks, types:", verifyTimeline?.map(b => b.type));
+          console.log(
+            "[usePipelineEvents] Timeline after add:",
+            verifyTimeline?.length,
+            "blocks, types:",
+            verifyTimeline?.map((b) => b.type)
+          );
           return;
         }
 

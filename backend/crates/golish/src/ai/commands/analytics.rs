@@ -2,6 +2,7 @@
 //!
 //! Provides tool call stats, token usage stats, memories, and audit log access.
 
+use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -21,14 +22,14 @@ pub struct ToolCallStats {
 pub async fn get_tool_call_stats(
     state: State<'_, AppState>,
     session_id: Option<String>,
-) -> Result<Vec<ToolCallStats>, String> {
+) -> Result<Vec<ToolCallStats>, GolishError> {
     let sid = session_id
         .as_deref()
         .and_then(|s| uuid::Uuid::parse_str(s).ok());
 
     let rows = golish_db::repo::tool_calls::stats_by_name(&state.db_pool, sid)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     Ok(rows
         .into_iter()
@@ -54,10 +55,10 @@ pub struct TokenUsageStats {
 #[tauri::command]
 pub async fn get_db_token_usage_stats(
     state: State<'_, AppState>,
-) -> Result<TokenUsageStats, String> {
+) -> Result<TokenUsageStats, GolishError> {
     let stats = golish_db::repo::message_chains::usage_stats_total(&state.db_pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     Ok(TokenUsageStats {
         total_tokens_in: stats.total_tokens_in,
@@ -78,10 +79,10 @@ pub struct AgentUsage {
 #[tauri::command]
 pub async fn get_usage_by_agent(
     state: State<'_, AppState>,
-) -> Result<Vec<AgentUsage>, String> {
+) -> Result<Vec<AgentUsage>, GolishError> {
     let rows = golish_db::repo::message_chains::usage_by_agent(&state.db_pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     Ok(rows
         .into_iter()
@@ -114,7 +115,7 @@ pub async fn get_audit_log(
     project_path: Option<String>,
     category: Option<String>,
     limit: Option<i64>,
-) -> Result<Vec<AuditEntry>, String> {
+) -> Result<Vec<AuditEntry>, GolishError> {
     let lim = limit.unwrap_or(100);
 
     let rows = if let Some(ref cat) = category {
@@ -125,11 +126,11 @@ pub async fn get_audit_log(
             lim,
         )
         .await
-        .map_err(|e| e.to_string())?
+?
     } else {
         golish_db::repo::audit::list(&state.db_pool, project_path.as_deref(), lim)
             .await
-            .map_err(|e| e.to_string())?
+?
     };
 
     Ok(rows
@@ -163,11 +164,11 @@ pub async fn search_memories(
     state: State<'_, AppState>,
     query: String,
     limit: Option<i64>,
-) -> Result<Vec<MemoryEntry>, String> {
+) -> Result<Vec<MemoryEntry>, GolishError> {
     let lim = limit.unwrap_or(20);
     let rows = golish_db::repo::memories::search_text(&state.db_pool, &query, None, lim)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     Ok(rows
         .into_iter()
@@ -185,11 +186,11 @@ pub async fn search_memories(
 pub async fn list_recent_memories(
     state: State<'_, AppState>,
     limit: Option<i64>,
-) -> Result<Vec<MemoryEntry>, String> {
+) -> Result<Vec<MemoryEntry>, GolishError> {
     let lim = limit.unwrap_or(50);
     let rows = golish_db::repo::memories::list_recent(&state.db_pool, lim)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     Ok(rows
         .into_iter()
@@ -206,8 +207,8 @@ pub async fn list_recent_memories(
 #[tauri::command]
 pub async fn get_memory_count(
     state: State<'_, AppState>,
-) -> Result<i64, String> {
+) -> Result<i64, GolishError> {
     golish_db::repo::memories::count(&state.db_pool)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }

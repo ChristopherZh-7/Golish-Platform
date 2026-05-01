@@ -45,7 +45,10 @@ export async function startProject(params: {
   return invoke<ProjectMethodology>("method_start_project", params);
 }
 
-export async function loadProject(id: string, projectPath: string | null): Promise<ProjectMethodology> {
+export async function loadProject(
+  id: string,
+  projectPath: string | null
+): Promise<ProjectMethodology> {
   return invoke<ProjectMethodology>("method_load_project", { id, projectPath });
 }
 

@@ -59,16 +59,14 @@ export interface WikiChangeEntry {
 }
 
 export const auditLogApi = {
-  agentLogsList: (projectPath: string, limit: number) =>
+  agentLogsList: (projectPath: string | null, limit: number) =>
     invoke<AgentLogEntry[]>("agent_logs_list", { projectPath, limit }),
-  terminalLogsList: (projectPath: string, limit: number) =>
+  terminalLogsList: (projectPath: string | null, limit: number) =>
     invoke<TerminalLogEntry[]>("terminal_logs_list", { projectPath, limit }),
-  searchLogsList: (projectPath: string, limit: number) =>
+  searchLogsList: (projectPath: string | null, limit: number) =>
     invoke<SearchLogEntry[]>("search_logs_list", { projectPath, limit }),
-  passiveScansGlobal: (projectPath: string, limit: number) =>
+  passiveScansGlobal: (projectPath: string | null, limit: number) =>
     invoke<PassiveScanEntry[]>("passive_scans_global", { projectPath, limit }),
-  wikiChangelogList: (limit: number) =>
-    invoke<WikiChangeEntry[]>("wiki_changelog_list", { limit }),
-  auditClear: (projectPath: string) =>
-    invoke("audit_clear", { projectPath }),
+  wikiChangelogList: (limit: number) => invoke<WikiChangeEntry[]>("wiki_changelog_list", { limit }),
+  auditClear: (projectPath: string | null) => invoke("audit_clear", { projectPath }),
 };

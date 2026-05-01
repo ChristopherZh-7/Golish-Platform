@@ -22,15 +22,12 @@ export function useSplitTabDrag(opts: UseSplitTabDragOptions) {
   const { setShowMergeDropZone, setSplitDragGhost, closeRightTab } = opts;
   const dragRef = useRef<SplitDragRef>({ ...INITIAL });
 
-  const onPointerDown = useCallback(
-    (e: React.PointerEvent, tabId: string) => {
-      if ((e.target as HTMLElement).closest("button")) return;
-      e.preventDefault();
-      dragRef.current = { startX: e.clientX, startY: e.clientY, dragging: false, tabId };
-      (e.target as HTMLElement).setPointerCapture(e.pointerId);
-    },
-    [],
-  );
+  const onPointerDown = useCallback((e: React.PointerEvent, tabId: string) => {
+    if ((e.target as HTMLElement).closest("button")) return;
+    e.preventDefault();
+    dragRef.current = { startX: e.clientX, startY: e.clientY, dragging: false, tabId };
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  }, []);
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent, tabName: string) => {
@@ -47,7 +44,7 @@ export function useSplitTabDrag(opts: UseSplitTabDragOptions) {
         setSplitDragGhost({ x: e.clientX, y: e.clientY, name: tabName });
       }
     },
-    [setShowMergeDropZone, setSplitDragGhost],
+    [setShowMergeDropZone, setSplitDragGhost]
   );
 
   const onPointerUp = useCallback(
@@ -59,7 +56,7 @@ export function useSplitTabDrag(opts: UseSplitTabDragOptions) {
       setSplitDragGhost(null);
       document.documentElement.classList.remove("tab-dragging");
     },
-    [closeRightTab, setShowMergeDropZone, setSplitDragGhost],
+    [closeRightTab, setShowMergeDropZone, setSplitDragGhost]
   );
 
   return { dragRef, onPointerDown, onPointerMove, onPointerUp };

@@ -1,4 +1,3 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -12,18 +11,13 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import {
-  type RuleInfo,
-  deleteRule,
-  listRules,
-  readRuleBody,
-  saveRule,
-} from "@/lib/ai";
+import { Textarea } from "@/components/ui/textarea";
+import { deleteRule, listRules, type RuleInfo, readRuleBody, saveRule } from "@/lib/ai";
 import { notify } from "@/lib/notify";
 
 interface EditingRule {
@@ -236,9 +230,7 @@ export function RulesSettings() {
           <label className="text-xs text-muted-foreground">Description</label>
           <Input
             value={editingRule.description}
-            onChange={(e) =>
-              setEditingRule({ ...editingRule, description: e.target.value })
-            }
+            onChange={(e) => setEditingRule({ ...editingRule, description: e.target.value })}
             placeholder="When and why this rule applies..."
             className="bg-background border-border text-foreground h-9"
           />
@@ -249,9 +241,7 @@ export function RulesSettings() {
             <label className="text-xs text-muted-foreground">File Globs</label>
             <Input
               value={editingRule.globs}
-              onChange={(e) =>
-                setEditingRule({ ...editingRule, globs: e.target.value })
-              }
+              onChange={(e) => setEditingRule({ ...editingRule, globs: e.target.value })}
               placeholder="*.ts,*.tsx"
               className="bg-background border-border text-foreground h-9 font-mono text-xs"
             />
@@ -264,9 +254,7 @@ export function RulesSettings() {
             <div className="flex items-center gap-2 pt-1">
               <Switch
                 checked={editingRule.alwaysApply}
-                onCheckedChange={(v) =>
-                  setEditingRule({ ...editingRule, alwaysApply: v })
-                }
+                onCheckedChange={(v) => setEditingRule({ ...editingRule, alwaysApply: v })}
               />
               <span className="text-xs text-muted-foreground">
                 {editingRule.alwaysApply
@@ -281,15 +269,11 @@ export function RulesSettings() {
           <label className="text-xs text-muted-foreground">Rule Content (Markdown)</label>
           <Textarea
             value={editingRule.body}
-            onChange={(e) =>
-              setEditingRule({ ...editingRule, body: e.target.value })
-            }
+            onChange={(e) => setEditingRule({ ...editingRule, body: e.target.value })}
             placeholder="When writing code, always..."
             className="bg-background border-border text-foreground font-mono text-xs min-h-[200px] resize-y"
           />
-          <p className="text-[10px] text-muted-foreground">
-            {editingRule.body.length} characters
-          </p>
+          <p className="text-[10px] text-muted-foreground">{editingRule.body.length} characters</p>
         </div>
       </div>
     );
@@ -329,7 +313,10 @@ export function RulesSettings() {
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium text-foreground font-mono">{rule.name}</span>
               {rule.always_apply && (
-                <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4 border-accent text-accent">
+                <Badge
+                  variant="outline"
+                  className="text-[9px] px-1.5 py-0 h-4 border-accent text-accent"
+                >
                   always
                 </Badge>
               )}
@@ -357,7 +344,12 @@ export function RulesSettings() {
             <p className="text-[10px] text-muted-foreground/50 font-mono truncate">{rule.path}</p>
 
             <div className="flex gap-2 pt-1">
-              <Button variant="outline" size="sm" onClick={() => startEditing(rule)} className="h-7 text-xs">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => startEditing(rule)}
+                className="h-7 text-xs"
+              >
                 <Edit3 className="w-3 h-3 mr-1" /> Edit
               </Button>
               <Button
@@ -425,7 +417,8 @@ export function RulesSettings() {
           {projectRules.map(renderRuleCard)}
           {projectRules.length === 0 && (
             <p className="text-xs text-muted-foreground italic py-3 text-center">
-              No project-specific rules. These are stored in your project&apos;s <code>.golish/rules/</code> directory.
+              No project-specific rules. These are stored in your project&apos;s{" "}
+              <code>.golish/rules/</code> directory.
             </p>
           )}
         </div>
@@ -433,9 +426,9 @@ export function RulesSettings() {
 
       <div className="text-xs text-muted-foreground border-t border-[var(--border-medium)] pt-4">
         <p>
-          <strong>Global</strong> rules apply across all projects.{" "}
-          <strong>Project</strong> rules are scoped to the current workspace.
-          Rules with &quot;Always Apply&quot; are injected into every prompt.
+          <strong>Global</strong> rules apply across all projects. <strong>Project</strong> rules
+          are scoped to the current workspace. Rules with &quot;Always Apply&quot; are injected into
+          every prompt.
         </p>
       </div>
     </div>

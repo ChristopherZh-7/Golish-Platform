@@ -1,25 +1,22 @@
+import { BookText, Copy, Eye, FileUp, Merge, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { CustomSelect } from "@/components/ui/custom-select";
 import { wordlist } from "@/lib/api";
 import type { WordlistMeta } from "@/lib/api/wordlist";
 import { logAudit } from "@/lib/audit";
-import {
-  BookText,
-  Copy,
-  Eye,
-  FileUp,
-  Merge,
-  Plus,
-  RefreshCw,
-  Trash2,
-  X,
-} from "lucide-react";
 import { copyToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
-import { CustomSelect } from "@/components/ui/custom-select";
 
 const CATEGORIES = [
-  "passwords", "directories", "subdomains", "usernames",
-  "extensions", "parameters", "fuzz", "custom", "merged",
+  "passwords",
+  "directories",
+  "subdomains",
+  "usernames",
+  "extensions",
+  "parameters",
+  "fuzz",
+  "custom",
+  "merged",
 ];
 
 const CAT_COLORS: Record<string, string> = {
@@ -65,7 +62,9 @@ export function WordlistPanel() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const handleImportFile = useCallback(async () => {
     if (!importForm.name.trim()) return;
@@ -86,12 +85,15 @@ export function WordlistPanel() {
             description: importForm.description,
             contentBase64: b64,
             originalFilename: file.name,
-            tags: importForm.tags ? importForm.tags.split(",").map((s) => s.trim()).filter(Boolean) : null,
           });
           setImportForm({ name: "", category: "custom", description: "", tags: "" });
           setShowImport(false);
           load();
-          logAudit({ action: "wordlist_imported", category: "tools", details: importForm.name.trim() });
+          logAudit({
+            action: "wordlist_imported",
+            category: "tools",
+            details: importForm.name.trim(),
+          });
         } catch (e) {
           console.error("Import failed:", e);
         }
@@ -101,12 +103,17 @@ export function WordlistPanel() {
     input.click();
   }, [importForm, load]);
 
-  const handleDelete = useCallback(async (id: string) => {
-    try {
-      await wordlist.deleteWordlist(id);
-      load();
-    } catch { /* ignore */ }
-  }, [load]);
+  const handleDelete = useCallback(
+    async (id: string) => {
+      try {
+        await wordlist.deleteWordlist(id);
+        load();
+      } catch {
+        /* ignore */
+      }
+    },
+    [load]
+  );
 
   const handleDedup = useCallback(async (id: string) => {
     try {
@@ -117,23 +124,30 @@ export function WordlistPanel() {
     }
   }, []);
 
-  const handlePreview = useCallback(async (id: string) => {
-    if (previewId === id) {
-      setPreviewId(null);
-      return;
-    }
-    try {
-      const lines = await wordlist.previewWordlist(id, 30);
-      setPreviewLines(lines);
-      setPreviewId(id);
-    } catch { /* ignore */ }
-  }, [previewId]);
+  const handlePreview = useCallback(
+    async (id: string) => {
+      if (previewId === id) {
+        setPreviewId(null);
+        return;
+      }
+      try {
+        const lines = await wordlist.previewWordlist(id, 30);
+        setPreviewLines(lines);
+        setPreviewId(id);
+      } catch {
+        /* ignore */
+      }
+    },
+    [previewId]
+  );
 
   const handleCopyPath = useCallback(async (id: string) => {
     try {
       const path = await wordlist.getWordlistPath(id);
       await copyToClipboard(path);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   const handleMerge = useCallback(async () => {
@@ -164,7 +178,8 @@ export function WordlistPanel() {
   }, []);
 
   const safeWordlists = wordlists ?? [];
-  const filtered = filterCat === "all" ? safeWordlists : safeWordlists.filter((w) => w.category === filterCat);
+  const filtered =
+    filterCat === "all" ? safeWordlists : safeWordlists.filter((w) => w.category === filterCat);
 
   return (
     <div className="h-full flex flex-col">
@@ -187,15 +202,24 @@ export function WordlistPanel() {
             >
               <Merge className="w-3 h-3" />
             </button>
-            <button onClick={() => setMergeIds(new Set())} className="text-[9px] text-muted-foreground/30">
+            <button
+              onClick={() => setMergeIds(new Set())}
+              className="text-[9px] text-muted-foreground/30"
+            >
               <X className="w-3 h-3" />
             </button>
           </div>
         )}
-        <button onClick={() => setShowImport(true)} className="p-1 text-muted-foreground/30 hover:text-accent transition-colors">
+        <button
+          onClick={() => setShowImport(true)}
+          className="p-1 text-muted-foreground/30 hover:text-accent transition-colors"
+        >
           <Plus className="w-3 h-3" />
         </button>
-        <button onClick={load} className="p-1 text-muted-foreground/30 hover:text-foreground transition-colors">
+        <button
+          onClick={load}
+          className="p-1 text-muted-foreground/30 hover:text-foreground transition-colors"
+        >
           <RefreshCw className={cn("w-3 h-3", loading && "animate-spin")} />
         </button>
       </div>
@@ -206,7 +230,9 @@ export function WordlistPanel() {
           onClick={() => setFilterCat("all")}
           className={cn(
             "text-[9px] px-2 py-0.5 rounded-full transition-colors whitespace-nowrap",
-            filterCat === "all" ? "bg-accent/15 text-accent" : "text-muted-foreground/30 hover:text-foreground"
+            filterCat === "all"
+              ? "bg-accent/15 text-accent"
+              : "text-muted-foreground/30 hover:text-foreground"
           )}
         >
           All
@@ -217,7 +243,9 @@ export function WordlistPanel() {
             onClick={() => setFilterCat(c)}
             className={cn(
               "text-[9px] px-2 py-0.5 rounded-full transition-colors whitespace-nowrap capitalize",
-              filterCat === c ? "bg-accent/15 text-accent" : "text-muted-foreground/30 hover:text-foreground"
+              filterCat === c
+                ? "bg-accent/15 text-accent"
+                : "text-muted-foreground/30 hover:text-foreground"
             )}
           >
             {c}
@@ -230,7 +258,10 @@ export function WordlistPanel() {
         <div className="px-3 py-2 border-b border-border/20 space-y-1.5 bg-muted/5">
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-medium">Import Wordlist</span>
-            <button onClick={() => setShowImport(false)} className="text-muted-foreground/30 hover:text-foreground">
+            <button
+              onClick={() => setShowImport(false)}
+              className="text-muted-foreground/30 hover:text-foreground"
+            >
               <X className="w-3 h-3" />
             </button>
           </div>
@@ -276,7 +307,9 @@ export function WordlistPanel() {
       <div className="flex-1 overflow-y-auto px-3 py-2 space-y-1">
         {filtered.length === 0 ? (
           <div className="text-center text-[11px] text-muted-foreground/30 py-12">
-            {safeWordlists.length === 0 ? "No wordlists imported yet" : "No wordlists in this category"}
+            {safeWordlists.length === 0
+              ? "No wordlists imported yet"
+              : "No wordlists in this category"}
           </div>
         ) : (
           filtered.map((wl) => (
@@ -291,33 +324,60 @@ export function WordlistPanel() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5">
                     <span className="text-[10px] font-medium truncate">{wl.name}</span>
-                    <span className={cn("text-[8px] px-1.5 py-0.5 rounded-full capitalize", CAT_COLORS[wl.category] || "text-slate-400 bg-slate-500/10")}>
+                    <span
+                      className={cn(
+                        "text-[8px] px-1.5 py-0.5 rounded-full capitalize",
+                        CAT_COLORS[wl.category] || "text-slate-400 bg-slate-500/10"
+                      )}
+                    >
                       {wl.category}
                     </span>
                   </div>
                   <div className="flex items-center gap-2 mt-0.5">
-                    <span className="text-[9px] text-muted-foreground/40">{wl.line_count.toLocaleString()} lines</span>
+                    <span className="text-[9px] text-muted-foreground/40">
+                      {wl.line_count.toLocaleString()} lines
+                    </span>
                     <span className="text-[9px] text-muted-foreground/25">•</span>
-                    <span className="text-[9px] text-muted-foreground/40">{formatSize(wl.file_size)}</span>
+                    <span className="text-[9px] text-muted-foreground/40">
+                      {formatSize(wl.file_size)}
+                    </span>
                     {wl.tags.length > 0 && (
                       <>
                         <span className="text-[9px] text-muted-foreground/25">•</span>
-                        <span className="text-[8px] text-muted-foreground/30">{wl.tags.join(", ")}</span>
+                        <span className="text-[8px] text-muted-foreground/30">
+                          {wl.tags.join(", ")}
+                        </span>
                       </>
                     )}
                   </div>
                 </div>
                 <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button onClick={() => handlePreview(wl.id)} className="p-1 text-muted-foreground/30 hover:text-foreground transition-colors" title="Preview">
+                  <button
+                    onClick={() => handlePreview(wl.id)}
+                    className="p-1 text-muted-foreground/30 hover:text-foreground transition-colors"
+                    title="Preview"
+                  >
                     <Eye className="w-3 h-3" />
                   </button>
-                  <button onClick={() => handleCopyPath(wl.id)} className="p-1 text-muted-foreground/30 hover:text-foreground transition-colors" title="Copy path">
+                  <button
+                    onClick={() => handleCopyPath(wl.id)}
+                    className="p-1 text-muted-foreground/30 hover:text-foreground transition-colors"
+                    title="Copy path"
+                  >
                     <Copy className="w-3 h-3" />
                   </button>
-                  <button onClick={() => handleDedup(wl.id)} className="p-1 text-muted-foreground/30 hover:text-accent transition-colors" title="Deduplicate">
+                  <button
+                    onClick={() => handleDedup(wl.id)}
+                    className="p-1 text-muted-foreground/30 hover:text-accent transition-colors"
+                    title="Deduplicate"
+                  >
                     <RefreshCw className="w-3 h-3" />
                   </button>
-                  <button onClick={() => handleDelete(wl.id)} className="p-1 text-muted-foreground/30 hover:text-red-400 transition-colors" title="Delete">
+                  <button
+                    onClick={() => handleDelete(wl.id)}
+                    className="p-1 text-muted-foreground/30 hover:text-red-400 transition-colors"
+                    title="Delete"
+                  >
                     <Trash2 className="w-3 h-3" />
                   </button>
                 </div>

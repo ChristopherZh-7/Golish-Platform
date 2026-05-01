@@ -41,7 +41,7 @@ export const SplitColumn = memo(function SplitColumn({
                 "flex items-center gap-1.5 px-3 py-1 h-full relative cursor-grab active:cursor-grabbing select-none text-[11px] font-mono transition-colors",
                 isRightActive
                   ? "bg-muted text-foreground"
-                  : "text-muted-foreground hover:text-foreground hover:bg-muted/50",
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
               )}
               onClick={() => setRightActiveTab(rTabId)}
               onPointerDown={(e) => splitDrag.onPointerDown(e, rTabId)}

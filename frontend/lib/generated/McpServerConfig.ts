@@ -3,20 +3,21 @@
 /**
  * MCP (Model Context Protocol) server configuration.
  */
-export type McpServerConfig = { 
-/**
- * Command to start the server
- */
-command: string | null, 
-/**
- * Arguments for the command
- */
-args: Array<string>, 
-/**
- * Environment variables for the server
- */
-env: { [key in string]: string }, 
-/**
- * URL for HTTP-based MCP servers
- */
-url: string | null, };
+export type McpServerConfig = {
+  /**
+   * Command to start the server
+   */
+  command: string | null;
+  /**
+   * Arguments for the command
+   */
+  args: Array<string>;
+  /**
+   * Environment variables for the server
+   */
+  env: { [key in string]: string };
+  /**
+   * URL for HTTP-based MCP servers
+   */
+  url: string | null;
+};

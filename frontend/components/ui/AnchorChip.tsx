@@ -47,8 +47,8 @@ export const AnchorChip = memo(function AnchorChip({
 }: AnchorChipProps) {
   // 自动查询模式（hook 在两种模式下都会调用，但传 null/undefined 时 selector 直接返回 null）
   const lookedUp = useAnchorFor(
-    anchor ? null : sessionId ?? null,
-    anchor ? null : requestId ?? null,
+    anchor ? null : (sessionId ?? null),
+    anchor ? null : (requestId ?? null)
   );
   const value = anchor ?? lookedUp;
 
@@ -64,7 +64,7 @@ export const AnchorChip = memo(function AnchorChip({
       className={cn(
         "text-[9.5px] font-mono font-medium tabular-nums px-1 py-px rounded flex-shrink-0",
         KIND_CLASS[kind],
-        className,
+        className
       )}
       title={`Anchor ${value}`}
     >

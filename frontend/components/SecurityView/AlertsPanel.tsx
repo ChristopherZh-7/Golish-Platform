@@ -1,11 +1,9 @@
+import { ChevronRight, Loader2, ShieldAlert, ShieldCheck, ShieldX } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import {
-  ChevronRight, Loader2, ShieldAlert, ShieldCheck, ShieldX,
-} from "lucide-react";
-import { cn } from "@/lib/utils";
-import { zapGetAlerts, zapGetAlertCount } from "@/lib/pentest/zap-api";
-import type { ZapAlert } from "@/lib/pentest/types";
 import { useTranslation } from "react-i18next";
+import type { ZapAlert } from "@/lib/pentest/types";
+import { zapGetAlertCount, zapGetAlerts } from "@/lib/pentest/zap-api";
+import { cn } from "@/lib/utils";
 import { AlertCard } from "./ScannerPanel";
 
 export function ScanResultsView({ alerts }: { alerts: ZapAlert[] }) {
@@ -48,15 +46,24 @@ export function ScanResultsView({ alerts }: { alerts: ZapAlert[] }) {
             onClick={() => setExpandedId(expandedId === a.id ? null : a.id)}
             className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[var(--bg-hover)]/20 transition-colors"
           >
-            <ChevronRight className={cn("w-3 h-3 transition-transform text-muted-foreground/30", expandedId === a.id && "rotate-90")} />
-            <span className={cn("text-[9px] px-1.5 py-0.5 rounded-full font-medium", riskColor(a.risk))}>
+            <ChevronRight
+              className={cn(
+                "w-3 h-3 transition-transform text-muted-foreground/30",
+                expandedId === a.id && "rotate-90"
+              )}
+            />
+            <span
+              className={cn("text-[9px] px-1.5 py-0.5 rounded-full font-medium", riskColor(a.risk))}
+            >
               {riskIcon(a.risk)}
             </span>
             <span className="text-[11px] font-medium flex-1 truncate">{a.name}</span>
             <span className="text-[9px] text-muted-foreground/30 font-mono truncate max-w-[120px]">
               {a.param && `${t("security.param")}: ${a.param}`}
             </span>
-            <span className={cn("text-[9px] px-1.5 py-0.5 rounded-full font-medium", riskColor(a.risk))}>
+            <span
+              className={cn("text-[9px] px-1.5 py-0.5 rounded-full font-medium", riskColor(a.risk))}
+            >
               {a.risk}
             </span>
           </button>
@@ -65,25 +72,37 @@ export function ScanResultsView({ alerts }: { alerts: ZapAlert[] }) {
               <p className="text-[10px] text-foreground/60 leading-relaxed">{a.description}</p>
               {a.param && (
                 <div>
-                  <span className="text-[9px] text-muted-foreground/40 font-medium">{t("security.param")}:</span>
+                  <span className="text-[9px] text-muted-foreground/40 font-medium">
+                    {t("security.param")}:
+                  </span>
                   <span className="text-[10px] text-orange-400 ml-1 font-mono">{a.param}</span>
                 </div>
               )}
               {a.evidence && (
                 <div>
-                  <span className="text-[9px] text-muted-foreground/40 font-medium">{t("security.evidence")}:</span>
-                  <pre className="text-[10px] text-foreground/50 font-mono mt-0.5 bg-muted/10 rounded p-1.5 overflow-x-auto">{a.evidence}</pre>
+                  <span className="text-[9px] text-muted-foreground/40 font-medium">
+                    {t("security.evidence")}:
+                  </span>
+                  <pre className="text-[10px] text-foreground/50 font-mono mt-0.5 bg-muted/10 rounded p-1.5 overflow-x-auto">
+                    {a.evidence}
+                  </pre>
                 </div>
               )}
               {a.solution && (
                 <div>
-                  <span className="text-[9px] text-muted-foreground/40 font-medium">{t("security.solution")}:</span>
-                  <p className="text-[10px] text-green-400/60 mt-0.5 leading-relaxed">{a.solution}</p>
+                  <span className="text-[9px] text-muted-foreground/40 font-medium">
+                    {t("security.solution")}:
+                  </span>
+                  <p className="text-[10px] text-green-400/60 mt-0.5 leading-relaxed">
+                    {a.solution}
+                  </p>
                 </div>
               )}
               <div className="flex items-center gap-3 text-[9px] text-muted-foreground/30">
                 <span>CWE-{a.cweid}</span>
-                <span>{a.method} {a.url}</span>
+                <span>
+                  {a.method} {a.url}
+                </span>
               </div>
             </div>
           )}
@@ -111,7 +130,9 @@ export function AlertsPanel() {
         ]);
         setAlerts(items);
         setCount(total);
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
       setLoading(false);
     }
     load();
@@ -125,12 +146,6 @@ export function AlertsPanel() {
       Informational: "text-blue-400 bg-blue-500/10",
     };
     return c[risk] || "text-muted-foreground bg-muted/20";
-  };
-
-  const riskIcon = (risk: string) => {
-    if (risk === "High") return <ShieldX className="w-3 h-3" />;
-    if (risk === "Medium") return <ShieldAlert className="w-3 h-3" />;
-    return <ShieldCheck className="w-3 h-3" />;
   };
 
   const grouped = useMemo(() => {
@@ -161,7 +176,10 @@ export function AlertsPanel() {
           {riskOrder.map((risk) => {
             const c = grouped[risk]?.length || 0;
             return c > 0 ? (
-              <span key={risk} className={cn("text-[9px] px-1.5 py-0.5 rounded-full font-medium", riskColor(risk))}>
+              <span
+                key={risk}
+                className={cn("text-[9px] px-1.5 py-0.5 rounded-full font-medium", riskColor(risk))}
+              >
                 {risk}: {c}
               </span>
             ) : null;
@@ -178,12 +196,7 @@ export function AlertsPanel() {
           <div className="space-y-2">
             {riskOrder.map((risk) =>
               (grouped[risk] || []).map((alert) => (
-                <AlertCard
-                  key={`${alert.id}-${alert.url}`}
-                  alert={alert}
-                  riskColor={riskColor}
-                  riskIcon={riskIcon}
-                />
+                <AlertCard key={`${alert.id}-${alert.url}`} alert={alert} />
               ))
             )}
           </div>
@@ -192,4 +205,3 @@ export function AlertsPanel() {
     </div>
   );
 }
-

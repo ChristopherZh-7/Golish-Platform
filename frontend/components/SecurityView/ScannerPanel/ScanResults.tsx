@@ -1,11 +1,16 @@
-import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, List, ShieldAlert, ShieldCheck, ShieldX } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ZapAlert } from "@/lib/pentest/types";
+import { cn } from "@/lib/utils";
 
 export function riskColor(risk: string) {
-  const c: Record<string, string> = { High: "text-red-400 bg-red-500/10", Medium: "text-orange-400 bg-orange-500/10", Low: "text-yellow-400 bg-yellow-500/10", Informational: "text-blue-400 bg-blue-500/10" };
+  const c: Record<string, string> = {
+    High: "text-red-400 bg-red-500/10",
+    Medium: "text-orange-400 bg-orange-500/10",
+    Low: "text-yellow-400 bg-yellow-500/10",
+    Informational: "text-blue-400 bg-blue-500/10",
+  };
   return c[risk] || "text-muted-foreground bg-muted/20";
 }
 
@@ -15,11 +20,7 @@ export function riskIcon(risk: string) {
   return <ShieldCheck className="w-3 h-3" />;
 }
 
-export function AlertCard({
-  alert,
-}: {
-  alert: ZapAlert;
-}) {
+export function AlertCard({ alert }: { alert: ZapAlert }) {
   const [expanded, setExpanded] = useState(false);
   return (
     <div className="rounded-xl border border-border/10 bg-[var(--bg-hover)]/15 overflow-hidden">
@@ -34,7 +35,12 @@ export function AlertCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-[12px] font-medium text-foreground">{alert.name}</span>
-            <span className={cn("text-[9px] px-1.5 py-0.5 rounded-full font-medium", riskColor(alert.risk))}>
+            <span
+              className={cn(
+                "text-[9px] px-1.5 py-0.5 rounded-full font-medium",
+                riskColor(alert.risk)
+              )}
+            >
               {alert.risk}
             </span>
           </div>
@@ -42,7 +48,11 @@ export function AlertCard({
             {alert.method} {alert.url}
           </p>
         </div>
-        {expanded ? <ChevronDown className="w-3 h-3 text-muted-foreground/30 mt-1" /> : <ChevronRight className="w-3 h-3 text-muted-foreground/30 mt-1" />}
+        {expanded ? (
+          <ChevronDown className="w-3 h-3 text-muted-foreground/30 mt-1" />
+        ) : (
+          <ChevronRight className="w-3 h-3 text-muted-foreground/30 mt-1" />
+        )}
       </button>
       {expanded && (
         <div className="px-3 pb-3 space-y-2 text-[11px]">
@@ -86,31 +96,66 @@ export function AlertCard({
 function ScanLogRow({ log }: { log: any }) {
   const [expanded, setExpanded] = useState(false);
   const isVuln = log.result === "vulnerable" || log.result === "potential";
-  const detail = typeof log.detail === "string" ? JSON.parse(log.detail || "{}") : (log.detail || {});
+  const detail = typeof log.detail === "string" ? JSON.parse(log.detail || "{}") : log.detail || {};
 
   return (
-    <div className={cn("rounded-lg border transition-colors", isVuln ? "border-red-500/20 bg-red-500/5" : "border-border/5 bg-transparent hover:bg-[var(--bg-hover)]/20")}>
-      <button type="button" onClick={() => setExpanded(!expanded)} className="w-full flex items-center gap-2 px-3 py-1.5 text-left">
-        <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", isVuln ? "bg-red-400" : "bg-muted-foreground/15")} />
-        <span className="text-[10px] font-medium text-muted-foreground/50 w-[80px] flex-shrink-0 truncate">{log.test_type || "unknown"}</span>
-        <span className="text-[10px] font-mono text-foreground/50 flex-1 truncate">{log.parameter || "-"}</span>
-        <span className={cn("text-[9px] px-1.5 py-0.5 rounded-full font-medium", isVuln ? "bg-red-500/10 text-red-400" : "text-muted-foreground/30 bg-muted/10")}>
+    <div
+      className={cn(
+        "rounded-lg border transition-colors",
+        isVuln
+          ? "border-red-500/20 bg-red-500/5"
+          : "border-border/5 bg-transparent hover:bg-[var(--bg-hover)]/20"
+      )}
+    >
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-left"
+      >
+        <span
+          className={cn(
+            "w-1.5 h-1.5 rounded-full flex-shrink-0",
+            isVuln ? "bg-red-400" : "bg-muted-foreground/15"
+          )}
+        />
+        <span className="text-[10px] font-medium text-muted-foreground/50 w-[80px] flex-shrink-0 truncate">
+          {log.test_type || "unknown"}
+        </span>
+        <span className="text-[10px] font-mono text-foreground/50 flex-1 truncate">
+          {log.parameter || "-"}
+        </span>
+        <span
+          className={cn(
+            "text-[9px] px-1.5 py-0.5 rounded-full font-medium",
+            isVuln ? "bg-red-500/10 text-red-400" : "text-muted-foreground/30 bg-muted/10"
+          )}
+        >
           {log.result}
         </span>
         {detail.status_code && (
-          <span className="text-[9px] text-muted-foreground/30 font-mono">{detail.status_code}</span>
+          <span className="text-[9px] text-muted-foreground/30 font-mono">
+            {detail.status_code}
+          </span>
         )}
         {detail.response_time_ms != null && (
-          <span className="text-[9px] text-muted-foreground/20 font-mono w-[40px] text-right">{detail.response_time_ms}ms</span>
+          <span className="text-[9px] text-muted-foreground/20 font-mono w-[40px] text-right">
+            {detail.response_time_ms}ms
+          </span>
         )}
-        {expanded ? <ChevronDown className="w-2.5 h-2.5 text-muted-foreground/20 flex-shrink-0" /> : <ChevronRight className="w-2.5 h-2.5 text-muted-foreground/20 flex-shrink-0" />}
+        {expanded ? (
+          <ChevronDown className="w-2.5 h-2.5 text-muted-foreground/20 flex-shrink-0" />
+        ) : (
+          <ChevronRight className="w-2.5 h-2.5 text-muted-foreground/20 flex-shrink-0" />
+        )}
       </button>
       {expanded && (
         <div className="px-3 pb-2 space-y-1.5 border-t border-border/5">
           {log.payload && (
             <div className="mt-1.5">
               <span className="text-[9px] text-muted-foreground/40 font-medium">Payload</span>
-              <pre className="text-[10px] font-mono text-foreground/50 bg-[var(--bg-hover)]/30 p-2 rounded-lg overflow-x-auto mt-0.5 whitespace-pre-wrap break-all">{log.payload}</pre>
+              <pre className="text-[10px] font-mono text-foreground/50 bg-[var(--bg-hover)]/30 p-2 rounded-lg overflow-x-auto mt-0.5 whitespace-pre-wrap break-all">
+                {log.payload}
+              </pre>
             </div>
           )}
           {log.url && (
@@ -122,7 +167,9 @@ function ScanLogRow({ log }: { log: any }) {
           {log.evidence && (
             <div>
               <span className="text-[9px] text-muted-foreground/40 font-medium">Evidence</span>
-              <pre className="text-[10px] font-mono text-foreground/50 bg-[var(--bg-hover)]/30 p-2 rounded-lg overflow-x-auto mt-0.5 whitespace-pre-wrap break-all">{log.evidence}</pre>
+              <pre className="text-[10px] font-mono text-foreground/50 bg-[var(--bg-hover)]/30 p-2 rounded-lg overflow-x-auto mt-0.5 whitespace-pre-wrap break-all">
+                {log.evidence}
+              </pre>
             </div>
           )}
         </div>
@@ -131,13 +178,12 @@ function ScanLogRow({ log }: { log: any }) {
   );
 }
 
-export function ScanDetailTabs({ alerts, scanLogs }: {
-  alerts: ZapAlert[];
-  scanLogs: any[];
-}) {
+export function ScanDetailTabs({ alerts, scanLogs }: { alerts: ZapAlert[]; scanLogs: any[] }) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<"alerts" | "tests">(alerts.length > 0 ? "alerts" : "tests");
-  const vulnCount = scanLogs.filter((l) => l.result === "vulnerable" || l.result === "potential").length;
+  const vulnCount = scanLogs.filter(
+    (l) => l.result === "vulnerable" || l.result === "potential"
+  ).length;
   const testTypes = useMemo(() => {
     const map = new Map<string, number>();
     for (const l of scanLogs) {
@@ -149,10 +195,26 @@ export function ScanDetailTabs({ alerts, scanLogs }: {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="flex items-center gap-1 px-4 py-1.5 border-b border-border/10 flex-shrink-0">
-        <button className={cn("px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors", tab === "alerts" ? "bg-accent/10 text-accent" : "text-muted-foreground/40 hover:text-muted-foreground/70")} onClick={() => setTab("alerts")}>
+        <button
+          className={cn(
+            "px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors",
+            tab === "alerts"
+              ? "bg-accent/10 text-accent"
+              : "text-muted-foreground/40 hover:text-muted-foreground/70"
+          )}
+          onClick={() => setTab("alerts")}
+        >
           {t("security.alertsTab", "Alerts")} ({alerts.length})
         </button>
-        <button className={cn("px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors", tab === "tests" ? "bg-accent/10 text-accent" : "text-muted-foreground/40 hover:text-muted-foreground/70")} onClick={() => setTab("tests")}>
+        <button
+          className={cn(
+            "px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors",
+            tab === "tests"
+              ? "bg-accent/10 text-accent"
+              : "text-muted-foreground/40 hover:text-muted-foreground/70"
+          )}
+          onClick={() => setTab("tests")}
+        >
           {t("security.testsTab", "Test Details")} ({scanLogs.length})
         </button>
         {tab === "tests" && vulnCount > 0 && (
@@ -169,10 +231,16 @@ export function ScanDetailTabs({ alerts, scanLogs }: {
           ) : (
             <div className="px-4 py-3 space-y-2">
               <div className="flex items-center gap-2 mb-2">
-                <span className="text-[11px] font-medium text-foreground/60">{alerts.length} {t("security.alertsTotal")}</span>
+                <span className="text-[11px] font-medium text-foreground/60">
+                  {alerts.length} {t("security.alertsTotal")}
+                </span>
                 {(() => {
                   const vulnTypes = new Set(alerts.map((a) => a.name));
-                  return <span className="text-[10px] text-muted-foreground/30">{vulnTypes.size} {t("security.uniqueVulnTypes")}</span>;
+                  return (
+                    <span className="text-[10px] text-muted-foreground/30">
+                      {vulnTypes.size} {t("security.uniqueVulnTypes")}
+                    </span>
+                  );
                 })()}
               </div>
               {alerts.map((alert) => (
@@ -180,30 +248,31 @@ export function ScanDetailTabs({ alerts, scanLogs }: {
               ))}
             </div>
           )
+        ) : scanLogs.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground/20">
+            <List className="w-10 h-10" />
+            <p className="text-[12px]">{t("security.noTestLogs", "No test logs available")}</p>
+          </div>
         ) : (
-          scanLogs.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground/20">
-              <List className="w-10 h-10" />
-              <p className="text-[12px]">{t("security.noTestLogs", "No test logs available")}</p>
-            </div>
-          ) : (
-            <div className="px-4 py-3 space-y-1">
-              {testTypes.length > 1 && (
-                <div className="flex flex-wrap gap-1.5 mb-3">
-                  {testTypes.map(([type, count]) => (
-                    <span key={type} className="text-[9px] px-1.5 py-0.5 rounded-full bg-muted/20 text-muted-foreground/50">
-                      {type} ({count})
-                    </span>
-                  ))}
-                </div>
-              )}
-              <div className="space-y-0.5">
-                {scanLogs.map((log) => (
-                  <ScanLogRow key={log.id} log={log} />
+          <div className="px-4 py-3 space-y-1">
+            {testTypes.length > 1 && (
+              <div className="flex flex-wrap gap-1.5 mb-3">
+                {testTypes.map(([type, count]) => (
+                  <span
+                    key={type}
+                    className="text-[9px] px-1.5 py-0.5 rounded-full bg-muted/20 text-muted-foreground/50"
+                  >
+                    {type} ({count})
+                  </span>
                 ))}
               </div>
+            )}
+            <div className="space-y-0.5">
+              {scanLogs.map((log) => (
+                <ScanLogRow key={log.id} log={log} />
+              ))}
             </div>
-          )
+          </div>
         )}
       </div>
     </div>

@@ -1,5 +1,6 @@
 //! Tauri commands for project configuration management.
 
+use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -47,7 +48,7 @@ impl From<ProjectFormData> for ProjectConfig {
 
 /// Save a new or updated project configuration.
 #[tauri::command]
-pub async fn save_project(form: ProjectFormData) -> Result<(), String> {
+pub async fn save_project(form: ProjectFormData) -> Result<(), GolishError> {
     let config: ProjectConfig = form.into();
 
     storage_save(&config)
@@ -60,7 +61,7 @@ pub async fn save_project(form: ProjectFormData) -> Result<(), String> {
 pub async fn delete_project_config(
     state: tauri::State<'_, DbState>,
     name: String,
-) -> Result<bool, String> {
+) -> Result<bool, GolishError> {
     let project_path = storage_load(&name)
         .await
         .ok()
@@ -132,7 +133,7 @@ pub async fn delete_project_config(
 
 /// List all saved project configurations.
 #[tauri::command]
-pub async fn list_project_configs() -> Result<Vec<ProjectData>, String> {
+pub async fn list_project_configs() -> Result<Vec<ProjectData>, GolishError> {
     let projects = storage_list()
         .await
         .map_err(|e| format!("Failed to list projects: {}", e))?;
@@ -142,7 +143,7 @@ pub async fn list_project_configs() -> Result<Vec<ProjectData>, String> {
 
 /// Get a single project configuration by name.
 #[tauri::command]
-pub async fn get_project_config(name: String) -> Result<Option<ProjectData>, String> {
+pub async fn get_project_config(name: String) -> Result<Option<ProjectData>, GolishError> {
     let project = storage_load(&name)
         .await
         .map_err(|e| format!("Failed to load project: {}", e))?;
@@ -152,7 +153,7 @@ pub async fn get_project_config(name: String) -> Result<Option<ProjectData>, Str
 
 /// Save workspace state (conversations, chat history) for a project.
 #[tauri::command]
-pub async fn save_project_workspace(project_name: String, state_json: String) -> Result<(), String> {
+pub async fn save_project_workspace(project_name: String, state_json: String) -> Result<(), GolishError> {
     save_workspace(&project_name, &state_json)
         .await
         .map_err(|e| format!("Failed to save workspace: {}", e))
@@ -160,7 +161,7 @@ pub async fn save_project_workspace(project_name: String, state_json: String) ->
 
 /// Load workspace state for a project. Returns None if no saved state exists.
 #[tauri::command]
-pub async fn load_project_workspace(project_name: String) -> Result<Option<String>, String> {
+pub async fn load_project_workspace(project_name: String) -> Result<Option<String>, GolishError> {
     load_workspace(&project_name)
         .await
         .map_err(|e| format!("Failed to load workspace: {}", e))
@@ -187,15 +188,15 @@ pub struct HostCaptures {
 
 /// Load the pentest project config (project.json) for a project.
 #[tauri::command]
-pub async fn get_pentest_config(project_name: String) -> Result<Option<PentestProjectConfig>, String> {
+pub async fn get_pentest_config(project_name: String) -> Result<Option<PentestProjectConfig>, GolishError> {
     let project = storage_load(&project_name)
         .await
-        .map_err(|e| e.to_string())?
+?
         .ok_or_else(|| format!("Project '{}' not found", project_name))?;
 
     file_storage::load_project_json(&project.root_path)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// Save the pentest project config (project.json) for a project.
@@ -203,34 +204,34 @@ pub async fn get_pentest_config(project_name: String) -> Result<Option<PentestPr
 pub async fn save_pentest_config(
     project_name: String,
     config: PentestProjectConfig,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let project = storage_load(&project_name)
         .await
-        .map_err(|e| e.to_string())?
+?
         .ok_or_else(|| format!("Project '{}' not found", project_name))?;
 
     file_storage::save_project_json(&project.root_path, &config)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// List all captured hosts and their ports.
 #[tauri::command]
-pub async fn list_captures(project_name: String) -> Result<CaptureOverview, String> {
+pub async fn list_captures(project_name: String) -> Result<CaptureOverview, GolishError> {
     let project = storage_load(&project_name)
         .await
-        .map_err(|e| e.to_string())?
+?
         .ok_or_else(|| format!("Project '{}' not found", project_name))?;
 
     let hosts = file_storage::list_capture_hosts(&project.root_path)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let mut host_captures = Vec::new();
     for host in hosts {
         let ports = file_storage::list_capture_ports(&project.root_path, &host)
             .await
-            .map_err(|e| e.to_string())?;
+?;
         host_captures.push(HostCaptures {
             host,
             ports,
@@ -239,7 +240,7 @@ pub async fn list_captures(project_name: String) -> Result<CaptureOverview, Stri
 
     let tool_outputs = file_storage::list_tool_outputs(&project.root_path)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     Ok(CaptureOverview {
         hosts: host_captures,
@@ -254,15 +255,15 @@ pub async fn list_capture_files(
     host: String,
     port: u16,
     file_type: String,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, GolishError> {
     let project = storage_load(&project_name)
         .await
-        .map_err(|e| e.to_string())?
+?
         .ok_or_else(|| format!("Project '{}' not found", project_name))?;
 
     file_storage::list_capture_files(&project.root_path, &host, port, &file_type)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// Read a file by relative path from the project root.
@@ -270,47 +271,47 @@ pub async fn list_capture_files(
 pub async fn read_project_file(
     project_name: String,
     rel_path: String,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     let project = storage_load(&project_name)
         .await
-        .map_err(|e| e.to_string())?
+?
         .ok_or_else(|| format!("Project '{}' not found", project_name))?;
 
     let content = file_storage::read_file(&project.root_path, &rel_path)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     String::from_utf8(content).map_err(|e| format!("File is not valid UTF-8: {}", e))
 }
 
 /// Initialize project directory structure (idempotent).
 #[tauri::command]
-pub async fn init_project_structure(project_name: String) -> Result<(), String> {
+pub async fn init_project_structure(project_name: String) -> Result<(), GolishError> {
     let project = storage_load(&project_name)
         .await
-        .map_err(|e| e.to_string())?
+?
         .ok_or_else(|| format!("Project '{}' not found", project_name))?;
 
     file_storage::init_project_dirs(&project.root_path)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     file_storage::init_project_json(&project.root_path, &project.name)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     Ok(())
 }
 
 /// Clean temporary files.
 #[tauri::command]
-pub async fn clean_project_temp(project_name: String) -> Result<u64, String> {
+pub async fn clean_project_temp(project_name: String) -> Result<u64, GolishError> {
     let project = storage_load(&project_name)
         .await
-        .map_err(|e| e.to_string())?
+?
         .ok_or_else(|| format!("Project '{}' not found", project_name))?;
 
     file_storage::clean_temp(&project.root_path)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }

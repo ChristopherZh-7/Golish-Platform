@@ -5,10 +5,9 @@ import { listen as tauriListen } from "../tauri-listen";
 export class ApiError extends Error {
   constructor(
     public readonly command: string,
-    public readonly cause: unknown,
+    public readonly cause: unknown
   ) {
-    const msg =
-      cause instanceof Error ? cause.message : String(cause);
+    const msg = cause instanceof Error ? cause.message : String(cause);
     super(`[API] ${command}: ${msg}`);
     this.name = "ApiError";
   }
@@ -23,7 +22,7 @@ export function getInflightCommands(): ReadonlyMap<number, { command: string; st
 
 export async function invoke<T = void>(
   command: string,
-  args?: Record<string, unknown>,
+  args?: Record<string, unknown>
 ): Promise<T> {
   const id = ++requestCounter;
   inflightCommands.set(id, { command, startedAt: Date.now() });
@@ -36,9 +35,6 @@ export async function invoke<T = void>(
   }
 }
 
-export function listen<T>(
-  channel: string,
-  handler: (payload: T) => void,
-): Promise<UnlistenFn> {
+export function listen<T>(channel: string, handler: (payload: T) => void): Promise<UnlistenFn> {
   return tauriListen<T>(channel, (event) => handler(event.payload));
 }

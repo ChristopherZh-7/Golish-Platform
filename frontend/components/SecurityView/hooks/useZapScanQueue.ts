@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { securityApi } from "@/lib/security";
+import {
+  clearCompletedScanQueueEntries,
+  importZapAlerts,
+  listScanQueue,
+  removeScanQueueEntry,
+  type ScanEndpoint,
+  saveScanQueueToDb,
+} from "@/lib/pentest/scan-queue";
 import {
   zapGetAlerts,
   zapPauseScan,
@@ -9,14 +16,7 @@ import {
   zapStartSpider,
   zapStopScan,
 } from "@/lib/pentest/zap-api";
-import {
-  clearCompletedScanQueueEntries,
-  importZapAlerts,
-  listScanQueue,
-  removeScanQueueEntry,
-  saveScanQueueToDb,
-  type ScanEndpoint,
-} from "@/lib/pentest/scan-queue";
+import { securityApi } from "@/lib/security";
 
 export interface UseZapScanQueueOptions {
   /** Active project path; queue persistence is keyed by it. */
@@ -134,7 +134,7 @@ export function useZapScanQueue({
     onUrlConsumed?.();
     // intentionally only watching initialBatchUrls — same semantics as before
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialBatchUrls]);
+  }, [initialBatchUrls, onUrlConsumed, projectPath]);
 
   const addEndpoint = useCallback(
     (url: string): boolean => {
@@ -186,9 +186,7 @@ export function useZapScanQueue({
       if (beforeScan) await beforeScan();
       try {
         await zapStartSpider(url);
-        setEndpoints((prev) =>
-          prev.map((e) => (e.url === url ? { ...e, status: "scanning" } : e))
-        );
+        setEndpoints((prev) => prev.map((e) => (e.url === url ? { ...e, status: "scanning" } : e)));
         const id = await zapStartScan(url, undefined, undefined, null, selectedPolicy || null);
         setEndpoints((prev) => prev.map((e) => (e.url === url ? { ...e, scanId: id } : e)));
       } catch {
@@ -233,9 +231,7 @@ export function useZapScanQueue({
           const [prog, alerts, msgCount] = await Promise.all([
             zapScanProgress(ep.scanId as string),
             zapGetAlerts(ep.url, 0, 200),
-            securityApi.zapScanMessageCount(ep.scanId as string).catch(
-              () => 0
-            ),
+            securityApi.zapScanMessageCount(ep.scanId as string).catch(() => 0),
           ]);
           const isComplete = prog.progress >= 100;
           if (isComplete && alerts.length > 0) {

@@ -1,11 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { notes } from "@/lib/api";
-import type { Note } from "@/lib/api/notes";
-import { logAudit } from "@/lib/audit";
 import { MessageSquare, Plus, Trash2, X } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { addNote, deleteNote, listNotes, type Note, updateNote } from "@/lib/api/notes";
+import { logAudit } from "@/lib/audit";
 import { getProjectPath } from "@/lib/projects";
-
+import { cn } from "@/lib/utils";
 
 const COLORS = [
   { id: "yellow", bg: "bg-yellow-500/10 border-yellow-500/20", dot: "bg-yellow-400" },
@@ -33,7 +31,7 @@ export function QuickNotes({
 
   const load = useCallback(async () => {
     try {
-      const list = await notes.listNotes({
+      const list = await listNotes({
         entityType,
         entityId,
         projectPath: getProjectPath(),
@@ -44,12 +42,14 @@ export function QuickNotes({
     }
   }, [entityType, entityId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const handleAdd = useCallback(async () => {
     if (!newContent.trim()) return;
     try {
-      await notes.addNote({
+      await addNote({
         entityType,
         entityId,
         content: newContent.trim(),
@@ -60,29 +60,50 @@ export function QuickNotes({
       setShowAdd(false);
       load();
 
-      logAudit({ action: "note_added", category: "notes", details: `Added note to ${entityType}:${entityId}`, entityType, entityId });
-    } catch { /* ignore */ }
+      logAudit({
+        action: "note_added",
+        category: "notes",
+        details: `Added note to ${entityType}:${entityId}`,
+        entityType,
+        entityId,
+      });
+    } catch {
+      /* ignore */
+    }
   }, [newContent, newColor, entityType, entityId, load]);
 
-  const handleUpdate = useCallback(async (id: string, content: string) => {
-    try {
-      await notes.updateNote({ id, content, projectPath: getProjectPath() });
-      setEditingId(null);
-      load();
-    } catch { /* ignore */ }
-  }, [load]);
+  const handleUpdate = useCallback(
+    async (id: string, content: string) => {
+      try {
+        await updateNote({ id, content, projectPath: getProjectPath() });
+        setEditingId(null);
+        load();
+      } catch {
+        /* ignore */
+      }
+    },
+    [load]
+  );
 
-  const handleDelete = useCallback(async (id: string) => {
-    try {
-      await notes.deleteNote({ id, projectPath: getProjectPath() });
-      load();
-    } catch { /* ignore */ }
-  }, [load]);
+  const handleDelete = useCallback(
+    async (id: string) => {
+      try {
+        await deleteNote({ id, projectPath: getProjectPath() });
+        load();
+      } catch {
+        /* ignore */
+      }
+    },
+    [load]
+  );
 
   if (compact && notes.length === 0 && !showAdd) {
     return (
       <button
-        onClick={() => { setShowAdd(true); requestAnimationFrame(() => textRef.current?.focus()); }}
+        onClick={() => {
+          setShowAdd(true);
+          requestAnimationFrame(() => textRef.current?.focus());
+        }}
         className="flex items-center gap-1 text-[9px] text-muted-foreground/30 hover:text-muted-foreground/60 transition-colors"
       >
         <MessageSquare className="w-2.5 h-2.5" />
@@ -104,9 +125,13 @@ export function QuickNotes({
                     defaultValue={note.content}
                     className="w-full text-[10px] bg-transparent outline-none resize-none"
                     rows={2}
-                    autoFocus
                     onBlur={(e) => handleUpdate(note.id, e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleUpdate(note.id, e.currentTarget.value); } }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        handleUpdate(note.id, e.currentTarget.value);
+                      }
+                    }}
                   />
                 ) : (
                   <div className="flex items-start gap-1.5">
@@ -139,7 +164,13 @@ export function QuickNotes({
             placeholder="Add a note..."
             className="w-full text-[10px] px-2 py-1.5 bg-background border border-border/30 rounded-md outline-none resize-none focus:border-accent/40"
             rows={2}
-            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleAdd(); } if (e.key === "Escape") setShowAdd(false); }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleAdd();
+              }
+              if (e.key === "Escape") setShowAdd(false);
+            }}
           />
           <div className="flex items-center gap-1.5">
             <div className="flex items-center gap-1">
@@ -150,24 +181,35 @@ export function QuickNotes({
                   className={cn(
                     "w-3 h-3 rounded-full transition-all",
                     c.dot,
-                    newColor === c.id ? "ring-1 ring-offset-1 ring-foreground/30 ring-offset-background scale-110" : "opacity-50 hover:opacity-80",
+                    newColor === c.id
+                      ? "ring-1 ring-offset-1 ring-foreground/30 ring-offset-background scale-110"
+                      : "opacity-50 hover:opacity-80"
                   )}
                 />
               ))}
             </div>
             <div className="flex-1" />
-            <button onClick={() => setShowAdd(false)} className="text-[9px] text-muted-foreground/40 hover:text-foreground transition-colors">
+            <button
+              onClick={() => setShowAdd(false)}
+              className="text-[9px] text-muted-foreground/40 hover:text-foreground transition-colors"
+            >
               <X className="w-3 h-3" />
             </button>
-            <button onClick={handleAdd} disabled={!newContent.trim()}
-              className="text-[9px] text-accent hover:text-accent/80 font-medium disabled:opacity-30 transition-colors">
+            <button
+              onClick={handleAdd}
+              disabled={!newContent.trim()}
+              className="text-[9px] text-accent hover:text-accent/80 font-medium disabled:opacity-30 transition-colors"
+            >
               Save
             </button>
           </div>
         </div>
       ) : (
         <button
-          onClick={() => { setShowAdd(true); requestAnimationFrame(() => textRef.current?.focus()); }}
+          onClick={() => {
+            setShowAdd(true);
+            requestAnimationFrame(() => textRef.current?.focus());
+          }}
           className="flex items-center gap-1 text-[9px] text-muted-foreground/30 hover:text-muted-foreground/60 transition-colors"
         >
           <Plus className="w-2.5 h-2.5" />

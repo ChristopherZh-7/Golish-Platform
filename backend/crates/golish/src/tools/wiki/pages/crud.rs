@@ -4,6 +4,7 @@
 //! so search and dashboards stay current. Failures are logged but never
 //! abort the user-facing operation.
 
+use crate::error::GolishError;
 use golish_db::models::NewWikiPage;
 use tokio::fs;
 
@@ -13,7 +14,7 @@ use super::super::{is_wiki_file, wiki_base_dir};
 use super::frontmatter::{build_tree, extract_frontmatter, infer_category_from_path, WikiEntry};
 
 #[tauri::command]
-pub async fn wiki_list() -> Result<Vec<WikiEntry>, String> {
+pub async fn wiki_list() -> Result<Vec<WikiEntry>, GolishError> {
     let base = wiki_base_dir();
     if !base.exists() {
         fs::create_dir_all(&base)
@@ -21,11 +22,11 @@ pub async fn wiki_list() -> Result<Vec<WikiEntry>, String> {
             .map_err(|e| format!("cannot create wiki dir: {e}"))?;
         return Ok(Vec::new());
     }
-    build_tree(&base, "").await.map_err(|e| e.to_string())
+    build_tree(&base, "").await.map_err(GolishError::from)
 }
 
 #[tauri::command]
-pub async fn wiki_read(path: String) -> Result<String, String> {
+pub async fn wiki_read(path: String) -> Result<String, GolishError> {
     let full = wiki_base_dir().join(&path);
     if !full.exists() {
         return Err(format!("file not found: {path}"));
@@ -40,7 +41,7 @@ pub async fn wiki_write(
     state: tauri::State<'_, DbState>,
     path: String,
     content: String,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let full = wiki_base_dir().join(&path);
     if let Some(parent) = full.parent() {
         fs::create_dir_all(parent)
@@ -80,7 +81,7 @@ pub async fn wiki_write(
 pub async fn wiki_delete(
     state: tauri::State<'_, DbState>,
     path: String,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let full = wiki_base_dir().join(&path);
     if !full.exists() {
         return Ok(());
@@ -116,7 +117,7 @@ pub async fn wiki_delete(
 }
 
 #[tauri::command]
-pub async fn wiki_rename(old_path: String, new_path: String) -> Result<(), String> {
+pub async fn wiki_rename(old_path: String, new_path: String) -> Result<(), GolishError> {
     let base = wiki_base_dir();
     let from = base.join(&old_path);
     let to = base.join(&new_path);
@@ -134,7 +135,7 @@ pub async fn wiki_rename(old_path: String, new_path: String) -> Result<(), Strin
 }
 
 #[tauri::command]
-pub async fn wiki_create_dir(path: String) -> Result<(), String> {
+pub async fn wiki_create_dir(path: String) -> Result<(), GolishError> {
     let full = wiki_base_dir().join(&path);
     fs::create_dir_all(&full)
         .await

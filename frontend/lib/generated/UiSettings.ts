@@ -5,20 +5,21 @@ import type { WindowSettings } from "./WindowSettings";
 /**
  * User interface preferences.
  */
-export type UiSettings = { 
-/**
- * Theme
- */
-theme: Theme, 
-/**
- * Show tips on startup
- */
-show_tips: boolean, 
-/**
- * Hide banner/welcome message
- */
-hide_banner: boolean, 
-/**
- * Window state (persisted on close/resize)
- */
-window: WindowSettings, };
+export type UiSettings = {
+  /**
+   * Theme
+   */
+  theme: Theme;
+  /**
+   * Show tips on startup
+   */
+  show_tips: boolean;
+  /**
+   * Hide banner/welcome message
+   */
+  hide_banner: boolean;
+  /**
+   * Window state (persisted on close/resize)
+   */
+  window: WindowSettings;
+};

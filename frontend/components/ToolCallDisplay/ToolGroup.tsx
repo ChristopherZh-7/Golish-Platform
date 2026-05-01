@@ -21,7 +21,6 @@ import { getToolIcon } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import type { ToolCallSource } from "@/store";
 
-
 /** Source badge to indicate where a tool call came from */
 function SourceBadge({ source }: { source?: ToolCallSource }) {
   if (!source || source.type === "main") {

@@ -9,7 +9,7 @@ type CreateTerminalFn = (
   workingDirectory?: string,
   skipConversationLink?: boolean,
   scrollback?: string,
-  logicalTerminalId?: string,
+  logicalTerminalId?: string
 ) => Promise<string | null>;
 
 interface UseAiChatInitResult {

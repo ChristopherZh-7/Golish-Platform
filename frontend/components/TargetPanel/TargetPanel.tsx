@@ -1,14 +1,11 @@
-import { useCallback, useState } from "react";
-import {
-  Crosshair, GitFork, LayoutList, Loader2, Shield,
-} from "lucide-react";
-import { cn } from "@/lib/utils";
+import { Crosshair, GitFork, LayoutList, Loader2, Shield } from "lucide-react";
+import { lazy, Suspense, useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TargetGraphView } from "@/components/TargetPanel/TargetGraphView";
-import { TargetListView } from "./TargetListView";
+import { cn } from "@/lib/utils";
 import { useTargetData } from "./hooks/useTargetData";
+import { TargetListView } from "./TargetListView";
 
-import { lazy, Suspense } from "react";
 const SecurityViewLazy = lazy(() =>
   import("@/components/SecurityView/SecurityView").then((m) => ({ default: m.SecurityView }))
 );
@@ -23,9 +20,14 @@ export function TargetPanel() {
   const [scanTarget, setScanTarget] = useState<{ id: string; value: string } | null>(null);
 
   const {
-    safeTargets, stats,
-    handleAdd, handleBatchAdd, handleDelete,
-    handleToggleScope, handleUpdateNotes, handleClearAll,
+    safeTargets,
+    stats,
+    handleAdd,
+    handleBatchAdd,
+    handleDelete,
+    handleToggleScope,
+    handleUpdateNotes,
+    handleClearAll,
   } = useTargetData();
 
   const openScanTools = useCallback((target: { id: string; value: string }) => {
@@ -44,7 +46,7 @@ export function TargetPanel() {
               "flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md transition-colors",
               activeTab === "targets"
                 ? "bg-accent/15 text-accent font-medium"
-                : "text-muted-foreground hover:text-foreground hover:bg-muted/40",
+                : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
             )}
             onClick={() => setActiveTab("targets")}
           >
@@ -58,7 +60,7 @@ export function TargetPanel() {
               "flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md transition-colors",
               activeTab === "security"
                 ? "bg-accent/15 text-accent font-medium"
-                : "text-muted-foreground hover:text-foreground hover:bg-muted/40",
+                : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
             )}
             onClick={() => setActiveTab("security")}
           >
@@ -74,7 +76,9 @@ export function TargetPanel() {
                   type="button"
                   className={cn(
                     "p-1.5 transition-colors",
-                    viewMode === "list" ? "bg-accent/15 text-accent" : "text-muted-foreground hover:text-foreground hover:bg-muted/30",
+                    viewMode === "list"
+                      ? "bg-accent/15 text-accent"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
                   )}
                   onClick={() => setViewMode("list")}
                   title={t("targets.listView", "List View")}
@@ -85,7 +89,9 @@ export function TargetPanel() {
                   type="button"
                   className={cn(
                     "p-1.5 transition-colors",
-                    viewMode === "graph" ? "bg-accent/15 text-accent" : "text-muted-foreground hover:text-foreground hover:bg-muted/30",
+                    viewMode === "graph"
+                      ? "bg-accent/15 text-accent"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
                   )}
                   onClick={() => setViewMode("graph")}
                   title={t("targets.graphView", "Graph View")}
@@ -104,10 +110,14 @@ export function TargetPanel() {
         </div>
       ) : activeTab === "security" ? (
         <div className="flex-1 min-h-0 overflow-hidden">
-          <Suspense fallback={<div className="h-full flex items-center justify-center"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground/20" /></div>}>
-            <SecurityViewLazy
-              initialScanTarget={scanTarget ?? undefined}
-            />
+          <Suspense
+            fallback={
+              <div className="h-full flex items-center justify-center">
+                <Loader2 className="w-5 h-5 animate-spin text-muted-foreground/20" />
+              </div>
+            }
+          >
+            <SecurityViewLazy initialScanTarget={scanTarget ?? undefined} />
           </Suspense>
         </div>
       ) : (

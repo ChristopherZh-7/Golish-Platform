@@ -75,5 +75,5 @@ export interface SessionStoreDraft {
 
   // ── Conversation slice fields ──────────────────────────────────────
   conversationTerminals?: Record<string, string[]>;
-  activeConversationId?: string;
+  activeConversationId: string | null;
 }

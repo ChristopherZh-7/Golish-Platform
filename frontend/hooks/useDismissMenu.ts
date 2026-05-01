@@ -1,12 +1,9 @@
-import { useEffect, type RefObject } from "react";
+import { type RefObject, useEffect } from "react";
 
 /**
  * Dismiss a floating menu/popup when clicking outside or pressing Escape.
  */
-export function useDismissMenu(
-  ref: RefObject<HTMLElement | null>,
-  onClose: () => void,
-) {
+export function useDismissMenu(ref: RefObject<HTMLElement | null>, onClose: () => void) {
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) {

@@ -21,9 +21,7 @@ export const handleTaskProgress: EventHandler<{
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
-  logger.info(
-    `[Task ${event.status}] ${event.message} (task: ${event.task_id})`
-  );
+  logger.info(`[Task ${event.status}] ${event.message} (task: ${event.task_id})`);
   const state = ctx.getState();
   state.addAgentMessage(ctx.sessionId, {
     id: nextId(),
@@ -44,9 +42,7 @@ export const handleSubtaskCreated: EventHandler<{
   seq?: number;
 }> = (event, ctx) => {
   const agentLabel = event.agent ?? "auto";
-  logger.info(
-    `[Subtask Created] ${event.title} (agent: ${agentLabel}, id: ${event.subtask_id})`
-  );
+  logger.info(`[Subtask Created] ${event.title} (agent: ${agentLabel}, id: ${event.subtask_id})`);
   const state = ctx.getState();
   state.addAgentMessage(ctx.sessionId, {
     id: nextId(),
@@ -124,9 +120,7 @@ export const handleTaskResumed: EventHandler<{
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
-  logger.info(
-    `[Task Resumed] from subtask ${event.subtask_index}/${event.total_subtasks}`
-  );
+  logger.info(`[Task Resumed] from subtask ${event.subtask_index}/${event.total_subtasks}`);
   const state = ctx.getState();
   state.addAgentMessage(ctx.sessionId, {
     id: nextId(),

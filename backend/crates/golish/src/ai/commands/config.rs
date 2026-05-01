@@ -1,5 +1,6 @@
 // Configuration commands for AI agent setup and workspace management.
 
+use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,7 +24,7 @@ pub struct ProjectSettingsResponse {
 /// Get the OpenRouter API key from settings with environment variable fallback.
 /// Priority: settings.ai.openrouter.api_key > $OPENROUTER_API_KEY
 #[tauri::command]
-pub async fn get_openrouter_api_key(state: State<'_, AppState>) -> Result<Option<String>, String> {
+pub async fn get_openrouter_api_key(state: State<'_, AppState>) -> Result<Option<String>, GolishError> {
     let settings = state.settings_manager.get().await;
     Ok(get_with_env_fallback(
         &settings.ai.openrouter.api_key,
@@ -35,7 +36,7 @@ pub async fn get_openrouter_api_key(state: State<'_, AppState>) -> Result<Option
 /// Get the OpenAI API key from settings with environment variable fallback.
 /// Priority: settings.ai.openai.api_key > $OPENAI_API_KEY
 #[tauri::command]
-pub async fn get_openai_api_key(state: State<'_, AppState>) -> Result<Option<String>, String> {
+pub async fn get_openai_api_key(state: State<'_, AppState>) -> Result<Option<String>, GolishError> {
     let settings = state.settings_manager.get().await;
     Ok(get_with_env_fallback(
         &settings.ai.openai.api_key,
@@ -46,7 +47,7 @@ pub async fn get_openai_api_key(state: State<'_, AppState>) -> Result<Option<Str
 
 /// Get per-project AI settings from {workspace}/.golish/project.toml
 #[tauri::command]
-pub async fn get_project_settings(workspace: String) -> Result<ProjectSettingsResponse, String> {
+pub async fn get_project_settings(workspace: String) -> Result<ProjectSettingsResponse, GolishError> {
     let workspace_path = PathBuf::from(workspace);
     let manager = ProjectSettingsManager::new(&workspace_path).await;
 
@@ -65,7 +66,7 @@ pub async fn save_project_model(
     workspace: String,
     provider: String,
     model: String,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let workspace_path = PathBuf::from(workspace);
     let manager = ProjectSettingsManager::new(&workspace_path).await;
 
@@ -74,7 +75,7 @@ pub async fn save_project_model(
     manager
         .set_model(ai_provider, model)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     Ok(())
 }
 
@@ -98,7 +99,7 @@ pub async fn init_ai_agent_openai(
     api_key: String,
     base_url: Option<String>,
     reasoning_effort: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     // Clean up existing session before replacing the bridge
     {
         let bridge_guard = state.ai_state.bridge.read().await;
@@ -128,7 +129,7 @@ pub async fn init_ai_agent_openai(
         runtime,
     )
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     configure_bridge(&mut bridge, &state, "legacy", Some(app_for_tools)).await;
 
@@ -170,7 +171,7 @@ pub async fn init_ai_agent_vertex(
     project_id: String,
     location: String,
     model: String,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     // Clean up existing session before replacing the bridge
     // This ensures sessions are properly finalized when switching models
     {
@@ -205,7 +206,7 @@ pub async fn init_ai_agent_vertex(
         runtime,
     )
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     configure_bridge(&mut bridge, &state, "legacy", Some(app_for_tools)).await;
 
@@ -239,7 +240,7 @@ pub async fn update_ai_workspace(
     state: State<'_, AppState>,
     workspace: String,
     session_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     tracing::debug!(
         "[cwd-sync] update_ai_workspace called with: {}, session_id: {:?}",
         workspace,
@@ -282,7 +283,7 @@ pub async fn update_ai_workspace(
 /// Load environment variables from a .env file.
 /// Returns the number of variables loaded.
 #[tauri::command]
-pub fn load_env_file(path: String) -> Result<usize, String> {
+pub fn load_env_file(path: String) -> Result<usize, GolishError> {
     match dotenvy::from_path(&path) {
         Ok(_) => {
             // Count how many vars we can read
@@ -311,7 +312,7 @@ pub struct VertexAiEnvConfig {
 /// - project_id: settings > $VERTEX_AI_PROJECT_ID > $GOOGLE_CLOUD_PROJECT
 /// - location: settings > $VERTEX_AI_LOCATION > "us-east5"
 #[tauri::command]
-pub async fn get_vertex_ai_config(state: State<'_, AppState>) -> Result<VertexAiEnvConfig, String> {
+pub async fn get_vertex_ai_config(state: State<'_, AppState>) -> Result<VertexAiEnvConfig, GolishError> {
     let settings = state.settings_manager.get().await;
 
     let credentials_path = get_with_env_fallback(
@@ -363,7 +364,7 @@ pub async fn set_sub_agent_model(
     agent_id: String,
     provider: Option<String>,
     model: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let bridges = state.bridges.read().await;
     let bridge = bridges
         .get(&session_id)
@@ -408,7 +409,7 @@ pub async fn get_sub_agent_model(
     state: State<'_, super::AiState>,
     session_id: String,
     agent_id: String,
-) -> Result<Option<(String, String)>, String> {
+) -> Result<Option<(String, String)>, GolishError> {
     let bridges = state.bridges.read().await;
     let bridge = bridges
         .get(&session_id)

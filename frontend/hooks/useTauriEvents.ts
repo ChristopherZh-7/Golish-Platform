@@ -1,30 +1,30 @@
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect } from "react";
 import { isAiSessionInitialized, updateAiWorkspace } from "@/lib/ai";
+import { getGitBranch, gitStatus } from "@/lib/api/git";
+import { ptyGetForegroundProcess } from "@/lib/api/pty";
 import { addCommandHistory } from "@/lib/history";
 import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
-import { getSettings } from "@/lib/settings";
-import { getGitBranch, gitStatus } from "@/lib/api/git";
-import { ptyGetForegroundProcess } from "@/lib/api/pty";
 import { runTauriUnlistenFn } from "@/lib/run-tauri-unlisten";
+import { getSettings } from "@/lib/settings";
 import { listen } from "@/lib/tauri-listen";
 import { liveTerminalManager, virtualTerminalManager } from "@/lib/terminal";
-import { useStore, _drainOutputBufferSize } from "@/store";
+import { _drainOutputBufferSize, useStore } from "@/store";
 import {
   type AlternateScreenEvent,
   BUILTIN_FULLTERM_COMMANDS,
   type CommandBlockEvent,
   type DirectoryChangedEvent,
+  extractProcessName,
   GIT_STATUS_POLL_INTERVAL_MS,
+  isFastCommand,
   PROCESS_DETECTION_DELAY_MS,
-  SHELL_PROCESSES,
   type SessionEndedEvent,
+  SHELL_PROCESSES,
+  shouldRefreshGitInfo,
   type TerminalOutputEvent,
   type VirtualEnvChangedEvent,
-  extractProcessName,
-  isFastCommand,
-  shouldRefreshGitInfo,
 } from "./tauri-event-types";
 
 let activeGeneration = 0;
@@ -152,7 +152,10 @@ export function useTauriEvents() {
 
             const processName = extractProcessName(command);
             if (processName && fulltermCommands.has(processName)) {
-              logger.debug("[fullterm] Switching to fullterm mode for", { session_id, processName });
+              logger.debug("[fullterm] Switching to fullterm mode for", {
+                session_id,
+                processName,
+              });
               state.setRenderMode(session_id, "fullterm");
               usedAlternateScreen.set(session_id, true);
             }
@@ -178,7 +181,10 @@ export function useTauriEvents() {
           }
           case "command_end": {
             const commandText =
-              command ?? lastStartedCommand.get(session_id) ?? state.pendingCommand[session_id]?.command ?? null;
+              command ??
+              lastStartedCommand.get(session_id) ??
+              state.pendingCommand[session_id]?.command ??
+              null;
 
             if (exit_code !== null) {
               const wasFulltermApp = usedAlternateScreen.get(session_id) ?? false;
@@ -209,7 +215,9 @@ export function useTauriEvents() {
             }
 
             const commandForRefresh =
-              command ?? lastStartedCommand.get(session_id) ?? state.pendingCommand[session_id]?.command;
+              command ??
+              lastStartedCommand.get(session_id) ??
+              state.pendingCommand[session_id]?.command;
 
             if (exit_code === 0 && shouldRefreshGitInfo(commandForRefresh ?? null)) {
               const cwd = state.sessions[session_id]?.workingDirectory;
@@ -310,7 +318,13 @@ export function useTauriEvents() {
       for (const { fallbackTimer } of deferredExitCodes.values()) clearTimeout(fallbackTimer);
       deferredExitCodes.clear();
       clearInterval(gitStatusPollInterval);
-      Promise.all(unlisteners.map((p) => p.then((unlisten) => { runTauriUnlistenFn(unlisten); }))).catch((err) => {
+      Promise.all(
+        unlisteners.map((p) =>
+          p.then((unlisten) => {
+            runTauriUnlistenFn(unlisten);
+          })
+        )
+      ).catch((err) => {
         logger.warn("Failed to unlisten from some events:", err);
       });
     };

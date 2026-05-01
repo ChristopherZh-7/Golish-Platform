@@ -20,7 +20,7 @@ const FILTERED_FIELD_PREFIXES: &[&str] = &[
 
 /// Check if a field name should be filtered from log output.
 #[inline]
-fn should_filter_field(name: &str) -> bool {
+pub(super) fn should_filter_field(name: &str) -> bool {
     FILTERED_FIELD_PREFIXES
         .iter()
         .any(|prefix| name.starts_with(prefix))

@@ -92,6 +92,7 @@ export function ToolApprovalDialog({ sessionId }: ToolApprovalDialogProps) {
       await respondToToolApproval(sessionId, {
         request_id: tool.id,
         approved: true,
+        reason: null,
         remember: true,
         always_allow: alwaysAllow,
       });
@@ -113,6 +114,7 @@ export function ToolApprovalDialog({ sessionId }: ToolApprovalDialogProps) {
       await respondToToolApproval(sessionId, {
         request_id: tool.id,
         approved: false,
+        reason: null,
         remember: true,
         always_allow: false,
       });

@@ -118,7 +118,10 @@ class ThemeManagerImpl {
   /**
    * Load and apply a custom theme object (for user uploads)
    */
-  async loadThemeFromObject(theme: GolishTheme, assets?: Array<[string, Uint8Array]>): Promise<void> {
+  async loadThemeFromObject(
+    theme: GolishTheme,
+    assets?: Array<[string, Uint8Array]>
+  ): Promise<void> {
     // Generate a safe theme ID from the theme name
     const customId = theme.name.toLowerCase().replace(/[^a-z0-9-]/g, "-");
 

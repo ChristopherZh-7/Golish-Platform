@@ -13,9 +13,9 @@
  * 否则按 toolCalls 反查归并。
  */
 import type { ActiveSubAgent, SubAgentToolCall } from "../index";
+import { useStore } from "../index";
 import type { AnchorMap } from "./anchors";
 import { selectAnchorMap } from "./anchors";
-import { useStore } from "../index";
 
 export type AgentTreeStatus = "running" | "completed" | "error" | "interrupted" | "pending";
 
@@ -97,10 +97,7 @@ function toolStatus(tc: SubAgentToolCall): AgentTreeStatus {
   return "running";
 }
 
-function buildTree(
-  subAgents: ActiveSubAgent[],
-  anchors: AnchorMap,
-): AgentTree {
+function buildTree(subAgents: ActiveSubAgent[], anchors: AnchorMap): AgentTree {
   // 1) 反向索引：tool call id → 拥有它的 sub-agent
   //    这样我们能从一个嵌套 sub-agent 的 parentRequestId 反查它的 owner
   const ownerByToolId = new Map<string, ActiveSubAgent>();
@@ -224,7 +221,7 @@ const EMPTY_TREE: AgentTree = {
 
 export function selectAgentTree(
   state: ReturnType<typeof useStore.getState>,
-  sessionId: string,
+  sessionId: string
 ): AgentTree {
   const subAgents = state.activeSubAgents[sessionId] ?? EMPTY_AGENTS;
   if (subAgents.length === 0) return EMPTY_TREE;

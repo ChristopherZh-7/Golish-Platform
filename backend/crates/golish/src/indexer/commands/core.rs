@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::error::GolishError;
 use crate::state::AppState;
 
 /// Result of indexing a file or directory.
@@ -100,7 +101,7 @@ pub fn get_indexed_file_count(state: State<'_, AppState>) -> Result<usize, Strin
             // Use all_files() instead of find_files("*") - more efficient and doesn't require regex
             Ok(indexer.all_files().len())
         })
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// Get all indexed file paths as absolute paths.
@@ -118,7 +119,7 @@ pub fn get_all_indexed_files(state: State<'_, AppState>) -> Result<Vec<String>, 
             // all_files() already returns Vec<String> of absolute paths
             Ok(indexer.all_files())
         })
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// Index a specific file.
@@ -139,7 +140,7 @@ pub async fn index_file(
             indexer.index_file(&path)?;
             Ok(())
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(GolishError::from)?;
 
     Ok(IndexResult {
         files_indexed: 1,
@@ -231,7 +232,7 @@ pub async fn search_code(
                 })
                 .collect())
         })
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// Search for files by name pattern.
@@ -246,7 +247,7 @@ pub async fn search_files(
             let results = indexer.find_files(&pattern)?;
             Ok(results)
         })
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// Shutdown the indexer.

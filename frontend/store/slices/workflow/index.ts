@@ -8,15 +8,15 @@
  *   plan.ts       — Plan management actions (setPlan, syncPlanToPipeline)
  */
 
-export type { WorkflowState, WorkflowActions, WorkflowSlice, WorkflowStoreDraft } from "./types";
+export type { WorkflowActions, WorkflowSlice, WorkflowState, WorkflowStoreDraft } from "./types";
 export { initialWorkflowState } from "./types";
 
 import type { SliceCreator } from "../types";
-import type { WorkflowSlice, WorkflowStoreDraft } from "./types";
-import { initialWorkflowState } from "./types";
-import { createSubAgentActions } from "./sub-agent";
 import { createPipelineActions } from "./pipeline";
 import { createPlanActions } from "./plan";
+import { createSubAgentActions } from "./sub-agent";
+import type { WorkflowSlice, WorkflowStoreDraft } from "./types";
+import { initialWorkflowState } from "./types";
 
 export const createWorkflowSlice: SliceCreator<WorkflowSlice, WorkflowStoreDraft> = (set) => ({
   ...initialWorkflowState,
@@ -128,15 +128,15 @@ export const createWorkflowSlice: SliceCreator<WorkflowSlice, WorkflowStoreDraft
 
 // ── Selectors ──────────────────────────────────────────────────────────
 
-import type { WorkflowState } from "./types";
 import type { ActiveSubAgent, ActiveWorkflow } from "../../store-types";
+import type { WorkflowState } from "./types";
 
 export const selectActiveWorkflow = <T extends WorkflowState>(
   state: T,
-  sessionId: string,
+  sessionId: string
 ): ActiveWorkflow | null => state.activeWorkflows[sessionId] ?? null;
 
 export const selectActiveSubAgents = <T extends WorkflowState>(
   state: T,
-  sessionId: string,
+  sessionId: string
 ): ActiveSubAgent[] => state.activeSubAgents[sessionId] ?? [];

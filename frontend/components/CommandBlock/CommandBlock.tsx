@@ -22,7 +22,7 @@ interface CommandBlockProps {
   source?: "manual" | "pipeline";
 }
 
-export function CommandBlock({ block, sessionId, onToggleCollapse, source }: CommandBlockProps) {
+export function CommandBlock({ block, sessionId: _sessionId, onToggleCollapse, source }: CommandBlockProps) {
   const isSuccess = block.exitCode === 0;
   const [outputExpanded, setOutputExpanded] = useState(false);
 
@@ -100,7 +100,7 @@ export function CommandBlock({ block, sessionId, onToggleCollapse, source }: Com
           <div
             className={cn(
               "relative overflow-hidden transition-[max-height] duration-200",
-              !outputExpanded && "max-h-[120px]",
+              !outputExpanded && "max-h-[120px]"
             )}
           >
             <pre
@@ -120,9 +120,13 @@ export function CommandBlock({ block, sessionId, onToggleCollapse, source }: Com
               onClick={() => setOutputExpanded(!outputExpanded)}
             >
               {outputExpanded ? (
-                <><Minimize2 className="w-3 h-3" /> Collapse</>
+                <>
+                  <Minimize2 className="w-3 h-3" /> Collapse
+                </>
               ) : (
-                <><Maximize2 className="w-3 h-3" /> Expand</>
+                <>
+                  <Maximize2 className="w-3 h-3" /> Expand
+                </>
               )}
             </button>
           )}

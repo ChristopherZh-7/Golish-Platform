@@ -69,7 +69,9 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
         return (
           <div style={{ padding: 24, color: "#888", fontSize: 13 }}>
             <p>A component crashed repeatedly. Reload the app to retry.</p>
-            <pre style={{ fontSize: 11, marginTop: 8, color: "#666" }}>{this.state.error?.message}</pre>
+            <pre style={{ fontSize: 11, marginTop: 8, color: "#666" }}>
+              {this.state.error?.message}
+            </pre>
           </div>
         );
       }

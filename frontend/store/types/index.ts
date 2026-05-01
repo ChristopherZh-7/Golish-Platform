@@ -13,53 +13,45 @@
  *   timeline.ts   — Unified timeline block union type
  */
 
-export type { StepStatus, PlanStep, PlanSummary, TaskPlan, RetiredPlan } from "./plan";
-
-export type {
-  SessionMode,
-  InputMode,
-  RenderMode,
-  AiStatus,
-  TabType,
-  AgentMode,
-  ExecutionMode,
-  AiConfig,
-  DetailViewMode,
-  Session,
-} from "./session";
-
-export type {
-  PipelineStepStatus,
-  PipelineSubTarget,
-  PipelineStepExecution,
-  PipelineExecution,
-} from "./pipeline";
-
-export type {
-  ToolCallSource,
-  ToolCall,
-  ActiveToolCall,
-  AskHumanRequest,
-} from "./tool-call";
-
-export type {
-  StreamingBlock,
-  FinalizedStreamingBlock,
-  CompactionResult,
-} from "./streaming";
-
-export type { WorkflowStatus, WorkflowStep, ActiveWorkflow } from "./workflow";
-
-export type { SubAgentToolCall, SubAgentEntry, ActiveSubAgent } from "./sub-agent";
-
-export type {
-  CommandBlock,
-  AgentMessage,
-  AiToolExecution,
-  PendingCommand,
-} from "./message";
-
-export type { UnifiedBlock } from "./timeline";
-
 export type { ApprovalPattern, ReasoningEffort } from "@/lib/ai";
 export type { RiskLevel } from "@/lib/tools";
+export type {
+  AgentMessage,
+  AiToolExecution,
+  CommandBlock,
+  PendingCommand,
+} from "./message";
+export type {
+  PipelineExecution,
+  PipelineStepExecution,
+  PipelineStepStatus,
+  PipelineSubTarget,
+} from "./pipeline";
+export type { PlanStep, PlanSummary, RetiredPlan, StepStatus, TaskPlan } from "./plan";
+export type {
+  AgentMode,
+  AiConfig,
+  AiStatus,
+  DetailViewMode,
+  ExecutionMode,
+  InputMode,
+  RenderMode,
+  Session,
+  SessionMode,
+  TabType,
+} from "./session";
+export type {
+  CompactionResult,
+  FinalizedStreamingBlock,
+  StreamingBlock,
+} from "./streaming";
+export type { ActiveSubAgent, SubAgentEntry, SubAgentToolCall } from "./sub-agent";
+
+export type { UnifiedBlock } from "./timeline";
+export type {
+  ActiveToolCall,
+  AskHumanRequest,
+  ToolCall,
+  ToolCallSource,
+} from "./tool-call";
+export type { ActiveWorkflow, WorkflowStatus, WorkflowStep } from "./workflow";

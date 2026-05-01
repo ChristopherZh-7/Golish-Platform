@@ -3,12 +3,13 @@
 /**
  * Grok settings for sidecar synthesis.
  */
-export type SynthesisGrokSettings = { 
-/**
- * API key (falls back to env var GROK_API_KEY)
- */
-api_key: string | null, 
-/**
- * Model to use for synthesis (default: grok-2)
- */
-model: string, };
+export type SynthesisGrokSettings = {
+  /**
+   * API key (falls back to env var GROK_API_KEY)
+   */
+  api_key: string | null;
+  /**
+   * Model to use for synthesis (default: grok-2)
+   */
+  model: string;
+};

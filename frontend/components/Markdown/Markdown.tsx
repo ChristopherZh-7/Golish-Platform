@@ -48,9 +48,9 @@ getCodeTheme().then((theme) => {
 });
 
 import { ChevronDown, FileCode } from "lucide-react";
-import { stripAllAnsi } from "@/lib/ansi";
 import { FilePathLink } from "@/components/FilePathLink";
 import { useFileIndex } from "@/hooks/useFileIndex";
+import { stripAllAnsi } from "@/lib/ansi";
 import type { FileIndex } from "@/lib/fileIndex";
 import { detectFilePathsWithIndex } from "@/lib/pathDetection";
 import { cn } from "@/lib/utils";
@@ -129,13 +129,38 @@ interface MarkdownProps {
 }
 
 const LANG_LABELS: Record<string, string> = {
-  js: "JavaScript", jsx: "JSX", ts: "TypeScript", tsx: "TSX",
-  py: "Python", rb: "Ruby", rs: "Rust", go: "Go", java: "Java",
-  sh: "Shell", bash: "Bash", zsh: "Zsh", fish: "Fish",
-  css: "CSS", html: "HTML", json: "JSON", yaml: "YAML", yml: "YAML",
-  toml: "TOML", xml: "XML", sql: "SQL", md: "Markdown",
-  c: "C", cpp: "C++", cs: "C#", swift: "Swift", kt: "Kotlin",
-  php: "PHP", lua: "Lua", r: "R", dart: "Dart", zig: "Zig",
+  js: "JavaScript",
+  jsx: "JSX",
+  ts: "TypeScript",
+  tsx: "TSX",
+  py: "Python",
+  rb: "Ruby",
+  rs: "Rust",
+  go: "Go",
+  java: "Java",
+  sh: "Shell",
+  bash: "Bash",
+  zsh: "Zsh",
+  fish: "Fish",
+  css: "CSS",
+  html: "HTML",
+  json: "JSON",
+  yaml: "YAML",
+  yml: "YAML",
+  toml: "TOML",
+  xml: "XML",
+  sql: "SQL",
+  md: "Markdown",
+  c: "C",
+  cpp: "C++",
+  cs: "C#",
+  swift: "Swift",
+  kt: "Kotlin",
+  php: "PHP",
+  lua: "Lua",
+  r: "R",
+  dart: "Dart",
+  zig: "Zig",
   text: "Plain Text",
 };
 
@@ -214,20 +239,24 @@ function CodeBlock({
                 onClick={() => setExpanded(!expanded)}
                 title={expanded ? "Collapse" : "Expand"}
               >
-                <ChevronDown className={cn(
-                  "w-3.5 h-3.5 text-muted-foreground/50 transition-transform",
-                  expanded && "rotate-180",
-                )} />
+                <ChevronDown
+                  className={cn(
+                    "w-3.5 h-3.5 text-muted-foreground/50 transition-transform",
+                    expanded && "rotate-180"
+                  )}
+                />
               </button>
             )}
           </div>
         </div>
         {/* Code body */}
-        <div className={cn(
-          "overflow-x-auto overflow-y-auto [&>div]:!overflow-visible [&>div]:!pb-6",
-          isLong && !expanded && "max-h-[180px]",
-          isLong && expanded && "max-h-[500px]",
-        )}>
+        <div
+          className={cn(
+            "overflow-x-auto overflow-y-auto [&>div]:!overflow-visible [&>div]:!pb-6",
+            isLong && !expanded && "max-h-[180px]",
+            isLong && expanded && "max-h-[500px]"
+          )}
+        >
           <Suspense fallback={<CodeBlockFallback code={codeString} language={language} />}>
             <SyntaxHighlightedCode code={codeString} language={language} {...props} />
           </Suspense>
@@ -295,18 +324,27 @@ export const Markdown = memo(function Markdown({
       code: CodeBlock,
       // Headings
       h1: ({ children }: { children?: ReactNode }) => (
-        <h1 className="text-base font-bold text-foreground mt-4 mb-2 first:mt-0 pb-1.5 border-b border-[var(--border-medium)] truncate max-w-full" title={typeof children === "string" ? children : undefined}>
+        <h1
+          className="text-base font-bold text-foreground mt-4 mb-2 first:mt-0 pb-1.5 border-b border-[var(--border-medium)] truncate max-w-full"
+          title={typeof children === "string" ? children : undefined}
+        >
           {children}
         </h1>
       ),
       h2: ({ children }: { children?: ReactNode }) => (
-        <h2 className="text-[13px] font-bold text-accent mt-3 mb-2 first:mt-0 pb-1.5 border-b border-[var(--border-subtle)] flex items-center gap-1.5 overflow-hidden max-h-8" title={typeof children === "string" ? children : undefined}>
+        <h2
+          className="text-[13px] font-bold text-accent mt-3 mb-2 first:mt-0 pb-1.5 border-b border-[var(--border-subtle)] flex items-center gap-1.5 overflow-hidden max-h-8"
+          title={typeof children === "string" ? children : undefined}
+        >
           <span className="w-0.5 h-4 bg-accent rounded-full flex-shrink-0" />
           <span className="truncate">{children}</span>
         </h2>
       ),
       h3: ({ children }: { children?: ReactNode }) => (
-        <h3 className="text-[12.5px] font-semibold text-muted-foreground mt-3 mb-1.5 first:mt-0 pl-2.5 border-l-2 border-accent truncate max-w-full" title={typeof children === "string" ? children : undefined}>
+        <h3
+          className="text-[12.5px] font-semibold text-muted-foreground mt-3 mb-1.5 first:mt-0 pl-2.5 border-l-2 border-accent truncate max-w-full"
+          title={typeof children === "string" ? children : undefined}
+        >
           {children}
         </h3>
       ),

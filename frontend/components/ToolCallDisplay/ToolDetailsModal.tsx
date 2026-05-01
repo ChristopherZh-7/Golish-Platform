@@ -26,16 +26,16 @@ import {
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { copyToClipboard } from "@/lib/clipboard";
+import { formatDurationShort } from "@/lib/time";
 import { type AnyToolCall, formatPrimaryArg } from "@/lib/toolGrouping";
 import {
   formatToolName,
   formatToolResult,
   getRiskLevel,
-  isAgentTerminalCommand,
   getToolIcon,
+  isAgentTerminalCommand,
   isEditFileResult,
 } from "@/lib/tools";
-import { formatDurationShort } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import type { RiskLevel } from "@/store";
 
@@ -153,7 +153,6 @@ interface ToolDetailsModalProps {
   tool: AnyToolCall | null;
   onClose: () => void;
 }
-
 
 // Risk level styling
 const RISK_STYLES: Record<RiskLevel, { color: string; bg: string; icon: typeof Shield }> = {

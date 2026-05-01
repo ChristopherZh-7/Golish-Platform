@@ -29,6 +29,7 @@ import type {
   ToolCallSource,
   UnifiedBlock,
 } from "../store-types";
+import type { SessionStoreDraft } from "./session-draft-types";
 import type { SliceCreator } from "./types";
 
 // Re-export output-buffer helpers (consumed by store/index.ts)
@@ -113,13 +114,13 @@ export interface SessionActions {
       args: Record<string, unknown>;
       executedByAgent?: boolean;
       source?: ToolCallSource;
-    },
+    }
   ) => void;
   updateStreamingToolBlock: (
     sessionId: string,
     toolId: string,
     success: boolean,
-    result?: unknown,
+    result?: unknown
   ) => void;
   clearStreamingBlocks: (sessionId: string) => void;
   addUdiffResultBlock: (sessionId: string, response: string, durationMs: number) => void;
@@ -144,7 +145,7 @@ export interface SessionActions {
   moveTabToPane: (
     sourceTabId: string,
     destTabId: string,
-    location: "left" | "right" | "top" | "bottom",
+    location: "left" | "right" | "top" | "bottom"
   ) => void;
 }
 
@@ -175,7 +176,7 @@ export const initialSessionState: SessionState = {
 // Slice creator (composes sub-modules)
 // ---------------------------------------------------------------------------
 
-export const createSessionSlice: SliceCreator<SessionSlice> = (set, get) => ({
+export const createSessionSlice: SliceCreator<SessionSlice, SessionStoreDraft> = (set, get) => ({
   ...initialSessionState,
   ...createSessionCoreActions(set, get),
   ...createSessionTerminalActions(set, get),

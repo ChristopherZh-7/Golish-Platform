@@ -34,7 +34,7 @@ export const handleContextWarning: EventHandler<{
  */
 export const handleCompactionStarted: EventHandler<{
   type: "compaction_started";
-  tokens_before: number;
+  tokens_before: bigint;
   messages_before: number;
   session_id: string;
   seq?: number;
@@ -51,12 +51,12 @@ export const handleCompactionStarted: EventHandler<{
  */
 export const handleCompactionCompleted: EventHandler<{
   type: "compaction_completed";
-  tokens_before: number;
+  tokens_before: bigint;
   messages_before: number;
   messages_after: number;
   summary_length: number;
-  summary?: string;
-  summarizer_input?: string;
+  summary: string | null;
+  summarizer_input: string | null;
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
@@ -82,12 +82,12 @@ export const handleCompactionCompleted: EventHandler<{
     timestamp: new Date().toISOString(),
     compaction: {
       status: "success",
-      tokensBefore: event.tokens_before,
+      tokensBefore: Number(event.tokens_before),
       messagesBefore: event.messages_before,
       messagesAfter: event.messages_after,
       summaryLength: event.summary_length,
-      summary: event.summary,
-      summarizerInput: event.summarizer_input,
+      summary: event.summary ?? undefined,
+      summarizerInput: event.summarizer_input ?? undefined,
     },
   });
 
@@ -102,10 +102,10 @@ export const handleCompactionCompleted: EventHandler<{
  */
 export const handleCompactionFailed: EventHandler<{
   type: "compaction_failed";
-  tokens_before: number;
+  tokens_before: bigint;
   messages_before: number;
   error: string;
-  summarizer_input?: string;
+  summarizer_input: string | null;
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
@@ -194,10 +194,10 @@ export const handleCompactionFailed: EventHandler<{
     timestamp: new Date().toISOString(),
     compaction: {
       status: "failed",
-      tokensBefore: event.tokens_before,
+      tokensBefore: Number(event.tokens_before),
       messagesBefore: event.messages_before,
       error: event.error,
-      summarizerInput: event.summarizer_input,
+      summarizerInput: event.summarizer_input ?? undefined,
     },
   });
 

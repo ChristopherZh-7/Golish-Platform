@@ -1,5 +1,6 @@
 //! AI agent lifecycle commands: init / unified-init.
 
+use crate::error::GolishError;
 use std::sync::Arc;
 
 use tauri::{AppHandle, State};
@@ -30,7 +31,7 @@ pub async fn init_ai_agent(
     provider: String,
     model: String,
     api_key: String,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     // Clean up existing session before replacing the bridge
     // This ensures sessions are properly finalized when switching models/providers
     {
@@ -57,7 +58,7 @@ pub async fn init_ai_agent(
     let mut bridge =
         AgentBridge::new_with_runtime(workspace.into(), &provider, &model, &api_key, runtime)
             .await
-            .map_err(|e| e.to_string())?;
+?;
 
     configure_bridge(&mut bridge, &state, "legacy", Some(app_for_tools)).await;
 
@@ -88,7 +89,7 @@ pub async fn init_ai_agent_unified(
     state: State<'_, AppState>,
     app: AppHandle,
     config: ProviderConfig,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     // Clean up existing session before replacing the bridge
     {
         let bridge_guard = state.ai_state.bridge.read().await;
@@ -117,7 +118,7 @@ pub async fn init_ai_agent_unified(
         "",
     )
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     configure_bridge(&mut bridge, &state, "legacy", Some(app_for_tools)).await;
 

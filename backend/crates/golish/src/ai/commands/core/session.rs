@@ -1,5 +1,6 @@
 //! AI session lifecycle and config commands.
 
+use crate::error::GolishError;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -31,7 +32,7 @@ pub async fn init_ai_session(
     app: AppHandle,
     session_id: String,
     config: ProviderConfig,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     // Clean up existing session bridge if present
     if state.ai_state.has_session_bridge(&session_id).await {
         tracing::debug!("Removing existing bridge for session {}", session_id);
@@ -88,7 +89,7 @@ pub async fn init_ai_session(
 
     let mut bridge = AgentBridge::from_provider_config(config, shared_config, runtime, &session_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     configure_bridge(&mut bridge, &state, &session_id, Some(app_for_tools)).await;
 
@@ -151,7 +152,7 @@ pub async fn init_ai_session(
 pub async fn shutdown_ai_session(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     // Signal cancellation before removing the bridge so the running
     // agentic loop (which holds an Arc clone) sees the flag.
     {
@@ -185,7 +186,7 @@ pub async fn shutdown_ai_session(
 pub async fn cancel_ai_generation(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     if let Some(bridge) = state.ai_state.get_session_bridge(&session_id).await {
         bridge.cancel();
         tracing::info!("Generation cancelled (session kept alive) for {}", session_id);
@@ -201,7 +202,7 @@ pub async fn cancel_ai_generation(
 pub async fn is_ai_session_initialized(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<bool, String> {
+) -> Result<bool, GolishError> {
     Ok(state.ai_state.has_session_bridge(&session_id).await)
 }
 
@@ -217,7 +218,7 @@ pub struct SessionAiConfig {
 pub async fn get_session_ai_config(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<Option<SessionAiConfig>, String> {
+) -> Result<Option<SessionAiConfig>, GolishError> {
     let bridges = state.ai_state.get_bridges().await;
     if let Some(bridge) = bridges.get(&session_id) {
         Ok(Some(SessionAiConfig {

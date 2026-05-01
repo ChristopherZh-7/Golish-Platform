@@ -1,11 +1,17 @@
-import { useCallback, useEffect, useState, useMemo } from "react";
 import {
-  ChevronDown, ChevronRight, Edit3, FolderOpen, Globe,
-  Loader2, Lock, Plus, Trash2,
+  ChevronDown,
+  ChevronRight,
+  Edit3,
+  FolderOpen,
+  Globe,
+  Loader2,
+  Lock,
+  Plus,
+  Trash2,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
-import type { SubAgentModelConfig } from "@/lib/settings";
+import { Button } from "@/components/ui/button";
 import {
   type AgentFileInfo,
   deleteAgentDefinition,
@@ -15,6 +21,7 @@ import {
   seedAgents,
 } from "@/lib/ai";
 import { notify } from "@/lib/notify";
+import type { SubAgentModelConfig } from "@/lib/settings";
 import { AgentEditor, type EditingAgent, emptyAgent } from "./AgentEditor";
 import { ModelOverridePanel } from "./ModelOverrides";
 
@@ -267,7 +274,11 @@ export function SubAgentSettings({ subAgentModels, onChange }: SubAgentSettingsP
                 </span>
                 <div className="flex flex-wrap gap-1">
                   {agent.allowed_tools.map((tool) => (
-                    <Badge key={tool} variant="secondary" className="text-[10px] font-mono px-1.5 py-0">
+                    <Badge
+                      key={tool}
+                      variant="secondary"
+                      className="text-[10px] font-mono px-1.5 py-0"
+                    >
                       {tool}
                     </Badge>
                   ))}
@@ -285,23 +296,36 @@ export function SubAgentSettings({ subAgentModels, onChange }: SubAgentSettingsP
             {(agent.temperature != null || agent.max_tokens != null || agent.top_p != null) && (
               <div className="flex gap-4 text-xs">
                 {agent.temperature != null && (
-                  <span><span className="text-muted-foreground">temp:</span> {agent.temperature}</span>
+                  <span>
+                    <span className="text-muted-foreground">temp:</span> {agent.temperature}
+                  </span>
                 )}
                 {agent.max_tokens != null && (
-                  <span><span className="text-muted-foreground">max_tokens:</span> {agent.max_tokens}</span>
+                  <span>
+                    <span className="text-muted-foreground">max_tokens:</span> {agent.max_tokens}
+                  </span>
                 )}
                 {agent.top_p != null && (
-                  <span><span className="text-muted-foreground">top_p:</span> {agent.top_p}</span>
+                  <span>
+                    <span className="text-muted-foreground">top_p:</span> {agent.top_p}
+                  </span>
                 )}
               </div>
             )}
 
             {agent.path && (
-              <p className="text-[10px] text-muted-foreground/50 font-mono truncate">{agent.path}</p>
+              <p className="text-[10px] text-muted-foreground/50 font-mono truncate">
+                {agent.path}
+              </p>
             )}
 
             <div className="flex gap-2 pt-1">
-              <Button variant="outline" size="sm" onClick={() => startEditing(agent)} className="h-7 text-xs">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => startEditing(agent)}
+                className="h-7 text-xs"
+              >
                 <Edit3 className="w-3 h-3 mr-1" /> Edit Definition
               </Button>
               {!agent.is_system && (
@@ -371,7 +395,8 @@ export function SubAgentSettings({ subAgentModels, onChange }: SubAgentSettingsP
           {projectAgents.map(renderAgentCard)}
           {projectAgents.length === 0 && (
             <p className="text-xs text-muted-foreground italic py-3 text-center">
-              No project-specific agents. These are stored in your project&apos;s <code>.golish/agents/</code> directory.
+              No project-specific agents. These are stored in your project&apos;s{" "}
+              <code>.golish/agents/</code> directory.
             </p>
           )}
         </div>
@@ -379,8 +404,8 @@ export function SubAgentSettings({ subAgentModels, onChange }: SubAgentSettingsP
 
       <div className="text-xs text-muted-foreground border-t border-[var(--border-medium)] pt-4">
         <p>
-          <strong>Global</strong> agents are available across all projects.{" "}
-          <strong>Project</strong> agents are scoped to the current workspace and override global agents with the same ID.
+          <strong>Global</strong> agents are available across all projects. <strong>Project</strong>{" "}
+          agents are scoped to the current workspace and override global agents with the same ID.
           System agents (Worker, Memorist, Reflector) can be edited but not deleted.
         </p>
       </div>

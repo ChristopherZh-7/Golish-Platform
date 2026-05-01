@@ -28,6 +28,9 @@ pub enum GolishError {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("HTTP error: {0}")]
+    Http(#[from] reqwest::Error),
+
     // -- Domain crate errors --------------------------------------------------
 
     #[error("{0}")]
@@ -85,6 +88,24 @@ impl From<anyhow::Error> for GolishError {
 impl From<String> for GolishError {
     fn from(s: String) -> Self {
         Self::Internal(s)
+    }
+}
+
+impl From<crate::history::HistoryError> for GolishError {
+    fn from(err: crate::history::HistoryError) -> Self {
+        Self::Internal(err.to_string())
+    }
+}
+
+impl From<std::string::FromUtf8Error> for GolishError {
+    fn from(err: std::string::FromUtf8Error) -> Self {
+        Self::Internal(err.to_string())
+    }
+}
+
+impl From<uuid::Error> for GolishError {
+    fn from(err: uuid::Error) -> Self {
+        Self::Internal(err.to_string())
     }
 }
 

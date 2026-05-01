@@ -135,8 +135,7 @@ export const redAlertTheme: GolishTheme = {
       fontSize: 14,
     },
     ui: {
-      fontFamily:
-        "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+      fontFamily: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
     },
   },
 };

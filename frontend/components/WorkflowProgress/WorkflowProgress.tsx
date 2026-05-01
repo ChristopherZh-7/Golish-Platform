@@ -39,7 +39,9 @@ function WorkflowStepItem({ step }: { step: WorkflowStep }) {
         {step.name}
       </span>
       {step.durationMs !== undefined && (
-        <span className="text-xs text-muted-foreground">{formatDurationShort(step.durationMs)}</span>
+        <span className="text-xs text-muted-foreground">
+          {formatDurationShort(step.durationMs)}
+        </span>
       )}
     </div>
   );

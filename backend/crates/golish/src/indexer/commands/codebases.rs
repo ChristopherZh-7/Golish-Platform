@@ -15,10 +15,11 @@
 
 use std::path::PathBuf;
 
-use golish_ai::indexer::paths::{compute_index_dir, find_existing_index_dir, migrate_index};
+use golish_indexer::paths::{compute_index_dir, find_existing_index_dir, migrate_index};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::error::GolishError;
 use crate::settings::schema::IndexLocation;
 use crate::state::AppState;
 
@@ -550,5 +551,5 @@ pub async fn migrate_codebase_index(
 
     migrate_index(&normalized_path, from_location, target_location)
         .map(|opt| opt.map(|p| p.to_string_lossy().to_string()))
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }

@@ -23,10 +23,12 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
 
   useEffect(() => {
     if (isOpen && !formData.rootPath) {
-      homeDir().then((dir) => {
-        const defaultPath = `${dir.replace(/\/$/, "")}/${DEFAULT_PROJECTS_DIR}`;
-        setFormData((prev) => prev.rootPath ? prev : { ...prev, rootPath: defaultPath });
-      }).catch(() => {});
+      homeDir()
+        .then((dir) => {
+          const defaultPath = `${dir.replace(/\/$/, "")}/${DEFAULT_PROJECTS_DIR}`;
+          setFormData((prev) => (prev.rootPath ? prev : { ...prev, rootPath: defaultPath }));
+        })
+        .catch(() => {});
     }
   }, [isOpen, formData.rootPath]);
 

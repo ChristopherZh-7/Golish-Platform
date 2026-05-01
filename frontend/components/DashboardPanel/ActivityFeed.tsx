@@ -1,7 +1,7 @@
 import { Zap } from "lucide-react";
-import { cn } from "@/lib/utils";
-import { formatDurationShort } from "@/lib/time";
 import type { AgentUsage, ToolCallStat } from "@/lib/dashboard";
+import { formatDurationShort } from "@/lib/time";
+import { cn } from "@/lib/utils";
 import { fmtNum } from "./StatCards";
 
 export function eventLabel(type: string): string {
@@ -18,10 +18,13 @@ export function eventLabel(type: string): string {
 }
 
 export function ActivityDot({ type }: { type: string }) {
-  const color = type.includes("finding") ? "bg-red-400"
-    : type.includes("pipeline") || type.includes("scan") ? "bg-orange-400"
-    : type.includes("target") ? "bg-blue-400"
-    : "bg-muted-foreground/40";
+  const color = type.includes("finding")
+    ? "bg-red-400"
+    : type.includes("pipeline") || type.includes("scan")
+      ? "bg-orange-400"
+      : type.includes("target")
+        ? "bg-blue-400"
+        : "bg-muted-foreground/40";
 
   return <div className={cn("w-1.5 h-1.5 rounded-full mt-1 flex-shrink-0", color)} />;
 }
@@ -77,7 +80,9 @@ export function ToolCallChart({ tools, maxCount }: { tools: ToolCallStat[]; maxC
         const pct = (t.total_count / maxCount) * 100;
         return (
           <div key={t.name} className="flex items-center gap-2 text-[10px]">
-            <span className="text-foreground/60 w-28 truncate flex-shrink-0" title={t.name}>{t.name}</span>
+            <span className="text-foreground/60 w-28 truncate flex-shrink-0" title={t.name}>
+              {t.name}
+            </span>
             <div className="flex-1 h-1.5 rounded-full bg-muted/15 overflow-hidden">
               <div
                 className="h-full rounded-full bg-blue-500/40 transition-all duration-500"

@@ -44,40 +44,46 @@ export function useChatModes() {
     setAgentMode(conv.aiSessionId, backendMode).catch(console.error);
   }, []);
 
-  const handleAgentModeChange = useCallback((mode: AgentMode) => {
-    if (mode === chatAgentMode) return;
-    setChatAgentMode(mode);
-    const store = useStore.getState();
-    const conv = store.activeConversationId
-      ? store.conversations[store.activeConversationId]
-      : null;
-    if (!conv) return;
-    setAgentMode(conv.aiSessionId, mode).catch(console.error);
-    if (mode === "auto-approve") {
-      setApprovalMode("run-all");
-      store.setApprovalMode("run-all");
-    } else {
-      setApprovalMode("ask");
-      store.setApprovalMode("ask");
-    }
-  }, [chatAgentMode]);
+  const handleAgentModeChange = useCallback(
+    (mode: AgentMode) => {
+      if (mode === chatAgentMode) return;
+      setChatAgentMode(mode);
+      const store = useStore.getState();
+      const conv = store.activeConversationId
+        ? store.conversations[store.activeConversationId]
+        : null;
+      if (!conv) return;
+      setAgentMode(conv.aiSessionId, mode).catch(console.error);
+      if (mode === "auto-approve") {
+        setApprovalMode("run-all");
+        store.setApprovalMode("run-all");
+      } else {
+        setApprovalMode("ask");
+        store.setApprovalMode("ask");
+      }
+    },
+    [chatAgentMode]
+  );
 
-  const handleExecutionModeChange = useCallback((mode: "chat" | "task") => {
-    if (mode === chatExecutionMode) return;
-    setChatExecutionMode(mode);
-    const storeState = useStore.getState();
-    const activeConvId = storeState.activeConversationId;
-    if (activeConvId) {
-      const termIds = storeState.conversationTerminals[activeConvId] ?? [];
-      for (const tid of termIds) storeState.setExecutionMode(tid, mode);
-    }
-    flushDbSave().catch(console.warn);
-    const conv = activeConvId ? storeState.conversations[activeConvId] : null;
-    if (!conv) return;
-    if (conv.aiInitialized) {
-      setExecutionModeBackend(conv.aiSessionId, mode).catch(console.error);
-    }
-  }, [chatExecutionMode]);
+  const handleExecutionModeChange = useCallback(
+    (mode: "chat" | "task") => {
+      if (mode === chatExecutionMode) return;
+      setChatExecutionMode(mode);
+      const storeState = useStore.getState();
+      const activeConvId = storeState.activeConversationId;
+      if (activeConvId) {
+        const termIds = storeState.conversationTerminals[activeConvId] ?? [];
+        for (const tid of termIds) storeState.setExecutionMode(tid, mode);
+      }
+      flushDbSave().catch(console.warn);
+      const conv = activeConvId ? storeState.conversations[activeConvId] : null;
+      if (!conv) return;
+      if (conv.aiInitialized) {
+        setExecutionModeBackend(conv.aiSessionId, mode).catch(console.error);
+      }
+    },
+    [chatExecutionMode]
+  );
 
   const handleToggleSubAgents = useCallback(() => {
     const newValue = !chatUseSubAgents;
@@ -102,6 +108,7 @@ export function useChatModes() {
     respondToToolApproval(pa.sessionId, {
       request_id: requestId,
       approved: true,
+      reason: null,
       remember: false,
       always_allow: false,
     }).catch(console.error);
@@ -114,6 +121,7 @@ export function useChatModes() {
     respondToToolApproval(pa.sessionId, {
       request_id: requestId,
       approved: false,
+      reason: null,
       remember: false,
       always_allow: false,
     }).catch(console.error);
@@ -122,11 +130,17 @@ export function useChatModes() {
 
   return {
     chatAgentMode,
-    chatExecutionMode, setChatExecutionMode,
-    chatUseSubAgents, setChatUseSubAgents,
-    chatExecutionModeRef, chatUseSubAgentsRef,
-    approvalMode, setApprovalMode,
-    pendingApproval, setPendingApproval, pendingApprovalRef,
+    chatExecutionMode,
+    setChatExecutionMode,
+    chatUseSubAgents,
+    setChatUseSubAgents,
+    chatExecutionModeRef,
+    chatUseSubAgentsRef,
+    approvalMode,
+    setApprovalMode,
+    pendingApproval,
+    setPendingApproval,
+    pendingApprovalRef,
     handleApprovalModeChange,
     handleAgentModeChange,
     handleExecutionModeChange,

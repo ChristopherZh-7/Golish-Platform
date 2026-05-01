@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { research } from "@/lib/api";
+import { invoke } from "@tauri-apps/api/core";
 import { AlertTriangle, Bot, Loader2, MessageSquare, Trash2, Zap } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Markdown } from "@/components/Markdown";
 import { respondToToolApproval, setAgentMode } from "@/lib/ai";
+import { research } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
 
 type TurnBlock =
@@ -23,20 +24,26 @@ const EMPTY_STREAMING: never[] = [];
 
 export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cveId: string }) {
   const sid = sessionId ?? "";
-  const isResponding = useStore((s) => sid ? (s.isAgentResponding[sid] ?? false) : false);
+  const isResponding = useStore((s) => (sid ? (s.isAgentResponding[sid] ?? false) : false));
   const streamingBlocks = useStore((s) => {
     if (!sid) return EMPTY_STREAMING;
     return s.streamingBlocks[sid] ?? EMPTY_STREAMING;
   });
-  const isThinking = useStore((s) => sid ? (s.isAgentThinking[sid] ?? false) : false);
-  const storeApproval = useStore((s) => sid ? (s.pendingToolApproval[sid] ?? null) : null);
-  const storeAskHuman = useStore((s) => sid ? (s.pendingAskHuman[sid] ?? null) : null);
+  const isThinking = useStore((s) => (sid ? (s.isAgentThinking[sid] ?? false) : false));
+  const storeApproval = useStore((s) => (sid ? (s.pendingToolApproval[sid] ?? null) : null));
+  const storeAskHuman = useStore((s) => (sid ? (s.pendingAskHuman[sid] ?? null) : null));
   const [dismissedApprovalId, setDismissedApprovalId] = useState<string | null>(null);
   const [dismissedAskHumanId, setDismissedAskHumanId] = useState<string | null>(null);
-  const agentMode = useStore((s) => sid ? (s.sessions[sid]?.agentMode ?? "default") : "default");
+  const agentMode = useStore((s) => (sid ? (s.sessions[sid]?.agentMode ?? "default") : "default"));
   const isAutoApprove = agentMode === "auto-approve";
-  const pendingApproval = isResponding && !isAutoApprove && storeApproval && storeApproval.id !== dismissedApprovalId ? storeApproval : null;
-  const pendingAskHuman = isResponding && storeAskHuman && storeAskHuman.requestId !== dismissedAskHumanId ? storeAskHuman : null;
+  const pendingApproval =
+    isResponding && !isAutoApprove && storeApproval && storeApproval.id !== dismissedApprovalId
+      ? storeApproval
+      : null;
+  const pendingAskHuman =
+    isResponding && storeAskHuman && storeAskHuman.requestId !== dismissedAskHumanId
+      ? storeAskHuman
+      : null;
   const scrollRef = useRef<HTMLDivElement>(null);
   const [askHumanInput, setAskHumanInput] = useState("");
 
@@ -46,16 +53,21 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
 
   // Load previous research conversation from DB on mount
   useEffect(() => {
-    invoke<{ turns: Array<Record<string, unknown>>; status: string } | null>("kb_research_load", { cveId })
+    invoke<{ turns: Array<Record<string, unknown>>; status: string } | null>("kb_research_load", {
+      cveId,
+    })
       .then((log) => {
         if (log?.turns && Array.isArray(log.turns) && log.turns.length > 0) {
           const migrated: CompletedTurn[] = log.turns.map((raw) => {
             if (Array.isArray(raw.blocks)) return raw as unknown as CompletedTurn;
             // Migrate old format: { text, toolCalls } -> { blocks }
             const blocks: TurnBlock[] = [];
-            const oldTools = Array.isArray(raw.toolCalls) ? raw.toolCalls as Array<{ id: string; name: string; status: string }> : [];
+            const oldTools = Array.isArray(raw.toolCalls)
+              ? (raw.toolCalls as Array<{ id: string; name: string; status: string }>)
+              : [];
             for (const tc of oldTools) blocks.push({ type: "tool", ...tc });
-            if (typeof raw.text === "string" && raw.text) blocks.push({ type: "text", content: raw.text });
+            if (typeof raw.text === "string" && raw.text)
+              blocks.push({ type: "text", content: raw.text });
             return { id: (raw.id as string) || crypto.randomUUID(), blocks };
           });
           setCompletedTurns(migrated);
@@ -77,8 +89,16 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
         if (b.type === "text") {
           textAcc += b.content;
         } else if (b.type === "tool") {
-          if (textAcc) { blocks.push({ type: "text", content: textAcc }); textAcc = ""; }
-          blocks.push({ type: "tool", id: b.toolCall.id, name: b.toolCall.name, status: b.toolCall.status });
+          if (textAcc) {
+            blocks.push({ type: "text", content: textAcc });
+            textAcc = "";
+          }
+          blocks.push({
+            type: "tool",
+            id: b.toolCall.id,
+            name: b.toolCall.name,
+            status: b.toolCall.status,
+          });
         }
       }
       if (textAcc) blocks.push({ type: "text", content: textAcc });
@@ -86,9 +106,9 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
       if (blocks.length > 0) {
         const turn: CompletedTurn = { id: crypto.randomUUID(), blocks };
         setCompletedTurns((prev) => [...prev, turn]);
-        research.saveTurn(cveId, sid, turn).catch((e) =>
-          console.error("Failed to save research turn:", e)
-        );
+        research
+          .saveTurn(cveId, sid, turn)
+          .catch((e) => console.error("Failed to save research turn:", e));
       }
     }
     prevBlocksRef.current = streamingBlocks;
@@ -98,9 +118,9 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
   const prevRespondingRef = useRef(false);
   useEffect(() => {
     if (prevRespondingRef.current && !isResponding && completedTurns.length > 0) {
-      research.setStatus(cveId, "completed").catch((e) =>
-        console.error("Failed to set research status:", e)
-      );
+      research
+        .setStatus(cveId, "completed")
+        .catch((e) => console.error("Failed to set research status:", e));
     }
     prevRespondingRef.current = isResponding;
   }, [isResponding, completedTurns.length, cveId]);
@@ -109,9 +129,10 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [completedTurns, streamingBlocks, isResponding, pendingApproval, pendingAskHuman]);
+  }, []);
 
-  const isEmpty = loadedFromDb && completedTurns.length === 0 && streamingBlocks.length === 0 && !isResponding;
+  const isEmpty =
+    loadedFromDb && completedTurns.length === 0 && streamingBlocks.length === 0 && !isResponding;
   const [clearing, setClearing] = useState(false);
 
   const handleClearHistory = useCallback(async () => {
@@ -126,7 +147,8 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
     setClearing(false);
   }, [cveId]);
 
-  const proseClasses = "text-[11px] leading-relaxed text-foreground/80 prose prose-invert prose-sm max-w-none prose-headings:text-foreground/90 prose-headings:text-[12px] prose-headings:font-semibold prose-p:text-[11px] prose-p:leading-relaxed prose-code:text-[10px] prose-code:bg-muted/20 prose-code:px-1 prose-code:rounded prose-pre:bg-muted/10 prose-pre:border prose-pre:border-border/10 prose-pre:text-[10px] prose-li:text-[11px] prose-a:text-accent";
+  const proseClasses =
+    "text-[11px] leading-relaxed text-foreground/80 prose prose-invert prose-sm max-w-none prose-headings:text-foreground/90 prose-headings:text-[12px] prose-headings:font-semibold prose-p:text-[11px] prose-p:leading-relaxed prose-code:text-[10px] prose-code:bg-muted/20 prose-code:px-1 prose-code:rounded prose-pre:bg-muted/10 prose-pre:border prose-pre:border-border/10 prose-pre:text-[10px] prose-li:text-[11px] prose-a:text-accent";
 
   return (
     <div ref={scrollRef} className="space-y-3 -mx-4 -my-3 px-4 py-3 overflow-y-auto max-h-full">
@@ -138,7 +160,11 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
             disabled={clearing}
             className="flex items-center gap-1 text-[9px] text-destructive/50 hover:text-destructive transition-colors disabled:opacity-30"
           >
-            {clearing ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Trash2 className="w-2.5 h-2.5" />}
+            {clearing ? (
+              <Loader2 className="w-2.5 h-2.5 animate-spin" />
+            ) : (
+              <Trash2 className="w-2.5 h-2.5" />
+            )}
             Clear History
           </button>
         </div>
@@ -161,16 +187,29 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
         <div key={turn.id} className="space-y-2">
           {turn.blocks.map((block, i) =>
             block.type === "tool" ? (
-              <div key={block.id || i} className="flex items-center gap-2 px-3 py-1.5 rounded bg-muted/8 border border-border/5">
+              <div
+                key={block.id || i}
+                className="flex items-center gap-2 px-3 py-1.5 rounded bg-muted/8 border border-border/5"
+              >
                 <Zap className="w-3 h-3 text-accent/60 flex-shrink-0" />
-                <span className="text-[10px] font-mono text-foreground/60 truncate">{block.name}</span>
-                <span className={cn(
-                  "text-[9px] ml-auto px-1.5 py-0.5 rounded",
-                  block.status === "completed" ? "text-green-400 bg-green-500/10" :
-                  block.status === "error" ? "text-red-400 bg-red-500/10" :
-                  "text-muted-foreground/40 bg-muted/10"
-                )}>
-                  {block.status === "completed" ? "done" : block.status === "error" ? "error" : "done"}
+                <span className="text-[10px] font-mono text-foreground/60 truncate">
+                  {block.name}
+                </span>
+                <span
+                  className={cn(
+                    "text-[9px] ml-auto px-1.5 py-0.5 rounded",
+                    block.status === "completed"
+                      ? "text-green-400 bg-green-500/10"
+                      : block.status === "error"
+                        ? "text-red-400 bg-red-500/10"
+                        : "text-muted-foreground/40 bg-muted/10"
+                  )}
+                >
+                  {block.status === "completed"
+                    ? "done"
+                    : block.status === "error"
+                      ? "error"
+                      : "done"}
                 </span>
               </div>
             ) : block.content ? (
@@ -191,16 +230,29 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
       )}
       {streamingBlocks.map((block, i) =>
         block.type === "tool" ? (
-          <div key={block.toolCall.id} className="flex items-center gap-2 px-3 py-1.5 rounded bg-muted/8 border border-border/5">
+          <div
+            key={block.toolCall.id}
+            className="flex items-center gap-2 px-3 py-1.5 rounded bg-muted/8 border border-border/5"
+          >
             <Zap className="w-3 h-3 text-accent/60 flex-shrink-0" />
-            <span className="text-[10px] font-mono text-foreground/60 truncate">{block.toolCall.name}</span>
-            <span className={cn(
-              "text-[9px] ml-auto px-1.5 py-0.5 rounded",
-              block.toolCall.status === "completed" ? "text-green-400 bg-green-500/10" :
-              block.toolCall.status === "error" ? "text-red-400 bg-red-500/10" :
-              "text-muted-foreground/40 bg-muted/10"
-            )}>
-              {block.toolCall.status === "completed" ? "done" : block.toolCall.status === "error" ? "error" : "running..."}
+            <span className="text-[10px] font-mono text-foreground/60 truncate">
+              {block.toolCall.name}
+            </span>
+            <span
+              className={cn(
+                "text-[9px] ml-auto px-1.5 py-0.5 rounded",
+                block.toolCall.status === "completed"
+                  ? "text-green-400 bg-green-500/10"
+                  : block.toolCall.status === "error"
+                    ? "text-red-400 bg-red-500/10"
+                    : "text-muted-foreground/40 bg-muted/10"
+              )}
+            >
+              {block.toolCall.status === "completed"
+                ? "done"
+                : block.toolCall.status === "error"
+                  ? "error"
+                  : "running..."}
             </span>
           </div>
         ) : block.type === "text" && block.content ? (
@@ -225,7 +277,16 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
           )}
           <div className="flex gap-2">
             <button
-              onClick={() => { setDismissedApprovalId(pendingApproval.id); respondToToolApproval(sid, { request_id: pendingApproval.id, approved: true, remember: false, always_allow: false }).catch(console.error); }}
+              onClick={() => {
+                setDismissedApprovalId(pendingApproval.id);
+                respondToToolApproval(sid, {
+                  request_id: pendingApproval.id,
+                  approved: true,
+                  reason: null,
+                  remember: false,
+                  always_allow: false,
+                }).catch(console.error);
+              }}
               className="px-3 py-1 rounded text-[10px] font-medium bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 transition-colors"
             >
               Approve
@@ -233,7 +294,13 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
             <button
               onClick={() => {
                 setDismissedApprovalId(pendingApproval.id);
-                respondToToolApproval(sid, { request_id: pendingApproval.id, approved: true, remember: false, always_allow: false }).catch(console.error);
+                respondToToolApproval(sid, {
+                  request_id: pendingApproval.id,
+                  approved: true,
+                  reason: null,
+                  remember: false,
+                  always_allow: false,
+                }).catch(console.error);
                 const ws = useStore.getState().sessions[sid]?.workingDirectory || ".";
                 setAgentMode(sid, "auto-approve", ws).catch(console.error);
               }}
@@ -242,7 +309,16 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
               Run Everything
             </button>
             <button
-              onClick={() => { setDismissedApprovalId(pendingApproval.id); respondToToolApproval(sid, { request_id: pendingApproval.id, approved: false, remember: false, always_allow: false }).catch(console.error); }}
+              onClick={() => {
+                setDismissedApprovalId(pendingApproval.id);
+                respondToToolApproval(sid, {
+                  request_id: pendingApproval.id,
+                  approved: false,
+                  reason: null,
+                  remember: false,
+                  always_allow: false,
+                }).catch(console.error);
+              }}
               className="px-3 py-1 rounded text-[10px] font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
             >
               Deny
@@ -263,7 +339,16 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
               {pendingAskHuman.options.map((opt) => (
                 <button
                   key={opt}
-                  onClick={() => { setDismissedAskHumanId(pendingAskHuman.requestId); respondToToolApproval(sid, { request_id: pendingAskHuman.requestId, approved: true, reason: opt, remember: false, always_allow: false }).catch(console.error); }}
+                  onClick={() => {
+                    setDismissedAskHumanId(pendingAskHuman.requestId);
+                    respondToToolApproval(sid, {
+                      request_id: pendingAskHuman.requestId,
+                      approved: true,
+                      reason: opt,
+                      remember: false,
+                      always_allow: false,
+                    }).catch(console.error);
+                  }}
                   className="px-2.5 py-1 rounded text-[10px] font-medium bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
                 >
                   {opt}
@@ -279,7 +364,13 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && askHumanInput.trim()) {
                     setDismissedAskHumanId(pendingAskHuman.requestId);
-                    respondToToolApproval(sid, { request_id: pendingAskHuman.requestId, approved: true, reason: askHumanInput.trim(), remember: false, always_allow: false }).catch(console.error);
+                    respondToToolApproval(sid, {
+                      request_id: pendingAskHuman.requestId,
+                      approved: true,
+                      reason: askHumanInput.trim(),
+                      remember: false,
+                      always_allow: false,
+                    }).catch(console.error);
                     setAskHumanInput("");
                   }
                 }}
@@ -290,7 +381,13 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
                 onClick={() => {
                   if (askHumanInput.trim()) {
                     setDismissedAskHumanId(pendingAskHuman.requestId);
-                    respondToToolApproval(sid, { request_id: pendingAskHuman.requestId, approved: true, reason: askHumanInput.trim(), remember: false, always_allow: false }).catch(console.error);
+                    respondToToolApproval(sid, {
+                      request_id: pendingAskHuman.requestId,
+                      approved: true,
+                      reason: askHumanInput.trim(),
+                      remember: false,
+                      always_allow: false,
+                    }).catch(console.error);
                     setAskHumanInput("");
                   }
                 }}
@@ -319,4 +416,3 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
     </div>
   );
 }
-

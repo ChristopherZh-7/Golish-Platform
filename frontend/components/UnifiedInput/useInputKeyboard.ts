@@ -2,11 +2,11 @@ import { useCallback } from "react";
 import { ptyWrite } from "@/lib/api/pty";
 import { useStore } from "@/store";
 import {
-  type InputStateReturn,
+  clearTerminal,
   extractWordAtCursor,
+  type InputStateReturn,
   isCursorOnFirstLine,
   isCursorOnLastLine,
-  clearTerminal,
 } from "./useUnifiedInputState";
 
 export function useInputKeyboard(state: InputStateReturn) {
@@ -169,9 +169,7 @@ export function useInputKeyboard(state: InputStateReturn) {
         if (e.ctrlKey && e.key === "r") {
           e.preventDefault();
           if (historyMatches.length > 0) {
-            setHistorySelectedIndex((prev) =>
-              prev < historyMatches.length - 1 ? prev + 1 : 0,
-            );
+            setHistorySelectedIndex((prev) => (prev < historyMatches.length - 1 ? prev + 1 : 0));
           }
           return;
         }
@@ -179,9 +177,7 @@ export function useInputKeyboard(state: InputStateReturn) {
         if (e.key === "ArrowDown") {
           e.preventDefault();
           if (historyMatches.length > 0) {
-            setHistorySelectedIndex((prev) =>
-              prev < historyMatches.length - 1 ? prev + 1 : prev,
-            );
+            setHistorySelectedIndex((prev) => (prev < historyMatches.length - 1 ? prev + 1 : prev));
           }
           return;
         }
@@ -235,23 +231,17 @@ export function useInputKeyboard(state: InputStateReturn) {
           setShowPathPopup(false);
           return;
         }
-        if (
-          e.key === "ArrowDown" ||
-          (e.ctrlKey && (e.key === "n" || e.key === "j"))
-        ) {
+        if (e.key === "ArrowDown" || (e.ctrlKey && (e.key === "n" || e.key === "j"))) {
           e.preventDefault();
           e.stopPropagation();
           setPathSelectedIndex((prev) => (prev + 1) % pathCompletions.length);
           return;
         }
-        if (
-          e.key === "ArrowUp" ||
-          (e.ctrlKey && (e.key === "p" || e.key === "k"))
-        ) {
+        if (e.key === "ArrowUp" || (e.ctrlKey && (e.key === "p" || e.key === "k"))) {
           e.preventDefault();
           e.stopPropagation();
           setPathSelectedIndex(
-            (prev) => (prev - 1 + pathCompletions.length) % pathCompletions.length,
+            (prev) => (prev - 1 + pathCompletions.length) % pathCompletions.length
           );
           return;
         }
@@ -277,7 +267,7 @@ export function useInputKeyboard(state: InputStateReturn) {
         if (e.key === "ArrowDown") {
           e.preventDefault();
           setSlashSelectedIndex((prev) =>
-            prev < filteredSlashCommands.length - 1 ? prev + 1 : prev,
+            prev < filteredSlashCommands.length - 1 ? prev + 1 : prev
           );
           return;
         }
@@ -479,6 +469,6 @@ export function useInputKeyboard(state: InputStateReturn) {
       setShowToolPopup,
       setToolSelectedIndex,
       setActiveTool,
-    ],
+    ]
   );
 }

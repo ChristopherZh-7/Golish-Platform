@@ -1,5 +1,5 @@
-import { memo, useEffect, useMemo, useState } from "react";
 import {
+  AlertTriangle,
   ArrowDownRight,
   CheckCircle2,
   ChevronDown,
@@ -7,15 +7,15 @@ import {
   Circle,
   Loader2,
   SkipForward,
-  AlertTriangle,
   Target,
 } from "lucide-react";
+import { memo, useEffect, useMemo, useState } from "react";
+import { SubAgentCard } from "@/components/SubAgentCard";
+import { TaskGroupShell } from "@/components/TaskGroupShell";
 import { stripAllAnsi } from "@/lib/ansi";
 import { formatDurationLong } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import type { PipelineExecution, PipelineStepExecution, PipelineStepStatus } from "@/store";
-import { SubAgentCard } from "@/components/SubAgentCard";
-import { TaskGroupShell } from "@/components/TaskGroupShell";
 
 interface PipelineProgressBlockProps {
   execution: PipelineExecution;
@@ -44,7 +44,11 @@ function StatusIcon({ status }: { status: PipelineStepStatus }) {
   }
 }
 
-function StepRow({ step, isExpanded, onToggle }: {
+function StepRow({
+  step,
+  isExpanded,
+  onToggle,
+}: {
   step: PipelineStepExecution;
   isExpanded: boolean;
   onToggle: () => void;
@@ -55,10 +59,7 @@ function StepRow({ step, isExpanded, onToggle }: {
   const canExpand =
     hasSubAgents ||
     ((hasOutput || hasFanOut) && (step.status === "success" || step.status === "failed"));
-  const cleanOutput = useMemo(
-    () => (step.output ? stripAllAnsi(step.output) : ""),
-    [step.output],
-  );
+  const cleanOutput = useMemo(() => (step.output ? stripAllAnsi(step.output) : ""), [step.output]);
   const ai = isAiStep(step);
   const fanOutCount = step.discoveredTargets?.length ?? 0;
 
@@ -71,19 +72,21 @@ function StepRow({ step, isExpanded, onToggle }: {
           step.status === "running" && "bg-blue-500/5",
           step.status === "failed" && "bg-red-500/5",
           canExpand && "hover:bg-muted/20 cursor-pointer",
-          !canExpand && "cursor-default",
+          !canExpand && "cursor-default"
         )}
         onClick={canExpand ? onToggle : undefined}
       >
         <StatusIcon status={step.status} />
-        <span className={cn(
-          "text-[11px] font-medium flex-shrink-0 min-w-[80px]",
-          step.status === "pending" && "text-muted-foreground/50",
-          step.status === "running" && "text-blue-300",
-          step.status === "success" && "text-foreground/70",
-          step.status === "failed" && "text-red-300",
-          step.status === "skipped" && "text-muted-foreground/40",
-        )}>
+        <span
+          className={cn(
+            "text-[11px] font-medium flex-shrink-0 min-w-[80px]",
+            step.status === "pending" && "text-muted-foreground/50",
+            step.status === "running" && "text-blue-300",
+            step.status === "success" && "text-foreground/70",
+            step.status === "failed" && "text-red-300",
+            step.status === "skipped" && "text-muted-foreground/40"
+          )}
+        >
           {step.name}
           {fanOutCount > 1 && (
             <span className="text-[9px] text-muted-foreground/50 ml-1">(x{fanOutCount})</span>
@@ -106,25 +109,29 @@ function StepRow({ step, isExpanded, onToggle }: {
           </span>
         )}
         {step.exitCode != null && step.exitCode !== 0 && (
-          <span className="text-[9px] text-red-400/70 flex-shrink-0">
-            exit {step.exitCode}
-          </span>
+          <span className="text-[9px] text-red-400/70 flex-shrink-0">exit {step.exitCode}</span>
         )}
-        {canExpand && (
-          isExpanded
-            ? <ChevronDown className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />
-            : <ChevronRight className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />
-        )}
+        {canExpand &&
+          (isExpanded ? (
+            <ChevronDown className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />
+          ) : (
+            <ChevronRight className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />
+          ))}
       </button>
 
       {isExpanded && hasFanOut && (
         <div className="mx-3 mb-1 space-y-0.5">
           {step.subTargets?.map((sub) => (
-            <div key={sub.target} className="flex items-center gap-2 px-2 py-0.5 text-[10px] rounded bg-muted/20">
+            <div
+              key={sub.target}
+              className="flex items-center gap-2 px-2 py-0.5 text-[10px] rounded bg-muted/20"
+            >
               <StatusIcon status={sub.status} />
               <span className="font-mono text-muted-foreground/70 truncate">{sub.target}</span>
               {sub.durationMs != null && (
-                <span className="ml-auto text-muted-foreground/40 tabular-nums">{formatDurationLong(sub.durationMs)}</span>
+                <span className="ml-auto text-muted-foreground/40 tabular-nums">
+                  {formatDurationLong(sub.durationMs)}
+                </span>
               )}
             </div>
           ))}
@@ -142,12 +149,8 @@ function StepRow({ step, isExpanded, onToggle }: {
       {/* Nested sub-agents for AI steps (compact inline style) */}
       {isExpanded && hasSubAgents && (
         <div className="mx-3 mb-1.5 space-y-0.5">
-          {step.subAgents!.map((agent) => (
-            <SubAgentCard
-              key={agent.parentRequestId}
-              subAgent={agent}
-              compact
-            />
+          {step.subAgents?.map((agent) => (
+            <SubAgentCard key={agent.parentRequestId} subAgent={agent} compact />
           ))}
         </div>
       )}
@@ -176,7 +179,9 @@ export const PipelineProgressBlock = memo(function PipelineProgressBlock({
 
   const running = execution.steps.filter((s) => s.status === "running").length;
   const completed = execution.steps.filter((s) => s.status === "success").length;
-  const failed = execution.steps.filter((s) => s.status === "failed" || s.status === "interrupted").length;
+  const failed = execution.steps.filter(
+    (s) => s.status === "failed" || s.status === "interrupted"
+  ).length;
 
   const totalDurationMs = useMemo(() => {
     if (execution.finishedAt && execution.startedAt) {
@@ -222,11 +227,13 @@ export const PipelineProgressBlock = memo(function PipelineProgressBlock({
               <div className="flex items-center gap-1.5 px-3 py-0.5 text-[9px] text-cyan-400/60">
                 <ArrowDownRight className="w-2.5 h-2.5" />
                 <span className="font-mono">
-                  {step.discoveredTargets!.length} target{step.discoveredTargets!.length > 1 ? "s" : ""} &rarr;
+                  {step.discoveredTargets?.length ?? 0} target
+                  {(step.discoveredTargets?.length ?? 0) > 1 ? "s" : ""} &rarr;
                 </span>
                 <span className="truncate text-muted-foreground/40">
-                  {step.discoveredTargets!.slice(0, 3).join(", ")}
-                  {step.discoveredTargets!.length > 3 && ` +${step.discoveredTargets!.length - 3}`}
+                  {step.discoveredTargets?.slice(0, 3).join(", ")}
+                  {(step.discoveredTargets?.length ?? 0) > 3 &&
+                    ` +${(step.discoveredTargets?.length ?? 0) - 3}`}
                 </span>
               </div>
             )}

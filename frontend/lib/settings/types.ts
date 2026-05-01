@@ -57,6 +57,8 @@ export interface AiSettings {
   nvidia: NvidiaSettings;
 }
 
+import type { AiProvider } from "../generated/AiProvider";
+
 export type { AiProvider } from "../generated/AiProvider";
 
 export interface VertexAiSettings {

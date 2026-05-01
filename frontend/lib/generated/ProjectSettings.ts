@@ -8,8 +8,9 @@ import type { ProjectAiSettings } from "./ProjectAiSettings";
  * This allows projects to remember their preferred model/mode without
  * affecting other global configuration.
  */
-export type ProjectSettings = { 
-/**
- * AI configuration overrides
- */
-ai: ProjectAiSettings, };
+export type ProjectSettings = {
+  /**
+   * AI configuration overrides
+   */
+  ai: ProjectAiSettings;
+};

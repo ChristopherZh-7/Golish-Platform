@@ -1,0 +1,115 @@
+---
+description: 前端 store refactor TS 错误修复完成记录（2026-05-02）
+globs:
+alwaysApply: false
+---
+
+# Frontend TS 错误修复完成 ✅ (0 errors)
+
+> cargo check --workspace --tests ✅ 零错误
+> npx tsc --noEmit ✅ 零错误
+> 前端从 194 → 0 错误（全部修复）
+
+## 错误总览
+
+| 错误码 | 数量 | 根因 |
+|--------|------|------|
+| TS2344 | 16 | event handler generic 约束不满足 |
+| TS2322 | 15 | 类型赋值不兼容 |
+| TS2345 | 4 | 函数参数类型不兼容 |
+| TS6133 | 3 | 未使用变量 |
+| TS2353 | 2 | 对象字面量含未知属性 |
+| TS2349 | 2 | 表达式不可调用 |
+| TS2538 | 1 | null 不能作索引 |
+| TS2454 | 1 | 变量赋值前使用 |
+| TS2448 | 1 | 变量声明前使用 |
+| TS2304 | 1 | 找不到名称 |
+
+---
+
+## 按根因分组 & 修复策略
+
+### 🔴 P0: `number ↔ bigint` 不兼容（~6 个）
+
+**文件：**
+- `services/ai-events/workflow-handlers.ts` — `duration_ms`, `total_duration_ms` handler 用 `number`，AiEvent 定义用 `bigint`
+- `services/ai-events/registry.ts` — 同上，注册表里的 handler 签名
+- `services/ai-events/context-handlers.ts` — `tokens_before` 用 `number`，定义用 `bigint`
+
+**修复方案：** handler 中统一把 `number` 改为 `bigint`，或在 Rust bindings 生成时把对应字段改为 `number`（看哪侧是 source of truth）。推荐改 handler 侧适配 bindings。
+
+### 🔴 P0: `unknown ↔ JsonValue` 不兼容（~8 个）
+
+**文件：**
+- `services/ai-events/tool-handlers.ts` — `args`, `result` 字段用 `unknown`，AiEvent 定义要求 `JsonValue`
+- `services/ai-events/misc-handlers.ts` — `input`, `results` 字段同理
+- `services/ai-events/sub-agent-handlers.ts` — 类似
+
+**修复方案：** handler 里把 `unknown` 改为 `JsonValue`，或加 `as JsonValue` 断言。
+
+### 🟠 P1: `ToolSource` 可选性（~5 个）
+
+**文件：**
+- `services/ai-events/tool-handlers.ts` — handler 传 `source?: ToolSource | undefined`，AiEvent 定义要求 `source: ToolSource`（非可选）
+
+**修复方案：** handler 里提供默认值 `source: event.source ?? "direct"` 或类似默认。
+
+### 🟠 P1: `null ↔ undefined` 不兼容（~8 个）
+
+**文件：**
+- `store/index.ts` — `activeConversationId: string | null` vs `string | undefined`
+- `store/slices/ai.ts` — 同类问题
+- `store/slices/workflow/plan.ts` — `PlanStep.id` 为 `string | null | undefined`，目标要 `string | undefined`
+- `services/ai-events/core-handlers.ts` — `null` vs `undefined`
+- `components/Settings/hooks/useVaultForm.ts` — `string | null` vs `string | undefined`
+- `components/SessionBrowser/SessionBrowser.test.tsx` — `title?: string` vs `title: string | null`
+
+**修复方案：** 逐个检查哪侧是 source of truth，统一用 `null`（Rust binding 风格）或 `undefined`（TS 风格）。大部分应统一为 `| null`。
+
+### 🟡 P2: 杂项组件错误（~10 个）
+
+| 文件 | 错误 | 修复 |
+|------|------|------|
+| `components/AIChatPanel/hooks/useAiChatEvents.ts` | TS6133 unused `activeConvId` | 删除或加 `_` 前缀 |
+| `components/CommandBlock/CommandBlock.tsx` | TS6133 unused `sessionId` | 删除或加 `_` 前缀 |
+| `components/SecurityView/AlertsPanel.tsx` | TS6133 unused `riskIcon` | 删除 |
+| `components/SubAgentDetailView/SubAgentDetailView.tsx` | TS2322 `unknown` 赋值 | 加类型断言 |
+| `components/TargetPanel/hooks/useTargetData.ts` | TS2353 多余 `notes` 属性 | 删除或扩展类型 |
+| `components/UnifiedTimeline/VirtualizedTimeline.test.tsx` | TS2304 `global` 未定义 | 加 `declare var global` 或用 `globalThis` |
+| `components/VulnIntelPanel/PocLibraryView.tsx` | TS2349 `VulnLink` 不可调用 (×2) | 检查 VulnLink 类型是否应为函数 |
+| `components/VulnIntelPanel/VulnIntelPanel.tsx` | TS2345 `null` 不可赋给 `string` | 加 null check |
+| `components/VulnIntelPanel/WikiTab.tsx` | TS2538 `null` 索引 | 加 null check |
+| `components/WikiPanel/WikiPanel.tsx` | TS2448+TS2454 变量声明顺序 | 调整声明顺序 |
+| `components/WordlistPanel/WordlistPanel.tsx` | TS2353 多余 `tags` 属性 | 删除或扩展类型 |
+
+---
+
+## 涉及文件清单（23 个）
+
+### services/ai-events/（7 个文件，28 个错误 — 主战场）
+1. `context-handlers.ts` — bigint (3)
+2. `core-handlers.ts` — null/undefined (2)
+3. `misc-handlers.ts` — unknown/JsonValue (2)
+4. `registry.ts` — bigint handler 签名 (2+)
+5. `sub-agent-handlers.ts` — unknown/JsonValue + ToolSource
+6. `tool-handlers.ts` — unknown/JsonValue + ToolSource (6+)
+7. `workflow-handlers.ts` — bigint (2)
+
+### store/（3 个文件，4 个错误）
+8. `store/index.ts` — ImmerSet 泛型 null/undefined
+9. `store/slices/ai.ts` — null/undefined
+10. `store/slices/workflow/plan.ts` — PlanStep.id null/undefined
+
+### components/（13 个文件，14 个错误）
+11-23. 见上方 P2 杂项表
+
+---
+
+## 推荐修复顺序
+
+1. **先修 `services/ai-events/` 的 handler 签名**（28 个错误，3 类根因统一处理）
+   - 把 `number` → `bigint`（duration_ms 类字段）
+   - 把 `unknown` → `JsonValue`（args/result/input 类字段）
+   - 给 `source` 加默认值（ToolSource 可选性）
+2. **再修 `store/` 的 null vs undefined**（4 个错误）
+3. **最后修 components 杂项**（14 个错误，各自独立）

@@ -1,5 +1,6 @@
 //! `wiki_create_cve` — scaffold a new CVE folder with README + PoC stub.
 
+use crate::error::GolishError;
 use tokio::fs;
 
 use super::super::wiki_base_dir;
@@ -10,7 +11,7 @@ pub async fn wiki_create_cve(
     cve_id: String,
     title: String,
     poc_lang: Option<String>,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     let base = wiki_base_dir();
     let folder = base.join(&cve_id);
     if folder.exists() {

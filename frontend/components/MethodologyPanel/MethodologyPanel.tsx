@@ -1,6 +1,3 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { invoke, methodology } from "@/lib/api";
-import { getProjectPath } from "@/lib/projects";
 import {
   ArrowLeft,
   Check,
@@ -14,9 +11,11 @@ import {
   Trash2,
   Wrench,
 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CustomSelect } from "@/components/ui/custom-select";
-import { useStore } from "@/store";
+import { invoke, methodology } from "@/lib/api";
+import { getProjectPath } from "@/lib/projects";
 
 interface CheckItem {
   id: string;
@@ -53,7 +52,6 @@ interface ProjectMethodology {
 
 export function MethodologyPanel() {
   const { t } = useTranslation();
-  const currentProjectPath = useStore((s) => s.currentProjectPath);
   const [view, setView] = useState<"list" | "project">("list");
   const [templates, setTemplates] = useState<MethodologyTemplate[]>([]);
   const [projects, setProjects] = useState<ProjectMethodology[]>([]);
@@ -79,7 +77,7 @@ export function MethodologyPanel() {
 
   useEffect(() => {
     loadData();
-  }, [loadData, currentProjectPath]);
+  }, [loadData]);
 
   const handleCreateProject = useCallback(async () => {
     if (!newProjectName.trim() || !newTemplateId) return;
@@ -103,7 +101,10 @@ export function MethodologyPanel() {
 
   const handleOpenProject = useCallback(async (id: string) => {
     try {
-      const project = await invoke<ProjectMethodology>("method_load_project", { id, projectPath: getProjectPath() });
+      const project = await invoke<ProjectMethodology>("method_load_project", {
+        id,
+        projectPath: getProjectPath(),
+      });
       setActiveProject(project);
       setView("project");
       setExpandedPhases(new Set(project.phases.map((p) => p.id)));
@@ -145,9 +146,7 @@ export function MethodologyPanel() {
               p.id === phaseId
                 ? {
                     ...p,
-                    items: p.items.map((i) =>
-                      i.id === itemId ? { ...i, checked } : i
-                    ),
+                    items: p.items.map((i) => (i.id === itemId ? { ...i, checked } : i)),
                   }
                 : p
             ),
@@ -180,9 +179,7 @@ export function MethodologyPanel() {
               p.id === phaseId
                 ? {
                     ...p,
-                    items: p.items.map((i) =>
-                      i.id === itemId ? { ...i, notes } : i
-                    ),
+                    items: p.items.map((i) => (i.id === itemId ? { ...i, notes } : i)),
                   }
                 : p
             ),
@@ -234,9 +231,7 @@ export function MethodologyPanel() {
             <ArrowLeft className="w-4 h-4" />
           </button>
           <ClipboardList className="w-4 h-4 text-accent" />
-          <span className="text-sm font-medium truncate flex-1">
-            {activeProject.project_name}
-          </span>
+          <span className="text-sm font-medium truncate flex-1">{activeProject.project_name}</span>
           <span className="text-[10px] text-muted-foreground px-2 py-0.5 rounded bg-muted/50">
             {activeProject.template_name}
           </span>
@@ -288,9 +283,7 @@ export function MethodologyPanel() {
                         <div className="flex items-start gap-2">
                           <button
                             className="mt-0.5 flex-shrink-0"
-                            onClick={() =>
-                              handleToggleItem(phase.id, item.id, !item.checked)
-                            }
+                            onClick={() => handleToggleItem(phase.id, item.id, !item.checked)}
                           >
                             {item.checked ? (
                               <Check className="w-3.5 h-3.5 text-green-400" />
@@ -302,9 +295,7 @@ export function MethodologyPanel() {
                             <div className="flex items-center gap-1.5">
                               <span
                                 className={`text-xs ${
-                                  item.checked
-                                    ? "line-through text-muted-foreground/60"
-                                    : ""
+                                  item.checked ? "line-through text-muted-foreground/60" : ""
                                 }`}
                               >
                                 {item.title}
@@ -333,10 +324,7 @@ export function MethodologyPanel() {
                                   className="w-full text-[10px] p-1.5 rounded bg-background border border-border/50 focus:border-accent outline-none resize-none"
                                   rows={2}
                                   defaultValue={item.notes}
-                                  autoFocus
-                                  onBlur={(e) =>
-                                    handleSaveNotes(phase.id, item.id, e.target.value)
-                                  }
+                                  onBlur={(e) => handleSaveNotes(phase.id, item.id, e.target.value)}
                                   onKeyDown={(e) => {
                                     if (e.key === "Escape") setEditingNotes(null);
                                   }}
@@ -378,9 +366,7 @@ export function MethodologyPanel() {
       {/* Header */}
       <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border/30 flex-shrink-0">
         <ClipboardList className="w-4 h-4 text-accent" />
-        <span className="text-sm font-medium">
-          {t("methodology.title", "Methodology")}
-        </span>
+        <span className="text-sm font-medium">{t("methodology.title", "Methodology")}</span>
         <div className="flex-1" />
         <button
           className="flex items-center gap-1 px-2 py-1 text-xs rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
@@ -416,18 +402,14 @@ export function MethodologyPanel() {
                     <div className="flex-1 min-w-0">
                       <div className="text-xs font-medium truncate">{p.project_name}</div>
                       <div className="flex items-center gap-2 mt-0.5">
-                        <span className="text-[10px] text-muted-foreground">
-                          {p.template_name}
-                        </span>
+                        <span className="text-[10px] text-muted-foreground">{p.template_name}</span>
                         <div className="flex-1 h-1 rounded-full bg-muted/50 max-w-[80px]">
                           <div
                             className="h-full rounded-full bg-accent"
                             style={{ width: `${pct}%` }}
                           />
                         </div>
-                        <span className="text-[10px] text-muted-foreground">
-                          {pct}%
-                        </span>
+                        <span className="text-[10px] text-muted-foreground">{pct}%</span>
                       </div>
                     </div>
                     <button
@@ -463,9 +445,7 @@ export function MethodologyPanel() {
                     ({tmpl.phases.length} phases)
                   </span>
                 </div>
-                <p className="text-[10px] text-muted-foreground/70 mt-0.5">
-                  {tmpl.description}
-                </p>
+                <p className="text-[10px] text-muted-foreground/70 mt-0.5">{tmpl.description}</p>
               </div>
             ))}
           </div>
@@ -485,7 +465,6 @@ export function MethodologyPanel() {
                 placeholder={t("methodology.projectName", "Project name...")}
                 value={newProjectName}
                 onChange={(e) => setNewProjectName(e.target.value)}
-                autoFocus
               />
               <CustomSelect
                 value={newTemplateId}

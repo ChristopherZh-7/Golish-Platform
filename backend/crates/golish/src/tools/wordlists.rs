@@ -1,3 +1,4 @@
+use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
@@ -38,11 +39,11 @@ async fn load_meta() -> MetaStore {
     }
 }
 
-async fn save_meta(store: &MetaStore) -> Result<(), String> {
+async fn save_meta(store: &MetaStore) -> Result<(), GolishError> {
     let base = wordlists_base();
-    fs::create_dir_all(&base).await.map_err(|e| e.to_string())?;
-    let json = serde_json::to_string_pretty(store).map_err(|e| e.to_string())?;
-    fs::write(meta_path(), json).await.map_err(|e| e.to_string())
+    fs::create_dir_all(&base).await?;
+    let json = serde_json::to_string_pretty(store)?;
+    fs::write(meta_path(), json).await.map_err(GolishError::from)
 }
 
 fn now_ts() -> u64 {
@@ -53,7 +54,7 @@ fn now_ts() -> u64 {
 }
 
 #[tauri::command]
-pub async fn wordlist_list() -> Result<Vec<WordlistMeta>, String> {
+pub async fn wordlist_list() -> Result<Vec<WordlistMeta>, GolishError> {
     Ok(load_meta().await.wordlists)
 }
 
@@ -65,7 +66,7 @@ pub async fn wordlist_import(
     content_base64: String,
     original_filename: String,
     tags: Option<Vec<String>>,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     let bytes = base64::Engine::decode(
         &base64::engine::general_purpose::STANDARD,
         &content_base64,
@@ -83,10 +84,10 @@ pub async fn wordlist_import(
     let filename = format!("{id}.{ext}");
 
     let base = wordlists_base();
-    fs::create_dir_all(&base).await.map_err(|e| e.to_string())?;
+    fs::create_dir_all(&base).await?;
     fs::write(base.join(&filename), &bytes)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let meta = WordlistMeta {
         id: id.clone(),
@@ -108,7 +109,7 @@ pub async fn wordlist_import(
 }
 
 #[tauri::command]
-pub async fn wordlist_delete(id: String) -> Result<(), String> {
+pub async fn wordlist_delete(id: String) -> Result<(), GolishError> {
     let mut store = load_meta().await;
     if let Some(pos) = store.wordlists.iter().position(|w| w.id == id) {
         let wl = store.wordlists.remove(pos);
@@ -120,18 +121,18 @@ pub async fn wordlist_delete(id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn wordlist_deduplicate(id: String) -> Result<WordlistMeta, String> {
+pub async fn wordlist_deduplicate(id: String) -> Result<WordlistMeta, GolishError> {
     let mut store = load_meta().await;
     let wl = store
         .wordlists
         .iter_mut()
         .find(|w| w.id == id)
-        .ok_or("Wordlist not found")?;
+        .ok_or_else(|| GolishError::Internal("Wordlist not found".into()))?;
 
     let file_path = wordlists_base().join(&wl.filename);
     let content = fs::read_to_string(&file_path)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let mut seen = HashSet::new();
     let deduped: Vec<&str> = content
@@ -146,7 +147,7 @@ pub async fn wordlist_deduplicate(id: String) -> Result<WordlistMeta, String> {
     let new_content = deduped.join("\n") + "\n";
     fs::write(&file_path, &new_content)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     wl.line_count = new_count;
     wl.file_size = new_content.len() as u64;
@@ -157,7 +158,7 @@ pub async fn wordlist_deduplicate(id: String) -> Result<WordlistMeta, String> {
 }
 
 #[tauri::command]
-pub async fn wordlist_merge(ids: Vec<String>, new_name: String, deduplicate: bool) -> Result<String, String> {
+pub async fn wordlist_merge(ids: Vec<String>, new_name: String, deduplicate: bool) -> Result<String, GolishError> {
     let store = load_meta().await;
     let base = wordlists_base();
 
@@ -191,7 +192,7 @@ pub async fn wordlist_merge(ids: Vec<String>, new_name: String, deduplicate: boo
 
     fs::write(base.join(&filename), &merged_content)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let meta = WordlistMeta {
         id: new_id.clone(),
@@ -213,18 +214,18 @@ pub async fn wordlist_merge(ids: Vec<String>, new_name: String, deduplicate: boo
 }
 
 #[tauri::command]
-pub async fn wordlist_preview(id: String, lines: Option<u32>) -> Result<Vec<String>, String> {
+pub async fn wordlist_preview(id: String, lines: Option<u32>) -> Result<Vec<String>, GolishError> {
     let store = load_meta().await;
     let wl = store
         .wordlists
         .iter()
         .find(|w| w.id == id)
-        .ok_or("Wordlist not found")?;
+        .ok_or_else(|| GolishError::Internal("Wordlist not found".into()))?;
 
     let file_path = wordlists_base().join(&wl.filename);
     let content = fs::read_to_string(&file_path)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let limit = lines.unwrap_or(50) as usize;
     let preview: Vec<String> = content.lines().take(limit).map(|s| s.to_string()).collect();
@@ -232,13 +233,13 @@ pub async fn wordlist_preview(id: String, lines: Option<u32>) -> Result<Vec<Stri
 }
 
 #[tauri::command]
-pub async fn wordlist_path(id: String) -> Result<String, String> {
+pub async fn wordlist_path(id: String) -> Result<String, GolishError> {
     let store = load_meta().await;
     let wl = store
         .wordlists
         .iter()
         .find(|w| w.id == id)
-        .ok_or("Wordlist not found")?;
+        .ok_or_else(|| GolishError::Internal("Wordlist not found".into()))?;
 
     let file_path = wordlists_base().join(&wl.filename);
     Ok(file_path.to_string_lossy().to_string())

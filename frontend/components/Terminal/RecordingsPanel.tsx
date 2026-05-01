@@ -1,16 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  Clock,
-  Pause,
-  Play,
-  SkipBack,
-  SkipForward,
-  Trash2,
-  X,
-} from "lucide-react";
-import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { cn } from "@/lib/utils";
+import { Terminal as XTerm } from "@xterm/xterm";
+import { Clock, Pause, Play, SkipBack, SkipForward, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CustomSelect } from "@/components/ui/custom-select";
 import {
   deleteRecording,
@@ -19,10 +10,9 @@ import {
   type Recording,
   type RecordingMeta,
 } from "@/lib/terminal/recording";
-import { useStore } from "@/store";
+import { cn } from "@/lib/utils";
 
 export function RecordingsPanel({ onClose }: { onClose: () => void }) {
-  const currentProjectPath = useStore((s) => s.currentProjectPath);
   const [recordings, setRecordings] = useState<RecordingMeta[]>([]);
   const [activeRecording, setActiveRecording] = useState<Recording | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -41,7 +31,7 @@ export function RecordingsPanel({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     load();
-  }, [load, currentProjectPath]);
+  }, [load]);
 
   useEffect(() => {
     if (!containerRef.current || !activeRecording) return;
@@ -95,10 +85,7 @@ export function RecordingsPanel({ onClose }: { onClose: () => void }) {
       const [elapsed, data] = events[idx];
       termRef.current.write(data);
 
-      const pct =
-        events.length > 0
-          ? Math.round(((idx + 1) / events.length) * 100)
-          : 100;
+      const pct = events.length > 0 ? Math.round(((idx + 1) / events.length) * 100) : 100;
       setProgress(pct);
 
       if (idx + 1 < events.length) {
@@ -110,7 +97,7 @@ export function RecordingsPanel({ onClose }: { onClose: () => void }) {
         setProgress(100);
       }
     },
-    [activeRecording, speed],
+    [activeRecording, speed]
   );
 
   const handlePlay = useCallback(() => {
@@ -137,15 +124,18 @@ export function RecordingsPanel({ onClose }: { onClose: () => void }) {
     eventIdxRef.current = 0;
   }, [stopPlayback]);
 
-  const handleOpen = useCallback(async (meta: RecordingMeta) => {
-    stopPlayback();
-    const rec = await loadRecording(meta.id);
-    if (rec) {
-      setActiveRecording(rec);
-      setProgress(0);
-      eventIdxRef.current = 0;
-    }
-  }, [stopPlayback]);
+  const handleOpen = useCallback(
+    async (meta: RecordingMeta) => {
+      stopPlayback();
+      const rec = await loadRecording(meta.id);
+      if (rec) {
+        setActiveRecording(rec);
+        setProgress(0);
+        eventIdxRef.current = 0;
+      }
+    },
+    [stopPlayback]
+  );
 
   const handleDelete = useCallback(
     async (id: string) => {
@@ -157,7 +147,7 @@ export function RecordingsPanel({ onClose }: { onClose: () => void }) {
       }
       load();
     },
-    [activeRecording, load, stopPlayback],
+    [activeRecording, load, stopPlayback]
   );
 
   const formatDuration = (ms: number) => {
@@ -198,7 +188,7 @@ export function RecordingsPanel({ onClose }: { onClose: () => void }) {
                     "px-2.5 py-2 rounded-md cursor-pointer transition-colors group",
                     activeRecording?.meta.id === rec.id
                       ? "bg-accent/10 text-accent"
-                      : "hover:bg-muted/20",
+                      : "hover:bg-muted/20"
                   )}
                   onClick={() => handleOpen(rec)}
                 >
@@ -245,15 +235,11 @@ export function RecordingsPanel({ onClose }: { onClose: () => void }) {
                     "p-1.5 rounded-md transition-colors",
                     playing
                       ? "bg-accent/20 text-accent"
-                      : "bg-muted/20 text-muted-foreground/70 hover:bg-muted/30",
+                      : "bg-muted/20 text-muted-foreground/70 hover:bg-muted/30"
                   )}
                   title={playing ? "Pause" : "Play"}
                 >
-                  {playing ? (
-                    <Pause className="w-4 h-4" />
-                  ) : (
-                    <Play className="w-4 h-4" />
-                  )}
+                  {playing ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
                 </button>
                 <div className="flex-1 h-1.5 rounded-full bg-muted/20 overflow-hidden mx-2">
                   <div
@@ -277,18 +263,13 @@ export function RecordingsPanel({ onClose }: { onClose: () => void }) {
                   />
                 </div>
               </div>
-              <div
-                ref={containerRef}
-                className="flex-1 p-2 overflow-hidden"
-              />
+              <div ref={containerRef} className="flex-1 p-2 overflow-hidden" />
             </>
           ) : (
             <div className="flex-1 flex items-center justify-center">
               <div className="text-center">
                 <Play className="w-8 h-8 text-muted-foreground/20 mx-auto mb-2" />
-                <p className="text-sm text-muted-foreground/40">
-                  Select a recording to play
-                </p>
+                <p className="text-sm text-muted-foreground/40">Select a recording to play</p>
               </div>
             </div>
           )}

@@ -1,5 +1,5 @@
-import { memo } from "react";
 import type React from "react";
+import { memo } from "react";
 import { FileCommandPopup } from "@/components/FileCommandPopup";
 import { HistorySearchPopup } from "@/components/HistorySearchPopup";
 import { PathCompletionPopup } from "@/components/PathCompletionPopup";
@@ -7,9 +7,9 @@ import { SlashCommandPopup } from "@/components/SlashCommandPopup";
 import { ToolSearchPopup } from "@/components/ToolSearchPopup/ToolSearchPopup";
 import type { HistoryMatch } from "@/hooks/useHistorySearch";
 import type { SlashCommand } from "@/hooks/useSlashCommands";
-import type { ToolConfig } from "@/lib/pentest/types";
 import type { FileInfo } from "@/lib/api/files";
 import type { PathCompletion } from "@/lib/api/shell";
+import type { ToolConfig } from "@/lib/pentest/types";
 
 interface InputPopupsProps {
   containerRef: React.RefObject<HTMLDivElement | null>;

@@ -1,14 +1,26 @@
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
-import { invoke, vulnLinks } from "@/lib/api";
 import {
-  ChevronDown, ChevronRight, Code, Copy, FileCode2, FileText,
-  Loader2, Play, Search, Trash2, X, Zap,
+  ChevronDown,
+  ChevronRight,
+  Code,
+  Copy,
+  FileCode2,
+  FileText,
+  Loader2,
+  Play,
+  Search,
+  Trash2,
+  X,
+  Zap,
 } from "lucide-react";
-import { copyToClipboard } from "@/lib/clipboard";
-import type { VulnLink, PocTemplate, DbVulnLinkFull } from "./types";
-import { dbToVulnLink } from "./types";
-import { CustomSelect } from "@/components/ui/custom-select";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { CustomSelect } from "@/components/ui/custom-select";
+import { invoke } from "@/lib/api";
+import { copyToClipboard } from "@/lib/clipboard";
+import * as vulnLinksApi from "@/lib/api/vuln-links";
+import type { DbVulnLinkFull, PocTemplate, VulnLink } from "./types";
+import { dbToVulnLink } from "./types";
+
 interface NucleiDiscoverResult {
   total_files: number;
   total_cves: number;
@@ -17,9 +29,17 @@ interface NucleiDiscoverResult {
   errors: number;
 }
 
-let _discoverState = { searching: false, progress: "", found: 0 };
+const _discoverState = { searching: false, progress: "", found: 0 };
 
-export const PocLibraryView = memo(function PocLibraryView({ vulnLinks, onLinksChange, onJumpToCve }: { vulnLinks: Record<string, VulnLink>; onLinksChange: (links: Record<string, VulnLink>) => void; onJumpToCve?: (cveId: string) => void }) {
+export const PocLibraryView = memo(function PocLibraryView({
+  vulnLinks,
+  onLinksChange,
+  onJumpToCve,
+}: {
+  vulnLinks: Record<string, VulnLink>;
+  onLinksChange: (links: Record<string, VulnLink>) => void;
+  onJumpToCve?: (cveId: string) => void;
+}) {
   const { t } = useTranslation();
   const [search, setSearch] = useState("");
   const [expandedPoc, setExpandedPoc] = useState<string | null>(null);
@@ -51,14 +71,27 @@ export const PocLibraryView = memo(function PocLibraryView({ vulnLinks, onLinksC
           _discoverState.progress = msg;
           setBatchProgress(msg);
         }
-      ).then((fn) => { unlisten = fn; });
+      ).then((fn) => {
+        unlisten = fn;
+      });
     });
-    return () => { unlisten?.(); };
+    return () => {
+      unlisten?.();
+    };
   }, []);
 
-  const setSearchingPersist = useCallback((v: boolean) => { _discoverState.searching = v; setBatchSearching(v); }, []);
-  const setProgressPersist = useCallback((v: string) => { _discoverState.progress = v; setBatchProgress(v); }, []);
-  const setFoundPersist = useCallback((v: number) => { _discoverState.found = v; setBatchFound(v); }, []);
+  const setSearchingPersist = useCallback((v: boolean) => {
+    _discoverState.searching = v;
+    setBatchSearching(v);
+  }, []);
+  const setProgressPersist = useCallback((v: string) => {
+    _discoverState.progress = v;
+    setBatchProgress(v);
+  }, []);
+  const setFoundPersist = useCallback((v: number) => {
+    _discoverState.found = v;
+    setBatchFound(v);
+  }, []);
 
   const batchSearchNuclei = useCallback(async () => {
     setSearchingPersist(true);
@@ -77,7 +110,9 @@ export const PocLibraryView = memo(function PocLibraryView({ vulnLinks, onLinksC
           converted[cveId] = dbToVulnLink(db);
         }
         onLinksChange(converted);
-      } catch { /* refresh failed, user can reload */ }
+      } catch {
+        /* refresh failed, user can reload */
+      }
     } catch (e) {
       setProgressPersist(`Error: ${String(e)}`);
     }
@@ -99,11 +134,12 @@ export const PocLibraryView = memo(function PocLibraryView({ vulnLinks, onLinksC
     if (filterType !== "all") items = items.filter((p) => p.poc.type === filterType);
     if (search.trim()) {
       const q = search.toLowerCase();
-      items = items.filter((p) =>
-        p.poc.name.toLowerCase().includes(q)
-        || p.cveId.toLowerCase().includes(q)
-        || p.poc.tags?.some((tag) => tag.toLowerCase().includes(q))
-        || p.poc.description?.toLowerCase().includes(q),
+      items = items.filter(
+        (p) =>
+          p.poc.name.toLowerCase().includes(q) ||
+          p.cveId.toLowerCase().includes(q) ||
+          p.poc.tags?.some((tag) => tag.toLowerCase().includes(q)) ||
+          p.poc.description?.toLowerCase().includes(q)
       );
     }
     return items;
@@ -111,18 +147,23 @@ export const PocLibraryView = memo(function PocLibraryView({ vulnLinks, onLinksC
 
   const PAGE_SIZE = 100;
   const [displayCount, setDisplayCount] = useState(PAGE_SIZE);
-  useEffect(() => { setDisplayCount(PAGE_SIZE); }, [filtered]);
+  useEffect(() => {
+    setDisplayCount(PAGE_SIZE);
+  }, []);
   const displayedPocs = useMemo(() => filtered.slice(0, displayCount), [filtered, displayCount]);
 
-  const handleDeletePoc = useCallback((cveId: string, pocId: string) => {
-    const next = { ...vulnLinks };
-    const link = next[cveId];
-    if (link) {
-      next[cveId] = { ...link, pocTemplates: link.pocTemplates.filter((p) => p.id !== pocId) };
-      onLinksChange(next);
-      vulnLinks.removePoc(pocId).catch(console.error);
-    }
-  }, [vulnLinks, onLinksChange]);
+  const handleDeletePoc = useCallback(
+    (cveId: string, pocId: string) => {
+      const next = { ...vulnLinks };
+      const link = next[cveId];
+      if (link) {
+        next[cveId] = { ...link, pocTemplates: link.pocTemplates.filter((p) => p.id !== pocId) };
+        onLinksChange(next);
+        vulnLinksApi.removePoc(pocId).catch(console.error);
+      }
+    },
+    [vulnLinks, onLinksChange]
+  );
 
   const handleCopy = useCallback((content: string) => {
     copyToClipboard(content);
@@ -141,11 +182,13 @@ export const PocLibraryView = memo(function PocLibraryView({ vulnLinks, onLinksC
     ];
     next[runTarget.cveId] = link;
     onLinksChange(next);
-    vulnLinks.addScan({
-      cveId: runTarget.cveId,
-      target: targetUrl.trim(),
-      result: "pending",
-    }).catch(console.error);
+    vulnLinksApi
+      .addScan({
+        cveId: runTarget.cveId,
+        target: targetUrl.trim(),
+        result: "pending",
+      })
+      .catch(console.error);
 
     setRunTarget(null);
     setTargetUrl("");
@@ -188,7 +231,11 @@ export const PocLibraryView = memo(function PocLibraryView({ vulnLinks, onLinksC
           className="flex items-center gap-1.5 h-7 px-2.5 text-[10px] font-medium rounded-lg bg-orange-500/10 text-orange-400/70 hover:bg-orange-500/20 hover:text-orange-400 transition-colors disabled:opacity-30"
           title="Discover ALL CVE-related Nuclei templates and auto-import to database"
         >
-          {batchSearching ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+          {batchSearching ? (
+            <Loader2 className="w-3 h-3 animate-spin" />
+          ) : (
+            <Zap className="w-3 h-3" />
+          )}
           Discover All Nuclei
         </button>
         <span className="text-[10px] text-muted-foreground/30">
@@ -203,7 +250,10 @@ export const PocLibraryView = memo(function PocLibraryView({ vulnLinks, onLinksC
           <span className="text-[10px] text-muted-foreground/50">{batchProgress}</span>
           {!batchSearching && batchFound > 0 && <Zap className="w-3 h-3 text-orange-400/50" />}
           {!batchSearching && (
-            <button onClick={() => setBatchProgress("")} className="ml-auto p-0.5 text-muted-foreground/30 hover:text-foreground transition-colors">
+            <button
+              onClick={() => setBatchProgress("")}
+              className="ml-auto p-0.5 text-muted-foreground/30 hover:text-foreground transition-colors"
+            >
               <X className="w-3 h-3" />
             </button>
           )}
@@ -215,9 +265,14 @@ export const PocLibraryView = memo(function PocLibraryView({ vulnLinks, onLinksC
         {filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground/20">
             <Code className="w-12 h-12" />
-            <p className="text-[13px] font-medium">{t("vulnKb.noPocTemplates", "No PoC templates")}</p>
+            <p className="text-[13px] font-medium">
+              {t("vulnKb.noPocTemplates", "No PoC templates")}
+            </p>
             <p className="text-[11px] text-muted-foreground/15 max-w-sm text-center">
-              {t("vulnKb.pocLibraryHint", "Add PoC templates to vulnerabilities in the Intel tab, and they'll appear here")}
+              {t(
+                "vulnKb.pocLibraryHint",
+                "Add PoC templates to vulnerabilities in the Intel tab, and they'll appear here"
+              )}
             </p>
           </div>
         ) : (
@@ -233,7 +288,10 @@ export const PocLibraryView = memo(function PocLibraryView({ vulnLinks, onLinksC
                     <div className="flex items-center gap-2">
                       <span className="text-[11px] text-foreground/70 truncate">{poc.name}</span>
                       <button
-                        onClick={(e) => { e.stopPropagation(); onJumpToCve?.(cveId); }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onJumpToCve?.(cveId);
+                        }}
                         className="text-[8px] px-1.5 py-0.5 rounded bg-accent/10 text-accent font-mono hover:bg-accent/20 transition-colors"
                         title="View in Intel"
                       >
@@ -241,26 +299,53 @@ export const PocLibraryView = memo(function PocLibraryView({ vulnLinks, onLinksC
                       </button>
                     </div>
                     <div className="flex items-center gap-2 mt-0.5">
-                      <span className="text-[9px] text-muted-foreground/25 px-1.5 py-0.5 bg-muted/10 rounded">{poc.type}</span>
+                      <span className="text-[9px] text-muted-foreground/25 px-1.5 py-0.5 bg-muted/10 rounded">
+                        {poc.type}
+                      </span>
                       <span className="text-[9px] text-muted-foreground/20">{poc.language}</span>
-                      <span className="text-[8px] text-muted-foreground/20">{new Date(poc.created).toLocaleDateString()}</span>
+                      <span className="text-[8px] text-muted-foreground/20">
+                        {new Date(poc.created).toLocaleDateString()}
+                      </span>
                     </div>
                   </div>
                   <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button onClick={(e) => { e.stopPropagation(); setRunTarget({ cveId, poc }); setTargetUrl(""); }}
-                      className="p-1 rounded text-emerald-400/40 hover:text-emerald-400 transition-colors" title="Run PoC">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setRunTarget({ cveId, poc });
+                        setTargetUrl("");
+                      }}
+                      className="p-1 rounded text-emerald-400/40 hover:text-emerald-400 transition-colors"
+                      title="Run PoC"
+                    >
                       <Play className="w-3 h-3" />
                     </button>
-                    <button onClick={(e) => { e.stopPropagation(); handleCopy(poc.content); }}
-                      className="p-1 rounded text-muted-foreground/30 hover:text-accent transition-colors" title="Copy">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleCopy(poc.content);
+                      }}
+                      className="p-1 rounded text-muted-foreground/30 hover:text-accent transition-colors"
+                      title="Copy"
+                    >
                       <Copy className="w-3 h-3" />
                     </button>
-                    <button onClick={(e) => { e.stopPropagation(); handleDeletePoc(cveId, poc.id); }}
-                      className="p-1 rounded text-muted-foreground/30 hover:text-destructive transition-colors" title="Delete">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeletePoc(cveId, poc.id);
+                      }}
+                      className="p-1 rounded text-muted-foreground/30 hover:text-destructive transition-colors"
+                      title="Delete"
+                    >
                       <Trash2 className="w-3 h-3" />
                     </button>
                   </div>
-                  {expandedPoc === poc.id ? <ChevronDown className="w-3 h-3 text-muted-foreground/30" /> : <ChevronRight className="w-3 h-3 text-muted-foreground/30" />}
+                  {expandedPoc === poc.id ? (
+                    <ChevronDown className="w-3 h-3 text-muted-foreground/30" />
+                  ) : (
+                    <ChevronRight className="w-3 h-3 text-muted-foreground/30" />
+                  )}
                 </div>
                 {expandedPoc === poc.id && (
                   <pre className="mx-4 mb-2 px-3 py-2 text-[10px] font-mono text-foreground/50 bg-[var(--bg-hover)]/20 border border-border/10 rounded overflow-x-auto max-h-80 overflow-y-auto leading-relaxed">
@@ -283,12 +368,20 @@ export const PocLibraryView = memo(function PocLibraryView({ vulnLinks, onLinksC
 
       {/* Run PoC Dialog */}
       {runTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setRunTarget(null)}>
-          <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          onClick={() => setRunTarget(null)}
+        >
+          <div
+            className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-md w-full"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex items-center gap-2 mb-3">
               <Play className="w-4 h-4 text-emerald-400" />
               <h3 className="text-[13px] font-semibold text-foreground">Run PoC</h3>
-              <span className="text-[9px] px-1.5 py-0.5 rounded bg-accent/10 text-accent font-mono">{runTarget.cveId}</span>
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-accent/10 text-accent font-mono">
+                {runTarget.cveId}
+              </span>
             </div>
             <p className="text-[10px] text-muted-foreground/50 mb-3">{runTarget.poc.name}</p>
             <div className="space-y-2">
@@ -298,20 +391,25 @@ export const PocLibraryView = memo(function PocLibraryView({ vulnLinks, onLinksC
                 onChange={(e) => setTargetUrl(e.target.value)}
                 placeholder="https://target.example.com"
                 className="w-full h-8 px-3 text-[12px] font-mono bg-background rounded-lg border border-border/20 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40 transition-colors"
-                autoFocus
                 onKeyDown={(e) => e.key === "Enter" && handleRunPoc()}
               />
               <p className="text-[9px] text-muted-foreground/30">
-                {"{{BaseURL}}"} in the template will be replaced with the target URL. The rendered PoC will be copied to clipboard.
+                {"{{BaseURL}}"} in the template will be replaced with the target URL. The rendered
+                PoC will be copied to clipboard.
               </p>
             </div>
             <div className="flex justify-end gap-2 mt-4">
-              <button onClick={() => setRunTarget(null)}
-                className="text-[11px] px-3 py-1.5 rounded-lg text-muted-foreground/50 hover:text-foreground transition-colors">
+              <button
+                onClick={() => setRunTarget(null)}
+                className="text-[11px] px-3 py-1.5 rounded-lg text-muted-foreground/50 hover:text-foreground transition-colors"
+              >
                 Cancel
               </button>
-              <button onClick={handleRunPoc} disabled={!targetUrl.trim()}
-                className="flex items-center gap-1.5 text-[11px] px-4 py-1.5 rounded-lg font-medium bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 transition-colors disabled:opacity-30">
+              <button
+                onClick={handleRunPoc}
+                disabled={!targetUrl.trim()}
+                className="flex items-center gap-1.5 text-[11px] px-4 py-1.5 rounded-lg font-medium bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 transition-colors disabled:opacity-30"
+              >
                 <Play className="w-3 h-3" />
                 Run & Copy
               </button>

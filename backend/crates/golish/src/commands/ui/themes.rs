@@ -1,3 +1,4 @@
+use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -9,9 +10,9 @@ pub struct ThemeInfo {
 }
 
 /// Get the golish themes directory path (~/.golish/themes/)
-fn get_themes_dir() -> Result<PathBuf, String> {
+fn get_themes_dir() -> Result<PathBuf, GolishError> {
     let home_dir =
-        dirs::home_dir().ok_or_else(|| "Could not determine home directory".to_string())?;
+        dirs::home_dir().ok_or_else(|| GolishError::Internal("Could not determine home directory".into()))?;
 
     let golish_dir = home_dir.join(".golish");
     let themes_dir = golish_dir.join("themes");
@@ -25,7 +26,7 @@ fn get_themes_dir() -> Result<PathBuf, String> {
 
 /// List all available themes in ~/.golish/themes/
 #[tauri::command]
-pub async fn list_themes() -> Result<Vec<ThemeInfo>, String> {
+pub async fn list_themes() -> Result<Vec<ThemeInfo>, GolishError> {
     let themes_dir = get_themes_dir()?;
     let mut themes = Vec::new();
 
@@ -55,7 +56,7 @@ pub async fn list_themes() -> Result<Vec<ThemeInfo>, String> {
 
 /// Read a theme file from ~/.golish/themes/{theme_name}/theme.json
 #[tauri::command]
-pub async fn read_theme(theme_name: String) -> Result<String, String> {
+pub async fn read_theme(theme_name: String) -> Result<String, GolishError> {
     let themes_dir = get_themes_dir()?;
     let theme_path = themes_dir.join(&theme_name).join("theme.json");
 
@@ -68,7 +69,7 @@ pub async fn read_theme(theme_name: String) -> Result<String, String> {
 
 /// Save a theme to ~/.golish/themes/{theme_name}/theme.json
 #[tauri::command]
-pub async fn save_theme(theme_name: String, theme_data: String) -> Result<String, String> {
+pub async fn save_theme(theme_name: String, theme_data: String) -> Result<String, GolishError> {
     let themes_dir = get_themes_dir()?;
     let theme_dir = themes_dir.join(&theme_name);
 
@@ -85,7 +86,7 @@ pub async fn save_theme(theme_name: String, theme_data: String) -> Result<String
 
 /// Delete a theme from ~/.golish/themes/{theme_name}/
 #[tauri::command]
-pub async fn delete_theme(theme_name: String) -> Result<(), String> {
+pub async fn delete_theme(theme_name: String) -> Result<(), GolishError> {
     let themes_dir = get_themes_dir()?;
     let theme_dir = themes_dir.join(&theme_name);
 
@@ -102,7 +103,7 @@ pub async fn save_theme_asset(
     theme_name: String,
     filename: String,
     data: Vec<u8>,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     let themes_dir = get_themes_dir()?;
     let assets_dir = themes_dir.join(&theme_name).join("assets");
 
@@ -123,7 +124,7 @@ pub async fn save_theme_asset(
 pub async fn get_theme_asset_path(
     theme_name: String,
     asset_path: String,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     let themes_dir = get_themes_dir()?;
     let full_path = themes_dir.join(&theme_name).join(&asset_path);
 

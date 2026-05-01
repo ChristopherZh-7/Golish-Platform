@@ -1,7 +1,7 @@
-import type { CommandBlock, AgentMessage, AiToolExecution } from "./message";
-import type { ToolCall } from "./tool-call";
+import type { AgentMessage, AiToolExecution, CommandBlock } from "./message";
 import type { PipelineExecution } from "./pipeline";
 import type { ActiveSubAgent } from "./sub-agent";
+import type { ToolCall } from "./tool-call";
 
 export type UnifiedBlock =
   | {

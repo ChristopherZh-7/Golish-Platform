@@ -14,6 +14,8 @@
 //! - [`nuclei_search`]   — Nuclei template search (single + batch).
 //! - [`nuclei_discover`] — bulk Nuclei template import via Git Trees/Contents API.
 
+pub use golish_vuln_intel_domain::traits;
+
 pub mod error;
 pub mod fetch;
 pub mod github_client;

@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { MarkdownEditor } from "@/components/MarkdownEditor";
 import {
   Select,
   SelectContent,
@@ -51,14 +52,13 @@ import {
   ParamsEditor,
   RUNTIME_VERSION_MAP,
 } from "./EditorFields";
+import { useGithubImport } from "./hooks/useGithubImport";
+import { useSkillEditor } from "./hooks/useSkillEditor";
 import { useToolData } from "./hooks/useToolData";
 import { useToolEditor } from "./hooks/useToolEditor";
 import { isAutoInstallMethod, useToolInstall } from "./hooks/useToolInstall";
-import { useSkillEditor } from "./hooks/useSkillEditor";
-import { useGithubImport } from "./hooks/useGithubImport";
 import { OutputParserEditor, type ToolWithMeta, type ViewMode } from "./OutputParserEditor";
 import { type ActionButtonProps, GridCard, ListRow } from "./ToolCards";
-import { MarkdownEditor } from "@/components/MarkdownEditor";
 
 export function ToolManager() {
   const { t } = useTranslation();
@@ -101,7 +101,6 @@ export function ToolManager() {
       window.removeEventListener("wheel", dismiss);
     };
   }, []);
-
 
   // ── Context menu ──
 
@@ -423,7 +422,6 @@ export function ToolManager() {
                         }
                       }}
                       placeholder={t("toolManager.newSkillName", "Skill name...")}
-                      autoFocus
                       className="flex-1 px-2 py-1 text-[11px] rounded bg-background border border-border/20 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40"
                     />
                     <button

@@ -6,7 +6,7 @@ export function syncSubAgentToTimeline(
   subAgentPipelineMap: Record<string, { blockId: string; stepId: string }>,
   timeline: UnifiedBlock[],
   parentRequestId: string,
-  agent: ActiveSubAgent,
+  agent: ActiveSubAgent
 ): void {
   const mapping = subAgentPipelineMap[parentRequestId];
   if (mapping) {
@@ -25,7 +25,7 @@ export function syncSubAgentToTimeline(
     }
   }
   const block = timeline.find(
-    (b) => b.type === "sub_agent_activity" && b.data.parentRequestId === parentRequestId,
+    (b) => b.type === "sub_agent_activity" && b.data.parentRequestId === parentRequestId
   );
   if (block && block.type === "sub_agent_activity") {
     block.data = { ...agent };
@@ -38,7 +38,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
       sessionId: string,
       agentId: string,
       parentRequestId: string,
-      data: { architectSystemPrompt: string; architectUserMessage: string },
+      data: { architectSystemPrompt: string; architectUserMessage: string }
     ) =>
       set((state) => {
         if (!state.activeSubAgents[sessionId]) {
@@ -46,7 +46,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
         }
         const now = new Date().toISOString();
         const existing = state.activeSubAgents[sessionId].find(
-          (a) => a.parentRequestId === parentRequestId,
+          (a) => a.parentRequestId === parentRequestId
         );
         if (existing) {
           existing.promptGeneration = {
@@ -78,7 +78,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
         const timeline = state.timelines[sessionId];
         const blockId = `sub-agent-${parentRequestId}`;
         const agentData = state.activeSubAgents[sessionId].find(
-          (a) => a.parentRequestId === parentRequestId,
+          (a) => a.parentRequestId === parentRequestId
         );
         if (!agentData) return;
         const existingBlock = timeline.find((b) => b.id === blockId);
@@ -105,7 +105,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
       sessionId: string,
       _agentId: string,
       parentRequestId: string,
-      data: { generatedPrompt?: string; success: boolean; durationMs: number },
+      data: { generatedPrompt?: string; success: boolean; durationMs: number }
     ) =>
       set((state) => {
         const agents = state.activeSubAgents[sessionId];
@@ -119,7 +119,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
         const timeline = state.timelines[sessionId];
         if (timeline && agent) {
           const block = timeline.find(
-            (b) => b.type === "sub_agent_activity" && b.data.parentRequestId === parentRequestId,
+            (b) => b.type === "sub_agent_activity" && b.data.parentRequestId === parentRequestId
           );
           if (block && block.type === "sub_agent_activity") {
             block.data = { ...agent };
@@ -135,7 +135,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
         parentRequestId: string;
         task: string;
         depth: number;
-      },
+      }
     ) =>
       set((state) => {
         if (!state.activeSubAgents[sessionId]) {
@@ -144,7 +144,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
         const now = new Date().toISOString();
         const existing = agent.parentRequestId
           ? state.activeSubAgents[sessionId].find(
-              (a) => a.parentRequestId === agent.parentRequestId,
+              (a) => a.parentRequestId === agent.parentRequestId
             )
           : undefined;
         if (existing) {
@@ -170,7 +170,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
         if (!state.timelines[sessionId]) state.timelines[sessionId] = [];
         const timeline = state.timelines[sessionId];
         const agentData = state.activeSubAgents[sessionId].find(
-          (a) => a.parentRequestId === agent.parentRequestId,
+          (a) => a.parentRequestId === agent.parentRequestId
         );
         if (!agentData) return;
 
@@ -181,12 +181,12 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
           const aiStep = block.data.steps.find(
             (s) =>
               s.status === "running" &&
-              (AI_PREFIXES.some((p) => s.command.startsWith(p)) || s.name.includes("(AI)")),
+              (AI_PREFIXES.some((p) => s.command.startsWith(p)) || s.name.includes("(AI)"))
           );
           if (aiStep) {
             if (!aiStep.subAgents) aiStep.subAgents = [];
             const existingIdx = aiStep.subAgents.findIndex(
-              (a) => a.parentRequestId === agent.parentRequestId,
+              (a) => a.parentRequestId === agent.parentRequestId
             );
             if (existingIdx >= 0) {
               aiStep.subAgents[existingIdx] = { ...agentData };
@@ -211,8 +211,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
         } else if (!existingBlock) {
           const currentAgents = state.activeSubAgents[sessionId];
           const anyRunning = currentAgents.some(
-            (a) =>
-              a.status === "running" && a.parentRequestId !== agent.parentRequestId,
+            (a) => a.status === "running" && a.parentRequestId !== agent.parentRequestId
           );
           if (!anyRunning) {
             state.subAgentBatchCounter[sessionId] =
@@ -239,7 +238,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
     addSubAgentToolCall: (
       sessionId: string,
       parentRequestId: string,
-      toolCall: { id: string; name: string; args: Record<string, unknown> },
+      toolCall: { id: string; name: string; args: Record<string, unknown> }
     ) =>
       set((state) => {
         const agents = state.activeSubAgents[sessionId];
@@ -265,7 +264,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
       parentRequestId: string,
       toolId: string,
       success: boolean,
-      result?: unknown,
+      result?: unknown
     ) =>
       set((state) => {
         const agents = state.activeSubAgents[sessionId];
@@ -288,7 +287,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
     completeSubAgent: (
       sessionId: string,
       parentRequestId: string,
-      result: { response: string; durationMs: number },
+      result: { response: string; durationMs: number }
     ) =>
       set((state) => {
         const agents = state.activeSubAgents[sessionId];
@@ -356,7 +355,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
                 state.subAgentPipelineMap,
                 timeline,
                 agent.parentRequestId,
-                agent,
+                agent
               );
             }
             return;

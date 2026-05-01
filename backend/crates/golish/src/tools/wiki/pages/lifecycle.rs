@@ -1,6 +1,7 @@
 //! Lifecycle commands: `wiki_init` (first-run scaffolding) and
 //! `wiki_reindex` (filesystem → Postgres re-sync).
 
+use crate::error::GolishError;
 use golish_db::models::NewWikiPage;
 use tokio::fs;
 
@@ -11,7 +12,7 @@ use super::frontmatter::{extract_frontmatter, infer_category_from_path};
 use super::templates::{INDEX_MD_HEADER, LOG_MD_HEADER, SCHEMA_MD, WIKI_CATEGORIES};
 
 #[tauri::command]
-pub async fn wiki_init() -> Result<(), String> {
+pub async fn wiki_init() -> Result<(), GolishError> {
     let base = wiki_base_dir();
     fs::create_dir_all(&base)
         .await
@@ -54,7 +55,7 @@ pub async fn wiki_init() -> Result<(), String> {
 #[tauri::command]
 pub async fn wiki_reindex(
     state: tauri::State<'_, DbState>,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, GolishError> {
     let pool = state.pool_ready().await?;
     let base = wiki_base_dir();
     if !base.exists() {

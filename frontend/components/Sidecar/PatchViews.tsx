@@ -1,5 +1,5 @@
-import { useState } from "react";
 import { Check, ChevronDown, ChevronRight, Clock, FileCode, GitCommit } from "lucide-react";
+import { useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { StagedPatch } from "@/lib/sidecar";
 import { cn } from "@/lib/utils";
@@ -15,7 +15,12 @@ interface PatchesViewProps {
   onSelectPatch: (id: number | null) => void;
 }
 
-export function PatchesView({ patches, selectedPatchId, selectedPatch, onSelectPatch }: PatchesViewProps) {
+export function PatchesView({
+  patches,
+  selectedPatchId,
+  selectedPatch,
+  onSelectPatch,
+}: PatchesViewProps) {
   if (patches.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -38,7 +43,9 @@ export function PatchesView({ patches, selectedPatchId, selectedPatch, onSelectP
                 key={patch.meta.id}
                 patch={patch}
                 isSelected={selectedPatchId === patch.meta.id}
-                onSelect={() => onSelectPatch(selectedPatchId === patch.meta.id ? null : patch.meta.id)}
+                onSelect={() =>
+                  onSelectPatch(selectedPatchId === patch.meta.id ? null : patch.meta.id)
+                }
               />
             ))}
           </div>
@@ -57,7 +64,15 @@ export function PatchesView({ patches, selectedPatchId, selectedPatch, onSelectP
   );
 }
 
-function PatchListItem({ patch, isSelected, onSelect }: { patch: PatchWithStatus; isSelected: boolean; onSelect: () => void }) {
+function PatchListItem({
+  patch,
+  isSelected,
+  onSelect,
+}: {
+  patch: PatchWithStatus;
+  isSelected: boolean;
+  onSelect: () => void;
+}) {
   return (
     <button
       type="button"
@@ -68,13 +83,24 @@ function PatchListItem({ patch, isSelected, onSelect }: { patch: PatchWithStatus
       )}
     >
       <div className="flex items-start gap-2">
-        <div className={cn("mt-0.5 p-1 rounded", patch.status === "applied" ? "bg-[var(--ansi-green)]/20" : "bg-[var(--ansi-yellow)]/20")}>
-          {patch.status === "applied" ? <Check className="w-3 h-3 text-[var(--ansi-green)]" /> : <Clock className="w-3 h-3 text-[var(--ansi-yellow)]" />}
+        <div
+          className={cn(
+            "mt-0.5 p-1 rounded",
+            patch.status === "applied" ? "bg-[var(--ansi-green)]/20" : "bg-[var(--ansi-yellow)]/20"
+          )}
+        >
+          {patch.status === "applied" ? (
+            <Check className="w-3 h-3 text-[var(--ansi-green)]" />
+          ) : (
+            <Clock className="w-3 h-3 text-[var(--ansi-yellow)]" />
+          )}
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-xs font-medium leading-tight line-clamp-2">{patch.subject}</p>
           <div className="flex items-center gap-2 mt-1 text-[10px] text-muted-foreground">
-            <span>{patch.files.length} file{patch.files.length !== 1 ? "s" : ""}</span>
+            <span>
+              {patch.files.length} file{patch.files.length !== 1 ? "s" : ""}
+            </span>
             <span>•</span>
             <span>{new Date(patch.meta.created_at).toLocaleTimeString()}</span>
             {patch.status === "applied" && patch.meta.applied_sha && (
@@ -98,11 +124,19 @@ function PatchDetail({ patch }: { patch: PatchWithStatus }) {
       <div className="p-3 space-y-3">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <span className={cn("text-[10px] px-1.5 py-0.5 rounded font-medium",
-              patch.status === "applied" ? "bg-[var(--ansi-green)]/20 text-[var(--ansi-green)]" : "bg-[var(--ansi-yellow)]/20 text-[var(--ansi-yellow)]")}>
+            <span
+              className={cn(
+                "text-[10px] px-1.5 py-0.5 rounded font-medium",
+                patch.status === "applied"
+                  ? "bg-[var(--ansi-green)]/20 text-[var(--ansi-green)]"
+                  : "bg-[var(--ansi-yellow)]/20 text-[var(--ansi-yellow)]"
+              )}
+            >
               {patch.status.toUpperCase()}
             </span>
-            <span className="text-[10px] text-muted-foreground">#{patch.meta.id} • {new Date(patch.meta.created_at).toLocaleString()}</span>
+            <span className="text-[10px] text-muted-foreground">
+              #{patch.meta.id} • {new Date(patch.meta.created_at).toLocaleString()}
+            </span>
           </div>
           <h3 className="text-sm font-medium leading-snug">{patch.subject}</h3>
         </div>
@@ -110,23 +144,37 @@ function PatchDetail({ patch }: { patch: PatchWithStatus }) {
         {patch.message !== patch.subject && (
           <div>
             <p className="text-[10px] text-muted-foreground mb-1 font-medium">COMMIT MESSAGE</p>
-            <pre className="text-xs font-mono whitespace-pre-wrap bg-muted p-2 rounded">{patch.message}</pre>
+            <pre className="text-xs font-mono whitespace-pre-wrap bg-muted p-2 rounded">
+              {patch.message}
+            </pre>
           </div>
         )}
 
         {patch.files.length > 0 && (
           <div>
-            <button type="button" onClick={() => setShowFiles(!showFiles)}
-              className="flex items-center gap-1 text-[10px] text-muted-foreground mb-1 font-medium hover:text-foreground">
-              {showFiles ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+            <button
+              type="button"
+              onClick={() => setShowFiles(!showFiles)}
+              className="flex items-center gap-1 text-[10px] text-muted-foreground mb-1 font-medium hover:text-foreground"
+            >
+              {showFiles ? (
+                <ChevronDown className="w-3 h-3" />
+              ) : (
+                <ChevronRight className="w-3 h-3" />
+              )}
               FILES CHANGED ({patch.files.length})
             </button>
             {showFiles && (
               <div className="space-y-0.5">
                 {patch.files.map((file) => (
-                  <div key={file} className="flex items-center gap-1.5 text-xs font-mono py-1 px-2 bg-muted/50 rounded">
+                  <div
+                    key={file}
+                    className="flex items-center gap-1.5 text-xs font-mono py-1 px-2 bg-muted/50 rounded"
+                  >
                     <FileCode className="w-3 h-3 text-[var(--ansi-blue)] shrink-0" />
-                    <span className="truncate" title={file}>{file}</span>
+                    <span className="truncate" title={file}>
+                      {file}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -137,7 +185,9 @@ function PatchDetail({ patch }: { patch: PatchWithStatus }) {
         {patch.status === "applied" && patch.meta.applied_sha && (
           <div>
             <p className="text-[10px] text-muted-foreground mb-1 font-medium">COMMIT SHA</p>
-            <code className="text-xs font-mono bg-muted px-2 py-1 rounded">{patch.meta.applied_sha}</code>
+            <code className="text-xs font-mono bg-muted px-2 py-1 rounded">
+              {patch.meta.applied_sha}
+            </code>
           </div>
         )}
 
@@ -154,14 +204,18 @@ function PatchDetail({ patch }: { patch: PatchWithStatus }) {
 
 export function DiffViewer({ content }: { content: string }) {
   const lines = content.split("\n");
-  const diffSections: { file: string; lines: { text: string; type: "add" | "del" | "hunk" | "context" | "header" }[] }[] = [];
+  const diffSections: {
+    file: string;
+    lines: { text: string; type: "add" | "del" | "hunk" | "context" | "header" }[];
+  }[] = [];
 
   let currentFile = "";
   let currentLines: { text: string; type: "add" | "del" | "hunk" | "context" | "header" }[] = [];
 
   for (const line of lines) {
     if (line.startsWith("diff --git ")) {
-      if (currentFile && currentLines.length > 0) diffSections.push({ file: currentFile, lines: currentLines });
+      if (currentFile && currentLines.length > 0)
+        diffSections.push({ file: currentFile, lines: currentLines });
       const match = line.match(/diff --git a\/(.+?) b\//);
       currentFile = match?.[1] ?? "unknown";
       currentLines = [];
@@ -177,24 +231,35 @@ export function DiffViewer({ content }: { content: string }) {
       currentLines.push({ text: line, type: "context" });
     }
   }
-  if (currentFile && currentLines.length > 0) diffSections.push({ file: currentFile, lines: currentLines });
+  if (currentFile && currentLines.length > 0)
+    diffSections.push({ file: currentFile, lines: currentLines });
 
-  if (diffSections.length === 0) return <p className="text-xs text-muted-foreground">No diff content</p>;
+  if (diffSections.length === 0)
+    return <p className="text-xs text-muted-foreground">No diff content</p>;
 
   return (
     <div className="space-y-2">
       {diffSections.map((section, idx) => (
-        <div key={`${section.file}-${idx}`} className="rounded overflow-hidden border border-border">
-          <div className="bg-muted px-2 py-1 text-[10px] font-mono text-muted-foreground border-b border-border">{section.file}</div>
+        <div
+          key={`${section.file}-${idx}`}
+          className="rounded overflow-hidden border border-border"
+        >
+          <div className="bg-muted px-2 py-1 text-[10px] font-mono text-muted-foreground border-b border-border">
+            {section.file}
+          </div>
           <pre className="text-[11px] font-mono overflow-x-auto">
             {section.lines.map((line, lineIdx) => (
-              <div key={`${lineIdx}-${line.type}-${line.text.slice(0, 20)}`}
-                className={cn("px-2 leading-5",
+              <div
+                key={`${lineIdx}-${line.type}-${line.text.slice(0, 20)}`}
+                className={cn(
+                  "px-2 leading-5",
                   line.type === "add" && "bg-[var(--ansi-green)]/10 text-[var(--ansi-green)]",
                   line.type === "del" && "bg-[var(--ansi-red)]/10 text-[var(--ansi-red)]",
                   line.type === "hunk" && "bg-[var(--ansi-blue)]/10 text-[var(--ansi-blue)]",
                   line.type === "header" && "text-muted-foreground",
-                  line.type === "context" && "text-foreground/70")}>
+                  line.type === "context" && "text-foreground/70"
+                )}
+              >
                 {line.text || " "}
               </div>
             ))}

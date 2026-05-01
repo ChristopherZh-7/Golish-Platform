@@ -1,5 +1,10 @@
-export type { RiskLevel } from "../generated/RiskLevel";
+import type { AiProvider } from "../generated/AiProvider";
+import type { ReasoningEffort } from "../generated/ReasoningEffort";
+
 export type { AiProvider } from "../generated/AiProvider";
+export type { ApiRequestStatsSnapshot } from "../generated/ApiRequestStatsSnapshot";
+export type { ReasoningEffort } from "../generated/ReasoningEffort";
+export type { RiskLevel } from "../generated/RiskLevel";
 
 export interface ProjectSettings {
   provider: AiProvider | null;
@@ -91,9 +96,7 @@ export type ProviderConfig =
       base_url?: string;
     };
 
-export type { ApprovalPattern } from "@/lib/generated";
-
-export type { ToolSource } from "@/lib/generated";
+export type { ApprovalPattern, ToolSource } from "@/lib/generated";
 
 import type { AiEvent as GeneratedAiEvent } from "@/lib/generated";
 
@@ -173,19 +176,17 @@ export interface OpenAiConfig {
   reasoningEffort?: ReasoningEffort;
 }
 
-export type { ReasoningEffort } from "@/lib/generated";
-
 export type AgentMode = "default" | "auto-approve" | "planning";
 
-export type { GolishMessageRole as SessionMessageRole } from "@/lib/generated";
-export type { GolishSessionMessage as SessionMessage } from "@/lib/generated";
-export type { SessionListingInfo } from "@/lib/generated";
-export type { GolishSessionSnapshot as SessionSnapshot } from "@/lib/generated";
-
-export type { ToolApprovalConfig } from "@/lib/generated";
-export type { ApprovalDecision } from "@/lib/generated";
-
-export type { TaskPlan } from "@/lib/generated";
+export type {
+  ApprovalDecision,
+  GolishMessageRole as SessionMessageRole,
+  GolishSessionMessage as SessionMessage,
+  GolishSessionSnapshot as SessionSnapshot,
+  SessionListingInfo,
+  TaskPlan,
+  ToolApprovalConfig,
+} from "@/lib/generated";
 
 export interface VisionCapabilities {
   supports_vision: boolean;
@@ -193,11 +194,11 @@ export interface VisionCapabilities {
   supported_formats: string[];
 }
 
-export type { PromptPart } from "@/lib/generated";
-export type { PromptPayload } from "@/lib/generated";
+export type { PromptPart, PromptPayload } from "@/lib/generated";
 
 import type { PromptPart } from "@/lib/generated";
 export type TextPart = Extract<PromptPart, { type: "text" }>;
+export type ImagePart = Extract<PromptPart, { type: "image" }>;
 
 export interface CommitMessageResponse {
   summary: string;

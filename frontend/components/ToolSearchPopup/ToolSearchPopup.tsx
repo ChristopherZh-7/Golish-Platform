@@ -1,8 +1,8 @@
 import { Download, Play, Terminal } from "lucide-react";
 import { memo, useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import type { ToolConfig } from "@/lib/pentest/types";
 import { cn } from "@/lib/utils";
-import { useTranslation } from "react-i18next";
 
 const RUNTIME_COLORS: Record<string, string> = {
   python: "text-[#3b82f6] border-[#3b82f6]/30",
@@ -34,12 +34,14 @@ const ToolSearchItem = memo(function ToolSearchItem({
       aria-selected={isSelected}
       aria-disabled={disabled}
       data-index={index}
-      onClick={() => { if (!disabled) onSelect(tool); }}
+      onClick={() => {
+        if (!disabled) onSelect(tool);
+      }}
       className={cn(
         "flex items-center gap-3 px-3 py-2 transition-colors",
         disabled
           ? "opacity-40 cursor-not-allowed"
-          : cn("cursor-pointer", isSelected ? "bg-primary/10" : "hover:bg-card"),
+          : cn("cursor-pointer", isSelected ? "bg-primary/10" : "hover:bg-card")
       )}
     >
       <div className="w-7 h-7 rounded-md bg-[var(--bg-hover)] flex items-center justify-center flex-shrink-0">
@@ -51,7 +53,7 @@ const ToolSearchItem = memo(function ToolSearchItem({
           <span
             className={cn(
               "text-[10px] px-1.5 py-0 border rounded-full leading-[18px]",
-              RUNTIME_COLORS[tool.runtime] || RUNTIME_COLORS.system,
+              RUNTIME_COLORS[tool.runtime] || RUNTIME_COLORS.system
             )}
           >
             {tool.runtime}

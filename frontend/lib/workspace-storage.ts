@@ -8,8 +8,8 @@
 
 import { logger } from "@/lib/logger";
 import { loadProjectWorkspace, saveProjectWorkspace } from "@/lib/projects";
-import type { ChatConversation, ChatMessage } from "@/store/slices/conversation";
 import type { CommandBlock } from "@/store";
+import type { ChatConversation, ChatMessage } from "@/store/slices/conversation";
 
 const LAST_PROJECT_KEY = "golish-last-project";
 
@@ -113,7 +113,11 @@ export function getLastProjectName(): string | null {
 
 /** Set the last-opened project name. */
 export function setLastProjectName(name: string): void {
-  try { localStorage.setItem(LAST_PROJECT_KEY, name); } catch { /* ignore */ }
+  try {
+    localStorage.setItem(LAST_PROJECT_KEY, name);
+  } catch {
+    /* ignore */
+  }
 }
 
 /** Clear the last-opened project. */
@@ -130,7 +134,7 @@ export async function saveWorkspaceState(
   terminalTabs?: PersistedTerminalTab[],
   conversationTerminalData?: Record<string, PersistedTerminalData[]>,
   aiModel?: { model: string; provider: string } | null,
-  approvalMode?: string,
+  approvalMode?: string
 ): Promise<void> {
   try {
     const state: PersistedWorkspaceState = {
@@ -152,7 +156,9 @@ export async function saveWorkspaceState(
     logger.debug("[WorkspaceStorage] Saved for project:", projectName, {
       conversations: state.conversations.length,
       terminalTabs: terminalTabs?.length ?? 0,
-      terminalDataConvs: conversationTerminalData ? Object.keys(conversationTerminalData).length : 0,
+      terminalDataConvs: conversationTerminalData
+        ? Object.keys(conversationTerminalData).length
+        : 0,
     });
   } catch (e) {
     logger.warn("[WorkspaceStorage] Failed to save:", e);
@@ -161,7 +167,7 @@ export async function saveWorkspaceState(
 
 /** Load workspace state for a project. Returns null if none exists. */
 export async function loadWorkspaceState(
-  projectName: string,
+  projectName: string
 ): Promise<PersistedWorkspaceState | null> {
   try {
     const raw = await loadProjectWorkspace(projectName);

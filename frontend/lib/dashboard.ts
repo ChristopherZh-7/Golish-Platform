@@ -62,7 +62,9 @@ export const dashboardApi = {
 
   // Project data
   targetList: (projectPath: string) => invoke<TargetStore>("target_list", { projectPath }),
-  methodListProjects: (projectPath: string) => invoke<ProjectMethodology[]>("method_list_projects", { projectPath }),
+  methodListProjects: (projectPath: string) =>
+    invoke<ProjectMethodology[]>("method_list_projects", { projectPath }),
   vaultList: (projectPath: string) => invoke<VaultEntry[]>("vault_list", { projectPath }),
-  oplogList: (projectPath: string, limit: number) => invoke<AuditEntry[]>("oplog_list", { projectPath, limit }),
+  oplogList: (projectPath: string, limit: number) =>
+    invoke<AuditEntry[]>("oplog_list", { projectPath, limit }),
 };

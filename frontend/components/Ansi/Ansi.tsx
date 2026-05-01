@@ -13,13 +13,14 @@ interface AnsiProps {
 export function Ansi({ children, useClasses = false }: AnsiProps) {
   const html = useMemo(() => {
     if (!children) return "";
-    
-    // Convert ANSI to HTML using anser
-    const anserOutput = Anser.ansiToHtml(children, {
+
+    // Convert ANSI to HTML using anser. anser ≥2 dropped the dedicated
+    // `escapeXML` flag; the equivalent is calling `escapeForHtml` first.
+    const safe = Anser.escapeForHtml(children);
+    const anserOutput = Anser.ansiToHtml(safe, {
       use_classes: useClasses,
-      escapeXML: true,
     });
-    
+
     return anserOutput;
   }, [children, useClasses]);
 

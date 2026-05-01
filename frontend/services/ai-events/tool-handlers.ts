@@ -4,10 +4,11 @@
  * Handles tool request, approval, auto-approval, and result events.
  */
 
+import { setPipelineSession } from "@/hooks/usePipelineEvents";
 import type { ApprovalPattern, RiskLevel, ToolSource } from "@/lib/ai";
 import { respondToToolApproval } from "@/lib/ai";
 import { logger } from "@/lib/logger";
-import { setPipelineSession } from "@/hooks/usePipelineEvents";
+import type { JsonValue } from "@/lib/serde_json/JsonValue";
 import type { EventHandler } from "./types";
 
 /**
@@ -17,9 +18,9 @@ import type { EventHandler } from "./types";
 export const handleToolRequest: EventHandler<{
   type: "tool_request";
   tool_name: string;
-  args: unknown;
+  args: JsonValue;
   request_id: string;
-  source?: ToolSource;
+  source: ToolSource;
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
@@ -57,8 +58,7 @@ export const handleToolRequest: EventHandler<{
   // Skip run_pipeline "run" calls — they get a PipelineProgressBlock via pipeline-event.
   const isSubAgentCall = event.tool_name.startsWith("sub_agent_");
   const isPipelineRun =
-    event.tool_name === "run_pipeline" &&
-    (event.args as Record<string, unknown>)?.action === "run";
+    event.tool_name === "run_pipeline" && (event.args as Record<string, unknown>)?.action === "run";
   if (isPipelineRun) {
     setPipelineSession(ctx.sessionId);
   }
@@ -84,12 +84,12 @@ export const handleToolApprovalRequest: EventHandler<{
   type: "tool_approval_request";
   request_id: string;
   tool_name: string;
-  args: unknown;
+  args: JsonValue;
   stats: ApprovalPattern | null;
   risk_level: RiskLevel;
   can_learn: boolean;
   suggestion: string | null;
-  source?: ToolSource;
+  source: ToolSource;
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
@@ -127,8 +127,7 @@ export const handleToolApprovalRequest: EventHandler<{
 
   const isSubAgentCall = event.tool_name.startsWith("sub_agent_");
   const isPipelineRun =
-    event.tool_name === "run_pipeline" &&
-    (event.args as Record<string, unknown>)?.action === "run";
+    event.tool_name === "run_pipeline" && (event.args as Record<string, unknown>)?.action === "run";
   if ((!source || source.type === "main") && !isSubAgentCall && !isPipelineRun) {
     state.addToolExecutionBlock(ctx.sessionId, {
       requestId: event.request_id,
@@ -151,6 +150,7 @@ export const handleToolApprovalRequest: EventHandler<{
     respondToToolApproval(ctx.sessionId, {
       request_id: event.request_id,
       approved: true,
+      reason: null,
       remember: false,
       always_allow: false,
     }).catch((err) => {
@@ -174,9 +174,9 @@ export const handleToolAutoApproved: EventHandler<{
   type: "tool_auto_approved";
   request_id: string;
   tool_name: string;
-  args: unknown;
+  args: JsonValue;
   reason: string;
-  source?: ToolSource;
+  source: ToolSource;
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
@@ -216,8 +216,7 @@ export const handleToolAutoApproved: EventHandler<{
 
   const isSubAgentCall = event.tool_name.startsWith("sub_agent_");
   const isPipelineRun =
-    event.tool_name === "run_pipeline" &&
-    (event.args as Record<string, unknown>)?.action === "run";
+    event.tool_name === "run_pipeline" && (event.args as Record<string, unknown>)?.action === "run";
   if (isPipelineRun) {
     setPipelineSession(ctx.sessionId);
   }
@@ -243,10 +242,10 @@ export const handleToolAutoApproved: EventHandler<{
 export const handleToolResult: EventHandler<{
   type: "tool_result";
   tool_name: string;
-  result: unknown;
+  result: JsonValue;
   success: boolean;
   request_id: string;
-  source?: ToolSource;
+  source: ToolSource;
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
@@ -269,7 +268,7 @@ export const handleToolOutputChunk: EventHandler<{
   tool_name: string;
   chunk: string;
   stream: string;
-  source?: ToolSource;
+  source: ToolSource;
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {

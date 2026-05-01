@@ -4,6 +4,7 @@
 //! provides the adapter (DB storage via `ScanResultStore`) and thin Tauri
 //! command wrappers.
 
+use crate::error::GolishError;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -47,7 +48,7 @@ impl ScanResultStore for PgScanStore {
         .bind(project_path)
         .execute(&self.pool)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(GolishError::from)?;
         Ok(())
     }
 
@@ -64,7 +65,7 @@ impl ScanResultStore for PgScanStore {
     }
 
     async fn load_wordlist_lines(&self, wordlist_id: &str) -> Result<Vec<String>, String> {
-        let path = super::wordlists::wordlist_path(wordlist_id.to_string()).await?;
+        let path = super::wordlists::wordlist_path(wordlist_id.to_string()).await.map_err(GolishError::from)?;
         let content = tokio::fs::read_to_string(&path)
             .await
             .map_err(|e| format!("Failed to read wordlist: {e}"))?;
@@ -82,9 +83,9 @@ pub async fn sensitive_scan_start(
     app_state: State<'_, AppState>,
     config: SensitiveScanConfig,
     project_path: Option<String>,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     if SCAN_RUNNING.load(Ordering::SeqCst) {
-        return Err("A sensitive scan is already running".to_string());
+        return Err(GolishError::Internal("A sensitive scan is already running".into()));
     }
     SCAN_RUNNING.store(true, Ordering::SeqCst);
     SCAN_CANCELLED.store(false, Ordering::SeqCst);
@@ -129,13 +130,13 @@ pub async fn sensitive_scan_start(
 }
 
 #[tauri::command]
-pub async fn sensitive_scan_stop() -> Result<(), String> {
+pub async fn sensitive_scan_stop() -> Result<(), GolishError> {
     SCAN_CANCELLED.store(true, Ordering::SeqCst);
     Ok(())
 }
 
 #[tauri::command]
-pub async fn sensitive_scan_status() -> Result<bool, String> {
+pub async fn sensitive_scan_status() -> Result<bool, GolishError> {
     Ok(SCAN_RUNNING.load(Ordering::SeqCst))
 }
 
@@ -144,7 +145,7 @@ pub async fn sensitive_scan_results(
     app_state: State<'_, AppState>,
     project_path: Option<String>,
     confirmed_only: Option<bool>,
-) -> Result<Vec<SensitiveScanResult>, String> {
+) -> Result<Vec<SensitiveScanResult>, GolishError> {
     let pool = app_state.db_pool_ready().await?;
     let rows = if confirmed_only.unwrap_or(false) {
         sqlx::query_as::<_, SensitiveScanRow>(
@@ -166,21 +167,21 @@ pub async fn sensitive_scan_results(
         .await
     };
     rows.map(|r| r.into_iter().map(|row| row.into()).collect())
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 #[tauri::command]
 pub async fn sensitive_scan_clear(
     app_state: State<'_, AppState>,
     project_path: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = app_state.db_pool_ready().await?;
     sqlx::query("DELETE FROM sensitive_scan_results WHERE project_path = $1")
         .bind(project_path.as_deref())
-        .execute(pool).await.map_err(|e| e.to_string())?;
+        .execute(pool).await?;
     sqlx::query("DELETE FROM sensitive_scan_history WHERE project_path = $1")
         .bind(project_path.as_deref())
-        .execute(pool).await.map_err(|e| e.to_string())?;
+        .execute(pool).await?;
     Ok(())
 }
 
@@ -189,19 +190,19 @@ pub async fn sensitive_scan_confirm(
     app_state: State<'_, AppState>,
     ids: Vec<String>,
     confirmed: bool,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = app_state.db_pool_ready().await?;
     for id in &ids {
         let uuid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
         sqlx::query("UPDATE sensitive_scan_results SET is_confirmed = $1 WHERE id = $2")
             .bind(confirmed).bind(uuid)
-            .execute(pool).await.map_err(|e| e.to_string())?;
+            .execute(pool).await?;
     }
     Ok(())
 }
 
 #[tauri::command]
-pub async fn sensitive_scan_default_paths() -> Result<Vec<String>, String> {
+pub async fn sensitive_scan_default_paths() -> Result<Vec<String>, GolishError> {
     Ok(DEFAULT_SENSITIVE_PATHS.iter().map(|s| s.to_string()).collect())
 }
 
@@ -211,14 +212,14 @@ pub async fn sensitive_scan_apply_verdicts(
     app_state: State<'_, AppState>,
     verdicts: Vec<serde_json::Value>,
     project_path: Option<String>,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, GolishError> {
     let pool = app_state.db_pool_ready().await?;
     let rows = sqlx::query_as::<_, SensitiveScanRow>(
         "SELECT id, base_url, probe_path, full_url, status_code, content_length, content_type, \
          is_confirmed, ai_verdict, created_at FROM sensitive_scan_results WHERE project_path = $1",
     )
     .bind(project_path.as_deref())
-    .fetch_all(pool).await.map_err(|e| e.to_string())?;
+    .fetch_all(pool).await?;
 
     let mut tp_count = 0u32;
     let mut applied = 0u32;

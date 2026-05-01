@@ -51,14 +51,14 @@ export const handleWorkflowStepCompleted: EventHandler<{
   workflow_id: string;
   step_name: string;
   output: string | null;
-  duration_ms: number;
+  duration_ms: bigint;
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
   ctx.getState().workflowStepCompleted(ctx.sessionId, {
     stepName: event.step_name,
     output: event.output,
-    durationMs: event.duration_ms,
+    durationMs: Number(event.duration_ms),
   });
 };
 
@@ -69,13 +69,13 @@ export const handleWorkflowCompleted: EventHandler<{
   type: "workflow_completed";
   workflow_id: string;
   final_output: string;
-  total_duration_ms: number;
+  total_duration_ms: bigint;
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
   ctx.getState().completeWorkflow(ctx.sessionId, {
     finalOutput: event.final_output,
-    totalDurationMs: event.total_duration_ms,
+    totalDurationMs: Number(event.total_duration_ms),
   });
 };
 

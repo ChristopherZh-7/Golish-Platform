@@ -56,7 +56,7 @@ export const ConversationTabs = memo(function ConversationTabs({
                 "group flex items-center gap-1.5 h-[28px] px-3 text-[12px] whitespace-nowrap flex-shrink-0 transition-all rounded-lg",
                 conv.id === activeConvId
                   ? "text-foreground bg-[var(--bg-hover)]"
-                  : "text-muted-foreground hover:text-foreground/80",
+                  : "text-muted-foreground hover:text-foreground/80"
               )}
               onClick={() => onSelect(conv.id)}
             >
@@ -69,7 +69,7 @@ export const ConversationTabs = memo(function ConversationTabs({
                   "w-4 h-4 flex items-center justify-center rounded-full transition-opacity",
                   conv.id === activeConvId
                     ? "opacity-60 hover:opacity-100"
-                    : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
+                    : "opacity-0 group-hover:opacity-60 hover:!opacity-100"
                 )}
                 onClick={(e) => onClose(conv.id, e)}
                 onKeyDown={() => {}}
@@ -97,7 +97,7 @@ export const ConversationTabs = memo(function ConversationTabs({
               "h-6 w-6 flex items-center justify-center rounded-md transition-colors",
               showHistory
                 ? "text-foreground bg-[var(--bg-hover)]"
-                : "text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]",
+                : "text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]"
             )}
             onClick={onToggleHistory}
           >

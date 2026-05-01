@@ -1,9 +1,4 @@
-import {
-  CheckCircle,
-  Loader2,
-  Maximize2,
-  XCircle,
-} from "lucide-react";
+import { CheckCircle, Loader2, Maximize2, XCircle } from "lucide-react";
 import { memo } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,7 +11,6 @@ import {
 } from "@/lib/toolGrouping";
 import { getToolIcon } from "@/lib/tools";
 import { cn } from "@/lib/utils";
-
 
 /** Status configuration for badges and icons */
 const statusConfig: Record<

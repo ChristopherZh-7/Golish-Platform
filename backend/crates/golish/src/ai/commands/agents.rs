@@ -3,6 +3,7 @@
 //! These commands expose the file-based agent system to the frontend,
 //! allowing listing, reading, saving, and deleting agent definitions.
 
+use crate::error::GolishError;
 use golish_sub_agents::file_loader::{serialize_agent_to_md, AgentFileInfo};
 use golish_sub_agents::discovery::{discover_agents, seed_default_agent_files};
 use golish_sub_agents::definition::AgentSource;
@@ -12,7 +13,7 @@ use std::path::PathBuf;
 #[tauri::command]
 pub async fn list_agent_definitions(
     working_directory: Option<String>,
-) -> Result<Vec<AgentFileInfo>, String> {
+) -> Result<Vec<AgentFileInfo>, GolishError> {
     let workspace = working_directory.map(PathBuf::from);
     let agents = discover_agents(workspace.as_deref());
     Ok(agents.iter().map(AgentFileInfo::from).collect())
@@ -20,7 +21,7 @@ pub async fn list_agent_definitions(
 
 /// Read the full body (system prompt) of an agent file.
 #[tauri::command]
-pub async fn read_agent_prompt(agent_id: String, working_directory: Option<String>) -> Result<String, String> {
+pub async fn read_agent_prompt(agent_id: String, working_directory: Option<String>) -> Result<String, GolishError> {
     let workspace = working_directory.map(PathBuf::from);
     let agents = discover_agents(workspace.as_deref());
     let agent = agents
@@ -53,7 +54,7 @@ pub async fn save_agent_definition(
     top_p: Option<f32>,
     scope: Option<String>,
     working_directory: Option<String>,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     let workspace = working_directory.map(PathBuf::from);
 
     // Find if this agent already exists (to get its file path)
@@ -64,15 +65,15 @@ pub async fn save_agent_definition(
         // Explicit scope provided — force save location
         match scope_str.as_str() {
             "project" => {
-                let ws = workspace.as_ref().ok_or("Working directory required for project agents")?;
+                let ws = workspace.as_ref().ok_or_else(|| GolishError::Internal("Working directory required for project agents".into()))?;
                 let agents_dir = ws.join(".golish").join("agents");
-                std::fs::create_dir_all(&agents_dir).map_err(|e| e.to_string())?;
+                std::fs::create_dir_all(&agents_dir)?;
                 agents_dir.join(format!("{agent_id}.md"))
             }
             _ => {
-                let home = dirs::home_dir().ok_or("No home directory")?;
+                let home = dirs::home_dir().ok_or_else(|| GolishError::Internal("No home directory".into()))?;
                 let agents_dir = home.join(".golish").join("agents");
-                std::fs::create_dir_all(&agents_dir).map_err(|e| e.to_string())?;
+                std::fs::create_dir_all(&agents_dir)?;
                 agents_dir.join(format!("{agent_id}.md"))
             }
         }
@@ -81,16 +82,16 @@ pub async fn save_agent_definition(
             Some(agent) => match &agent.source {
                 AgentSource::File(path) => path.clone(),
                 AgentSource::BuiltIn => {
-                    let home = dirs::home_dir().ok_or("No home directory")?;
+                    let home = dirs::home_dir().ok_or_else(|| GolishError::Internal("No home directory".into()))?;
                     let agents_dir = home.join(".golish").join("agents");
-                    std::fs::create_dir_all(&agents_dir).map_err(|e| e.to_string())?;
+                    std::fs::create_dir_all(&agents_dir)?;
                     agents_dir.join(format!("{agent_id}.md"))
                 }
             },
             None => {
-                let home = dirs::home_dir().ok_or("No home directory")?;
+                let home = dirs::home_dir().ok_or_else(|| GolishError::Internal("No home directory".into()))?;
                 let agents_dir = home.join(".golish").join("agents");
-                std::fs::create_dir_all(&agents_dir).map_err(|e| e.to_string())?;
+                std::fs::create_dir_all(&agents_dir)?;
                 agents_dir.join(format!("{agent_id}.md"))
             }
         }
@@ -128,7 +129,7 @@ pub async fn save_agent_definition(
     def.top_p = top_p;
 
     let content = serialize_agent_to_md(&def);
-    std::fs::write(&file_path, content).map_err(|e| e.to_string())?;
+    std::fs::write(&file_path, content)?;
 
     Ok(file_path.to_string_lossy().to_string())
 }
@@ -139,7 +140,7 @@ pub async fn save_agent_definition(
 pub async fn delete_agent_definition(
     agent_id: String,
     working_directory: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let workspace = working_directory.map(PathBuf::from);
     let agents = discover_agents(workspace.as_deref());
     let agent = agents
@@ -156,7 +157,7 @@ pub async fn delete_agent_definition(
 
     match &agent.source {
         AgentSource::File(path) => {
-            std::fs::remove_file(path).map_err(|e| e.to_string())?;
+            std::fs::remove_file(path)?;
             Ok(())
         }
         AgentSource::BuiltIn => Err(format!(
@@ -169,6 +170,6 @@ pub async fn delete_agent_definition(
 /// Seed default agent files if they don't exist.
 /// Called during app initialization.
 #[tauri::command]
-pub async fn seed_agents() -> Result<usize, String> {
-    seed_default_agent_files().map_err(|e| e.to_string())
+pub async fn seed_agents() -> Result<usize, GolishError> {
+    seed_default_agent_files().map_err(GolishError::from)
 }

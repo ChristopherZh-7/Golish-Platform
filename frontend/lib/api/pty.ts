@@ -10,7 +10,7 @@ export interface PtySession {
 export async function ptyCreate(
   workingDirectory?: string,
   rows?: number,
-  cols?: number,
+  cols?: number
 ): Promise<PtySession> {
   return invoke<PtySession>("pty_create", {
     workingDirectory,
