@@ -260,8 +260,7 @@ impl DbTracker {
         result_value: &serde_json::Value,
         success: bool,
     ) {
-        use golish_db::gatekeeper::{self, StoreDecision};
-        use golish_db::models::ToolcallStatus;
+        use crate::db_traits::{self, StoreDecision, ToolcallStatus};
 
         let status = if success {
             ToolcallStatus::Finished
@@ -269,7 +268,7 @@ impl DbTracker {
             ToolcallStatus::Failed
         };
 
-        let decision = gatekeeper::should_store(tool_name, status);
+        let decision = db_traits::should_store(tool_name, status);
         let mem_type = match decision {
             StoreDecision::Skip => return,
             StoreDecision::Store(t) | StoreDecision::StoreSummary(t) => t,
@@ -280,12 +279,12 @@ impl DbTracker {
             _ => serde_json::to_string(result_value).unwrap_or_default(),
         };
 
-        let filtered = match gatekeeper::filter_content(&result_text) {
+        let filtered = match db_traits::filter_content(&result_text) {
             Some(c) => c,
             None => return,
         };
 
-        let memory_content = gatekeeper::build_memory_content(tool_name, args, &filtered);
+        let memory_content = db_traits::build_memory_content(tool_name, args, &filtered);
 
         let mem_type_str = format!("{:?}", mem_type).to_lowercase();
         let metadata = serde_json::json!({

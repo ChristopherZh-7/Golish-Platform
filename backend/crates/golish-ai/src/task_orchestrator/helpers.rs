@@ -5,15 +5,16 @@
 //! [`looks_like_text_only_response`] is a simple heuristic that detects
 //! "I would do X" responses lacking evidence of actual tool execution.
 
-pub(super) fn parse_agent_type(agent: &Option<String>) -> Option<golish_db::models::AgentType> {
+pub(super) fn parse_agent_type(agent: &Option<String>) -> Option<crate::db_traits::AgentType> {
+    use crate::db_traits::AgentType;
     agent.as_ref().and_then(|a| match a.as_str() {
-        "pentester" => Some(golish_db::models::AgentType::Pentester),
-        "coder" => Some(golish_db::models::AgentType::Coder),
-        "searcher" | "researcher" => Some(golish_db::models::AgentType::Searcher),
-        "memorist" => Some(golish_db::models::AgentType::Memorist),
-        "reporter" => Some(golish_db::models::AgentType::Reporter),
-        "adviser" => Some(golish_db::models::AgentType::Adviser),
-        _ => Some(golish_db::models::AgentType::Primary),
+        "pentester" => Some(AgentType::Pentester),
+        "coder" => Some(AgentType::Coder),
+        "searcher" | "researcher" => Some(AgentType::Searcher),
+        "memorist" => Some(AgentType::Memorist),
+        "reporter" => Some(AgentType::Reporter),
+        "adviser" => Some(AgentType::Adviser),
+        _ => Some(AgentType::Primary),
     })
 }
 

@@ -39,7 +39,7 @@ impl AgentBridge {
     pub fn set_db_pool(
         &mut self,
         pool: Arc<sqlx::PgPool>,
-        ready_gate: golish_db::DbReadyGate,
+        ready_gate: golish_core::DbReadyGate,
     ) {
         let session_uuid = uuid::Uuid::new_v4();
         let ws = self.workspace.try_read().ok();
@@ -144,7 +144,7 @@ impl AgentBridge {
     }
 
     /// Attach an embedder to the DB tracker for semantic memory operations.
-    pub fn set_embedder(&mut self, embedder: Arc<dyn golish_db::embeddings::Embedder>) {
+    pub fn set_embedder(&mut self, embedder: Arc<dyn crate::db_traits::TextEmbedder>) {
         if let Some(ref mut tracker) = self.services.db_tracker {
             tracker.set_embedder(embedder);
         }
