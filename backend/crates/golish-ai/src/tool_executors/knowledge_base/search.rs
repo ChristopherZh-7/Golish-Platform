@@ -2,7 +2,7 @@
 //! markdown wiki. Falls back to a filesystem scan when the database is
 //! unavailable.
 
-use serde_json::json;
+
 
 use crate::tool_executors::common::{error_result, extract_string_param, ToolResult};
 
