@@ -170,7 +170,7 @@ pub async fn execute_security_analysis_tool(
                 Some(id) => id,
                 None => return Some(error_result("fingerprint_target requires a valid 'target_id' UUID")),
             };
-            let source = extract_string_param(args, &["source"])
+            let _source = extract_string_param(args, &["source"])
                 .unwrap_or_else(|| "ai".to_string());
             let fps = match args.get("fingerprints").and_then(|v| v.as_array()) {
                 Some(arr) => arr.clone(),
@@ -187,7 +187,7 @@ pub async fn execute_security_analysis_tool(
                 let version = fp.get("version").and_then(|v| v.as_str());
                 let confidence = fp.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.5) as f32;
                 let evidence = fp.get("evidence").cloned().unwrap_or_else(|| json!([]));
-                let cpe = fp.get("cpe").and_then(|v| v.as_str());
+                let _cpe = fp.get("cpe").and_then(|v| v.as_str());
 
                 if repo.fingerprints_upsert(
                     target_id, project_path.unwrap_or(""), category, name,
@@ -280,8 +280,6 @@ pub async fn execute_security_analysis_tool(
                         .collect()
                 })
                 .unwrap_or_else(|| vec!["all".to_string()]);
-            let include_all = sections.contains(&"all".to_string());
-
             let data = match repo.query_target_data(target_id, &sections).await {
                 Ok(d) => d,
                 Err(e) => return Some(error_result(format!("Failed to query target data: {}", e))),

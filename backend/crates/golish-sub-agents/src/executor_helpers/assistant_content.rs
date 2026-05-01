@@ -53,18 +53,6 @@ pub fn build_assistant_content(
     content
 }
 
-/// Map agent_id to the DB AgentType enum for message_chains storage.
-pub(crate) fn agent_id_to_db_type(agent_id: &str) -> &'static str {
-    match agent_id {
-        "pentester" => "pentester",
-        "coder" => "coder",
-        "explorer" | "searcher" | "researcher" => "searcher",
-        "memorist" => "memorist",
-        "reporter" => "reporter",
-        "adviser" | "analyzer" => "adviser",
-        _ => "primary",
-    }
-}
 
 /// Serialize rig Message history to JSON for DB storage.
 pub(crate) fn serialize_chat_history(messages: &[Message]) -> serde_json::Value {
