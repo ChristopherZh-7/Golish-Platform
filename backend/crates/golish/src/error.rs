@@ -39,6 +39,18 @@ pub enum GolishError {
     #[error("{0}")]
     Skills(#[from] golish_skills::SkillsError),
 
+    #[error("{0}")]
+    Pentest(#[from] golish_pentest::PentestError),
+
+    #[error("{0}")]
+    VulnIntel(#[from] golish_vuln_intel::VulnIntelError),
+
+    #[error("{0}")]
+    Pipeline(#[from] golish_pipeline::PipelineError),
+
+    #[error("{0}")]
+    ScanRunner(#[from] golish_scan_runner::ScanRunnerError),
+
     // -- Application-level errors ---------------------------------------------
 
     #[error("Session not found: {0}")]
@@ -70,6 +82,18 @@ impl From<anyhow::Error> for GolishError {
     }
 }
 
+impl From<String> for GolishError {
+    fn from(s: String) -> Self {
+        Self::Internal(s)
+    }
+}
+
+impl From<&str> for GolishError {
+    fn from(s: &str) -> Self {
+        Self::Internal(s.to_string())
+    }
+}
+
 impl Serialize for GolishError {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
@@ -78,5 +102,7 @@ impl Serialize for GolishError {
         serializer.serialize_str(&self.to_string())
     }
 }
+
+pub type IpcError = GolishError;
 
 pub type Result<T> = std::result::Result<T, GolishError>;

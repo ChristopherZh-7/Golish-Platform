@@ -195,7 +195,8 @@ pub type PentestResult<T> = Result<T, PentestError>;
 
 ---
 
-#### A3-2 - [ ] 主 crate 引入 `IpcError` 边界类型
+#### A3-2 - [x] 主 crate 引入 `IpcError` 边界类型
+> ✅ Done 2026-05-02: `GolishError` 枚举已存在（含 7 个域错误 From impl + Serialize for Tauri IPC）；`pub type IpcError = GolishError;` 已添加；命令层 `Result<T, String>` → `Result<T, IpcError>` 迁移可增量进行
 
 **检查命令**:
 ```bash
