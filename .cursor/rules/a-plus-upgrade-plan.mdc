@@ -73,27 +73,24 @@ alwaysApply: false
 
 ---
 
-### S-1: 拆分 golish 主 crate (44K行/224文件 → 目标 <15K)
+### S-1: 拆分 golish 主 crate (进行中: 1/6 crate)
 
-**问题**: 主 crate 承担 commands、tools、CLI、indexer、projects 等多种职责，是 God crate。
+**已完成**:
+- ✅ `golish-cli-output` (~2K 行) — 唯一不依赖 tauri/AppState 的模块
 
-**拆分方案 (按功能域)**:
+**分析发现**: 剩余 5 个提取目标全部深度耦合到 `tauri::State<AppState>`:
+| 模块 | 行数 | tauri 耦合文件数 | 复杂度 |
+|------|------|-----------------|--------|
+| `indexer/` | 1681 | 需要分析 | 中 |
+| `projects/` | 1386 | 需要分析 | 中 |
+| `tools/vuln_intel/` | ~2K | 4/7 | 高 |
+| `tools/scan_runner/` | ~2K | 5/6 | 高 |
+| `tools/pipeline/` | ~3K | 8/13 | 高 |
 
-| 新 crate | 来源目录 | 预估行数 | 职责 |
-|----------|---------|---------|------|
-| `golish-indexer` | `src/indexer/` | ~2K | 代码索引 |
-| `golish-projects` | `src/projects/` | ~3K | 项目管理 |
-| `golish-cli-output` | `src/cli_output/` | ~2K | CLI 输出格式化 |
-| `golish-vuln-intel` | `src/tools/vuln_intel/` | ~2K | 漏洞情报 |
-| `golish-scan-runner` | `src/tools/scan_runner/` | ~2K | 扫描执行 |
-| `golish-pipeline` | `src/tools/pipeline/` | ~3K | 流水线引擎 |
-
-**步骤**:
-1. 每个新 crate 独立创建 Cargo.toml
-2. 将源文件移入，调整 `use` 路径
-3. 主 crate 通过 `pub use` 或直接依赖引用
-4. `cargo check` 验证
-5. 逐个迁移，每次一个 crate
+**需要的额外架构工作**:
+1. 将每个模块的 tauri command handlers 与纯业务逻辑分离
+2. 纯逻辑移入新 crate，command handlers 保留在主 crate 作为薄包装
+3. 通过 trait/struct 参数替代 `AppState` 直接访问
 
 ---
 
