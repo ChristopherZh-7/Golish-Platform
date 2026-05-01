@@ -97,21 +97,15 @@ alwaysApply: false
 
 ---
 
-### S-2: 降低 golish-ai 耦合 (11 依赖 → 目标 6-7)
+### S-2: 降低 golish-ai 耦合 (✅ 已完成: 11 依赖 → 7)
 
-**当前 11 依赖**: core, settings, tools, events, session, context, web, llm-providers, sub-agents, skills, shell-exec
+**已消除的 4 个依赖**:
+- ✅ `golish-shell-exec`: 删除死代码 (`execute_shell_command_streaming` 未使用)
+- ✅ `golish-web`: 定义 `WebFetchProvider` trait + `WebFetchResult` 在 golish-core，golish-web 实现
+- ✅ `golish-skills`: 定义 `SkillProvider` trait + `SkillMetadata` 在 golish-core，golish-skills 实现 `DefaultSkillProvider`
+- ✅ `golish-session`: 定义 `SessionManager` + `SessionManagerFactory` trait 在 golish-core，golish-session 实现
 
-**可消除的依赖**:
-- `golish-web`: 通过 trait `WebFetcher` 抽象（已有类似模式在 db_traits.rs）
-- `golish-skills`: 通过 trait `SkillResolver` 抽象
-- `golish-session`: 通过 trait `SessionPersistence` 抽象（已部分完成）
-- `golish-shell-exec`: 通过 trait `CommandExecutor` 抽象
-
-**步骤**:
-1. 在 `golish-core` 定义 trait
-2. 在各具体 crate 实现 trait
-3. `golish-ai` 依赖 trait 而非具体实现
-4. 在 `golish` (主 crate) 注入具体实现
+**当前 7 个依赖**: core, settings, tools, events, context, llm-providers, sub-agents
 
 ---
 

@@ -1,9 +1,13 @@
 use serde_json::json;
-use golish_web::web_fetch::WebFetcher;
+use golish_core::WebFetchProvider;
 use super::common::{error_result, ToolResult};
 
-/// Execute a web fetch tool using readability-based content extraction.
-pub async fn execute_web_fetch_tool(tool_name: &str, args: &serde_json::Value) -> ToolResult {
+/// Execute a web fetch tool using the injected `WebFetchProvider`.
+pub async fn execute_web_fetch_tool(
+    fetcher: &dyn WebFetchProvider,
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> ToolResult {
     if tool_name != "web_fetch" {
         return error_result(format!("Unknown web fetch tool: {}", tool_name));
     }
@@ -16,8 +20,6 @@ pub async fn execute_web_fetch_tool(tool_name: &str, args: &serde_json::Value) -
             )
         }
     };
-
-    let fetcher = WebFetcher::new();
 
     match fetcher.fetch(&url).await {
         Ok(result) => (

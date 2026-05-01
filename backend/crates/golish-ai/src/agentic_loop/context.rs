@@ -156,6 +156,8 @@ pub struct AgenticLoopContext<'a> {
     /// Returns `true` when a shell command's output already has structured
     /// storage, so the generic memory store can skip duplicating it.
     pub output_classifier: Option<OutputClassifier>,
+    /// Web fetch provider (injected by the host crate).
+    pub web_fetcher: Option<Arc<dyn golish_core::WebFetchProvider>>,
 }
 
 /// Check cancellation flag; returns true when the user has requested a stop.

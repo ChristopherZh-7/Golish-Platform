@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use golish_core::{ApiRequestStats, PromptMatchedSkill, PromptSkillInfo};
-use golish_skills::SkillMetadata;
+use golish_core::SkillMetadata;
 
 use crate::sidecar_trait::SessionCaptureBackend;
 use golish_sub_agents::SubAgentRegistry;
@@ -227,15 +227,18 @@ impl AgentBridge {
     /// (<workspace>/.golish/skills/) directories and caches their metadata
     /// for efficient matching.
     pub async fn refresh_skills(&self) {
+        let Some(ref provider) = self.skill_provider else {
+            tracing::debug!("[refresh_skills] No skill provider configured, skipping");
+            return;
+        };
+
         let workspace = self.workspace.read().await;
         let workspace_str = workspace.to_string_lossy().to_string();
         drop(workspace);
 
-        // Run discover_skills in a blocking thread to avoid blocking the tokio runtime.
-        // discover_skills scans directories synchronously.
-        let workspace_str_clone = workspace_str.clone();
-        let skills = match tokio::task::spawn_blocking(move || {
-            golish_skills::discover_skills(Some(&workspace_str_clone))
+        let provider = Arc::clone(provider);
+        let metadata = match tokio::task::spawn_blocking(move || {
+            provider.discover_skills(Some(&workspace_str))
         })
         .await
         {
@@ -245,8 +248,6 @@ impl AgentBridge {
                 return;
             }
         };
-
-        let metadata: Vec<SkillMetadata> = skills.into_iter().map(Into::into).collect();
 
         *self.skill_cache.write().await = metadata.clone();
         tracing::debug!(
@@ -280,8 +281,11 @@ impl AgentBridge {
             })
             .collect();
 
-        let matcher = golish_skills::SkillMatcher::default();
-        let matches = matcher.match_skills(prompt, &skill_cache);
+        let Some(ref provider) = self.skill_provider else {
+            return (available_skills, Vec::new());
+        };
+
+        let matches = provider.match_skills(prompt, &skill_cache);
 
         if matches.is_empty() {
             tracing::debug!("[skills] No skills matched for prompt");
@@ -296,7 +300,7 @@ impl AgentBridge {
 
         let mut matched_skills = Vec::new();
         for (meta, score, reason) in matches {
-            match golish_skills::load_skill_body(&meta.path) {
+            match provider.load_skill_body(&meta.path) {
                 Ok(body) => {
                     matched_skills.push(PromptMatchedSkill {
                         name: meta.name.clone(),

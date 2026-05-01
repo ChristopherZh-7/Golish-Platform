@@ -133,3 +133,14 @@ pub struct FetchResult {
     pub url: String,
     pub content: String,
 }
+
+#[async_trait::async_trait]
+impl golish_core::WebFetchProvider for WebFetcher {
+    async fn fetch(&self, url: &str) -> anyhow::Result<golish_core::WebFetchResult> {
+        let result = self.fetch(url).await?;
+        Ok(golish_core::WebFetchResult {
+            url: result.url,
+            content: result.content,
+        })
+    }
+}
