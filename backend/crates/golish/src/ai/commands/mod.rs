@@ -173,7 +173,7 @@ pub async fn configure_bridge(bridge: &mut AgentBridge, state: &AppState, sessio
     }
 
     configure_core_services(bridge, state).await;
-    configure_domain_hooks(bridge);
+    configure_domain_hooks(bridge, state);
 
     let settings = state.settings_manager.get().await;
     configure_memory_and_embeddings(bridge, state, &settings).await;
@@ -210,7 +210,13 @@ async fn configure_core_services(bridge: &mut AgentBridge, state: &AppState) {
         std::sync::Arc::new(crate::ai::sidecar_bridge::SidecarCaptureBackend::new(sidecar_state));
     bridge.set_sidecar_state(sidecar_backend);
     bridge.set_settings_manager(state.settings_manager.clone());
-    bridge.set_db_pool(state.db_pool.clone(), state.db_ready.clone());
+
+    let tracking_backend: std::sync::Arc<dyn golish_ai::db_traits::DbTrackingBackend> =
+        std::sync::Arc::new(crate::ai::tracking_bridge::PgTrackingBackend::new(state.db_pool.clone()));
+    let chain_persistence: std::sync::Arc<dyn golish_sub_agents::SubAgentChainPersistence> =
+        std::sync::Arc::new(crate::ai::tracking_bridge::PgChainPersistence::new(state.db_pool.clone()));
+    let ready_gate = crate::ai::tracking_bridge::CoreDbReadyGate(state.db_ready.clone());
+    bridge.set_db_backend(tracking_backend, ready_gate, chain_persistence);
 
     let graph_backend = std::sync::Arc::new(
         crate::ai::graph_bridge::GraphClientBackend::new(state.db_pool.clone()),
@@ -222,8 +228,10 @@ async fn configure_core_services(bridge: &mut AgentBridge, state: &AppState) {
     bridge.set_db_repo(db_repo);
 }
 
-fn configure_domain_hooks(bridge: &mut AgentBridge) {
-    bridge.set_post_shell_hook(std::sync::Arc::new(|pool, cmd, stdout, project_path| {
+fn configure_domain_hooks(bridge: &mut AgentBridge, state: &AppState) {
+    let pool = state.db_pool.clone();
+    bridge.set_post_shell_hook(std::sync::Arc::new(move |cmd, stdout, project_path| {
+        let pool = pool.clone();
         Box::pin(async move {
             let _ = golish_pentest::output_store::maybe_detect_and_store(
                 &pool,

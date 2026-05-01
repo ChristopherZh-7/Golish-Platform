@@ -64,13 +64,9 @@ impl PromptRegistry {
 
     /// Load DB overrides on top of embedded defaults.
     /// Active rows in `prompt_templates` replace the corresponding embedded template.
-    pub async fn load_db_overrides(&self, pool: &sqlx::PgPool) -> anyhow::Result<()> {
-        let rows = sqlx::query_as::<_, (String, String)>(
-            "SELECT template_name, content FROM prompt_templates WHERE is_active = true",
-        )
-        .fetch_all(pool)
-        .await?;
-
+    ///
+    /// Accepts pre-fetched rows to decouple from any specific DB library.
+    pub async fn load_overrides(&self, rows: Vec<(String, String)>) -> anyhow::Result<()> {
         if rows.is_empty() {
             return Ok(());
         }

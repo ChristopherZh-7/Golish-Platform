@@ -84,7 +84,7 @@ pub async fn send_ai_prompt_session(
                     e.to_string()
                 })
             } else {
-                execute_task_mode(bridge, &session_id, &prompt)
+                execute_task_mode(bridge, &session_id, &prompt, &state)
                     .await
                     .map_err(|e| {
                         tracing::error!(
@@ -109,37 +109,12 @@ async fn execute_task_mode(
     bridge: Arc<AgentBridge>,
     _session_id: &str,
     prompt: &str,
+    state: &AppState,
 ) -> anyhow::Result<String> {
     use golish_ai::task_orchestrator::{bridge_executor::BridgeAgentExecutor, TaskOrchestrator};
     use golish_core::events::AiEvent;
 
-    let pool = bridge
-        .db_pool()
-        .ok_or_else(|| anyhow::anyhow!("Database pool not available — Task mode requires a DB connection"))?;
-
-    let db_session = golish_db::repo::sessions::create(
-        &pool,
-        golish_db::models::NewSession {
-            title: Some(format!("Task: {}", {
-                let max = 50;
-                if prompt.len() <= max {
-                    prompt
-                } else {
-                    let mut end = max;
-                    while !prompt.is_char_boundary(end) { end -= 1; }
-                    &prompt[..end]
-                }
-            })),
-            workspace_path: None,
-            workspace_label: None,
-            model: Some(bridge.model_name().to_string()),
-            provider: Some(bridge.provider_name().to_string()),
-            project_path: None,
-        },
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("Failed to create DB session for task mode: {}", e))?;
-    let uuid_session_id = db_session.id;
+    let uuid_session_id = uuid::Uuid::new_v4();
 
     let event_tx = bridge.get_or_create_event_tx();
 
@@ -167,8 +142,8 @@ async fn execute_task_mode(
 
     let start_time = std::time::Instant::now();
     let db_repo: std::sync::Arc<dyn golish_ai::db_traits::DbRepoProvider> =
-        std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(pool.clone()));
-    let mut orchestrator = TaskOrchestrator::new(pool, db_repo, uuid_session_id, event_tx);
+        std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(state.db_pool.clone()));
+    let mut orchestrator = TaskOrchestrator::new(db_repo, uuid_session_id, event_tx);
     let executor = BridgeAgentExecutor::new(bridge.clone());
 
     let result = orchestrator.run(prompt, &executor).await;

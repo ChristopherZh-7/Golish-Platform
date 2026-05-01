@@ -13,21 +13,19 @@ pub use types::{BriefingPlan, MemoryHit, ScoredMemoryHit, ToolCallGuard};
 
 use std::sync::Arc;
 
-use golish_core::DbReadyGate;
-use crate::db_traits::TextEmbedder;
-use sqlx::PgPool;
+use crate::db_traits::{DbReadinessGate, DbTrackingBackend, TextEmbedder};
 use uuid::Uuid;
 
 /// Lightweight handle passed through the agent loop for background DB recording.
 /// All methods spawn fire-and-forget tasks so the agentic loop is never blocked.
-/// Queries are gated on `DbReadyGate` — if PG isn't ready yet, fire-and-forget
+/// Queries are gated on `DbReadinessGate` — if PG isn't ready yet, fire-and-forget
 /// writes silently wait (up to a short timeout) rather than timing out against
 /// the pool's acquire_timeout.
 #[derive(Clone)]
 pub struct DbTracker {
-    pub(crate) pool: Arc<PgPool>,
+    pub(crate) backend: Arc<dyn DbTrackingBackend>,
     pub(crate) session_uuid: Uuid,
-    pub(crate) ready_gate: DbReadyGate,
+    pub(crate) ready_gate: Box<dyn DbReadinessGate>,
     pub(crate) project_path: Option<String>,
     pub(crate) task_id: Option<Uuid>,
     pub(crate) subtask_id: Option<Uuid>,
@@ -36,11 +34,15 @@ pub struct DbTracker {
 }
 
 impl DbTracker {
-    pub fn new(pool: Arc<PgPool>, session_uuid: Uuid, ready_gate: DbReadyGate) -> Self {
+    pub fn new(
+        backend: Arc<dyn DbTrackingBackend>,
+        session_uuid: Uuid,
+        ready_gate: impl DbReadinessGate + 'static,
+    ) -> Self {
         Self {
-            pool,
+            backend,
             session_uuid,
-            ready_gate,
+            ready_gate: Box::new(ready_gate),
             project_path: None,
             task_id: None,
             subtask_id: None,
@@ -87,15 +89,11 @@ impl DbTracker {
         self.session_uuid
     }
 
-    pub fn pool(&self) -> &PgPool {
-        &self.pool
+    pub fn backend(&self) -> &Arc<dyn DbTrackingBackend> {
+        &self.backend
     }
 
-    pub fn pool_arc(&self) -> &Arc<PgPool> {
-        &self.pool
-    }
-
-    pub fn ready_gate(&self) -> &DbReadyGate {
-        &self.ready_gate
+    pub fn ready_gate(&self) -> &dyn DbReadinessGate {
+        &*self.ready_gate
     }
 }

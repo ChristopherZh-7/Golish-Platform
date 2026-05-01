@@ -18,7 +18,6 @@ use super::{
 /// Optionally persists plans to PostgreSQL for cross-session continuation.
 pub struct PlanManager {
     plan: Arc<RwLock<TaskPlan>>,
-    db_pool: Option<Arc<sqlx::PgPool>>,
     db_repo: Option<Arc<dyn crate::db_traits::DbRepoProvider>>,
     session_id: Option<uuid::Uuid>,
     project_path: Option<String>,
@@ -36,7 +35,6 @@ impl PlanManager {
     pub fn new() -> Self {
         Self {
             plan: Arc::new(RwLock::new(TaskPlan::default())),
-            db_pool: None,
             db_repo: None,
             session_id: None,
             project_path: None,
@@ -44,23 +42,25 @@ impl PlanManager {
         }
     }
 
-    /// Enable DB persistence for this PlanManager.
-    pub fn with_db(
+    /// Enable DB persistence for this PlanManager (trait-based).
+    pub fn with_db_repo(
         mut self,
-        pool: Arc<sqlx::PgPool>,
         session_id: Option<uuid::Uuid>,
         project_path: Option<String>,
     ) -> Self {
-        self.db_pool = Some(pool);
         self.session_id = session_id;
         self.project_path = project_path;
         self
     }
 
+    /// Set the DB repository provider.
+    pub fn set_repo(&mut self, repo: Arc<dyn crate::db_traits::DbRepoProvider>) {
+        self.db_repo = Some(repo);
+    }
+
     /// Load the most recent active plan from DB for the current project.
     /// Returns true if a plan was loaded.
     pub async fn load_from_db(&self) -> bool {
-        let Some(pool) = &self.db_pool else { return false };
         let Some(project_path) = &self.project_path else { return false };
 
         let Some(repo) = &self.db_repo else { return false };

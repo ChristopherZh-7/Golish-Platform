@@ -90,10 +90,10 @@ impl GolishSessionManager {
         })
     }
 
-    /// Set the database pool for dual-write persistence.
-    pub fn set_db_pool(&mut self, pool: Arc<sqlx::PgPool>) {
+    /// Set the session persistence backend for dual-write.
+    pub fn set_persistence(&mut self, backend: Arc<dyn db::SessionPersistence>) {
         self.db_handle = Some(db::DbSessionHandle {
-            pool,
+            backend,
             session_uuid: uuid::Uuid::new_v4(),
         });
     }
@@ -216,13 +216,13 @@ impl GolishSessionManager {
             }
         }
 
-        // Dual-write to PostgreSQL if configured
+        // Dual-write to DB if configured
         if let Some(ref handle) = self.db_handle {
             let snapshot = self.build_snapshot();
-            let pool = handle.pool.clone();
+            let backend = handle.backend.clone();
             let uuid = handle.session_uuid;
             tokio::spawn(async move {
-                if let Err(e) = db::save_session_to_db(&pool, &snapshot, &uuid).await {
+                if let Err(e) = backend.save_session(&snapshot, &uuid).await {
                     tracing::warn!("Failed to save session to DB: {}", e);
                 }
             });
@@ -238,7 +238,6 @@ impl GolishSessionManager {
     pub fn finalize(&mut self) -> Result<PathBuf> {
         let archive = self.archive.take().context("Session already finalized")?;
 
-        // Convert GolishSessionMessages to SessionMessages
         let session_messages: Vec<SessionMessage> = self
             .messages
             .iter()
@@ -264,27 +263,25 @@ impl GolishSessionManager {
             )
             .context("Failed to finalize session archive")?;
 
-        // Save sidecar session ID to companion file if available
         if let Some(ref sidecar_id) = self.sidecar_session_id {
             if let Err(e) = Self::write_sidecar_session_id(&path, sidecar_id) {
                 tracing::warn!("Failed to save sidecar session ID: {}", e);
             }
         }
 
-        // Save agent mode to companion file if available
         if let Some(ref mode) = self.agent_mode {
             if let Err(e) = Self::write_agent_mode(&path, mode) {
                 tracing::warn!("Failed to save agent mode: {}", e);
             }
         }
 
-        // Dual-write to PostgreSQL if configured (finalize = mark completed)
+        // Dual-write to DB if configured (finalize = mark completed)
         if let Some(ref handle) = self.db_handle {
             let snapshot = self.build_snapshot();
-            let pool = handle.pool.clone();
+            let backend = handle.backend.clone();
             let uuid = handle.session_uuid;
             tokio::spawn(async move {
-                if let Err(e) = db::finalize_session_in_db(&pool, &snapshot, &uuid).await {
+                if let Err(e) = backend.finalize_session(&snapshot, &uuid).await {
                     tracing::warn!("Failed to finalize session in DB: {}", e);
                 }
             });

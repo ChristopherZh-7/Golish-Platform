@@ -30,16 +30,17 @@ impl AgentBridge {
     // Database / persistence
     // ========================================================================
 
-    /// Get a clone of the database pool (if available).
-    pub fn db_pool(&self) -> Option<Arc<sqlx::PgPool>> {
-        self.services.db_pool.clone()
-    }
-
-    /// Set the database pool for session persistence dual-write and activity tracking.
-    pub fn set_db_pool(
+    /// Set the database tracking backend and readiness gate.
+    ///
+    /// This replaces the old `set_db_pool`. The caller provides:
+    /// - A `DbTrackingBackend` (abstracts all recording + memory SQL)
+    /// - A `DbReadinessGate` (waits for PG to be ready)
+    /// - A `SubAgentChainPersistence` (for sub-agent chain persistence)
+    pub fn set_db_backend(
         &mut self,
-        pool: Arc<sqlx::PgPool>,
-        ready_gate: golish_core::DbReadyGate,
+        backend: Arc<dyn crate::db_traits::DbTrackingBackend>,
+        ready_gate: impl crate::db_traits::DbReadinessGate + Clone + 'static,
+        chain_persistence: Arc<dyn golish_sub_agents::SubAgentChainPersistence>,
     ) {
         let session_uuid = uuid::Uuid::new_v4();
         let ws = self.workspace.try_read().ok();
@@ -48,17 +49,18 @@ impl AgentBridge {
             .map(|p| p.to_string_lossy().to_string())
             .filter(|s| s != ".");
         self.services.db_tracker = Some(
-            crate::db_tracking::DbTracker::new(pool.clone(), session_uuid, ready_gate.clone())
+            crate::db_tracking::DbTracker::new(backend.clone(), session_uuid, ready_gate.clone())
                 .with_project_path(project_path),
         );
-        self.services.db_pool = Some(pool.clone());
+        self.services.chain_persistence = Some(chain_persistence.clone());
 
         // Load prompt template overrides from DB (non-blocking)
         let prompt_reg = self.prompt_registry.clone();
-        let pool_for_prompts = pool.clone();
         let sub_reg = self.sub_agent_registry.clone();
+        let cp = chain_persistence.clone();
         tokio::spawn(async move {
-            if let Err(e) = prompt_reg.load_db_overrides(&pool_for_prompts).await {
+            let rows = cp.load_prompt_template_overrides().await;
+            if let Err(e) = prompt_reg.load_overrides(rows).await {
                 tracing::warn!("[prompt-registry] Failed to load DB overrides: {e}");
             } else {
                 let new_agents = golish_sub_agents::defaults::create_default_sub_agents_from_registry(&prompt_reg).await;
@@ -75,11 +77,11 @@ impl AgentBridge {
             .map(|p| p.to_string_lossy().to_string())
             .filter(|s| s != ".");
         self.plan_manager = Arc::new(
-            PlanManager::new().with_db(pool.clone(), Some(session_uuid), plan_project_path),
+            PlanManager::new().with_db_repo(Some(session_uuid), plan_project_path),
         );
 
         let plan_manager = self.plan_manager.clone();
-        let pool_for_session = pool.clone();
+        let be = backend.clone();
         let mut gate = ready_gate;
         tokio::spawn(async move {
             if !gate.is_ready() {
@@ -90,12 +92,8 @@ impl AgentBridge {
                     return;
                 }
             }
-            let _ = sqlx::query("INSERT INTO sessions (id) VALUES ($1) ON CONFLICT DO NOTHING")
-                .bind(session_uuid)
-                .execute(pool_for_session.as_ref())
-                .await;
+            be.ensure_session(session_uuid).await;
 
-            // Load any active plan from the previous session
             plan_manager.load_from_db().await;
         });
     }

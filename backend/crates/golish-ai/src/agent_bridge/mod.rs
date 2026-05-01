@@ -125,8 +125,8 @@ pub(crate) struct BridgeLlmConfig {
 
 /// Optional external service handles wired in after construction.
 pub(crate) struct BridgeServices {
-    pub(crate) db_pool: Option<Arc<sqlx::PgPool>>,
     pub(crate) db_tracker: Option<crate::db_tracking::DbTracker>,
+    pub(crate) chain_persistence: Option<Arc<dyn golish_sub_agents::SubAgentChainPersistence>>,
     pub(crate) indexer_state: Option<Arc<IndexerState>>,
     pub(crate) sidecar_state: Option<Arc<dyn SessionCaptureBackend>>,
     pub(crate) graph_backend: Option<Arc<dyn GraphKnowledgeBase>>,

@@ -35,10 +35,7 @@ impl AgentBridge {
 
         let workspace = self.workspace.read().await.clone();
         match GolishSessionManager::new(workspace, &self.llm.model_name, &self.llm.provider_name).await {
-            Ok(mut manager) => {
-                if let Some(ref pool) = self.services.db_pool {
-                    manager.set_db_pool(pool.clone());
-                }
+            Ok(manager) => {
                 *manager_guard = Some(manager);
                 tracing::debug!("Session started for persistence");
             }

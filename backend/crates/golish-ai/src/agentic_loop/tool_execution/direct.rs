@@ -172,10 +172,7 @@ where
             let is_success = is_tool_result_success(v);
 
             if effective_tool_name == "run_pty_cmd" && is_success {
-                if let (Some(hook), Some(tracker)) =
-                    (&ctx.post_shell_hook, ctx.events.db_tracker)
-                {
-                    let pool = tracker.pool_arc().clone();
+                if let Some(hook) = &ctx.post_shell_hook {
                     let stdout = v
                         .get("stdout")
                         .and_then(|s| s.as_str())
@@ -191,7 +188,7 @@ where
                     drop(ws);
                     let hook = Arc::clone(hook);
                     tokio::spawn(async move {
-                        hook(pool, command, stdout, Some(pp)).await;
+                        hook(command, stdout, Some(pp)).await;
                     });
                 }
             }
@@ -285,7 +282,7 @@ where
                 temperature_override: agent_def.temperature,
                 max_tokens_override: agent_def.max_tokens,
                 top_p_override: agent_def.top_p,
-                db_pool: ctx.events.db_tracker.map(|t| t.pool_arc()),
+                chain_persistence: ctx.chain_persistence.as_ref(),
                 sub_agent_registry: Some(ctx.sub_agent_registry),
                 post_shell_hook: ctx.post_shell_hook.clone(),
             };
@@ -319,7 +316,7 @@ where
                 temperature_override: agent_def.temperature,
                 max_tokens_override: agent_def.max_tokens,
                 top_p_override: agent_def.top_p,
-                db_pool: ctx.events.db_tracker.map(|t| t.pool_arc()),
+                chain_persistence: ctx.chain_persistence.as_ref(),
                 sub_agent_registry: Some(ctx.sub_agent_registry),
                 post_shell_hook: ctx.post_shell_hook.clone(),
             };
@@ -354,7 +351,7 @@ where
             temperature_override: agent_def.temperature,
             max_tokens_override: agent_def.max_tokens,
             top_p_override: agent_def.top_p,
-            db_pool: ctx.events.db_tracker.map(|t| t.pool_arc()),
+            chain_persistence: ctx.chain_persistence.as_ref(),
             sub_agent_registry: Some(ctx.sub_agent_registry),
             post_shell_hook: ctx.post_shell_hook.clone(),
         };

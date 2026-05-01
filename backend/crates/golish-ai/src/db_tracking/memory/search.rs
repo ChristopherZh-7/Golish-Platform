@@ -2,65 +2,27 @@
 //! variants, plus document-type filtered lookups.
 
 use super::super::helpers::vec_to_pgvector;
-use super::super::types::{MemoryHit, PgvectorScoredRow, ScoredMemoryHit};
+use super::super::types::{MemoryHit, ScoredMemoryHit};
 use super::super::DbTracker;
 
 impl DbTracker {
-
-    /// Search memories filtered by `doc_type` (for multi-vector store).
-    /// Optional `sub_filter` is matched against metadata or content tags.
     pub async fn search_memories_by_doc_type(
         &self,
         query: &str,
         doc_type: &str,
         sub_filter: Option<&str>,
         limit: i64,
-    ) -> Result<Vec<MemoryHit>, sqlx::Error> {
+    ) -> Vec<MemoryHit> {
         let mut gate = self.ready_gate.clone();
         if !gate.is_ready() && !gate.wait().await {
-            return Ok(Vec::new());
+            return Vec::new();
         }
-        let pattern = format!("%{}%", query);
 
-        if let Some(sf) = sub_filter {
-            let sf_pattern = format!("%{}%", sf);
-            sqlx::query_as::<_, MemoryHit>(
-                r#"SELECT id, content, mem_type::TEXT as mem_type, metadata, created_at
-                   FROM memories
-                   WHERE doc_type = $1
-                     AND content ILIKE $2
-                     AND content ILIKE $3
-                     AND ($4::text IS NULL OR project_path = $4 OR project_path IS NULL)
-                   ORDER BY created_at DESC
-                   LIMIT $5"#,
-            )
-            .bind(doc_type)
-            .bind(&pattern)
-            .bind(&sf_pattern)
-            .bind(&self.project_path)
-            .bind(limit)
-            .fetch_all(self.pool.as_ref())
+        self.backend
+            .search_memories_by_doc_type(query, doc_type, sub_filter, self.project_path.as_deref(), limit)
             .await
-        } else {
-            sqlx::query_as::<_, MemoryHit>(
-                r#"SELECT id, content, mem_type::TEXT as mem_type, metadata, created_at
-                   FROM memories
-                   WHERE doc_type = $1
-                     AND content ILIKE $2
-                     AND ($3::text IS NULL OR project_path = $3 OR project_path IS NULL)
-                   ORDER BY created_at DESC
-                   LIMIT $4"#,
-            )
-            .bind(doc_type)
-            .bind(&pattern)
-            .bind(&self.project_path)
-            .bind(limit)
-            .fetch_all(self.pool.as_ref())
-            .await
-        }
     }
 
-    /// Semantic similarity search over memories using pgvector's `<=>` operator.
     pub async fn search_memories_semantic(
         &mut self,
         query_embedding: &[f32],
@@ -74,74 +36,35 @@ impl DbTracker {
         }
 
         let emb_str = vec_to_pgvector(query_embedding);
-        let rows: Vec<PgvectorScoredRow> = sqlx::query_as(
-            r#"SELECT id, content, mem_type::TEXT as mem_type, tool_name,
-                      metadata, created_at,
-                      1.0 - (embedding <=> $1::vector) AS score
-               FROM memories
-               WHERE embedding IS NOT NULL
-                 AND ($2::text IS NULL OR project_path = $2 OR project_path IS NULL)
-               ORDER BY embedding <=> $1::vector ASC
-               LIMIT $3"#,
-        )
-        .bind(&emb_str)
-        .bind(&self.project_path)
-        .bind(limit as i64)
-        .fetch_all(self.pool.as_ref())
-        .await
-        .unwrap_or_default();
+        let results = self
+            .backend
+            .search_memories_semantic(&emb_str, self.project_path.as_deref(), limit as i64)
+            .await;
 
-        rows.into_iter()
+        results
+            .into_iter()
             .filter(|r| r.score >= threshold)
-            .map(|r| ScoredMemoryHit {
-                hit: MemoryHit {
-                    id: r.id,
-                    content: r.content,
-                    mem_type: r.mem_type,
-                    metadata: r.metadata,
-                    created_at: r.created_at,
-                },
-                tool_name: r.tool_name,
-                score: r.score,
-            })
             .collect()
     }
 
-    /// Search memories by text content (ILIKE), scoped to current project + global.
     pub async fn search_memories_text(&mut self, query: &str, limit: i64) -> Vec<MemoryHit> {
         if !self.ready_gate.is_ready() {
             if !self.ready_gate.wait().await {
                 return Vec::new();
             }
         }
-        let pattern = format!("%{}%", query);
-        sqlx::query_as::<_, MemoryHit>(
-            r#"SELECT id, content, mem_type::TEXT as mem_type, metadata, created_at
-               FROM memories
-               WHERE content ILIKE $1
-                 AND ($2::text IS NULL OR project_path = $2 OR project_path IS NULL)
-               ORDER BY created_at DESC
-               LIMIT $3"#,
-        )
-        .bind(&pattern)
-        .bind(&self.project_path)
-        .bind(limit)
-        .fetch_all(self.pool.as_ref())
-        .await
-        .unwrap_or_default()
+
+        self.backend
+            .search_memories_text(query, self.project_path.as_deref(), limit)
+            .await
     }
 
-    /// Search memories by text content with optional category filter.
-    /// Used by the `search_memories` AI tool. Scoped to current project + global.
-    ///
-    /// When an embedder is available, performs hybrid search: semantic + text with
-    /// deduplicated, interleaved results. Falls back to pure text (ILIKE) otherwise.
     pub async fn search_memories_by_text(
         &self,
         query: &str,
         category: Option<&str>,
         limit: i64,
-    ) -> Result<Vec<MemoryHit>, sqlx::Error> {
+    ) -> Vec<MemoryHit> {
         self.record_vecstore_op(
             "search",
             query,
@@ -151,7 +74,7 @@ impl DbTracker {
 
         let mut gate = self.ready_gate.clone();
         if !gate.is_ready() && !gate.wait().await {
-            return Ok(Vec::new());
+            return Vec::new();
         }
 
         if let Some(ref embedder) = self.embedder {
@@ -171,7 +94,9 @@ impl DbTracker {
             }
         }
 
-        self.text_only_search(query, category, limit).await
+        self.backend
+            .search_memories_text_with_category(query, category, self.project_path.as_deref(), limit)
+            .await
     }
 
     async fn hybrid_search(
@@ -180,46 +105,24 @@ impl DbTracker {
         embedding: &[f32],
         category: Option<&str>,
         limit: i64,
-    ) -> Result<Vec<MemoryHit>, sqlx::Error> {
+    ) -> Vec<MemoryHit> {
         let emb_str = vec_to_pgvector(embedding);
         let half = (limit / 2).max(1);
 
-        let semantic_results: Vec<MemoryHit> = if let Some(cat) = category {
-            let cat_pattern = format!("[{}]%", cat);
-            sqlx::query_as::<_, MemoryHit>(
-                r#"SELECT id, content, mem_type::TEXT as mem_type, metadata, created_at
-                   FROM memories
-                   WHERE embedding IS NOT NULL
-                     AND content ILIKE $1
-                     AND ($2::text IS NULL OR project_path = $2 OR project_path IS NULL)
-                   ORDER BY embedding <=> $3::vector ASC
-                   LIMIT $4"#,
+        let semantic_results = self
+            .backend
+            .search_memories_semantic_with_category(
+                category,
+                self.project_path.as_deref(),
+                &emb_str,
+                half,
             )
-            .bind(&cat_pattern)
-            .bind(&self.project_path)
-            .bind(&emb_str)
-            .bind(half)
-            .fetch_all(self.pool.as_ref())
-            .await
-            .unwrap_or_default()
-        } else {
-            sqlx::query_as::<_, MemoryHit>(
-                r#"SELECT id, content, mem_type::TEXT as mem_type, metadata, created_at
-                   FROM memories
-                   WHERE embedding IS NOT NULL
-                     AND ($1::text IS NULL OR project_path = $1 OR project_path IS NULL)
-                   ORDER BY embedding <=> $2::vector ASC
-                   LIMIT $3"#,
-            )
-            .bind(&self.project_path)
-            .bind(&emb_str)
-            .bind(half)
-            .fetch_all(self.pool.as_ref())
-            .await
-            .unwrap_or_default()
-        };
+            .await;
 
-        let text_results = self.text_only_search(query, category, half).await.unwrap_or_default();
+        let text_results = self
+            .backend
+            .search_memories_text_with_category(query, category, self.project_path.as_deref(), half)
+            .await;
 
         let mut seen = std::collections::HashSet::new();
         let mut merged = Vec::with_capacity(limit as usize);
@@ -228,47 +131,6 @@ impl DbTracker {
                 merged.push(hit);
             }
         }
-        Ok(merged)
-    }
-
-    async fn text_only_search(
-        &self,
-        query: &str,
-        category: Option<&str>,
-        limit: i64,
-    ) -> Result<Vec<MemoryHit>, sqlx::Error> {
-        let pattern = format!("%{}%", query);
-
-        if let Some(cat) = category {
-            let cat_pattern = format!("[{}]%", cat);
-            sqlx::query_as::<_, MemoryHit>(
-                r#"SELECT id, content, mem_type::TEXT as mem_type, metadata, created_at
-                   FROM memories
-                   WHERE content ILIKE $1 AND content ILIKE $2
-                     AND ($3::text IS NULL OR project_path = $3 OR project_path IS NULL)
-                   ORDER BY created_at DESC
-                   LIMIT $4"#,
-            )
-            .bind(&pattern)
-            .bind(&cat_pattern)
-            .bind(&self.project_path)
-            .bind(limit)
-            .fetch_all(self.pool.as_ref())
-            .await
-        } else {
-            sqlx::query_as::<_, MemoryHit>(
-                r#"SELECT id, content, mem_type::TEXT as mem_type, metadata, created_at
-                   FROM memories
-                   WHERE content ILIKE $1
-                     AND ($2::text IS NULL OR project_path = $2 OR project_path IS NULL)
-                   ORDER BY created_at DESC
-                   LIMIT $3"#,
-            )
-            .bind(&pattern)
-            .bind(&self.project_path)
-            .bind(limit)
-            .fetch_all(self.pool.as_ref())
-            .await
-        }
+        merged
     }
 }

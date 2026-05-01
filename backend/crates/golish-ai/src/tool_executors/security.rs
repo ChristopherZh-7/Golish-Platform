@@ -21,11 +21,6 @@ pub async fn execute_security_analysis_tool(
         Some(r) => r,
         None => return Some(error_result("Database not available for security analysis tools")),
     };
-    let pool = match db_tracker {
-        Some(t) => t.pool(),
-        None => return Some(error_result("Database not available for security analysis tools")),
-    };
-
     match tool_name {
         "log_operation" => {
             let op_type = extract_string_param(args, &["op_type"])
