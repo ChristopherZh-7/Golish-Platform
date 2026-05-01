@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use golish_core::{ApiRequestStats, PromptMatchedSkill, PromptSkillInfo};
-use golish_core::SkillMetadata;
 
 use crate::sidecar_trait::SessionCaptureBackend;
 use golish_sub_agents::SubAgentRegistry;
@@ -18,10 +17,10 @@ use tokio::sync::RwLock;
 
 use super::super::agent_mode::AgentMode;
 use super::super::execution_mode::ExecutionMode;
-use super::super::indexer::IndexerState;
 use super::super::llm_client::{LlmClient, LlmClientFactory};
 use super::super::planner::PlanManager;
 use super::super::transcript::TranscriptWriter;
+use golish_indexer::IndexerState;
 
 use super::AgentBridge;
 
