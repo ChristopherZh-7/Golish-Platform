@@ -1,4 +1,3 @@
-import { invoke } from "@/lib/api/client";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -6,17 +5,28 @@ import {
   cancelDownload,
   cancelRuntimeInstall,
   createPythonEnv,
+  deleteTool,
   downloadAndExtract,
   fetchGitHubRelease,
+  findToolExecutables,
   fixToolExecutablePermission,
   getConfig,
+  gitCloneTool,
+  installDepFile,
   installJavaVersion,
+  installRequirements,
   installRuntime,
   listAvailableJava,
   listInstalledJava,
   listPythonEnvs,
+  listToolDirFiles,
+  pipInstall,
+  pipUninstall,
+  renameToolDir,
   uninstallBrewPackage,
   uninstallGemPackage,
+  uninstallToolFiles,
+  updateToolExecutable,
 } from "@/lib/pentest/api";
 import { getSettings } from "@/lib/settings";
 import type { ExecPickerState, ToolUpdateInfo } from "../Dialogs";
@@ -292,19 +302,13 @@ export function useToolInstall(
               const actualDir = result.extract_path.split("/").pop() || "";
               if (actualDir && actualDir !== stableDirName) {
                 try {
-                  await invoke("pentest_rename_tool_dir", {
-                    fromPath: result.extract_path,
-                    toName: stableDirName,
-                  });
+                  await renameToolDir(result.extract_path, stableDirName);
                 } catch {}
               }
             }
             setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.detectExecutable") }));
             try {
-              let execs: string[] = await invoke("pentest_find_tool_executables", {
-                toolDir: stableDirName,
-                runtime: tool.runtime || null,
-              });
+              let execs: string[] = await findToolExecutables(stableDirName, tool.runtime || null);
               if (execs.length === 0) {
                 try {
                   const NON_EXEC_NAMES = new Set([
@@ -366,9 +370,7 @@ export function useToolInstall(
                     "tar",
                     "gz",
                   ]);
-                  const allFiles: string[] = await invoke("pentest_list_tool_dir_files", {
-                    toolDir: stableDirName,
-                  });
+                  const allFiles: string[] = await listToolDirFiles(stableDirName);
                   execs = allFiles.filter((f) => {
                     const base = f.split("/").pop()?.toLowerCase() || "";
                     if (NON_EXEC_NAMES.has(base)) return false;
@@ -394,14 +396,14 @@ export function useToolInstall(
                 : execs[0] || null;
               if (selectedExec) {
                 const newExecutable = `${stableDirName}/${selectedExec.replace(/^[/\\]+/, "")}`;
-                await invoke("pentest_update_tool_executable", {
+                await updateToolExecutable({
                   toolId: tool.id,
                   newExecutable,
                   version: releaseVersion || undefined,
                   lastUpdated: new Date().toISOString().slice(0, 10),
                 });
               } else if (releaseVersion) {
-                await invoke("pentest_update_tool_executable", {
+                await updateToolExecutable({
                   toolId: tool.id,
                   newExecutable: tool.executable,
                   version: releaseVersion,
@@ -413,7 +415,7 @@ export function useToolInstall(
             setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.gitCloning") }));
             const toolDir = tool.executable?.split("/")[0] || tool.name;
             installedToolDir = toolDir;
-            await invoke("pentest_git_clone_tool", {
+            await gitCloneTool({
               source: `https://github.com/${source}.git`,
               toolDir,
               proxyUrl: proxyUrl || null,
@@ -427,7 +429,7 @@ export function useToolInstall(
           if (!r.success) throw new Error(r.message || `brew install ${pkg} failed`);
           const m = r.message?.match(/BREW_VERSION=(.+)/);
           if (m)
-            await invoke("pentest_update_tool_executable", {
+            await updateToolExecutable({
               toolId: tool.id,
               newExecutable: tool.executable,
               version: m[1],
@@ -448,11 +450,7 @@ export function useToolInstall(
           const ver = (tool.runtimeVersion || "").replace(/\+$/, "");
           const envName = ver ? `python${ver}_env` : "base";
           setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.pipInstalling", { pkg }) }));
-          const r: { success: boolean; message?: string } = await invoke("pentest_pip_install", {
-            envName,
-            packageName: pkg,
-            proxyUrl: proxyUrl || null,
-          });
+          const r = await pipInstall(envName, pkg);
           if (!r.success) throw new Error(r.message || `pip install ${pkg} failed`);
         }
 
@@ -465,11 +463,7 @@ export function useToolInstall(
                 ...p,
                 [tool.id]: t("toolManager.installingPythonDeps"),
               }));
-              await invoke("pentest_install_requirements", {
-                toolDir,
-                pythonVersion: tool.runtimeVersion,
-                proxyUrl: proxyUrl || null,
-              });
+              await installRequirements(toolDir, tool.runtimeVersion || null);
             }
           } catch {}
         }
@@ -528,10 +522,7 @@ export function useToolInstall(
         else if (via === "pip" || method === "pip") {
           const ver = (tool.runtimeVersion || "").replace(/\+$/, "");
           const envName = ver ? `python${ver}_env` : "base";
-          const r: { success: boolean; message?: string } = await invoke("pentest_pip_uninstall", {
-            envName,
-            packageName: pkg,
-          });
+          const r = await pipUninstall(envName, pkg);
           if (!r.success) throw new Error(r.message || `pip uninstall ${pkg} failed`);
         } else {
           const execHead = (tool.executable || "").split("/")[0];
@@ -540,7 +531,7 @@ export function useToolInstall(
             throw new Error(
               t("toolManager.uninstallNotManaged", { executable: tool.executable || tool.name })
             );
-          await invoke("pentest_uninstall_tool_files", { toolDir: execHead });
+          await uninstallToolFiles(execHead);
         }
         await loadData(true);
       } catch (e) {
@@ -571,12 +562,7 @@ export function useToolInstall(
       setError(null);
       try {
         const proxyUrl = await getProxy();
-        await invoke("pentest_install_dep_file", {
-          toolDir,
-          fileName,
-          pythonVersion: tool.runtimeVersion || "",
-          proxyUrl: proxyUrl || null,
-        });
+        await installDepFile(toolDir, fileName);
         setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.depInstallDone") }));
         await new Promise((r) => setTimeout(r, 1500));
       } catch (e) {
@@ -626,7 +612,7 @@ export function useToolInstall(
     async (tool: ToolWithMeta) => {
       setDeleteTarget(null);
       try {
-        await invoke("pentest_delete_tool", { toolId: tool.id, toolFolder: null });
+        await deleteTool({ toolId: tool.id, toolFolder: null });
         await loadData(true);
       } catch (e) {
         setError(t("toolManager.deleteFailed", { error: e }));
