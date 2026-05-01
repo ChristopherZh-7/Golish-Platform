@@ -3,6 +3,9 @@
 //! A signaling primitive that lets consumers wait for the embedded PostgreSQL
 //! to become ready. Lives in golish-core so both golish-ai (consumer) and
 //! golish-db (producer) can share the same type without a dependency cycle.
+//!
+//! Constructed in the `golish` application crate; consumed by `golish-ai`
+//! via the `DbReadinessGate` trait newtype adapter.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -12,6 +15,7 @@ use tokio::sync::watch;
 type GateState = Option<bool>;
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct DbReadyGate {
     ready: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
