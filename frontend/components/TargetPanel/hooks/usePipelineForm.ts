@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@/lib/api/client";
+import { targets } from "@/lib/api";
 import { listen } from "@tauri-apps/api/event";
 import { getProjectPath } from "@/lib/projects";
 import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
@@ -156,7 +156,7 @@ export function usePipelineForm(targetValue: string) {
     setSummary(null);
     setRunning(true);
     try {
-      await invoke("pipeline_execute", {
+      await targets.executePipeline({
         pipeline: selected,
         target: targetValue,
         projectPath: getProjectPath(),
@@ -169,7 +169,7 @@ export function usePipelineForm(targetValue: string) {
   }, [selected, targetValue, running]);
 
   const cancelPipeline = useCallback(async () => {
-    try { await invoke("pipeline_cancel"); } catch { /* ignore */ }
+    try { await targets.cancelPipeline(); } catch { /* ignore */ }
   }, []);
 
   return {

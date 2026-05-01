@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@/lib/api";
+import { invoke, vulnLinks } from "@/lib/api";
 import {
   AlertTriangle, BookOpen, Bot, Code, History, Loader2, MessageSquare, Shield, X,
 } from "lucide-react";
@@ -204,7 +204,7 @@ Update the product page frontmatter \`status\`:
         ...l,
         wikiPaths: l.wikiPaths.includes(expectedPath) ? l.wikiPaths : [...l.wikiPaths, expectedPath],
       }));
-      invoke("vuln_link_add_wiki", { cveId: entry.cve_id, wikiPath: expectedPath }).catch(console.error);
+      vulnLinks.addWikiLink(entry.cve_id, expectedPath).catch(console.error);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("Failed to trigger AI research:", e);

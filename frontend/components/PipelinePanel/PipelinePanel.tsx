@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@/lib/api";
+import { invoke, targets } from "@/lib/api";
 import { listen } from "@tauri-apps/api/event";
 import {
   Code2, Database, Download, GitBranch, Loader2, Plus, Save, Trash2, X,
@@ -557,7 +557,7 @@ export function PipelinePanel() {
   }, []);
 
   const handleDelete = useCallback(async (id: string) => {
-    await invoke("pipeline_delete", { id, projectPath: getProjectPath() });
+    await targets.deletePipeline(id, getProjectPath());
     if (active?.id === id) setActive(null); load();
   }, [active, load]);
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { invoke } from "@/lib/api/client";
+import { targets } from "@/lib/api";
 import { emit, listen } from "@tauri-apps/api/event";
 import { logAudit } from "@/lib/audit";
 import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
@@ -70,7 +70,7 @@ export function useTargetData() {
   const handleAdd = useCallback(async (addForm: AddForm): Promise<string | null> => {
     if (!addForm.value.trim()) return null;
     try {
-      await invoke("target_add", {
+      await targets.addTarget({
         name: addForm.name,
         value: addForm.value.trim(),
         notes: addForm.notes,
@@ -109,7 +109,7 @@ export function useTargetData() {
 
   const handleDelete = useCallback(async (id: string) => {
     try {
-      await invoke("target_delete", { id, projectPath: getProjectPath() });
+      await targets.deleteTarget(id, getProjectPath());
       loadTargets();
       logAudit({ action: "target_deleted", category: "targets", details: id, entityType: "target", entityId: id });
     } catch (e) {
@@ -119,7 +119,7 @@ export function useTargetData() {
 
   const handleToggleScope = useCallback(async (target: Target) => {
     try {
-      await invoke("target_update", {
+      await targets.updateTarget({
         id: target.id,
         scope: target.scope === "in" ? "out" : "in",
         projectPath: getProjectPath(),
@@ -132,7 +132,7 @@ export function useTargetData() {
 
   const handleUpdateNotes = useCallback(async (id: string, notes: string) => {
     try {
-      await invoke("target_update", { id, notes, projectPath: getProjectPath() });
+      await targets.updateTarget({ id, notes, projectPath: getProjectPath() });
       loadTargets();
     } catch (e) {
       console.error("Failed to update notes:", e);
@@ -142,7 +142,7 @@ export function useTargetData() {
   const handleClearAll = useCallback(async (confirmMsg: string) => {
     if (!confirm(confirmMsg)) return;
     try {
-      await invoke("target_clear_all", { projectPath: getProjectPath() });
+      await targets.clearAllTargets(getProjectPath());
       loadTargets();
     } catch (e) {
       console.error("Failed to clear:", e);
