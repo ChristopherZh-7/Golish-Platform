@@ -31,7 +31,6 @@ pub mod embeddings;
 pub mod gatekeeper;
 pub mod models;
 pub mod pool;
-mod ready_gate;
 pub mod repo;
 
 use anyhow::Result;
