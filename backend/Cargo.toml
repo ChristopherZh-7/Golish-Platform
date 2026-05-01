@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/golish",
+    "crates/golish-cli-output",
     "crates/golish-core",
     "crates/golish-evals",
     "crates/golish-models",
@@ -75,6 +76,7 @@ repository = "https://github.com/ChristopherZh-7/golish-platform"
 
 [workspace.dependencies]
 # Internal crates
+golish-cli-output = { path = "crates/golish-cli-output" }
 golish-core = { path = "crates/golish-core" }
 golish-evals = { path = "crates/golish-evals" }
 golish-models = { path = "crates/golish-models" }
