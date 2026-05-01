@@ -42,7 +42,7 @@ pub async fn execute_security_analysis_tool(
             let detail = args.get("detail").cloned().unwrap_or_else(|| json!({}));
 
             match crate::db_shim::audit::log_operation(
-                pool,
+                repo,
                 &summary,
                 &op_type,
                 &summary,
@@ -90,8 +90,8 @@ pub async fn execute_security_analysis_tool(
                 let auth_type = ep.get("auth_type").and_then(|v| v.as_str());
                 let risk_level = ep.get("risk_level").and_then(|v| v.as_str()).unwrap_or("unknown");
 
-                match golish_db::repo::api_endpoints::insert(
-                    pool, target_id, project_path, url, method, path,
+                match repo.api_endpoints_insert(
+                    target_id, project_path, &url, &method, &path,
                     &params, &json!({}), auth_type, &source, risk_level,
                 ).await {
                     Ok(_) => saved += 1,
