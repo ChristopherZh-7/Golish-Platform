@@ -240,7 +240,8 @@ grep -c "^\s*[a-z_]\+,$" backend/crates/golish/src/commands_registry.rs
 
 ### A5. 事件总线统一 Schema 契约
 
-#### A5-1 - [ ] 引入 `DomainEvent` 顶级 enum + `event_dispatch` 单一出口
+#### A5-1 - [x] 引入 `DomainEvent` 顶级 enum + `event_dispatch` 单一出口
+> ✅ Done 2026-05-02: `DomainEvent` 枚举 (Ai/Pentest/Pipeline/Indexer/Sidecar) 在 golish-events，event_dispatch.rs 存在，`cargo check -p golish-events` 通过
 
 **检查命令**:
 ```bash
