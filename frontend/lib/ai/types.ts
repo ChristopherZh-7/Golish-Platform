@@ -93,16 +93,6 @@ export type ProviderConfig =
 
 export type { ApprovalPattern } from "@/lib/generated";
 
-export interface ProviderRequestStats {
-  requests: number;
-  last_sent_at: number | null;
-  last_received_at: number | null;
-}
-
-export interface ApiRequestStatsSnapshot {
-  providers: Record<string, ProviderRequestStats>;
-}
-
 export type { ToolSource } from "@/lib/generated";
 
 import type { AiEvent as GeneratedAiEvent } from "@/lib/generated";
@@ -183,81 +173,19 @@ export interface OpenAiConfig {
   reasoningEffort?: ReasoningEffort;
 }
 
-export type ReasoningEffort = "low" | "medium" | "high" | "extra_high";
+export type { ReasoningEffort } from "@/lib/generated";
 
 export type AgentMode = "default" | "auto-approve" | "planning";
 
-export type SessionMessageRole = "user" | "assistant" | "system" | "tool";
+export type { GolishMessageRole as SessionMessageRole } from "@/lib/generated";
+export type { GolishSessionMessage as SessionMessage } from "@/lib/generated";
+export type { SessionListingInfo } from "@/lib/generated";
+export type { GolishSessionSnapshot as SessionSnapshot } from "@/lib/generated";
 
-export interface SessionMessage {
-  role: SessionMessageRole;
-  content: string;
-  tool_call_id?: string;
-  tool_name?: string;
-}
+export type { ToolApprovalConfig } from "@/lib/generated";
+export type { ApprovalDecision } from "@/lib/generated";
 
-export interface SessionListingInfo {
-  identifier: string;
-  path: string;
-  workspace_label: string;
-  workspace_path: string;
-  model: string;
-  provider: string;
-  started_at: string;
-  ended_at: string;
-  total_messages: number;
-  distinct_tools: string[];
-  first_prompt_preview?: string;
-  first_reply_preview?: string;
-  status?: "active" | "completed" | "abandoned";
-  title?: string;
-}
-
-export interface SessionSnapshot {
-  workspace_label: string;
-  workspace_path: string;
-  model: string;
-  provider: string;
-  started_at: string;
-  ended_at: string;
-  total_messages: number;
-  distinct_tools: string[];
-  transcript: string[];
-  messages: SessionMessage[];
-  agent_mode?: string;
-}
-
-export interface ToolApprovalConfig {
-  always_allow: string[];
-  always_require_approval: string[];
-  pattern_learning_enabled: boolean;
-  min_approvals: number;
-  approval_threshold: number;
-}
-
-export interface ApprovalDecision {
-  request_id: string;
-  approved: boolean;
-  reason?: string;
-  remember: boolean;
-  always_allow: boolean;
-}
-
-export interface TaskPlan {
-  explanation: string | null;
-  steps: Array<{
-    step: string;
-    status: "pending" | "in_progress" | "completed" | "cancelled" | "failed";
-  }>;
-  summary: {
-    total: number;
-    completed: number;
-    in_progress: number;
-    pending: number;
-  };
-  version: number;
-  updated_at: string;
-}
+export type { TaskPlan } from "@/lib/generated";
 
 export interface VisionCapabilities {
   supports_vision: boolean;
@@ -265,23 +193,11 @@ export interface VisionCapabilities {
   supported_formats: string[];
 }
 
-export interface TextPart {
-  type: "text";
-  text: string;
-}
+export type { PromptPart } from "@/lib/generated";
+export type { PromptPayload } from "@/lib/generated";
 
-export interface ImagePart {
-  type: "image";
-  data: string;
-  media_type?: string;
-  filename?: string;
-}
-
-export type PromptPart = TextPart | ImagePart;
-
-export interface PromptPayload {
-  parts: PromptPart[];
-}
+import type { PromptPart } from "@/lib/generated";
+export type TextPart = Extract<PromptPart, { type: "text" }>;
 
 export interface CommitMessageResponse {
   summary: string;

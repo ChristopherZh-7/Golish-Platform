@@ -110,6 +110,7 @@ generate-types:
     cp crates/golish-models/bindings/generated/*.ts ../frontend/lib/generated/ 2>/dev/null || true
     cp crates/golish-settings/bindings/generated/*.ts ../frontend/lib/generated/ 2>/dev/null || true
     cp crates/golish-core/bindings/generated/*.ts ../frontend/lib/generated/ 2>/dev/null || true
+    cp crates/golish-session/bindings/generated/*.ts ../frontend/lib/generated/ 2>/dev/null || true
     # Generate barrel index
     cd ../frontend/lib/generated
     echo "// This file was auto-generated. Do not edit manually." > index.ts

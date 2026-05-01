@@ -1,13 +1,11 @@
 import type { Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
-import { Vim, vim } from "@replit/codemirror-vim";
-import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { vim } from "@replit/codemirror-vim";
 import { basicSetup as uiwBasicSetup } from "@uiw/codemirror-extensions-basic-setup";
 import { lineNumbersRelative } from "@uiw/codemirror-extensions-line-numbers-relative";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
-import { Eye, FileText, FolderOpen, Plus, Save, X } from "lucide-react";
+import { Eye, FileText, FolderOpen, Save, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Markdown } from "@/components/Markdown/Markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useFileEditorSidebar } from "@/hooks/useFileEditorSidebar";
@@ -21,129 +19,8 @@ import { useFileEditorSidebarStore } from "@/store/file-editor-sidebar";
 import { FileBrowser } from "./FileBrowser";
 import { FileConflictBanner } from "./FileConflictBanner";
 import { TabBar } from "./TabBar";
-
-// Custom vim command callbacks (set by component)
-let vimSaveCallback: (() => void) | null = null;
-let vimCloseCallback: (() => void) | null = null;
-let vimForceCloseCallback: (() => void) | null = null;
-let vimCloseAllCallback: (() => void) | null = null;
-let vimReloadCallback: (() => void) | null = null;
-let vimNextTabCallback: (() => void) | null = null;
-let vimPrevTabCallback: (() => void) | null = null;
-
-export function setVimCallbacks(callbacks: {
-  save: (() => void) | null;
-  close: (() => void) | null;
-  forceClose: (() => void) | null;
-  closeAll: (() => void) | null;
-  reload: (() => void) | null;
-  nextTab: (() => void) | null;
-  prevTab: (() => void) | null;
-}) {
-  vimSaveCallback = callbacks.save;
-  vimCloseCallback = callbacks.close;
-  vimForceCloseCallback = callbacks.forceClose;
-  vimCloseAllCallback = callbacks.closeAll;
-  vimReloadCallback = callbacks.reload;
-  vimNextTabCallback = callbacks.nextTab;
-  vimPrevTabCallback = callbacks.prevTab;
-}
-
-// Register custom vim ex commands (only runs once at module load)
-let vimCommandsRegistered = false;
-function registerVimCommands() {
-  if (vimCommandsRegistered) return;
-  vimCommandsRegistered = true;
-
-  // biome-ignore lint/suspicious/noExplicitAny: Vim.defineEx not fully typed
-  const defineEx = (Vim as any).defineEx;
-  if (!defineEx) return;
-
-  // :set <option> / :set no<option>
-  defineEx("set", "", (_cm: unknown, params: { args?: string[] }) => {
-    const args = params.args || [];
-    const arg = args[0]?.toLowerCase();
-
-    const state = useFileEditorSidebarStore.getState();
-
-    switch (arg) {
-      case "wrap":
-        state.setWrap(true);
-        break;
-      case "nowrap":
-        state.setWrap(false);
-        break;
-      case "number":
-      case "nu":
-        state.setLineNumbers(true);
-        break;
-      case "nonumber":
-      case "nonu":
-        state.setLineNumbers(false);
-        break;
-      case "relativenumber":
-      case "rnu":
-        state.setRelativeLineNumbers(true);
-        break;
-      case "norelativenumber":
-      case "nornu":
-        state.setRelativeLineNumbers(false);
-        break;
-    }
-  });
-
-  // :w / :write - save
-  defineEx("write", "w", () => {
-    vimSaveCallback?.();
-  });
-
-  // :q / :quit - close current tab
-  defineEx("quit", "q", () => {
-    vimCloseCallback?.();
-  });
-
-  // :q! - force close current tab (ignores dirty state)
-  defineEx("q!", "q!", () => {
-    vimForceCloseCallback?.();
-  });
-
-  // :qa / :qall - close all tabs and panel
-  defineEx("qall", "qa", () => {
-    vimCloseAllCallback?.();
-  });
-
-  // :wq - save and close
-  defineEx("wq", "wq", () => {
-    vimSaveCallback?.();
-    // Small delay to let save complete before closing
-    setTimeout(() => vimCloseCallback?.(), 100);
-  });
-
-  // :e! - reload file (discard changes)
-  defineEx("e!", "e!", () => {
-    vimReloadCallback?.();
-  });
-
-  // :bn / :bnext - next tab
-  defineEx("bnext", "bn", () => {
-    vimNextTabCallback?.();
-  });
-
-  // :bp / :bprev - previous tab
-  defineEx("bprev", "bp", () => {
-    vimPrevTabCallback?.();
-  });
-
-  // :tabn - next tab (alias)
-  defineEx("tabnext", "tabn", () => {
-    vimNextTabCallback?.();
-  });
-
-  // :tabp - previous tab (alias)
-  defineEx("tabprev", "tabp", () => {
-    vimPrevTabCallback?.();
-  });
-}
+import { setVimCallbacks, registerVimCommands } from "./VimCommands";
+import { MarkdownPreview, EditablePathBar, FileOpenPrompt } from "./EditorPanels";
 
 interface FileEditorSidebarPanelProps {
   open: boolean;
@@ -153,160 +30,6 @@ interface FileEditorSidebarPanelProps {
 const MIN_WIDTH = 320;
 const MAX_WIDTH = 1200;
 const DEFAULT_WIDTH = 420;
-
-function MarkdownPreview({ content }: { content: string }) {
-  return (
-    <div className="p-4 overflow-auto h-full">
-      <Markdown content={content} />
-    </div>
-  );
-}
-
-function EditablePathBar({
-  value,
-  onNavigate,
-}: {
-  value: string;
-  onNavigate: (path: string) => void;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  // Sync draft when value changes externally (while not editing)
-  useEffect(() => {
-    if (!editing) {
-      setDraft(value);
-    }
-  }, [value, editing]);
-
-  const startEditing = () => {
-    setDraft(value);
-    setEditing(true);
-    // Focus the input after it renders
-    requestAnimationFrame(() => {
-      inputRef.current?.focus();
-      inputRef.current?.select();
-    });
-  };
-
-  const commit = () => {
-    setEditing(false);
-    const trimmed = draft.trim();
-    if (trimmed && trimmed !== value) {
-      onNavigate(trimmed);
-    } else {
-      setDraft(value);
-    }
-  };
-
-  const cancel = () => {
-    setEditing(false);
-    setDraft(value);
-  };
-
-  if (!editing) {
-    return (
-      <button
-        type="button"
-        onClick={startEditing}
-        className="font-mono text-[11px] truncate text-left hover:text-foreground transition-colors cursor-text min-w-0"
-        title={`${value}\nClick to edit path`}
-      >
-        {value || "Browser"}
-      </button>
-    );
-  }
-
-  return (
-    <input
-      ref={inputRef}
-      type="text"
-      value={draft}
-      onChange={(e) => setDraft(e.target.value)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          commit();
-        } else if (e.key === "Escape") {
-          e.preventDefault();
-          cancel();
-        }
-      }}
-      onBlur={commit}
-      className="font-mono text-[11px] bg-transparent border-b border-primary/50 outline-none text-foreground min-w-0 w-full"
-    />
-  );
-}
-
-function FileOpenPrompt({
-  workingDirectory,
-  onOpen,
-  onOpenBrowser,
-  recentFiles,
-}: {
-  workingDirectory?: string | null;
-  onOpen: (path: string) => void;
-  onOpenBrowser: () => void;
-  recentFiles: string[];
-}) {
-  const handleBrowse = async () => {
-    const selected = await openFileDialog({
-      directory: false,
-      multiple: false,
-      defaultPath: workingDirectory ?? undefined,
-    });
-    if (selected) {
-      onOpen(selected);
-    }
-  };
-
-  return (
-    <div className="h-full flex flex-col items-center justify-center gap-6 px-6 text-center">
-      <div className="space-y-2 max-w-xl">
-        <p className="text-xs text-muted-foreground">Open a file to start editing</p>
-        <p className="text-xs text-muted-foreground/80">
-          Browse for a file or use the file browser.
-        </p>
-      </div>
-      <div className="w-full max-w-xl flex flex-col items-stretch gap-3">
-        <div className="flex gap-2">
-          <Button onClick={handleBrowse} variant="default" className="flex-1 justify-center gap-2">
-            <Plus className="h-4 w-4" />
-            Open File
-          </Button>
-          <Button onClick={onOpenBrowser} variant="outline" className="flex-1 justify-center gap-2">
-            <FolderOpen className="h-4 w-4" />
-            Browse Files
-          </Button>
-        </div>
-        {recentFiles.length > 0 && (
-          <div className="w-full text-left mt-4">
-            <p className="text-xs text-muted-foreground mb-2">Recent files:</p>
-            <div className="grid gap-2">
-              {recentFiles.slice(0, 5).map((file) => {
-                const fileName = file.split("/").pop() || file;
-                const parentDir = file.split("/").slice(-2, -1)[0];
-                const displayPath = parentDir ? `${parentDir}/${fileName}` : fileName;
-                return (
-                  <button
-                    key={file}
-                    type="button"
-                    onClick={() => onOpen(file)}
-                    className="text-left text-xs font-mono px-3 py-2 rounded-md border border-border hover:border-primary/60 hover:bg-muted transition truncate"
-                    title={file}
-                  >
-                    {displayPath}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
 
 export function FileEditorSidebarPanel({ open, onOpenChange }: FileEditorSidebarPanelProps) {
   const activeSessionId = useStore((state) => state.activeSessionId);
@@ -346,7 +69,6 @@ export function FileEditorSidebarPanel({ open, onOpenChange }: FileEditorSidebar
     reorderTabs,
   } = useFileEditorSidebar(workingDirectory || undefined);
 
-  // Watch open files for external changes
   useFileWatcher();
 
   const [containerWidth, setContainerWidth] = useState(DEFAULT_WIDTH);
@@ -354,7 +76,6 @@ export function FileEditorSidebarPanel({ open, onOpenChange }: FileEditorSidebar
   const panelRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<ReactCodeMirrorRef>(null);
 
-  // Throttled resize handling
   const handleWidthChange = useCallback(
     (newWidth: number) => {
       setContainerWidth(newWidth);
@@ -370,7 +91,6 @@ export function FileEditorSidebarPanel({ open, onOpenChange }: FileEditorSidebar
     calculateWidth: (e) => window.innerWidth - e.clientX,
   });
 
-  // Navigate to next/previous tab
   const goToNextTab = useCallback(() => {
     if (tabs.length <= 1) return;
     const tabOrder = tabs.map((tab) => tab.id);
@@ -399,7 +119,6 @@ export function FileEditorSidebarPanel({ open, onOpenChange }: FileEditorSidebar
     setOpen(open);
   }, [open, setOpen]);
 
-  // Load language extension dynamically when active file changes
   useEffect(() => {
     let cancelled = false;
 
@@ -423,16 +142,13 @@ export function FileEditorSidebarPanel({ open, onOpenChange }: FileEditorSidebar
     };
   }, [activeFile?.language]);
 
-  // Register custom vim commands when vim mode is first enabled
   useEffect(() => {
     if (vimMode) {
       registerVimCommands();
       setVimCallbacks({
         save: () => void saveFile(),
         close: () => {
-          // Close current tab; if no tabs left, close panel
           closeTab();
-          // Check if we still have tabs after closing
           const state = useFileEditorSidebarStore.getState();
           if (state.tabOrder.length === 0) {
             onOpenChange(false);
@@ -500,7 +216,6 @@ export function FileEditorSidebarPanel({ open, onOpenChange }: FileEditorSidebar
       }
     };
 
-    // CM5-style event listener on the cm object (not Vim.on)
     cm.on("vim-mode-change", handler);
     return () => {
       cm.off("vim-mode-change", handler);
@@ -510,7 +225,6 @@ export function FileEditorSidebarPanel({ open, onOpenChange }: FileEditorSidebar
   const extensions = useMemo(() => {
     const ext: Extension[] = [];
 
-    // Basic setup from package
     ext.push(
       uiwBasicSetup({
         lineNumbers: (lineNumbers ?? true) && !relativeLineNumbers,
@@ -523,7 +237,6 @@ export function FileEditorSidebarPanel({ open, onOpenChange }: FileEditorSidebar
       ext.push(lineNumbersRelative);
     }
 
-    // Language extension is loaded asynchronously via useEffect
     if (languageExtension) {
       ext.push(languageExtension);
     }
@@ -534,7 +247,6 @@ export function FileEditorSidebarPanel({ open, onOpenChange }: FileEditorSidebar
     if (vimMode) {
       ext.push(vim());
     }
-    // Keymap for save shortcut inside the editor
     ext.push(
       keymap.of([
         {
@@ -555,7 +267,6 @@ export function FileEditorSidebarPanel({ open, onOpenChange }: FileEditorSidebar
 
   const hasTabs = tabs.length > 0;
 
-  // Render the active tab content
   const renderTabContent = () => {
     if (!activeTab) {
       return (
@@ -626,17 +337,14 @@ export function FileEditorSidebarPanel({ open, onOpenChange }: FileEditorSidebar
         maxWidth: `${MAX_WIDTH}px`,
       }}
     >
-      {/* Resize handle */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: resize handle is mouse-only */}
       <div
         className="absolute top-0 left-0 w-1 h-full cursor-col-resize hover:bg-primary/50 transition-colors z-10 group"
         onMouseDown={onStartResize}
       />
 
-      {/* Header */}
       <div className="flex items-center justify-between px-2 py-1.5 bg-muted border-b border-border">
         <div className="flex items-center gap-1">
-          {/* Always visible: folder browser */}
           <Button
             variant="ghost"
             size="sm"
@@ -647,7 +355,6 @@ export function FileEditorSidebarPanel({ open, onOpenChange }: FileEditorSidebar
             <FolderOpen className="w-3 h-3" />
             <span>Browse</span>
           </Button>
-          {/* Always visible: save (disabled when no file) */}
           <Button
             variant="ghost"
             size="sm"
@@ -659,9 +366,7 @@ export function FileEditorSidebarPanel({ open, onOpenChange }: FileEditorSidebar
             <Save className="w-3 h-3" />
             <span>Save</span>
           </Button>
-          {/* Separator before conditional icons */}
           <div className="w-px h-3 bg-border mx-1" />
-          {/* Conditional: markdown preview toggle */}
           {activeTab?.type === "file" && activeTab.file.language === "markdown" && (
             <Button
               variant="ghost"
@@ -698,7 +403,6 @@ export function FileEditorSidebarPanel({ open, onOpenChange }: FileEditorSidebar
         </Button>
       </div>
 
-      {/* Tab Bar */}
       {hasTabs && (
         <TabBar
           tabs={tabs}
@@ -706,7 +410,6 @@ export function FileEditorSidebarPanel({ open, onOpenChange }: FileEditorSidebar
           onSelectTab={setActiveTab}
           onCloseTab={(tabId) => {
             closeTab(tabId);
-            // If no tabs left, close panel
             const state = useFileEditorSidebarStore.getState();
             if (state.tabOrder.length === 0) {
               onOpenChange(false);
@@ -721,10 +424,8 @@ export function FileEditorSidebarPanel({ open, onOpenChange }: FileEditorSidebar
         />
       )}
 
-      {/* Body */}
       <div className="flex-1 min-h-0 flex flex-col">{renderTabContent()}</div>
 
-      {/* Footer */}
       <div className="px-3 py-2 border-t border-border text-xs text-muted-foreground flex items-center justify-between">
         <div className="flex-1 flex items-center gap-2 min-w-0">
           {vimMode && activeTab?.type === "file" && (

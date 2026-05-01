@@ -1,377 +1,37 @@
 import { homeDir } from "@tauri-apps/api/path";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
-import {
-  ChevronDown,
-  ChevronRight,
-  File,
-  FolderGit2,
-  FolderOpen,
-  GitBranch,
-  Loader2,
-  Minus,
-  Plus,
-  Trash2,
-  TreePine,
-  X,
-} from "lucide-react";
+import { FolderGit2, Loader2, Plus, X } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
+  Dialog, DialogContent, DialogDescription,
+  DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
-import { useDismissMenu } from "@/hooks/useDismissMenu";
 import { clearSaveFingerprints } from "@/lib/conversation-db-sync";
 import {
-  listProjectsForHome,
-  listRecentDirectories,
-  type ProjectInfo,
-  type RecentDirectory,
+  listProjectsForHome, listRecentDirectories,
+  type ProjectInfo, type RecentDirectory,
 } from "@/lib/indexer";
 import { logger } from "@/lib/logger";
 import {
-  deleteProject,
-  listProjectConfigs,
-  type ProjectData,
-  type ProjectFormData,
-  saveProject,
+  deleteProject, listProjectConfigs,
+  type ProjectData, type ProjectFormData, saveProject,
 } from "@/lib/projects";
 import { deleteWorktree } from "@/lib/api/git";
 import { disposeAllRuntimeTerminals } from "@/lib/terminal-restore";
 import { openProject, useStore } from "@/store";
 import { NewWorktreeModal } from "./NewWorktreeModal";
 import { SetupProjectModal } from "./SetupProjectModal";
+import { ProjectRow, RecentDirectoryRow } from "./ProjectCards";
+import {
+  ProjectContextMenu, WorktreeContextMenu,
+  type ContextMenuState, type WorktreeContextMenuState,
+} from "./ContextMenus";
 
-/**
- * Debounce delay for window focus refresh (milliseconds).
- * Small delay to batch rapid focus events.
- */
 export const HOME_VIEW_FOCUS_DEBOUNCE_MS = 100;
-
-/**
- * Minimum interval between focus-triggered fetches (milliseconds).
- * Prevents excessive fetching when user rapidly switches windows.
- */
 export const HOME_VIEW_FOCUS_MIN_INTERVAL_MS = 2000;
-
-/** Context menu state */
-interface ContextMenuState {
-  x: number;
-  y: number;
-  projectPath: string;
-  projectName: string;
-}
-
-/** Worktree context menu state */
-interface WorktreeContextMenuState {
-  x: number;
-  y: number;
-  projectPath: string;
-  worktreePath: string;
-  branchName: string;
-}
-
-/** Stats badge showing file count, insertions, and deletions */
-const StatsBadge = memo(function StatsBadge({
-  fileCount,
-  insertions,
-  deletions,
-}: {
-  fileCount: number;
-  insertions: number;
-  deletions: number;
-}) {
-  if (fileCount === 0 && insertions === 0 && deletions === 0) {
-    return null;
-  }
-
-  return (
-    <div className="flex items-center bg-background px-2 py-1 rounded-full border border-border space-x-2 text-xs text-muted-foreground">
-      {fileCount > 0 && (
-        <div className="flex items-center">
-          <File size={12} className="mr-0.5 text-muted-foreground" />
-          <span>{fileCount}</span>
-        </div>
-      )}
-      {insertions > 0 && (
-        <div className="flex items-center">
-          <Plus size={12} className="mr-0.5 text-[var(--ansi-green)]" />
-          <span>{insertions}</span>
-        </div>
-      )}
-      {deletions > 0 && (
-        <div className="flex items-center">
-          <Minus size={12} className="mr-0.5 text-[var(--ansi-red)]" />
-          <span>{deletions}</span>
-        </div>
-      )}
-    </div>
-  );
-});
-
-/** Worktree count badge */
-const WorktreeBadge = memo(function WorktreeBadge({ count }: { count: number }) {
-  return (
-    <div className="flex items-center bg-background px-2 py-1 rounded-full border border-border text-xs text-muted-foreground">
-      <TreePine size={14} className="mr-1 text-primary" />
-      {count}
-    </div>
-  );
-});
-
-/** Worktree context menu component */
-function WorktreeContextMenu({
-  x,
-  y,
-  onDelete,
-  onClose,
-}: {
-  x: number;
-  y: number;
-  onDelete: () => void;
-  onClose: () => void;
-}) {
-  const menuRef = useRef<HTMLDivElement>(null);
-  useDismissMenu(menuRef, onClose);
-
-  const handleDeleteClick = useCallback(() => {
-    onDelete();
-    onClose();
-  }, [onDelete, onClose]);
-
-  return (
-    <div
-      ref={menuRef}
-      className="fixed z-50 bg-popover border border-border rounded-md shadow-xl py-1 min-w-[160px]"
-      style={{ left: x, top: y }}
-    >
-      <button
-        type="button"
-        onClick={handleDeleteClick}
-        className="w-full flex items-center px-3 py-2 text-sm text-destructive hover:bg-muted hover:text-destructive/80 transition-colors text-left"
-      >
-        <Trash2 size={14} className="mr-2" />
-        Delete Worktree
-      </button>
-    </div>
-  );
-}
-
-/** Single project row (expandable) - memoized to prevent re-renders when parent state changes */
-export const ProjectRow = memo(function ProjectRow({
-  project,
-  isExpanded,
-  onToggle,
-  onOpenDirectory,
-  onContextMenu,
-  onWorktreeContextMenu,
-  onDelete,
-}: {
-  project: ProjectInfo;
-  isExpanded: boolean;
-  onToggle: () => void;
-  onOpenDirectory: (path: string) => void;
-  onContextMenu: (e: React.MouseEvent) => void;
-  onWorktreeContextMenu: (e: React.MouseEvent, worktreePath: string, branchName: string) => void;
-  onDelete: () => void;
-}) {
-  return (
-    <div className="border-b border-border/50 last:border-0">
-      {/* Project header */}
-      <div
-        role="button"
-        tabIndex={0}
-        onClick={onToggle}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            onToggle();
-          }
-        }}
-        onContextMenu={onContextMenu}
-        className="w-full flex items-center justify-between p-3 hover:bg-muted transition-colors group text-left cursor-pointer"
-      >
-        <div className="flex items-center min-w-0 mr-4">
-          <div className="mr-2 flex-shrink-0 hover:bg-border rounded p-0.5 transition-colors">
-            {isExpanded ? (
-              <ChevronDown size={14} className="text-muted-foreground" />
-            ) : (
-              <ChevronRight size={14} className="text-muted-foreground" />
-            )}
-          </div>
-          <FolderGit2
-            size={16}
-            className="text-muted-foreground mr-3 flex-shrink-0 group-hover:text-primary transition-colors"
-          />
-          <div className="min-w-0">
-            <div className="text-sm font-medium text-foreground/80 truncate group-hover:text-foreground transition-colors">
-              {project.name}
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center text-xs text-muted-foreground flex-shrink-0 space-x-3">
-          <WorktreeBadge count={project.branches.length} />
-          <span>{project.last_activity}</span>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete();
-            }}
-            className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive flex-shrink-0"
-            title="Delete project"
-          >
-            <X size={14} />
-          </button>
-        </div>
-      </div>
-
-      {/* Expanded branches */}
-      {isExpanded && project.branches.length > 0 && (
-        <div className="bg-background border-t border-border/50 max-h-[420px] overflow-y-auto custom-scrollbar">
-          {project.branches.map((branch) => (
-            <button
-              type="button"
-              key={branch.name}
-              onClick={() => onOpenDirectory(branch.path)}
-              onContextMenu={(e) => onWorktreeContextMenu(e, branch.path, branch.name)}
-              className="w-full flex items-center p-3 pl-12 hover:bg-card transition-colors text-left border-b border-border/30 last:border-0 group"
-            >
-              <div className="flex items-center min-w-0 w-[450px] mr-4">
-                <div className="min-w-0">
-                  <div className="flex items-center text-xs text-muted-foreground">
-                    <GitBranch size={12} className="mr-1 text-primary flex-shrink-0" />
-                    <span className="text-foreground/80 truncate">{branch.name}</span>
-                  </div>
-                  <div className="text-xs text-muted-foreground/60 truncate font-mono mt-0.5">
-                    {branch.path}
-                  </div>
-                </div>
-              </div>
-
-              <StatsBadge
-                fileCount={branch.file_count}
-                insertions={branch.insertions}
-                deletions={branch.deletions}
-              />
-
-              <div className="flex items-center text-xs text-muted-foreground flex-shrink-0 ml-auto space-x-2">
-                <span>{branch.last_activity}</span>
-                <ChevronRight
-                  size={14}
-                  className="opacity-0 group-hover:opacity-100 transition-opacity text-primary"
-                />
-              </div>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-});
-
-/** Single recent directory row - memoized to prevent re-renders when parent state changes */
-export const RecentDirectoryRow = memo(function RecentDirectoryRow({
-  directory,
-  onOpen,
-  onRemove,
-}: {
-  directory: RecentDirectory;
-  onOpen: () => void;
-  onRemove: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="w-full flex items-center p-3 hover:bg-muted transition-colors group text-left border-b border-border/50 last:border-0"
-    >
-      <div className="flex items-center min-w-0 w-[500px] mr-4">
-        <FolderOpen
-          size={16}
-          className="text-muted-foreground mr-3 flex-shrink-0 group-hover:text-primary transition-colors"
-        />
-        <div className="min-w-0">
-          <div className="text-sm font-medium text-foreground/80 truncate group-hover:text-foreground transition-colors">
-            {directory.name}
-          </div>
-          {directory.branch && (
-            <div className="flex items-center text-xs text-muted-foreground opacity-60">
-              <GitBranch size={12} className="mr-1 text-primary" />
-              <span className="text-foreground/80">{directory.branch}</span>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <StatsBadge
-        fileCount={directory.file_count}
-        insertions={directory.insertions}
-        deletions={directory.deletions}
-      />
-
-      <div className="flex items-center text-xs text-muted-foreground flex-shrink-0 ml-auto space-x-2">
-        <span>{directory.last_accessed}</span>
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onRemove();
-          }}
-          className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive flex-shrink-0"
-          title="Remove from recent"
-        >
-          <X size={14} />
-        </button>
-      </div>
-    </button>
-  );
-});
-
-/** Context menu component */
-function ProjectContextMenu({
-  x,
-  y,
-  onNewWorktree,
-  onClose,
-}: {
-  x: number;
-  y: number;
-  onNewWorktree: () => void;
-  onClose: () => void;
-}) {
-  const menuRef = useRef<HTMLDivElement>(null);
-  useDismissMenu(menuRef, onClose);
-
-  const handleNewWorktreeClick = useCallback(() => {
-    onNewWorktree();
-    onClose();
-  }, [onNewWorktree, onClose]);
-
-  return (
-    <div
-      ref={menuRef}
-      className="fixed z-50 bg-popover border border-border rounded-md shadow-xl py-1 min-w-[160px]"
-      style={{ left: x, top: y }}
-    >
-      <button
-        type="button"
-        onClick={handleNewWorktreeClick}
-        className="w-full flex items-center px-3 py-2 text-sm text-foreground/80 hover:bg-muted hover:text-foreground transition-colors text-left"
-      >
-        <TreePine size={14} className="mr-2 text-primary" />
-        New Worktree
-      </button>
-    </div>
-  );
-}
 
 export const HomeView = memo(function HomeView() {
   const { createTerminalTab } = useCreateTerminalTab();
@@ -381,23 +41,16 @@ export const HomeView = memo(function HomeView() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSetupModalOpen, setIsSetupModalOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const [worktreeContextMenu, setWorktreeContextMenu] = useState<WorktreeContextMenuState | null>(
-    null
-  );
-  const [worktreeModal, setWorktreeModal] = useState<{
-    projectPath: string;
-    projectName: string;
-  } | null>(null);
+  const [worktreeContextMenu, setWorktreeContextMenu] = useState<WorktreeContextMenuState | null>(null);
+  const [worktreeModal, setWorktreeModal] = useState<{ projectPath: string; projectName: string } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ name: string; path: string } | null>(null);
   const [openingProject, setOpeningProject] = useState<string | null>(null);
   const openingRef = useRef(false);
   const currentProjectName = useStore((s) => s.currentProjectName);
 
-  // Fetch data — saved projects are critical, indexer data is nice-to-have
   const fetchData = useCallback(async (showLoadingState = true) => {
     if (showLoadingState) setIsLoading(true);
     try {
-      // Saved projects are lightweight — fetch first so the UI is usable quickly
       try {
         const savedProjectsData = await listProjectConfigs();
         setSavedProjects(savedProjectsData);
@@ -405,7 +58,6 @@ export const HomeView = memo(function HomeView() {
         logger.warn("Failed to load saved projects:", e);
       }
 
-      // Indexer data can be slow — don't block the UI on it
       setIsLoading(false);
 
       try {
@@ -423,15 +75,10 @@ export const HomeView = memo(function HomeView() {
     }
   }, []);
 
-  // Fetch data on mount
   useEffect(() => {
     fetchData();
   }, [fetchData]);
 
-  // Refresh on window focus with debounce to avoid excessive fetches
-  // when user rapidly switches windows
-  // Track last fetch time at component level so it persists across effect re-runs
-  // Start with 0 to allow the first focus fetch (after initial mount fetch)
   const lastFocusFetchTimeRef = useRef(0);
 
   useEffect(() => {
@@ -439,15 +86,12 @@ export const HomeView = memo(function HomeView() {
 
     const handleFocus = () => {
       const now = Date.now();
-      // Skip if we fetched recently (minimum interval between fetches)
       if (now - lastFocusFetchTimeRef.current < HOME_VIEW_FOCUS_MIN_INTERVAL_MS) {
         return;
       }
-      // Clear any pending debounced fetch
       if (timeoutId) {
         clearTimeout(timeoutId);
       }
-      // Debounce the fetch
       timeoutId = setTimeout(() => {
         lastFocusFetchTimeRef.current = Date.now();
         fetchData(false);
@@ -464,7 +108,6 @@ export const HomeView = memo(function HomeView() {
     };
   }, [fetchData]);
 
-  /** Open a project: load its workspace state, set as current, create terminal */
   const handleOpenProject = useCallback(
     async (projectName: string, rootPath: string): Promise<string | null> => {
       if (openingRef.current) return null;
@@ -539,9 +182,7 @@ export const HomeView = memo(function HomeView() {
 
   const handleWorktreeCreated = useCallback(
     (worktreePath: string) => {
-      // Refresh the project list to show the new worktree
       fetchData(false);
-      // Optionally open the new worktree in a tab
       createTerminalTab(worktreePath);
     },
     [fetchData, createTerminalTab]
@@ -592,7 +233,6 @@ export const HomeView = memo(function HomeView() {
         onSubmit={handleProjectSubmit}
       />
 
-      {/* Delete Project Confirmation Dialog */}
       <Dialog open={!!deleteConfirm} onOpenChange={() => setDeleteConfirm(null)}>
         <DialogContent className="bg-card border-border text-foreground/80 max-w-sm">
           <DialogHeader>
@@ -630,7 +270,6 @@ export const HomeView = memo(function HomeView() {
         </DialogContent>
       </Dialog>
 
-      {/* New Worktree Modal */}
       {worktreeModal && (
         <NewWorktreeModal
           isOpen={true}
@@ -641,7 +280,6 @@ export const HomeView = memo(function HomeView() {
         />
       )}
 
-      {/* Context Menu */}
       {contextMenu &&
         createPortal(
           <ProjectContextMenu
@@ -653,7 +291,6 @@ export const HomeView = memo(function HomeView() {
           document.body
         )}
 
-      {/* Worktree Context Menu */}
       {worktreeContextMenu &&
         createPortal(
           <WorktreeContextMenu
@@ -667,20 +304,18 @@ export const HomeView = memo(function HomeView() {
 
       <div className="h-full overflow-auto bg-background">
         <div className="flex flex-col items-center justify-center min-h-full py-16 px-8">
-          {/* Logo / Title */}
           <div className="text-center mb-10">
             <h1 className="text-3xl font-bold text-foreground tracking-tight mb-1">Golish</h1>
             <p className="text-sm text-muted-foreground">Penetration Testing Platform</p>
           </div>
 
-          {/* Action Buttons */}
           <div className="flex items-center gap-3 mb-12">
             <button
               type="button"
               onClick={handleOpenExistingProject}
               className="flex items-center gap-2 px-5 py-2.5 bg-card border border-border rounded-lg hover:bg-muted hover:border-border/70 transition-colors text-sm text-foreground/90"
             >
-              <FolderOpen size={16} className="text-muted-foreground" />
+              <FolderGit2 size={16} className="text-muted-foreground" />
               Open Project
             </button>
             <button
@@ -693,7 +328,6 @@ export const HomeView = memo(function HomeView() {
             </button>
           </div>
 
-          {/* Projects List */}
           <div className="w-full max-w-lg">
             {savedProjects.length > 0 && (
               <div className="mb-8">

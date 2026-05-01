@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
+use ts_rs::TS;
 
 use crate::schema::AiProvider;
 
@@ -19,7 +20,8 @@ use crate::schema::AiProvider;
 /// Only fields that are Some() will override the global settings.
 /// This allows projects to remember their preferred model/mode without
 /// affecting other global configuration.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "generated/")]
 pub struct ProjectSettings {
     /// AI configuration overrides
     #[serde(default)]
@@ -27,7 +29,8 @@ pub struct ProjectSettings {
 }
 
 /// AI-specific project settings.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "generated/")]
 pub struct ProjectAiSettings {
     /// Override for the AI provider (e.g., "anthropic", "openai")
     #[serde(skip_serializing_if = "Option::is_none")]

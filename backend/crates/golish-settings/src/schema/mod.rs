@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use ts_rs::TS;
 
 mod enums;
 mod defaults;
@@ -26,8 +27,9 @@ mod tests;
 ///
 /// Loaded from `~/.golish/settings.toml` with environment variable interpolation support.
 /// Version field enables future migrations.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct GolishSettings {
     /// Schema version for migrations
     pub version: u32,
@@ -99,7 +101,8 @@ pub struct GolishSettings {
 /// Allows overriding the model and LLM parameters for specific sub-agents
 /// (e.g., "coder", "analyzer"). When fields are None, the sub-agent inherits
 /// from the main agent's defaults.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, TS)]
+#[ts(export, export_to = "generated/")]
 pub struct SubAgentModelConfig {
     /// Provider override (None = inherit from main agent)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -126,8 +129,9 @@ pub struct SubAgentModelConfig {
 }
 
 /// AI provider configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct AiSettings {
     /// Default AI provider
     pub default_provider: AiProvider,
@@ -203,8 +207,9 @@ pub struct AiSettings {
 ///
 /// When configured, proxy settings are applied to all outgoing HTTP requests
 /// including LLM API calls, web fetch, and Tavily search.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct NetworkSettings {
     /// HTTP/HTTPS proxy URL (e.g., "http://127.0.0.1:7890" or "socks5://proxy:1080")
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -222,8 +227,9 @@ pub struct NetworkSettings {
 }
 
 /// API keys for external services.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct ApiKeysSettings {
     /// Tavily API key for web search
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -239,16 +245,18 @@ pub struct ApiKeysSettings {
 }
 
 /// Tool enablement settings.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct ToolsSettings {
     /// Enable web search tools (Tavily)
     pub web_search: bool,
 }
 
 /// User interface preferences.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct UiSettings {
     /// Theme
     pub theme: Theme,
@@ -265,8 +273,9 @@ pub struct UiSettings {
 }
 
 /// Window state settings (persisted across sessions).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct WindowSettings {
     /// Window width in pixels
     pub width: u32,
@@ -287,8 +296,9 @@ pub struct WindowSettings {
 }
 
 /// Caret (text cursor) customization for the input area.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct CaretSettings {
     /// Caret style: "block" or "default" (native browser caret)
     pub style: String,
@@ -320,8 +330,9 @@ impl Default for CaretSettings {
 }
 
 /// Terminal configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct TerminalSettings {
     /// Default shell override
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -348,8 +359,9 @@ pub struct TerminalSettings {
 }
 
 /// Agent behavior settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct AgentSettings {
     /// Auto-save conversations
     pub session_persistence: bool,
@@ -368,8 +380,9 @@ pub struct AgentSettings {
 }
 
 /// MCP (Model Context Protocol) server configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct McpServerConfig {
     /// Command to start the server
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -389,8 +402,9 @@ pub struct McpServerConfig {
 }
 
 /// Repository trust settings.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct TrustSettings {
     /// Paths with full trust (all tools allowed)
     #[serde(default)]
@@ -415,8 +429,9 @@ pub struct TrustSettings {
 }
 
 /// Privacy and telemetry settings.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct PrivacySettings {
     /// Enable anonymous usage statistics
     pub usage_statistics: bool,
@@ -426,8 +441,9 @@ pub struct PrivacySettings {
 }
 
 /// Advanced/debug settings.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct AdvancedSettings {
     /// Enable experimental features
     pub enable_experimental: bool,
@@ -445,16 +461,18 @@ pub struct AdvancedSettings {
 }
 
 /// Code indexer settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct IndexerSettings {
     /// Where to store index files: "global" or "local"
     pub index_location: IndexLocation,
 }
 
 /// Telemetry and observability settings.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct TelemetrySettings {
     /// Langfuse integration settings
     pub langfuse: LangfuseSettings,
@@ -464,8 +482,9 @@ pub struct TelemetrySettings {
 ///
 /// Langfuse provides LLM observability via OpenTelemetry.
 /// See: https://langfuse.com/docs/integrations/opentelemetry
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct LangfuseSettings {
     /// Enable Langfuse tracing
     pub enabled: bool,
@@ -489,8 +508,9 @@ pub struct LangfuseSettings {
 }
 
 /// Context window management settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct ContextSettings {
     /// Enable context window management
     #[serde(default = "default_context_enabled")]
@@ -512,8 +532,9 @@ pub struct ContextSettings {
 }
 
 /// Native OS notification settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct NotificationsSettings {
     /// Enable native OS notifications for agent/command completion
     pub native_enabled: bool,
@@ -558,7 +579,8 @@ impl Default for ContextSettings {
 }
 
 /// Configuration for an indexed codebase.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, TS)]
+#[ts(export, export_to = "generated/")]
 pub struct CodebaseConfig {
     /// Path to the codebase (supports ~ for home directory)
     pub path: String,
@@ -569,8 +591,9 @@ pub struct CodebaseConfig {
 }
 
 /// Sidecar context capture settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct SidecarSettings {
     /// Enable context capture during AI sessions
     pub enabled: bool,
@@ -601,8 +624,9 @@ pub struct SidecarSettings {
 }
 
 /// Vertex AI settings for sidecar synthesis.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct SynthesisVertexSettings {
     /// Google Cloud project ID (falls back to ai.vertex_ai.project_id if not set)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -621,8 +645,9 @@ pub struct SynthesisVertexSettings {
 }
 
 /// OpenAI settings for sidecar synthesis.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct SynthesisOpenAiSettings {
     /// API key (falls back to api_keys or env var)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -637,8 +662,9 @@ pub struct SynthesisOpenAiSettings {
 }
 
 /// Grok settings for sidecar synthesis.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(default)]
+#[ts(export, export_to = "generated/")]
 pub struct SynthesisGrokSettings {
     /// API key (falls back to env var GROK_API_KEY)
     #[serde(skip_serializing_if = "Option::is_none")]

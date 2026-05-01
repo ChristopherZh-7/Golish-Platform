@@ -102,7 +102,8 @@ impl PlanSummary {
 }
 
 /// A complete task plan with steps and metadata.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "generated/")]
 pub struct TaskPlan {
     /// Optional high-level explanation of the plan.
     pub explanation: Option<String>,
