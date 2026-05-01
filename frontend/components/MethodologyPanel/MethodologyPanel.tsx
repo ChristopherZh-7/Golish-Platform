@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { invoke } from "@/lib/api";
+import { invoke, methodology } from "@/lib/api";
 import { getProjectPath } from "@/lib/projects";
 import {
   ArrowLeft,
@@ -116,7 +116,7 @@ export function MethodologyPanel() {
     async (id: string) => {
       if (!confirm(t("methodology.deleteConfirm", "Delete this project?"))) return;
       try {
-        await invoke("method_delete_project", { id, projectPath: getProjectPath() });
+        await methodology.deleteProject(id, getProjectPath());
         await loadData();
       } catch (e) {
         console.error("Delete failed:", e);
@@ -129,12 +129,12 @@ export function MethodologyPanel() {
     async (phaseId: string, itemId: string, checked: boolean) => {
       if (!activeProject) return;
       try {
-        await invoke("method_update_item", {
+        await methodology.updateItem({
           projectId: activeProject.id,
           phaseId,
           itemId,
           checked,
-          notes: null as string | null,
+          notes: null,
           projectPath: getProjectPath(),
         });
         setActiveProject((prev) => {
@@ -164,11 +164,11 @@ export function MethodologyPanel() {
     async (phaseId: string, itemId: string, notes: string) => {
       if (!activeProject) return;
       try {
-        await invoke("method_update_item", {
+        await methodology.updateItem({
           projectId: activeProject.id,
           phaseId,
           itemId,
-          checked: null as boolean | null,
+          checked: null,
           notes,
           projectPath: getProjectPath(),
         });

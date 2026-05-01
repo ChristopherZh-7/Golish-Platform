@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@/lib/api";
+import { invoke, vulnLinks } from "@/lib/api";
 import {
   BookOpen, ChevronDown, ChevronRight, FileText,
   Link2, Loader2, Plus, Search, X,
@@ -146,12 +146,12 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
       ...l,
       wikiPaths: l.wikiPaths.includes(path) ? l.wikiPaths : [...l.wikiPaths, path],
     }));
-    invoke("vuln_link_add_wiki", { cveId, wikiPath: path }).catch(console.error);
+    vulnLinks.addWikiLink(cveId, path).catch(console.error);
   }, [onUpdateLink, cveId]);
 
   const handleUnlinkWiki = useCallback((path: string) => {
     onUpdateLink((l) => ({ ...l, wikiPaths: l.wikiPaths.filter((p) => p !== path) }));
-    invoke("vuln_link_remove_wiki", { cveId, wikiPath: path }).catch(console.error);
+    vulnLinks.removeWikiLink(cveId, path).catch(console.error);
     if (selectedPath === path) setSelectedPath(null);
   }, [onUpdateLink, cveId, selectedPath]);
 

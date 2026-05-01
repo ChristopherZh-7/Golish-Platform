@@ -24,7 +24,11 @@ import * as context from "./context";
 import * as wordlist from "./wordlist";
 import * as notes from "./notes";
 import * as methodology from "./methodology";
+import * as targets from "./targets";
+import * as vault from "./vault";
+import * as vulnLinks from "./vuln-links";
+import * as research from "./research";
 
-export { pty, git, shell, files, ai, settings, mcp, context, wordlist, notes, methodology };
+export { pty, git, shell, files, ai, settings, mcp, context, wordlist, notes, methodology, targets, vault, vulnLinks, research };
 
-export const api = { pty, git, shell, files, ai, settings, mcp, context, wordlist, notes, methodology } as const;
+export const api = { pty, git, shell, files, ai, settings, mcp, context, wordlist, notes, methodology, targets, vault, vulnLinks, research } as const;

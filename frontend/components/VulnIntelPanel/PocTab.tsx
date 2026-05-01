@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { invoke } from "@/lib/api";
+import { invoke, vulnLinks } from "@/lib/api";
 import {
   ChevronDown, ChevronRight, Code, Copy, ExternalLink, FileCode2,
   FileText, Loader2, Plus, Search, Trash2, Zap,
@@ -323,7 +323,7 @@ int main(int argc, char *argv[]) {
         }));
       }).catch(console.error);
     } else {
-      invoke("vuln_link_update_poc", { pocId: editing.id, name: formName.trim(), content: formContent }).catch(console.error);
+      vulnLinks.updatePoc(editing.id, formName.trim(), formContent).catch(console.error);
       onUpdateLink((l) => ({
         ...l,
         pocTemplates: l.pocTemplates.map((p) =>
@@ -338,7 +338,7 @@ int main(int argc, char *argv[]) {
 
   const handleDeletePoc = useCallback((id: string) => {
     onUpdateLink((l) => ({ ...l, pocTemplates: l.pocTemplates.filter((p) => p.id !== id) }));
-    invoke("vuln_link_remove_poc", { pocId: id }).catch(console.error);
+    vulnLinks.removePoc(id).catch(console.error);
   }, [onUpdateLink]);
 
   const handleCopyContent = useCallback((content: string) => {
