@@ -36,6 +36,7 @@ pub mod loop_detection;
 pub mod planner;
 pub mod tool_policy;
 
+pub mod db_shim;
 pub mod db_traits;
 pub mod sidecar_trait;
 

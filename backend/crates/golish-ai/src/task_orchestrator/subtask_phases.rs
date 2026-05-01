@@ -12,8 +12,8 @@ use uuid::Uuid;
 
 use golish_core::events::AiEvent;
 use golish_core::plan::{PlanStep, PlanSummary, StepStatus};
-use golish_db::models::{SubtaskStatus, TaskStatus};
-use golish_db::repo::{subtasks, tasks};
+use crate::db_shim::{tasks, subtasks, message_chains};
+use crate::db_traits::{SubtaskStatus, TaskStatus};
 
 use super::helpers::{looks_like_text_only_response, parse_agent_type, truncate};
 use super::types::{
@@ -33,7 +33,7 @@ impl TaskOrchestrator {
         start_index: usize,
         executor: &dyn AgentExecutor,
     ) -> Result<String> {
-        let task_input = tasks::get(&self.pool, task_id)
+        let task_input = tasks::get(&*self.repo, task_id)
             .await
             .ok()
             .flatten()
@@ -48,7 +48,7 @@ impl TaskOrchestrator {
         };
 
         if start_index > 0 {
-            let db_subtasks = subtasks::list_by_task(&self.pool, task_id).await?;
+            let db_subtasks = subtasks::list_by_task(&*self.repo, task_id).await?;
             for st in db_subtasks.iter().take(start_index) {
                 exec_ctx.completed_results.push(SubtaskResult {
                     title: st.title.clone().unwrap_or_default(),
@@ -64,9 +64,9 @@ impl TaskOrchestrator {
         while subtask_index < queue.len() && subtask_index < MAX_SUBTASKS {
             let planned = &queue[subtask_index];
 
-            let db_subtask = subtasks::next_pending(&self.pool, task_id).await?;
+            let db_subtask = subtasks::next_pending(&*self.repo, task_id).await?;
             if let Some(ref st) = db_subtask {
-                subtasks::update_status(&self.pool, st.id, SubtaskStatus::Running).await?;
+                subtasks::update_status(&*self.repo, st.id, SubtaskStatus::Running).await?;
             }
 
             self.emit(AiEvent::TaskProgress {
@@ -91,9 +91,9 @@ impl TaskOrchestrator {
             // Create message chain record for this subtask
             let chain_id = if let Some(ref st) = db_subtask {
                 let agent_type = parse_agent_type(&planned.agent)
-                    .unwrap_or(golish_db::models::AgentType::Primary);
-                match golish_db::repo::message_chains::create(
-                    &self.pool,
+                    .unwrap_or(crate::db_traits::AgentType::Primary);
+                match message_chains::create(
+                    &*self.repo,
                     self.session_id,
                     Some(task_id),
                     Some(st.id),
@@ -135,14 +135,14 @@ impl TaskOrchestrator {
             // Persist message chain content
             if let Some(cid) = chain_id {
                 if let Some(chain_json) = executor.current_message_chain() {
-                    let _ = golish_db::repo::message_chains::update_chain(
-                        &self.pool, cid, &chain_json,
+                    let _ = message_chains::update_chain(
+                        &*self.repo, cid, &chain_json,
                     )
                     .await;
                 }
                 if let Some(ref usage) = subtask_usage {
-                    let _ = golish_db::repo::message_chains::update_usage(
-                        &self.pool,
+                    let _ = message_chains::update_usage(
+                        &*self.repo,
                         cid,
                         usage.input_tokens as i32,
                         usage.output_tokens as i32,
@@ -160,7 +160,7 @@ impl TaskOrchestrator {
             }
 
             if let Some(ref st) = db_subtask {
-                subtasks::set_result(&self.pool, st.id, &result_text, SubtaskStatus::Finished)
+                subtasks::set_result(&*self.repo, st.id, &result_text, SubtaskStatus::Finished)
                     .await?;
             }
 
@@ -217,7 +217,7 @@ impl TaskOrchestrator {
             }
         };
 
-        tasks::set_result(&self.pool, task_id, &report, TaskStatus::Finished).await?;
+        tasks::set_result(&*self.repo, task_id, &report, TaskStatus::Finished).await?;
 
         tracing::info!(
             "[TaskMode] Task completed. Total tokens: {} in / {} out, {} agent calls, {:.1}s",
@@ -271,7 +271,7 @@ impl TaskOrchestrator {
         planned: &PlannedSubtask,
         exec_ctx: &ExecutionContext,
         executor: &dyn AgentExecutor,
-        db_subtask: &Option<golish_db::models::Subtask>,
+        db_subtask: &Option<crate::db_traits::SubtaskView>,
         task_id: Uuid,
     ) -> (String, Option<AgentTokenUsage>) {
         let agent_type = planned.agent.as_deref().unwrap_or("primary");
@@ -405,7 +405,7 @@ impl TaskOrchestrator {
 
                         if let Some(ref st) = db_subtask {
                             let _ = subtasks::update_status(
-                                &self.pool,
+                                &*self.repo,
                                 st.id,
                                 SubtaskStatus::Waiting,
                             )
@@ -440,7 +440,7 @@ impl TaskOrchestrator {
 
                                 if let Some(ref st) = db_subtask {
                                     let _ = subtasks::update_status(
-                                        &self.pool,
+                                        &*self.repo,
                                         st.id,
                                         SubtaskStatus::Running,
                                     )
@@ -484,7 +484,7 @@ impl TaskOrchestrator {
                         );
                         if let Some(ref st) = db_subtask {
                             let _ = subtasks::set_result(
-                                &self.pool,
+                                &*self.repo,
                                 st.id,
                                 &err_msg,
                                 SubtaskStatus::Failed,
@@ -519,7 +519,7 @@ impl TaskOrchestrator {
             Ok(refinement) => {
                 if refinement.complete {
                     tracing::info!("Refiner says task is complete, skipping remaining");
-                    let _ = subtasks::delete_pending(&self.pool, task_id).await;
+                    let _ = subtasks::delete_pending(&*self.repo, task_id).await;
                     queue.truncate(subtask_index);
                     return;
                 }
@@ -569,7 +569,7 @@ impl TaskOrchestrator {
                 for added in &refinement.add {
                     let agent_type = parse_agent_type(&added.agent);
                     match subtasks::create(
-                        &self.pool,
+                        &*self.repo,
                         subtasks::NewSubtask {
                             task_id,
                             session_id: self.session_id,

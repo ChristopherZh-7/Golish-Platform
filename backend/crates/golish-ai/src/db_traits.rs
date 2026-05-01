@@ -190,12 +190,19 @@ pub struct NewWikiChangelog {
 #[derive(Debug, Clone)]
 pub struct SubtaskView {
     pub id: Uuid,
+    pub status: SubtaskStatus,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub agent: Option<AgentType>,
+    pub result: Option<String>,
 }
 
 /// Minimal view of a DB task (only fields accessed by golish-ai).
 #[derive(Debug, Clone)]
 pub struct TaskView {
     pub id: Uuid,
+    pub status: TaskStatus,
+    pub result: Option<String>,
 }
 
 /// Minimal view of a DB execution plan.
@@ -482,6 +489,7 @@ pub trait DbRepoProvider: Send + Sync {
     // -- Tasks & Subtasks -------------------------------------------------
 
     async fn task_create(&self, task: NewTask) -> anyhow::Result<TaskView>;
+    async fn task_get(&self, id: Uuid) -> anyhow::Result<Option<TaskView>>;
     async fn task_update_status(&self, id: Uuid, status: TaskStatus) -> anyhow::Result<()>;
     async fn task_set_result(&self, id: Uuid, result: &str) -> anyhow::Result<()>;
 
@@ -499,6 +507,8 @@ pub trait DbRepoProvider: Send + Sync {
         status: SubtaskStatus,
     ) -> anyhow::Result<()>;
     async fn subtask_set_result(&self, id: Uuid, result: &str) -> anyhow::Result<()>;
+    async fn subtask_next_pending(&self, task_id: Uuid) -> anyhow::Result<Option<SubtaskView>>;
+    async fn subtask_list_by_task(&self, task_id: Uuid) -> anyhow::Result<Vec<SubtaskView>>;
 
     // -- Message Chains ---------------------------------------------------
 

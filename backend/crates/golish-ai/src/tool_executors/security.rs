@@ -17,6 +17,10 @@ pub async fn execute_security_analysis_tool(
         return None;
     }
 
+    let repo = match db_tracker.and_then(|t| t.repo()) {
+        Some(r) => r,
+        None => return Some(error_result("Database not available for security analysis tools")),
+    };
     let pool = match db_tracker {
         Some(t) => t.pool(),
         None => return Some(error_result("Database not available for security analysis tools")),
@@ -37,7 +41,7 @@ pub async fn execute_security_analysis_tool(
                 .unwrap_or_else(|| "completed".to_string());
             let detail = args.get("detail").cloned().unwrap_or_else(|| json!({}));
 
-            match golish_db::repo::audit::log_operation(
+            match crate::db_shim::audit::log_operation(
                 pool,
                 &summary,
                 &op_type,
