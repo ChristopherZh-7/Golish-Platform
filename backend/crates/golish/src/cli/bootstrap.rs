@@ -432,7 +432,9 @@ async fn initialize_agent(
 
     // Inject dependencies (same as init_ai_agent command in Tauri)
     bridge.set_indexer_state(indexer_state);
-    bridge.set_sidecar_state(sidecar_state);
+    let sidecar_backend: std::sync::Arc<dyn golish_ai::sidecar_trait::SessionCaptureBackend> =
+        std::sync::Arc::new(crate::ai::sidecar_bridge::SidecarCaptureBackend::new(sidecar_state));
+    bridge.set_sidecar_state(sidecar_backend);
 
     // Initialize MCP (Model Context Protocol) integration
     // Load config from user-global (~/.golish/mcp.json) and project-specific paths

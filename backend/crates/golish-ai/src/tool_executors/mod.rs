@@ -22,6 +22,7 @@ mod memory;
 pub mod knowledge_base;
 pub mod security;
 mod graph;
+pub mod graph_trait;
 mod shell;
 
 pub use common::{ToolResult, error_result, extract_string_param};

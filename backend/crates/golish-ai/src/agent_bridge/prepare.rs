@@ -102,35 +102,7 @@ impl AgentBridge {
         self.start_session().await;
         self.record_user_message(initial_prompt).await;
 
-        if let Some(ref sidecar) = self.services.sidecar_state {
-            use golish_sidecar::events::SessionEvent;
-
-            let session_id = if let Some(existing_id) = sidecar.current_session_id() {
-                tracing::debug!("Reusing existing sidecar session: {}", existing_id);
-                Some(existing_id)
-            } else {
-                match sidecar.start_session(initial_prompt) {
-                    Ok(new_id) => {
-                        tracing::info!("Started new sidecar session: {}", new_id);
-                        Some(new_id)
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to start sidecar session: {}", e);
-                        None
-                    }
-                }
-            };
-
-            if let Some(ref sid) = session_id {
-                let prompt_event = SessionEvent::user_prompt(sid.clone(), initial_prompt);
-                sidecar.capture(prompt_event);
-
-                self.with_session_manager(|m| {
-                    m.set_sidecar_session_id(sid.clone());
-                })
-                .await;
-            }
-        }
+        self.sidecar_start_and_capture(initial_prompt).await;
 
         let mut history_guard = self.session.conversation_history.write().await;
         history_guard.push(Message::User {
@@ -220,35 +192,7 @@ impl AgentBridge {
         self.start_session().await;
         self.record_user_message(text_for_logging).await;
 
-        if let Some(ref sidecar) = self.services.sidecar_state {
-            use golish_sidecar::events::SessionEvent;
-
-            let session_id = if let Some(existing_id) = sidecar.current_session_id() {
-                tracing::debug!("Reusing existing sidecar session: {}", existing_id);
-                Some(existing_id)
-            } else {
-                match sidecar.start_session(text_for_logging) {
-                    Ok(new_id) => {
-                        tracing::info!("Started new sidecar session: {}", new_id);
-                        Some(new_id)
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to start sidecar session: {}", e);
-                        None
-                    }
-                }
-            };
-
-            if let Some(ref sid) = session_id {
-                let prompt_event = SessionEvent::user_prompt(sid.clone(), text_for_logging);
-                sidecar.capture(prompt_event);
-
-                self.with_session_manager(|m| {
-                    m.set_sidecar_session_id(sid.clone());
-                })
-                .await;
-            }
-        }
+        self.sidecar_start_and_capture(text_for_logging).await;
 
         let mut history_guard = self.session.conversation_history.write().await;
 
@@ -336,6 +280,7 @@ impl AgentBridge {
             context_manager: &self.context_manager,
             compaction_state: &self.compaction_state,
             tool_config: &self.tool_config,
+            graph_backend: self.services.graph_backend.clone(),
             sidecar_state: self.services.sidecar_state.as_ref(),
             plan_manager: &self.plan_manager,
             api_request_stats: &self.api_request_stats,
@@ -386,13 +331,9 @@ impl AgentBridge {
         }
 
         if let Some(ref sidecar) = self.services.sidecar_state {
-            use golish_sidecar::events::SessionEvent;
-
             if let Some(session_id) = sidecar.current_session_id() {
                 if !accumulated_response.is_empty() {
-                    let response_event =
-                        SessionEvent::ai_response(session_id, &accumulated_response);
-                    sidecar.capture(response_event);
+                    sidecar.capture_ai_response(&session_id, &accumulated_response);
                     tracing::debug!(
                         "[agent] Captured AI response in sidecar ({} chars)",
                         accumulated_response.len()
@@ -457,14 +398,42 @@ impl AgentBridge {
             self.record_assistant_message(partial_response).await;
 
             if let Some(ref sidecar) = self.services.sidecar_state {
-                use golish_sidecar::events::SessionEvent;
-
                 if let Some(session_id) = sidecar.current_session_id() {
-                    sidecar.capture(SessionEvent::ai_response(session_id, partial_response));
+                    sidecar.capture_ai_response(&session_id, partial_response);
                 }
             }
         }
 
         self.save_session().await;
+    }
+
+    /// Start or reuse a sidecar session and capture the user prompt.
+    async fn sidecar_start_and_capture(&self, text: &str) {
+        if let Some(ref sidecar) = self.services.sidecar_state {
+            let session_id = if let Some(existing_id) = sidecar.current_session_id() {
+                tracing::debug!("Reusing existing sidecar session: {}", existing_id);
+                Some(existing_id)
+            } else {
+                match sidecar.start_session(text) {
+                    Ok(new_id) => {
+                        tracing::info!("Started new sidecar session: {}", new_id);
+                        Some(new_id)
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to start sidecar session: {}", e);
+                        None
+                    }
+                }
+            };
+
+            if let Some(ref sid) = session_id {
+                sidecar.capture_user_prompt(sid, text);
+
+                self.with_session_manager(|m| {
+                    m.set_sidecar_session_id(sid.clone());
+                })
+                .await;
+            }
+        }
     }
 }

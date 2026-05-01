@@ -54,13 +54,15 @@ pub async fn init_indexer(
         index_location
     );
 
-    state
-        .indexer_state
-        .initialize_with_location(path, index_location)
-        .map_err(|e| {
-            tracing::error!("Failed to initialize indexer: {}", e);
-            e.to_string()
-        })?;
+    crate::indexer::vtcode_bridge::initialize_vtcode_indexer(
+        &state.indexer_state,
+        path,
+        index_location,
+    )
+    .map_err(|e| {
+        tracing::error!("Failed to initialize indexer: {}", e);
+        e.to_string()
+    })?;
 
     tracing::info!(
         "init_indexer completed successfully for: {}",

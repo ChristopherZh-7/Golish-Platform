@@ -632,6 +632,7 @@ impl TestContext {
             context_manager: &self.context_manager,
             compaction_state: &self.compaction_state,
             tool_config: &self.tool_config,
+            graph_backend: None,
             sidecar_state: None,
             plan_manager: &self.plan_manager,
             api_request_stats: &self.api_request_stats,

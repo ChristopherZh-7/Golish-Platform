@@ -1,8 +1,7 @@
 //! Graph knowledge base tool executors.
 //!
-//! Bridges the LLM-facing `graph_*` tools onto the typed
-//! [`golish_graphiti::GraphClient`]. When the client is not configured
-//! (e.g. database not yet attached), graph tool calls return a graceful
+//! Bridges the LLM-facing `graph_*` tools onto the [`GraphKnowledgeBase`]
+//! trait. When no graph backend is configured, tool calls return a graceful
 //! "not available" error instead of crashing the agent loop.
 //!
 //! Entity-name resolution: agents typically reference entities by their
@@ -13,8 +12,7 @@
 use serde_json::json;
 use uuid::Uuid;
 
-use golish_graphiti::{GraphClient, GraphEntity};
-
+use super::graph_trait::{GraphEntityView, GraphKnowledgeBase};
 use super::common::{error_result, extract_string_param, ToolResult};
 
 /// Execute graph tool calls (graph_add_entity, graph_add_relation,
@@ -25,7 +23,7 @@ use super::common::{error_result, extract_string_param, ToolResult};
 pub async fn execute_graph_tool(
     tool_name: &str,
     args: &serde_json::Value,
-    graph_client: Option<&GraphClient>,
+    graph_client: Option<&dyn GraphKnowledgeBase>,
 ) -> Option<ToolResult> {
     let graph_tools = [
         "graph_add_entity",
@@ -288,7 +286,7 @@ pub async fn execute_graph_tool(
 /// to a name search via [`GraphClient::search_entities`] and returns the
 /// most recently updated match. Returns a human-readable error message on
 /// failure suitable for direct surfacing to the LLM.
-async fn resolve_entity_id(client: &GraphClient, reference: &str) -> Result<Uuid, String> {
+async fn resolve_entity_id(client: &dyn GraphKnowledgeBase, reference: &str) -> Result<Uuid, String> {
     if let Ok(id) = Uuid::parse_str(reference) {
         return Ok(id);
     }
@@ -303,7 +301,7 @@ async fn resolve_entity_id(client: &GraphClient, reference: &str) -> Result<Uuid
 }
 
 /// Convert a [`GraphEntity`] to a stable JSON shape for tool results.
-fn entity_to_json(entity: &GraphEntity) -> serde_json::Value {
+fn entity_to_json(entity: &GraphEntityView) -> serde_json::Value {
     json!({
         "id": entity.id,
         "entity_type": entity.entity_type,

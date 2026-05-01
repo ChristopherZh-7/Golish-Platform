@@ -9,8 +9,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use golish_core::{ApiRequestStats, PromptMatchedSkill, PromptSkillInfo};
-use golish_sidecar::SidecarState;
 use golish_skills::SkillMetadata;
+
+use crate::sidecar_trait::SessionCaptureBackend;
 use golish_sub_agents::SubAgentRegistry;
 use golish_tools::ToolRegistry;
 use tokio::sync::RwLock;
@@ -108,9 +109,14 @@ impl AgentBridge {
         self.services.indexer_state = Some(indexer_state);
     }
 
-    /// Set the SidecarState for context capture
-    pub fn set_sidecar_state(&mut self, sidecar_state: Arc<SidecarState>) {
+    /// Set the session capture backend (decoupled from golish-sidecar).
+    pub fn set_sidecar_state(&mut self, sidecar_state: Arc<dyn SessionCaptureBackend>) {
         self.services.sidecar_state = Some(sidecar_state);
+    }
+
+    /// Set the graph knowledge base backend (decoupled from golish-graphiti).
+    pub fn set_graph_backend(&mut self, backend: Arc<dyn crate::tool_executors::graph_trait::GraphKnowledgeBase>) {
+        self.services.graph_backend = Some(backend);
     }
 
     /// Set the TranscriptWriter for persisting AI events to JSONL.

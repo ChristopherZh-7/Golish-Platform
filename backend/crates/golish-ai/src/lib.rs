@@ -36,6 +36,9 @@ pub mod loop_detection;
 pub mod planner;
 pub mod tool_policy;
 
+pub mod db_traits;
+pub mod sidecar_trait;
+
 // Core modules
 pub mod agent_bridge;
 pub mod agent_mode;

@@ -124,14 +124,10 @@ where
             | "graph_neighbors"
             | "graph_attack_paths"
     ) {
-        let graph_client = ctx
-            .events
-            .db_tracker
-            .map(|t| golish_graphiti::GraphClient::new(t.pool().clone()));
         if let Some((value, success)) = crate::tool_executors::execute_graph_tool(
             tool_name,
             tool_args,
-            graph_client.as_ref(),
+            ctx.graph_backend.as_deref(),
         )
         .await
         {

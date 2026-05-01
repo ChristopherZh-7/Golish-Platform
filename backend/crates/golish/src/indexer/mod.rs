@@ -12,6 +12,7 @@
 // at this level so command names don't shadow `golish_ai::indexer::*` types
 // in `crate::indexer::*` lookups.
 pub mod commands;
+pub mod vtcode_bridge;
 
 // Re-export everything from golish-ai::indexer
 pub use golish_ai::indexer::*;
