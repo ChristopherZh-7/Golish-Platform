@@ -1,13 +1,11 @@
-use sqlx::PgPool;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 use tauri::{Emitter, State};
 use uuid::Uuid;
 
 use crate::state::AppState;
 pub use golish_pentest::sensitive_scan::{
-    extract_dirs_from_sitemap, ScanProgress, SensitiveScanConfig, SensitiveScanResult,
-    DEFAULT_SENSITIVE_PATHS,
+    build_probe_targets, extract_dirs_from_sitemap, run_probe_loop, ProbeHit, ScanProgress,
+    SensitiveScanConfig, SensitiveScanResult, DEFAULT_SENSITIVE_PATHS,
 };
 
 static SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -18,18 +16,11 @@ async fn load_wordlist_lines(wordlist_id: &str) -> Result<Vec<String>, String> {
     let content = tokio::fs::read_to_string(&path)
         .await
         .map_err(|e| format!("Failed to read wordlist: {}", e))?;
-    Ok(content.lines().filter(|l| !l.is_empty() && !l.starts_with('#')).map(|s| s.to_string()).collect())
-}
-
-async fn get_already_scanned(pool: &PgPool, base_url: &str, wordlist_id: &str, _project_path: Option<&str>) -> bool {
-    sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM sensitive_scan_history WHERE base_url = $1 AND wordlist_id = $2 AND project_path = $3)",
-    )
-    .bind(base_url)
-    .bind(wordlist_id)
-    .fetch_one(pool)
-    .await
-    .unwrap_or(false)
+    Ok(content
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|s| s.to_string())
+        .collect())
 }
 
 #[tauri::command]
@@ -45,23 +36,29 @@ pub async fn sensitive_scan_start(
     SCAN_RUNNING.store(true, Ordering::SeqCst);
     SCAN_CANCELLED.store(false, Ordering::SeqCst);
 
-    let pool = app_state.db_pool_ready().await?;
+    let pool = app_state.db_pool_ready().await?.clone();
     let scan_id = Uuid::new_v4().to_string();
 
     let probe_paths: Vec<String> = if let Some(ref wl_id) = config.wordlist_id {
         load_wordlist_lines(wl_id).await?
     } else {
-        DEFAULT_SENSITIVE_PATHS.iter().map(|s| s.to_string()).collect()
+        DEFAULT_SENSITIVE_PATHS
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     };
 
-    let wordlist_label = config.wordlist_id.clone().unwrap_or_else(|| "builtin".to_string());
+    let wordlist_label = config
+        .wordlist_id
+        .clone()
+        .unwrap_or_else(|| "builtin".to_string());
 
     let dirs: Vec<String> = if config.use_sitemap_dirs {
         let sitemap_data = sqlx::query_scalar::<_, serde_json::Value>(
             "SELECT data FROM sitemap_store WHERE name = 'zap-sitemap' AND project_path = $1",
         )
         .bind(project_path.as_deref())
-        .fetch_optional(pool)
+        .fetch_optional(&pool)
         .await
         .unwrap_or(None)
         .unwrap_or(serde_json::json!([]));
@@ -71,133 +68,61 @@ pub async fn sensitive_scan_start(
         vec![format!("{}/", target)]
     };
 
-    let pool2 = pool.clone();
     let pp = project_path.clone();
-    let app2 = app.clone();
     let sid = scan_id.clone();
+    let rate = config.rate_per_second;
 
     tokio::spawn(async move {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .redirect(reqwest::redirect::Policy::none())
-            .danger_accept_invalid_certs(true)
-            .build()
-            .unwrap_or_default();
+        let targets = build_probe_targets(&dirs, &probe_paths);
+        let dirs_count = dirs.len();
 
-        let delay = if config.rate_per_second > 0 {
-            Duration::from_millis(1000 / config.rate_per_second as u64)
-        } else {
-            Duration::from_millis(50)
-        };
+        let _ = app.emit(
+            "sensitive-scan-progress",
+            serde_json::json!({
+                "scanId": &sid, "total": targets.len(), "completed": 0, "hits": 0,
+                "currentUrl": "", "running": true, "dirsFound": dirs_count,
+            }),
+        );
 
-        let mut tasks: Vec<(String, String)> = Vec::new();
-        for dir in &dirs {
-            if get_already_scanned(&pool2, dir, &wordlist_label, pp.as_deref()).await {
-                continue;
-            }
-            for path in &probe_paths {
-                let full = format!("{}{}", dir, path.trim_start_matches('/'));
-                tasks.push((dir.clone(), full));
-            }
-        }
+        let app_ref = &app;
+        let sid_ref = &sid;
+        let hits = run_probe_loop(
+            &targets,
+            rate,
+            || SCAN_CANCELLED.load(Ordering::SeqCst),
+            |completed, hit_count, url| {
+                let _ = app_ref.emit(
+                    "sensitive-scan-progress",
+                    serde_json::json!({
+                        "scanId": sid_ref, "total": targets.len(),
+                        "completed": completed, "hits": hit_count,
+                        "currentUrl": url, "running": true, "dirsFound": dirs_count,
+                    }),
+                );
+            },
+        )
+        .await;
 
-        let total = tasks.len();
-        let mut completed = 0usize;
-        let mut hits = 0usize;
-
-        let _ = app2.emit("sensitive-scan-progress", serde_json::json!({
-            "scanId": &sid, "total": total, "completed": 0, "hits": 0,
-            "currentUrl": "", "running": true, "dirsFound": dirs.len(),
-        }));
-
-        let mut current_dir = String::new();
-        let mut dir_probe_count = 0u32;
-        let mut dir_hit_count = 0u32;
-
-        for (base_dir, full_url) in &tasks {
-            if SCAN_CANCELLED.load(Ordering::SeqCst) {
-                break;
-            }
-
-            if *base_dir != current_dir {
-                if !current_dir.is_empty() {
-                    let _ = sqlx::query(
-                        "INSERT INTO sensitive_scan_history (base_url, wordlist_id, probe_count, hit_count, project_path)
-                         VALUES ($1, $2, $3, $4, $5)
-                         ON CONFLICT (base_url, wordlist_id, project_path) DO UPDATE SET probe_count = $3, hit_count = $4, scanned_at = NOW()",
-                    )
-                    .bind(&current_dir).bind(&wordlist_label)
-                    .bind(dir_probe_count as i32).bind(dir_hit_count as i32)
-                    .bind(pp.as_deref())
-                    .execute(&pool2).await;
-                }
-                current_dir = base_dir.clone();
-                dir_probe_count = 0;
-                dir_hit_count = 0;
-            }
-            dir_probe_count += 1;
-
-            let resp = match client.get(full_url).send().await {
-                Ok(r) => r,
-                Err(_) => {
-                    completed += 1;
-                    continue;
-                }
-            };
-
-            let status = resp.status().as_u16() as i32;
-            let ct = resp.headers().get("content-type")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("")
-                .to_string();
-            let cl = resp.headers().get("content-length")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<i32>().ok())
-                .unwrap_or(0);
-
-            if status >= 200 && status < 400 && status != 301 && status != 302 {
-                hits += 1;
-                dir_hit_count += 1;
-                let probe_path = full_url.strip_prefix(base_dir).unwrap_or(full_url).to_string();
-                let _ = sqlx::query(
-                    "INSERT INTO sensitive_scan_results (base_url, probe_path, full_url, status_code, content_length, content_type, wordlist_id, project_path)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                     ON CONFLICT (full_url, project_path) DO NOTHING",
-                )
-                .bind(base_dir).bind(&probe_path).bind(full_url)
-                .bind(status).bind(cl).bind(&ct)
-                .bind(&wordlist_label).bind(pp.as_deref())
-                .execute(&pool2).await;
-            }
-
-            completed += 1;
-            if completed % 10 == 0 || completed == total {
-                let _ = app2.emit("sensitive-scan-progress", serde_json::json!({
-                    "scanId": &sid, "total": total, "completed": completed, "hits": hits,
-                    "currentUrl": full_url, "running": true, "dirsFound": dirs.len(),
-                }));
-            }
-
-            tokio::time::sleep(delay).await;
-        }
-
-        if !current_dir.is_empty() {
+        for hit in &hits {
             let _ = sqlx::query(
-                "INSERT INTO sensitive_scan_history (base_url, wordlist_id, probe_count, hit_count, project_path)
-                 VALUES ($1, $2, $3, $4, $5)
-                 ON CONFLICT (base_url, wordlist_id, project_path) DO UPDATE SET probe_count = $3, hit_count = $4, scanned_at = NOW()",
+                "INSERT INTO sensitive_scan_results (base_url, probe_path, full_url, status_code, content_length, content_type, wordlist_id, project_path) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (full_url, project_path) DO NOTHING",
             )
-            .bind(&current_dir).bind(&wordlist_label)
-            .bind(dir_probe_count as i32).bind(dir_hit_count as i32)
-            .bind(pp.as_deref())
-            .execute(&pool2).await;
+            .bind(&hit.base_dir).bind(&hit.probe_path).bind(&hit.full_url)
+            .bind(hit.status_code).bind(hit.content_length).bind(&hit.content_type)
+            .bind(&wordlist_label).bind(pp.as_deref())
+            .execute(&pool).await;
         }
 
         SCAN_RUNNING.store(false, Ordering::SeqCst);
-        let _ = app2.emit("sensitive-scan-progress", serde_json::json!({
-            "scanId": &sid, "total": total, "completed": completed, "hits": hits,
-            "currentUrl": "", "running": false, "dirsFound": dirs.len(),
-        }));
+        let _ = app.emit(
+            "sensitive-scan-progress",
+            serde_json::json!({
+                "scanId": &sid, "total": targets.len(),
+                "completed": targets.len(), "hits": hits.len(),
+                "currentUrl": "", "running": false, "dirsFound": dirs_count,
+            }),
+        );
     });
 
     Ok(scan_id)
