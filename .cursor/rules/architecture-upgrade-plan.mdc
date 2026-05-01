@@ -425,7 +425,7 @@ find backend/crates/golish/src/tools -name "*.rs" -not -name "mod.rs" | xargs wc
 **待重构文件清单**(按行数降序):
 - [x] `sensitive_scan.rs` (471→285, ScanResultStore trait) ✅
 - [x] `pentest/zap/scan.rs` (493→420, BatchScanAuditLog trait + run_batch_scan) ✅
-- [ ] `pentest/tool_mgmt.rs` (484, 60行 fs 工具函数 → golish-pentest)
+- [x] `pentest/tool_mgmt.rs` (484→384, fs_utils 迁移到 golish-pentest) ✅
 - [x] `vault.rs` (458, golish-core::vault 已创建含类型+加密; 主crate待切换re-export) ✅
 - [x] `pentest/packages/install/runtime.rs` (424, 主要是 golish-pentest 的薄封装) — SKIP: adapter 层
 - [x] `vuln_intel/commands.rs` (420, 已迁移 settings 访问) — SKIP: 纯 CRUD
