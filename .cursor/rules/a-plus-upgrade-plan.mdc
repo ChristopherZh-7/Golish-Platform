@@ -17,7 +17,7 @@ alwaysApply: false
 
 ## 剩余 A+ 任务
 
-### 任务 1: 全面集成 ts-rs 生成的类型 (预计 1.5 小时)
+### 任务 1: 全面集成 ts-rs 生成的类型 (部分完成)
 
 **问题**: `frontend/lib/generated/` 已有 11 个生成的类型文件，但前端大部分仍用手动定义的类型。
 
@@ -25,16 +25,30 @@ alwaysApply: false
 - 生成的 `ToolSource` 用 `agent_id`，手动的 `ToolCallSource` 用 `agentId`
 - 生成的 `AiEvent` 字段是 snake_case，但事件处理器 (`services/ai-events/`) 用 camelCase
 
-**步骤**:
-1. 对比 `frontend/lib/generated/AiEvent.ts` 和 `frontend/hooks/tauri-event-types.ts` + `frontend/services/ai-events/types.ts`
-2. 决定策略：
-   - 方案 A: 后端 `#[ts(rename_all = "camelCase")]` 让生成的类型用 camelCase（推荐）
-   - 方案 B: 前端事件处理器全改为 snake_case
-3. 在 `backend/crates/golish-core/src/events/event.rs` 的 `#[derive(TS)]` 上添加 `#[ts(rename_all = "camelCase")]`
-4. 重新运行 `just generate-types`
-5. 更新 `frontend/hooks/tauri-event-types.ts` 导入生成的 AiEvent 类型
-6. 更新 `frontend/services/ai-events/types.ts` 导入生成的类型
-7. 更新 `frontend/store/types/tool-call.ts` 中的 `ToolCallSource` 使用生成的 `ToolSource`
+**已完成 (7 个类型)**:
+- ✅ AiEvent — 280 行手动类型替换为生成类型 + 信封交叉类型
+- ✅ ToolSource, ApprovalPattern, RiskLevel, StepStatus, PlanStep, PlanSummary
+
+**S 级扩展 — 剩余需生成的类型（按 Rust crate 分组）**:
+
+**golish-core 需要加 `#[derive(TS)]` 的类型**:
+- `ApiRequestStats` / `ApiRequestStatsSnapshot` → 前端 `lib/ai/types.ts`
+- Tauri command 返回类型（在 golish crate 的 commands/ 中定义）
+
+**golish-settings 需要加的类型**:
+- `GolishSettings`, `AiSettings` 的子类型 → 前端 `lib/ai/types.ts` 的 config 类型
+
+**golish-session 需要加的类型**:
+- `GolishSessionSnapshot`, `SessionListingInfo`, `GolishSessionMessage` → 前端的 session 类型
+
+**注意**: 前端 `lib/ai/types.ts` 中很多类型（如 `ProjectSettings`, `AiConfig`, 
+`ProviderConfig` 等）是纯前端视图模型，没有 Rust 对应类型——这些不需要生成。
+
+**步骤（每组独立可执行）**:
+1. 在 Rust 类型上加 `#[derive(TS)]` + `#[ts(export, export_to = "generated/")]`
+2. 运行 `just generate-types` 
+3. 在前端 `import type { X } from "@/lib/generated"` 替换手动定义
+4. 验证 `npx tsc --noEmit`
 
 **关键文件**:
 - `backend/crates/golish-core/src/events/event.rs` — AiEvent 定义，添加 ts() 属性
