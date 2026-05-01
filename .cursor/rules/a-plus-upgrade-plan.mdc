@@ -1,0 +1,99 @@
+---
+description: Frontend + Backend A+ upgrade plan - remaining tasks
+globs:
+alwaysApply: false
+---
+
+# A+ 升级计划
+
+## 已完成 (A 级)
+- ✅ 后端 3 个 crate (golish-ai, golish-sub-agents, golish-session) 完全移除 sqlx
+- ✅ 7 个 trait 抽象 + 8 个应用层实现
+- ✅ 前端 16 个 API 模块，组件零 invoke（除 DetachedView 窗口管理）
+- ✅ 0 errors, 0 warnings
+- ✅ ts-rs 类型生成基础设施已存在 (`frontend/lib/generated/`)
+- ✅ 4 个类型已迁移到 ts-rs 生成：StepStatus, PlanStep, PlanSummary, ApprovalPattern
+
+## 剩余 A+ 任务
+
+### 任务 1: 全面集成 ts-rs 生成的类型 (预计 1.5 小时)
+
+**问题**: `frontend/lib/generated/` 已有 11 个生成的类型文件，但前端大部分仍用手动定义的类型。
+
+**主要障碍**: 命名约定不匹配 — 后端 snake_case vs 前端 camelCase。
+- 生成的 `ToolSource` 用 `agent_id`，手动的 `ToolCallSource` 用 `agentId`
+- 生成的 `AiEvent` 字段是 snake_case，但事件处理器 (`services/ai-events/`) 用 camelCase
+
+**步骤**:
+1. 对比 `frontend/lib/generated/AiEvent.ts` 和 `frontend/hooks/tauri-event-types.ts` + `frontend/services/ai-events/types.ts`
+2. 决定策略：
+   - 方案 A: 后端 `#[ts(rename_all = "camelCase")]` 让生成的类型用 camelCase（推荐）
+   - 方案 B: 前端事件处理器全改为 snake_case
+3. 在 `backend/crates/golish-core/src/events/event.rs` 的 `#[derive(TS)]` 上添加 `#[ts(rename_all = "camelCase")]`
+4. 重新运行 `just generate-types`
+5. 更新 `frontend/hooks/tauri-event-types.ts` 导入生成的 AiEvent 类型
+6. 更新 `frontend/services/ai-events/types.ts` 导入生成的类型
+7. 更新 `frontend/store/types/tool-call.ts` 中的 `ToolCallSource` 使用生成的 `ToolSource`
+
+**关键文件**:
+- `backend/crates/golish-core/src/events/event.rs` — AiEvent 定义，添加 ts() 属性
+- `backend/crates/golish-core/src/events/tool_source.rs` — ToolSource 定义
+- `backend/crates/golish-core/src/hitl.rs` — ApprovalPattern 定义
+- `backend/crates/golish-core/src/plan.rs` — PlanStep, PlanSummary, StepStatus 定义
+- `frontend/hooks/tauri-event-types.ts` — 手动的 TauriAiEvent 类型
+- `frontend/services/ai-events/types.ts` — 事件处理器类型
+- `frontend/store/types/tool-call.ts` — ToolCallSource 手动类型
+
+### 任务 2: 拆分大组件 (预计 1 小时)
+
+**需拆分的组件**:
+
+1. **ToolManager.tsx (1046 行)**
+   - 当前是单文件包含：工具列表、安装面板、编辑器、输出解析器
+   - 建议拆分为：
+     - `ToolManager/index.tsx` — 主容器
+     - `ToolManager/ToolList.tsx` — 工具列表视图
+     - `ToolManager/ToolInstallPanel.tsx` — 安装面板
+     - `ToolManager/OutputParserEditor.tsx` — 已存在，检查是否完整
+
+2. **PentestEnvSettings.tsx (925 行)**
+   - 拆分为：
+     - `PentestEnvSettings/index.tsx` — 主容器
+     - `PentestEnvSettings/RuntimeSection.tsx` — 运行时管理
+     - `PentestEnvSettings/PythonEnvSection.tsx` — Python 环境
+
+3. **DashboardPanel.tsx (849 行)**
+   - 拆分为：
+     - `DashboardPanel/index.tsx` — 主容器 + 布局
+     - `DashboardPanel/StatCards.tsx` — 统计卡片
+     - `DashboardPanel/ActivityFeed.tsx` — 活动信息流
+
+### 任务 3: 前端错误处理标准化 (预计 30 分钟)
+
+**问题**: API 调用的错误处理不一致
+- 有些用 `.catch(console.error)` — 静默失败
+- 有些用 `try/catch { /* ignore */ }` — 静默失败
+- 有些用 `try/catch` + `console.error` — 日志但不通知
+
+**统一方案**:
+```typescript
+// 在 lib/api/client.ts 或新建 lib/api/error.ts
+export function handleApiError(context: string) {
+  return (error: unknown) => {
+    console.error(`[${context}]`, error);
+    // 可选：通知用户
+  };
+}
+```
+
+### 运行命令
+```bash
+# 重新生成 ts-rs 类型
+cd backend && just generate-types
+
+# 验证前端编译
+cd .. && npx tsc --noEmit
+
+# 验证后端编译  
+cd backend && cargo check
+```
