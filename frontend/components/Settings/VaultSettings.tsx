@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@/lib/api";
+import { vault } from "@/lib/api";
 import {
   ChevronDown, ChevronRight, Copy, Eye, EyeOff, Globe, KeyRound, Link2, Loader2, Plus, ShieldCheck, ShieldX, Trash2,
 } from "lucide-react";
@@ -79,7 +79,7 @@ function InlineNotes({ entryId, initial, onSaved }: { entryId: string; initial: 
     setEditing(false);
     if (value === initial) return;
     try {
-      await invoke("vault_update", { id: entryId, notes: value, projectPath: getProjectPath() });
+      await vault.updateVaultEntry({ id: entryId, notes: value, projectPath: getProjectPath() });
       onSaved();
     } catch (e) {
       console.error("Failed to update notes:", e);

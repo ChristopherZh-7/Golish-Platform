@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { invoke } from "@/lib/api/client";
+import { vault } from "@/lib/api";
 import { listen } from "@tauri-apps/api/event";
 import { logAudit } from "@/lib/audit";
 import { copyToClipboard } from "@/lib/clipboard";
@@ -103,7 +103,7 @@ export function useVaultForm() {
           const entryHost = entry.project || entry.name.split(" - ")[0];
           if (entryHost.includes(host) || host.includes(entryHost)) {
             if (entry.status !== "expired") {
-              await invoke("vault_update_status", { id: entry.id, status: "expired", projectPath: getProjectPath() }).catch(() => {});
+              await vault.updateVaultStatus(entry.id, "expired", getProjectPath()).catch(() => {});
             }
           }
         }
@@ -118,7 +118,7 @@ export function useVaultForm() {
   const handleAdd = useCallback(async () => {
     if (!addForm.name.trim() || !addForm.value.trim()) return;
     try {
-      await invoke("vault_add", {
+      await vault.addVaultEntry({
         name: addForm.name.trim(),
         entryType: addForm.type,
         value: addForm.value,
@@ -140,7 +140,7 @@ export function useVaultForm() {
   const handleDelete = useCallback(async (id: string, name: string) => {
     if (!confirm(t("vault.deleteConfirm", { name }))) return;
     try {
-      await invoke("vault_delete", { id, projectPath: getProjectPath() });
+      await vault.deleteVaultEntry(id, getProjectPath());
       setRevealedIds((s) => { const n = new Set(s); n.delete(id); return n; });
       loadEntries();
       logAudit({ action: "vault_entry_deleted", category: "vault", details: name, entityType: "vault", entityId: id });

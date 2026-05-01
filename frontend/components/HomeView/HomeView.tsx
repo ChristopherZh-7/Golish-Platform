@@ -556,10 +556,10 @@ export const HomeView = memo(function HomeView() {
         await handleOpenProject(data.name, data.rootPath);
 
         if (data.targets && data.targets.length > 0) {
-          const { invoke } = await import("@tauri-apps/api/core");
+          const { targets: targetsApi } = await import("@/lib/api");
           const { emit } = await import("@tauri-apps/api/event");
           try {
-            await invoke("target_batch_add", {
+            await targetsApi.batchAddTargets({
               values: data.targets.join("\n"),
               group: "default",
               projectPath: data.rootPath,

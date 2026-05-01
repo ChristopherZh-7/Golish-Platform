@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
-import { invoke } from "@/lib/api";
+import { invoke, vulnLinks } from "@/lib/api";
 import {
   ChevronDown, ChevronRight, Code, Copy, FileCode2, FileText,
   Loader2, Play, Search, Trash2, X, Zap,
@@ -120,7 +120,7 @@ export const PocLibraryView = memo(function PocLibraryView({ vulnLinks, onLinksC
     if (link) {
       next[cveId] = { ...link, pocTemplates: link.pocTemplates.filter((p) => p.id !== pocId) };
       onLinksChange(next);
-      invoke("vuln_link_remove_poc", { pocId }).catch(console.error);
+      vulnLinks.removePoc(pocId).catch(console.error);
     }
   }, [vulnLinks, onLinksChange]);
 
@@ -141,7 +141,7 @@ export const PocLibraryView = memo(function PocLibraryView({ vulnLinks, onLinksC
     ];
     next[runTarget.cveId] = link;
     onLinksChange(next);
-    invoke("vuln_link_add_scan", {
+    vulnLinks.addScan({
       cveId: runTarget.cveId,
       target: targetUrl.trim(),
       result: "pending",

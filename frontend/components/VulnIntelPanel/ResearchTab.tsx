@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@/lib/api";
+import { research } from "@/lib/api";
 import { AlertTriangle, Bot, Loader2, MessageSquare, Trash2, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
@@ -86,7 +86,7 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
       if (blocks.length > 0) {
         const turn: CompletedTurn = { id: crypto.randomUUID(), blocks };
         setCompletedTurns((prev) => [...prev, turn]);
-        invoke("kb_research_save_turn", { cveId, sessionId: sid, turn }).catch((e) =>
+        research.saveTurn(cveId, sid, turn).catch((e) =>
           console.error("Failed to save research turn:", e)
         );
       }
@@ -98,7 +98,7 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
   const prevRespondingRef = useRef(false);
   useEffect(() => {
     if (prevRespondingRef.current && !isResponding && completedTurns.length > 0) {
-      invoke("kb_research_set_status", { cveId, status: "completed" }).catch((e) =>
+      research.setStatus(cveId, "completed").catch((e) =>
         console.error("Failed to set research status:", e)
       );
     }
@@ -118,7 +118,7 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
     if (!confirm("Delete all research history for this CVE? This cannot be undone.")) return;
     setClearing(true);
     try {
-      await invoke("kb_research_clear", { cveId });
+      await research.clearResearch(cveId);
       setCompletedTurns([]);
     } catch (e) {
       console.error("Failed to clear research history:", e);
