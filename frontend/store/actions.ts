@@ -43,7 +43,7 @@ export async function closeTabAndCleanup(
         { shutdownAiSession },
         { ptyDestroy },
         { TerminalInstanceManager, liveTerminalManager },
-      ] = await Promise.all([import("@/lib/ai"), import("@/lib/tauri"), import("@/lib/terminal")]);
+      ] = await Promise.all([import("@/lib/ai"), import("@/lib/api/pty"), import("@/lib/terminal")]);
 
       await Promise.all(
         idsToCleanup.map(async (sessionId) => {

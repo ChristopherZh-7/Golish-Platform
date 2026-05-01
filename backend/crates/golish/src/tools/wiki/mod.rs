@@ -102,13 +102,16 @@ pub(super) fn is_text_searchable(name: &str) -> bool {
     is_wiki_file(name)
 }
 
-/// Resolve the on-disk wiki root: `<app-data>/wiki`.
+/// Resolve the on-disk wiki root.
+///
+/// Prefers `<project_root>/resources/wiki` when the directory exists
+/// (so wiki content can live in the repo and be pushed to GitHub);
+/// falls back to `<app-data>/wiki` otherwise.
 ///
 /// Panics if the home directory can't be determined — at this point the
 /// app has already started, so this is a configuration bug rather than
 /// something to recover from.
 pub(super) fn wiki_base_dir() -> PathBuf {
-    golish_core::paths::app_data_base()
+    golish_core::paths::wiki_dir()
         .expect("cannot resolve home directory")
-        .join("wiki")
 }

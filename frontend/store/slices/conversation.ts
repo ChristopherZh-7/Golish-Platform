@@ -7,6 +7,15 @@
 
 import type { SliceCreator } from "./types";
 
+/**
+ * Cross-slice fields accessed by conversation actions when switching
+ * the active conversation also switches the active terminal tab.
+ */
+interface ConversationStoreDraft extends ConversationState {
+  activeSessionId?: string | null;
+  tabActivationHistory?: string[];
+}
+
 export interface ChatToolCall {
   name: string;
   args: string;
@@ -116,7 +125,7 @@ export function createNewConversation(): ChatConversation {
 /**
  * Creates the conversation slice.
  */
-export const createConversationSlice: SliceCreator<ConversationSlice> = (set, get) => ({
+export const createConversationSlice: SliceCreator<ConversationSlice, ConversationStoreDraft> = (set, get) => ({
   ...initialConversationState,
 
   addConversation: (conv) =>
@@ -143,7 +152,7 @@ export const createConversationSlice: SliceCreator<ConversationSlice> = (set, ge
     }),
 
   setActiveConversation: (convId) =>
-    set((state: any) => {
+    set((state) => {
       if (state.conversations[convId]) {
         state.activeConversationId = convId;
         // 1:1 sync: switch center timeline to this conversation's terminal

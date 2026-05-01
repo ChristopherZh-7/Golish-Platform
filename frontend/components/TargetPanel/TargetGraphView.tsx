@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Network } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/api";
 import { getProjectPath } from "@/lib/projects";
 import { useGraphLayout } from "./hooks/useGraphLayout";
 import { GraphSidebar, GraphNodeDetail } from "./GraphElements";

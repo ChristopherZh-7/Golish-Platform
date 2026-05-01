@@ -197,7 +197,6 @@ async fn configure_title_gen(bridge: &mut AgentBridge) {
 }
 
 async fn configure_core_services(bridge: &mut AgentBridge, state: &AppState) {
-    bridge.set_pty_manager(state.pty_manager.clone());
     bridge.set_indexer_state(state.indexer_state.clone());
 
     let workspace_path = bridge.workspace().read().await.clone();
@@ -312,6 +311,42 @@ async fn register_visible_pty_tool(bridge: &AgentBridge, state: &AppState) {
     tracing::info!("[configure_bridge] Registered VisibleRunPtyCmdTool for visible terminal execution");
 }
 
+/// MCP tool executor that routes tool calls through the MCP manager.
+///
+/// Handles tools with the `mcp__` prefix; returns `None` for all others.
+pub(crate) struct McpManagerToolExecutor {
+    manager: Arc<golish_mcp::McpManager>,
+}
+
+impl McpManagerToolExecutor {
+    pub(crate) fn new(manager: Arc<golish_mcp::McpManager>) -> Self {
+        Self { manager }
+    }
+}
+
+#[async_trait::async_trait]
+impl golish_ai::agentic_loop::McpToolExecutor for McpManagerToolExecutor {
+    async fn execute_tool(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> Option<(serde_json::Value, bool)> {
+        if !tool_name.starts_with("mcp__") {
+            return None;
+        }
+        match self.manager.call_tool(tool_name, args.clone()).await {
+            Ok(result) => {
+                let (value, success) = golish_mcp::convert_mcp_result_to_tool_result(result);
+                Some((value, success))
+            }
+            Err(e) => {
+                tracing::error!("[mcp] Tool call failed for '{}': {}", tool_name, e);
+                Some((serde_json::json!({"error": e.to_string()}), false))
+            }
+        }
+    }
+}
+
 /// Set up MCP tool definitions and executor on a bridge from the global MCP manager.
 /// This is called during bridge configuration and also when MCP servers change.
 pub(crate) async fn setup_bridge_mcp_tools(bridge: &AgentBridge, state: &AppState) {
@@ -322,9 +357,8 @@ pub(crate) async fn setup_bridge_mcp_tools(bridge: &AgentBridge, state: &AppStat
     };
 
     let manager = Arc::clone(manager);
-    drop(manager_guard); // Release the lock
+    drop(manager_guard);
 
-    // Get all available tools from connected servers
     match manager.list_tools().await {
         Ok(tools) => {
             let tool_definitions: Vec<rig::completion::ToolDefinition> =
@@ -335,37 +369,8 @@ pub(crate) async fn setup_bridge_mcp_tools(bridge: &AgentBridge, state: &AppStat
                 tool_definitions.len()
             );
 
-            // Create executor closure that routes MCP tool calls through the manager.
-            let manager_clone = Arc::clone(&manager);
-            let executor = Arc::new(move |name: &str, args: &serde_json::Value| {
-                let manager = Arc::clone(&manager_clone);
-                let name = name.to_string();
-                let args = args.clone();
-                Box::pin(async move {
-                    if !name.starts_with("mcp__") {
-                        return None;
-                    }
-                    match manager.call_tool(&name, args).await {
-                        Ok(result) => {
-                            let (value, success) =
-                                golish_mcp::convert_mcp_result_to_tool_result(result);
-                            Some((value, success))
-                        }
-                        Err(e) => {
-                            tracing::error!("[mcp] Tool call failed for '{}': {}", name, e);
-                            let error_result = serde_json::json!({
-                                "error": e.to_string(),
-                            });
-                            Some((error_result, false))
-                        }
-                    }
-                })
-                    as std::pin::Pin<
-                        Box<
-                            dyn std::future::Future<Output = Option<(serde_json::Value, bool)>>
-                                + Send,
-                        >,
-                    >
+            let executor = Arc::new(McpManagerToolExecutor {
+                manager: Arc::clone(&manager),
             });
 
             bridge.set_mcp_tools(tool_definitions).await;

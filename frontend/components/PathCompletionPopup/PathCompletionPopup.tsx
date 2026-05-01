@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { type EntryType, getEntryIcon } from "@/lib/file-icons";
-import type { PathCompletion } from "@/lib/tauri";
+import type { PathCompletion } from "@/lib/api/shell";
 import { cn } from "@/lib/utils";
 
 interface PathCompletionPopupProps {

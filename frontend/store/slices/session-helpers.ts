@@ -6,6 +6,7 @@
  */
 
 import { getAllLeafPanes } from "@/lib/pane-utils";
+import type { SessionStoreDraft } from "./session-draft-types";
 
 // ---------------------------------------------------------------------------
 // Output buffer (module-scoped, shared across terminal / core actions)
@@ -52,8 +53,8 @@ export function deleteOutputBuffer(sessionId: string): void {
  * session id. Operates directly on the Immer draft to avoid nested set()
  * calls. Pulls `tabLayouts` (lives in the pane slice) via the merged state.
  */
-export function markTabNewActivityInDraft(state: any, sessionId: string): void {
-  const tabLayouts = state.tabLayouts as Record<string, { root: any }> | undefined;
+export function markTabNewActivityInDraft(state: SessionStoreDraft, sessionId: string): void {
+  const tabLayouts = state.tabLayouts;
   if (!tabLayouts) return;
   for (const [tabId, layout] of Object.entries(tabLayouts)) {
     const leaves = getAllLeafPanes(layout.root);
@@ -73,11 +74,11 @@ export function markTabNewActivityInDraft(state: any, sessionId: string): void {
  * `handleCommandEnd` notification dispatch). Reads `tabLayouts` from the
  * passed-in state snapshot.
  */
-export function getOwningTabIdFromState(state: any, sessionId: string): string | null {
+export function getOwningTabIdFromState(state: SessionStoreDraft, sessionId: string): string | null {
   if (state.tabLayouts?.[sessionId]) return sessionId;
-  for (const [tabId, layout] of Object.entries<any>(state.tabLayouts ?? {})) {
+  for (const [tabId, layout] of Object.entries(state.tabLayouts ?? {})) {
     const panes = getAllLeafPanes(layout.root);
-    if (panes.some((pane: any) => pane.sessionId === sessionId)) return tabId;
+    if (panes.some((pane) => pane.sessionId === sessionId)) return tabId;
   }
   return null;
 }

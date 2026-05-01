@@ -301,7 +301,7 @@ export async function disposeAllRuntimeTerminals(): Promise<void> {
 
   const [{ shutdownAiSession }, { ptyDestroy }] = await Promise.all([
     import("@/lib/ai"),
-    import("@/lib/tauri"),
+    import("@/lib/api/pty"),
   ]);
 
   for (const conv of Object.values(state.conversations)) {

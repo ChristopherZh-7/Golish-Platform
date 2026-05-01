@@ -58,6 +58,7 @@ import { useSkillEditor } from "./hooks/useSkillEditor";
 import { useGithubImport } from "./hooks/useGithubImport";
 import { OutputParserEditor, type ToolWithMeta, type ViewMode } from "./OutputParserEditor";
 import { type ActionButtonProps, GridCard, ListRow } from "./ToolCards";
+import { MarkdownEditor } from "@/components/MarkdownEditor";
 
 export function ToolManager() {
   const { t } = useTranslation();
@@ -495,32 +496,34 @@ export function ToolManager() {
                           <span className="w-1.5 h-1.5 rounded-full bg-accent/60" />
                         )}
                       </div>
-                      <button
-                        type="button"
-                        onClick={skills.handleSaveSkill}
-                        disabled={!skills.skillDirty || skills.skillSaving}
-                        className={cn(
-                          "flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium transition-colors",
-                          skills.skillDirty
-                            ? "bg-accent text-accent-foreground hover:bg-accent/90"
-                            : "text-muted-foreground/30 cursor-not-allowed"
-                        )}
-                      >
-                        {skills.skillSaving ? (
-                          <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                        ) : (
-                          <Save className="w-2.5 h-2.5" />
-                        )}
-                        {t("common.save")}
-                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={skills.handleSaveSkill}
+                          disabled={!skills.skillDirty || skills.skillSaving}
+                          className={cn(
+                            "flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium transition-colors",
+                            skills.skillDirty
+                              ? "bg-accent text-accent-foreground hover:bg-accent/90"
+                              : "text-muted-foreground/30 cursor-not-allowed"
+                          )}
+                        >
+                          {skills.skillSaving ? (
+                            <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                          ) : (
+                            <Save className="w-2.5 h-2.5" />
+                          )}
+                          {t("common.save")}
+                        </button>
+                      </div>
                     </div>
-                    <textarea
-                      value={skills.skillContent}
-                      onChange={(e) => skills.updateContent(e.target.value)}
-                      spellCheck={false}
-                      className="flex-1 w-full px-4 py-3 text-[12px] font-mono leading-[1.7] bg-transparent text-foreground outline-none resize-none"
-                      style={{ tabSize: 2 }}
-                    />
+                    <div className="flex-1 min-h-0">
+                      <MarkdownEditor
+                        editorKey={skills.activeSkillId ?? ""}
+                        value={skills.skillContent}
+                        onChange={(val) => skills.updateContent(val)}
+                      />
+                    </div>
                   </>
                 ) : (
                   <div className="flex-1 flex flex-col items-center justify-center gap-3">

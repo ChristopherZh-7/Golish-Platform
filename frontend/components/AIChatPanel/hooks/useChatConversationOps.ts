@@ -40,7 +40,7 @@ export function useChatConversationOps(createTerminalTab: CreateTerminalFn) {
       }
     }
 
-    import("@/lib/tauri").then(({ ptyDestroy }) => {
+    import("@/lib/api/pty").then(({ ptyDestroy }) => {
       for (const sid of allSessionIds) ptyDestroy(sid).catch(() => {});
     });
     for (const sid of allSessionIds) TerminalInstanceManager.dispose(sid);

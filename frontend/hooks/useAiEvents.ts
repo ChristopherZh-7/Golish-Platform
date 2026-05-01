@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { type AiEvent, onAiEvent, signalFrontendReady } from "@/lib/ai";
 import { logger } from "@/lib/logger";
 import { useStore } from "@/store";
-import { dispatchEvent, type EventHandlerContext } from "./ai-events";
+import { dispatchEvent, type EventHandlerContext } from "@/services/ai-events";
 import {
   pendingTextBatches,
   scheduledTextBatchFlush,

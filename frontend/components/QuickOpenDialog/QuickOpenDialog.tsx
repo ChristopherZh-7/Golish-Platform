@@ -2,7 +2,7 @@ import { FileText } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useFileEditorSidebar } from "@/hooks/useFileEditorSidebar";
-import { type FileInfo, listWorkspaceFiles } from "@/lib/tauri";
+import { type FileInfo, listWorkspaceFiles } from "@/lib/api/files";
 import { cn } from "@/lib/utils";
 import { useFocusedSessionId, useStore } from "@/store";
 

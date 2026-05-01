@@ -1463,7 +1463,7 @@ export async function mockFullPlanExecution(): Promise<void> {
 /**
  * Simulate AI executing multiple tool calls (auto-approved) that appear as
  * compact badges in the right chat and as ToolExecutionCards in the center
- * ToolDetailView. Click the badges to navigate.
+ * panel. Click the badges to navigate.
  * Call from console: __mockRunCommand()
  */
 export async function mockRunCommandApproval(): Promise<void> {
@@ -1600,7 +1600,7 @@ export async function mockRunCommandApproval(): Promise<void> {
     output_tokens: 200,
   });
 
-  console.log("[mockRunCommand] Done! You should see tool badges (Shell, Read, Shell) in the right chat. Click them to open ToolDetailView in the center.");
+  console.log("[mockRunCommand] Done! You should see tool badges (Shell, Read, Shell) in the right chat. Click them to open the tool detail panel in the center.");
 }
 
 // =============================================================================

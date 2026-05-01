@@ -310,7 +310,6 @@ impl AgentBridge {
                 indexer_state: None,
                 sidecar_state: None,
                 settings_manager: None,
-                pty_manager: None,
             },
             access: BridgeAccessControl {
                 approval_recorder,

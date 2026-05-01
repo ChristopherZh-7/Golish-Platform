@@ -30,7 +30,7 @@ export const ChatModelSelector = memo(function ChatModelSelector({
   const filtered = PROVIDER_GROUPS.filter((g) => configuredProviders.has(g.provider));
 
   return (
-    <DropdownMenu>
+    <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"

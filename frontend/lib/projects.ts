@@ -5,7 +5,7 @@
  * Each directory contains config.toml and workspace.json.
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/api/client";
 import { useStore } from "@/store";
 
 /** Get the current project's root path from the store. */

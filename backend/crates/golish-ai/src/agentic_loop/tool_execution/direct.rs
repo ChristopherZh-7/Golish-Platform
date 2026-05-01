@@ -151,7 +151,7 @@ where
     }
 
     if let Some(ref executor) = ctx.custom_tool_executor {
-        if let Some((value, success)) = executor(tool_name, tool_args).await {
+        if let Some((value, success)) = executor.execute_tool(tool_name, tool_args).await {
             return Ok(ToolExecutionResult { value, success });
         }
     }

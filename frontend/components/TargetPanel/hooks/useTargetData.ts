@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/api/client";
 import { emit, listen } from "@tauri-apps/api/event";
 import { logAudit } from "@/lib/audit";
 import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";

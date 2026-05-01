@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { liveTerminalManager } from "@/lib/terminal";
-import { ptyWrite } from "@/lib/tauri";
+import { ptyWrite } from "@/lib/api/pty";
 import "@xterm/xterm/css/xterm.css";
 import "@/styles/xterm-overrides.css";
 

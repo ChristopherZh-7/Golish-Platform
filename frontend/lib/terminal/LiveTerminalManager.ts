@@ -95,6 +95,7 @@ class LiveTerminalManagerClass {
       scrollback: 500,
       convertEol: true,
       allowProposedApi: true,
+      allowTransparency: true,
     });
 
     // Create addons

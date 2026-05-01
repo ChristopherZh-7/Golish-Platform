@@ -42,7 +42,7 @@ import {
   type ProjectFormData,
   saveProject,
 } from "@/lib/projects";
-import { deleteWorktree } from "@/lib/tauri";
+import { deleteWorktree } from "@/lib/api/git";
 import { disposeAllRuntimeTerminals } from "@/lib/terminal-restore";
 import { openProject, useStore } from "@/store";
 import { NewWorktreeModal } from "./NewWorktreeModal";

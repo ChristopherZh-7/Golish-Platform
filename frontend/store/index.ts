@@ -195,7 +195,7 @@ export const useStore = create<GolishState>()(
       pendingTerminalRestoreData: null,
       setPendingTerminalRestoreData: (data) =>
         set((state) => {
-          state.pendingTerminalRestoreData = data as any;
+          state.pendingTerminalRestoreData = data;
         }),
 
       chatPanelVisible: true,

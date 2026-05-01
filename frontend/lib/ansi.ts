@@ -72,27 +72,18 @@ export function stripOscSequences(str: string): string {
     result = result.replace(/\n\x1b\[\d*A(?:\x1b\[\d*K)*/g, "\r");
   } while (result !== prev);
 
-  // Strip remaining CSI cursor movement sequences that don't translate to static HTML.
-  // These are used by npm/pnpm/yarn for progress animations but cause display issues
-  // when rendered statically. We preserve SGR (color) sequences for ansi-to-react.
+  // Strip ALL non-SGR CSI sequences while keeping \x1b[...m (colors/styles).
+  // Covers cursor movement, erase, DEC private modes, bracketed paste, etc.
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping non-SGR CSI sequences
+  result = result.replace(/\x1b\[[0-9;?]*[a-ln-zA-Z]/g, "");
 
-  // Cursor movement: \x1b[nA (up), \x1b[nB (down), \x1b[nC (forward), \x1b[nD (back)
-  result = result.replace(/\x1b\[\d*[ABCD]/g, "");
+  // Character set selection: \x1b(B, \x1b)0, etc.
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping character set escapes
+  result = result.replace(/\x1b[()][A-Z0-9]/g, "");
 
-  // Cursor position: \x1b[n;mH, \x1b[n;mf (move to row;col)
-  result = result.replace(/\x1b\[\d*(?:;\d*)?[Hf]/g, "");
-
-  // Erase sequences: \x1b[K (erase to EOL), \x1b[2K (erase line), \x1b[J (erase screen)
-  result = result.replace(/\x1b\[\d*[JK]/g, "");
-
-  // Cursor visibility: \x1b[?25l (hide), \x1b[?25h (show)
-  result = result.replace(/\x1b\[\?25[lh]/g, "");
-
-  // Cursor save/restore: \x1b[s, \x1b[u (CSI), \x1b7, \x1b8 (DEC)
-  result = result.replace(/\x1b\[[su]|\x1b[78]/g, "");
-
-  // DEC synchronized output markers: \x1b[?2026h, \x1b[?2026l
-  result = result.replace(/\x1b\[\?2026[hl]/g, "");
+  // Bare ESC sequences: cursor save/restore, ST, keypad modes, etc.
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping bare ESC sequences
+  result = result.replace(/\x1b[78\\=>#]/g, "");
 
   // Simulate carriage return behavior: \r moves cursor to beginning of line,
   // so subsequent text overwrites previous content. We process line by line,

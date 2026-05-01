@@ -93,7 +93,7 @@ export function useChatSend(opts: UseChatSendOptions) {
 
     if (activeTermId) {
       try {
-        const { setActiveTerminalSession } = await import("@/lib/tauri");
+        const { setActiveTerminalSession } = await import("@/lib/api/pty");
         await setActiveTerminalSession(activeTermId);
       } catch { /* ignore */ }
     }

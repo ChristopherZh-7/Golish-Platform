@@ -247,19 +247,8 @@ where
     })
 }
 
-/// Type alias for a custom tool executor function.
-///
-/// Takes (tool_name, tool_args) and returns Some((result, success)) if handled,
-/// None if not handled (falls through to standard executors).
-pub type CustomToolExecutor = Arc<
-    dyn Fn(
-            &str,
-            &serde_json::Value,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Option<(serde_json::Value, bool)>> + Send>,
-        > + Send
-        + Sync,
->;
+/// Type alias for a custom tool executor (re-exports the trait-based type).
+pub type CustomToolExecutor = Arc<dyn crate::agentic_loop::McpToolExecutor>;
 
 /// Run the unified agentic loop with custom tools for evaluation purposes.
 ///
