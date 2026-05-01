@@ -6,9 +6,9 @@
 //!
 //! All public items are re-exported at the parent [`crate::commands`] level.
 
-mod ime;
-mod logging;
-mod themes;
+pub mod ime;
+pub mod logging;
+pub mod themes;
 
 pub use ime::*;
 pub use logging::*;
