@@ -1,4 +1,4 @@
-use golish_db::DbReadyGate;
+use golish_core::DbReadyGate;
 
 /// Convert a Vec<f32> into pgvector's text format: `[0.1,0.2,...]`
 pub(super) fn vec_to_pgvector(v: &[f32]) -> String {

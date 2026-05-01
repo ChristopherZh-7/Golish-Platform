@@ -12,8 +12,7 @@ use uuid::Uuid;
 
 use golish_core::events::AiEvent;
 use golish_core::plan::{PlanStep, PlanSummary, StepStatus};
-use golish_db::models::{SubtaskStatus, TaskStatus};
-use golish_db::repo::{subtasks, tasks};
+use crate::db_traits::{DbRepoProvider, SubtaskStatus, TaskStatus, NewTask};
 
 use super::helpers::parse_agent_type;
 use super::types::{AgentExecutor, PlannedSubtask};
@@ -32,25 +31,24 @@ use super::types::{AgentExecutor, PlannedSubtask};
 /// - **Enricher**: After each subtask, searches for additional context to inject.
 pub struct TaskOrchestrator {
     pub(super) pool: Arc<sqlx::PgPool>,
+    pub(super) repo: Arc<dyn DbRepoProvider>,
     pub(super) session_id: Uuid,
     pub(super) event_tx: mpsc::UnboundedSender<AiEvent>,
-    /// Channel for receiving user input when a subtask is paused.
-    /// The orchestrator sends a `SubtaskWaitingForInput` event and blocks
-    /// on this receiver until the user provides input.
     pub(super) user_input_rx: Option<mpsc::UnboundedReceiver<String>>,
-    /// Sender side kept so callers can feed user input to the orchestrator.
     user_input_tx: mpsc::UnboundedSender<String>,
 }
 
 impl TaskOrchestrator {
     pub fn new(
         pool: Arc<sqlx::PgPool>,
+        repo: Arc<dyn DbRepoProvider>,
         session_id: Uuid,
         event_tx: mpsc::UnboundedSender<AiEvent>,
     ) -> Self {
         let (user_input_tx, user_input_rx) = mpsc::unbounded_channel();
         Self {
             pool,
+            repo,
             session_id,
             event_tx,
             user_input_rx: Some(user_input_rx),
@@ -72,18 +70,15 @@ impl TaskOrchestrator {
         task_input: &str,
         executor: &dyn AgentExecutor,
     ) -> Result<String> {
-        let task = tasks::create(
-            &self.pool,
-            golish_db::models::NewTask {
-                session_id: self.session_id,
-                title: None,
-                input: task_input.to_string(),
-            },
-        )
+        let task = self.repo.task_create(NewTask {
+            session_id: self.session_id,
+            title: None,
+            input: task_input.to_string(),
+        })
         .await
         .context("Failed to create task")?;
 
-        tasks::update_status(&self.pool, task.id, TaskStatus::Running).await?;
+        self.repo.task_update_status(task.id, TaskStatus::Running).await?;
 
         self.emit(AiEvent::TaskProgress {
             task_id: task.id.to_string(),

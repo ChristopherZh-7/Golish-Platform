@@ -26,6 +26,7 @@ pub mod os;
 pub mod paths;
 pub mod plan;
 pub mod prompt;
+pub mod ready_gate;
 pub mod utils;
 
 // Re-exports
@@ -48,5 +49,6 @@ pub use session::{
     find_session_by_identifier, list_recent_sessions, MessageContent, MessageRole, SessionArchive,
     SessionArchiveMetadata, SessionListing, SessionMessage, SessionSnapshot,
 };
+pub use ready_gate::DbReadyGate;
 pub use tool::Tool;
 pub use tool_name::{ToolCategory, ToolName};
