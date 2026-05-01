@@ -71,9 +71,7 @@ export async function convDelete(conversationId: string): Promise<void> {
   await invoke("conv_delete", { conversationId });
 }
 
-export async function convList(
-  projectPath?: string | null
-): Promise<ConversationRow[]> {
+export async function convList(projectPath?: string | null): Promise<ConversationRow[]> {
   return invoke<ConversationRow[]>("conv_list", {
     projectPath: projectPath ?? null,
   });
@@ -88,9 +86,7 @@ export async function convSaveMessages(
   await invoke("conv_save_messages", { conversationId, messages });
 }
 
-export async function convLoadMessages(
-  conversationId: string
-): Promise<ChatMessageRow[]> {
+export async function convLoadMessages(conversationId: string): Promise<ChatMessageRow[]> {
   return invoke<ChatMessageRow[]>("conv_load_messages", { conversationId });
 }
 
@@ -104,23 +100,17 @@ export async function convSaveTimeline(
   await invoke("conv_save_timeline", { sessionId, conversationId, blocks });
 }
 
-export async function convLoadTimeline(
-  sessionId: string
-): Promise<TimelineBlockRow[]> {
+export async function convLoadTimeline(sessionId: string): Promise<TimelineBlockRow[]> {
   return invoke<TimelineBlockRow[]>("conv_load_timeline", { sessionId });
 }
 
 // ─── Terminal State ──────────────────────────────────────────────────────────
 
-export async function convSaveTerminalState(
-  terminal: TerminalStateRow
-): Promise<void> {
+export async function convSaveTerminalState(terminal: TerminalStateRow): Promise<void> {
   await invoke("conv_save_terminal_state", { terminal });
 }
 
-export async function convLoadTerminalStates(
-  conversationId: string
-): Promise<TerminalStateRow[]> {
+export async function convLoadTerminalStates(conversationId: string): Promise<TerminalStateRow[]> {
   return invoke<TerminalStateRow[]>("conv_load_terminal_states", {
     conversationId,
   });
@@ -148,9 +138,7 @@ export interface ConvBatchSavePayload {
   preferences: WorkspacePreferences;
 }
 
-export async function convSaveBatch(
-  payload: ConvBatchSavePayload
-): Promise<void> {
+export async function convSaveBatch(payload: ConvBatchSavePayload): Promise<void> {
   await invoke("conv_save_batch", { payload });
 }
 

@@ -1,6 +1,6 @@
+import { ChevronDown, Cpu } from "lucide-react";
 import { memo } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, Cpu } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -74,7 +74,7 @@ export const ChatModelSelector = memo(function ChatModelSelector({
                       "text-xs cursor-pointer",
                       isSelected
                         ? "text-accent bg-[var(--accent-dim)]"
-                        : "text-foreground hover:text-accent",
+                        : "text-foreground hover:text-accent"
                     )}
                   >
                     {model.name}

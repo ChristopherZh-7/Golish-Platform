@@ -99,9 +99,7 @@ export interface CaptureOverview {
   toolOutputs: string[];
 }
 
-export async function getPentestConfig(
-  projectName: string,
-): Promise<PentestProjectConfig | null> {
+export async function getPentestConfig(projectName: string): Promise<PentestProjectConfig | null> {
   return invoke<PentestProjectConfig | null>("get_pentest_config", {
     projectName,
   });
@@ -109,14 +107,12 @@ export async function getPentestConfig(
 
 export async function savePentestConfig(
   projectName: string,
-  config: PentestProjectConfig,
+  config: PentestProjectConfig
 ): Promise<void> {
   await invoke("save_pentest_config", { projectName, config });
 }
 
-export async function listCaptures(
-  projectName: string,
-): Promise<CaptureOverview> {
+export async function listCaptures(projectName: string): Promise<CaptureOverview> {
   return invoke<CaptureOverview>("list_captures", { projectName });
 }
 
@@ -124,7 +120,7 @@ export async function listCaptureFiles(
   projectName: string,
   host: string,
   port: number,
-  fileType: string,
+  fileType: string
 ): Promise<string[]> {
   return invoke<string[]>("list_capture_files", {
     projectName,
@@ -134,21 +130,14 @@ export async function listCaptureFiles(
   });
 }
 
-export async function readProjectFile(
-  projectName: string,
-  relPath: string,
-): Promise<string> {
+export async function readProjectFile(projectName: string, relPath: string): Promise<string> {
   return invoke<string>("read_project_file", { projectName, relPath });
 }
 
-export async function initProjectStructure(
-  projectName: string,
-): Promise<void> {
+export async function initProjectStructure(projectName: string): Promise<void> {
   await invoke("init_project_structure", { projectName });
 }
 
-export async function cleanProjectTemp(
-  projectName: string,
-): Promise<number> {
+export async function cleanProjectTemp(projectName: string): Promise<number> {
   return invoke<number>("clean_project_temp", { projectName });
 }

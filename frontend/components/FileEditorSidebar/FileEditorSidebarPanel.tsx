@@ -16,11 +16,11 @@ import { golishTheme } from "@/lib/codemirror-theme";
 import { cn } from "@/lib/utils";
 import { useFocusedSessionId, useStore } from "@/store";
 import { useFileEditorSidebarStore } from "@/store/file-editor-sidebar";
+import { EditablePathBar, FileOpenPrompt, MarkdownPreview } from "./EditorPanels";
 import { FileBrowser } from "./FileBrowser";
 import { FileConflictBanner } from "./FileConflictBanner";
 import { TabBar } from "./TabBar";
-import { setVimCallbacks, registerVimCommands } from "./VimCommands";
-import { MarkdownPreview, EditablePathBar, FileOpenPrompt } from "./EditorPanels";
+import { registerVimCommands, setVimCallbacks } from "./VimCommands";
 
 interface FileEditorSidebarPanelProps {
   open: boolean;

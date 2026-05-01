@@ -3,6 +3,7 @@
 //! These commands expose the settings system to the frontend, allowing
 //! the UI to read and update configuration.
 
+use crate::error::GolishError;
 use tauri::State;
 
 use crate::state::AppState;
@@ -11,7 +12,7 @@ use golish_settings::GolishSettings;
 
 /// Get all settings.
 #[tauri::command]
-pub async fn get_settings(state: State<'_, AppState>) -> Result<GolishSettings, String> {
+pub async fn get_settings(state: State<'_, AppState>) -> Result<GolishSettings, GolishError> {
     Ok(state.settings_manager.get().await)
 }
 
@@ -20,12 +21,12 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<GolishSettings, 
 pub async fn update_settings(
     state: State<'_, AppState>,
     settings: GolishSettings,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     state
         .settings_manager
         .update(settings)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// Get a specific setting by key (dot notation: "ai.vertex_ai.project_id").
@@ -33,12 +34,12 @@ pub async fn update_settings(
 pub async fn get_setting(
     state: State<'_, AppState>,
     key: String,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, GolishError> {
     state
         .settings_manager
         .get_value(&key)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// Set a specific setting by key.
@@ -47,22 +48,22 @@ pub async fn set_setting(
     state: State<'_, AppState>,
     key: String,
     value: serde_json::Value,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     state
         .settings_manager
         .set_value(&key, value)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// Reset all settings to defaults.
 #[tauri::command]
-pub async fn reset_settings(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn reset_settings(state: State<'_, AppState>) -> Result<(), GolishError> {
     state
         .settings_manager
         .reset()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// Check if settings file exists.
@@ -79,12 +80,12 @@ pub fn get_settings_path(state: State<'_, AppState>) -> String {
 
 /// Reload settings from disk.
 #[tauri::command]
-pub async fn reload_settings(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn reload_settings(state: State<'_, AppState>) -> Result<(), GolishError> {
     state
         .settings_manager
         .reload()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// Save window state (size, position, maximized).
@@ -98,7 +99,7 @@ pub async fn save_window_state(
     x: Option<i32>,
     y: Option<i32>,
     maximized: bool,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let mut settings = state.settings_manager.get().await;
     settings.ui.window.width = width;
     settings.ui.window.height = height;
@@ -110,7 +111,7 @@ pub async fn save_window_state(
         .settings_manager
         .update(settings)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// Get window state from settings.
@@ -119,7 +120,7 @@ pub async fn save_window_state(
 #[tauri::command]
 pub async fn get_window_state(
     state: State<'_, AppState>,
-) -> Result<golish_settings::WindowSettings, String> {
+) -> Result<golish_settings::WindowSettings, GolishError> {
     let settings = state.settings_manager.get().await;
     Ok(settings.ui.window)
 }

@@ -4,17 +4,18 @@ import type { StepStatus } from "./StepStatus";
 /**
  * A single step in the plan.
  */
-export type PlanStep = { 
-/**
- * Stable unique identifier for this step (UUID).
- * Persists across plan updates so tool executions remain linked.
- */
-id?: string | null, 
-/**
- * Description of what this step accomplishes.
- */
-step: string, 
-/**
- * Current status of this step.
- */
-status: StepStatus, };
+export type PlanStep = {
+  /**
+   * Stable unique identifier for this step (UUID).
+   * Persists across plan updates so tool executions remain linked.
+   */
+  id?: string | null;
+  /**
+   * Description of what this step accomplishes.
+   */
+  step: string;
+  /**
+   * Current status of this step.
+   */
+  status: StepStatus;
+};

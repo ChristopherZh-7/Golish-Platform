@@ -1,9 +1,15 @@
 import { AlertTriangle, BookOpen, Code, Shield } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { TopTab } from "./types";
-import { useTranslation } from "react-i18next";
 
-export function VulnKbTopBar({ activeTab, onTabChange }: { activeTab: TopTab; onTabChange: (tab: TopTab) => void }) {
+export function VulnKbTopBar({
+  activeTab,
+  onTabChange,
+}: {
+  activeTab: TopTab;
+  onTabChange: (tab: TopTab) => void;
+}) {
   const { t } = useTranslation();
   const tabs: { id: TopTab; icon: typeof Shield; label: string }[] = [
     { id: "intel", icon: Shield, label: t("vulnKb.intelTab", "Intel") },
@@ -21,7 +27,9 @@ export function VulnKbTopBar({ activeTab, onTabChange }: { activeTab: TopTab; on
           onClick={() => onTabChange(tab.id)}
           className={cn(
             "flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors",
-            activeTab === tab.id ? "bg-accent/15 text-accent" : "text-muted-foreground/40 hover:text-foreground hover:bg-muted/10"
+            activeTab === tab.id
+              ? "bg-accent/15 text-accent"
+              : "text-muted-foreground/40 hover:text-foreground hover:bg-muted/10"
           )}
         >
           <tab.icon className="w-3 h-3" />
@@ -31,4 +39,3 @@ export function VulnKbTopBar({ activeTab, onTabChange }: { activeTab: TopTab; on
     </div>
   );
 }
-

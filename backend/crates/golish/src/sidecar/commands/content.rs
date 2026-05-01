@@ -1,5 +1,6 @@
 //! Read-only commands exposing per-session content (state.md, log.md, metadata).
 
+use crate::error::GolishError;
 use crate::state::AppState;
 use tauri::State;
 
@@ -10,24 +11,24 @@ use super::super::session::{Session, SessionMeta};
 pub async fn sidecar_get_session_state(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     state
         .sidecar_state
         .get_session_state(&session_id)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// Get the injectable context for the current session
 #[tauri::command]
 pub async fn sidecar_get_injectable_context(
     state: State<'_, AppState>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, GolishError> {
     state
         .sidecar_state
         .get_injectable_context()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// Get the metadata for a session
@@ -35,22 +36,22 @@ pub async fn sidecar_get_injectable_context(
 pub async fn sidecar_get_session_meta(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<SessionMeta, String> {
+) -> Result<SessionMeta, GolishError> {
     state
         .sidecar_state
         .get_session_meta(&session_id)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// List all sessions
 #[tauri::command]
-pub async fn sidecar_list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionMeta>, String> {
+pub async fn sidecar_list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionMeta>, GolishError> {
     state
         .sidecar_state
         .list_sessions()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// Get the session log (append-only event log)
@@ -58,11 +59,11 @@ pub async fn sidecar_list_sessions(state: State<'_, AppState>) -> Result<Vec<Ses
 pub async fn sidecar_get_session_log(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     let sessions_dir = state.sidecar_state.config().sessions_dir();
     let session = Session::load(&sessions_dir, &session_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
-    session.read_log().await.map_err(|e| e.to_string())
+    session.read_log().await.map_err(GolishError::from)
 }

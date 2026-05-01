@@ -38,7 +38,7 @@ export function ToolParamsPanel({
                 ? "bg-accent/20 text-accent border border-accent/30 hover:bg-destructive/20 hover:text-destructive hover:border-destructive/30"
                 : p.required
                   ? "bg-accent/15 text-accent border border-accent/30 hover:bg-accent/25"
-                  : "bg-muted/40 text-muted-foreground hover:bg-muted/60",
+                  : "bg-muted/40 text-muted-foreground hover:bg-muted/60"
             )}
             onClick={() => {
               const ta = textareaRef.current;
@@ -48,17 +48,13 @@ export function ToolParamsPanel({
                 let newInput = input;
                 if (p.type === "boolean") {
                   newInput = newInput.replace(
-                    new RegExp(
-                      `\\s*${p.flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
-                    ),
-                    "",
+                    new RegExp(`\\s*${p.flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`),
+                    ""
                   );
                 } else {
                   newInput = newInput.replace(
-                    new RegExp(
-                      `\\s*${p.flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+\\S*`,
-                    ),
-                    "",
+                    new RegExp(`\\s*${p.flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+\\S*`),
+                    ""
                   );
                 }
                 setInput(newInput.trim());
@@ -180,7 +176,7 @@ export function SendButton({ onSubmit, disabled }: SendButtonProps) {
         "transition-all duration-150",
         !disabled
           ? "text-foreground hover:text-foreground/70"
-          : "text-muted-foreground/40 cursor-not-allowed",
+          : "text-muted-foreground/40 cursor-not-allowed"
       )}
     >
       <SendHorizontal className="w-3.5 h-3.5" />

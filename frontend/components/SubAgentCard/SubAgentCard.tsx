@@ -9,12 +9,12 @@ import {
   Wand2,
   XCircle,
 } from "lucide-react";
-import { memo, useEffect, useRef, useState, type ReactElement } from "react";
+import { memo, type ReactElement, useEffect, useRef, useState } from "react";
 import { Markdown } from "@/components/Markdown";
 import { AnchorChip } from "@/components/ui/AnchorChip";
-import { StatusIcon } from "@/components/ui/StatusIcon";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { StatusIcon } from "@/components/ui/StatusIcon";
 import { stripAllAnsi } from "@/lib/ansi";
 import { getAgentColor, getAgentIcon } from "@/lib/sub-agent-theme";
 import { formatDurationShort } from "@/lib/time";
@@ -29,7 +29,10 @@ import { SubAgentDetailsModal } from "./SubAgentDetailsModal";
 function cleanSubAgentText(text: string): string {
   return stripAllAnsi(
     text
-      .replace(/<\/?(task_assignment|original_request|execution_plan|execution_context|prior_knowledge)>/gi, "")
+      .replace(
+        /<\/?(task_assignment|original_request|execution_plan|execution_context|prior_knowledge)>/gi,
+        ""
+      )
       .replace(/<function=[^>]*>[\s\S]*?(?:<\/function>|$)/g, "")
       .replace(/<parameter=[^>]*>[\s\S]*?<\/parameter>/g, "")
       .replace(/<\/?(?:function|parameter)[^>]*>/g, "")
@@ -70,14 +73,20 @@ const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall
   const preRef = useRef<HTMLPreElement>(null);
   const rawStatus = tool.status as string;
   const status: "running" | "completed" | "error" | "interrupted" =
-    rawStatus === "completed" ? "completed" : rawStatus === "error" ? "error" : rawStatus === "interrupted" ? "interrupted" : "running";
+    rawStatus === "completed"
+      ? "completed"
+      : rawStatus === "error"
+        ? "error"
+        : rawStatus === "interrupted"
+          ? "interrupted"
+          : "running";
   const isStreaming = isShellCmd && tool.status === "running" && !!tool.streamingOutput;
 
   useEffect(() => {
     if (isStreaming && preRef.current) {
       preRef.current.scrollTop = preRef.current.scrollHeight;
     }
-  }, [isStreaming, tool.streamingOutput]);
+  }, [isStreaming]);
 
   const primaryArg = (() => {
     const args = tool.args;
@@ -98,8 +107,7 @@ const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall
     const r = tool.result as Record<string, unknown>;
     return (r.stdout as string) || (r.output as string) || null;
   })();
-  const argsPreview: string =
-    JSON.stringify(tool.args ?? null, null, 2) ?? String(tool.args ?? "");
+  const argsPreview: string = JSON.stringify(tool.args ?? null, null, 2) ?? String(tool.args ?? "");
   const resultPreview: string =
     typeof tool.result === "string"
       ? tool.result
@@ -109,9 +117,7 @@ const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall
     return (
       <div>
         <span className="text-muted-foreground">Args:</span>
-        <pre className="mt-0.5 rounded bg-muted px-2 py-1 text-[10px]">
-          {argsPreview}
-        </pre>
+        <pre className="mt-0.5 rounded bg-muted px-2 py-1 text-[10px]">{argsPreview}</pre>
       </div>
     );
   };
@@ -139,9 +145,7 @@ const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall
         {isShellCmd ? (
           <Terminal className="h-3 w-3 text-[var(--ansi-green)] flex-shrink-0" />
         ) : null}
-        <span className="font-mono text-[var(--ansi-cyan)]">
-          {isShellCmd ? "" : tool.name}
-        </span>
+        <span className="font-mono text-[var(--ansi-cyan)]">{isShellCmd ? "" : tool.name}</span>
         {primaryArg && (
           <span
             className={cn(
@@ -170,7 +174,7 @@ const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall
               ref={preRef}
               className={cn(
                 "max-h-48 overflow-auto whitespace-pre-wrap rounded bg-[var(--ansi-black)]/20 px-2 py-1.5 text-[10px] font-mono text-foreground/80",
-                isStreaming && "border-l-2 border-[var(--ansi-blue)]",
+                isStreaming && "border-l-2 border-[var(--ansi-blue)]"
               )}
             >
               {shellOutput.length > 3000
@@ -186,11 +190,14 @@ const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: SubAgentToolCall
           {renderResultSection() as any}
 
           {/* Shell error output */}
-          {isShellCmd && tool.result && typeof tool.result === "object" && (tool.result as Record<string, unknown>).error && (
-            <div className="rounded bg-[var(--ansi-red)]/10 px-2 py-1 text-[10px] text-[var(--ansi-red)]">
-              {String((tool.result as Record<string, unknown>).error)}
-            </div>
-          )}
+          {isShellCmd &&
+            tool.result &&
+            typeof tool.result === "object" &&
+            (tool.result as Record<string, unknown>).error && (
+              <div className="rounded bg-[var(--ansi-red)]/10 px-2 py-1 text-[10px] text-[var(--ansi-red)]">
+                {String((tool.result as Record<string, unknown>).error)}
+              </div>
+            )}
         </div>
       </CollapsibleContent>
     </Collapsible>
@@ -265,7 +272,10 @@ function InterleavedEntries({
 const CompactSubAgentCard = memo(function CompactSubAgentCard({
   subAgent,
   sessionId,
-}: { subAgent: ActiveSubAgent; sessionId?: string | null }) {
+}: {
+  subAgent: ActiveSubAgent;
+  sessionId?: string | null;
+}) {
   const [isExpanded, setIsExpanded] = useState(subAgent.status === "running");
   const [showAll, setShowAll] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
@@ -276,74 +286,72 @@ const CompactSubAgentCard = memo(function CompactSubAgentCard({
 
   return (
     <>
-    <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
-      <div className="flex items-center gap-0.5">
-        <CollapsibleTrigger className="group flex flex-1 items-center gap-1.5 rounded px-1 py-0.5 text-xs hover:bg-accent/50 min-w-0">
-          {isExpanded ? (
-            <ChevronDown className="h-3 w-3 text-muted-foreground flex-shrink-0" />
-          ) : (
-            <ChevronRight className="h-3 w-3 text-muted-foreground flex-shrink-0" />
-          )}
-          <StatusIcon status={subAgent.status} size="sm" />
-          <AgentIcon className="h-3 w-3 flex-shrink-0" style={{ color: agentColor }} />
-          <span className="font-mono text-[var(--ansi-cyan)] truncate">
-            {subAgent.agentName || subAgent.agentId}
-          </span>
-          <AnchorChip sessionId={sessionId} requestId={subAgent.parentRequestId} />
-          {totalToolCalls > 0 && (
-            <span className="text-[10px] text-muted-foreground flex-shrink-0">
-              {totalToolCalls} tool{totalToolCalls > 1 ? "s" : ""}
+      <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
+        <div className="flex items-center gap-0.5">
+          <CollapsibleTrigger className="group flex flex-1 items-center gap-1.5 rounded px-1 py-0.5 text-xs hover:bg-accent/50 min-w-0">
+            {isExpanded ? (
+              <ChevronDown className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+            ) : (
+              <ChevronRight className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+            )}
+            <StatusIcon status={subAgent.status} size="sm" />
+            <AgentIcon className="h-3 w-3 flex-shrink-0" style={{ color: agentColor }} />
+            <span className="font-mono text-[var(--ansi-cyan)] truncate">
+              {subAgent.agentName || subAgent.agentId}
             </span>
-          )}
-          {subAgent.durationMs !== undefined && (
-            <span className="ml-auto text-[10px] text-muted-foreground flex-shrink-0">
-              {formatDurationShort(subAgent.durationMs)}
-            </span>
-          )}
-        </CollapsibleTrigger>
-        <button
-          type="button"
-          onClick={() => setShowDetailsModal(true)}
-          className="p-0.5 hover:bg-accent/50 rounded transition-colors flex-shrink-0"
-          title="View details"
-        >
-          <Maximize2 className="w-3 h-3 text-muted-foreground hover:text-foreground" />
-        </button>
-      </div>
+            <AnchorChip sessionId={sessionId} requestId={subAgent.parentRequestId} />
+            {totalToolCalls > 0 && (
+              <span className="text-[10px] text-muted-foreground flex-shrink-0">
+                {totalToolCalls} tool{totalToolCalls > 1 ? "s" : ""}
+              </span>
+            )}
+            {subAgent.durationMs !== undefined && (
+              <span className="ml-auto text-[10px] text-muted-foreground flex-shrink-0">
+                {formatDurationShort(subAgent.durationMs)}
+              </span>
+            )}
+          </CollapsibleTrigger>
+          <button
+            type="button"
+            onClick={() => setShowDetailsModal(true)}
+            className="p-0.5 hover:bg-accent/50 rounded transition-colors flex-shrink-0"
+            title="View details"
+          >
+            <Maximize2 className="w-3 h-3 text-muted-foreground hover:text-foreground" />
+          </button>
+        </div>
 
-      <CollapsibleContent className="pl-5 pr-1 pb-0.5">
-        {hasEntries ? (
-          <InterleavedEntries
-            entries={subAgent.entries}
-            toolCalls={subAgent.toolCalls}
-            showAll={showAll}
-            onToggleShowAll={() => setShowAll((v) => !v)}
-          />
-        ) : (
-          subAgent.toolCalls.slice(-3).map((tool) => (
-            <ToolCallRow key={tool.id} tool={tool} />
-          ))
-        )}
-              {subAgent.status === "completed" && subAgent.response && (
-                <div className="text-[10px] text-muted-foreground line-clamp-2 border-t border-border/30 pt-0.5 mt-0.5">
-                  <Markdown
-                    content={cleanSubAgentText(
-                      subAgent.response.length > 200
-                        ? `${subAgent.response.slice(0, 200)}...`
-                        : subAgent.response
-                    )}
-                    className="text-[10px] [&_p]:mb-0"
-                  />
-                </div>
-              )}
-        {subAgent.error && (
-          <div className="text-[10px] text-[var(--ansi-red)] mt-0.5">Error: {subAgent.error}</div>
-        )}
-      </CollapsibleContent>
-    </Collapsible>
-    {showDetailsModal && (
-      <SubAgentDetailsModal subAgent={subAgent} onClose={() => setShowDetailsModal(false)} />
-    )}
+        <CollapsibleContent className="pl-5 pr-1 pb-0.5">
+          {hasEntries ? (
+            <InterleavedEntries
+              entries={subAgent.entries}
+              toolCalls={subAgent.toolCalls}
+              showAll={showAll}
+              onToggleShowAll={() => setShowAll((v) => !v)}
+            />
+          ) : (
+            subAgent.toolCalls.slice(-3).map((tool) => <ToolCallRow key={tool.id} tool={tool} />)
+          )}
+          {subAgent.status === "completed" && subAgent.response && (
+            <div className="text-[10px] text-muted-foreground line-clamp-2 border-t border-border/30 pt-0.5 mt-0.5">
+              <Markdown
+                content={cleanSubAgentText(
+                  subAgent.response.length > 200
+                    ? `${subAgent.response.slice(0, 200)}...`
+                    : subAgent.response
+                )}
+                className="text-[10px] [&_p]:mb-0"
+              />
+            </div>
+          )}
+          {subAgent.error && (
+            <div className="text-[10px] text-[var(--ansi-red)] mt-0.5">Error: {subAgent.error}</div>
+          )}
+        </CollapsibleContent>
+      </Collapsible>
+      {showDetailsModal && (
+        <SubAgentDetailsModal subAgent={subAgent} onClose={() => setShowDetailsModal(false)} />
+      )}
     </>
   );
 });
@@ -376,7 +384,7 @@ const FullSubAgentCard = memo(function FullSubAgentCard({
   highlighted = false,
   sessionId,
 }: Omit<SubAgentCardProps, "compact">) {
-  const defaultExpanded = autoCollapse ? false : highlighted ? true : true;
+  const defaultExpanded = !autoCollapse;
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const prevStatusRef = useRef(subAgent.status);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -402,7 +410,11 @@ const FullSubAgentCard = memo(function FullSubAgentCard({
   const hasEntries = subAgent.entries.length > 0;
 
   const hasExpandableContent =
-    hasEntries || totalToolCalls > 0 || !!subAgent.error || !!subAgent.promptGeneration || !!subAgent.task;
+    hasEntries ||
+    totalToolCalls > 0 ||
+    !!subAgent.error ||
+    !!subAgent.promptGeneration ||
+    !!subAgent.task;
 
   const agentColor = getAgentColor(subAgent.agentName);
   const AgentIcon = getAgentIcon(subAgent.agentName);
@@ -442,10 +454,7 @@ const FullSubAgentCard = memo(function FullSubAgentCard({
                 ) : (
                   <ChevronRight className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
                 )}
-                <AgentIcon
-                  className="h-4 w-4 flex-shrink-0"
-                  style={{ color: agentColor }}
-                />
+                <AgentIcon className="h-4 w-4 flex-shrink-0" style={{ color: agentColor }} />
                 <span className="font-medium text-sm truncate">
                   {subAgent.agentName || subAgent.agentId}
                 </span>
@@ -478,7 +487,10 @@ const FullSubAgentCard = memo(function FullSubAgentCard({
               {/* Task description */}
               {subAgent.task && (
                 <div className="mb-1.5 text-xs text-muted-foreground line-clamp-2 px-1.5">
-                  <Markdown content={cleanSubAgentText(subAgent.task)} className="text-xs [&_p]:mb-0" />
+                  <Markdown
+                    content={cleanSubAgentText(subAgent.task)}
+                    className="text-xs [&_p]:mb-0"
+                  />
                 </div>
               )}
 
@@ -585,10 +597,7 @@ const FullSubAgentCard = memo(function FullSubAgentCard({
         ) : (
           <div className="flex items-center gap-2 px-3 py-2">
             <div className="flex flex-1 items-center gap-2 -ml-1 pl-1 py-0.5 min-w-0">
-              <AgentIcon
-                className="h-4 w-4 flex-shrink-0"
-                style={{ color: agentColor }}
-              />
+              <AgentIcon className="h-4 w-4 flex-shrink-0" style={{ color: agentColor }} />
               <span className="font-medium text-sm truncate">
                 {subAgent.agentName || subAgent.agentId}
               </span>

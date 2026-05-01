@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import {
-  createAppearanceSlice,
   type AppearanceSlice,
+  createAppearanceSlice,
   defaultDisplaySettings,
   selectDisplaySettings,
 } from "./appearance";

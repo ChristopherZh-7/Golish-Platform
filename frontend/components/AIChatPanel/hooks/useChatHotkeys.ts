@@ -1,4 +1,4 @@
-import { useCallback, type KeyboardEvent, type RefObject } from "react";
+import { type KeyboardEvent, type RefObject, useCallback } from "react";
 
 interface UseChatHotkeysOptions {
   textareaRef: RefObject<HTMLTextAreaElement | null>;

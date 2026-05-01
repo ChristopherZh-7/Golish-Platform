@@ -7,7 +7,10 @@ import type { ToolCallSource } from "../store-types";
 import type { SessionStoreDraft } from "./session-draft-types";
 import type { ImmerSet, StateGet } from "./types";
 
-export function createSessionStreamingActions(set: ImmerSet<SessionStoreDraft>, _get: StateGet<SessionStoreDraft>) {
+export function createSessionStreamingActions(
+  set: ImmerSet<SessionStoreDraft>,
+  _get: StateGet<SessionStoreDraft>
+) {
   return {
     addStreamingToolBlock: (
       sessionId: string,
@@ -17,7 +20,7 @@ export function createSessionStreamingActions(set: ImmerSet<SessionStoreDraft>, 
         args: Record<string, unknown>;
         executedByAgent?: boolean;
         source?: ToolCallSource;
-      },
+      }
     ) =>
       set((state) => {
         if (!state.streamingBlocks[sessionId]) {
@@ -37,7 +40,7 @@ export function createSessionStreamingActions(set: ImmerSet<SessionStoreDraft>, 
       sessionId: string,
       toolId: string,
       success: boolean,
-      result?: unknown,
+      result?: unknown
     ) =>
       set((state) => {
         const blocks = state.streamingBlocks[sessionId];

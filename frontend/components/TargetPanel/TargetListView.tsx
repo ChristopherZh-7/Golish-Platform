@@ -1,13 +1,24 @@
-import { useCallback, useMemo, useState } from "react";
 import {
-  ChevronDown, Crosshair, Globe, Hash,
-  Network, Plus, Search, Shield, ShieldOff, Tag, Trash2, Wifi, X,
+  ChevronDown,
+  Crosshair,
+  Globe,
+  Hash,
+  Network,
+  Plus,
+  Search,
+  Shield,
+  ShieldOff,
+  Tag,
+  Trash2,
+  Wifi,
+  X,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
-import { getRootDomain } from "@/lib/domain";
+import { useCallback, useMemo, useState } from "react";
 import { MiniDropdown } from "@/components/ui/MiniDropdown";
+import { getRootDomain } from "@/lib/domain";
+import type { Target, TargetStatus } from "@/lib/pentest/types";
+import { cn } from "@/lib/utils";
 import { TargetDetailView } from "./TargetDetail";
-import { type Target, type TargetStatus } from "@/lib/pentest/types";
 
 const TYPE_ICONS: Record<string, React.ReactNode> = {
   domain: <Globe className="w-3.5 h-3.5 text-blue-400" />,
@@ -37,7 +48,12 @@ interface TargetListViewProps {
   targets: Target[];
   stats: { total: number; inScope: number; outOfScope: number };
   t: (key: string) => string;
-  onAdd: (form: { name: string; value: string; notes: string; tags: string }) => Promise<string | null>;
+  onAdd: (form: {
+    name: string;
+    value: string;
+    notes: string;
+    tags: string;
+  }) => Promise<string | null>;
   onBatchAdd: (input: string) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   onToggleScope: (target: Target) => Promise<void>;
@@ -47,8 +63,16 @@ interface TargetListViewProps {
 }
 
 export function TargetListView({
-  targets, stats, t, onAdd, onBatchAdd, onDelete,
-  onToggleScope, onUpdateNotes, onClearAll, onScan,
+  targets,
+  stats,
+  t,
+  onAdd,
+  onBatchAdd,
+  onDelete,
+  onToggleScope,
+  onUpdateNotes,
+  onClearAll,
+  onScan,
 }: TargetListViewProps) {
   const [search, setSearch] = useState("");
   const [scopeFilter, setScopeFilter] = useState<"all" | "in" | "out">("all");
@@ -65,10 +89,11 @@ export function TargetListView({
     let list = targets;
     if (search) {
       const q = search.toLowerCase();
-      list = list.filter((t) =>
-        t.name.toLowerCase().includes(q) ||
-        t.value.toLowerCase().includes(q) ||
-        t.tags.some((tag) => tag.toLowerCase().includes(q))
+      list = list.filter(
+        (t) =>
+          t.name.toLowerCase().includes(q) ||
+          t.value.toLowerCase().includes(q) ||
+          t.tags.some((tag) => tag.toLowerCase().includes(q))
       );
     }
     if (scopeFilter !== "all") {
@@ -89,9 +114,7 @@ export function TargetListView({
     return map;
   }, [filtered]);
 
-  const rootTargets = useMemo(() =>
-    filtered.filter((t) => !t.parent_id),
-  [filtered]);
+  const rootTargets = useMemo(() => filtered.filter((t) => !t.parent_id), [filtered]);
 
   const domainGroups = useMemo(() => {
     const map = new Map<string, Target[]>();
@@ -101,13 +124,12 @@ export function TargetListView({
       arr.push(t);
       map.set(domain, arr);
     }
-    return [...map.entries()]
-      .sort((a, b) => {
-        const aIn = a[1].some((t) => t.scope === "in");
-        const bIn = b[1].some((t) => t.scope === "in");
-        if (aIn !== bIn) return aIn ? -1 : 1;
-        return b[1].length - a[1].length;
-      });
+    return [...map.entries()].sort((a, b) => {
+      const aIn = a[1].some((t) => t.scope === "in");
+      const bIn = b[1].some((t) => t.scope === "in");
+      if (aIn !== bIn) return aIn ? -1 : 1;
+      return b[1].length - a[1].length;
+    });
   }, [rootTargets]);
 
   const handleAdd = useCallback(async () => {
@@ -156,14 +178,20 @@ export function TargetListView({
         <div className="flex items-center gap-0.5 ml-1">
           <button
             className="p-1.5 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
-            onClick={() => { setShowBatch(true); setShowAdd(false); }}
+            onClick={() => {
+              setShowBatch(true);
+              setShowAdd(false);
+            }}
             title={t("targets.batchAdd")}
           >
             <Hash className="w-3.5 h-3.5" />
           </button>
           <button
             className="p-1.5 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
-            onClick={() => { setShowAdd(true); setShowBatch(false); }}
+            onClick={() => {
+              setShowAdd(true);
+              setShowBatch(false);
+            }}
             title={t("targets.addTarget")}
           >
             <Plus className="w-3.5 h-3.5" />
@@ -189,8 +217,10 @@ export function TargetListView({
               placeholder={`${t("targets.value")} *  (e.g. example.com, 192.168.1.0/24, https://...)`}
               value={addForm.value}
               onChange={(e) => setAddForm((f) => ({ ...f, value: e.target.value }))}
-              onKeyDown={(e) => { if (e.key === "Enter") handleAdd(); if (e.key === "Escape") setShowAdd(false); }}
-              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleAdd();
+                if (e.key === "Escape") setShowAdd(false);
+              }}
             />
           </div>
           <div className="flex items-center gap-2">
@@ -215,18 +245,23 @@ export function TargetListView({
               onChange={(e) => setAddForm((f) => ({ ...f, notes: e.target.value }))}
             />
           </div>
-          {addError && (
-            <p className="text-[11px] text-red-400">{addError}</p>
-          )}
+          {addError && <p className="text-[11px] text-red-400">{addError}</p>}
           <div className="flex justify-end gap-2">
             <button
               className="px-3 py-1 text-xs rounded bg-muted/50 hover:bg-muted text-foreground"
-              onClick={() => { setShowAdd(false); setAddError(null); }}
-            >{t("common.cancel")}</button>
+              onClick={() => {
+                setShowAdd(false);
+                setAddError(null);
+              }}
+            >
+              {t("common.cancel")}
+            </button>
             <button
               className="px-3 py-1 text-xs rounded bg-accent text-accent-foreground hover:bg-accent/90"
               onClick={handleAdd}
-            >{t("targets.addTarget")}</button>
+            >
+              {t("targets.addTarget")}
+            </button>
           </div>
         </div>
       )}
@@ -239,17 +274,20 @@ export function TargetListView({
             placeholder={t("targets.batchPlaceholder")}
             value={batchInput}
             onChange={(e) => setBatchInput(e.target.value)}
-            autoFocus
           />
           <div className="flex justify-end gap-2">
             <button
               className="px-3 py-1 text-xs rounded bg-muted/50 hover:bg-muted text-foreground"
               onClick={() => setShowBatch(false)}
-            >{t("common.cancel")}</button>
+            >
+              {t("common.cancel")}
+            </button>
             <button
               className="px-3 py-1 text-xs rounded bg-accent text-accent-foreground hover:bg-accent/90"
               onClick={handleBatchAdd}
-            >{t("targets.batchAdd")}</button>
+            >
+              {t("targets.batchAdd")}
+            </button>
           </div>
         </div>
       )}
@@ -281,170 +319,266 @@ export function TargetListView({
               const isDomainExpanded = expandedDomains.has(domain);
               const inCount = domTargets.filter((t) => t.scope === "in").length;
               const outCount = domTargets.length - inCount;
-              const allChildCount = domTargets.reduce((acc, t) => acc + (childrenMap.get(t.id)?.length || 0), 0);
-              const isSingleFlat = domTargets.length === 1 && getRootDomain(domTargets[0].value) === domain;
+              const allChildCount = domTargets.reduce(
+                (acc, t) => acc + (childrenMap.get(t.id)?.length || 0),
+                0
+              );
+              const isSingleFlat =
+                domTargets.length === 1 && getRootDomain(domTargets[0].value) === domain;
               return (
-              <div key={domain}>
-                {!isSingleFlat && (
-                <button
-                  type="button"
-                  className="flex items-center gap-2 w-full px-4 py-2 hover:bg-muted/20 transition-colors text-left"
-                  onClick={() => setExpandedDomains((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(domain)) next.delete(domain); else next.add(domain);
-                    return next;
-                  })}
-                >
-                  <ChevronDown className={cn("w-3 h-3 text-muted-foreground/50 transition-transform", !isDomainExpanded && "-rotate-90")} />
-                  <Globe className="w-3.5 h-3.5 text-blue-400" />
-                  <span className="text-xs font-medium text-foreground">{domain}</span>
-                  <span className="text-[10px] text-muted-foreground/50 tabular-nums">{domTargets.length}</span>
-                  {inCount > 0 && (
-                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-green-500/10 text-green-400">{inCount} in</span>
-                  )}
-                  {outCount > 0 && (
-                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-red-500/10 text-red-400">{outCount} out</span>
-                  )}
-                  {allChildCount > 0 && (
-                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-accent/10 text-accent/70">{allChildCount} sub</span>
-                  )}
-                </button>
-                )}
-
-                {(isSingleFlat || isDomainExpanded) && domTargets.map((target) => {
-                  const children = childrenMap.get(target.id) || [];
-                  const hasChildren = children.length > 0;
-                  const isParentExpanded = expandedParents.has(target.id);
-                  return (
-                  <div key={target.id} className={isSingleFlat ? "" : "border-l-2 border-blue-400/20 ml-4"}>
-                  <div
-                    className={cn(
-                      "px-4 py-2.5 hover:bg-muted/30 transition-colors group cursor-pointer",
-                      target.scope === "out" && "opacity-50",
-                      editingId === target.id && "bg-muted/20",
-                    )}
-                    onClick={() => setEditingId(editingId === target.id ? null : target.id)}
-                  >
-                    <div className="flex items-center gap-2">
-                      {TYPE_ICONS[target.type] || <Globe className="w-3.5 h-3.5" />}
-
-                      <button
-                        className={cn(
-                          "p-0.5 rounded transition-colors",
-                          target.scope === "in"
-                            ? "text-green-400 hover:text-green-300"
-                            : "text-red-400 hover:text-red-300",
-                        )}
-                        onClick={(e) => { e.stopPropagation(); onToggleScope(target); }}
-                        title={target.scope === "in" ? t("targets.inScope") : t("targets.outOfScope")}
-                      >
-                        {target.scope === "in" ? <Shield className="w-3 h-3" /> : <ShieldOff className="w-3 h-3" />}
-                      </button>
-
-                      <span className="text-xs font-mono text-foreground flex-1 truncate">{target.value}</span>
-
-                      {target.status && target.status !== "new" && (() => {
-                        const cfg = STATUS_CONFIG[target.status] || STATUS_CONFIG.new;
-                        return (
-                          <span className={cn("text-[10px] px-1.5 py-0.5 rounded font-medium", cfg.color, cfg.bg)}>
-                            {cfg.label}
-                          </span>
-                        );
-                      })()}
-
-                      {target.ports && target.ports.length > 0 && (
-                        <span className="flex items-center gap-0.5 text-[10px] text-emerald-400/80" title={`${target.ports.length} open port(s)`}>
-                          <Wifi className="w-2.5 h-2.5" />
-                          {target.ports.length}
-                        </span>
-                      )}
-
-                      <span className="text-[10px] text-muted-foreground px-1.5 py-0.5 rounded bg-muted/30">
-                        {t(TYPE_LABELS[target.type] || target.type)}
-                      </span>
-
-                      <button
-                        className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-muted-foreground hover:text-red-400 transition-all"
-                        onClick={(e) => { e.stopPropagation(); onDelete(target.id); }}
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
-                    </div>
-
-                    {target.tags.length > 0 && (
-                      <div className="flex items-center gap-1 mt-1 ml-5">
-                        <Tag className="w-2.5 h-2.5 text-muted-foreground" />
-                        {target.tags.map((tag) => (
-                          <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded bg-muted/40 text-muted-foreground">
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-
-                    {editingId === target.id && (
-                      <TargetDetailView target={target} t={t} onUpdateNotes={onUpdateNotes} onScan={onScan} />
-                    )}
-                  </div>
-
-                  {hasChildren && (
+                <div key={domain}>
+                  {!isSingleFlat && (
                     <button
                       type="button"
-                      className="flex items-center gap-1 px-4 py-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors w-full"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setExpandedParents((prev) => {
+                      className="flex items-center gap-2 w-full px-4 py-2 hover:bg-muted/20 transition-colors text-left"
+                      onClick={() =>
+                        setExpandedDomains((prev) => {
                           const next = new Set(prev);
-                          if (next.has(target.id)) next.delete(target.id); else next.add(target.id);
+                          if (next.has(domain)) next.delete(domain);
+                          else next.add(domain);
                           return next;
-                        });
-                      }}
+                        })
+                      }
                     >
-                      <ChevronDown className={cn("w-3 h-3 transition-transform", !isParentExpanded && "-rotate-90")} />
-                      <Network className="w-3 h-3 text-accent/60" />
-                      <span>{children.length} subdomain{children.length > 1 ? "s" : ""}</span>
+                      <ChevronDown
+                        className={cn(
+                          "w-3 h-3 text-muted-foreground/50 transition-transform",
+                          !isDomainExpanded && "-rotate-90"
+                        )}
+                      />
+                      <Globe className="w-3.5 h-3.5 text-blue-400" />
+                      <span className="text-xs font-medium text-foreground">{domain}</span>
+                      <span className="text-[10px] text-muted-foreground/50 tabular-nums">
+                        {domTargets.length}
+                      </span>
+                      {inCount > 0 && (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-green-500/10 text-green-400">
+                          {inCount} in
+                        </span>
+                      )}
+                      {outCount > 0 && (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-red-500/10 text-red-400">
+                          {outCount} out
+                        </span>
+                      )}
+                      {allChildCount > 0 && (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-accent/10 text-accent/70">
+                          {allChildCount} sub
+                        </span>
+                      )}
                     </button>
                   )}
 
-                  {hasChildren && isParentExpanded && (
-                    <div className="border-l-2 border-accent/20 ml-6">
-                      {children.map((child) => (
+                  {(isSingleFlat || isDomainExpanded) &&
+                    domTargets.map((target) => {
+                      const children = childrenMap.get(target.id) || [];
+                      const hasChildren = children.length > 0;
+                      const isParentExpanded = expandedParents.has(target.id);
+                      return (
                         <div
-                          key={child.id}
-                          className={cn(
-                            "pl-3 pr-4 py-1.5 hover:bg-muted/20 transition-colors cursor-pointer",
-                            child.scope === "out" && "opacity-50",
-                            editingId === child.id && "bg-muted/15",
-                          )}
-                          onClick={() => setEditingId(editingId === child.id ? null : child.id)}
+                          key={target.id}
+                          className={isSingleFlat ? "" : "border-l-2 border-blue-400/20 ml-4"}
                         >
-                          <div className="flex items-center gap-1.5">
-                            {TYPE_ICONS[child.type] || <Globe className="w-3 h-3" />}
-                            <span className="text-[11px] font-mono text-foreground/80 flex-1 truncate">{child.value}</span>
-                            {child.http_status != null && (
-                              <span className={cn("text-[10px] font-mono", child.http_status < 400 ? "text-green-400/70" : "text-red-400/70")}>{child.http_status}</span>
+                          <div
+                            className={cn(
+                              "px-4 py-2.5 hover:bg-muted/30 transition-colors group cursor-pointer",
+                              target.scope === "out" && "opacity-50",
+                              editingId === target.id && "bg-muted/20"
                             )}
-                            {child.ports && child.ports.length > 0 && (
-                              <span className="flex items-center gap-0.5 text-[10px] text-emerald-400/60">
-                                <Wifi className="w-2.5 h-2.5" />{child.ports.length}
+                            onClick={() => setEditingId(editingId === target.id ? null : target.id)}
+                          >
+                            <div className="flex items-center gap-2">
+                              {TYPE_ICONS[target.type] || <Globe className="w-3.5 h-3.5" />}
+
+                              <button
+                                className={cn(
+                                  "p-0.5 rounded transition-colors",
+                                  target.scope === "in"
+                                    ? "text-green-400 hover:text-green-300"
+                                    : "text-red-400 hover:text-red-300"
+                                )}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onToggleScope(target);
+                                }}
+                                title={
+                                  target.scope === "in"
+                                    ? t("targets.inScope")
+                                    : t("targets.outOfScope")
+                                }
+                              >
+                                {target.scope === "in" ? (
+                                  <Shield className="w-3 h-3" />
+                                ) : (
+                                  <ShieldOff className="w-3 h-3" />
+                                )}
+                              </button>
+
+                              <span className="text-xs font-mono text-foreground flex-1 truncate">
+                                {target.value}
                               </span>
+
+                              {target.status &&
+                                target.status !== "new" &&
+                                (() => {
+                                  const cfg = STATUS_CONFIG[target.status] || STATUS_CONFIG.new;
+                                  return (
+                                    <span
+                                      className={cn(
+                                        "text-[10px] px-1.5 py-0.5 rounded font-medium",
+                                        cfg.color,
+                                        cfg.bg
+                                      )}
+                                    >
+                                      {cfg.label}
+                                    </span>
+                                  );
+                                })()}
+
+                              {target.ports && target.ports.length > 0 && (
+                                <span
+                                  className="flex items-center gap-0.5 text-[10px] text-emerald-400/80"
+                                  title={`${target.ports.length} open port(s)`}
+                                >
+                                  <Wifi className="w-2.5 h-2.5" />
+                                  {target.ports.length}
+                                </span>
+                              )}
+
+                              <span className="text-[10px] text-muted-foreground px-1.5 py-0.5 rounded bg-muted/30">
+                                {t(TYPE_LABELS[target.type] || target.type)}
+                              </span>
+
+                              <button
+                                className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-muted-foreground hover:text-red-400 transition-all"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onDelete(target.id);
+                                }}
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </div>
+
+                            {target.tags.length > 0 && (
+                              <div className="flex items-center gap-1 mt-1 ml-5">
+                                <Tag className="w-2.5 h-2.5 text-muted-foreground" />
+                                {target.tags.map((tag) => (
+                                  <span
+                                    key={tag}
+                                    className="text-[10px] px-1.5 py-0.5 rounded bg-muted/40 text-muted-foreground"
+                                  >
+                                    {tag}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+
+                            {editingId === target.id && (
+                              <TargetDetailView
+                                target={target}
+                                t={t}
+                                onUpdateNotes={onUpdateNotes}
+                                onScan={onScan}
+                              />
                             )}
                           </div>
-                          {editingId === child.id && (
-                            <div className="mt-1 ml-4 space-y-1 text-[10px]">
-                              {child.http_title && <div className="text-muted-foreground"><span className="text-blue-400">Title:</span> {child.http_title}</div>}
-                              {child.real_ip && <div className="text-muted-foreground font-mono"><span className="text-emerald-400">IP:</span> {child.real_ip}</div>}
-                              {child.webserver && <div className="text-muted-foreground"><span className="text-orange-400">Server:</span> {child.webserver}</div>}
+
+                          {hasChildren && (
+                            <button
+                              type="button"
+                              className="flex items-center gap-1 px-4 py-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors w-full"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setExpandedParents((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(target.id)) next.delete(target.id);
+                                  else next.add(target.id);
+                                  return next;
+                                });
+                              }}
+                            >
+                              <ChevronDown
+                                className={cn(
+                                  "w-3 h-3 transition-transform",
+                                  !isParentExpanded && "-rotate-90"
+                                )}
+                              />
+                              <Network className="w-3 h-3 text-accent/60" />
+                              <span>
+                                {children.length} subdomain{children.length > 1 ? "s" : ""}
+                              </span>
+                            </button>
+                          )}
+
+                          {hasChildren && isParentExpanded && (
+                            <div className="border-l-2 border-accent/20 ml-6">
+                              {children.map((child) => (
+                                <div
+                                  key={child.id}
+                                  className={cn(
+                                    "pl-3 pr-4 py-1.5 hover:bg-muted/20 transition-colors cursor-pointer",
+                                    child.scope === "out" && "opacity-50",
+                                    editingId === child.id && "bg-muted/15"
+                                  )}
+                                  onClick={() =>
+                                    setEditingId(editingId === child.id ? null : child.id)
+                                  }
+                                >
+                                  <div className="flex items-center gap-1.5">
+                                    {TYPE_ICONS[child.type] || <Globe className="w-3 h-3" />}
+                                    <span className="text-[11px] font-mono text-foreground/80 flex-1 truncate">
+                                      {child.value}
+                                    </span>
+                                    {child.http_status != null && (
+                                      <span
+                                        className={cn(
+                                          "text-[10px] font-mono",
+                                          child.http_status < 400
+                                            ? "text-green-400/70"
+                                            : "text-red-400/70"
+                                        )}
+                                      >
+                                        {child.http_status}
+                                      </span>
+                                    )}
+                                    {child.ports && child.ports.length > 0 && (
+                                      <span className="flex items-center gap-0.5 text-[10px] text-emerald-400/60">
+                                        <Wifi className="w-2.5 h-2.5" />
+                                        {child.ports.length}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {editingId === child.id && (
+                                    <div className="mt-1 ml-4 space-y-1 text-[10px]">
+                                      {child.http_title && (
+                                        <div className="text-muted-foreground">
+                                          <span className="text-blue-400">Title:</span>{" "}
+                                          {child.http_title}
+                                        </div>
+                                      )}
+                                      {child.real_ip && (
+                                        <div className="text-muted-foreground font-mono">
+                                          <span className="text-emerald-400">IP:</span>{" "}
+                                          {child.real_ip}
+                                        </div>
+                                      )}
+                                      {child.webserver && (
+                                        <div className="text-muted-foreground">
+                                          <span className="text-orange-400">Server:</span>{" "}
+                                          {child.webserver}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
                             </div>
                           )}
                         </div>
-                      ))}
-                    </div>
-                  )}
-                  </div>
-                  );
-                })}
-              </div>
+                      );
+                    })}
+                </div>
               );
             })}
           </div>

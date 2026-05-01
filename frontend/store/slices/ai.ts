@@ -77,7 +77,7 @@ export interface AiActions {
     sessionId: string,
     toolId: string,
     status: ToolCall["status"],
-    result?: unknown,
+    result?: unknown
   ) => void;
   clearAgentMessages: (sessionId: string) => void;
   restoreAgentMessages: (sessionId: string, messages: AgentMessage[]) => void;
@@ -90,13 +90,13 @@ export interface AiActions {
       args: Record<string, unknown>;
       executedByAgent?: boolean;
       source?: ToolCallSource;
-    },
+    }
   ) => void;
   completeActiveToolCall: (
     sessionId: string,
     toolId: string,
     success: boolean,
-    result?: unknown,
+    result?: unknown
   ) => void;
   clearActiveToolCalls: (sessionId: string) => void;
 
@@ -113,13 +113,13 @@ export interface AiActions {
       autoApproved?: boolean;
       riskLevel?: string;
       source?: ToolCallSource;
-    },
+    }
   ) => void;
   completeToolExecutionBlock: (
     sessionId: string,
     requestId: string,
     success: boolean,
-    result?: unknown,
+    result?: unknown
   ) => void;
   appendToolExecutionOutput: (sessionId: string, requestId: string, chunk: string) => void;
   finalizeRunningToolExecutions: (sessionId: string) => void;
@@ -377,7 +377,7 @@ export const createAiSlice: SliceCreator<AiSlice, AiStoreDraft> = (set, get) => 
       }
       const timeline = state.timelines[sessionId];
       const exists = timeline.some(
-        (b) => b.type === "ai_tool_execution" && b.data.requestId === execution.requestId,
+        (b) => b.type === "ai_tool_execution" && b.data.requestId === execution.requestId
       );
       if (exists) return;
 
@@ -396,7 +396,7 @@ export const createAiSlice: SliceCreator<AiSlice, AiStoreDraft> = (set, get) => 
         }
         if (idx >= 0) {
           planStepIndex = idx;
-          planStepId = plan.steps[idx].id;
+          planStepId = plan.steps[idx].id ?? undefined;
         }
       }
       timeline.push({
@@ -423,7 +423,7 @@ export const createAiSlice: SliceCreator<AiSlice, AiStoreDraft> = (set, get) => 
       const timeline = state.timelines[sessionId];
       if (!timeline) return;
       const block = timeline.find(
-        (b) => b.type === "ai_tool_execution" && b.data.requestId === requestId,
+        (b) => b.type === "ai_tool_execution" && b.data.requestId === requestId
       );
       if (block && block.type === "ai_tool_execution") {
         block.data.status = success ? "completed" : "error";
@@ -439,7 +439,7 @@ export const createAiSlice: SliceCreator<AiSlice, AiStoreDraft> = (set, get) => 
       const timeline = state.timelines[sessionId];
       if (!timeline) return;
       const block = timeline.find(
-        (b) => b.type === "ai_tool_execution" && b.data.requestId === requestId,
+        (b) => b.type === "ai_tool_execution" && b.data.requestId === requestId
       );
       if (block && block.type === "ai_tool_execution") {
         block.data.streamingOutput = (block.data.streamingOutput || "") + chunk;
@@ -465,15 +465,11 @@ export const selectAiConfig = <T extends AiState>(state: T): AiConfig => state.a
 
 export const selectActiveToolCalls = <T extends AiState>(
   state: T,
-  sessionId: string,
+  sessionId: string
 ): ActiveToolCall[] => state.activeToolCalls[sessionId] ?? [];
 
-export const selectIsAgentThinking = <T extends AiState>(
-  state: T,
-  sessionId: string,
-): boolean => state.isAgentThinking[sessionId] ?? false;
+export const selectIsAgentThinking = <T extends AiState>(state: T, sessionId: string): boolean =>
+  state.isAgentThinking[sessionId] ?? false;
 
-export const selectIsAgentResponding = <T extends AiState>(
-  state: T,
-  sessionId: string,
-): boolean => state.isAgentResponding[sessionId] ?? false;
+export const selectIsAgentResponding = <T extends AiState>(state: T, sessionId: string): boolean =>
+  state.isAgentResponding[sessionId] ?? false;

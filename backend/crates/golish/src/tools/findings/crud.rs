@@ -1,5 +1,6 @@
 //! Findings CRUD operations (Tauri commands).
 
+use crate::error::GolishError;
 use std::path::PathBuf;
 use tokio::fs;
 use uuid::Uuid;
@@ -12,7 +13,7 @@ const SELECT_COLS: &str = "id, title, sev::TEXT, cvss, url, target, target_id, d
 pub async fn findings_list(
     state: tauri::State<'_, DbState>,
     project_path: Option<String>,
-) -> Result<FindingsStore, String> {
+) -> Result<FindingsStore, GolishError> {
     let pool = state.pool_ready().await?;
     let sql = format!(
         "SELECT {} FROM findings WHERE project_path = $1 ORDER BY created_at DESC",
@@ -22,14 +23,14 @@ pub async fn findings_list(
         .bind(project_path.as_deref())
         .fetch_all(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     Ok(FindingsStore {
         findings: rows.into_iter().map(Finding::from).collect(),
     })
 }
 
-async fn insert_finding(pool: &sqlx::PgPool, f: &Finding, project_path: Option<&str>) -> Result<(), String> {
+async fn insert_finding(pool: &sqlx::PgPool, f: &Finding, project_path: Option<&str>) -> Result<(), GolishError> {
     let uid: Uuid = f.id.parse().unwrap_or_else(|_| Uuid::new_v4());
     let tags_json = serde_json::to_value(&f.tags).unwrap_or_else(|_| serde_json::json!([]));
     let refs_json = serde_json::to_value(&f.references).unwrap_or_else(|_| serde_json::json!([]));
@@ -66,7 +67,7 @@ async fn insert_finding(pool: &sqlx::PgPool, f: &Finding, project_path: Option<&
     .bind(tid)
     .execute(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
     Ok(())
 }
 
@@ -75,7 +76,7 @@ pub async fn findings_add(
     state: tauri::State<'_, DbState>,
     finding: Finding,
     project_path: Option<String>,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     let pool = state.pool_ready().await?;
     let ts = now_ts();
     let id = if finding.id.is_empty() { Uuid::new_v4().to_string() } else { finding.id.clone() };
@@ -89,7 +90,7 @@ pub async fn findings_update(
     state: tauri::State<'_, DbState>,
     finding: Finding,
     project_path: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     let uid: Uuid = finding.id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let created: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
@@ -98,7 +99,7 @@ pub async fn findings_update(
     .bind(uid)
     .fetch_one(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
     let entry = Finding {
         updated_at: now_ts(),
         created_at: ts_from_dt(created),
@@ -112,7 +113,7 @@ pub async fn findings_delete(
     state: tauri::State<'_, DbState>,
     id: String,
     project_path: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -120,7 +121,7 @@ pub async fn findings_delete(
         .bind(uid)
         .execute(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     Ok(())
 }
 
@@ -130,7 +131,7 @@ pub async fn findings_import_parsed(
     items: Vec<std::collections::HashMap<String, String>>,
     tool_name: Option<String>,
     project_path: Option<String>,
-) -> Result<u32, String> {
+) -> Result<u32, GolishError> {
     let pool = state.pool_ready().await?;
     let ts = now_ts();
     let tool = tool_name.unwrap_or_default();
@@ -148,7 +149,7 @@ pub async fn findings_import_parsed(
         .bind(&url)
         .fetch_one(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
         if count > 0 { continue; }
 
         let severity = match item.get("severity").map(|s| s.to_lowercase()).as_deref() {
@@ -195,19 +196,19 @@ pub async fn findings_add_evidence(
     caption: String,
     data_base64: String,
     project_path: Option<String>,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     let pool = state.pool_ready().await?;
     let evidence_id = Uuid::new_v4().to_string();
     let ext = filename.rsplit('.').next().unwrap_or("bin").to_string();
     let stored_name = format!("{}.{}", evidence_id, ext);
 
     let dir = evidence_dir(project_path.as_deref()).join(&finding_id);
-    fs::create_dir_all(&dir).await.map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).await?;
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&data_base64)
         .map_err(|e| format!("Invalid base64: {}", e))?;
-    fs::write(dir.join(&stored_name), &bytes).await.map_err(|e| e.to_string())?;
+    fs::write(dir.join(&stored_name), &bytes).await?;
 
     let uid: Uuid = finding_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let ts = now_ts();
@@ -217,7 +218,7 @@ pub async fn findings_add_evidence(
     .bind(uid)
     .fetch_one(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     let mut evidence_list: Vec<Evidence> = serde_json::from_value(evidence_val).unwrap_or_default();
     evidence_list.push(Evidence {
@@ -234,7 +235,7 @@ pub async fn findings_add_evidence(
         .bind(uid)
         .execute(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     Ok(evidence_id)
 }
@@ -245,7 +246,7 @@ pub async fn findings_remove_evidence(
     finding_id: String,
     evidence_id: String,
     project_path: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     let uid: Uuid = finding_id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
@@ -255,7 +256,7 @@ pub async fn findings_remove_evidence(
     .bind(uid)
     .fetch_one(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     let mut list: Vec<Evidence> = serde_json::from_value(evidence_val).unwrap_or_default();
     let fname = list.iter().find(|e| e.id == evidence_id).map(|e| e.filename.clone());
@@ -267,7 +268,7 @@ pub async fn findings_remove_evidence(
         .bind(uid)
         .execute(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     if let Some(fname) = fname {
         let file = evidence_dir(project_path.as_deref()).join(&finding_id).join(&fname);
@@ -282,7 +283,7 @@ pub async fn findings_evidence_path(
     finding_id: String,
     evidence_id: String,
     project_path: Option<String>,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     let pool = state.pool_ready().await?;
     let uid: Uuid = finding_id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
@@ -292,10 +293,10 @@ pub async fn findings_evidence_path(
     .bind(uid)
     .fetch_one(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     let list: Vec<Evidence> = serde_json::from_value(evidence_val).unwrap_or_default();
-    let ev = list.iter().find(|e| e.id == evidence_id).ok_or("Evidence not found")?;
+    let ev = list.iter().find(|e| e.id == evidence_id).ok_or_else(|| GolishError::Internal("Evidence not found".into()))?;
     let path = evidence_dir(project_path.as_deref()).join(&finding_id).join(&ev.filename);
     Ok(path.to_string_lossy().to_string())
 }
@@ -305,7 +306,7 @@ pub async fn findings_for_host(
     state: tauri::State<'_, DbState>,
     host: String,
     project_path: Option<String>,
-) -> Result<Vec<Finding>, String> {
+) -> Result<Vec<Finding>, GolishError> {
     let pool = state.pool_ready().await?;
     let _ = project_path;
     let pattern = format!("%{}%", host.to_lowercase());
@@ -317,7 +318,7 @@ pub async fn findings_for_host(
         .bind(&pattern)
         .fetch_all(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     Ok(rows.into_iter().map(Finding::from).collect())
 }
@@ -326,14 +327,14 @@ pub async fn findings_for_host(
 pub async fn findings_deduplicate(
     state: tauri::State<'_, DbState>,
     project_path: Option<String>,
-) -> Result<u32, String> {
+) -> Result<u32, GolishError> {
     let pool = state.pool_ready().await?;
     let _ = project_path;
     let sql = format!("SELECT {} FROM findings ORDER BY created_at ASC", SELECT_COLS);
     let rows: Vec<FindingRow> = sqlx::query_as(&sql)
         .fetch_all(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let mut findings: Vec<Finding> = rows.into_iter().map(Finding::from).collect();
     let mut removed = 0u32;
@@ -377,7 +378,7 @@ pub async fn findings_deduplicate(
                     .bind(dup_uid)
                     .execute(pool)
                     .await
-                    .map_err(|e| e.to_string())?;
+?;
                 findings.remove(j);
                 removed += 1;
             } else {

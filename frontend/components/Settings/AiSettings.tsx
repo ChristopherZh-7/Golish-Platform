@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { Input } from "@/components/ui/input";
 import { CustomSelect } from "@/components/ui/custom-select";
+import { Input } from "@/components/ui/input";
 import type { ApiKeysSettings, SidecarSettings, SynthesisBackendType } from "@/lib/settings";
 
 interface AiSettingsProps {
@@ -20,9 +20,7 @@ function SimpleSelect({
   onValueChange: (value: string) => void;
   options: { value: string; label: string }[];
 }) {
-  return (
-    <CustomSelect value={value} onChange={onValueChange} options={options} />
-  );
+  return <CustomSelect value={value} onChange={onValueChange} options={options} />;
 }
 
 export function AiSettings({
@@ -88,7 +86,12 @@ export function AiSettings({
           />
           <p className="text-xs text-muted-foreground">
             Get your API key from{" "}
-            <a href="https://brave.com/search/api/" target="_blank" rel="noopener noreferrer" className="text-primary underline decoration-primary/30 hover:decoration-primary/70">
+            <a
+              href="https://brave.com/search/api/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary underline decoration-primary/30 hover:decoration-primary/70"
+            >
               brave.com/search/api
             </a>
           </p>

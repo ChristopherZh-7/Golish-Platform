@@ -1,16 +1,31 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke, vulnLinks } from "@/lib/api";
 import {
-  BookOpen, ChevronDown, ChevronRight, FileText,
-  Link2, Loader2, Plus, Search, X,
+  BookOpen,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  Link2,
+  Loader2,
+  Plus,
+  Search,
+  X,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
-import type { VulnLink } from "./types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "@/components/Markdown";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
-import { wikiApi, type WikiPageInfo, type WikiBacklinkInfo, type WikiTreeNode } from "@/lib/wiki";
+import { invoke, vulnLinks } from "@/lib/api";
+import { cn } from "@/lib/utils";
+import { type WikiBacklinkInfo, type WikiPageInfo, type WikiTreeNode, wikiApi } from "@/lib/wiki";
+import type { VulnLink } from "./types";
 
-export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: string; onUpdateLink: (updater: (l: VulnLink) => VulnLink) => void }) {
+export function WikiTab({
+  link,
+  cveId,
+  onUpdateLink,
+}: {
+  link: VulnLink;
+  cveId: string;
+  onUpdateLink: (updater: (l: VulnLink) => VulnLink) => void;
+}) {
   const [fullTree, setFullTree] = useState<WikiTreeNode[]>([]);
   const [loadingTree, setLoadingTree] = useState(true);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -25,7 +40,9 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
   const [adding, setAdding] = useState(false);
   const [newPath, setNewPath] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<{ path: string; title: string; snippet: string }[]>([]);
+  const [searchResults, setSearchResults] = useState<
+    { path: string; title: string; snippet: string }[]
+  >([]);
   const [searching, setSearching] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createPath, setCreatePath] = useState("");
@@ -34,7 +51,9 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
 
   const reloadTree = useCallback(() => {
     setLoadingTree(true);
-    wikiApi.list().then(d => d as unknown as WikiTreeNode[])
+    wikiApi
+      .list()
+      .then((d) => d as unknown as WikiTreeNode[])
       .then((tree) => {
         setFullTree(Array.isArray(tree) ? tree : []);
         const dirs = new Set<string>();
@@ -49,14 +68,17 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
       .finally(() => setLoadingTree(false));
   }, [link.wikiPaths, selectedPath]);
 
-  useEffect(() => { reloadTree(); }, []);
+  useEffect(() => {
+    reloadTree();
+  }, [reloadTree]);
 
   useEffect(() => {
     if (!selectedPath || articleContents[selectedPath] !== undefined) return;
-    wikiApi.read(selectedPath)
+    wikiApi
+      .read(selectedPath)
       .then((content) => setArticleContents((prev) => ({ ...prev, [selectedPath]: content })))
       .catch(() => setArticleContents((prev) => ({ ...prev, [selectedPath]: "" })));
-  }, [selectedPath]);
+  }, [selectedPath, selectedPath ? articleContents[selectedPath] : undefined]);
 
   // Ensure DB index is up-to-date before fetching metadata
   const reindexDone = useRef(false);
@@ -64,7 +86,8 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
   useEffect(() => {
     if (reindexDone.current) return;
     reindexDone.current = true;
-    wikiApi.reindex()
+    wikiApi
+      .reindex()
       .catch(() => {})
       .finally(() => setIndexReady(true));
   }, []);
@@ -72,7 +95,10 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
   // Fetch metadata for linked pages (category, status, etc.)
   useEffect(() => {
     if (!indexReady) return;
-    if (link.wikiPaths.length === 0) { setLinkedPageInfos([]); return; }
+    if (link.wikiPaths.length === 0) {
+      setLinkedPageInfos([]);
+      return;
+    }
     invoke<WikiPageInfo[]>("wiki_pages_for_paths", { paths: link.wikiPaths })
       .then(setLinkedPageInfos)
       .catch(() => setLinkedPageInfos([]));
@@ -83,11 +109,14 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
     invoke<WikiPageInfo[]>("wiki_suggest_for_cve", { cveId, limit: 8 })
       .then(setSuggestedPages)
       .catch(() => setSuggestedPages([]));
-  }, [cveId, link.wikiPaths]);
+  }, [cveId]);
 
   // Fetch backlinks when selected page changes
   useEffect(() => {
-    if (!selectedPath) { setBacklinks([]); return; }
+    if (!selectedPath) {
+      setBacklinks([]);
+      return;
+    }
     invoke<WikiBacklinkInfo[]>("wiki_backlinks", { path: selectedPath })
       .then(setBacklinks)
       .catch(() => setBacklinks([]));
@@ -105,8 +134,8 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
     const infoPathSet = new Set(linkedPageInfos.map((p) => p.path));
     for (const wp of link.wikiPaths) {
       if (!infoPathSet.has(wp)) {
-        if (!groups["uncategorized"]) groups["uncategorized"] = [];
-        groups["uncategorized"].push({
+        if (!groups.uncategorized) groups.uncategorized = [];
+        groups.uncategorized.push({
           path: wp,
           title: wp.split("/").pop()?.replace(/\.md$/, "") || wp,
           category: "uncategorized",
@@ -120,9 +149,21 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
     return groups;
   }, [linkedPageInfos, link.wikiPaths]);
 
-  const categoryOrder = ["products", "techniques", "pocs", "experience", "analysis", "uncategorized"];
+  const categoryOrder = [
+    "products",
+    "techniques",
+    "pocs",
+    "experience",
+    "analysis",
+    "uncategorized",
+  ];
   const categoryIcons: Record<string, string> = {
-    products: "📦", techniques: "⚔️", pocs: "🔧", experience: "📝", analysis: "🔬", uncategorized: "📄",
+    products: "📦",
+    techniques: "⚔️",
+    pocs: "🔧",
+    experience: "📝",
+    analysis: "🔬",
+    uncategorized: "📄",
   };
   const statusColors: Record<string, string> = {
     draft: "text-yellow-400 bg-yellow-500/10",
@@ -141,24 +182,33 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
     });
   }, []);
 
-  const handleLinkWiki = useCallback((path: string) => {
-    onUpdateLink((l) => ({
-      ...l,
-      wikiPaths: l.wikiPaths.includes(path) ? l.wikiPaths : [...l.wikiPaths, path],
-    }));
-    vulnLinks.addWikiLink(cveId, path).catch(console.error);
-  }, [onUpdateLink, cveId]);
+  const handleLinkWiki = useCallback(
+    (path: string) => {
+      onUpdateLink((l) => ({
+        ...l,
+        wikiPaths: l.wikiPaths.includes(path) ? l.wikiPaths : [...l.wikiPaths, path],
+      }));
+      vulnLinks.addWikiLink(cveId, path).catch(console.error);
+    },
+    [onUpdateLink, cveId]
+  );
 
-  const handleUnlinkWiki = useCallback((path: string) => {
-    onUpdateLink((l) => ({ ...l, wikiPaths: l.wikiPaths.filter((p) => p !== path) }));
-    vulnLinks.removeWikiLink(cveId, path).catch(console.error);
-    if (selectedPath === path) setSelectedPath(null);
-  }, [onUpdateLink, cveId, selectedPath]);
+  const handleUnlinkWiki = useCallback(
+    (path: string) => {
+      onUpdateLink((l) => ({ ...l, wikiPaths: l.wikiPaths.filter((p) => p !== path) }));
+      vulnLinks.removeWikiLink(cveId, path).catch(console.error);
+      if (selectedPath === path) setSelectedPath(null);
+    },
+    [onUpdateLink, cveId, selectedPath]
+  );
 
-  const handleStartEdit = useCallback((path: string) => {
-    setEditingPath(path);
-    setEditContent(articleContents[path] || "");
-  }, [articleContents]);
+  const handleStartEdit = useCallback(
+    (path: string) => {
+      setEditingPath(path);
+      setEditContent(articleContents[path] || "");
+    },
+    [articleContents]
+  );
 
   const handleSaveEdit = useCallback(async () => {
     if (!editingPath) return;
@@ -171,22 +221,25 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
     }
   }, [editingPath, editContent]);
 
-  const handleDeletePage = useCallback(async (path: string) => {
-    if (!confirm(`Delete wiki page "${path}"? This cannot be undone.`)) return;
-    try {
-      await wikiApi.delete(path);
-      setArticleContents((prev) => {
-        const next = { ...prev };
-        delete next[path];
-        return next;
-      });
-      if (selectedPath === path) setSelectedPath(null);
-      if (linkedSet.has(path)) handleUnlinkWiki(path);
-      reloadTree();
-    } catch (err) {
-      console.error("Failed to delete wiki page:", err);
-    }
-  }, [selectedPath, linkedSet, handleUnlinkWiki, reloadTree]);
+  const handleDeletePage = useCallback(
+    async (path: string) => {
+      if (!confirm(`Delete wiki page "${path}"? This cannot be undone.`)) return;
+      try {
+        await wikiApi.delete(path);
+        setArticleContents((prev) => {
+          const next = { ...prev };
+          delete next[path];
+          return next;
+        });
+        if (selectedPath === path) setSelectedPath(null);
+        if (linkedSet.has(path)) handleUnlinkWiki(path);
+        reloadTree();
+      } catch (err) {
+        console.error("Failed to delete wiki page:", err);
+      }
+    },
+    [selectedPath, linkedSet, handleUnlinkWiki, reloadTree]
+  );
 
   const handleCreatePage = useCallback(async () => {
     const p = createPath.trim();
@@ -208,17 +261,22 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
 
   // Full-text search via DB
   const handleSearch = useCallback(async (query: string) => {
-    if (!query.trim()) { setSearchResults([]); return; }
+    if (!query.trim()) {
+      setSearchResults([]);
+      return;
+    }
     setSearching(true);
     try {
-      const results = await invoke<{ path: string; title: string; category: string; tags: string[]; status: string | null }[]>(
-        "wiki_search_db", { query: query.trim(), limit: 20 }
+      const results = await invoke<
+        { path: string; title: string; category: string; tags: string[]; status: string | null }[]
+      >("wiki_search_db", { query: query.trim(), limit: 20 });
+      setSearchResults(
+        results.map((r) => ({
+          path: r.path,
+          title: r.title || r.path,
+          snippet: `[${r.category}] ${r.tags.join(", ")}${r.status ? ` • ${r.status}` : ""}`,
+        }))
       );
-      setSearchResults(results.map((r) => ({
-        path: r.path,
-        title: r.title || r.path,
-        snippet: `[${r.category}] ${r.tags.join(", ")}${r.status ? ` • ${r.status}` : ""}`,
-      })));
     } catch {
       setSearchResults([]);
     }
@@ -277,27 +335,35 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
     const fm = content.match(/^---\n([\s\S]*?)\n---/);
     if (!fm) return [];
     const m = fm[1].match(/tags:\s*\[([^\]]*)\]/);
-    if (m) return m[1].split(",").map((t) => t.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
+    if (m)
+      return m[1]
+        .split(",")
+        .map((t) => t.trim().replace(/^["']|["']$/g, ""))
+        .filter(Boolean);
     return [];
   };
 
   // Intercept wiki-link clicks in rendered markdown
-  const handleContentClick = useCallback((e: React.MouseEvent) => {
-    const target = e.target as HTMLElement;
-    const anchor = target.closest("a");
-    if (!anchor) return;
-    const href = anchor.getAttribute("href") || "";
-    if (href.match(/^(https?:|mailto:|#)/)) return;
-    if (href.endsWith(".md") || !href.includes("://")) {
-      e.preventDefault();
-      const resolved = selectedPath
-        ? new URL(href, `file:///${selectedPath}`).pathname.replace(/^\//, "")
-        : href;
-      navigateToWikiPage(resolved);
-    }
-  }, [selectedPath, navigateToWikiPage]);
+  const handleContentClick = useCallback(
+    (e: React.MouseEvent) => {
+      const target = e.target as HTMLElement;
+      const anchor = target.closest("a");
+      if (!anchor) return;
+      const href = anchor.getAttribute("href") || "";
+      if (href.match(/^(https?:|mailto:|#)/)) return;
+      if (href.endsWith(".md") || !href.includes("://")) {
+        e.preventDefault();
+        const resolved = selectedPath
+          ? new URL(href, `file:///${selectedPath}`).pathname.replace(/^\//, "")
+          : href;
+        navigateToWikiPage(resolved);
+      }
+    },
+    [selectedPath, navigateToWikiPage]
+  );
 
-  const proseClasses = "text-[11px] leading-relaxed text-foreground/80 prose prose-invert prose-sm max-w-none prose-headings:text-foreground/90 prose-headings:text-[12px] prose-headings:font-semibold prose-p:text-[11px] prose-p:leading-relaxed prose-code:text-[10px] prose-code:bg-muted/20 prose-code:px-1 prose-code:rounded prose-pre:bg-muted/10 prose-pre:border prose-pre:border-border/10 prose-pre:text-[10px] prose-li:text-[11px] prose-a:text-accent";
+  const proseClasses =
+    "text-[11px] leading-relaxed text-foreground/80 prose prose-invert prose-sm max-w-none prose-headings:text-foreground/90 prose-headings:text-[12px] prose-headings:font-semibold prose-p:text-[11px] prose-p:leading-relaxed prose-code:text-[10px] prose-code:bg-muted/20 prose-code:px-1 prose-code:rounded prose-pre:bg-muted/10 prose-pre:border prose-pre:border-border/10 prose-pre:text-[10px] prose-li:text-[11px] prose-a:text-accent";
 
   // Filter tree nodes by search
   const filterTree = useCallback((nodes: WikiTreeNode[], q: string): WikiTreeNode[] => {
@@ -307,7 +373,10 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
       if (node.is_dir) {
         const filtered = filterTree(node.children || [], q);
         if (filtered.length > 0) acc.push({ ...node, children: filtered });
-      } else if (node.name.toLowerCase().includes(lower) || node.path.toLowerCase().includes(lower)) {
+      } else if (
+        node.name.toLowerCase().includes(lower) ||
+        node.path.toLowerCase().includes(lower)
+      ) {
         acc.push(node);
       }
       return acc;
@@ -316,7 +385,12 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
 
   const [browseAll, setBrowseAll] = useState(false);
 
-  const displayTree = searchQuery && !searchResults.length ? filterTree(fullTree, searchQuery) : browseAll ? fullTree : [];
+  const displayTree =
+    searchQuery && !searchResults.length
+      ? filterTree(fullTree, searchQuery)
+      : browseAll
+        ? fullTree
+        : [];
 
   const renderTreeNode = (node: WikiTreeNode, depth = 0) => {
     if (node.is_dir) {
@@ -360,7 +434,12 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
           )}
           style={{ paddingLeft: `${depth * 12 + 6}px` }}
         >
-          <FileText className={cn("w-3 h-3 flex-shrink-0", isSelected ? "text-accent" : "text-muted-foreground/25")} />
+          <FileText
+            className={cn(
+              "w-3 h-3 flex-shrink-0",
+              isSelected ? "text-accent" : "text-muted-foreground/25"
+            )}
+          />
           <span className="text-[10px] truncate flex-1">{node.name.replace(/\.md$/, "")}</span>
         </button>
         {!isLinked && (
@@ -377,7 +456,9 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
   };
 
   const selectedContent = selectedPath ? articleContents[selectedPath] || "" : "";
-  const selectedTitle = selectedContent ? extractTitle(selectedContent) || selectedPath?.split("/").pop()?.replace(/\.md$/, "") : null;
+  const selectedTitle = selectedContent
+    ? extractTitle(selectedContent) || selectedPath?.split("/").pop()?.replace(/\.md$/, "")
+    : null;
   const selectedStatus = selectedContent ? extractStatus(selectedContent) : null;
   const selectedBody = selectedContent ? stripFrontmatter(selectedContent) : "";
   const selectedTags = selectedContent ? extractTags(selectedContent) : [];
@@ -394,14 +475,20 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
           </span>
           <div className="flex items-center gap-0.5">
             <button
-              onClick={() => { setCreating(!creating); setAdding(false); }}
+              onClick={() => {
+                setCreating(!creating);
+                setAdding(false);
+              }}
               className="p-0.5 text-muted-foreground/30 hover:text-emerald-400 transition-colors"
               title="Create new wiki page"
             >
               <Plus className="w-3 h-3" />
             </button>
             <button
-              onClick={() => { setAdding(!adding); setCreating(false); }}
+              onClick={() => {
+                setAdding(!adding);
+                setCreating(false);
+              }}
               className="p-0.5 text-muted-foreground/30 hover:text-accent transition-colors"
               title="Link existing wiki article"
             >
@@ -420,7 +507,9 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
               placeholder="Search wiki..."
               className="w-full h-5 pl-5 pr-1.5 text-[9px] bg-[var(--bg-hover)]/30 rounded border border-border/10 text-foreground placeholder:text-muted-foreground/25 outline-none focus:border-accent/30"
             />
-            {searching && <Loader2 className="absolute right-1.5 top-1/2 -translate-y-1/2 w-2.5 h-2.5 animate-spin text-muted-foreground/30" />}
+            {searching && (
+              <Loader2 className="absolute right-1.5 top-1/2 -translate-y-1/2 w-2.5 h-2.5 animate-spin text-muted-foreground/30" />
+            )}
           </div>
         </div>
 
@@ -430,16 +519,29 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
             <input
               value={createPath}
               onChange={(e) => setCreatePath(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") handleCreatePage(); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleCreatePage();
+              }}
               placeholder="products/myapp/CVE-XXXX.md"
               className="w-full h-5 px-1.5 text-[9px] font-mono bg-[var(--bg-hover)]/30 rounded border border-border/15 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40"
-              autoFocus
             />
             <div className="flex gap-1">
-              <button onClick={handleCreatePage} disabled={!createPath.trim()}
-                className="text-[8px] text-emerald-400 disabled:opacity-30">Create</button>
-              <button onClick={() => { setCreating(false); setCreatePath(""); }}
-                className="text-[8px] text-muted-foreground/30">Cancel</button>
+              <button
+                onClick={handleCreatePage}
+                disabled={!createPath.trim()}
+                className="text-[8px] text-emerald-400 disabled:opacity-30"
+              >
+                Create
+              </button>
+              <button
+                onClick={() => {
+                  setCreating(false);
+                  setCreatePath("");
+                }}
+                className="text-[8px] text-muted-foreground/30"
+              >
+                Cancel
+              </button>
             </div>
           </div>
         )}
@@ -459,13 +561,28 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
               }}
               placeholder="Path to link..."
               className="w-full h-5 px-1.5 text-[9px] font-mono bg-[var(--bg-hover)]/30 rounded border border-border/15 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40"
-              autoFocus
             />
             <div className="flex gap-1">
-              <button onClick={() => { handleLinkWiki(newPath.trim()); setAdding(false); setNewPath(""); }}
-                disabled={!newPath.trim()} className="text-[8px] text-accent disabled:opacity-30">Link</button>
-              <button onClick={() => { setAdding(false); setNewPath(""); }}
-                className="text-[8px] text-muted-foreground/30">Cancel</button>
+              <button
+                onClick={() => {
+                  handleLinkWiki(newPath.trim());
+                  setAdding(false);
+                  setNewPath("");
+                }}
+                disabled={!newPath.trim()}
+                className="text-[8px] text-accent disabled:opacity-30"
+              >
+                Link
+              </button>
+              <button
+                onClick={() => {
+                  setAdding(false);
+                  setNewPath("");
+                }}
+                className="text-[8px] text-muted-foreground/30"
+              >
+                Cancel
+              </button>
             </div>
           </div>
         )}
@@ -504,50 +621,73 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
           ) : (
             <>
               {/* Linked pages grouped by category */}
-              {categoryOrder.filter((cat) => linkedByCategory[cat]?.length).map((cat) => (
-                <div key={cat}>
-                  <div className="flex items-center gap-1 px-2 py-1 mt-1">
-                    <span className="text-[10px]">{categoryIcons[cat] || "📄"}</span>
-                    <span className="text-[8px] text-muted-foreground/40 uppercase tracking-wider flex-1">{cat}</span>
-                    <span className="text-[7px] text-muted-foreground/20">{linkedByCategory[cat].length}</span>
-                  </div>
-                  {linkedByCategory[cat].map((info) => {
-                    const isSelected = selectedPath === info.path;
-                    return (
-                      <div key={info.path} className="group/file flex items-center">
-                        <button
-                          onClick={() => setSelectedPath(info.path)}
-                          className={cn(
-                            "flex items-center gap-1.5 flex-1 px-2 py-1 rounded text-left transition-colors min-w-0",
-                            isSelected ? "bg-accent/15 text-accent" : "text-foreground/70 hover:bg-muted/10"
-                          )}
-                        >
-                          <FileText className={cn("w-3 h-3 flex-shrink-0", isSelected ? "text-accent" : "text-blue-400/60")} />
-                          <span className="text-[10px] truncate flex-1">{info.title || info.path.split("/").pop()?.replace(/\.md$/, "")}</span>
-                          {info.status && (
-                            <span className={cn("text-[6px] px-1 py-0.5 rounded flex-shrink-0", statusColors[info.status] || "text-muted-foreground/30 bg-muted/10")}>
-                              {info.status}
+              {categoryOrder
+                .filter((cat) => linkedByCategory[cat]?.length)
+                .map((cat) => (
+                  <div key={cat}>
+                    <div className="flex items-center gap-1 px-2 py-1 mt-1">
+                      <span className="text-[10px]">{categoryIcons[cat] || "📄"}</span>
+                      <span className="text-[8px] text-muted-foreground/40 uppercase tracking-wider flex-1">
+                        {cat}
+                      </span>
+                      <span className="text-[7px] text-muted-foreground/20">
+                        {linkedByCategory[cat].length}
+                      </span>
+                    </div>
+                    {linkedByCategory[cat].map((info) => {
+                      const isSelected = selectedPath === info.path;
+                      return (
+                        <div key={info.path} className="group/file flex items-center">
+                          <button
+                            onClick={() => setSelectedPath(info.path)}
+                            className={cn(
+                              "flex items-center gap-1.5 flex-1 px-2 py-1 rounded text-left transition-colors min-w-0",
+                              isSelected
+                                ? "bg-accent/15 text-accent"
+                                : "text-foreground/70 hover:bg-muted/10"
+                            )}
+                          >
+                            <FileText
+                              className={cn(
+                                "w-3 h-3 flex-shrink-0",
+                                isSelected ? "text-accent" : "text-blue-400/60"
+                              )}
+                            />
+                            <span className="text-[10px] truncate flex-1">
+                              {info.title || info.path.split("/").pop()?.replace(/\.md$/, "")}
                             </span>
-                          )}
-                        </button>
-                        <button
-                          onClick={() => handleUnlinkWiki(info.path)}
-                          className="p-0.5 text-destructive/0 group-hover/file:text-destructive/40 hover:!text-destructive transition-colors flex-shrink-0"
-                          title="Unlink"
-                        >
-                          <X className="w-2.5 h-2.5" />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              ))}
+                            {info.status && (
+                              <span
+                                className={cn(
+                                  "text-[6px] px-1 py-0.5 rounded flex-shrink-0",
+                                  statusColors[info.status] ||
+                                    "text-muted-foreground/30 bg-muted/10"
+                                )}
+                              >
+                                {info.status}
+                              </span>
+                            )}
+                          </button>
+                          <button
+                            onClick={() => handleUnlinkWiki(info.path)}
+                            className="p-0.5 text-destructive/0 group-hover/file:text-destructive/40 hover:!text-destructive transition-colors flex-shrink-0"
+                            title="Unlink"
+                          >
+                            <X className="w-2.5 h-2.5" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
 
               {/* Suggested pages */}
               {suggestedPages.length > 0 && (
                 <>
                   <div className="px-2 py-1 mt-2 border-t border-border/5">
-                    <span className="text-[7px] text-muted-foreground/25 uppercase tracking-wider">Suggested</span>
+                    <span className="text-[7px] text-muted-foreground/25 uppercase tracking-wider">
+                      Suggested
+                    </span>
                   </div>
                   {suggestedPages.map((info) => (
                     <div key={info.path} className="group/sugg flex items-center">
@@ -575,7 +715,9 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
               {browseAll && displayTree.length > 0 && (
                 <>
                   <div className="px-2 py-0.5 mt-2 border-t border-border/5">
-                    <span className="text-[7px] text-muted-foreground/25 uppercase tracking-wider">All Pages</span>
+                    <span className="text-[7px] text-muted-foreground/25 uppercase tracking-wider">
+                      All Pages
+                    </span>
                   </div>
                   {displayTree.map((node) => renderTreeNode(node))}
                 </>
@@ -606,40 +748,57 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
                 {selectedTitle || selectedPath}
               </span>
               {selectedStatus && (
-                <span className={cn("text-[8px] px-1.5 py-0.5 rounded", statusColors[selectedStatus] || "text-muted-foreground/40 bg-muted/10")}>
+                <span
+                  className={cn(
+                    "text-[8px] px-1.5 py-0.5 rounded",
+                    statusColors[selectedStatus] || "text-muted-foreground/40 bg-muted/10"
+                  )}
+                >
                   {selectedStatus}
                 </span>
               )}
               {linkedSet.has(selectedPath) ? (
-                <button onClick={() => handleUnlinkWiki(selectedPath)}
-                  className="text-[8px] px-1.5 py-0.5 rounded text-destructive/50 hover:text-destructive hover:bg-destructive/10 transition-colors">
+                <button
+                  onClick={() => handleUnlinkWiki(selectedPath)}
+                  className="text-[8px] px-1.5 py-0.5 rounded text-destructive/50 hover:text-destructive hover:bg-destructive/10 transition-colors"
+                >
                   Unlink
                 </button>
               ) : (
-                <button onClick={() => handleLinkWiki(selectedPath)}
-                  className="text-[8px] px-1.5 py-0.5 rounded text-accent/50 hover:text-accent hover:bg-accent/10 transition-colors">
+                <button
+                  onClick={() => handleLinkWiki(selectedPath)}
+                  className="text-[8px] px-1.5 py-0.5 rounded text-accent/50 hover:text-accent hover:bg-accent/10 transition-colors"
+                >
                   Link
                 </button>
               )}
               {isEditing ? (
                 <>
-                  <button onClick={handleSaveEdit}
-                    className="text-[9px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 transition-colors">
+                  <button
+                    onClick={handleSaveEdit}
+                    className="text-[9px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 transition-colors"
+                  >
                     Save
                   </button>
-                  <button onClick={() => setEditingPath(null)}
-                    className="text-[9px] px-2 py-0.5 rounded text-muted-foreground/40 hover:text-muted-foreground/60 transition-colors">
+                  <button
+                    onClick={() => setEditingPath(null)}
+                    className="text-[9px] px-2 py-0.5 rounded text-muted-foreground/40 hover:text-muted-foreground/60 transition-colors"
+                  >
                     Cancel
                   </button>
                 </>
               ) : (
                 <>
-                  <button onClick={() => handleStartEdit(selectedPath)}
-                    className="text-[9px] px-2 py-0.5 rounded text-muted-foreground/30 hover:text-accent transition-colors">
+                  <button
+                    onClick={() => handleStartEdit(selectedPath)}
+                    className="text-[9px] px-2 py-0.5 rounded text-muted-foreground/30 hover:text-accent transition-colors"
+                  >
                     Edit
                   </button>
-                  <button onClick={() => handleDeletePage(selectedPath)}
-                    className="text-[9px] px-2 py-0.5 rounded text-destructive/30 hover:text-destructive transition-colors">
+                  <button
+                    onClick={() => handleDeletePage(selectedPath)}
+                    className="text-[9px] px-2 py-0.5 rounded text-destructive/30 hover:text-destructive transition-colors"
+                  >
                     Delete
                   </button>
                 </>
@@ -652,7 +811,12 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
               {selectedTags.length > 0 && (
                 <div className="flex items-center gap-1 flex-wrap">
                   {selectedTags.map((tag) => (
-                    <span key={tag} className="text-[7px] px-1 py-0.5 rounded bg-accent/10 text-accent/60">{tag}</span>
+                    <span
+                      key={tag}
+                      className="text-[7px] px-1 py-0.5 rounded bg-accent/10 text-accent/60"
+                    >
+                      {tag}
+                    </span>
                   ))}
                 </div>
               )}
@@ -676,7 +840,9 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
                   <Markdown content={selectedBody} />
                 </div>
               ) : (
-                <div className="text-[10px] text-muted-foreground/20 py-8 text-center">Empty article</div>
+                <div className="text-[10px] text-muted-foreground/20 py-8 text-center">
+                  Empty article
+                </div>
               )}
 
               {/* Backlinks section */}
@@ -693,8 +859,14 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
                         className="flex items-center gap-1.5 w-full px-1.5 py-1 rounded text-left hover:bg-muted/10 transition-colors"
                       >
                         <Link2 className="w-2.5 h-2.5 text-accent/40 flex-shrink-0" />
-                        <span className="text-[9px] text-accent/60 truncate">{bl.source_path.replace(/\.md$/, "")}</span>
-                        {bl.context && <span className="text-[8px] text-muted-foreground/20 truncate ml-auto">{bl.context}</span>}
+                        <span className="text-[9px] text-accent/60 truncate">
+                          {bl.source_path.replace(/\.md$/, "")}
+                        </span>
+                        {bl.context && (
+                          <span className="text-[8px] text-muted-foreground/20 truncate ml-auto">
+                            {bl.context}
+                          </span>
+                        )}
                       </button>
                     ))}
                   </div>
@@ -717,4 +889,3 @@ export function WikiTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: 
     </div>
   );
 }
-

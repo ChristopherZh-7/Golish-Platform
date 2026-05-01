@@ -1,18 +1,47 @@
-import type { ComponentProps } from "react";
-
 export function extToLang(name: string): string | null {
   const ext = name.split(".").pop()?.toLowerCase();
   const map: Record<string, string> = {
-    py: "python", sh: "bash", bash: "bash", zsh: "bash", go: "go", rs: "rust",
-    rb: "ruby", pl: "perl", js: "javascript", ts: "typescript", jsx: "jsx", tsx: "tsx",
-    c: "c", cpp: "cpp", h: "c", hpp: "cpp", java: "java", cs: "csharp",
-    swift: "swift", kt: "kotlin", lua: "lua", r: "r", ps1: "powershell",
-    bat: "batch", php: "php", html: "html", css: "css", xml: "xml",
-    json: "json", yaml: "yaml", yml: "yaml", toml: "toml", ini: "ini",
-    sql: "sql", graphql: "graphql", proto: "protobuf", nse: "lua",
-    dockerfile: "dockerfile", makefile: "makefile",
+    py: "python",
+    sh: "bash",
+    bash: "bash",
+    zsh: "bash",
+    go: "go",
+    rs: "rust",
+    rb: "ruby",
+    pl: "perl",
+    js: "javascript",
+    ts: "typescript",
+    jsx: "jsx",
+    tsx: "tsx",
+    c: "c",
+    cpp: "cpp",
+    h: "c",
+    hpp: "cpp",
+    java: "java",
+    cs: "csharp",
+    swift: "swift",
+    kt: "kotlin",
+    lua: "lua",
+    r: "r",
+    ps1: "powershell",
+    bat: "batch",
+    php: "php",
+    html: "html",
+    css: "css",
+    xml: "xml",
+    json: "json",
+    yaml: "yaml",
+    yml: "yaml",
+    toml: "toml",
+    ini: "ini",
+    sql: "sql",
+    graphql: "graphql",
+    proto: "protobuf",
+    nse: "lua",
+    dockerfile: "dockerfile",
+    makefile: "makefile",
   };
-  return ext ? (map[ext] || null) : null;
+  return ext ? map[ext] || null : null;
 }
 
 export function isMarkdown(name: string): boolean {

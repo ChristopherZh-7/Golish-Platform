@@ -3,20 +3,21 @@
 /**
  * Vertex AI (Anthropic on Google Cloud) settings.
  */
-export type VertexAiSettings = { 
-/**
- * Path to service account JSON credentials
- */
-credentials_path: string | null, 
-/**
- * Google Cloud project ID
- */
-project_id: string | null, 
-/**
- * Vertex AI region (e.g., "us-east5")
- */
-location: string | null, 
-/**
- * Whether to show this provider's models in the model selector
- */
-show_in_selector: boolean, };
+export type VertexAiSettings = {
+  /**
+   * Path to service account JSON credentials
+   */
+  credentials_path: string | null;
+  /**
+   * Google Cloud project ID
+   */
+  project_id: string | null;
+  /**
+   * Vertex AI region (e.g., "us-east5")
+   */
+  location: string | null;
+  /**
+   * Whether to show this provider's models in the model selector
+   */
+  show_in_selector: boolean;
+};

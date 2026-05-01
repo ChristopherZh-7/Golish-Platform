@@ -1,3 +1,4 @@
+import { open as openFileDialog, save } from "@tauri-apps/plugin-dialog";
 import {
   ArrowLeftRight,
   BookOpen,
@@ -26,8 +27,6 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useState } from "react";
-import { invoke } from "@/lib/api";
-import { save, open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   CommandDialog,
   CommandEmpty,
@@ -38,6 +37,7 @@ import {
   CommandSeparator,
   CommandShortcut,
 } from "@/components/ui/command";
+import { invoke } from "@/lib/api";
 import { indexDirectory, isIndexerInitialized, searchCode, searchFiles } from "@/lib/indexer";
 import { notify } from "@/lib/notify";
 import { getProjectPath } from "@/lib/projects";
@@ -203,7 +203,10 @@ export function CommandPalette({
         filters: [{ name: "ZIP", extensions: ["zip"] }],
       });
       if (!path) return;
-      const result = await invoke<{ path: string; files_count: number; size_bytes: number }>("project_export", { outputPath: path, projectPath: getProjectPath() });
+      const result = await invoke<{ path: string; files_count: number; size_bytes: number }>(
+        "project_export",
+        { outputPath: path, projectPath: getProjectPath() }
+      );
       const sizeMb = (result.size_bytes / 1024 / 1024).toFixed(1);
       notify.success(`Exported ${result.files_count} files (${sizeMb} MB)`);
     } catch (e) {
@@ -218,7 +221,11 @@ export function CommandPalette({
         multiple: false,
       });
       if (!path) return;
-      const result = await invoke<{ files_count: number }>("project_import", { zipPath: path, overwrite: false, projectPath: getProjectPath() });
+      const result = await invoke<{ files_count: number }>("project_import", {
+        zipPath: path,
+        overwrite: false,
+        projectPath: getProjectPath(),
+      });
       notify.success(`Imported ${result.files_count} files`);
     } catch (e) {
       notify.error(`Import failed: ${e}`);

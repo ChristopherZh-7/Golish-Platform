@@ -9,6 +9,7 @@
 //! The MCP manager is global (shared across all sessions) and initialized
 //! in the background during app startup.
 
+use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -70,7 +71,7 @@ pub struct McpToolInfo {
 pub async fn mcp_list_servers(
     workspace_path: Option<String>,
     state: State<'_, AppState>,
-) -> Result<Vec<McpServerInfo>, String> {
+) -> Result<Vec<McpServerInfo>, GolishError> {
     use golish_mcp::{load_mcp_config, McpTransportType};
 
     // Get workspace path (from parameter or current dir as fallback)
@@ -84,7 +85,7 @@ pub async fn mcp_list_servers(
     };
 
     // Load merged config
-    let config = load_mcp_config(&workspace).map_err(|e| e.to_string())?;
+    let config = load_mcp_config(&workspace)?;
 
     // Check which servers are from builtin, user, or project config
     let builtin_names = golish_mcp::builtin_server_names();
@@ -157,13 +158,13 @@ pub async fn mcp_list_servers(
 ///
 /// This retrieves tools from the global MCP manager.
 #[tauri::command]
-pub async fn mcp_list_tools(state: State<'_, AppState>) -> Result<Vec<McpToolInfo>, String> {
+pub async fn mcp_list_tools(state: State<'_, AppState>) -> Result<Vec<McpToolInfo>, GolishError> {
     let manager_guard = state.mcp_manager.read().await;
     let manager = manager_guard
         .as_ref()
-        .ok_or_else(|| "MCP manager not initialized yet".to_string())?;
+        .ok_or_else(|| GolishError::Internal("MCP manager not initialized yet".into()))?;
 
-    let tools = manager.list_tools().await.map_err(|e| e.to_string())?;
+    let tools = manager.list_tools().await?;
 
     let mut result = Vec::new();
     for tool in tools {
@@ -188,7 +189,7 @@ pub async fn mcp_list_tools(state: State<'_, AppState>) -> Result<Vec<McpToolInf
 
 /// Check if a project's MCP configuration is trusted.
 #[tauri::command]
-pub async fn mcp_is_project_trusted(project_path: String) -> Result<bool, String> {
+pub async fn mcp_is_project_trusted(project_path: String) -> Result<bool, GolishError> {
     let path = PathBuf::from(project_path);
     Ok(golish_mcp::is_project_config_trusted(&path))
 }
@@ -198,9 +199,9 @@ pub async fn mcp_is_project_trusted(project_path: String) -> Result<bool, String
 /// This should be called after the user explicitly approves a project's
 /// MCP configuration in the UI.
 #[tauri::command]
-pub async fn mcp_trust_project_config(project_path: String) -> Result<(), String> {
+pub async fn mcp_trust_project_config(project_path: String) -> Result<(), GolishError> {
     let path = PathBuf::from(project_path);
-    golish_mcp::trust_project_config(&path).map_err(|e| e.to_string())
+    golish_mcp::trust_project_config(&path).map_err(GolishError::from)
 }
 
 /// Get MCP configuration for a workspace.
@@ -209,11 +210,11 @@ pub async fn mcp_trust_project_config(project_path: String) -> Result<(), String
 #[tauri::command]
 pub async fn mcp_get_config(
     workspace_path: String,
-) -> Result<HashMap<String, serde_json::Value>, String> {
+) -> Result<HashMap<String, serde_json::Value>, GolishError> {
     use golish_mcp::load_mcp_config;
 
     let workspace = PathBuf::from(workspace_path);
-    let config = load_mcp_config(&workspace).map_err(|e| e.to_string())?;
+    let config = load_mcp_config(&workspace)?;
 
     // Convert to JSON-serializable format
     let servers: HashMap<String, serde_json::Value> = config
@@ -232,7 +233,7 @@ pub async fn mcp_get_config(
 
 /// Check if MCP config exists for a workspace.
 #[tauri::command]
-pub async fn mcp_has_project_config(workspace_path: String) -> Result<bool, String> {
+pub async fn mcp_has_project_config(workspace_path: String) -> Result<bool, GolishError> {
     let path = PathBuf::from(workspace_path).join(".golish/mcp.json");
     Ok(path.exists())
 }
@@ -242,7 +243,7 @@ pub async fn mcp_has_project_config(workspace_path: String) -> Result<bool, Stri
 /// The server must be configured in the workspace config.
 /// After connecting, all active agent sessions have their MCP tools refreshed.
 #[tauri::command]
-pub async fn mcp_connect(server_name: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn mcp_connect(server_name: String, state: State<'_, AppState>) -> Result<(), GolishError> {
     // Get the global MCP manager
     let manager_guard = state.mcp_manager.read().await;
     let manager = manager_guard.as_ref().ok_or_else(|| {
@@ -268,7 +269,7 @@ pub async fn mcp_connect(server_name: String, state: State<'_, AppState>) -> Res
 ///
 /// After disconnecting, all active agent sessions have their MCP tools refreshed.
 #[tauri::command]
-pub async fn mcp_disconnect(server_name: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn mcp_disconnect(server_name: String, state: State<'_, AppState>) -> Result<(), GolishError> {
     // Get the global MCP manager
     let manager_guard = state.mcp_manager.read().await;
     let manager = manager_guard.as_ref().ok_or_else(|| {

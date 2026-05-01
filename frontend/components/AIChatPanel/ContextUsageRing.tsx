@@ -40,7 +40,7 @@ export const ContextUsageRing = memo(function ContextUsageRing({
                 ? "text-red-400"
                 : contextUsage.utilization > 0.7
                   ? "text-[#e0af68]"
-                  : "text-accent",
+                  : "text-accent"
           )}
           stroke="currentColor"
         />

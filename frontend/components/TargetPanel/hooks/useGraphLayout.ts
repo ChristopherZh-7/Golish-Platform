@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import cytoscape from "cytoscape";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getRootDomain } from "@/lib/domain";
-import { type Target } from "@/lib/pentest/types";
+import type { Target } from "@/lib/pentest/types";
 
 // ── Graph element construction ──
 
@@ -196,7 +196,7 @@ function getCytoscapeStyles() {
 
 export function useGraphLayout(
   containerRef: React.RefObject<HTMLDivElement | null>,
-  targets: Target[],
+  targets: Target[]
 ) {
   const cyRef = useRef<cytoscape.Core | null>(null);
   const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -204,82 +204,91 @@ export function useGraphLayout(
 
   const elements = useMemo(() => buildGraphElements(targets), [targets]);
 
-  const renderCytoscape = useCallback((retries = 0) => {
-    const container = containerRef.current;
-    if (!container || elements.length === 0) return;
-    const parent = container.parentElement;
-    if (!parent) return;
-    const parentRect = parent.getBoundingClientRect();
-    if (parentRect.width <= 0 || parentRect.height <= 0) {
-      if (retries < 20) {
-        retryRef.current = setTimeout(() => renderCytoscape(retries + 1), 150);
+  const renderCytoscape = useCallback(
+    (retries = 0) => {
+      const container = containerRef.current;
+      if (!container || elements.length === 0) return;
+      const parent = container.parentElement;
+      if (!parent) return;
+      const parentRect = parent.getBoundingClientRect();
+      if (parentRect.width <= 0 || parentRect.height <= 0) {
+        if (retries < 20) {
+          retryRef.current = setTimeout(() => renderCytoscape(retries + 1), 150);
+        }
+        return;
       }
-      return;
-    }
 
-    if (cyRef.current) cyRef.current.destroy();
+      if (cyRef.current) cyRef.current.destroy();
 
-    container.style.width = `${parentRect.width}px`;
-    container.style.height = `${parentRect.height}px`;
+      container.style.width = `${parentRect.width}px`;
+      container.style.height = `${parentRect.height}px`;
 
-    const cy = cytoscape({
-      container,
-      elements,
-      style: getCytoscapeStyles(),
-      layout: { name: "preset", fit: true, padding: 48, animate: false },
-      minZoom: 0.2,
-      maxZoom: 5,
-      textureOnViewport: true,
-      hideEdgesOnViewport: true,
-      hideLabelsOnViewport: true,
-    });
-
-    container.style.opacity = "0";
-    requestAnimationFrame(() => {
-      cy.resize();
-      cy.fit(undefined, 60);
-      const fitZ = cy.zoom();
-      cy.zoom({
-        level: Math.min(fitZ * 0.7, 1.5),
-        renderedPosition: { x: container.clientWidth / 2, y: container.clientHeight / 2 },
-      });
-      container.style.transition = "opacity 150ms ease-in";
-      container.style.opacity = "1";
-    });
-
-    cy.on("tap", "node", (evt) => {
-      const node = evt.target;
-      const d = node.data();
-
-      cy.stop();
-      cy.animate({
-        center: { eles: node },
-        zoom: Math.max(cy.zoom(), 1.2),
-      }, {
-        duration: 200,
-        easing: "ease-out-quad",
-        complete: () => {
-          if (d.targetId) {
-            const t = targets.find((t) => t.id === d.targetId);
-            if (t) setSelectedTarget(t);
-          }
-        },
+      const cy = cytoscape({
+        container,
+        elements,
+        style: getCytoscapeStyles(),
+        layout: { name: "preset", fit: true, padding: 48, animate: false },
+        minZoom: 0.2,
+        maxZoom: 5,
+        textureOnViewport: true,
+        hideEdgesOnViewport: true,
+        hideLabelsOnViewport: true,
       });
 
-      if (!d.targetId) setSelectedTarget(null);
-    });
-    cy.on("tap", (evt) => {
-      if (evt.target === cy) {
-        setSelectedTarget(null);
+      container.style.opacity = "0";
+      requestAnimationFrame(() => {
+        cy.resize();
+        cy.fit(undefined, 60);
+        const fitZ = cy.zoom();
+        cy.zoom({
+          level: Math.min(fitZ * 0.7, 1.5),
+          renderedPosition: { x: container.clientWidth / 2, y: container.clientHeight / 2 },
+        });
+        container.style.transition = "opacity 150ms ease-in";
+        container.style.opacity = "1";
+      });
+
+      cy.on("tap", "node", (evt) => {
+        const node = evt.target;
+        const d = node.data();
+
         cy.stop();
-        cy.animate({
-          fit: { eles: cy.elements(), padding: 60 },
-        }, { duration: 200, easing: "ease-out-quad" });
-      }
-    });
+        cy.animate(
+          {
+            center: { eles: node },
+            zoom: Math.max(cy.zoom(), 1.2),
+          },
+          {
+            duration: 200,
+            easing: "ease-out-quad",
+            complete: () => {
+              if (d.targetId) {
+                const t = targets.find((t) => t.id === d.targetId);
+                if (t) setSelectedTarget(t);
+              }
+            },
+          }
+        );
 
-    cyRef.current = cy;
-  }, [elements, targets, containerRef]);
+        if (!d.targetId) setSelectedTarget(null);
+      });
+      cy.on("tap", (evt) => {
+        if (evt.target === cy) {
+          setSelectedTarget(null);
+          cy.stop();
+          cy.animate(
+            {
+              fit: { eles: cy.elements(), padding: 60 },
+            },
+            { duration: 200, easing: "ease-out-quad" }
+          );
+        }
+      });
+
+      cyRef.current = cy;
+    },
+    [elements, targets, containerRef]
+  );
 
   useEffect(() => {
     renderCytoscape();
@@ -314,28 +323,34 @@ export function useGraphLayout(
     return () => observer.disconnect();
   }, [elements, renderCytoscape, containerRef]);
 
-  const focusNode = useCallback((targetId: string) => {
-    const cy = cyRef.current;
-    if (!cy) return;
-    const node = cy.getElementById(`target:${targetId}`);
-    if (node.length > 0) {
-      cy.stop();
-      cy.animate({
-        center: { eles: node },
-        zoom: Math.max(cy.zoom(), 1.2),
-      }, {
-        duration: 200,
-        easing: "ease-out-quad",
-        complete: () => {
-          const t = targets.find((t) => t.id === targetId);
-          if (t) setSelectedTarget(t);
-        },
-      });
-    } else {
-      const t = targets.find((t) => t.id === targetId);
-      if (t) setSelectedTarget(t);
-    }
-  }, [targets]);
+  const focusNode = useCallback(
+    (targetId: string) => {
+      const cy = cyRef.current;
+      if (!cy) return;
+      const node = cy.getElementById(`target:${targetId}`);
+      if (node.length > 0) {
+        cy.stop();
+        cy.animate(
+          {
+            center: { eles: node },
+            zoom: Math.max(cy.zoom(), 1.2),
+          },
+          {
+            duration: 200,
+            easing: "ease-out-quad",
+            complete: () => {
+              const t = targets.find((t) => t.id === targetId);
+              if (t) setSelectedTarget(t);
+            },
+          }
+        );
+      } else {
+        const t = targets.find((t) => t.id === targetId);
+        if (t) setSelectedTarget(t);
+      }
+    },
+    [targets]
+  );
 
   return {
     cyRef,

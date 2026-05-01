@@ -1,3 +1,4 @@
+use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 
 use crate::state::DbState;
@@ -29,7 +30,7 @@ fn default_true() -> bool {
 pub async fn custom_rules_list(
     state: tauri::State<'_, DbState>,
     project_path: Option<String>,
-) -> Result<Vec<CustomPassiveRule>, String> {
+) -> Result<Vec<CustomPassiveRule>, GolishError> {
     let pool = state.pool_ready().await?;
     let rows: Vec<(String, String, String, String, String, bool)> = sqlx::query_as(
         "SELECT id, name, pattern, scope, severity, enabled \
@@ -39,7 +40,7 @@ pub async fn custom_rules_list(
     .bind(project_path.as_deref())
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     Ok(rows
         .into_iter()
@@ -59,7 +60,7 @@ pub async fn custom_rules_upsert(
     state: tauri::State<'_, DbState>,
     rule: CustomPassiveRule,
     project_path: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     sqlx::query(
         r#"INSERT INTO custom_passive_rules (id, name, pattern, scope, severity, enabled, project_path)
@@ -81,7 +82,7 @@ pub async fn custom_rules_upsert(
     .bind(project_path.as_deref())
     .execute(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
     Ok(())
 }
 
@@ -90,14 +91,14 @@ pub async fn custom_rules_save_all(
     state: tauri::State<'_, DbState>,
     rules: Vec<CustomPassiveRule>,
     project_path: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
 
     sqlx::query("DELETE FROM custom_passive_rules WHERE project_path = $1")
         .bind(project_path.as_deref())
         .execute(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     for rule in &rules {
         sqlx::query(
@@ -113,7 +114,7 @@ pub async fn custom_rules_save_all(
         .bind(project_path.as_deref())
         .execute(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     }
 
     Ok(())
@@ -123,12 +124,12 @@ pub async fn custom_rules_save_all(
 pub async fn custom_rules_delete(
     state: tauri::State<'_, DbState>,
     id: String,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     sqlx::query("DELETE FROM custom_passive_rules WHERE id = $1")
         .bind(&id)
         .execute(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     Ok(())
 }

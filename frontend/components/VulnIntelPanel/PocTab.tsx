@@ -1,14 +1,24 @@
-import { useCallback, useState } from "react";
-import { invoke, vulnLinks } from "@/lib/api";
 import {
-  ChevronDown, ChevronRight, Code, Copy, ExternalLink, FileCode2,
-  FileText, Loader2, Plus, Search, Trash2, Zap,
+  ChevronDown,
+  ChevronRight,
+  Code,
+  Copy,
+  ExternalLink,
+  FileCode2,
+  FileText,
+  Loader2,
+  Plus,
+  Search,
+  Trash2,
+  Zap,
 } from "lucide-react";
+import { useCallback, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { CustomSelect } from "@/components/ui/custom-select";
+import { invoke, vulnLinks } from "@/lib/api";
 import { copyToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
-import type { VulnLink, PocTemplate } from "./types";
-import { CustomSelect } from "@/components/ui/custom-select";
-import { useTranslation } from "react-i18next";
+import type { PocTemplate, VulnLink } from "./types";
 
 interface GithubPocResult {
   full_name: string;
@@ -28,7 +38,15 @@ interface NucleiTemplateResult {
   severity: string | null;
 }
 
-export function PocTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: string; onUpdateLink: (updater: (l: VulnLink) => VulnLink) => void }) {
+export function PocTab({
+  link,
+  cveId,
+  onUpdateLink,
+}: {
+  link: VulnLink;
+  cveId: string;
+  onUpdateLink: (updater: (l: VulnLink) => VulnLink) => void;
+}) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState<PocTemplate | null>(null);
   const [formName, setFormName] = useState("");
@@ -65,7 +83,9 @@ export function PocTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: s
     setNucleiSearching(true);
     setNucleiError(null);
     try {
-      const results = await invoke<NucleiTemplateResult[]>("intel_search_nuclei_templates", { cveId });
+      const results = await invoke<NucleiTemplateResult[]>("intel_search_nuclei_templates", {
+        cveId,
+      });
       setNucleiResults(results);
     } catch (e) {
       setNucleiError(String(e));
@@ -75,31 +95,40 @@ export function PocTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: s
     setNucleiSearched(true);
   }, [cveId]);
 
-  const importNucleiTemplate = useCallback(async (template: NucleiTemplateResult) => {
-    if (!template.content) return;
-    setNucleiImporting(template.name);
-    try {
-      const dbPoc = await invoke<PocTemplate>(
-        "vuln_link_add_poc_full",
-        {
-          cveId, name: `[Nuclei] ${template.name}`, pocType: "nuclei", language: "yaml",
-          content: template.content, source: "nuclei_template",
-          sourceUrl: template.html_url, severity: template.severity ?? "unknown",
-          description: "", tags: [],
-        }
-      );
-      onUpdateLink((l) => ({
-        ...l,
-        pocTemplates: [...l.pocTemplates, {
-          ...dbPoc,
-          type: dbPoc.type as PocTemplate["type"],
-        }],
-      }));
-    } catch (e) {
-      console.error("Failed to import nuclei template:", e);
-    }
-    setNucleiImporting(null);
-  }, [cveId, onUpdateLink]);
+  const importNucleiTemplate = useCallback(
+    async (template: NucleiTemplateResult) => {
+      if (!template.content) return;
+      setNucleiImporting(template.name);
+      try {
+        const dbPoc = await invoke<PocTemplate>("vuln_link_add_poc_full", {
+          cveId,
+          name: `[Nuclei] ${template.name}`,
+          pocType: "nuclei",
+          language: "yaml",
+          content: template.content,
+          source: "nuclei_template",
+          sourceUrl: template.html_url,
+          severity: template.severity ?? "unknown",
+          description: "",
+          tags: [],
+        });
+        onUpdateLink((l) => ({
+          ...l,
+          pocTemplates: [
+            ...l.pocTemplates,
+            {
+              ...dbPoc,
+              type: dbPoc.type as PocTemplate["type"],
+            },
+          ],
+        }));
+      } catch (e) {
+        console.error("Failed to import nuclei template:", e);
+      }
+      setNucleiImporting(null);
+    },
+    [cveId, onUpdateLink]
+  );
 
   const importAllNucleiTemplates = useCallback(async () => {
     const importable = nucleiResults.filter((t) => t.content);
@@ -108,10 +137,13 @@ export function PocTab({ link, cveId, onUpdateLink }: { link: VulnLink; cveId: s
     }
   }, [nucleiResults, importNucleiTemplate]);
 
-  const generateTemplate = useCallback((type: PocTemplate["type"], lang = "python"): { content: string; language: string } => {
-    const slug = cveId.toLowerCase().replace(/[^a-z0-9-]/g, "-");
-    if (type === "nuclei") {
-      return { language: "yaml", content: `id: ${slug}
+  const generateTemplate = useCallback(
+    (type: PocTemplate["type"], lang = "python"): { content: string; language: string } => {
+      const slug = cveId.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+      if (type === "nuclei") {
+        return {
+          language: "yaml",
+          content: `id: ${slug}
 
 info:
   name: ${cveId}
@@ -128,11 +160,12 @@ http:
       - type: status
         status:
           - 200
-` };
-    }
-    if (type === "script") {
-      const templates: Record<string, string> = {
-        python: `#!/usr/bin/env python3
+`,
+        };
+      }
+      if (type === "script") {
+        const templates: Record<string, string> = {
+          python: `#!/usr/bin/env python3
 """${cveId} PoC - Proof of Concept"""
 import requests
 import sys
@@ -155,7 +188,7 @@ if __name__ == "__main__":
         sys.exit(1)
     exploit(sys.argv[1])
 `,
-        bash: `#!/bin/bash
+          bash: `#!/bin/bash
 # ${cveId} PoC - Proof of Concept
 
 TARGET="\${1:?Usage: $0 <target_url>}"
@@ -170,7 +203,7 @@ else
     echo "[-] $TARGET does not appear vulnerable (HTTP $RESP)"
 fi
 `,
-        go: `package main
+          go: `package main
 
 import (
 \t"fmt"
@@ -200,7 +233,7 @@ func main() {
 \t}
 }
 `,
-        javascript: `#!/usr/bin/env node
+          javascript: `#!/usr/bin/env node
 // ${cveId} PoC - Proof of Concept
 
 const target = process.argv[2];
@@ -219,7 +252,7 @@ fetch(\`\${target.replace(/\\/$/, "")}/\`)
   })
   .catch((err) => console.error(\`[-] Error: \${err.message}\`));
 `,
-        c: `/* ${cveId} PoC - Proof of Concept */
+          c: `/* ${cveId} PoC - Proof of Concept */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -266,11 +299,16 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 `,
+        };
+        return { language: lang, content: templates[lang] || templates.python };
+      }
+      return {
+        language: "markdown",
+        content: `# ${cveId} - Manual Testing\n\n## Steps to Reproduce\n\n1. Navigate to the target application\n2. ...\n\n## Expected Result\n\n...\n\n## Actual Result\n\n...\n\n## Impact\n\n...\n`,
       };
-      return { language: lang, content: templates[lang] || templates.python };
-    }
-    return { language: "markdown", content: `# ${cveId} - Manual Testing\n\n## Steps to Reproduce\n\n1. Navigate to the target application\n2. ...\n\n## Expected Result\n\n...\n\n## Actual Result\n\n...\n\n## Impact\n\n...\n` };
-  }, [cveId]);
+    },
+    [cveId]
+  );
 
   const handleNewPoc = useCallback(() => {
     const { content, language } = generateTemplate("nuclei");
@@ -278,25 +316,47 @@ int main(int argc, char *argv[]) {
     setFormType("nuclei");
     setFormLang(language);
     setFormContent(content);
-    setEditing({ id: "", name: "", type: "nuclei", language, content: "", source: "manual", source_url: "", severity: "unknown", verified: false, description: "", tags: [], created: 0 });
+    setEditing({
+      id: "",
+      name: "",
+      type: "nuclei",
+      language,
+      content: "",
+      source: "manual",
+      source_url: "",
+      severity: "unknown",
+      verified: false,
+      description: "",
+      tags: [],
+      created: 0,
+    });
   }, [cveId, generateTemplate]);
 
-  const handleTypeChange = useCallback((newType: PocTemplate["type"]) => {
-    setFormType(newType);
-    const { content, language } = generateTemplate(newType, newType === "script" ? "python" : undefined);
-    setFormLang(language);
-    if (!editing?.id) {
-      setFormContent(content);
-    }
-  }, [generateTemplate, editing]);
+  const handleTypeChange = useCallback(
+    (newType: PocTemplate["type"]) => {
+      setFormType(newType);
+      const { content, language } = generateTemplate(
+        newType,
+        newType === "script" ? "python" : undefined
+      );
+      setFormLang(language);
+      if (!editing?.id) {
+        setFormContent(content);
+      }
+    },
+    [generateTemplate, editing]
+  );
 
-  const handleLangChange = useCallback((newLang: string) => {
-    setFormLang(newLang);
-    if (!editing?.id) {
-      const { content } = generateTemplate("script", newLang);
-      setFormContent(content);
-    }
-  }, [generateTemplate, editing]);
+  const handleLangChange = useCallback(
+    (newLang: string) => {
+      setFormLang(newLang);
+      if (!editing?.id) {
+        const { content } = generateTemplate("script", newLang);
+        setFormContent(content);
+      }
+    },
+    [generateTemplate, editing]
+  );
 
   const handleEditPoc = useCallback((poc: PocTemplate) => {
     setFormName(poc.name);
@@ -310,18 +370,26 @@ int main(int argc, char *argv[]) {
     if (!formName.trim() || !formContent.trim()) return;
     const isNew = !editing;
     if (isNew) {
-      invoke<PocTemplate>(
-        "vuln_link_add_poc",
-        { cveId, name: formName.trim(), pocType: formType, language: formLang, content: formContent }
-      ).then((dbPoc) => {
-        onUpdateLink((l) => ({
-          ...l,
-          pocTemplates: [...l.pocTemplates, {
-            ...dbPoc,
-            type: dbPoc.type as PocTemplate["type"],
-          }],
-        }));
-      }).catch(console.error);
+      invoke<PocTemplate>("vuln_link_add_poc", {
+        cveId,
+        name: formName.trim(),
+        pocType: formType,
+        language: formLang,
+        content: formContent,
+      })
+        .then((dbPoc) => {
+          onUpdateLink((l) => ({
+            ...l,
+            pocTemplates: [
+              ...l.pocTemplates,
+              {
+                ...dbPoc,
+                type: dbPoc.type as PocTemplate["type"],
+              },
+            ],
+          }));
+        })
+        .catch(console.error);
     } else {
       vulnLinks.updatePoc(editing.id, formName.trim(), formContent).catch(console.error);
       onUpdateLink((l) => ({
@@ -336,10 +404,13 @@ int main(int argc, char *argv[]) {
     setFormContent("");
   }, [editing, formName, formType, formLang, formContent, onUpdateLink, cveId]);
 
-  const handleDeletePoc = useCallback((id: string) => {
-    onUpdateLink((l) => ({ ...l, pocTemplates: l.pocTemplates.filter((p) => p.id !== id) }));
-    vulnLinks.removePoc(id).catch(console.error);
-  }, [onUpdateLink]);
+  const handleDeletePoc = useCallback(
+    (id: string) => {
+      onUpdateLink((l) => ({ ...l, pocTemplates: l.pocTemplates.filter((p) => p.id !== id) }));
+      vulnLinks.removePoc(id).catch(console.error);
+    },
+    [onUpdateLink]
+  );
 
   const handleCopyContent = useCallback((content: string) => {
     copyToClipboard(content);
@@ -357,8 +428,10 @@ int main(int argc, char *argv[]) {
         <span className="text-[8px] text-muted-foreground/30 uppercase tracking-wider">
           {t("vulnIntel.pocTemplates", "PoC Templates")}
         </span>
-        <button onClick={handleNewPoc}
-          className="flex items-center gap-1 text-[9px] text-accent/60 hover:text-accent transition-colors">
+        <button
+          onClick={handleNewPoc}
+          className="flex items-center gap-1 text-[9px] text-accent/60 hover:text-accent transition-colors"
+        >
           <Plus className="w-2.5 h-2.5" /> {t("vulnIntel.addPoc", "Add PoC")}
         </button>
       </div>
@@ -372,7 +445,9 @@ int main(int argc, char *argv[]) {
               placeholder={t("vulnIntel.pocName", "PoC name...")}
               className="flex-1 h-6 px-2 text-[10px] bg-[var(--bg-hover)]/30 rounded border border-border/15 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40"
             />
-            <CustomSelect value={formType} onChange={(v) => handleTypeChange(v as PocTemplate["type"])}
+            <CustomSelect
+              value={formType}
+              onChange={(v) => handleTypeChange(v as PocTemplate["type"])}
               options={[
                 { value: "nuclei", label: "Nuclei YAML" },
                 { value: "script", label: "Script" },
@@ -382,7 +457,9 @@ int main(int argc, char *argv[]) {
               className="min-w-[70px]"
             />
             {formType === "script" && (
-              <CustomSelect value={formLang} onChange={handleLangChange}
+              <CustomSelect
+                value={formLang}
+                onChange={handleLangChange}
                 options={[
                   { value: "python", label: "Python" },
                   { value: "bash", label: "Bash" },
@@ -398,17 +475,25 @@ int main(int argc, char *argv[]) {
           <textarea
             value={formContent}
             onChange={(e) => setFormContent(e.target.value)}
-            placeholder={t("vulnIntel.pocContentPlaceholder", "Paste or write your PoC template here...")}
+            placeholder={t(
+              "vulnIntel.pocContentPlaceholder",
+              "Paste or write your PoC template here..."
+            )}
             rows={12}
             className="w-full px-3 py-2 text-[10px] font-mono bg-[var(--bg-hover)]/30 rounded border border-border/15 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40 resize-y leading-relaxed"
           />
           <div className="flex items-center gap-2">
-            <button onClick={handleSavePoc} disabled={!formName.trim() || !formContent.trim()}
-              className="px-3 py-1 rounded text-[9px] font-medium text-accent bg-accent/10 hover:bg-accent/20 transition-colors disabled:opacity-30">
+            <button
+              onClick={handleSavePoc}
+              disabled={!formName.trim() || !formContent.trim()}
+              className="px-3 py-1 rounded text-[9px] font-medium text-accent bg-accent/10 hover:bg-accent/20 transition-colors disabled:opacity-30"
+            >
               {editing.id ? t("vulnIntel.updatePoc", "Update") : t("vulnIntel.savePoc", "Save PoC")}
             </button>
-            <button onClick={() => setEditing(null)}
-              className="px-3 py-1 rounded text-[9px] text-muted-foreground/40 hover:text-foreground transition-colors">
+            <button
+              onClick={() => setEditing(null)}
+              className="px-3 py-1 rounded text-[9px] text-muted-foreground/40 hover:text-foreground transition-colors"
+            >
               {t("common.cancel")}
             </button>
           </div>
@@ -418,18 +503,26 @@ int main(int argc, char *argv[]) {
       {/* GitHub PoC Search */}
       <div className="border border-border/10 rounded-lg overflow-hidden">
         <div className="flex items-center justify-between px-3 py-2">
-          <span className="text-[8px] text-muted-foreground/30 uppercase tracking-wider">GitHub PoC</span>
+          <span className="text-[8px] text-muted-foreground/30 uppercase tracking-wider">
+            GitHub PoC
+          </span>
           <button
             onClick={searchGithubPoc}
             disabled={ghSearching}
             className="flex items-center gap-1 text-[9px] text-accent/60 hover:text-accent transition-colors disabled:opacity-30"
           >
-            {ghSearching ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Search className="w-2.5 h-2.5" />}
+            {ghSearching ? (
+              <Loader2 className="w-2.5 h-2.5 animate-spin" />
+            ) : (
+              <Search className="w-2.5 h-2.5" />
+            )}
             {ghSearched ? "Refresh" : "Search GitHub"}
           </button>
         </div>
         {ghError && (
-          <div className="px-3 py-1.5 text-[9px] text-red-400/70 border-t border-border/5">{ghError}</div>
+          <div className="px-3 py-1.5 text-[9px] text-red-400/70 border-t border-border/5">
+            {ghError}
+          </div>
         )}
         {ghSearched && ghResults.length === 0 && !ghError && (
           <div className="px-3 py-2 text-[9px] text-muted-foreground/25 border-t border-border/5">
@@ -439,23 +532,40 @@ int main(int argc, char *argv[]) {
         {ghResults.length > 0 && (
           <div className="border-t border-border/5 max-h-48 overflow-y-auto">
             {ghResults.map((repo) => (
-              <div key={repo.full_name} className="flex items-start gap-2 px-3 py-2 hover:bg-muted/5 transition-colors border-b border-border/3 last:border-b-0">
+              <div
+                key={repo.full_name}
+                className="flex items-start gap-2 px-3 py-2 hover:bg-muted/5 transition-colors border-b border-border/3 last:border-b-0"
+              >
                 <div className="flex-1 min-w-0">
-                  <a href={repo.html_url} target="_blank" rel="noopener noreferrer"
-                    className="text-[10px] text-accent/80 hover:text-accent transition-colors font-medium truncate block">
+                  <a
+                    href={repo.html_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[10px] text-accent/80 hover:text-accent transition-colors font-medium truncate block"
+                  >
                     {repo.full_name}
                   </a>
                   {repo.description && (
-                    <p className="text-[9px] text-muted-foreground/40 truncate mt-0.5">{repo.description}</p>
+                    <p className="text-[9px] text-muted-foreground/40 truncate mt-0.5">
+                      {repo.description}
+                    </p>
                   )}
                   <div className="flex items-center gap-2 mt-0.5">
-                    {repo.language && <span className="text-[8px] text-muted-foreground/30">{repo.language}</span>}
+                    {repo.language && (
+                      <span className="text-[8px] text-muted-foreground/30">{repo.language}</span>
+                    )}
                     <span className="text-[8px] text-yellow-400/50">★ {repo.stars}</span>
-                    <span className="text-[8px] text-muted-foreground/20">{new Date(repo.updated_at).toLocaleDateString()}</span>
+                    <span className="text-[8px] text-muted-foreground/20">
+                      {new Date(repo.updated_at).toLocaleDateString()}
+                    </span>
                   </div>
                 </div>
-                <a href={repo.html_url} target="_blank" rel="noopener noreferrer"
-                  className="p-1 text-muted-foreground/25 hover:text-accent transition-colors flex-shrink-0">
+                <a
+                  href={repo.html_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="p-1 text-muted-foreground/25 hover:text-accent transition-colors flex-shrink-0"
+                >
                   <ExternalLink className="w-3 h-3" />
                 </a>
               </div>
@@ -467,7 +577,9 @@ int main(int argc, char *argv[]) {
       {/* Nuclei Template Search */}
       <div className="border border-border/10 rounded-lg overflow-hidden">
         <div className="flex items-center justify-between px-3 py-2">
-          <span className="text-[8px] text-muted-foreground/30 uppercase tracking-wider">Nuclei Templates</span>
+          <span className="text-[8px] text-muted-foreground/30 uppercase tracking-wider">
+            Nuclei Templates
+          </span>
           <div className="flex items-center gap-2">
             {nucleiSearched && nucleiResults.filter((t) => t.content).length > 0 && (
               <button
@@ -482,13 +594,19 @@ int main(int argc, char *argv[]) {
               disabled={nucleiSearching}
               className="flex items-center gap-1 text-[9px] text-accent/60 hover:text-accent transition-colors disabled:opacity-30"
             >
-              {nucleiSearching ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Search className="w-2.5 h-2.5" />}
+              {nucleiSearching ? (
+                <Loader2 className="w-2.5 h-2.5 animate-spin" />
+              ) : (
+                <Search className="w-2.5 h-2.5" />
+              )}
               {nucleiSearched ? "Refresh" : "Search"}
             </button>
           </div>
         </div>
         {nucleiError && (
-          <div className="px-3 py-1.5 text-[9px] text-red-400/70 border-t border-border/5">{nucleiError}</div>
+          <div className="px-3 py-1.5 text-[9px] text-red-400/70 border-t border-border/5">
+            {nucleiError}
+          </div>
         )}
         {nucleiSearched && nucleiResults.length === 0 && !nucleiError && (
           <div className="px-3 py-2 text-[9px] text-muted-foreground/25 border-t border-border/5">
@@ -498,25 +616,44 @@ int main(int argc, char *argv[]) {
         {nucleiResults.length > 0 && (
           <div className="border-t border-border/5 max-h-56 overflow-y-auto">
             {nucleiResults.map((tmpl) => {
-              const alreadyImported = link.pocTemplates.some((p) => p.name === `[Nuclei] ${tmpl.name}`);
-              const severityColor = tmpl.severity === "critical" ? "text-red-400"
-                : tmpl.severity === "high" ? "text-orange-400"
-                : tmpl.severity === "medium" ? "text-yellow-400"
-                : tmpl.severity === "low" ? "text-blue-400"
-                : "text-muted-foreground/40";
+              const alreadyImported = link.pocTemplates.some(
+                (p) => p.name === `[Nuclei] ${tmpl.name}`
+              );
+              const severityColor =
+                tmpl.severity === "critical"
+                  ? "text-red-400"
+                  : tmpl.severity === "high"
+                    ? "text-orange-400"
+                    : tmpl.severity === "medium"
+                      ? "text-yellow-400"
+                      : tmpl.severity === "low"
+                        ? "text-blue-400"
+                        : "text-muted-foreground/40";
               return (
-                <div key={tmpl.path} className="flex items-start gap-2 px-3 py-2 hover:bg-muted/5 transition-colors border-b border-border/3 last:border-b-0">
+                <div
+                  key={tmpl.path}
+                  className="flex items-start gap-2 px-3 py-2 hover:bg-muted/5 transition-colors border-b border-border/3 last:border-b-0"
+                >
                   <Zap className="w-3 h-3 text-orange-400/60 flex-shrink-0 mt-0.5" />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <span className="text-[10px] text-foreground/70 font-medium truncate">{tmpl.name}</span>
+                      <span className="text-[10px] text-foreground/70 font-medium truncate">
+                        {tmpl.name}
+                      </span>
                       {tmpl.severity && (
-                        <span className={cn("text-[8px] px-1 py-0.5 rounded bg-muted/10 font-medium", severityColor)}>
+                        <span
+                          className={cn(
+                            "text-[8px] px-1 py-0.5 rounded bg-muted/10 font-medium",
+                            severityColor
+                          )}
+                        >
                           {tmpl.severity}
                         </span>
                       )}
                     </div>
-                    <p className="text-[9px] text-muted-foreground/35 truncate mt-0.5">{tmpl.path}</p>
+                    <p className="text-[9px] text-muted-foreground/35 truncate mt-0.5">
+                      {tmpl.path}
+                    </p>
                   </div>
                   <div className="flex items-center gap-1 flex-shrink-0">
                     {tmpl.content && !alreadyImported && (
@@ -525,14 +662,22 @@ int main(int argc, char *argv[]) {
                         disabled={nucleiImporting === tmpl.name}
                         className="px-1.5 py-0.5 rounded text-[8px] font-medium text-accent/70 bg-accent/10 hover:bg-accent/20 transition-colors disabled:opacity-30"
                       >
-                        {nucleiImporting === tmpl.name ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : "Import"}
+                        {nucleiImporting === tmpl.name ? (
+                          <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                        ) : (
+                          "Import"
+                        )}
                       </button>
                     )}
                     {alreadyImported && (
                       <span className="text-[8px] text-emerald-400/50 px-1.5">Imported</span>
                     )}
-                    <a href={tmpl.html_url} target="_blank" rel="noopener noreferrer"
-                      className="p-1 text-muted-foreground/25 hover:text-accent transition-colors">
+                    <a
+                      href={tmpl.html_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="p-1 text-muted-foreground/25 hover:text-accent transition-colors"
+                    >
                       <ExternalLink className="w-3 h-3" />
                     </a>
                   </div>
@@ -547,7 +692,12 @@ int main(int argc, char *argv[]) {
         <div className="flex flex-col items-center justify-center py-4 gap-2 text-muted-foreground/20">
           <Code className="w-8 h-8" />
           <p className="text-[10px]">{t("vulnIntel.noPoc", "No PoC templates")}</p>
-          <p className="text-[9px] text-muted-foreground/15 max-w-xs text-center">{t("vulnIntel.pocHint", "Add Nuclei YAML templates, scripts, or manual testing notes for this vulnerability")}</p>
+          <p className="text-[9px] text-muted-foreground/15 max-w-xs text-center">
+            {t(
+              "vulnIntel.pocHint",
+              "Add Nuclei YAML templates, scripts, or manual testing notes for this vulnerability"
+            )}
+          </p>
         </div>
       ) : (
         <div className="space-y-1">
@@ -559,23 +709,44 @@ int main(int argc, char *argv[]) {
               >
                 {typeIcon(poc.type)}
                 <span className="text-[10px] text-foreground/70 truncate flex-1">{poc.name}</span>
-                <span className="text-[8px] text-muted-foreground/25 px-1.5 py-0.5 bg-muted/10 rounded">{poc.type}</span>
+                <span className="text-[8px] text-muted-foreground/25 px-1.5 py-0.5 bg-muted/10 rounded">
+                  {poc.type}
+                </span>
                 <span className="text-[8px] text-muted-foreground/20">{poc.language}</span>
                 <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button onClick={(e) => { e.stopPropagation(); handleCopyContent(poc.content); }}
-                    className="p-0.5 rounded text-muted-foreground/30 hover:text-accent transition-colors">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleCopyContent(poc.content);
+                    }}
+                    className="p-0.5 rounded text-muted-foreground/30 hover:text-accent transition-colors"
+                  >
                     <Copy className="w-3 h-3" />
                   </button>
-                  <button onClick={(e) => { e.stopPropagation(); handleEditPoc(poc); }}
-                    className="p-0.5 rounded text-muted-foreground/30 hover:text-accent transition-colors">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleEditPoc(poc);
+                    }}
+                    className="p-0.5 rounded text-muted-foreground/30 hover:text-accent transition-colors"
+                  >
                     <FileCode2 className="w-3 h-3" />
                   </button>
-                  <button onClick={(e) => { e.stopPropagation(); handleDeletePoc(poc.id); }}
-                    className="p-0.5 rounded text-muted-foreground/30 hover:text-destructive transition-colors">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeletePoc(poc.id);
+                    }}
+                    className="p-0.5 rounded text-muted-foreground/30 hover:text-destructive transition-colors"
+                  >
                     <Trash2 className="w-3 h-3" />
                   </button>
                 </div>
-                {expandedPoc === poc.id ? <ChevronDown className="w-3 h-3 text-muted-foreground/30" /> : <ChevronRight className="w-3 h-3 text-muted-foreground/30" />}
+                {expandedPoc === poc.id ? (
+                  <ChevronDown className="w-3 h-3 text-muted-foreground/30" />
+                ) : (
+                  <ChevronRight className="w-3 h-3 text-muted-foreground/30" />
+                )}
               </div>
               {expandedPoc === poc.id && (
                 <pre className="px-3 py-2 text-[10px] font-mono text-foreground/50 bg-[var(--bg-hover)]/20 border-t border-border/10 overflow-x-auto max-h-64 overflow-y-auto leading-relaxed">
@@ -589,4 +760,3 @@ int main(int argc, char *argv[]) {
     </div>
   );
 }
-

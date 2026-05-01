@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { logger } from "@/lib/logger";
 import { type FileInfo, listWorkspaceFiles } from "@/lib/api/files";
+import { logger } from "@/lib/logger";
 
 export function useFileCommands(workingDirectory?: string, query?: string) {
   const [files, setFiles] = useState<FileInfo[]>([]);

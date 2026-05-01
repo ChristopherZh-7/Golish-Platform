@@ -1,3 +1,4 @@
+use crate::error::GolishError;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -193,7 +194,7 @@ pub async fn output_parse(
     config: OutputParserConfig,
     tool_id: Option<String>,
     tool_name: Option<String>,
-) -> Result<ParseResult, String> {
+) -> Result<ParseResult, GolishError> {
     let items = match config.format.as_str() {
         "text" => parse_text(&raw_output, &config.patterns),
         "json_lines" => parse_json_lines(&raw_output, &config.fields),
@@ -215,7 +216,7 @@ pub async fn output_parse(
     })
 }
 
-fn toolsconfig_dir() -> Result<std::path::PathBuf, String> {
+fn toolsconfig_dir() -> Result<std::path::PathBuf, GolishError> {
     golish_core::paths::toolsconfig_dir().ok_or_else(|| "cannot resolve home directory".to_string())
 }
 
@@ -223,7 +224,7 @@ fn toolsconfig_dir() -> Result<std::path::PathBuf, String> {
 pub async fn output_detect_tool(
     command: String,
     raw_output: String,
-) -> Result<Option<serde_json::Value>, String> {
+) -> Result<Option<serde_json::Value>, GolishError> {
     let tools_dir = toolsconfig_dir()?;
 
     if !tools_dir.exists() {
@@ -302,7 +303,7 @@ pub async fn output_parse_and_store(
     tool_id: Option<String>,
     tool_name: Option<String>,
     project_path: Option<String>,
-) -> Result<ParseAndStoreResult, String> {
+) -> Result<ParseAndStoreResult, GolishError> {
     let items = match config.format.as_str() {
         "text" => parse_text(&raw_output, &config.patterns),
         "json_lines" => parse_json_lines(&raw_output, &config.fields),

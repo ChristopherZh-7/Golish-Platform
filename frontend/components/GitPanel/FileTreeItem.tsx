@@ -1,10 +1,17 @@
-import { ChevronDown, ChevronRight, File, Minus, Pencil, Plus } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  File,
+  GitCommitHorizontal,
+  Minus,
+  Pencil,
+  Plus,
+  X,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { GitChange } from "@/lib/git";
 import { cn } from "@/lib/utils";
-import { X } from "lucide-react";
-import { GitCommitHorizontal } from "lucide-react";
 
 export interface TreeNode {
   name: string;

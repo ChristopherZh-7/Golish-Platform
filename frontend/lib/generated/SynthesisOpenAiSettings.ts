@@ -3,16 +3,17 @@
 /**
  * OpenAI settings for sidecar synthesis.
  */
-export type SynthesisOpenAiSettings = { 
-/**
- * API key (falls back to api_keys or env var)
- */
-api_key: string | null, 
-/**
- * Model to use for synthesis (default: gpt-4o-mini)
- */
-model: string, 
-/**
- * Custom base URL for OpenAI-compatible APIs
- */
-base_url: string | null, };
+export type SynthesisOpenAiSettings = {
+  /**
+   * API key (falls back to api_keys or env var)
+   */
+  api_key: string | null;
+  /**
+   * Model to use for synthesis (default: gpt-4o-mini)
+   */
+  model: string;
+  /**
+   * Custom base URL for OpenAI-compatible APIs
+   */
+  base_url: string | null;
+};

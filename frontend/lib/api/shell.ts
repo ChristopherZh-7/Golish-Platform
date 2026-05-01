@@ -46,7 +46,7 @@ export interface PathCompletionResponse {
 export async function listPathCompletions(
   sessionId: string,
   partialPath: string,
-  limit?: number,
+  limit?: number
 ): Promise<PathCompletionResponse> {
   return invoke<PathCompletionResponse>("list_path_completions", {
     sessionId,

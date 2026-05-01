@@ -34,12 +34,29 @@ export const SHELL_PROCESSES = new Set(["zsh", "bash", "sh", "fish"]);
 export const GIT_STATUS_POLL_INTERVAL_MS = 5000;
 
 export const FAST_COMMANDS = new Set([
-  "ls", "pwd", "cd", "echo", "cat", "which", "whoami",
-  "date", "clear", "exit", "history", "env", "printenv",
+  "ls",
+  "pwd",
+  "cd",
+  "echo",
+  "cat",
+  "which",
+  "whoami",
+  "date",
+  "clear",
+  "exit",
+  "history",
+  "env",
+  "printenv",
 ]);
 
 export const BUILTIN_FULLTERM_COMMANDS = [
-  "claude", "cc", "codex", "cdx", "aider", "cursor", "gemini",
+  "claude",
+  "cc",
+  "codex",
+  "cdx",
+  "aider",
+  "cursor",
+  "gemini",
 ];
 
 export function isFastCommand(command: string | null): boolean {

@@ -57,7 +57,12 @@ export type SidecarEventPayload =
   | { event_type: "patch_created"; session_id: string; patch_id: number; subject: string }
   | { event_type: "patch_applied"; session_id: string; patch_id: number; commit_sha: string }
   | { event_type: "patch_discarded"; session_id: string; patch_id: number }
-  | { event_type: "patch_message_updated"; session_id: string; patch_id: number; new_subject: string }
+  | {
+      event_type: "patch_message_updated";
+      session_id: string;
+      patch_id: number;
+      new_subject: string;
+    }
   | { event_type: "artifact_created"; session_id: string; filename: string; target: string }
   | { event_type: "artifact_applied"; session_id: string; filename: string; target: string }
   | { event_type: "artifact_discarded"; session_id: string; filename: string }

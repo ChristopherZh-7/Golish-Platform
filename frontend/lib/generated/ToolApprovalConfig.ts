@@ -3,24 +3,25 @@
 /**
  * Configuration for tool approval behavior.
  */
-export type ToolApprovalConfig = { 
-/**
- * Tools that are always allowed without approval
- */
-always_allow: Array<string>, 
-/**
- * Tools that always require approval (cannot be auto-approved)
- */
-always_require_approval: Array<string>, 
-/**
- * Whether pattern learning is enabled
- */
-pattern_learning_enabled: boolean, 
-/**
- * Minimum approvals before auto-approve
- */
-min_approvals: number, 
-/**
- * Approval rate threshold (0.0 - 1.0)
- */
-approval_threshold: number, };
+export type ToolApprovalConfig = {
+  /**
+   * Tools that are always allowed without approval
+   */
+  always_allow: Array<string>;
+  /**
+   * Tools that always require approval (cannot be auto-approved)
+   */
+  always_require_approval: Array<string>;
+  /**
+   * Whether pattern learning is enabled
+   */
+  pattern_learning_enabled: boolean;
+  /**
+   * Minimum approvals before auto-approve
+   */
+  min_approvals: number;
+  /**
+   * Approval rate threshold (0.0 - 1.0)
+   */
+  approval_threshold: number;
+};

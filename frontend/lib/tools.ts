@@ -2,8 +2,19 @@
  * Shared utilities for tool call display components.
  */
 
+import type { RiskLevel } from "@/lib/generated/RiskLevel";
 import type { LucideIcon } from "lucide-react";
-import { FileCode, FileSearch, FolderOpen, Globe, Network, Pencil, Search, Terminal, Wrench } from "lucide-react";
+import {
+  FileCode,
+  FileSearch,
+  FolderOpen,
+  Globe,
+  Network,
+  Pencil,
+  Search,
+  Terminal,
+  Wrench,
+} from "lucide-react";
 
 const TOOL_COLORS: Record<string, string> = {
   run_command: "var(--ansi-green)",

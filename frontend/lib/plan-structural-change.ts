@@ -4,8 +4,8 @@
  * steps, normalises the text and compares Jaccard similarity >= 0.5.
  */
 export function planStepsStructurallyChanged(
-  prev: Array<{ id?: string; step: string }>,
-  next: Array<{ id?: string; step: string }>,
+  prev: Array<{ id?: string | null; step: string }>,
+  next: Array<{ id?: string | null; step: string }>
 ): boolean {
   if (prev.length !== next.length) return true;
 
@@ -23,10 +23,18 @@ export function planStepsStructurallyChanged(
       continue;
     }
     const pWords = new Set(
-      prev[i].step.toLowerCase().replace(/[^\w\s]/g, "").split(/\s+/).filter(Boolean),
+      prev[i].step
+        .toLowerCase()
+        .replace(/[^\w\s]/g, "")
+        .split(/\s+/)
+        .filter(Boolean)
     );
     const nWords = new Set(
-      next[i].step.toLowerCase().replace(/[^\w\s]/g, "").split(/\s+/).filter(Boolean),
+      next[i].step
+        .toLowerCase()
+        .replace(/[^\w\s]/g, "")
+        .split(/\s+/)
+        .filter(Boolean)
     );
     const union = new Set([...pWords, ...nWords]);
     const intersection = [...pWords].filter((w) => nWords.has(w)).length;

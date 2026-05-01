@@ -5,6 +5,7 @@
  * started, text_delta, reasoning, completed, error, system_hooks_injected
  */
 
+import type { AiEvent } from "@/lib/ai";
 import { addPromptHistory } from "@/lib/history";
 import { logger } from "@/lib/logger";
 import { sendNotification } from "@/lib/systemNotifications";
@@ -178,16 +179,10 @@ export const handleReasoning: EventHandler<{
  * Handle agent turn completed event.
  * Finalizes streaming content into a persisted message.
  */
-export const handleCompleted: EventHandler<{
-  type: "completed";
-  response: string;
-  reasoning?: string;
-  input_tokens?: number;
-  output_tokens?: number;
-  duration_ms?: number;
-  session_id: string;
-  seq?: number;
-}> = (event, ctx) => {
+export const handleCompleted: EventHandler<Extract<AiEvent, { type: "completed" }>> = (
+  event,
+  ctx
+) => {
   logger.info("AI turn completed:", {
     sessionId: ctx.sessionId,
     inputTokens: event.input_tokens,
@@ -295,8 +290,8 @@ export const handleCompleted: EventHandler<{
       workflow: workflowForMessage,
       subAgents: activeSubAgents.length > 0 ? [...activeSubAgents] : undefined,
       systemHooks: systemHooks.length > 0 ? systemHooks : undefined,
-      inputTokens: event.input_tokens,
-      outputTokens: event.output_tokens,
+      inputTokens: event.input_tokens ?? undefined,
+      outputTokens: event.output_tokens ?? undefined,
     });
   }
 
@@ -322,7 +317,6 @@ export const handleCompleted: EventHandler<{
       logger.debug("Failed to send completion notification:", err);
     });
   }
-
 };
 
 /**

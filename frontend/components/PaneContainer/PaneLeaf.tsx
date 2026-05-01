@@ -65,10 +65,15 @@ interface PaneLeafProps {
 export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId }: PaneLeafProps) {
   // Use combined selector for efficient state access - only re-renders when
   // specific properties change, not when entire Session/TabLayout objects change
-  const { focusedPaneId, renderMode, tabType, sessionExists, sessionName, workingDirectory, detailViewMode } = usePaneLeafState(
-    tabId,
-    sessionId
-  );
+  const {
+    focusedPaneId,
+    renderMode,
+    tabType,
+    sessionExists,
+    sessionName,
+    workingDirectory,
+    detailViewMode,
+  } = usePaneLeafState(tabId, sessionId);
   const terminalRestoreInProgress = useStore((s) => s.terminalRestoreInProgress);
 
   // Action is stable (doesn't change between renders)
@@ -80,7 +85,7 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
   // Register portal target for this pane's Terminal
   const terminalPortalRef = useTerminalPortalTarget(sessionId);
   const pendingCommand = usePendingCommand(sessionId);
-  const isCommandRunning = !!(pendingCommand?.command);
+  const isCommandRunning = !!pendingCommand?.command;
 
   const isFocused = focusedPaneId === paneId;
   const showFocusIndicator = isFocused && paneCount > 1;

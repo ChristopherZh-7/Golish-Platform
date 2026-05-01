@@ -1,12 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { cn } from "@/lib/utils";
-import { CustomSelect } from "@/components/ui/custom-select";
-import { statusColor } from "./shared";
-import { zapSendRequest } from "@/lib/pentest/zap-api";
 import {
-  AlertTriangle, Crosshair,
-  Loader2, Pause, Play, Plus, Settings2, Trash2, X,
+  AlertTriangle,
+  Crosshair,
+  Loader2,
+  Pause,
+  Play,
+  Plus,
+  Settings2,
+  Trash2,
+  X,
 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CustomSelect } from "@/components/ui/custom-select";
+import { zapSendRequest } from "@/lib/pentest/zap-api";
+import { cn } from "@/lib/utils";
+import { statusColor } from "./shared";
 
 const MARKER = "§";
 
@@ -14,33 +21,75 @@ const MARKER = "§";
 
 const BUILTIN_PAYLOADS: Record<string, string[]> = {
   "SQLi (basic)": [
-    "'", "\"", "' OR '1'='1", "\" OR \"1\"=\"1", "1' OR '1'='1'--",
-    "' UNION SELECT NULL--", "1; DROP TABLE users--", "' AND 1=1--",
-    "' AND 1=2--", "admin'--", "1' WAITFOR DELAY '0:0:5'--",
-    "1 AND SLEEP(5)", "' OR SLEEP(5)#",
+    "'",
+    '"',
+    "' OR '1'='1",
+    '" OR "1"="1',
+    "1' OR '1'='1'--",
+    "' UNION SELECT NULL--",
+    "1; DROP TABLE users--",
+    "' AND 1=1--",
+    "' AND 1=2--",
+    "admin'--",
+    "1' WAITFOR DELAY '0:0:5'--",
+    "1 AND SLEEP(5)",
+    "' OR SLEEP(5)#",
   ],
   "XSS (basic)": [
-    "<script>alert(1)</script>", "<img src=x onerror=alert(1)>",
-    "<svg onload=alert(1)>", "javascript:alert(1)", "\"><script>alert(1)</script>",
-    "'-alert(1)-'", "<body onload=alert(1)>", "<input onfocus=alert(1) autofocus>",
-    "{{7*7}}", "${7*7}", "<img/src=x onerror=alert(1)>",
+    "<script>alert(1)</script>",
+    "<img src=x onerror=alert(1)>",
+    "<svg onload=alert(1)>",
+    "javascript:alert(1)",
+    '"><script>alert(1)</script>',
+    "'-alert(1)-'",
+    "<body onload=alert(1)>",
+    "<input onfocus=alert(1) autofocus>",
+    "{{7*7}}",
+    "${7*7}",
+    "<img/src=x onerror=alert(1)>",
   ],
   "Path Traversal": [
-    "../../../etc/passwd", "..\\..\\..\\windows\\win.ini",
-    "....//....//....//etc/passwd", "%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
-    "/etc/passwd", "file:///etc/passwd",
+    "../../../etc/passwd",
+    "..\\..\\..\\windows\\win.ini",
+    "....//....//....//etc/passwd",
+    "%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+    "/etc/passwd",
+    "file:///etc/passwd",
   ],
   "Command Injection": [
-    "; id", "| id", "` id `", "$(id)", "; cat /etc/passwd",
-    "| cat /etc/passwd", "\n id", "& id", "&& id",
+    "; id",
+    "| id",
+    "` id `",
+    "$(id)",
+    "; cat /etc/passwd",
+    "| cat /etc/passwd",
+    "\n id",
+    "& id",
+    "&& id",
   ],
-  "SSTI": [
-    "{{7*7}}", "${7*7}", "<%= 7*7 %>", "#{7*7}", "{7*7}",
-    "{{config}}", "{{self}}", "${T(java.lang.Runtime).getRuntime().exec('id')}",
+  SSTI: [
+    "{{7*7}}",
+    "${7*7}",
+    "<%= 7*7 %>",
+    "#{7*7}",
+    "{7*7}",
+    "{{config}}",
+    "{{self}}",
+    "${T(java.lang.Runtime).getRuntime().exec('id')}",
   ],
   "Auth Bypass": [
-    "admin", "administrator", "root", "test", "guest",
-    "null", "undefined", "true", "false", "0", "1", "-1",
+    "admin",
+    "administrator",
+    "root",
+    "test",
+    "guest",
+    "null",
+    "undefined",
+    "true",
+    "false",
+    "0",
+    "1",
+    "-1",
   ],
   "Numbers (0-9)": Array.from({ length: 10 }, (_, i) => String(i)),
 };
@@ -70,7 +119,7 @@ interface IntruderPanelProps {
 
 export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderPanelProps) {
   const [rawRequest, setRawRequest] = useState(
-    "GET / HTTP/1.1\nHost: example.com\nUser-Agent: Mozilla/5.0\n\n",
+    "GET / HTTP/1.1\nHost: example.com\nUser-Agent: Mozilla/5.0\n\n"
   );
   const [attackMode, setAttackMode] = useState<AttackMode>("sniper");
   const [payloadSets, setPayloadSets] = useState<string[][]>([[]]);
@@ -109,7 +158,11 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
   }, [rawRequest]);
 
   // Generate request variants from base + payloads
-  const generateRequests = useCallback((): { request: string; payload: string; posIdx: number }[] => {
+  const generateRequests = useCallback((): {
+    request: string;
+    payload: string;
+    posIdx: number;
+  }[] => {
     if (positions.length === 0 || payloadSets.every((s) => s.length === 0)) return [];
 
     const variants: { request: string; payload: string; posIdx: number }[] = [];
@@ -197,9 +250,14 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
         setResults((prev) => [
           ...prev,
           {
-            index: i, payload, position: posIdx, status: 0, length: 0,
+            index: i,
+            payload,
+            position: posIdx,
+            status: 0,
+            length: 0,
             time_ms: Math.round(performance.now() - start),
-            responseHeaders: "", responseBody: "",
+            responseHeaders: "",
+            responseBody: "",
             error: String(e),
           },
         ]);
@@ -215,11 +273,16 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
     setRunning(false);
   }, [generateRequests, delay]);
 
-  const stopAttack = useCallback(() => { abortRef.current = true; }, []);
+  const stopAttack = useCallback(() => {
+    abortRef.current = true;
+  }, []);
 
   const addPayload = useCallback(() => {
     if (!payloadInput.trim()) return;
-    const lines = payloadInput.split("\n").map((l) => l.trim()).filter(Boolean);
+    const lines = payloadInput
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
     setPayloadSets((prev) => {
       const next = [...prev];
       next[activePayloadSet] = [...(next[activePayloadSet] ?? []), ...lines];
@@ -232,7 +295,10 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
     if (!selectedBuiltin || !BUILTIN_PAYLOADS[selectedBuiltin]) return;
     setPayloadSets((prev) => {
       const next = [...prev];
-      next[activePayloadSet] = [...(next[activePayloadSet] ?? []), ...BUILTIN_PAYLOADS[selectedBuiltin]];
+      next[activePayloadSet] = [
+        ...(next[activePayloadSet] ?? []),
+        ...BUILTIN_PAYLOADS[selectedBuiltin],
+      ];
       return next;
     });
     setSelectedBuiltin("");
@@ -268,7 +334,8 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
         />
 
         <span className="text-muted-foreground/30 text-[9px] ml-1">
-          {positions.length} position{positions.length !== 1 ? "s" : ""} · {totalRequests} request{totalRequests !== 1 ? "s" : ""}
+          {positions.length} position{positions.length !== 1 ? "s" : ""} · {totalRequests} request
+          {totalRequests !== 1 ? "s" : ""}
         </span>
 
         <div className="ml-auto flex items-center gap-1">
@@ -277,7 +344,9 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
             onClick={() => setShowConfig(!showConfig)}
             className={cn(
               "p-1 rounded transition-colors",
-              showConfig ? "text-accent bg-accent/10" : "text-muted-foreground/30 hover:text-muted-foreground/60",
+              showConfig
+                ? "text-accent bg-accent/10"
+                : "text-muted-foreground/30 hover:text-muted-foreground/60"
             )}
           >
             <Settings2 className="w-3 h-3" />
@@ -300,7 +369,7 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
                 "flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors",
                 positions.length === 0 || payloadSets.every((s) => s.length === 0)
                   ? "bg-muted/10 text-muted-foreground/20 cursor-not-allowed"
-                  : "bg-accent/15 text-accent hover:bg-accent/25",
+                  : "bg-accent/15 text-accent hover:bg-accent/25"
               )}
             >
               <Play className="w-3 h-3" /> Attack
@@ -315,17 +384,22 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
           <label className="flex items-center gap-1.5 text-[9px] text-muted-foreground/50">
             Concurrency
             <input
-              type="number" min={1} max={20}
+              type="number"
+              min={1}
+              max={20}
               className="w-10 px-1 py-0.5 bg-background border border-border/30 rounded text-[10px] outline-none"
-              value={concurrency} onChange={(e) => setConcurrency(Number(e.target.value) || 1)}
+              value={concurrency}
+              onChange={(e) => setConcurrency(Number(e.target.value) || 1)}
             />
           </label>
           <label className="flex items-center gap-1.5 text-[9px] text-muted-foreground/50">
             Delay (ms)
             <input
-              type="number" min={0}
+              type="number"
+              min={0}
               className="w-14 px-1 py-0.5 bg-background border border-border/30 rounded text-[10px] outline-none"
-              value={delay} onChange={(e) => setDelay(Number(e.target.value) || 0)}
+              value={delay}
+              onChange={(e) => setDelay(Number(e.target.value) || 0)}
             />
           </label>
           <span className="text-[8px] text-muted-foreground/25">
@@ -338,7 +412,9 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
       {running && (
         <div className="px-3 py-1 border-b border-border/5">
           <div className="flex items-center justify-between text-[9px] text-muted-foreground/40 mb-0.5">
-            <span>{progress.current}/{progress.total}</span>
+            <span>
+              {progress.current}/{progress.total}
+            </span>
             <span>{((progress.current / Math.max(1, progress.total)) * 100).toFixed(0)}%</span>
           </div>
           <div className="h-1 rounded-full bg-muted/10 overflow-hidden">
@@ -357,7 +433,9 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
           {/* Request editor */}
           <div className="flex-1 min-h-0 flex flex-col">
             <div className="px-2 py-1 text-[9px] font-medium text-muted-foreground/40 border-b border-border/5 flex items-center justify-between">
-              <span>Request (mark positions with {MARKER}…{MARKER})</span>
+              <span>
+                Request (mark positions with {MARKER}…{MARKER})
+              </span>
               <span className="text-accent/50">{positions.length} pos</span>
             </div>
             <textarea
@@ -383,7 +461,7 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
                         "px-1.5 py-0.5 rounded text-[8px]",
                         i === activePayloadSet
                           ? "bg-accent/15 text-accent"
-                          : "text-muted-foreground/30 hover:text-muted-foreground/60",
+                          : "text-muted-foreground/30 hover:text-muted-foreground/60"
                       )}
                       onClick={() => setActivePayloadSet(i)}
                     >
@@ -426,7 +504,8 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
                 options={[
                   { value: "", label: "Load built-in list…" },
                   ...Object.keys(BUILTIN_PAYLOADS).map((k) => ({
-                    value: k, label: `${k} (${BUILTIN_PAYLOADS[k].length})`,
+                    value: k,
+                    label: `${k} (${BUILTIN_PAYLOADS[k].length})`,
                   })),
                 ]}
                 size="xs"
@@ -448,7 +527,12 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
                 placeholder="Add payloads (one per line)"
                 value={payloadInput}
                 onChange={(e) => setPayloadInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); addPayload(); } }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    addPayload();
+                  }
+                }}
               />
               <button
                 type="button"
@@ -468,8 +552,13 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
               ) : (
                 <div className="space-y-0">
                   {(payloadSets[activePayloadSet] ?? []).slice(0, 50).map((p, i) => (
-                    <div key={`${i}-${p}`} className="flex items-center gap-1 text-[9px] py-0.5 group">
-                      <span className="w-5 text-right text-muted-foreground/20 font-mono">{i + 1}</span>
+                    <div
+                      key={`${i}-${p}`}
+                      className="flex items-center gap-1 text-[9px] py-0.5 group"
+                    >
+                      <span className="w-5 text-right text-muted-foreground/20 font-mono">
+                        {i + 1}
+                      </span>
                       <span className="font-mono text-foreground/60 truncate flex-1">{p}</span>
                       <button
                         type="button"
@@ -477,7 +566,9 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
                         onClick={() => {
                           setPayloadSets((prev) => {
                             const next = [...prev];
-                            next[activePayloadSet] = (next[activePayloadSet] ?? []).filter((_, idx) => idx !== i);
+                            next[activePayloadSet] = (next[activePayloadSet] ?? []).filter(
+                              (_, idx) => idx !== i
+                            );
                             return next;
                           });
                         }}
@@ -527,11 +618,13 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
                         key={r.index}
                         className={cn(
                           "border-b border-border/5 cursor-pointer hover:bg-muted/10 transition-colors text-[10px]",
-                          selectedResult?.index === r.index && "bg-accent/5",
+                          selectedResult?.index === r.index && "bg-accent/5"
                         )}
                         onClick={() => setSelectedResult(r)}
                       >
-                        <td className="px-2 py-1 text-muted-foreground/25 font-mono">{r.index + 1}</td>
+                        <td className="px-2 py-1 text-muted-foreground/25 font-mono">
+                          {r.index + 1}
+                        </td>
                         <td className="px-2 py-1 font-mono truncate max-w-[200px]">
                           {r.error ? (
                             <span className="text-red-400 flex items-center gap-1">
@@ -541,9 +634,18 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
                             <span className="text-foreground/70">{r.payload}</span>
                           )}
                         </td>
-                        <td className={cn("px-2 py-1 font-mono", statusColor(r.status, "text-muted-foreground/30"))}>{r.status || "—"}</td>
+                        <td
+                          className={cn(
+                            "px-2 py-1 font-mono",
+                            statusColor(r.status, "text-muted-foreground/30")
+                          )}
+                        >
+                          {r.status || "—"}
+                        </td>
                         <td className="px-2 py-1 font-mono text-muted-foreground/40">{r.length}</td>
-                        <td className="px-2 py-1 font-mono text-muted-foreground/30">{r.time_ms}ms</td>
+                        <td className="px-2 py-1 font-mono text-muted-foreground/30">
+                          {r.time_ms}ms
+                        </td>
                       </tr>
                     ))}
                     {running && (
@@ -563,7 +665,8 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
                 <div className="h-1/2 border-t border-border/10 flex flex-col">
                   <div className="flex items-center justify-between px-2 py-1 border-b border-border/5 flex-shrink-0">
                     <span className="text-[9px] text-muted-foreground/40">
-                      #{selectedResult.index + 1} — {selectedResult.payload} — {selectedResult.status}
+                      #{selectedResult.index + 1} — {selectedResult.payload} —{" "}
+                      {selectedResult.status}
                     </span>
                     <button
                       type="button"
@@ -590,4 +693,3 @@ export function IntruderPanel({ injectedRequest, onInjectedConsumed }: IntruderP
     </div>
   );
 }
-

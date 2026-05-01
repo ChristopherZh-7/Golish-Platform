@@ -8,6 +8,7 @@ description = "Vulnerability intelligence — NVD/CISA/RSS feed ingestion, GitHu
 [dependencies]
 golish-core = { workspace = true }
 golish-db = { workspace = true }
+golish-vuln-intel-domain = { workspace = true }
 
 anyhow = { workspace = true }
 serde = { workspace = true }

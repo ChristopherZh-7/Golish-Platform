@@ -1,18 +1,28 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity, ArrowRight, ChevronRight,
-  Download, Globe, Loader2, RefreshCw,
-  Search, Send, Trash2, TreePine, X, Zap,
+  Activity,
+  ArrowRight,
+  ChevronRight,
+  Download,
+  Globe,
+  Loader2,
+  RefreshCw,
+  Search,
+  Send,
+  Trash2,
+  TreePine,
+  X,
+  Zap,
 } from "lucide-react";
-import { getRootDomain } from "@/lib/domain";
-import { cn } from "@/lib/utils";
-import { zapGetHistory, zapGetSiteMapData, zapGetMessage } from "@/lib/pentest/zap-api";
-import type { SiteMapEntry, SiteMapData } from "@/lib/pentest/zap-api";
-import type { HttpHistoryEntry, HttpMessageDetail } from "@/lib/pentest/types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { getRootDomain } from "@/lib/domain";
+import type { HttpHistoryEntry, HttpMessageDetail } from "@/lib/pentest/types";
+import type { SiteMapData, SiteMapEntry } from "@/lib/pentest/zap-api";
+import { zapGetHistory, zapGetMessage, zapGetSiteMapData } from "@/lib/pentest/zap-api";
+import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
-import { ResizeHandle, methodColor, statusColor } from "./shared";
 import { buildRawRequest, DetailTabs } from "./HttpHistoryPanel";
+import { methodColor, ResizeHandle, statusColor } from "./shared";
 import { ZapContextMenu } from "./ZapContextMenu";
 
 interface SiteTreeNode {
@@ -43,15 +53,20 @@ function buildSiteTree(entries: HttpHistoryEntry[]): Map<string, SiteTreeNode> {
     if (!domainGroups.has(root)) domainGroups.set(root, new Map());
     const subMap = domainGroups.get(root)!;
     if (!subMap.has(host)) subMap.set(host, []);
-    subMap.get(host)!.push(entry);
+    subMap.get(host)?.push(entry);
   }
 
   const roots = new Map<string, SiteTreeNode>();
 
   for (const [rootDomain, subdomainMap] of domainGroups) {
     const rootNode: SiteTreeNode = {
-      name: rootDomain, fullPath: rootDomain, methods: new Set(), entries: [],
-      children: new Map(), isEndpoint: false, nodeType: "domain",
+      name: rootDomain,
+      fullPath: rootDomain,
+      methods: new Set(),
+      entries: [],
+      children: new Map(),
+      isEndpoint: false,
+      nodeType: "domain",
     };
 
     for (const [host, hostEntries] of subdomainMap) {
@@ -59,8 +74,13 @@ function buildSiteTree(entries: HttpHistoryEntry[]): Map<string, SiteTreeNode> {
       if (host !== rootDomain) {
         if (!rootNode.children.has(host)) {
           rootNode.children.set(host, {
-            name: host, fullPath: host, methods: new Set(), entries: [],
-            children: new Map(), isEndpoint: false, nodeType: "subdomain",
+            name: host,
+            fullPath: host,
+            methods: new Set(),
+            entries: [],
+            children: new Map(),
+            isEndpoint: false,
+            nodeType: "subdomain",
           });
         }
         hostNode = rootNode.children.get(host)!;
@@ -84,8 +104,12 @@ function buildSiteTree(entries: HttpHistoryEntry[]): Map<string, SiteTreeNode> {
           builtPath += `/${seg}`;
           if (!current.children.has(seg)) {
             current.children.set(seg, {
-              name: seg, fullPath: builtPath, methods: new Set(), entries: [],
-              children: new Map(), isEndpoint: false,
+              name: seg,
+              fullPath: builtPath,
+              methods: new Set(),
+              entries: [],
+              children: new Map(),
+              isEndpoint: false,
             });
           }
           const child = current.children.get(seg)!;
@@ -102,7 +126,17 @@ function buildSiteTree(entries: HttpHistoryEntry[]): Map<string, SiteTreeNode> {
   return roots;
 }
 
-export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan, onBatchScan }: { onSendToRepeater: (raw: string) => void; onSendToIntruder?: (raw: string) => void; onActiveScan?: (url: string) => void; onBatchScan?: (urls: string[]) => void }) {
+export function SiteMapPanel({
+  onSendToRepeater,
+  onSendToIntruder,
+  onActiveScan,
+  onBatchScan,
+}: {
+  onSendToRepeater: (raw: string) => void;
+  onSendToIntruder?: (raw: string) => void;
+  onActiveScan?: (url: string) => void;
+  onBatchScan?: (urls: string[]) => void;
+}) {
   const { t } = useTranslation();
   const currentProjectPath = useStore((s) => s.currentProjectPath);
   const [siteMapData, setSiteMapData] = useState<SiteMapData | null>(null);
@@ -112,7 +146,9 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
   const [detailLoading, setDetailLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [filterMode, setFilterMode] = useState<"all" | "api" | "js" | "captured">("all");
-  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; entry: HttpHistoryEntry } | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; entry: HttpHistoryEntry } | null>(
+    null
+  );
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [hideBeforeId, setHideBeforeId] = useState(0);
   const [scanSelection, setScanSelection] = useState<Set<string>>(new Set());
@@ -129,7 +165,10 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
     return map;
   }, [siteMapData]);
 
-  const entries = useMemo(() => allEntries.filter((e) => e.id > hideBeforeId), [allEntries, hideBeforeId]);
+  const entries = useMemo(
+    () => allEntries.filter((e) => e.id > hideBeforeId),
+    [allEntries, hideBeforeId]
+  );
 
   const loadEntries = useCallback(async () => {
     try {
@@ -139,7 +178,9 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
       let items: HttpHistoryEntry[] = [];
       try {
         items = await zapGetHistory(0, 2000);
-      } catch { /* ZAP not running */ }
+      } catch {
+        /* ZAP not running */
+      }
 
       if (items.length === 0 && dbData?.entries) {
         // Fallback: reconstruct entries from persisted DB data
@@ -157,7 +198,9 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
         }));
       }
       setAllEntries(items);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }, [currentProjectPath]);
 
   useEffect(() => {
@@ -165,7 +208,9 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
     // Listen for backend event when new sitemap data arrives
     let unlisten: (() => void) | null = null;
     import("@tauri-apps/api/event").then(({ listen }) => {
-      listen("sitemap-updated", () => loadEntries()).then((fn) => { unlisten = fn; });
+      listen("sitemap-updated", () => loadEntries()).then((fn) => {
+        unlisten = fn;
+      });
     });
     // Fallback: poll every 15s in case events are missed
     intervalRef.current = setInterval(loadEntries, 15000);
@@ -175,31 +220,41 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
     };
   }, [loadEntries]);
 
-  const isCaptured = useCallback((entry: HttpHistoryEntry) => {
-    const pathNoQuery = (entry.url || "").split("?")[0].split("#")[0];
-    const key = `${entry.method}:${pathNoQuery}`;
-    return captureMap.get(key)?.captured ?? false;
-  }, [captureMap]);
+  const isCaptured = useCallback(
+    (entry: HttpHistoryEntry) => {
+      const pathNoQuery = (entry.url || "").split("?")[0].split("#")[0];
+      const key = `${entry.method}:${pathNoQuery}`;
+      return captureMap.get(key)?.captured ?? false;
+    },
+    [captureMap]
+  );
 
-  const getCaptureInfo = useCallback((entry: HttpHistoryEntry) => {
-    const pathNoQuery = (entry.url || "").split("?")[0].split("#")[0];
-    const key = `${entry.method}:${pathNoQuery}`;
-    return captureMap.get(key);
-  }, [captureMap]);
+  const getCaptureInfo = useCallback(
+    (entry: HttpHistoryEntry) => {
+      const pathNoQuery = (entry.url || "").split("?")[0].split("#")[0];
+      const key = `${entry.method}:${pathNoQuery}`;
+      return captureMap.get(key);
+    },
+    [captureMap]
+  );
 
   const filtered = useMemo(() => {
     let items = entries;
     if (filterMode === "js") {
-      items = items.filter((e) => /\.(js|jsx|ts|tsx|mjs|cjs|css|woff2?|svg|png|jpg|gif|ico)(\?|$)/i.test(e.path));
+      items = items.filter((e) =>
+        /\.(js|jsx|ts|tsx|mjs|cjs|css|woff2?|svg|png|jpg|gif|ico)(\?|$)/i.test(e.path)
+      );
     } else if (filterMode === "api") {
-      items = items.filter((e) => !(/\.(js|jsx|ts|tsx|mjs|cjs|css|woff2?|svg|png|jpg|gif|ico|html?)(\?|$)/i.test(e.path)));
+      items = items.filter(
+        (e) => !/\.(js|jsx|ts|tsx|mjs|cjs|css|woff2?|svg|png|jpg|gif|ico|html?)(\?|$)/i.test(e.path)
+      );
     } else if (filterMode === "captured") {
       items = items.filter((e) => isCaptured(e));
     }
     if (search.trim()) {
       const q = search.toLowerCase();
-      items = items.filter((e) =>
-        e.url.toLowerCase().includes(q) || e.host.toLowerCase().includes(q)
+      items = items.filter(
+        (e) => e.url.toLowerCase().includes(q) || e.host.toLowerCase().includes(q)
       );
     }
     return items;
@@ -228,16 +283,14 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
 
   const handleBatchScan = useCallback(() => {
     if (scanSelection.size === 0) return;
-    const urls = deduped
-      .filter((e) => scanSelection.has(entryKey(e)))
-      .map((e) => e.url);
+    const urls = deduped.filter((e) => scanSelection.has(entryKey(e))).map((e) => e.url);
     if (onBatchScan) {
       onBatchScan(urls);
     } else if (onActiveScan) {
       urls.forEach((url) => onActiveScan(url));
     }
     setScanSelection(new Set());
-  }, [scanSelection, deduped, onBatchScan, onActiveScan]);
+  }, [scanSelection, deduped, onBatchScan, onActiveScan, entryKey]);
 
   const tree = useMemo(() => buildSiteTree(deduped), [deduped]);
 
@@ -259,7 +312,9 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
         status_code: entry.status_code,
         request_headers: `${entry.method} ${new URL(entry.url).pathname} HTTP/1.1\r\nHost: ${entry.host}\r\n`,
         request_body: "",
-        response_headers: entry.status_code ? `HTTP/1.1 ${entry.status_code}\r\nContent-Length: ${entry.content_length}\r\n` : "",
+        response_headers: entry.status_code
+          ? `HTTP/1.1 ${entry.status_code}\r\nContent-Length: ${entry.content_length}\r\n`
+          : "",
         response_body: `(Response body not available — ZAP session expired.\nURL: ${entry.url}\nStatus: ${entry.status_code}\nSize: ${entry.content_length} bytes)`,
       });
     } finally {
@@ -267,12 +322,17 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
     }
   }, []);
 
-  const handleCtxSendToRepeater = useCallback(async (entry: HttpHistoryEntry) => {
-    try {
-      const msg = await zapGetMessage(entry.id, entry.url);
-      onSendToRepeater(buildRawRequest(msg));
-    } catch { /* ignore */ }
-  }, [onSendToRepeater]);
+  const handleCtxSendToRepeater = useCallback(
+    async (entry: HttpHistoryEntry) => {
+      try {
+        const msg = await zapGetMessage(entry.id, entry.url);
+        onSendToRepeater(buildRawRequest(msg));
+      } catch {
+        /* ignore */
+      }
+    },
+    [onSendToRepeater]
+  );
 
   useEffect(() => {
     if (!ctxMenu) return;
@@ -298,9 +358,10 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
       const currentIdx = rows.findIndex((r) => r.dataset.entryId === String(selectedEntry.id));
       if (currentIdx === -1) return;
 
-      const nextIdx = e.key === "ArrowDown"
-        ? Math.min(currentIdx + 1, rows.length - 1)
-        : Math.max(currentIdx - 1, 0);
+      const nextIdx =
+        e.key === "ArrowDown"
+          ? Math.min(currentIdx + 1, rows.length - 1)
+          : Math.max(currentIdx - 1, 0);
       if (nextIdx === currentIdx) return;
 
       const nextId = Number(rows[nextIdx].dataset.entryId);
@@ -316,7 +377,10 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
 
   const hostCount = tree.size;
   const endpointCount = deduped.length;
-  const capturedCount = useMemo(() => deduped.filter((e) => isCaptured(e)).length, [deduped, isCaptured]);
+  const capturedCount = useMemo(
+    () => deduped.filter((e) => isCaptured(e)).length,
+    [deduped, isCaptured]
+  );
   const siteContainerRef = useRef<HTMLDivElement>(null);
   const [siteDetailWidth, setSiteDetailWidth] = useState<number | null>(null);
 
@@ -351,10 +415,13 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
             className={cn(
               "px-2.5 py-1 text-[10px] rounded-md font-medium transition-colors",
               filterMode === mode
-                ? mode === "api" ? "bg-green-500/15 text-green-400"
-                  : mode === "js" ? "bg-yellow-500/15 text-yellow-400"
-                  : mode === "captured" ? "bg-blue-500/15 text-blue-400"
-                  : "bg-accent/15 text-accent"
+                ? mode === "api"
+                  ? "bg-green-500/15 text-green-400"
+                  : mode === "js"
+                    ? "bg-yellow-500/15 text-yellow-400"
+                    : mode === "captured"
+                      ? "bg-blue-500/15 text-blue-400"
+                      : "bg-accent/15 text-accent"
                 : "text-muted-foreground/40 hover:text-foreground hover:bg-[var(--bg-hover)]"
             )}
           >
@@ -375,7 +442,14 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
           </button>
         )}
         <span className="text-[10px] text-muted-foreground/50">
-          {hostCount} {t("security.hosts", "hosts")} · {endpointCount} {t("security.endpoints", "endpoints")}{capturedCount > 0 && <> · <span className="text-blue-400">{capturedCount} saved</span></>}
+          {hostCount} {t("security.hosts", "hosts")} · {endpointCount}{" "}
+          {t("security.endpoints", "endpoints")}
+          {capturedCount > 0 && (
+            <>
+              {" "}
+              · <span className="text-blue-400">{capturedCount} saved</span>
+            </>
+          )}
         </span>
         <button
           type="button"
@@ -428,17 +502,30 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
 
         {(selectedEntry || detailLoading) && <ResizeHandle onResize={handleSiteResize} />}
 
-        <div className="flex flex-col overflow-hidden" style={{ width: (selectedEntry || detailLoading) ? (siteDetailWidth ?? 0) : 0, flexShrink: 0 }}>
+        <div
+          className="flex flex-col overflow-hidden"
+          style={{
+            width: selectedEntry || detailLoading ? (siteDetailWidth ?? 0) : 0,
+            flexShrink: 0,
+          }}
+        >
           {selectedEntry && detail ? (
             <div className="flex-1 flex flex-col min-h-0">
               <div className="flex items-center gap-2 px-3 py-2 border-b border-border/10 flex-shrink-0">
-                <span className={cn("text-[10px] font-mono font-bold", methodColor(selectedEntry.method))}>
+                <span
+                  className={cn(
+                    "text-[10px] font-mono font-bold",
+                    methodColor(selectedEntry.method)
+                  )}
+                >
                   {selectedEntry.method}
                 </span>
                 <span className="text-[11px] font-mono text-foreground/70 truncate flex-1">
                   {selectedEntry.url}
                 </span>
-                <span className={cn("text-[10px] font-mono", statusColor(selectedEntry.status_code))}>
+                <span
+                  className={cn("text-[10px] font-mono", statusColor(selectedEntry.status_code))}
+                >
                   {selectedEntry.status_code}
                 </span>
                 {isCaptured(selectedEntry) && (
@@ -447,7 +534,7 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
                     Saved
                     {getCaptureInfo(selectedEntry)?.capture?.file_size != null && (
                       <span className="text-blue-400/60">
-                        ({formatBytes(getCaptureInfo(selectedEntry)!.capture!.file_size)})
+                        ({formatBytes(getCaptureInfo(selectedEntry)?.capture?.file_size ?? 0)})
                       </span>
                     )}
                   </span>
@@ -462,7 +549,10 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
                 </button>
                 <button
                   type="button"
-                  onClick={() => { setSelectedEntry(null); setDetail(null); }}
+                  onClick={() => {
+                    setSelectedEntry(null);
+                    setDetail(null);
+                  }}
                   className="p-1 rounded text-muted-foreground/30 hover:text-foreground transition-colors"
                 >
                   <X className="w-3 h-3" />
@@ -478,7 +568,9 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
             <div className="flex-1 flex items-center justify-center text-muted-foreground/40">
               <div className="flex flex-col items-center gap-2">
                 <Search className="w-8 h-8" />
-                <p className="text-[12px]">{t("security.selectEndpoint", "Select an endpoint to view details")}</p>
+                <p className="text-[12px]">
+                  {t("security.selectEndpoint", "Select an endpoint to view details")}
+                </p>
               </div>
             </div>
           )}
@@ -491,9 +583,18 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
           entry={ctxMenu.entry}
           onClose={() => setCtxMenu(null)}
           onSendToRepeater={(e) => handleCtxSendToRepeater(e as any)}
-          onSendToIntruder={onSendToIntruder ? async (e) => {
-            try { const msg = await zapGetMessage(e.id, e.url); onSendToIntruder(buildRawRequest(msg)); } catch { /* ignore */ }
-          } : undefined}
+          onSendToIntruder={
+            onSendToIntruder
+              ? async (e) => {
+                  try {
+                    const msg = await zapGetMessage(e.id, e.url);
+                    onSendToIntruder(buildRawRequest(msg));
+                  } catch {
+                    /* ignore */
+                  }
+                }
+              : undefined
+          }
           onActiveScan={onActiveScan}
         />
       )}
@@ -502,10 +603,16 @@ export function SiteMapPanel({ onSendToRepeater, onSendToIntruder, onActiveScan,
 }
 
 function SiteTreeNodeView({
-  node, depth, onSelect, selectedId, onContextMenu,
+  node,
+  depth,
+  onSelect,
+  selectedId,
+  onContextMenu,
 }: {
-  node: SiteTreeNode; depth: number;
-  onSelect: (e: HttpHistoryEntry) => void; selectedId: number | null;
+  node: SiteTreeNode;
+  depth: number;
+  onSelect: (e: HttpHistoryEntry) => void;
+  selectedId: number | null;
   onContextMenu?: (e: React.MouseEvent, entry: HttpHistoryEntry) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -522,7 +629,7 @@ function SiteTreeNodeView({
         data-entry-id={latestEntry?.id}
         className={cn(
           "flex items-center gap-1 py-0.5 pr-2 cursor-pointer transition-colors text-[11px] hover:bg-[var(--bg-hover)]/40",
-          isSelected && "!bg-[#7aa2f7]/20 border-l-2 !border-l-[#7aa2f7] !text-[#c0caf5]",
+          isSelected && "!bg-[#7aa2f7]/20 border-l-2 !border-l-[#7aa2f7] !text-[#c0caf5]"
         )}
         style={{ paddingLeft: `${depth * 16 + 8}px` }}
         onClick={() => {
@@ -534,7 +641,12 @@ function SiteTreeNodeView({
         }}
       >
         {hasChildren ? (
-          <ChevronRight className={cn("w-3 h-3 text-muted-foreground/40 transition-transform flex-shrink-0", open && "rotate-90")} />
+          <ChevronRight
+            className={cn(
+              "w-3 h-3 text-muted-foreground/40 transition-transform flex-shrink-0",
+              open && "rotate-90"
+            )}
+          />
         ) : (
           <span className="w-3 flex-shrink-0" />
         )}
@@ -551,17 +663,26 @@ function SiteTreeNodeView({
             {node.isEndpoint ? "·" : "/"}
           </span>
         )}
-        <span className={cn(
-          "truncate flex-1",
-          node.nodeType === "domain" ? "font-medium text-foreground/80"
-            : node.nodeType === "subdomain" ? "font-medium text-foreground/70"
-            : "text-foreground/60",
-        )}>
-          {node.nodeType === "domain" || node.nodeType === "subdomain" ? node.name : `/${node.name}`}
+        <span
+          className={cn(
+            "truncate flex-1",
+            node.nodeType === "domain"
+              ? "font-medium text-foreground/80"
+              : node.nodeType === "subdomain"
+                ? "font-medium text-foreground/70"
+                : "text-foreground/60"
+          )}
+        >
+          {node.nodeType === "domain" || node.nodeType === "subdomain"
+            ? node.name
+            : `/${node.name}`}
         </span>
         <span className="flex items-center gap-0.5 flex-shrink-0">
           {[...node.methods].map((m) => (
-            <span key={m} className={cn("text-[8px] font-mono font-bold px-1 rounded", methodColor(m))}>
+            <span
+              key={m}
+              className={cn("text-[8px] font-mono font-bold px-1 rounded", methodColor(m))}
+            >
               {m}
             </span>
           ))}
@@ -591,5 +712,3 @@ function SiteTreeNodeView({
 }
 
 // ── Audit Log Panel ──
-
-

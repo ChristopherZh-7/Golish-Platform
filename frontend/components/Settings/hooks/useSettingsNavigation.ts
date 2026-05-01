@@ -2,13 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 import { listIndexedCodebases } from "@/lib/indexer";
 import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
+import { updateConfig as updatePentestConfig } from "@/lib/pentest/api";
 import {
   type CodebaseConfig,
-  getSettings,
   type GolishSettings,
+  getSettings,
   updateSettings,
 } from "@/lib/settings";
-import { updateConfig as updatePentestConfig } from "@/lib/pentest/api";
 
 export type SettingsSection =
   | "providers"

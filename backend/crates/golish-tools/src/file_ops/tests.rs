@@ -1,16 +1,13 @@
 //! file_ops integration tests.
 
 use std::fs;
-use std::path::Path;
 
 use serde_json::json;
-use tempfile::TempDir;
+use tempfile::tempdir;
 
 use golish_core::Tool;
 
 use super::*;
-use super::*;
-use tempfile::tempdir;
 
 // ========================================================================
 // read_file tests

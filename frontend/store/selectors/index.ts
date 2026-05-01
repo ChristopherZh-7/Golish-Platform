@@ -40,28 +40,6 @@ export {
   useSessionState,
 } from "./session";
 export {
-  clearTabBarCache,
-  clearTabItemCache,
-  selectTabBarState,
-  selectTabItemState,
-  type TabBarState,
-  type TabItemState,
-  useTabBarState,
-  useTabItemState,
-} from "./tab-bar";
-export {
-  selectTaskPlanState,
-  type TaskPlanState,
-  useTaskPlanState,
-} from "./task-plan";
-export {
-  clearAllUnifiedInputCaches,
-  clearUnifiedInputCache,
-  selectUnifiedInputState,
-  type UnifiedInputState,
-  useUnifiedInputState,
-} from "./unified-input";
-export {
   getOwningTabId,
   useActiveConversation,
   useActiveConversationTerminals,
@@ -98,3 +76,25 @@ export {
   useThinkingContent,
   useUseAgents,
 } from "./store-hooks";
+export {
+  clearTabBarCache,
+  clearTabItemCache,
+  selectTabBarState,
+  selectTabItemState,
+  type TabBarState,
+  type TabItemState,
+  useTabBarState,
+  useTabItemState,
+} from "./tab-bar";
+export {
+  selectTaskPlanState,
+  type TaskPlanState,
+  useTaskPlanState,
+} from "./task-plan";
+export {
+  clearAllUnifiedInputCaches,
+  clearUnifiedInputCache,
+  selectUnifiedInputState,
+  type UnifiedInputState,
+  useUnifiedInputState,
+} from "./unified-input";

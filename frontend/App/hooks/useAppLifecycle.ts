@@ -1,7 +1,8 @@
-import { invoke } from "@/lib/api/client";
 import { listen } from "@tauri-apps/api/event";
 import type React from "react";
 import { useEffect, useState } from "react";
+import { invoke } from "@/lib/api/client";
+import { shellIntegrationInstall, shellIntegrationStatus } from "@/lib/api/shell";
 import { logger } from "@/lib/logger";
 import { runTauriUnlistenFn } from "@/lib/run-tauri-unlisten";
 import { useAiEvents } from "../../hooks/useAiEvents";
@@ -13,7 +14,6 @@ import { notify } from "../../lib/notify";
 import { updateConfig as updatePentestConfig } from "../../lib/pentest/api";
 import { getSettings } from "../../lib/settings";
 import { initSystemNotifications, listenForSettingsUpdates } from "../../lib/systemNotifications";
-import { shellIntegrationInstall, shellIntegrationStatus } from "@/lib/api/shell";
 import {
   getLastProjectName,
   loadWorkspaceState,
@@ -347,7 +347,6 @@ export function useAppLifecycle({
     };
   }, []);
 
-
   // Handle native menu events from Tauri backend
   useEffect(() => {
     const unlisteners: Array<() => void> = [];
@@ -374,7 +373,6 @@ export function useAppLifecycle({
       }
     };
   }, [openHomeTab, openSettingsTab]);
-
 
   return { isLoading, error };
 }

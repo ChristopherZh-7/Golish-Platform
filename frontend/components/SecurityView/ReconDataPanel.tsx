@@ -1,14 +1,17 @@
+import { Check, ChevronDown, ChevronRight, FileCode2, Globe, Loader2, Search } from "lucide-react";
 import { useCallback, useState } from "react";
-import {
-  Check, ChevronDown, ChevronRight, FileCode2, Globe, Loader2, Search,
-} from "lucide-react";
-import { cn } from "@/lib/utils";
-import {
-  targetAssetsList, apiEndpointsList, fingerprintsList, jsAnalysisList,
-  type TargetAsset, type ApiEndpoint,
-  type Fingerprint, type JsAnalysisResult,
-} from "@/lib/security-analysis";
 import { formatBytes as formatSize } from "@/lib/format";
+import {
+  type ApiEndpoint,
+  apiEndpointsList,
+  type Fingerprint,
+  fingerprintsList,
+  type JsAnalysisResult,
+  jsAnalysisList,
+  type TargetAsset,
+  targetAssetsList,
+} from "@/lib/security-analysis";
+import { cn } from "@/lib/utils";
 import { methodColor } from "./shared";
 
 export function ReconDataPanel() {
@@ -60,7 +63,10 @@ export function ReconDataPanel() {
             className="bg-transparent text-[10px] text-foreground outline-none w-48 placeholder:text-muted-foreground/20 font-mono"
           />
         </div>
-        <button onClick={loadData} className="px-2.5 py-1 rounded-md text-[10px] font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors">
+        <button
+          onClick={loadData}
+          className="px-2.5 py-1 rounded-md text-[10px] font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors"
+        >
           Load
         </button>
       </div>
@@ -73,11 +79,15 @@ export function ReconDataPanel() {
             onClick={() => setSubTab(st.id)}
             className={cn(
               "px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors",
-              subTab === st.id ? "bg-accent/15 text-accent" : "text-muted-foreground/40 hover:text-foreground"
+              subTab === st.id
+                ? "bg-accent/15 text-accent"
+                : "text-muted-foreground/40 hover:text-foreground"
             )}
           >
             {st.label}
-            {st.count > 0 && <span className="ml-1 text-[8px] text-muted-foreground/30">({st.count})</span>}
+            {st.count > 0 && (
+              <span className="ml-1 text-[8px] text-muted-foreground/30">({st.count})</span>
+            )}
           </button>
         ))}
       </div>
@@ -91,7 +101,9 @@ export function ReconDataPanel() {
           <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground/20">
             <Globe className="w-10 h-10" />
             <p className="text-[12px]">Enter a target UUID to view recon data</p>
-            <p className="text-[10px] text-muted-foreground/15">Data is populated by the AI agent during security analysis</p>
+            <p className="text-[10px] text-muted-foreground/15">
+              Data is populated by the AI agent during security analysis
+            </p>
           </div>
         ) : subTab === "assets" ? (
           <ReconAssetsTable data={assets} />
@@ -107,7 +119,11 @@ export function ReconDataPanel() {
 
 function ReconAssetsTable({ data }: { data: TargetAsset[] }) {
   if (data.length === 0) {
-    return <div className="text-center text-[11px] text-muted-foreground/20 py-12">No assets discovered</div>;
+    return (
+      <div className="text-center text-[11px] text-muted-foreground/20 py-12">
+        No assets discovered
+      </div>
+    );
   }
   return (
     <table className="w-full text-[10px]">
@@ -125,17 +141,25 @@ function ReconAssetsTable({ data }: { data: TargetAsset[] }) {
         {data.map((a) => (
           <tr key={a.id} className="border-b border-border/5 hover:bg-[var(--bg-hover)]/20">
             <td className="px-4 py-1.5">
-              <span className="text-[9px] font-medium px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">{a.assetType}</span>
+              <span className="text-[9px] font-medium px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">
+                {a.assetType}
+              </span>
             </td>
             <td className="px-2 py-1.5 font-mono text-foreground/70">{a.value}</td>
             <td className="px-2 py-1.5 text-muted-foreground/40 font-mono">{a.port ?? "-"}</td>
             <td className="px-2 py-1.5 text-muted-foreground/40">{a.service ?? "-"}</td>
             <td className="px-2 py-1.5 text-muted-foreground/40">{a.version ?? "-"}</td>
             <td className="px-2 py-1.5">
-              <span className={cn(
-                "text-[9px] px-1.5 py-0.5 rounded",
-                a.status === "active" ? "bg-green-500/10 text-green-400" : "bg-zinc-500/10 text-zinc-400"
-              )}>{a.status}</span>
+              <span
+                className={cn(
+                  "text-[9px] px-1.5 py-0.5 rounded",
+                  a.status === "active"
+                    ? "bg-green-500/10 text-green-400"
+                    : "bg-zinc-500/10 text-zinc-400"
+                )}
+              >
+                {a.status}
+              </span>
             </td>
           </tr>
         ))}
@@ -146,7 +170,11 @@ function ReconAssetsTable({ data }: { data: TargetAsset[] }) {
 
 function ReconEndpointsTable({ data }: { data: ApiEndpoint[] }) {
   if (data.length === 0) {
-    return <div className="text-center text-[11px] text-muted-foreground/20 py-12">No endpoints discovered</div>;
+    return (
+      <div className="text-center text-[11px] text-muted-foreground/20 py-12">
+        No endpoints discovered
+      </div>
+    );
   }
   const riskBadge: Record<string, string> = {
     critical: "bg-red-500/10 text-red-400",
@@ -170,16 +198,27 @@ function ReconEndpointsTable({ data }: { data: ApiEndpoint[] }) {
       <tbody>
         {data.map((ep) => (
           <tr key={ep.id} className="border-b border-border/5 hover:bg-[var(--bg-hover)]/20">
-            <td className={cn("px-4 py-1.5 font-mono font-medium", methodColor(ep.method))}>{ep.method}</td>
+            <td className={cn("px-4 py-1.5 font-mono font-medium", methodColor(ep.method))}>
+              {ep.method}
+            </td>
             <td className="px-2 py-1.5 font-mono text-foreground/60">{ep.path}</td>
             <td className="px-2 py-1.5 text-muted-foreground/40">{ep.authType ?? "-"}</td>
             <td className="px-2 py-1.5">
-              <span className={cn("text-[9px] px-1.5 py-0.5 rounded", riskBadge[ep.riskLevel] ?? "bg-zinc-500/10 text-zinc-400")}>{ep.riskLevel}</span>
+              <span
+                className={cn(
+                  "text-[9px] px-1.5 py-0.5 rounded",
+                  riskBadge[ep.riskLevel] ?? "bg-zinc-500/10 text-zinc-400"
+                )}
+              >
+                {ep.riskLevel}
+              </span>
             </td>
             <td className="px-2 py-1.5">
-              {ep.tested
-                ? <Check className="w-3 h-3 text-green-400" />
-                : <span className="text-muted-foreground/20">—</span>}
+              {ep.tested ? (
+                <Check className="w-3 h-3 text-green-400" />
+              ) : (
+                <span className="text-muted-foreground/20">—</span>
+              )}
             </td>
             <td className="px-2 py-1.5 text-muted-foreground/30">{ep.source}</td>
           </tr>
@@ -191,7 +230,11 @@ function ReconEndpointsTable({ data }: { data: ApiEndpoint[] }) {
 
 function ReconFingerprintsTable({ data }: { data: Fingerprint[] }) {
   if (data.length === 0) {
-    return <div className="text-center text-[11px] text-muted-foreground/20 py-12">No fingerprints detected</div>;
+    return (
+      <div className="text-center text-[11px] text-muted-foreground/20 py-12">
+        No fingerprints detected
+      </div>
+    );
   }
   return (
     <table className="w-full text-[10px]">
@@ -209,7 +252,9 @@ function ReconFingerprintsTable({ data }: { data: Fingerprint[] }) {
         {data.map((fp) => (
           <tr key={fp.id} className="border-b border-border/5 hover:bg-[var(--bg-hover)]/20">
             <td className="px-4 py-1.5">
-              <span className="text-[9px] font-medium px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400">{fp.category}</span>
+              <span className="text-[9px] font-medium px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400">
+                {fp.category}
+              </span>
             </td>
             <td className="px-2 py-1.5 text-foreground/70 font-medium">{fp.name}</td>
             <td className="px-2 py-1.5 font-mono text-muted-foreground/40">{fp.version ?? "-"}</td>
@@ -217,14 +262,23 @@ function ReconFingerprintsTable({ data }: { data: Fingerprint[] }) {
               <div className="flex items-center gap-1.5">
                 <div className="w-12 h-1 rounded-full bg-muted/20 overflow-hidden">
                   <div
-                    className={cn("h-full rounded-full", fp.confidence >= 80 ? "bg-green-500" : fp.confidence >= 50 ? "bg-yellow-500" : "bg-red-500")}
+                    className={cn(
+                      "h-full rounded-full",
+                      fp.confidence >= 80
+                        ? "bg-green-500"
+                        : fp.confidence >= 50
+                          ? "bg-yellow-500"
+                          : "bg-red-500"
+                    )}
                     style={{ width: `${Math.min(100, fp.confidence)}%` }}
                   />
                 </div>
                 <span className="text-muted-foreground/30">{fp.confidence}%</span>
               </div>
             </td>
-            <td className="px-2 py-1.5 font-mono text-[9px] text-muted-foreground/30 truncate max-w-[120px]">{fp.cpe ?? "-"}</td>
+            <td className="px-2 py-1.5 font-mono text-[9px] text-muted-foreground/30 truncate max-w-[120px]">
+              {fp.cpe ?? "-"}
+            </td>
             <td className="px-2 py-1.5 text-muted-foreground/30">{fp.source}</td>
           </tr>
         ))}
@@ -271,7 +325,10 @@ export function JsAnalysisPanel() {
             className="bg-transparent text-[10px] text-foreground outline-none w-48 placeholder:text-muted-foreground/20 font-mono"
           />
         </div>
-        <button onClick={loadData} className="px-2.5 py-1 rounded-md text-[10px] font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors">
+        <button
+          onClick={loadData}
+          className="px-2.5 py-1 rounded-md text-[10px] font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors"
+        >
           Load
         </button>
       </div>
@@ -285,10 +342,14 @@ export function JsAnalysisPanel() {
           <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground/20">
             <FileCode2 className="w-10 h-10" />
             <p className="text-[12px]">Enter a target UUID to view JS analysis</p>
-            <p className="text-[10px] text-muted-foreground/15">Results from JS security analysis appear here</p>
+            <p className="text-[10px] text-muted-foreground/15">
+              Results from JS security analysis appear here
+            </p>
           </div>
         ) : results.length === 0 ? (
-          <div className="text-center text-[11px] text-muted-foreground/20 py-12">No JS analysis results</div>
+          <div className="text-center text-[11px] text-muted-foreground/20 py-12">
+            No JS analysis results
+          </div>
         ) : (
           <div className="space-y-2 p-4">
             {results.map((r) => {
@@ -296,15 +357,24 @@ export function JsAnalysisPanel() {
               const secretCount = Array.isArray(r.secretsFound) ? r.secretsFound.length : 0;
               const endpointCount = Array.isArray(r.endpointsFound) ? r.endpointsFound.length : 0;
               return (
-                <div key={r.id} className="rounded-xl border border-border/10 bg-[var(--bg-hover)]/15 overflow-hidden">
+                <div
+                  key={r.id}
+                  className="rounded-xl border border-border/10 bg-[var(--bg-hover)]/15 overflow-hidden"
+                >
                   <button
                     type="button"
                     onClick={() => setExpandedId(isExpanded ? null : r.id)}
                     className="w-full flex items-center gap-3 p-3 text-left hover:bg-[var(--bg-hover)]/30 transition-colors"
                   >
-                    {isExpanded ? <ChevronDown className="w-3 h-3 text-muted-foreground/40" /> : <ChevronRight className="w-3 h-3 text-muted-foreground/40" />}
+                    {isExpanded ? (
+                      <ChevronDown className="w-3 h-3 text-muted-foreground/40" />
+                    ) : (
+                      <ChevronRight className="w-3 h-3 text-muted-foreground/40" />
+                    )}
                     <FileCode2 className="w-3.5 h-3.5 text-yellow-400 flex-shrink-0" />
-                    <span className="text-[11px] font-mono text-foreground/80 flex-1 truncate">{r.filename || r.url}</span>
+                    <span className="text-[11px] font-mono text-foreground/80 flex-1 truncate">
+                      {r.filename || r.url}
+                    </span>
                     {secretCount > 0 && (
                       <span className="text-[9px] px-1.5 py-0.5 rounded bg-red-500/10 text-red-400 flex-shrink-0">
                         {secretCount} secrets
@@ -326,11 +396,15 @@ export function JsAnalysisPanel() {
                       <div className="grid grid-cols-3 gap-3 text-[10px]">
                         <div>
                           <span className="text-muted-foreground/40 block mb-1">URL</span>
-                          <span className="font-mono text-foreground/60 text-[9px] break-all">{r.url}</span>
+                          <span className="font-mono text-foreground/60 text-[9px] break-all">
+                            {r.url}
+                          </span>
                         </div>
                         <div>
                           <span className="text-muted-foreground/40 block mb-1">Size</span>
-                          <span className="text-foreground/60">{r.sizeBytes ? formatSize(r.sizeBytes) : "-"}</span>
+                          <span className="text-foreground/60">
+                            {r.sizeBytes ? formatSize(r.sizeBytes) : "-"}
+                          </span>
                         </div>
                         <div>
                           <span className="text-muted-foreground/40 block mb-1">Risk Summary</span>
@@ -339,10 +413,15 @@ export function JsAnalysisPanel() {
                       </div>
                       {Array.isArray(r.frameworks) && r.frameworks.length > 0 && (
                         <div>
-                          <span className="text-[9px] text-muted-foreground/40 block mb-1">Frameworks</span>
+                          <span className="text-[9px] text-muted-foreground/40 block mb-1">
+                            Frameworks
+                          </span>
                           <div className="flex flex-wrap gap-1">
                             {r.frameworks.map((fw, i) => (
-                              <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400">
+                              <span
+                                key={i}
+                                className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400"
+                              >
                                 {String(fw)}
                               </span>
                             ))}
@@ -351,10 +430,15 @@ export function JsAnalysisPanel() {
                       )}
                       {Array.isArray(r.libraries) && r.libraries.length > 0 && (
                         <div>
-                          <span className="text-[9px] text-muted-foreground/40 block mb-1">Libraries</span>
+                          <span className="text-[9px] text-muted-foreground/40 block mb-1">
+                            Libraries
+                          </span>
                           <div className="flex flex-wrap gap-1">
                             {r.libraries.map((lib, i) => (
-                              <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400">
+                              <span
+                                key={i}
+                                className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400"
+                              >
                                 {String(lib)}
                               </span>
                             ))}
@@ -363,10 +447,17 @@ export function JsAnalysisPanel() {
                       )}
                       {secretCount > 0 && (
                         <div>
-                          <span className="text-[9px] text-red-400/70 block mb-1">Secrets Found</span>
+                          <span className="text-[9px] text-red-400/70 block mb-1">
+                            Secrets Found
+                          </span>
                           <div className="space-y-0.5">
                             {r.secretsFound.map((s, i) => (
-                              <div key={i} className="text-[9px] font-mono text-red-400/50 bg-red-500/5 px-2 py-1 rounded">{String(s)}</div>
+                              <div
+                                key={i}
+                                className="text-[9px] font-mono text-red-400/50 bg-red-500/5 px-2 py-1 rounded"
+                              >
+                                {String(s)}
+                              </div>
                             ))}
                           </div>
                         </div>
@@ -382,4 +473,3 @@ export function JsAnalysisPanel() {
     </div>
   );
 }
-

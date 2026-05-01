@@ -1,3 +1,4 @@
+use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
@@ -42,8 +43,8 @@ pub struct ProjectMethodology {
     pub updated_at: String,
 }
 
-fn templates_dir() -> Result<PathBuf, String> {
-    let base = dirs::data_dir().ok_or("Cannot resolve data dir")?;
+fn templates_dir() -> Result<PathBuf, GolishError> {
+    let base = dirs::data_dir().ok_or_else(|| GolishError::Internal("Cannot resolve data dir".into()))?;
     Ok(base.join("golish-platform").join("methodology").join("templates"))
 }
 
@@ -165,12 +166,12 @@ fn check(id: &str, title: &str, desc: &str, tools: &[&str]) -> CheckItem {
 }
 
 #[tauri::command]
-pub async fn method_list_templates() -> Result<Vec<MethodologyTemplate>, String> {
+pub async fn method_list_templates() -> Result<Vec<MethodologyTemplate>, GolishError> {
     let mut templates = built_in_templates();
     let custom_dir = templates_dir()?;
     if custom_dir.exists() {
-        let mut entries = fs::read_dir(&custom_dir).await.map_err(|e| e.to_string())?;
-        while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
+        let mut entries = fs::read_dir(&custom_dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
             if entry.path().extension().map_or(false, |e| e == "json") {
                 if let Ok(content) = fs::read_to_string(entry.path()).await {
                     if let Ok(t) = serde_json::from_str::<MethodologyTemplate>(&content) {
@@ -189,10 +190,10 @@ pub async fn method_start_project(
     template_id: String,
     project_name: String,
     project_path: Option<String>,
-) -> Result<ProjectMethodology, String> {
+) -> Result<ProjectMethodology, GolishError> {
     let pool = state.pool_ready().await?;
     let templates = built_in_templates();
-    let template = templates.iter().find(|t| t.id == template_id).ok_or("Template not found")?;
+    let template = templates.iter().find(|t| t.id == template_id).ok_or_else(|| GolishError::Internal("Template not found".into()))?;
     let now = chrono::Utc::now().to_rfc3339();
     let project = ProjectMethodology {
         id: Uuid::new_v4().to_string(),
@@ -203,7 +204,7 @@ pub async fn method_start_project(
         created_at: now.clone(),
         updated_at: now,
     };
-    let data = serde_json::to_value(&project).map_err(|e| e.to_string())?;
+    let data = serde_json::to_value(&project)?;
     let uid: Uuid = project.id.parse().unwrap_or_else(|_| Uuid::new_v4());
     sqlx::query(
         "INSERT INTO methodology_projects (id, data, project_path) VALUES ($1, $2, $3)",
@@ -213,7 +214,7 @@ pub async fn method_start_project(
     .bind(project_path.as_deref())
     .execute(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
     Ok(project)
 }
 
@@ -221,7 +222,7 @@ pub async fn method_start_project(
 pub async fn method_list_projects(
     state: tauri::State<'_, DbState>,
     project_path: Option<String>,
-) -> Result<Vec<ProjectMethodology>, String> {
+) -> Result<Vec<ProjectMethodology>, GolishError> {
     let pool = state.pool_ready().await?;
     let rows: Vec<serde_json::Value> = sqlx::query_scalar(
         "SELECT data FROM methodology_projects WHERE project_path = $1 ORDER BY updated_at DESC",
@@ -229,7 +230,7 @@ pub async fn method_list_projects(
     .bind(project_path.as_deref())
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     let projects: Vec<ProjectMethodology> = rows
         .into_iter()
@@ -243,7 +244,7 @@ pub async fn method_load_project(
     state: tauri::State<'_, DbState>,
     id: String,
     project_path: Option<String>,
-) -> Result<ProjectMethodology, String> {
+) -> Result<ProjectMethodology, GolishError> {
     let pool = state.pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -253,8 +254,8 @@ pub async fn method_load_project(
     .bind(uid)
     .fetch_one(pool)
     .await
-    .map_err(|e| e.to_string())?;
-    serde_json::from_value(data).map_err(|e| e.to_string())
+?;
+    serde_json::from_value(data).map_err(GolishError::from)
 }
 
 #[tauri::command]
@@ -266,7 +267,7 @@ pub async fn method_update_item(
     checked: Option<bool>,
     notes: Option<String>,
     project_path: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = project_id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -277,9 +278,9 @@ pub async fn method_update_item(
     .bind(uid)
     .fetch_one(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
-    let mut project: ProjectMethodology = serde_json::from_value(data).map_err(|e| e.to_string())?;
+    let mut project: ProjectMethodology = serde_json::from_value(data)?;
 
     for phase in &mut project.phases {
         if phase.id == phase_id {
@@ -292,14 +293,14 @@ pub async fn method_update_item(
         }
     }
     project.updated_at = chrono::Utc::now().to_rfc3339();
-    let new_data = serde_json::to_value(&project).map_err(|e| e.to_string())?;
+    let new_data = serde_json::to_value(&project)?;
 
     sqlx::query("UPDATE methodology_projects SET data=$1, updated_at=NOW() WHERE id=$2")
         .bind(&new_data)
         .bind(uid)
         .execute(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     Ok(())
 }
 
@@ -308,7 +309,7 @@ pub async fn method_delete_project(
     state: tauri::State<'_, DbState>,
     id: String,
     project_path: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -316,6 +317,6 @@ pub async fn method_delete_project(
         .bind(uid)
         .execute(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     Ok(())
 }

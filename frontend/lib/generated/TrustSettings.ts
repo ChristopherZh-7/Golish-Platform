@@ -3,25 +3,26 @@
 /**
  * Repository trust settings.
  */
-export type TrustSettings = { 
-/**
- * Paths with full trust (all tools allowed)
- */
-full_trust: Array<string>, 
-/**
- * Paths with read-only trust
- */
-read_only_trust: Array<string>, 
-/**
- * Paths that are never trusted
- */
-never_trust: Array<string>, 
-/**
- * Additional paths accessible outside workspace (supports glob patterns)
- * Example: ["~/Documents/*", "/tmp/scratch"]
- */
-allowed_paths: Array<string>, 
-/**
- * Disable workspace path restrictions entirely (use with caution)
- */
-disable_path_restrictions: boolean, };
+export type TrustSettings = {
+  /**
+   * Paths with full trust (all tools allowed)
+   */
+  full_trust: Array<string>;
+  /**
+   * Paths with read-only trust
+   */
+  read_only_trust: Array<string>;
+  /**
+   * Paths that are never trusted
+   */
+  never_trust: Array<string>;
+  /**
+   * Additional paths accessible outside workspace (supports glob patterns)
+   * Example: ["~/Documents/*", "/tmp/scratch"]
+   */
+  allowed_paths: Array<string>;
+  /**
+   * Disable workspace path restrictions entirely (use with caution)
+   */
+  disable_path_restrictions: boolean;
+};

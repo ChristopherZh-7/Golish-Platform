@@ -1,3 +1,4 @@
+use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -28,7 +29,7 @@ fn default_status() -> String {
 pub async fn scan_queue_list(
     state: tauri::State<'_, DbState>,
     project_path: Option<String>,
-) -> Result<Vec<ScanEndpoint>, String> {
+) -> Result<Vec<ScanEndpoint>, GolishError> {
     let pool = state.pool_ready().await?;
     let rows: Vec<(String, String, Option<String>, i32, String, serde_json::Value, i64)> =
         sqlx::query_as(
@@ -39,7 +40,7 @@ pub async fn scan_queue_list(
         .bind(project_path.as_deref())
         .fetch_all(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     Ok(rows
         .into_iter()
@@ -60,7 +61,7 @@ pub async fn scan_queue_upsert(
     state: tauri::State<'_, DbState>,
     endpoint: ScanEndpoint,
     project_path: Option<String>,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     let pool = state.pool_ready().await?;
     let id: Uuid = endpoint
         .id
@@ -88,7 +89,7 @@ pub async fn scan_queue_upsert(
     .bind(project_path.as_deref())
     .execute(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     Ok(id.to_string())
 }
@@ -98,7 +99,7 @@ pub async fn scan_queue_save_all(
     state: tauri::State<'_, DbState>,
     endpoints: Vec<ScanEndpoint>,
     project_path: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
 
     // Delete existing entries for this project, then re-insert
@@ -106,7 +107,7 @@ pub async fn scan_queue_save_all(
         .bind(project_path.as_deref())
         .execute(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     for ep in &endpoints {
         let id: Uuid = ep
@@ -129,7 +130,7 @@ pub async fn scan_queue_save_all(
         .bind(project_path.as_deref())
         .execute(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     }
 
     Ok(())
@@ -140,7 +141,7 @@ pub async fn scan_queue_remove(
     state: tauri::State<'_, DbState>,
     url: String,
     project_path: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     sqlx::query(
         "DELETE FROM scan_queue WHERE url = $1 AND project_path = $2",
@@ -149,7 +150,7 @@ pub async fn scan_queue_remove(
     .bind(project_path.as_deref())
     .execute(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
     Ok(())
 }
 
@@ -157,7 +158,7 @@ pub async fn scan_queue_remove(
 pub async fn scan_queue_clear_completed(
     state: tauri::State<'_, DbState>,
     project_path: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     sqlx::query(
         "DELETE FROM scan_queue WHERE status = 'complete' AND project_path = $1",
@@ -165,6 +166,6 @@ pub async fn scan_queue_clear_completed(
     .bind(project_path.as_deref())
     .execute(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
     Ok(())
 }

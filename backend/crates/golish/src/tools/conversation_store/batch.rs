@@ -3,6 +3,7 @@
 //! Lifted out of the parent module so the per-command file stays under the
 //! 500-line module budget. Re-exported via `super::`.
 
+use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 
 use crate::state::DbState;
@@ -50,9 +51,9 @@ pub struct ConvBatchSavePayload {
 pub async fn conv_save_batch(
     state: tauri::State<'_, DbState>,
     payload: ConvBatchSavePayload,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
-    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    let mut tx = pool.begin().await?;
 
     // ── 1. Delete stale conversations not in `surviving_ids` ──
     if payload.surviving_ids.is_empty() {
@@ -60,7 +61,7 @@ pub async fn conv_save_batch(
             .bind(&payload.project_path)
             .execute(&mut *tx)
             .await
-            .map_err(|e| e.to_string())?;
+?;
     } else {
         // Build a ($2, $3, ...) placeholder list for the surviving IDs
         let placeholders: Vec<String> = (0..payload.surviving_ids.len())
@@ -74,7 +75,7 @@ pub async fn conv_save_batch(
         for id in &payload.surviving_ids {
             q = q.bind(id);
         }
-        q.execute(&mut *tx).await.map_err(|e| e.to_string())?;
+        q.execute(&mut *tx).await?;
     }
 
     // ── 2. Upsert each changed conversation ──
@@ -98,14 +99,14 @@ pub async fn conv_save_batch(
         .bind(conv.created_at as f64)
         .execute(&mut *tx)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
         // Messages: delete + re-insert
         sqlx::query("DELETE FROM chat_messages WHERE conversation_id = $1")
             .bind(&conv.id)
             .execute(&mut *tx)
             .await
-            .map_err(|e| e.to_string())?;
+?;
 
         for msg in &item.messages {
             sqlx::query(
@@ -126,7 +127,7 @@ pub async fn conv_save_batch(
             .bind(msg.created_at as f64)
             .execute(&mut *tx)
             .await
-            .map_err(|e| e.to_string())?;
+?;
         }
 
         // Terminal states
@@ -139,7 +140,7 @@ pub async fn conv_save_batch(
                 .bind(&ts.session_id)
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| e.to_string())?;
+?;
             }
 
             sqlx::query(
@@ -168,7 +169,7 @@ pub async fn conv_save_batch(
             .bind(&ts.plan_message_id)
             .execute(&mut *tx)
             .await
-            .map_err(|e| e.to_string())?;
+?;
         }
 
         // Timeline blocks per terminal
@@ -177,7 +178,7 @@ pub async fn conv_save_batch(
                 .bind(&entry.session_id)
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| e.to_string())?;
+?;
 
             for block in &entry.blocks {
                 sqlx::query(
@@ -195,7 +196,7 @@ pub async fn conv_save_batch(
                 .bind(&block.timestamp)
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| e.to_string())?;
+?;
             }
         }
     }
@@ -219,9 +220,9 @@ pub async fn conv_save_batch(
     .bind(&payload.preferences.approval_patterns)
     .execute(&mut *tx)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
-    tx.commit().await.map_err(|e| e.to_string())?;
+    tx.commit().await?;
     Ok(())
 }
 

@@ -1,3 +1,4 @@
+use crate::error::GolishError;
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -23,7 +24,7 @@ pub fn obfuscate_value(plain: &str) -> String {
     obfuscate(plain)
 }
 
-pub fn deobfuscate_value(encoded: &str) -> Result<String, String> {
+pub fn deobfuscate_value(encoded: &str) -> Result<String, GolishError> {
     deobfuscate(encoded)
 }
 
@@ -38,15 +39,15 @@ fn obfuscate(plain: &str) -> String {
     B64.encode(&encrypted)
 }
 
-fn deobfuscate(encoded: &str) -> Result<String, String> {
+fn deobfuscate(encoded: &str) -> Result<String, GolishError> {
     let key = derive_key();
-    let data = B64.decode(encoded).map_err(|e| e.to_string())?;
+    let data = B64.decode(encoded)?;
     let plain: Vec<u8> = data
         .iter()
         .enumerate()
         .map(|(i, b)| b ^ key[i % key.len()])
         .collect();
-    String::from_utf8(plain).map_err(|e| e.to_string())
+    String::from_utf8(plain).map_err(GolishError::from)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,7 +175,7 @@ impl From<VaultRow> for VaultEntrySafe {
 pub async fn vault_list(
     state: tauri::State<'_, DbState>,
     project_path: Option<String>,
-) -> Result<Vec<VaultEntrySafe>, String> {
+) -> Result<Vec<VaultEntrySafe>, GolishError> {
     let pool = state.pool_ready().await?;
     let rows: Vec<VaultRow> = sqlx::query_as(
         "SELECT id, name, entry_type::TEXT, username, notes, project, tags, status, source_url, last_validated_at, created_at, updated_at \
@@ -183,7 +184,7 @@ pub async fn vault_list(
     .bind(project_path.as_deref())
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     Ok(rows.into_iter().map(VaultEntrySafe::from).collect())
 }
@@ -200,7 +201,7 @@ pub async fn vault_add(
     tags: Option<Vec<String>>,
     source_url: Option<String>,
     project_path: Option<String>,
-) -> Result<VaultEntrySafe, String> {
+) -> Result<VaultEntrySafe, GolishError> {
     let pool = state.pool_ready().await?;
     let ts = now_ts();
     let id = Uuid::new_v4();
@@ -229,7 +230,7 @@ pub async fn vault_add(
     .bind(&project_path)
     .execute(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     Ok(VaultEntrySafe {
         id: short_id,
@@ -252,7 +253,7 @@ pub async fn vault_get_value(
     state: tauri::State<'_, DbState>,
     id: String,
     project_path: Option<String>,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     let pool = state.pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -260,7 +261,7 @@ pub async fn vault_get_value(
         .bind(uid)
         .fetch_one(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     deobfuscate(&enc)
 }
 
@@ -275,35 +276,35 @@ pub async fn vault_update(
     project: Option<String>,
     tags: Option<Vec<String>>,
     project_path: Option<String>,
-) -> Result<VaultEntrySafe, String> {
+) -> Result<VaultEntrySafe, GolishError> {
     let pool = state.pool_ready().await?;
     let _ = &project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
     if let Some(n) = &name {
         sqlx::query("UPDATE vault_entries SET name=$1, updated_at=NOW() WHERE id=$2")
-            .bind(n).bind(uid).execute(pool).await.map_err(|e| e.to_string())?;
+            .bind(n).bind(uid).execute(pool).await?;
     }
     if let Some(v) = &value {
         sqlx::query("UPDATE vault_entries SET value=$1, updated_at=NOW() WHERE id=$2")
-            .bind(obfuscate(v)).bind(uid).execute(pool).await.map_err(|e| e.to_string())?;
+            .bind(obfuscate(v)).bind(uid).execute(pool).await?;
     }
     if let Some(u) = &username {
         sqlx::query("UPDATE vault_entries SET username=$1, updated_at=NOW() WHERE id=$2")
-            .bind(u).bind(uid).execute(pool).await.map_err(|e| e.to_string())?;
+            .bind(u).bind(uid).execute(pool).await?;
     }
     if let Some(n) = &notes {
         sqlx::query("UPDATE vault_entries SET notes=$1, updated_at=NOW() WHERE id=$2")
-            .bind(n).bind(uid).execute(pool).await.map_err(|e| e.to_string())?;
+            .bind(n).bind(uid).execute(pool).await?;
     }
     if let Some(p) = &project {
         sqlx::query("UPDATE vault_entries SET project=$1, updated_at=NOW() WHERE id=$2")
-            .bind(p).bind(uid).execute(pool).await.map_err(|e| e.to_string())?;
+            .bind(p).bind(uid).execute(pool).await?;
     }
     if let Some(t) = &tags {
         let j = serde_json::to_value(t).unwrap_or_else(|_| serde_json::json!([]));
         sqlx::query("UPDATE vault_entries SET tags=$1, updated_at=NOW() WHERE id=$2")
-            .bind(&j).bind(uid).execute(pool).await.map_err(|e| e.to_string())?;
+            .bind(&j).bind(uid).execute(pool).await?;
     }
 
     let row: VaultRow = sqlx::query_as(
@@ -313,7 +314,7 @@ pub async fn vault_update(
     .bind(uid)
     .fetch_one(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     Ok(VaultEntrySafe::from(row))
 }
@@ -324,7 +325,7 @@ pub async fn vault_update_status(
     id: String,
     status: String,
     project_path: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     let _ = &project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -333,7 +334,7 @@ pub async fn vault_update_status(
         .bind(uid)
         .execute(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     Ok(())
 }
 
@@ -342,7 +343,7 @@ pub async fn vault_validate(
     state: tauri::State<'_, DbState>,
     id: String,
     project_path: Option<String>,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     let pool = state.pool_ready().await?;
     let _ = &project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -353,12 +354,12 @@ pub async fn vault_validate(
     .bind(uid)
     .fetch_one(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     let value = deobfuscate(&enc_value)?;
 
     if source_url.is_empty() {
-        return Err("No source URL to validate against".to_string());
+        return Err(GolishError::Internal("No source URL to validate against".into()));
     }
 
     let client = reqwest::Client::builder()
@@ -366,7 +367,7 @@ pub async fn vault_validate(
         .timeout(std::time::Duration::from_secs(10))
         .no_proxy()
         .build()
-        .map_err(|e| e.to_string())?;
+?;
 
     let mut req = client.get(&source_url);
     match entry_type.as_str() {
@@ -407,7 +408,7 @@ pub async fn vault_validate(
         .bind(uid)
         .execute(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     Ok(status.to_string())
 }
@@ -417,7 +418,7 @@ pub async fn vault_delete(
     state: tauri::State<'_, DbState>,
     id: String,
     project_path: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     let _ = project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -425,7 +426,7 @@ pub async fn vault_delete(
         .bind(uid)
         .execute(pool)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     Ok(())
 }
 
@@ -434,7 +435,7 @@ pub async fn vault_resolve(
     state: tauri::State<'_, DbState>,
     reference: String,
     project_path: Option<String>,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     let pool = state.pool_ready().await?;
     let name = reference.trim_start_matches("{{vault:").trim_end_matches("}}");
     let enc: String = if let Some(ref pp) = project_path {

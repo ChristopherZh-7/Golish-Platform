@@ -5,16 +5,17 @@
  *
  * Uses the OpenAI-compatible API at https://integrate.api.nvidia.com/v1
  */
-export type NvidiaSettings = { 
-/**
- * NVIDIA API key (supports $ENV_VAR syntax)
- */
-api_key: string | null, 
-/**
- * Custom base URL (defaults to https://integrate.api.nvidia.com/v1)
- */
-base_url: string | null, 
-/**
- * Whether to show this provider's models in the model selector
- */
-show_in_selector: boolean, };
+export type NvidiaSettings = {
+  /**
+   * NVIDIA API key (supports $ENV_VAR syntax)
+   */
+  api_key: string | null;
+  /**
+   * Custom base URL (defaults to https://integrate.api.nvidia.com/v1)
+   */
+  base_url: string | null;
+  /**
+   * Whether to show this provider's models in the model selector
+   */
+  show_in_selector: boolean;
+};

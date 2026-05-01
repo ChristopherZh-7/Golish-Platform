@@ -35,8 +35,7 @@ export function useActivityViewControls(
   setActivityView: React.Dispatch<React.SetStateAction<ActivityView>>
 ): ActivityViewControls {
   const toggleView = useCallback(
-    (view: NonNullable<ActivityView>) =>
-      setActivityView((v) => (v === view ? null : view)),
+    (view: NonNullable<ActivityView>) => setActivityView((v) => (v === view ? null : view)),
     [setActivityView]
   );
 

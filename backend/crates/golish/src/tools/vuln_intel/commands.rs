@@ -11,6 +11,7 @@ use golish_vuln_intel::{
     NucleiDiscoverResult,
 };
 
+use crate::error::GolishError;
 use crate::event_emitter::TauriEventEmitter;
 use crate::settings::SettingsManager;
 use crate::state::DbState;
@@ -19,7 +20,7 @@ use crate::state::DbState;
 
 async fn github_client_from_settings(
     settings_mgr: &SettingsManager,
-) -> Result<(reqwest::Client, Option<String>), String> {
+) -> Result<(reqwest::Client, Option<String>), GolishError> {
     let settings = settings_mgr.get().await;
     let github_token = settings
         .api_keys
@@ -27,7 +28,7 @@ async fn github_client_from_settings(
         .clone()
         .or_else(|| settings.network.github_token.clone());
     let proxy_url = settings.network.proxy_url.as_deref();
-    let client = intel::build_github_client(proxy_url).map_err(|e| e.to_string())?;
+    let client = intel::build_github_client(proxy_url)?;
     Ok((client, github_token))
 }
 
@@ -36,15 +37,15 @@ async fn github_client_from_settings(
 #[tauri::command]
 pub async fn intel_list_feeds(
     state: tauri::State<'_, DbState>,
-) -> Result<Vec<VulnFeed>, String> {
+) -> Result<Vec<VulnFeed>, GolishError> {
     let pool = state.pool_ready().await?;
-    intel::ensure_default_feeds(pool).await.map_err(|e| e.to_string())?;
+    intel::ensure_default_feeds(pool).await?;
     let rows: Vec<FeedRow> = sqlx::query_as(
         "SELECT id, name, feed_type, url, enabled, last_fetched FROM vuln_feeds",
     )
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+    ?;
     Ok(rows.into_iter().map(VulnFeed::from).collect())
 }
 
@@ -54,7 +55,7 @@ pub async fn intel_add_feed(
     name: String,
     feed_type: String,
     url: String,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     let pool = state.pool_ready().await?;
     let id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
@@ -66,7 +67,7 @@ pub async fn intel_add_feed(
     .bind(&url)
     .execute(pool)
     .await
-    .map_err(|e| e.to_string())?;
+    ?;
     Ok(id)
 }
 
@@ -75,14 +76,14 @@ pub async fn intel_toggle_feed(
     state: tauri::State<'_, DbState>,
     id: String,
     enabled: bool,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     sqlx::query("UPDATE vuln_feeds SET enabled=$1 WHERE id=$2")
         .bind(enabled)
         .bind(&id)
         .execute(pool)
         .await
-        .map_err(|e| e.to_string())?;
+        ?;
     Ok(())
 }
 
@@ -90,13 +91,13 @@ pub async fn intel_toggle_feed(
 pub async fn intel_delete_feed(
     state: tauri::State<'_, DbState>,
     id: String,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     sqlx::query("DELETE FROM vuln_feeds WHERE id=$1")
         .bind(&id)
         .execute(pool)
         .await
-        .map_err(|e| e.to_string())?;
+        ?;
     Ok(())
 }
 
@@ -106,16 +107,16 @@ pub async fn intel_delete_feed(
 pub async fn intel_fetch(
     state: tauri::State<'_, DbState>,
     settings_mgr: tauri::State<'_, std::sync::Arc<SettingsManager>>,
-) -> Result<Vec<VulnEntry>, String> {
+) -> Result<Vec<VulnEntry>, GolishError> {
     let pool = state.pool_ready().await?;
-    intel::ensure_default_feeds(pool).await.map_err(|e| e.to_string())?;
+    intel::ensure_default_feeds(pool).await?;
 
     let feeds: Vec<FeedRow> = sqlx::query_as(
         "SELECT id, name, feed_type, url, enabled, last_fetched FROM vuln_feeds WHERE enabled = true",
     )
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+    ?;
 
     let settings = settings_mgr.get().await;
     let mut client_builder = reqwest::Client::builder()
@@ -129,7 +130,7 @@ pub async fn intel_fetch(
             }
         }
     }
-    let client = client_builder.build().map_err(|e| e.to_string())?;
+    let client = client_builder.build()?;
 
     let mut all_entries: Vec<VulnEntry> = Vec::new();
 
@@ -157,7 +158,7 @@ pub async fn intel_fetch(
                     .bind(&feed.id)
                     .execute(pool)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    ?;
             }
             Err(e) => {
                 tracing::warn!(feed = %feed.name, error = %e, "[intel-fetch] Feed fetch failed");
@@ -169,7 +170,7 @@ pub async fn intel_fetch(
     intel::enrich_missing_cvss(&client, &mut all_entries).await;
     all_entries.sort_by(|a, b| b.published.cmp(&a.published));
 
-    intel::upsert_entries(pool, &all_entries).await.map_err(|e| e.to_string())?;
+    intel::upsert_entries(pool, &all_entries).await?;
 
     Ok(all_entries)
 }
@@ -177,7 +178,7 @@ pub async fn intel_fetch(
 #[tauri::command]
 pub async fn intel_get_cached(
     state: tauri::State<'_, DbState>,
-) -> Result<Vec<VulnEntry>, String> {
+) -> Result<Vec<VulnEntry>, GolishError> {
     let pool = state.pool_ready().await?;
     let rows: Vec<EntryRow> = sqlx::query_as(
         "SELECT cve_id, title, description, sev, cvss_score, published, source, refs, affected_products \
@@ -185,7 +186,7 @@ pub async fn intel_get_cached(
     )
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+    ?;
     Ok(rows.into_iter().map(VulnEntry::from).collect())
 }
 
@@ -193,12 +194,12 @@ pub async fn intel_get_cached(
 pub async fn intel_fetch_page(
     state: tauri::State<'_, DbState>,
     page: u32,
-) -> Result<Vec<VulnEntry>, String> {
+) -> Result<Vec<VulnEntry>, GolishError> {
     let pool = state.pool_ready().await?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .map_err(|e| e.to_string())?;
+        ?;
 
     let days_back = 120 + (page as i64 * 120);
     let days_start = days_back;
@@ -211,8 +212,8 @@ pub async fn intel_fetch_page(
         end.format("%Y-%m-%dT23:59:59.999"),
     );
 
-    let new_entries = intel::fetch_nvd(&client, &url).await.map_err(|e| e.to_string())?;
-    intel::upsert_entries(pool, &new_entries).await.map_err(|e| e.to_string())?;
+    let new_entries = intel::fetch_nvd(&client, &url).await?;
+    intel::upsert_entries(pool, &new_entries).await?;
 
     let rows: Vec<EntryRow> = sqlx::query_as(
         "SELECT cve_id, title, description, sev, cvss_score, published, source, refs, affected_products \
@@ -220,7 +221,7 @@ pub async fn intel_fetch_page(
     )
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+    ?;
     Ok(rows.into_iter().map(VulnEntry::from).collect())
 }
 
@@ -230,7 +231,7 @@ pub async fn intel_fetch_page(
 pub async fn intel_search(
     state: tauri::State<'_, DbState>,
     query: String,
-) -> Result<Vec<VulnEntry>, String> {
+) -> Result<Vec<VulnEntry>, GolishError> {
     let pool = state.pool_ready().await?;
     let pattern = format!("%{}%", query.to_lowercase());
     let rows: Vec<EntryRow> = sqlx::query_as(
@@ -242,7 +243,7 @@ pub async fn intel_search(
     .bind(&pattern)
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+    ?;
     Ok(rows.into_iter().map(VulnEntry::from).collect())
 }
 
@@ -250,12 +251,12 @@ pub async fn intel_search(
 pub async fn intel_search_remote(
     state: tauri::State<'_, DbState>,
     query: String,
-) -> Result<Vec<VulnEntry>, String> {
+) -> Result<Vec<VulnEntry>, GolishError> {
     let pool = state.pool_ready().await?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .map_err(|e| e.to_string())?;
+        ?;
 
     let cve_pattern = regex::Regex::new(r"(?i)^CVE-\d{4}-\d{4,}$").unwrap();
     let is_cve = cve_pattern.is_match(query.trim());
@@ -272,9 +273,9 @@ pub async fn intel_search_remote(
         )
     };
 
-    let mut entries = intel::fetch_nvd(&client, &url).await.map_err(|e| e.to_string())?;
+    let mut entries = intel::fetch_nvd(&client, &url).await?;
     entries.sort_by(|a, b| b.published.cmp(&a.published));
-    intel::upsert_entries(pool, &entries).await.map_err(|e| e.to_string())?;
+    intel::upsert_entries(pool, &entries).await?;
     Ok(entries)
 }
 
@@ -283,12 +284,12 @@ pub async fn intel_search_remote_page(
     state: tauri::State<'_, DbState>,
     query: String,
     start_index: u32,
-) -> Result<Vec<VulnEntry>, String> {
+) -> Result<Vec<VulnEntry>, GolishError> {
     let pool = state.pool_ready().await?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .map_err(|e| e.to_string())?;
+        ?;
 
     let url = format!(
         "https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch={}&resultsPerPage=50&startIndex={}",
@@ -296,9 +297,9 @@ pub async fn intel_search_remote_page(
         start_index
     );
 
-    let mut entries = intel::fetch_nvd(&client, &url).await.map_err(|e| e.to_string())?;
+    let mut entries = intel::fetch_nvd(&client, &url).await?;
     entries.sort_by(|a, b| b.published.cmp(&a.published));
-    intel::upsert_entries(pool, &entries).await.map_err(|e| e.to_string())?;
+    intel::upsert_entries(pool, &entries).await?;
     Ok(entries)
 }
 
@@ -306,7 +307,7 @@ pub async fn intel_search_remote_page(
 pub async fn intel_match_targets(
     state: tauri::State<'_, DbState>,
     project_path: Option<String>,
-) -> Result<Vec<VulnEntry>, String> {
+) -> Result<Vec<VulnEntry>, GolishError> {
     let pool = state.pool_ready().await?;
     let _ = project_path;
 
@@ -314,7 +315,7 @@ pub async fn intel_match_targets(
         sqlx::query_as("SELECT name, tags FROM targets")
             .fetch_all(pool)
             .await
-            .map_err(|e| e.to_string())?;
+            ?;
 
     let mut keywords = Vec::new();
     for (name, tags) in &target_rows {
@@ -346,7 +347,7 @@ pub async fn intel_match_targets(
     )
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+    ?;
 
     let entries: Vec<VulnEntry> = rows.into_iter().map(VulnEntry::from).collect();
     let matched: Vec<VulnEntry> = entries
@@ -373,12 +374,10 @@ pub async fn intel_search_github_poc(
     state: tauri::State<'_, DbState>,
     settings_mgr: tauri::State<'_, std::sync::Arc<SettingsManager>>,
     cve_id: String,
-) -> Result<Vec<GithubPocResult>, String> {
+) -> Result<Vec<GithubPocResult>, GolishError> {
     let (client, token) = github_client_from_settings(&settings_mgr).await?;
     let headers = intel::github_headers(&token);
-    intel::search_github_poc(&client, &headers, &cve_id)
-        .await
-        .map_err(|e| e.to_string())
+    Ok(intel::search_github_poc(&client, &headers, &cve_id).await?)
 }
 
 // ─── Nuclei template search ────────────────────────────────────────
@@ -388,12 +387,10 @@ pub async fn intel_search_nuclei_templates(
     state: tauri::State<'_, DbState>,
     settings_mgr: tauri::State<'_, std::sync::Arc<SettingsManager>>,
     cve_id: String,
-) -> Result<Vec<NucleiTemplateResult>, String> {
+) -> Result<Vec<NucleiTemplateResult>, GolishError> {
     let (client, token) = github_client_from_settings(&settings_mgr).await?;
     let headers = intel::github_headers(&token);
-    intel::search_nuclei_templates(&client, &headers, &cve_id)
-        .await
-        .map_err(|e| e.to_string())
+    Ok(intel::search_nuclei_templates(&client, &headers, &cve_id).await?)
 }
 
 #[tauri::command]
@@ -401,12 +398,10 @@ pub async fn intel_batch_search_nuclei_templates(
     state: tauri::State<'_, DbState>,
     settings_mgr: tauri::State<'_, std::sync::Arc<SettingsManager>>,
     cve_ids: Vec<String>,
-) -> Result<Vec<BatchNucleiResult>, String> {
+) -> Result<Vec<BatchNucleiResult>, GolishError> {
     let (client, token) = github_client_from_settings(&settings_mgr).await?;
     let headers = intel::github_headers(&token);
-    intel::batch_search_nuclei_templates(&client, &headers, &cve_ids)
-        .await
-        .map_err(|e| e.to_string())
+    Ok(intel::batch_search_nuclei_templates(&client, &headers, &cve_ids).await?)
 }
 
 // ─── Nuclei bulk discover ───────────────────────────────────────────
@@ -416,12 +411,10 @@ pub async fn intel_discover_all_nuclei(
     app: tauri::AppHandle,
     state: tauri::State<'_, DbState>,
     settings_mgr: tauri::State<'_, std::sync::Arc<SettingsManager>>,
-) -> Result<NucleiDiscoverResult, String> {
+) -> Result<NucleiDiscoverResult, GolishError> {
     let pool = state.pool_ready().await?;
     let (client, token) = github_client_from_settings(&settings_mgr).await?;
     let headers = intel::github_headers(&token);
     let emitter = TauriEventEmitter::handle(app);
-    intel::discover_all_nuclei(pool, &client, &headers, Some(&emitter))
-        .await
-        .map_err(|e| e.to_string())
+    Ok(intel::discover_all_nuclei(pool, &client, &headers, Some(&emitter)).await?)
 }

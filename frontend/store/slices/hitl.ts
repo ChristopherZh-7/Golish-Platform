@@ -61,10 +61,10 @@ export const selectApprovalMode = <T extends HitlState>(state: T): string => sta
 
 export const selectPendingToolApproval = <T extends HitlState>(
   state: T,
-  sessionId: string,
+  sessionId: string
 ): ToolCall | null => state.pendingToolApproval[sessionId] ?? null;
 
 export const selectPendingAskHuman = <T extends HitlState>(
   state: T,
-  sessionId: string,
+  sessionId: string
 ): AskHumanRequest | null => state.pendingAskHuman[sessionId] ?? null;

@@ -30,6 +30,7 @@ mod lifecycle;
 mod loop_guard;
 mod streaming;
 mod sub_agent;
+mod tail;
 mod task;
 mod tools;
 mod workflow;
@@ -445,82 +446,15 @@ pub fn convert_to_cli_json(event: &AiEvent) -> CliJsonEvent {
             workflow::plan_updated(*version, summary, steps, explanation),
         ),
 
-        // ── HITL ─────────────────────────────────────────────────────────
-        AiEvent::AskHumanRequest {
-            request_id,
-            question,
-            input_type,
-            options,
-            context,
-        } => CliJsonEvent::new(
-            "ask_human_request",
-            hitl::ask_human_request(request_id, question, input_type, options, context),
-        ),
-        AiEvent::AskHumanResponse {
-            request_id,
-            response,
-            skipped,
-        } => CliJsonEvent::new(
-            "ask_human_response",
-            hitl::ask_human_response(request_id, response, *skipped),
-        ),
-
-        // ── task mode ────────────────────────────────────────────────────
-        AiEvent::TaskProgress {
-            task_id,
-            status,
-            message,
-        } => CliJsonEvent::new("task_progress", task::task_progress(task_id, status, message)),
-        AiEvent::SubtaskCreated {
-            task_id,
-            subtask_id,
-            title,
-            agent,
-        } => CliJsonEvent::new(
-            "subtask_created",
-            task::subtask_created(task_id, subtask_id, title, agent),
-        ),
-        AiEvent::SubtaskCompleted {
-            task_id,
-            subtask_id,
-            title,
-            result,
-        } => CliJsonEvent::new(
-            "subtask_completed",
-            task::subtask_completed(task_id, subtask_id, title, result),
-        ),
-        AiEvent::SubtaskWaitingForInput {
-            task_id,
-            subtask_id,
-            title,
-            prompt,
-        } => CliJsonEvent::new(
-            "subtask_waiting_for_input",
-            task::subtask_waiting_for_input(task_id, subtask_id, title, prompt),
-        ),
-        AiEvent::SubtaskUserInput {
-            task_id,
-            subtask_id,
-            input,
-        } => CliJsonEvent::new(
-            "subtask_user_input",
-            task::subtask_user_input(task_id, subtask_id, input),
-        ),
-        AiEvent::TaskResumed {
-            task_id,
-            subtask_index,
-            total_subtasks,
-        } => CliJsonEvent::new(
-            "task_resumed",
-            task::task_resumed(task_id, *subtask_index, *total_subtasks),
-        ),
-        AiEvent::EnricherResult {
-            task_id,
-            subtask_id,
-            context_added,
-        } => CliJsonEvent::new(
-            "enricher_result",
-            task::enricher_result(task_id, subtask_id, context_added),
-        ),
+        // ── HITL + task mode ─────────────────────────────────────────────
+        AiEvent::AskHumanRequest { .. }
+        | AiEvent::AskHumanResponse { .. }
+        | AiEvent::TaskProgress { .. }
+        | AiEvent::SubtaskCreated { .. }
+        | AiEvent::SubtaskCompleted { .. }
+        | AiEvent::SubtaskWaitingForInput { .. }
+        | AiEvent::SubtaskUserInput { .. }
+        | AiEvent::TaskResumed { .. }
+        | AiEvent::EnricherResult { .. } => tail::convert_hitl_or_task(event),
     }
 }

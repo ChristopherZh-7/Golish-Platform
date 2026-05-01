@@ -14,6 +14,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::GolishError;
+
 use super::home_view::{format_relative_time, get_git_stats};
 
 /// Recent directory information for the home view.
@@ -51,8 +53,8 @@ fn load_hidden_dirs() -> Vec<String> {
 
 fn save_hidden_dirs(dirs: &[String]) -> Result<(), String> {
     let path = hidden_dirs_path().ok_or("Could not determine home directory")?;
-    let contents = serde_json::to_string(dirs).map_err(|e| e.to_string())?;
-    std::fs::write(&path, contents).map_err(|e| e.to_string())
+    let contents = serde_json::to_string(dirs).map_err(GolishError::from)?;
+    std::fs::write(&path, contents).map_err(GolishError::from)
 }
 
 /// Remove a directory from the recent directories list by adding it to
@@ -74,7 +76,7 @@ pub async fn list_recent_directories(limit: Option<usize>) -> Result<Vec<RecentD
 
     let sessions = golish_session::list_recent_sessions(limit.unwrap_or(20))
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(GolishError::from)?;
 
     // Deduplicate by workspace_path, keeping the most recent
     let mut seen_paths = std::collections::HashSet::new();

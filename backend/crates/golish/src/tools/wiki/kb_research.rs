@@ -6,17 +6,18 @@
 //! the regular conversation system because the research surface needs to
 //! be query-able by CVE rather than by session.
 
+use crate::error::GolishError;
 use crate::state::DbState;
 
 #[tauri::command]
 pub async fn kb_research_load(
     state: tauri::State<'_, DbState>,
     cve_id: String,
-) -> Result<Option<serde_json::Value>, String> {
+) -> Result<Option<serde_json::Value>, GolishError> {
     let pool = state.pool_ready().await?;
     let log = golish_db::repo::kb_research::get_log(pool, &cve_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     Ok(log.map(|l| {
         serde_json::json!({
             "cve_id": l.cve_id,
@@ -34,22 +35,22 @@ pub async fn kb_research_save_turn(
     cve_id: String,
     session_id: String,
     turn: serde_json::Value,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
 
     let existing = golish_db::repo::kb_research::get_log(pool, &cve_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     if existing.is_some() {
         golish_db::repo::kb_research::append_turn(pool, &cve_id, &turn)
             .await
-            .map_err(|e| e.to_string())?;
+?;
     } else {
         let turns = serde_json::json!([turn]);
         golish_db::repo::kb_research::upsert_log(pool, &cve_id, &session_id, &turns, "in_progress")
             .await
-            .map_err(|e| e.to_string())?;
+?;
     }
     Ok(())
 }
@@ -59,11 +60,11 @@ pub async fn kb_research_set_status(
     state: tauri::State<'_, DbState>,
     cve_id: String,
     status: String,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     golish_db::repo::kb_research::set_status(pool, &cve_id, &status)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     Ok(())
 }
 
@@ -71,10 +72,10 @@ pub async fn kb_research_set_status(
 pub async fn kb_research_clear(
     state: tauri::State<'_, DbState>,
     cve_id: String,
-) -> Result<(), String> {
+) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     golish_db::repo::kb_research::delete_log(pool, &cve_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
     Ok(())
 }

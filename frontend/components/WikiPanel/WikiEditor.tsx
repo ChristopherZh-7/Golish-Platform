@@ -18,14 +18,14 @@ export const WikiEditor = React.forwardRef<
         const ta = e.currentTarget;
         const start = ta.selectionStart;
         const end = ta.selectionEnd;
-        const newValue = value.substring(0, start) + "  " + value.substring(end);
+        const newValue = `${value.substring(0, start)}  ${value.substring(end)}`;
         onChange(newValue);
         requestAnimationFrame(() => {
           ta.selectionStart = ta.selectionEnd = start + 2;
         });
       }
     },
-    [value, onChange],
+    [value, onChange]
   );
 
   const handleScroll = useCallback(() => {
@@ -55,7 +55,7 @@ export const WikiEditor = React.forwardRef<
         spellCheck={false}
         className={cn(
           "flex-1 px-4 py-4 text-[13px] font-mono leading-[1.7] bg-transparent text-foreground outline-none resize-none overflow-y-auto",
-          language && "text-emerald-100/90",
+          language && "text-emerald-100/90"
         )}
         style={{ tabSize: 2 }}
       />

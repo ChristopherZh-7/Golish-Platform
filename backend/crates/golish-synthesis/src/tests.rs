@@ -1,4 +1,7 @@
 use super::*;
+use crate::template::{analyze_changes, infer_commit_type, infer_scope, ChangeAnalysis};
+use golish_settings::schema::{SidecarSettings, SynthesisOpenAiSettings};
+use std::path::PathBuf;
 
     // -------------------------------------------------------------------------
     // SynthesisBackend tests

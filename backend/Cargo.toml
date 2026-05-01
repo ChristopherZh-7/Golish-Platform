@@ -36,6 +36,7 @@ members = [
     "crates/golish-pentest-mcp",
     "crates/golish-pipeline",
     "crates/golish-vuln-intel",
+    "crates/golish-vuln-intel-domain",
     "crates/golish-scan-runner",
     "crates/golish-projects",
     "crates/golish-indexer",
@@ -76,6 +77,7 @@ default-members = [
     "crates/golish-pentest-mcp",
     "crates/golish-pipeline",
     "crates/golish-vuln-intel",
+    "crates/golish-vuln-intel-domain",
     "crates/golish-scan-runner",
     "crates/golish-projects",
     "crates/golish-indexer",
@@ -125,6 +127,7 @@ golish-pentest-domain = { path = "crates/golish-pentest-domain" }
 golish-pentest-mcp = { path = "crates/golish-pentest-mcp" }
 golish-pipeline = { path = "crates/golish-pipeline" }
 golish-vuln-intel = { path = "crates/golish-vuln-intel" }
+golish-vuln-intel-domain = { path = "crates/golish-vuln-intel-domain" }
 golish-scan-runner = { path = "crates/golish-scan-runner" }
 golish-projects = { path = "crates/golish-projects" }
 golish-indexer = { path = "crates/golish-indexer" }

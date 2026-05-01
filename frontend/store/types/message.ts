@@ -1,7 +1,7 @@
-import type { ToolCall, ToolCallSource } from "./tool-call";
-import type { FinalizedStreamingBlock, CompactionResult } from "./streaming";
-import type { ActiveWorkflow } from "./workflow";
+import type { CompactionResult, FinalizedStreamingBlock } from "./streaming";
 import type { ActiveSubAgent } from "./sub-agent";
+import type { ToolCall, ToolCallSource } from "./tool-call";
+import type { ActiveWorkflow } from "./workflow";
 
 export interface CommandBlock {
   id: string;

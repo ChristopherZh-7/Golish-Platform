@@ -5,30 +5,40 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
 import {
-  Dialog, DialogContent, DialogDescription,
-  DialogFooter, DialogHeader, DialogTitle,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
 } from "@/components/ui/dialog";
 import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
+import { deleteWorktree } from "@/lib/api/git";
 import { clearSaveFingerprints } from "@/lib/conversation-db-sync";
 import {
-  listProjectsForHome, listRecentDirectories,
-  type ProjectInfo, type RecentDirectory,
+  listProjectsForHome,
+  listRecentDirectories,
+  type ProjectInfo,
+  type RecentDirectory,
 } from "@/lib/indexer";
 import { logger } from "@/lib/logger";
 import {
-  deleteProject, listProjectConfigs,
-  type ProjectData, type ProjectFormData, saveProject,
+  deleteProject,
+  listProjectConfigs,
+  type ProjectData,
+  type ProjectFormData,
+  saveProject,
 } from "@/lib/projects";
-import { deleteWorktree } from "@/lib/api/git";
 import { disposeAllRuntimeTerminals } from "@/lib/terminal-restore";
 import { openProject, useStore } from "@/store";
+import {
+  type ContextMenuState,
+  ProjectContextMenu,
+  WorktreeContextMenu,
+  type WorktreeContextMenuState,
+} from "./ContextMenus";
 import { NewWorktreeModal } from "./NewWorktreeModal";
 import { SetupProjectModal } from "./SetupProjectModal";
-import { ProjectRow, RecentDirectoryRow } from "./ProjectCards";
-import {
-  ProjectContextMenu, WorktreeContextMenu,
-  type ContextMenuState, type WorktreeContextMenuState,
-} from "./ContextMenus";
 
 export const HOME_VIEW_FOCUS_DEBOUNCE_MS = 100;
 export const HOME_VIEW_FOCUS_MIN_INTERVAL_MS = 2000;
@@ -41,8 +51,13 @@ export const HomeView = memo(function HomeView() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSetupModalOpen, setIsSetupModalOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const [worktreeContextMenu, setWorktreeContextMenu] = useState<WorktreeContextMenuState | null>(null);
-  const [worktreeModal, setWorktreeModal] = useState<{ projectPath: string; projectName: string } | null>(null);
+  const [worktreeContextMenu, setWorktreeContextMenu] = useState<WorktreeContextMenuState | null>(
+    null
+  );
+  const [worktreeModal, setWorktreeModal] = useState<{
+    projectPath: string;
+    projectName: string;
+  } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ name: string; path: string } | null>(null);
   const [openingProject, setOpeningProject] = useState<string | null>(null);
   const openingRef = useRef(false);
@@ -130,7 +145,7 @@ export const HomeView = memo(function HomeView() {
   const handleOpenExistingProject = useCallback(async () => {
     let defaultPath: string | undefined;
     try {
-      defaultPath = (await homeDir()) + "golish-platform";
+      defaultPath = `${await homeDir()}golish-platform`;
     } catch {
       /* ignore */
     }

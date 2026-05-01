@@ -1,5 +1,10 @@
+import type {
+  DbVulnLinkFull,
+  PocTemplate,
+  VulnEntry,
+  VulnFeed,
+} from "@/components/VulnIntelPanel/types";
 import { invoke } from "@/lib/api/client";
-import type { VulnFeed, VulnEntry, DbVulnLinkFull, PocTemplate } from "@/components/VulnIntelPanel/types";
 
 export interface GithubPocResult {
   name: string;
@@ -22,7 +27,13 @@ export interface NucleiTemplateResult {
 
 export interface NucleiDiscoverResult {
   total: number;
-  templates: Array<{ cve_id: string; template_id: string; name: string; severity: string; content: string }>;
+  templates: Array<{
+    cve_id: string;
+    template_id: string;
+    name: string;
+    severity: string;
+    content: string;
+  }>;
 }
 
 export interface WikiPageInfo {
@@ -56,15 +67,13 @@ export const vulnIntelApi = {
   listFeeds: () => invoke<VulnFeed[]>("intel_list_feeds"),
   addFeed: (name: string, feedType: string, url: string) =>
     invoke("intel_add_feed", { name, feedType, url }),
-  toggleFeed: (id: string, enabled: boolean) =>
-    invoke("intel_toggle_feed", { id, enabled }),
+  toggleFeed: (id: string, enabled: boolean) => invoke("intel_toggle_feed", { id, enabled }),
   deleteFeed: (id: string) => invoke("intel_delete_feed", { id }),
 
   // Vuln links
   getAllLinks: () => invoke<Record<string, DbVulnLinkFull>>("vuln_link_get_all"),
   getLink: (cveId: string) => invoke<DbVulnLinkFull>("vuln_link_get", { cveId }),
-  addWiki: (cveId: string, wikiPath: string) =>
-    invoke("vuln_link_add_wiki", { cveId, wikiPath }),
+  addWiki: (cveId: string, wikiPath: string) => invoke("vuln_link_add_wiki", { cveId, wikiPath }),
   removeWiki: (cveId: string, wikiPath: string) =>
     invoke("vuln_link_remove_wiki", { cveId, wikiPath }),
   removePoc: (pocId: string) => invoke("vuln_link_remove_poc", { pocId }),
@@ -78,16 +87,37 @@ export const vulnIntelApi = {
     invoke<GithubPocResult[]>("intel_search_github_poc", { cveId }),
   searchNucleiTemplates: (cveId: string) =>
     invoke<NucleiTemplateResult[]>("intel_search_nuclei_templates", { cveId }),
-  addPocFromSource: (cveId: string, name: string, type: string, language: string,
-    content: string, source: string, sourceUrl: string, severity: string, description: string, tags: string[]) =>
+  addPocFromSource: (
+    cveId: string,
+    name: string,
+    type: string,
+    language: string,
+    content: string,
+    source: string,
+    sourceUrl: string,
+    severity: string,
+    description: string,
+    tags: string[]
+  ) =>
     invoke<PocTemplate>("vuln_link_add_poc", {
-      cveId, name, pocType: type, language, content, source, sourceUrl, severity, description, tags,
+      cveId,
+      name,
+      pocType: type,
+      language,
+      content,
+      source,
+      sourceUrl,
+      severity,
+      description,
+      tags,
     }),
   discoverAllNuclei: () => invoke<NucleiDiscoverResult>("intel_discover_all_nuclei"),
 
   // KB Research
   researchLoad: (cveId: string) =>
-    invoke<{ turns: Array<Record<string, unknown>>; status: string } | null>("kb_research_load", { cveId }),
+    invoke<{ turns: Array<Record<string, unknown>>; status: string } | null>("kb_research_load", {
+      cveId,
+    }),
   researchSaveTurn: (cveId: string, sessionId: string, turn: unknown) =>
     invoke("kb_research_save_turn", { cveId, sessionId, turn }),
   researchSetStatus: (cveId: string, status: string) =>
@@ -95,13 +125,18 @@ export const vulnIntelApi = {
   researchClear: (cveId: string) => invoke("kb_research_clear", { cveId }),
 
   // Wiki page info
-  wikiPagesForPaths: (paths: string[]) =>
-    invoke<WikiPageInfo[]>("wiki_pages_for_paths", { paths }),
+  wikiPagesForPaths: (paths: string[]) => invoke<WikiPageInfo[]>("wiki_pages_for_paths", { paths }),
   wikiSuggestForCve: (cveId: string, limit: number) =>
     invoke<WikiPageInfo[]>("wiki_suggest_for_cve", { cveId, limit }),
-  wikiBacklinks: (path: string) =>
-    invoke<WikiBacklinkInfo[]>("wiki_backlinks", { path }),
+  wikiBacklinks: (path: string) => invoke<WikiBacklinkInfo[]>("wiki_backlinks", { path }),
   wikiSearch: (query: string) =>
-    invoke<Array<{ path: string; title: string; category: string; tags: string[]; status: string | null }>>(
-      "wiki_search_pages", { query }),
+    invoke<
+      Array<{
+        path: string;
+        title: string;
+        category: string;
+        tags: string[];
+        status: string | null;
+      }>
+    >("wiki_search_pages", { query }),
 };

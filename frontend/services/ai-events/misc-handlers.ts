@@ -5,6 +5,7 @@
  */
 
 import { logger } from "@/lib/logger";
+import type { JsonValue } from "@/lib/serde_json/JsonValue";
 import type { EventHandler } from "./types";
 
 /**
@@ -15,7 +16,11 @@ export const handlePlanUpdated: EventHandler<{
   type: "plan_updated";
   version: number;
   summary: { total: number; completed: number; in_progress: number; pending: number };
-  steps: Array<{ id?: string; step: string; status: "pending" | "in_progress" | "completed" | "cancelled" | "failed" }>;
+  steps: Array<{
+    id?: string | null;
+    step: string;
+    status: "pending" | "in_progress" | "completed" | "cancelled" | "failed";
+  }>;
   explanation: string | null;
   session_id: string;
   seq?: number;
@@ -43,7 +48,7 @@ export const handleServerToolStarted: EventHandler<{
   type: "server_tool_started";
   request_id: string;
   tool_name: string;
-  input: unknown;
+  input: JsonValue;
   session_id: string;
   seq?: number;
 }> = (event, _ctx) => {
@@ -57,7 +62,7 @@ export const handleServerToolStarted: EventHandler<{
 export const handleWebSearchResult: EventHandler<{
   type: "web_search_result";
   request_id: string;
-  results: unknown;
+  results: JsonValue;
   session_id: string;
   seq?: number;
 }> = (event, _ctx) => {

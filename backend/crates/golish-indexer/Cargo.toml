@@ -1,0 +1,22 @@
+[package]
+name = "golish-indexer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Code indexer trait + state + vtcode-indexer backend + codebase registry helpers + git utilities"
+
+[dependencies]
+golish-settings = { workspace = true }
+
+vtcode-indexer = { workspace = true }
+
+anyhow = { workspace = true }
+chrono = { workspace = true }
+dirs = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -26,14 +26,12 @@ export function createPipelineActions(set: ImmerSet<WorkflowStoreDraft>) {
       sessionId: string,
       executionId: string,
       stepId: string,
-      update: Partial<PipelineStepExecution>,
+      update: Partial<PipelineStepExecution>
     ) =>
       set((state) => {
         const timeline = state.timelines[sessionId];
         if (!timeline) return;
-        const block = timeline.find(
-          (b) => b.type === "pipeline_progress" && b.id === executionId,
-        );
+        const block = timeline.find((b) => b.type === "pipeline_progress" && b.id === executionId);
         if (!block || block.type !== "pipeline_progress") return;
         const step = block.data.steps.find((s) => s.stepId === stepId);
         if (step) Object.assign(step, update);
@@ -42,14 +40,12 @@ export function createPipelineActions(set: ImmerSet<WorkflowStoreDraft>) {
     completePipelineExecution: (
       sessionId: string,
       executionId: string,
-      status: "completed" | "failed",
+      status: "completed" | "failed"
     ) =>
       set((state) => {
         const timeline = state.timelines[sessionId];
         if (!timeline) return;
-        const block = timeline.find(
-          (b) => b.type === "pipeline_progress" && b.id === executionId,
-        );
+        const block = timeline.find((b) => b.type === "pipeline_progress" && b.id === executionId);
         if (!block || block.type !== "pipeline_progress") return;
         block.data.status = status;
         block.data.finishedAt = new Date().toISOString();

@@ -4,36 +4,42 @@ import type { GolishSessionMessage } from "./GolishSessionMessage";
 /**
  * Golish session snapshot containing conversation data.
  */
-export type GolishSessionSnapshot = { 
-/**
- * Session metadata
- */
-workspace_label: string, workspace_path: string, model: string, provider: string, 
-/**
- * Timestamps
- */
-started_at: string, ended_at: string, 
-/**
- * Session statistics
- */
-total_messages: number, distinct_tools: Array<string>, 
-/**
- * Human-readable transcript lines
- */
-transcript: Array<string>, 
-/**
- * Full message history
- */
-messages: Array<GolishSessionMessage>, 
-/**
- * Associated sidecar session ID (for context restoration)
- */
-sidecar_session_id: string | null, 
-/**
- * Total tokens used in this session
- */
-total_tokens?: bigint | null, 
-/**
- * Agent mode used in this session ("default", "auto-approve", "planning")
- */
-agent_mode?: string | null, };
+export type GolishSessionSnapshot = {
+  /**
+   * Session metadata
+   */
+  workspace_label: string;
+  workspace_path: string;
+  model: string;
+  provider: string;
+  /**
+   * Timestamps
+   */
+  started_at: string;
+  ended_at: string;
+  /**
+   * Session statistics
+   */
+  total_messages: number;
+  distinct_tools: Array<string>;
+  /**
+   * Human-readable transcript lines
+   */
+  transcript: Array<string>;
+  /**
+   * Full message history
+   */
+  messages: Array<GolishSessionMessage>;
+  /**
+   * Associated sidecar session ID (for context restoration)
+   */
+  sidecar_session_id: string | null;
+  /**
+   * Total tokens used in this session
+   */
+  total_tokens?: bigint | null;
+  /**
+   * Agent mode used in this session ("default", "auto-approve", "planning")
+   */
+  agent_mode?: string | null;
+};

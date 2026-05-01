@@ -82,15 +82,30 @@ export const TabItem = React.memo(function TabItem({
 
     if (tabType === "settings") {
       const name = tab.customName || tab.name || "Settings";
-      return { displayName: name, dirName: tab.name || "Settings", isCustomName: !!tab.customName, isProcessName: false };
+      return {
+        displayName: name,
+        dirName: tab.name || "Settings",
+        isCustomName: !!tab.customName,
+        isProcessName: false,
+      };
     }
 
     if (tabType === "browser") {
-      return { displayName: tab.customName || "Browser", dirName: "Browser", isCustomName: !!tab.customName, isProcessName: false };
+      return {
+        displayName: tab.customName || "Browser",
+        dirName: "Browser",
+        isCustomName: !!tab.customName,
+        isProcessName: false,
+      };
     }
 
     if (tabType === "security") {
-      return { displayName: tab.customName || "Security", dirName: "Security", isCustomName: !!tab.customName, isProcessName: false };
+      return {
+        displayName: tab.customName || "Security",
+        dirName: "Security",
+        isCustomName: !!tab.customName,
+        isProcessName: false,
+      };
     }
 
     const dir = tab.workingDirectory.split(/[/\\]/).pop() || "Terminal";

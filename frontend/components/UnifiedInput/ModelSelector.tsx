@@ -1,5 +1,5 @@
-import { type JSX, memo, useCallback, useMemo } from "react";
 import { Cpu } from "lucide-react";
+import { type JSX, memo, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -12,6 +12,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useProviderSettings } from "@/hooks/useProviderSettings";
+import type { AiProvider } from "@/lib/ai";
 import {
   getOpenAiApiKey,
   getOpenRouterApiKey,
@@ -21,8 +22,12 @@ import {
   saveProjectModel,
 } from "@/lib/ai";
 import { logger } from "@/lib/logger";
-import type { AiProvider } from "@/lib/ai";
-import { formatModelName, getProviderGroup, getProviderGroupNested, type ModelEntry } from "@/lib/models";
+import {
+  formatModelName,
+  getProviderGroup,
+  getProviderGroupNested,
+  type ModelEntry,
+} from "@/lib/models";
 import { notify } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 import { useSessionAiConfig, useStore } from "@/store";
@@ -50,12 +55,22 @@ function isAnyNestedSelected(
   return entries.some((e) => {
     if (e.id) {
       if (checkReasoningEffort) {
-        return currentProvider === "openai" && currentModel === e.id && e.reasoningEffort === currentReasoningEffort;
+        return (
+          currentProvider === "openai" &&
+          currentModel === e.id &&
+          e.reasoningEffort === currentReasoningEffort
+        );
       }
       return currentProvider === "vertex_gemini" && currentModel === e.id;
     }
     if (e.subModels) {
-      return isAnyNestedSelected(e.subModels, currentProvider, currentModel, currentReasoningEffort, checkReasoningEffort);
+      return isAnyNestedSelected(
+        e.subModels,
+        currentProvider,
+        currentModel,
+        currentReasoningEffort,
+        checkReasoningEffort
+      );
     }
     return false;
   });
@@ -73,15 +88,38 @@ function renderModelEntry(
   onSelect: (modelId: string, provider: ModelProvider, reasoningEffort?: ReasoningEffort) => void
 ): JSX.Element | null {
   if (entry.subModels && entry.subModels.length > 0) {
-    const isSubSelected = isAnyNestedSelected(entry.subModels, currentProvider, currentModel, currentReasoningEffort, checkReasoningEffort);
+    const isSubSelected = isAnyNestedSelected(
+      entry.subModels,
+      currentProvider,
+      currentModel,
+      currentReasoningEffort,
+      checkReasoningEffort
+    );
     return (
       <DropdownMenuSub key={`${keyPrefix}-${entry.name}`}>
-        <DropdownMenuSubTrigger className={cn("text-xs cursor-pointer", isSubSelected ? "text-accent bg-[var(--accent-dim)]" : "text-foreground hover:text-accent")}>
+        <DropdownMenuSubTrigger
+          className={cn(
+            "text-xs cursor-pointer",
+            isSubSelected
+              ? "text-accent bg-[var(--accent-dim)]"
+              : "text-foreground hover:text-accent"
+          )}
+        >
           {entry.name}
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent className="bg-card border-[var(--border-medium)]">
           {entry.subModels.map((sub) =>
-            renderModelEntry(sub, `${keyPrefix}-${entry.name}`, targetProvider, currentProvider, currentModel, currentReasoningEffort, checkReasoningEffort, credentials, onSelect)
+            renderModelEntry(
+              sub,
+              `${keyPrefix}-${entry.name}`,
+              targetProvider,
+              currentProvider,
+              currentModel,
+              currentReasoningEffort,
+              checkReasoningEffort,
+              credentials,
+              onSelect
+            )
           )}
         </DropdownMenuSubContent>
       </DropdownMenuSub>
@@ -91,14 +129,23 @@ function renderModelEntry(
   if (!entry.id) return null;
   const entryId = entry.id;
   const isSelected = checkReasoningEffort
-    ? currentProvider === "openai" && currentModel === entryId && entry.reasoningEffort === currentReasoningEffort
+    ? currentProvider === "openai" &&
+      currentModel === entryId &&
+      entry.reasoningEffort === currentReasoningEffort
     : currentProvider === targetProvider && currentModel === entryId;
   return (
     <DropdownMenuItem
-      key={checkReasoningEffort ? `${keyPrefix}-${entryId}-${entry.reasoningEffort ?? "default"}` : `${keyPrefix}-${entryId}`}
+      key={
+        checkReasoningEffort
+          ? `${keyPrefix}-${entryId}-${entry.reasoningEffort ?? "default"}`
+          : `${keyPrefix}-${entryId}`
+      }
       onClick={() => onSelect(entryId, targetProvider, entry.reasoningEffort)}
       disabled={!checkReasoningEffort && !credentials}
-      className={cn("text-xs cursor-pointer", isSelected ? "text-accent bg-[var(--accent-dim)]" : "text-foreground hover:text-accent")}
+      className={cn(
+        "text-xs cursor-pointer",
+        isSelected ? "text-accent bg-[var(--accent-dim)]" : "text-foreground hover:text-accent"
+      )}
     >
       {entry.name}
     </DropdownMenuItem>
@@ -123,7 +170,9 @@ interface ModelSelectorBadgeProps {
   sessionId: string;
 }
 
-export const ModelSelectorBadge = memo(function ModelSelectorBadge({ sessionId }: ModelSelectorBadgeProps) {
+export const ModelSelectorBadge = memo(function ModelSelectorBadge({
+  sessionId,
+}: ModelSelectorBadgeProps) {
   const aiConfig = useSessionAiConfig(sessionId);
   const model = aiConfig?.model ?? "";
   const provider = aiConfig?.provider ?? "";
@@ -132,11 +181,27 @@ export const ModelSelectorBadge = memo(function ModelSelectorBadge({ sessionId }
   const setSessionAiConfig = useStore((state) => state.setSessionAiConfig);
 
   const [providerSettings, refreshProviderSettings] = useProviderSettings();
-  const { enabled: providerEnabled, apiKeys, vertexAiCredentials, vertexGeminiCredentials, visibility: providerVisibility } = providerSettings;
+  const {
+    enabled: providerEnabled,
+    apiKeys,
+    vertexAiCredentials,
+    vertexGeminiCredentials,
+    visibility: providerVisibility,
+  } = providerSettings;
 
   const {
-    showVertexAi, showVertexGemini, showOpenRouter, showOpenAi, showAnthropic,
-    showOllama, showGemini, showGroq, showXai, showZaiSdk, showNvidia, hasVisibleProviders,
+    showVertexAi,
+    showVertexGemini,
+    showOpenRouter,
+    showOpenAi,
+    showAnthropic,
+    showOllama,
+    showGemini,
+    showGroq,
+    showXai,
+    showZaiSdk,
+    showNvidia,
+    hasVisibleProviders,
   } = useMemo(() => {
     const flags = {
       showVertexAi: providerVisibility.vertex_ai && providerEnabled.vertex_ai,
@@ -174,22 +239,46 @@ export const ModelSelectorBadge = memo(function ModelSelectorBadge({ sessionId }
         if (modelProvider === "vertex") {
           const vertexConfig = aiConfig?.vertexConfig;
           const credentials = vertexConfig
-            ? { credentials_path: vertexConfig.credentialsPath, project_id: vertexConfig.projectId, location: vertexConfig.location }
+            ? {
+                credentials_path: vertexConfig.credentialsPath,
+                project_id: vertexConfig.projectId,
+                location: vertexConfig.location,
+              }
             : vertexAiCredentials;
-          if (!credentials?.credentials_path && !credentials?.project_id) throw new Error("Vertex AI credentials not configured");
+          if (!credentials?.credentials_path && !credentials?.project_id)
+            throw new Error("Vertex AI credentials not configured");
           const credentialsPath = credentials.credentials_path ?? "";
           const projectId = credentials.project_id ?? "";
           const location = credentials.location ?? "us-east5";
-          config = { provider: "vertex_ai", workspace, model: modelId, credentials_path: credentialsPath, project_id: projectId, location };
+          config = {
+            provider: "vertex_ai",
+            workspace,
+            model: modelId,
+            credentials_path: credentialsPath,
+            project_id: projectId,
+            location,
+          };
           await initAiSession(sessionId, config);
-          setSessionAiConfig(sessionId, { status: "ready", provider: "anthropic_vertex", vertexConfig: { workspace, credentialsPath, projectId, location } });
+          setSessionAiConfig(sessionId, {
+            status: "ready",
+            provider: "anthropic_vertex",
+            vertexConfig: { workspace, credentialsPath, projectId, location },
+          });
         } else if (modelProvider === "vertex_gemini") {
           const credentials = vertexGeminiCredentials;
-          if (!credentials?.credentials_path && !credentials?.project_id) throw new Error("Vertex Gemini credentials not configured");
+          if (!credentials?.credentials_path && !credentials?.project_id)
+            throw new Error("Vertex Gemini credentials not configured");
           const credentialsPath = credentials.credentials_path ?? "";
           const projectId = credentials.project_id ?? "";
           const location = credentials.location ?? "us-central1";
-          config = { provider: "vertex_gemini", workspace, model: modelId, credentials_path: credentialsPath, project_id: projectId, location };
+          config = {
+            provider: "vertex_gemini",
+            workspace,
+            model: modelId,
+            credentials_path: credentialsPath,
+            project_id: projectId,
+            location,
+          };
           await initAiSession(sessionId, config);
           setSessionAiConfig(sessionId, { status: "ready", provider: "vertex_gemini" });
         } else if (modelProvider === "openrouter") {
@@ -201,7 +290,13 @@ export const ModelSelectorBadge = memo(function ModelSelectorBadge({ sessionId }
         } else if (modelProvider === "openai") {
           const apiKey = apiKeys.openai ?? (await getOpenAiApiKey());
           if (!apiKey) throw new Error("OpenAI API key not configured");
-          config = { provider: "openai", workspace, model: modelId, api_key: apiKey, reasoning_effort: reasoningEffort };
+          config = {
+            provider: "openai",
+            workspace,
+            model: modelId,
+            api_key: apiKey,
+            reasoning_effort: reasoningEffort,
+          };
           await initAiSession(sessionId, config);
           setSessionAiConfig(sessionId, { status: "ready", provider: "openai", reasoningEffort });
         } else if (modelProvider === "anthropic") {
@@ -256,11 +351,25 @@ export const ModelSelectorBadge = memo(function ModelSelectorBadge({ sessionId }
         }
       } catch (error) {
         logger.error("Failed to switch model:", error);
-        setSessionAiConfig(sessionId, { status: "error", errorMessage: error instanceof Error ? error.message : "Failed to switch model" });
+        setSessionAiConfig(sessionId, {
+          status: "error",
+          errorMessage: error instanceof Error ? error.message : "Failed to switch model",
+        });
         notify.error(`Failed to switch to ${modelName}`);
       }
     },
-    [sessionId, model, provider, currentReasoningEffort, aiConfig, sessionWorkingDirectory, vertexAiCredentials, vertexGeminiCredentials, apiKeys, setSessionAiConfig]
+    [
+      sessionId,
+      model,
+      provider,
+      currentReasoningEffort,
+      aiConfig,
+      sessionWorkingDirectory,
+      vertexAiCredentials,
+      vertexGeminiCredentials,
+      apiKeys,
+      setSessionAiConfig,
+    ]
   );
 
   const status = aiConfig?.status ?? "disconnected";
@@ -298,9 +407,27 @@ export const ModelSelectorBadge = memo(function ModelSelectorBadge({ sessionId }
     );
   }
 
-  const providerSections: { key: string; label: string; provider: ModelProvider; nested?: boolean; checkReasoning?: boolean; creds?: unknown }[] = [
-    { key: "vertex_ai", label: "Vertex AI", provider: "vertex", creds: aiConfig?.vertexConfig || vertexAiCredentials },
-    { key: "vertex_gemini", label: "Vertex AI Gemini", provider: "vertex_gemini", nested: true, creds: vertexGeminiCredentials },
+  const providerSections: {
+    key: string;
+    label: string;
+    provider: ModelProvider;
+    nested?: boolean;
+    checkReasoning?: boolean;
+    creds?: unknown;
+  }[] = [
+    {
+      key: "vertex_ai",
+      label: "Vertex AI",
+      provider: "vertex",
+      creds: aiConfig?.vertexConfig || vertexAiCredentials,
+    },
+    {
+      key: "vertex_gemini",
+      label: "Vertex AI Gemini",
+      provider: "vertex_gemini",
+      nested: true,
+      creds: vertexGeminiCredentials,
+    },
     { key: "openrouter", label: "OpenRouter", provider: "openrouter" },
     { key: "openai", label: "OpenAI", provider: "openai", nested: true, checkReasoning: true },
     { key: "anthropic", label: "Anthropic", provider: "anthropic" },
@@ -313,9 +440,17 @@ export const ModelSelectorBadge = memo(function ModelSelectorBadge({ sessionId }
   ];
 
   const visibilityMap: Record<string, boolean> = {
-    vertex_ai: showVertexAi, vertex_gemini: showVertexGemini, openrouter: showOpenRouter,
-    openai: showOpenAi, anthropic: showAnthropic, ollama: showOllama, gemini: showGemini,
-    groq: showGroq, xai: showXai, zai_sdk: showZaiSdk, nvidia: showNvidia,
+    vertex_ai: showVertexAi,
+    vertex_gemini: showVertexGemini,
+    openrouter: showOpenRouter,
+    openai: showOpenAi,
+    anthropic: showAnthropic,
+    ollama: showOllama,
+    gemini: showGemini,
+    groq: showGroq,
+    xai: showXai,
+    zai_sdk: showZaiSdk,
+    nvidia: showNvidia,
   };
 
   let hasPrevious = false;
@@ -323,13 +458,19 @@ export const ModelSelectorBadge = memo(function ModelSelectorBadge({ sessionId }
   return (
     <DropdownMenu onOpenChange={(open) => open && refreshProviderSettings()}>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm"
-          className="h-6 px-2.5 gap-1.5 text-xs font-medium rounded-lg bg-accent/10 text-accent hover:text-accent hover:bg-accent/20 border border-accent/20 hover:border-accent/30">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 px-2.5 gap-1.5 text-xs font-medium rounded-lg bg-accent/10 text-accent hover:text-accent hover:bg-accent/20 border border-accent/20 hover:border-accent/30"
+        >
           <Cpu className="size-icon-status-bar" />
           <span>{formatModelName(model, currentReasoningEffort)}</span>
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="bg-card border-[var(--border-medium)] min-w-[200px]">
+      <DropdownMenuContent
+        align="start"
+        className="bg-card border-[var(--border-medium)] min-w-[200px]"
+      >
         {providerSections.map((section) => {
           if (!visibilityMap[section.key]) return null;
           const separator = hasPrevious;
@@ -337,8 +478,8 @@ export const ModelSelectorBadge = memo(function ModelSelectorBadge({ sessionId }
 
           const providerKey = section.key as AiProvider;
           const models = section.nested
-            ? getProviderGroupNested(providerKey)?.models ?? []
-            : getProviderGroup(providerKey)?.models ?? [];
+            ? (getProviderGroupNested(providerKey)?.models ?? [])
+            : (getProviderGroup(providerKey)?.models ?? []);
 
           return (
             <div key={section.key}>
@@ -347,18 +488,33 @@ export const ModelSelectorBadge = memo(function ModelSelectorBadge({ sessionId }
                 {section.label}
               </div>
               {section.key === "ollama" ? (
-                <div className="px-2 py-1.5 text-xs text-muted-foreground">Configure in settings</div>
+                <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                  Configure in settings
+                </div>
               ) : section.nested ? (
                 (models as ModelEntry[]).map((entry) =>
-                  renderModelEntry(entry, section.key, section.provider, provider, model, currentReasoningEffort, !!section.checkReasoning, section.creds ?? null, handleModelSelect)
+                  renderModelEntry(
+                    entry,
+                    section.key,
+                    section.provider,
+                    provider,
+                    model,
+                    currentReasoningEffort,
+                    !!section.checkReasoning,
+                    section.creds ?? null,
+                    handleModelSelect
+                  )
                 )
               ) : (
                 (models as { id: string; name: string }[]).map((m) => (
                   <DropdownMenuItem
                     key={m.id}
                     onClick={() => handleModelSelect(m.id, section.provider)}
-                    disabled={section.key === "vertex_ai" && !aiConfig?.vertexConfig && !vertexAiCredentials}
-                    className={cn("text-xs cursor-pointer",
+                    disabled={
+                      section.key === "vertex_ai" && !aiConfig?.vertexConfig && !vertexAiCredentials
+                    }
+                    className={cn(
+                      "text-xs cursor-pointer",
                       model === m.id && provider === PROVIDER_MAP[section.provider]
                         ? "text-accent bg-[var(--accent-dim)]"
                         : "text-foreground hover:text-accent"

@@ -23,6 +23,10 @@ export async function updateVaultEntry(params: {
   await invoke("vault_update", params);
 }
 
-export async function updateVaultStatus(id: string, status: string, projectPath: string | null): Promise<void> {
+export async function updateVaultStatus(
+  id: string,
+  status: string,
+  projectPath: string | null
+): Promise<void> {
   await invoke("vault_update_status", { id, status, projectPath });
 }

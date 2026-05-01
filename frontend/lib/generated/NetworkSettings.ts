@@ -6,18 +6,19 @@
  * When configured, proxy settings are applied to all outgoing HTTP requests
  * including LLM API calls, web fetch, and Tavily search.
  */
-export type NetworkSettings = { 
-/**
- * HTTP/HTTPS proxy URL (e.g., "http://127.0.0.1:7890" or "socks5://proxy:1080")
- */
-proxy_url: string | null, 
-/**
- * Comma-separated list of hosts that should bypass the proxy
- * (e.g., "localhost,127.0.0.1,.local")
- */
-no_proxy: string | null, 
-/**
- * GitHub Personal Access Token for higher API rate limits (5000/hour vs 60/hour).
- * Used for tool downloads that fetch GitHub release information.
- */
-github_token: string | null, };
+export type NetworkSettings = {
+  /**
+   * HTTP/HTTPS proxy URL (e.g., "http://127.0.0.1:7890" or "socks5://proxy:1080")
+   */
+  proxy_url: string | null;
+  /**
+   * Comma-separated list of hosts that should bypass the proxy
+   * (e.g., "localhost,127.0.0.1,.local")
+   */
+  no_proxy: string | null;
+  /**
+   * GitHub Personal Access Token for higher API rate limits (5000/hour vs 60/hour).
+   * Used for tool downloads that fetch GitHub release information.
+   */
+  github_token: string | null;
+};

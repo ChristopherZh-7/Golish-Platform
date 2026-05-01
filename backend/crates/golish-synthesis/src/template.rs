@@ -33,28 +33,28 @@ pub fn generate_template_message(files: &[PathBuf], diff: &str) -> String {
 
 /// Analysis of changes for template-based generation
 #[derive(Debug, Default)]
-struct ChangeAnalysis {
+pub(crate) struct ChangeAnalysis {
     /// Number of files added
-    files_added: usize,
+    pub(crate) files_added: usize,
     /// Number of files modified
-    files_modified: usize,
+    pub(crate) files_modified: usize,
     /// Number of files deleted
-    files_deleted: usize,
+    pub(crate) files_deleted: usize,
     /// Number of lines added
-    lines_added: usize,
+    pub(crate) lines_added: usize,
     /// Number of lines deleted
-    lines_deleted: usize,
+    pub(crate) lines_deleted: usize,
     /// Whether changes appear to be tests
-    is_test: bool,
+    pub(crate) is_test: bool,
     /// Whether changes appear to be documentation
-    is_docs: bool,
+    pub(crate) is_docs: bool,
     /// Whether changes appear to be configuration
-    is_config: bool,
+    pub(crate) is_config: bool,
     /// Key file names
-    key_files: Vec<String>,
+    pub(crate) key_files: Vec<String>,
 }
 
-fn analyze_changes(files: &[PathBuf], diff: &str) -> ChangeAnalysis {
+pub(crate) fn analyze_changes(files: &[PathBuf], diff: &str) -> ChangeAnalysis {
     let mut analysis = ChangeAnalysis::default();
 
     // Count files by type
@@ -112,7 +112,7 @@ fn analyze_changes(files: &[PathBuf], diff: &str) -> ChangeAnalysis {
     analysis
 }
 
-fn infer_commit_type(analysis: &ChangeAnalysis) -> &'static str {
+pub(crate) fn infer_commit_type(analysis: &ChangeAnalysis) -> &'static str {
     if analysis.is_test {
         return "test";
     }
@@ -141,7 +141,7 @@ fn infer_commit_type(analysis: &ChangeAnalysis) -> &'static str {
     "chore"
 }
 
-fn infer_scope(files: &[PathBuf]) -> Option<String> {
+pub(crate) fn infer_scope(files: &[PathBuf]) -> Option<String> {
     if files.is_empty() {
         return None;
     }

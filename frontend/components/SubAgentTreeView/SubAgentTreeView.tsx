@@ -50,17 +50,14 @@ interface FlatRow {
   parentId: string | null;
 }
 
-function flatten(
-  root: AgentTreeAgentNode,
-  collapsedIds: Set<string>,
-): FlatRow[] {
+function flatten(root: AgentTreeAgentNode, collapsedIds: Set<string>): FlatRow[] {
   const out: FlatRow[] = [];
   const walk = (
     node: AgentTreeAgentNode | AgentTreeToolNode,
     depth: number,
     ancestorIsLast: boolean[],
     isLast: boolean,
-    parentId: string | null,
+    parentId: string | null
   ) => {
     const hasChildren = node.kind === "agent" && node.children.length > 0;
     const collapsed = collapsedIds.has(node.id);
@@ -78,7 +75,10 @@ function flatten(
   return out;
 }
 
-function flattenAllAgentIds(node: AgentTreeAgentNode | AgentTreeToolNode, acc: string[] = []): string[] {
+function flattenAllAgentIds(
+  node: AgentTreeAgentNode | AgentTreeToolNode,
+  acc: string[] = []
+): string[] {
   if (node.kind === "agent") {
     if (node.id !== "__main__") acc.push(node.id);
     for (const c of node.children) flattenAllAgentIds(c, acc);
@@ -96,26 +96,46 @@ function StatusGlyph({ status }: { status: AgentTreeStatus }) {
       return <Loader2 className="w-3 h-3 text-accent animate-spin flex-shrink-0" />;
     case "completed":
       return (
-        <svg className="w-3 h-3 text-green-500 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+        <svg
+          className="w-3 h-3 text-green-500 flex-shrink-0"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+        >
           <path d="M20 6L9 17l-5-5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       );
     case "error":
       return (
-        <svg className="w-3 h-3 text-red-400 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+        <svg
+          className="w-3 h-3 text-red-400 flex-shrink-0"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+        >
           <circle cx="12" cy="12" r="9" />
           <path d="M15 9l-6 6M9 9l6 6" strokeLinecap="round" />
         </svg>
       );
     case "interrupted":
       return (
-        <svg className="w-3 h-3 text-amber-400 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+        <svg
+          className="w-3 h-3 text-amber-400 flex-shrink-0"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+        >
           <circle cx="12" cy="12" r="9" />
           <path d="M12 8v5M12 16h.01" strokeLinecap="round" />
         </svg>
       );
     default:
-      return <div className="w-3 h-3 rounded-full border-[1.5px] border-muted-foreground/25 flex-shrink-0" />;
+      return (
+        <div className="w-3 h-3 rounded-full border-[1.5px] border-muted-foreground/25 flex-shrink-0" />
+      );
   }
 }
 
@@ -141,7 +161,7 @@ function TreeGuides({ row }: { row: FlatRow }) {
             style={{ height: row.isLast ? "50%" : "100%" }}
           />
           <span className="absolute left-2.5 top-1/2 h-px w-2.5 bg-[var(--border-subtle)]" />
-        </span>,
+        </span>
       );
     } else {
       const ancestorIsLast = row.ancestorIsLast[i + 1];
@@ -150,7 +170,7 @@ function TreeGuides({ row }: { row: FlatRow }) {
           {!ancestorIsLast && (
             <span className="absolute left-2.5 top-0 bottom-0 w-px bg-[var(--border-subtle)]" />
           )}
-        </span>,
+        </span>
       );
     }
   }
@@ -210,7 +230,7 @@ function AgentRow({
         "group flex items-center gap-2 w-full text-left px-2 py-1.5 rounded transition-colors",
         node.status === "running" && "bg-accent/[0.04]",
         isHovered && "bg-accent/10",
-        isParentHovered && "bg-accent/5",
+        isParentHovered && "bg-accent/5"
       )}
     >
       <TreeGuides row={row} />
@@ -220,12 +240,16 @@ function AgentRow({
         onClick={handleClick}
         className={cn(
           "flex flex-1 items-center gap-2 min-w-0 text-left",
-          row.hasChildren ? "cursor-pointer" : "cursor-default",
+          row.hasChildren ? "cursor-pointer" : "cursor-default"
         )}
       >
         <span className="w-3 flex-shrink-0 text-muted-foreground/60">
           {row.hasChildren ? (
-            row.collapsed ? <ChevronRight className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />
+            row.collapsed ? (
+              <ChevronRight className="w-3 h-3" />
+            ) : (
+              <ChevronDown className="w-3 h-3" />
+            )
           ) : null}
         </span>
 
@@ -240,7 +264,7 @@ function AgentRow({
             node.status === "running" && "text-accent",
             node.status === "error" && "text-red-400/90",
             node.status === "interrupted" && "text-amber-400/90",
-            node.status === "pending" && "text-muted-foreground/60",
+            node.status === "pending" && "text-muted-foreground/60"
           )}
         >
           {node.agentName}
@@ -251,7 +275,10 @@ function AgentRow({
         )}
 
         {node.task && (
-          <span className="text-[11px] text-muted-foreground/50 truncate flex-1 min-w-0" title={node.task}>
+          <span
+            className="text-[11px] text-muted-foreground/50 truncate flex-1 min-w-0"
+            title={node.task}
+          >
             {node.task}
           </span>
         )}
@@ -310,7 +337,7 @@ function ToolRow({
         "flex items-center gap-2 w-full px-2 py-1 rounded text-[11px]",
         node.status === "running" && "bg-accent/[0.04]",
         isHovered && "bg-accent/10",
-        isParentHovered && "bg-accent/5",
+        isParentHovered && "bg-accent/5"
       )}
     >
       <TreeGuides row={row} />
@@ -324,7 +351,7 @@ function ToolRow({
           node.status === "error" && "text-red-400/85",
           node.status === "running" && "text-foreground/85",
           node.status === "completed" && "text-foreground/75",
-          node.status === "interrupted" && "text-amber-400/85",
+          node.status === "interrupted" && "text-amber-400/85"
         )}
       >
         {node.toolName}
@@ -334,7 +361,9 @@ function ToolRow({
         <span
           className={cn(
             "truncate font-mono text-[10px] flex-1 min-w-0 px-1.5 py-px rounded",
-            isShell ? "bg-[var(--ansi-black)]/30 text-[var(--ansi-green)]/80" : "bg-muted/25 text-muted-foreground/75",
+            isShell
+              ? "bg-[var(--ansi-black)]/30 text-[var(--ansi-green)]/80"
+              : "bg-muted/25 text-muted-foreground/75"
           )}
           title={node.primary}
         >
@@ -353,7 +382,9 @@ function ToolRow({
 /*                                Main                                      */
 /* ──────────────────────────────────────────────────────────────────────── */
 
-export const SubAgentTreeView = memo(function SubAgentTreeView({ sessionId }: SubAgentTreeViewProps) {
+export const SubAgentTreeView = memo(function SubAgentTreeView({
+  sessionId,
+}: SubAgentTreeViewProps) {
   const { t } = useTranslation();
   const tree = useAgentTree(sessionId);
   const setDetailViewMode = useStore((s) => s.setDetailViewMode);
@@ -369,7 +400,7 @@ export const SubAgentTreeView = memo(function SubAgentTreeView({ sessionId }: Su
       const agent = subAgents.find((a) => a.parentRequestId === parentRequestId) ?? null;
       setModalAgent(agent);
     },
-    [subAgents],
+    [subAgents]
   );
 
   const allAgentIds = useMemo(() => flattenAllAgentIds(tree.root), [tree.root]);
@@ -423,19 +454,27 @@ export const SubAgentTreeView = memo(function SubAgentTreeView({ sessionId }: Su
         </button>
         <div className="flex items-center gap-2 text-[10px] text-muted-foreground/70 ml-2">
           <Bot className="w-3.5 h-3.5 text-accent" />
-          <span className="tabular-nums">{tree.totalAgents} {t("ai.agentTree.agents")}</span>
+          <span className="tabular-nums">
+            {tree.totalAgents} {t("ai.agentTree.agents")}
+          </span>
           <span className="text-muted-foreground/30">·</span>
-          <span className="tabular-nums">{tree.totalTools} {t("ai.agentTree.tools")}</span>
+          <span className="tabular-nums">
+            {tree.totalTools} {t("ai.agentTree.tools")}
+          </span>
           {stats.running > 0 && (
             <>
               <span className="text-muted-foreground/30">·</span>
-              <span className="text-accent tabular-nums">{stats.running} {t("ai.agentTree.running")}</span>
+              <span className="text-accent tabular-nums">
+                {stats.running} {t("ai.agentTree.running")}
+              </span>
             </>
           )}
           {stats.errored > 0 && (
             <>
               <span className="text-muted-foreground/30">·</span>
-              <span className="text-red-400/90 tabular-nums">{stats.errored} {t("ai.agentTree.failed")}</span>
+              <span className="text-red-400/90 tabular-nums">
+                {stats.errored} {t("ai.agentTree.failed")}
+              </span>
             </>
           )}
         </div>
@@ -505,10 +544,7 @@ export const SubAgentTreeView = memo(function SubAgentTreeView({ sessionId }: Su
       )}
 
       {modalAgent && (
-        <SubAgentDetailsModal
-          subAgent={modalAgent}
-          onClose={() => setModalAgent(null)}
-        />
+        <SubAgentDetailsModal subAgent={modalAgent} onClose={() => setModalAgent(null)} />
       )}
     </div>
   );

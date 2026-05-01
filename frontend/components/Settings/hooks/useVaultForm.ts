@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { vault } from "@/lib/api";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { vault } from "@/lib/api";
 import { logAudit } from "@/lib/audit";
 import { copyToClipboard } from "@/lib/clipboard";
-import { useTranslation } from "react-i18next";
 import { getProjectPath } from "@/lib/projects";
-import { useStore } from "@/store";
 
 export interface VaultEntrySafe {
   id: string;
@@ -23,7 +23,13 @@ export interface VaultEntrySafe {
 }
 
 export const ENTRY_TYPES = [
-  "password", "token", "api_key", "ssh_key", "cookie", "certificate", "other",
+  "password",
+  "token",
+  "api_key",
+  "ssh_key",
+  "cookie",
+  "certificate",
+  "other",
 ] as const;
 
 export const TYPE_LABEL_KEYS: Record<string, string> = {
@@ -38,7 +44,6 @@ export const TYPE_LABEL_KEYS: Record<string, string> = {
 
 export function useVaultForm() {
   const { t } = useTranslation();
-  const currentProjectPath = useStore((s) => s.currentProjectPath);
   const [entries, setEntries] = useState<VaultEntrySafe[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [revealedIds, setRevealedIds] = useState<Set<string>>(new Set());
@@ -55,7 +60,7 @@ export function useVaultForm() {
         if (dashIdx > 0) key = e.name.slice(0, dashIdx);
       }
       if (!groups.has(key)) groups.set(key, []);
-      groups.get(key)!.push(e);
+      groups.get(key)?.push(e);
     }
     for (const [, group] of groups) {
       group.sort((a, b) => b.updated_at - a.updated_at);
@@ -68,7 +73,13 @@ export function useVaultForm() {
   }, [entries]);
 
   const [addForm, setAddForm] = useState({
-    name: "", type: "password" as string, value: "", username: "", notes: "", project: "", tags: "",
+    name: "",
+    type: "password" as string,
+    value: "",
+    username: "",
+    notes: "",
+    project: "",
+    tags: "",
   });
 
   const [validatingIds, setValidatingIds] = useState<Set<string>>(new Set());
@@ -82,17 +93,24 @@ export function useVaultForm() {
     }
   }, []);
 
-  const handleValidate = useCallback(async (id: string) => {
-    setValidatingIds((prev) => new Set(prev).add(id));
-    try {
-      await invoke<string>("vault_validate", { id, projectPath: getProjectPath() });
-      await loadEntries();
-    } catch (e) {
-      console.error("Failed to validate:", e);
-    } finally {
-      setValidatingIds((prev) => { const n = new Set(prev); n.delete(id); return n; });
-    }
-  }, [loadEntries]);
+  const handleValidate = useCallback(
+    async (id: string) => {
+      setValidatingIds((prev) => new Set(prev).add(id));
+      try {
+        await invoke<string>("vault_validate", { id, projectPath: getProjectPath() });
+        await loadEntries();
+      } catch (e) {
+        console.error("Failed to validate:", e);
+      } finally {
+        setValidatingIds((prev) => {
+          const n = new Set(prev);
+          n.delete(id);
+          return n;
+        });
+      }
+    },
+    [loadEntries]
+  );
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -110,10 +128,14 @@ export function useVaultForm() {
         loadEntries();
       });
     })();
-    return () => { unlisten?.(); };
+    return () => {
+      unlisten?.();
+    };
   }, [entries, loadEntries]);
 
-  useEffect(() => { loadEntries(); }, [loadEntries, currentProjectPath]);
+  useEffect(() => {
+    loadEntries();
+  }, [loadEntries]);
 
   const handleAdd = useCallback(async () => {
     if (!addForm.name.trim() || !addForm.value.trim()) return;
@@ -122,13 +144,18 @@ export function useVaultForm() {
         name: addForm.name.trim(),
         entryType: addForm.type,
         value: addForm.value,
-        username: addForm.username || null,
-        notes: addForm.notes || null,
-        project: addForm.project || null,
-        tags: addForm.tags ? addForm.tags.split(",").map((s) => s.trim()).filter(Boolean) : null,
+        notes: addForm.notes || undefined,
         projectPath: getProjectPath(),
       });
-      setAddForm({ name: "", type: "password", value: "", username: "", notes: "", project: "", tags: "" });
+      setAddForm({
+        name: "",
+        type: "password",
+        value: "",
+        username: "",
+        notes: "",
+        project: "",
+        tags: "",
+      });
       setShowAdd(false);
       loadEntries();
       logAudit({ action: "vault_entry_added", category: "vault", details: addForm.name.trim() });
@@ -137,46 +164,71 @@ export function useVaultForm() {
     }
   }, [addForm, loadEntries]);
 
-  const handleDelete = useCallback(async (id: string, name: string) => {
-    if (!confirm(t("vault.deleteConfirm", { name }))) return;
-    try {
-      await vault.deleteVaultEntry(id, getProjectPath());
-      setRevealedIds((s) => { const n = new Set(s); n.delete(id); return n; });
-      loadEntries();
-      logAudit({ action: "vault_entry_deleted", category: "vault", details: name, entityType: "vault", entityId: id });
-    } catch (e) {
-      console.error("Failed to delete:", e);
-    }
-  }, [t, loadEntries]);
+  const handleDelete = useCallback(
+    async (id: string, name: string) => {
+      if (!confirm(t("vault.deleteConfirm", { name }))) return;
+      try {
+        await vault.deleteVaultEntry(id, getProjectPath());
+        setRevealedIds((s) => {
+          const n = new Set(s);
+          n.delete(id);
+          return n;
+        });
+        loadEntries();
+        logAudit({
+          action: "vault_entry_deleted",
+          category: "vault",
+          details: name,
+          entityType: "vault",
+          entityId: id,
+        });
+      } catch (e) {
+        console.error("Failed to delete:", e);
+      }
+    },
+    [t, loadEntries]
+  );
 
-  const handleRevealToggle = useCallback(async (id: string) => {
-    if (revealedIds.has(id)) {
-      setRevealedIds((s) => { const n = new Set(s); n.delete(id); return n; });
-      return;
-    }
-    try {
-      const value = await invoke<string>("vault_get_value", { id, projectPath: getProjectPath() });
-      setRevealedValues((v) => ({ ...v, [id]: value }));
-      setRevealedIds((s) => new Set(s).add(id));
-    } catch (e) {
-      console.error("Failed to reveal:", e);
-    }
-  }, [revealedIds]);
+  const handleRevealToggle = useCallback(
+    async (id: string) => {
+      if (revealedIds.has(id)) {
+        setRevealedIds((s) => {
+          const n = new Set(s);
+          n.delete(id);
+          return n;
+        });
+        return;
+      }
+      try {
+        const value = await invoke<string>("vault_get_value", {
+          id,
+          projectPath: getProjectPath(),
+        });
+        setRevealedValues((v) => ({ ...v, [id]: value }));
+        setRevealedIds((s) => new Set(s).add(id));
+      } catch (e) {
+        console.error("Failed to reveal:", e);
+      }
+    },
+    [revealedIds]
+  );
 
   const handleCopyAll = useCallback(async (entry: VaultEntrySafe) => {
     try {
-      const value = await invoke<string>("vault_get_value", { id: entry.id, projectPath: getProjectPath() });
-      const lines = [
-        `Name: ${entry.name}`,
-        `Type: ${entry.type}`,
-      ];
+      const value = await invoke<string>("vault_get_value", {
+        id: entry.id,
+        projectPath: getProjectPath(),
+      });
+      const lines = [`Name: ${entry.name}`, `Type: ${entry.type}`];
       if (entry.username) lines.push(`Username: ${entry.username}`);
       lines.push(`Value: ${value}`);
       if (entry.notes) lines.push(`Notes: ${entry.notes}`);
       if (entry.project) lines.push(`Project: ${entry.project}`);
       if (entry.tags.length > 0) lines.push(`Tags: ${entry.tags.join(", ")}`);
       await copyToClipboard(lines.join("\n"));
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   const handleCopyRef = useCallback(async (name: string) => {

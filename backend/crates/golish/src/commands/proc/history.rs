@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{GolishError, Result};
 use crate::history::{HistoryEntry, HistoryManager};
 use crate::state::AppState;
 use std::sync::Arc;
@@ -55,7 +55,7 @@ pub async fn load_history(
         return Ok(vec![]);
     };
     let et = entry_type.as_deref();
-    history.load_recent(limit, et).map_err(|e| e.to_string())
+    history.load_recent(limit, et).map_err(GolishError::from)
 }
 
 #[tauri::command]
@@ -73,7 +73,7 @@ pub async fn search_history(
     let et = entry_type.as_deref();
     history
         .search(query, include_archives, limit, et)
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 #[tauri::command]
@@ -84,5 +84,5 @@ pub async fn clear_history(
     let Some(ref history) = *history.read().await else {
         return Ok(());
     };
-    history.clear_all().map_err(|e| e.to_string())
+    history.clear_all().map_err(GolishError::from)
 }

@@ -74,7 +74,10 @@ export function markTabNewActivityInDraft(state: SessionStoreDraft, sessionId: s
  * `handleCommandEnd` notification dispatch). Reads `tabLayouts` from the
  * passed-in state snapshot.
  */
-export function getOwningTabIdFromState(state: SessionStoreDraft, sessionId: string): string | null {
+export function getOwningTabIdFromState(
+  state: SessionStoreDraft,
+  sessionId: string
+): string | null {
   if (state.tabLayouts?.[sessionId]) return sessionId;
   for (const [tabId, layout] of Object.entries(state.tabLayouts ?? {})) {
     const panes = getAllLeafPanes(layout.root);

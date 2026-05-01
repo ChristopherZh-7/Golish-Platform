@@ -19,7 +19,7 @@ export interface ChatAutoScrollState {
   chatAtBottomRef: React.MutableRefObject<boolean>;
 }
 
-export function useChatAutoScroll<T>(messages: readonly T[]): ChatAutoScrollState {
+export function useChatAutoScroll<T>(_messages: readonly T[]): ChatAutoScrollState {
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const chatAtBottomRef = useRef(true);
   const userScrolledUpRef = useRef(false);
@@ -62,7 +62,7 @@ export function useChatAutoScroll<T>(messages: readonly T[]): ChatAutoScrollStat
         container.scrollTop = container.scrollHeight;
       }
     }
-  }, [messages]);
+  }, []);
 
   return {
     messagesContainerRef,

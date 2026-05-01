@@ -3,6 +3,7 @@
 //! Pipeline execution is now AI-driven via the agent system.
 //! These commands provide tool availability checks.
 
+use crate::error::GolishError;
 use tauri::State;
 
 use crate::state::AppState;
@@ -19,14 +20,14 @@ pub async fn run_recon_pipeline(
     _project_name: String,
     _project_path: String,
     _session_id: Option<String>,
-) -> Result<String, String> {
-    Err("Pipeline execution is now AI-driven. Use the AI agent to execute pipelines.".to_string())
+) -> Result<String, GolishError> {
+    Err(GolishError::Internal("Pipeline execution is now AI-driven. Use the AI agent to execute pipelines.".into()))
 }
 
 /// Check if common recon tools are installed.
 /// Uses unified pentest preflight checks for consistency.
 #[tauri::command]
-pub async fn check_recon_tools_cmd() -> Result<serde_json::Value, String> {
+pub async fn check_recon_tools_cmd() -> Result<serde_json::Value, GolishError> {
     let tools = [
         "nmap", "subfinder", "httpx", "nuclei", "whatweb", "katana",
         "masscan", "rustscan", "nikto", "ffuf", "gobuster", "dirsearch",

@@ -7,18 +7,18 @@ import { logger } from "@/lib/logger";
 import { countLeafPanes, getAllLeafPanes } from "@/lib/pane-utils";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import type { SessionStoreDraft } from "./session-draft-types";
-import {
-  markTabNewActivityInDraft,
-  purgeSessionStateInDraft,
-} from "./session-helpers";
+import { markTabNewActivityInDraft, purgeSessionStateInDraft } from "./session-helpers";
 import type { ImmerSet, StateGet } from "./types";
 
-export function createSessionTabActions(set: ImmerSet<SessionStoreDraft>, get: StateGet<SessionStoreDraft>) {
+export function createSessionTabActions(
+  set: ImmerSet<SessionStoreDraft>,
+  get: StateGet<SessionStoreDraft>
+) {
   return {
     openSettingsTab: () =>
       set((state) => {
         const existingSettingsTab = Object.values(state.sessions).find(
-          (session) => session.tabType === "settings",
+          (session) => session.tabType === "settings"
         );
 
         if (existingSettingsTab) {
@@ -55,7 +55,7 @@ export function createSessionTabActions(set: ImmerSet<SessionStoreDraft>, get: S
     openHomeTab: () =>
       set((state) => {
         const existingHomeTab = Object.values(state.sessions).find(
-          (session) => session.tabType === "home",
+          (session) => session.tabType === "home"
         );
 
         if (existingHomeTab) {
@@ -93,7 +93,7 @@ export function createSessionTabActions(set: ImmerSet<SessionStoreDraft>, get: S
     openBrowserTab: (url?: string) =>
       set((state) => {
         const existingBrowserTab = Object.values(state.sessions).find(
-          (session) => session.tabType === "browser",
+          (session) => session.tabType === "browser"
         );
 
         if (existingBrowserTab) {
@@ -130,7 +130,7 @@ export function createSessionTabActions(set: ImmerSet<SessionStoreDraft>, get: S
     openSecurityTab: () =>
       set((state) => {
         const existingTab = Object.values(state.sessions).find(
-          (session) => session.tabType === "security",
+          (session) => session.tabType === "security"
         );
 
         if (existingTab) {
@@ -200,7 +200,7 @@ export function createSessionTabActions(set: ImmerSet<SessionStoreDraft>, get: S
           purgeSessionStateInDraft(state, tabId);
 
           state.tabActivationHistory = state.tabActivationHistory.filter(
-            (id: string) => id !== tabId,
+            (id: string) => id !== tabId
           );
           if (state.activeSessionId === tabId) {
             state.activeSessionId =
@@ -222,7 +222,7 @@ export function createSessionTabActions(set: ImmerSet<SessionStoreDraft>, get: S
         }
 
         state.tabActivationHistory = state.tabActivationHistory.filter(
-          (id: string) => id !== tabId,
+          (id: string) => id !== tabId
         );
         if (state.activeSessionId === tabId) {
           state.activeSessionId =
@@ -266,7 +266,7 @@ export function createSessionTabActions(set: ImmerSet<SessionStoreDraft>, get: S
     moveTabToPane: (
       sourceTabId: string,
       destTabId: string,
-      location: "left" | "right" | "top" | "bottom",
+      location: "left" | "right" | "top" | "bottom"
     ) =>
       set((state) => {
         logger.info("[store] moveTabToPane: start", {
@@ -319,8 +319,7 @@ export function createSessionTabActions(set: ImmerSet<SessionStoreDraft>, get: S
           return;
         }
 
-        const direction =
-          location === "left" || location === "right" ? "vertical" : "horizontal";
+        const direction = location === "left" || location === "right" ? "vertical" : "horizontal";
         const newPaneId = crypto.randomUUID();
 
         if (location === "right" || location === "bottom") {
@@ -328,10 +327,7 @@ export function createSessionTabActions(set: ImmerSet<SessionStoreDraft>, get: S
             type: "split",
             id: crypto.randomUUID(),
             direction,
-            children: [
-              destLayout.root,
-              { type: "leaf", id: newPaneId, sessionId: sourceTabId },
-            ],
+            children: [destLayout.root, { type: "leaf", id: newPaneId, sessionId: sourceTabId }],
             ratio: 0.5,
           };
         } else {
@@ -339,10 +335,7 @@ export function createSessionTabActions(set: ImmerSet<SessionStoreDraft>, get: S
             type: "split",
             id: crypto.randomUUID(),
             direction,
-            children: [
-              { type: "leaf", id: newPaneId, sessionId: sourceTabId },
-              destLayout.root,
-            ],
+            children: [{ type: "leaf", id: newPaneId, sessionId: sourceTabId }, destLayout.root],
             ratio: 0.5,
           };
         }

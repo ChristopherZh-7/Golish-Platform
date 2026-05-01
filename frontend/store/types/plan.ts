@@ -1,6 +1,6 @@
-export type { StepStatus, PlanSummary } from "@/lib/generated";
-export type { PlanStep } from "@/lib/generated";
-export type { TaskPlan } from "@/lib/generated";
+import type { TaskPlan } from "@/lib/generated";
+
+export type { PlanStep, PlanSummary, StepStatus, TaskPlan } from "@/lib/generated";
 
 export interface RetiredPlan {
   plan: TaskPlan;

@@ -1,5 +1,5 @@
-import React, { memo } from "react";
 import { AlertCircle, Loader2 } from "lucide-react";
+import React, { memo } from "react";
 import { Markdown } from "@/components/Markdown";
 import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/store";
@@ -72,8 +72,8 @@ export const MessageBlock = memo(function MessageBlock({
       )}
 
       {(() => {
-        const hasContent = !!(message.content?.trim()) ||
-          (message.toolCalls && message.toolCalls.length > 0);
+        const hasContent =
+          !!message.content?.trim() || (message.toolCalls && message.toolCalls.length > 0);
 
         if (message.error && !hasContent) {
           return (
@@ -92,14 +92,14 @@ export const MessageBlock = memo(function MessageBlock({
           tc.name !== "update_plan" &&
           !isSubAgentCall(tc) &&
           !nestedIds.has(tc.requestId ?? "") &&
-          (tc.success !== undefined ||
-            (pendingApproval == null && tc.success === undefined));
+          (tc.success !== undefined || (pendingApproval == null && tc.success === undefined));
 
-        const pendingCalls = hasToolCalls && pendingApproval
-          ? message.toolCalls!.filter(
-              (tc) => tc.name === pendingApproval.toolName && tc.success === undefined
-            )
-          : [];
+        const pendingCalls =
+          (hasToolCalls && pendingApproval
+            ? message.toolCalls?.filter(
+                (tc) => tc.name === pendingApproval.toolName && tc.success === undefined
+              )
+            : []) ?? [];
 
         const renderPendingApprovalCards = () =>
           pendingCalls.length > 0 ? (
@@ -127,10 +127,7 @@ export const MessageBlock = memo(function MessageBlock({
 
         const segments: Segment[] = [];
 
-        const flushToolBatch = (
-          toolBatch: ChatToolCall[],
-          toolBatchIds: string[],
-        ) => {
+        const flushToolBatch = (toolBatch: ChatToolCall[], toolBatchIds: string[]) => {
           if (toolBatch.length > 0) {
             segments.push({ kind: "tools", calls: [...toolBatch], requestIds: [...toolBatchIds] });
           }
@@ -215,7 +212,10 @@ export const MessageBlock = memo(function MessageBlock({
             segments.push({ kind: "text", content: message.content.slice(tcOffset) });
           }
         } else {
-          segments.push({ kind: "text", content: message.content || (message.isStreaming ? "..." : "") });
+          segments.push({
+            kind: "text",
+            content: message.content || (message.isStreaming ? "..." : ""),
+          });
         }
 
         // Determine where to insert the task plan card
@@ -287,7 +287,12 @@ export const MessageBlock = memo(function MessageBlock({
               // Tool segment
               const messageComplete = !message.isStreaming;
               return (
-                <ToolCallSummary key={`seg-${idx}`} toolCalls={seg.calls} requestIds={seg.requestIds} isMessageComplete={messageComplete} />
+                <ToolCallSummary
+                  key={`seg-${idx}`}
+                  toolCalls={seg.calls}
+                  requestIds={seg.requestIds}
+                  isMessageComplete={messageComplete}
+                />
               );
             })}
             {shouldShowPlan && !planInserted && <InlinePlanCard plan={taskPlan!} />}
@@ -308,66 +313,74 @@ export const MessageBlock = memo(function MessageBlock({
         );
       })()}
 
-      {message.isStreaming && (() => {
-        const lastPendingTool = message.toolCalls
-          ?.slice()
-          .reverse()
-          .find((tc) => tc.success === undefined);
-        let statusLabel = "Thinking";
-        if (lastPendingTool) {
-          const name = lastPendingTool.name;
-          if (name.startsWith("sub_agent_")) {
-            const agentName = name.replace("sub_agent_", "");
-            statusLabel = `Delegating to ${agentName}`;
-          } else if (name === "update_plan") {
-            statusLabel = "Planning";
-          } else if (name === "run_pty_cmd" || name === "run_command") {
-            try {
-              const args = JSON.parse(lastPendingTool.args || "{}");
-              const cmd = args.command as string | undefined;
-              statusLabel = cmd ? `Running ${cmd.length > 40 ? `${cmd.slice(0, 40)}…` : cmd}` : "Running command";
-            } catch { statusLabel = "Running command"; }
-          } else if (name === "pentest_run") {
-            try {
-              const args = JSON.parse(lastPendingTool.args || "{}");
-              statusLabel = args.tool_name ? `Running ${args.tool_name}` : "Running pentest tool";
-            } catch { statusLabel = "Running pentest tool"; }
-          } else if (name === "run_pipeline") {
-            statusLabel = "Running pipeline";
-          } else if (name === "read_file") {
-            try {
-              const args = JSON.parse(lastPendingTool.args || "{}");
-              const path = (args.path as string) || "";
-              const filename = path.split("/").pop() || path;
-              statusLabel = `Reading ${filename}`;
-            } catch { statusLabel = "Reading file"; }
-          } else if (name === "write_file" || name === "create_file" || name === "edit_file") {
-            statusLabel = "Writing file";
-          } else if (name === "search_memories") {
-            statusLabel = "Searching memories";
-          } else if (name === "manage_targets") {
-            statusLabel = "Managing targets";
-          } else if (name === "web_search" || name.startsWith("tavily_")) {
-            statusLabel = "Searching web";
+      {message.isStreaming &&
+        (() => {
+          const lastPendingTool = message.toolCalls
+            ?.slice()
+            .reverse()
+            .find((tc) => tc.success === undefined);
+          let statusLabel = "Thinking";
+          if (lastPendingTool) {
+            const name = lastPendingTool.name;
+            if (name.startsWith("sub_agent_")) {
+              const agentName = name.replace("sub_agent_", "");
+              statusLabel = `Delegating to ${agentName}`;
+            } else if (name === "update_plan") {
+              statusLabel = "Planning";
+            } else if (name === "run_pty_cmd" || name === "run_command") {
+              try {
+                const args = JSON.parse(lastPendingTool.args || "{}");
+                const cmd = args.command as string | undefined;
+                statusLabel = cmd
+                  ? `Running ${cmd.length > 40 ? `${cmd.slice(0, 40)}…` : cmd}`
+                  : "Running command";
+              } catch {
+                statusLabel = "Running command";
+              }
+            } else if (name === "pentest_run") {
+              try {
+                const args = JSON.parse(lastPendingTool.args || "{}");
+                statusLabel = args.tool_name ? `Running ${args.tool_name}` : "Running pentest tool";
+              } catch {
+                statusLabel = "Running pentest tool";
+              }
+            } else if (name === "run_pipeline") {
+              statusLabel = "Running pipeline";
+            } else if (name === "read_file") {
+              try {
+                const args = JSON.parse(lastPendingTool.args || "{}");
+                const path = (args.path as string) || "";
+                const filename = path.split("/").pop() || path;
+                statusLabel = `Reading ${filename}`;
+              } catch {
+                statusLabel = "Reading file";
+              }
+            } else if (name === "write_file" || name === "create_file" || name === "edit_file") {
+              statusLabel = "Writing file";
+            } else if (name === "search_memories") {
+              statusLabel = "Searching memories";
+            } else if (name === "manage_targets") {
+              statusLabel = "Managing targets";
+            } else if (name === "web_search" || name.startsWith("tavily_")) {
+              statusLabel = "Searching web";
+            } else {
+              statusLabel = `Running ${name.replace(/_/g, " ")}`;
+            }
+          } else if (message.thinking && !message.content) {
+            statusLabel = "Reasoning";
+          } else if (!message.content) {
+            statusLabel = "Thinking";
           } else {
-            statusLabel = `Running ${name.replace(/_/g, " ")}`;
+            statusLabel = "Writing";
           }
-        } else if (message.thinking && !message.content) {
-          statusLabel = "Reasoning";
-        } else if (!message.content) {
-          statusLabel = "Thinking";
-        } else {
-          statusLabel = "Writing";
-        }
 
-        return (
-          <div className="flex items-center gap-2 mt-2 agent-loading-shimmer rounded py-1">
-            <Loader2 className="w-3 h-3 animate-spin text-accent flex-shrink-0" />
-            <span className="text-[11px] text-muted-foreground/70 truncate">{statusLabel}</span>
-          </div>
-        );
-      })()}
+          return (
+            <div className="flex items-center gap-2 mt-2 agent-loading-shimmer rounded py-1">
+              <Loader2 className="w-3 h-3 animate-spin text-accent flex-shrink-0" />
+              <span className="text-[11px] text-muted-foreground/70 truncate">{statusLabel}</span>
+            </div>
+          );
+        })()}
     </div>
   );
 });
-

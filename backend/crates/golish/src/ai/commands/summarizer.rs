@@ -3,6 +3,7 @@
 //! This module provides Tauri command wrappers for the conversation summarizer
 //! in golish-ai. The actual summarization logic is implemented in golish-ai::summarizer.
 
+use crate::error::GolishError;
 use tauri::State;
 
 use super::ai_session_not_initialized_error;
@@ -28,7 +29,7 @@ pub async fn generate_conversation_summary(
     state: State<'_, AppState>,
     session_id: String,
     conversation: String,
-) -> Result<SummaryResponse, String> {
+) -> Result<SummaryResponse, GolishError> {
     // Get Arc clone and release map lock immediately
     let bridge = state
         .ai_state

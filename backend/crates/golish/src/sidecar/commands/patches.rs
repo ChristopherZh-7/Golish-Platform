@@ -1,5 +1,6 @@
 //! L2: Staged patch commands (list / get / discard / apply / regenerate).
 
+use crate::error::GolishError;
 use crate::state::AppState;
 use tauri::State;
 
@@ -9,7 +10,7 @@ use super::super::session::Session;
 use golish_artifacts::ArtifactManager;
 
 /// Resolve git_root from session meta, falling back to `git rev-parse --show-toplevel`.
-fn resolve_git_root(session: &Session) -> Result<std::path::PathBuf, String> {
+fn resolve_git_root(session: &Session) -> Result<std::path::PathBuf, GolishError> {
     session
         .meta()
         .git_root
@@ -33,14 +34,14 @@ fn resolve_git_root(session: &Session) -> Result<std::path::PathBuf, String> {
 pub async fn sidecar_get_staged_patches(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<Vec<StagedPatch>, String> {
+) -> Result<Vec<StagedPatch>, GolishError> {
     let sessions_dir = state.sidecar_state.config().sessions_dir();
     let session = Session::load(&sessions_dir, &session_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let manager = PatchManager::new(session.dir().to_path_buf());
-    manager.list_staged().await.map_err(|e| e.to_string())
+    manager.list_staged().await.map_err(GolishError::from)
 }
 
 /// Get all applied patches for a session
@@ -48,14 +49,14 @@ pub async fn sidecar_get_staged_patches(
 pub async fn sidecar_get_applied_patches(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<Vec<StagedPatch>, String> {
+) -> Result<Vec<StagedPatch>, GolishError> {
     let sessions_dir = state.sidecar_state.config().sessions_dir();
     let session = Session::load(&sessions_dir, &session_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let manager = PatchManager::new(session.dir().to_path_buf());
-    manager.list_applied().await.map_err(|e| e.to_string())
+    manager.list_applied().await.map_err(GolishError::from)
 }
 
 /// Get a specific patch by ID
@@ -64,17 +65,17 @@ pub async fn sidecar_get_patch(
     state: State<'_, AppState>,
     session_id: String,
     patch_id: u32,
-) -> Result<Option<StagedPatch>, String> {
+) -> Result<Option<StagedPatch>, GolishError> {
     let sessions_dir = state.sidecar_state.config().sessions_dir();
     let session = Session::load(&sessions_dir, &session_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let manager = PatchManager::new(session.dir().to_path_buf());
     manager
         .get_staged(patch_id)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// Discard a staged patch
@@ -83,17 +84,17 @@ pub async fn sidecar_discard_patch(
     state: State<'_, AppState>,
     session_id: String,
     patch_id: u32,
-) -> Result<bool, String> {
+) -> Result<bool, GolishError> {
     let sessions_dir = state.sidecar_state.config().sessions_dir();
     let session = Session::load(&sessions_dir, &session_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let manager = PatchManager::new(session.dir().to_path_buf());
     let discarded = manager
         .discard_patch(patch_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     if discarded {
         state
@@ -116,13 +117,13 @@ pub async fn sidecar_apply_patch(
     state: State<'_, AppState>,
     session_id: String,
     patch_id: u32,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     use golish_artifacts::ArtifactSynthesisConfig;
 
     let sessions_dir = state.sidecar_state.config().sessions_dir();
     let session = Session::load(&sessions_dir, &session_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let git_root = resolve_git_root(&session)?;
 
@@ -132,14 +133,14 @@ pub async fn sidecar_apply_patch(
     let patch = patch_manager
         .get_staged(patch_id)
         .await
-        .map_err(|e| e.to_string())?
+?
         .ok_or_else(|| format!("Patch {} not found", patch_id))?;
     let patch_subject = patch.subject.clone();
 
     let sha = patch_manager
         .apply_patch(patch_id, &git_root)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     state.sidecar_state.emit_event(SidecarEvent::PatchApplied {
         session_id: session_id.clone(),
@@ -178,13 +179,13 @@ pub async fn sidecar_apply_patch(
 pub async fn sidecar_apply_all_patches(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<Vec<(u32, String)>, String> {
+) -> Result<Vec<(u32, String)>, GolishError> {
     use golish_artifacts::ArtifactSynthesisConfig;
 
     let sessions_dir = state.sidecar_state.config().sessions_dir();
     let session = Session::load(&sessions_dir, &session_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let git_root = resolve_git_root(&session)?;
 
@@ -193,13 +194,13 @@ pub async fn sidecar_apply_all_patches(
     let staged = patch_manager
         .list_staged()
         .await
-        .map_err(|e| e.to_string())?;
+?;
     let patch_subjects: Vec<String> = staged.iter().map(|p| p.subject.clone()).collect();
 
     let results = patch_manager
         .apply_all_patches(&git_root)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     for (patch_id, sha) in &results {
         state.sidecar_state.emit_event(SidecarEvent::PatchApplied {
@@ -241,19 +242,19 @@ pub async fn sidecar_apply_all_patches(
 #[tauri::command]
 pub async fn sidecar_get_current_staged_patches(
     state: State<'_, AppState>,
-) -> Result<Vec<StagedPatch>, String> {
+) -> Result<Vec<StagedPatch>, GolishError> {
     let session_id = state
         .sidecar_state
         .current_session_id()
-        .ok_or_else(|| "No active session".to_string())?;
+        .ok_or_else(|| GolishError::Internal("No active session".into()))?;
 
     let sessions_dir = state.sidecar_state.config().sessions_dir();
     let session = Session::load(&sessions_dir, &session_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let manager = PatchManager::new(session.dir().to_path_buf());
-    manager.list_staged().await.map_err(|e| e.to_string())
+    manager.list_staged().await.map_err(GolishError::from)
 }
 
 /// Regenerate a patch's commit message using LLM synthesis
@@ -265,26 +266,26 @@ pub async fn sidecar_regenerate_patch(
     state: State<'_, AppState>,
     session_id: String,
     patch_id: u32,
-) -> Result<StagedPatch, String> {
+) -> Result<StagedPatch, GolishError> {
     use golish_synthesis::{create_synthesizer, SynthesisConfig, SynthesisInput};
 
     let sessions_dir = state.sidecar_state.config().sessions_dir();
     let session = Session::load(&sessions_dir, &session_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let manager = PatchManager::new(session.dir().to_path_buf());
 
     let patch = manager
         .get_staged(patch_id)
         .await
-        .map_err(|e| e.to_string())?
+?
         .ok_or_else(|| format!("Patch {} not found", patch_id))?;
 
     let diff = manager
         .get_patch_diff(patch_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let session_context = session.read_state().await.ok();
 
@@ -308,7 +309,7 @@ pub async fn sidecar_regenerate_patch(
     let updated_patch = manager
         .update_patch_message(patch_id, &result.message)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     tracing::info!(
         "Regenerated patch {} message using {} backend",
@@ -326,17 +327,17 @@ pub async fn sidecar_update_patch_message(
     session_id: String,
     patch_id: u32,
     new_message: String,
-) -> Result<StagedPatch, String> {
+) -> Result<StagedPatch, GolishError> {
     let sessions_dir = state.sidecar_state.config().sessions_dir();
     let session = Session::load(&sessions_dir, &session_id)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     let manager = PatchManager::new(session.dir().to_path_buf());
     let updated_patch = manager
         .update_patch_message(patch_id, &new_message)
         .await
-        .map_err(|e| e.to_string())?;
+?;
 
     state
         .sidecar_state

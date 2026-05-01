@@ -1,5 +1,5 @@
-import type React from "react";
 import { ChevronDown, ChevronRight, FolderOpen, FolderPlus, Plus, Trash2 } from "lucide-react";
+import type React from "react";
 import { cn } from "@/lib/utils";
 import type { WikiEntry } from "@/lib/wiki";
 import { FileIcon } from "./FileIcon";
@@ -18,8 +18,16 @@ interface TreeNodeProps {
 }
 
 export function TreeNode({
-  entry, depth, expandedDirs, activePath, creating,
-  toggleDir, openFile, startCreate, setDeleteTarget, renderCreateInput,
+  entry,
+  depth,
+  expandedDirs,
+  activePath,
+  creating,
+  toggleDir,
+  openFile,
+  startCreate,
+  setDeleteTarget,
+  renderCreateInput,
 }: TreeNodeProps) {
   const isExpanded = expandedDirs.has(entry.path);
   const isActive = activePath === entry.path;
@@ -35,19 +43,36 @@ export function TreeNode({
           )}
           style={{ paddingLeft: pl }}
           onClick={() => toggleDir(entry.path)}
-          onContextMenu={(e) => { e.preventDefault(); setDeleteTarget(entry); }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setDeleteTarget(entry);
+          }}
         >
-          {isExpanded
-            ? <ChevronDown className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />
-            : <ChevronRight className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />}
+          {isExpanded ? (
+            <ChevronDown className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />
+          ) : (
+            <ChevronRight className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />
+          )}
           <FolderOpen className="w-3.5 h-3.5 text-amber-400/70 flex-shrink-0" />
           <span className="text-[12px] truncate flex-1">{entry.name}</span>
-          <button type="button" onClick={(e) => { e.stopPropagation(); startCreate("file", entry.path); }}
-            className="p-0.5 rounded opacity-0 group-hover:opacity-40 hover:!opacity-100 hover:text-accent transition-all">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              startCreate("file", entry.path);
+            }}
+            className="p-0.5 rounded opacity-0 group-hover:opacity-40 hover:!opacity-100 hover:text-accent transition-all"
+          >
             <Plus className="w-3 h-3" />
           </button>
-          <button type="button" onClick={(e) => { e.stopPropagation(); startCreate("folder", entry.path); }}
-            className="p-0.5 rounded opacity-0 group-hover:opacity-40 hover:!opacity-100 hover:text-accent transition-all">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              startCreate("folder", entry.path);
+            }}
+            className="p-0.5 rounded opacity-0 group-hover:opacity-40 hover:!opacity-100 hover:text-accent transition-all"
+          >
             <FolderPlus className="w-3 h-3" />
           </button>
         </div>
@@ -83,12 +108,21 @@ export function TreeNode({
       )}
       style={{ paddingLeft: pl }}
       onClick={() => openFile(entry.path, entry.name)}
-      onContextMenu={(e) => { e.preventDefault(); setDeleteTarget(entry); }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        setDeleteTarget(entry);
+      }}
     >
       <FileIcon name={entry.name} className="w-3.5 h-3.5 flex-shrink-0" />
       <span className="text-[12px] truncate flex-1">{entry.name}</span>
-      <button type="button" onClick={(e) => { e.stopPropagation(); setDeleteTarget(entry); }}
-        className="p-0.5 rounded opacity-0 group-hover:opacity-40 hover:!opacity-100 hover:text-destructive transition-all">
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setDeleteTarget(entry);
+        }}
+        className="p-0.5 rounded opacity-0 group-hover:opacity-40 hover:!opacity-100 hover:text-destructive transition-all"
+      >
         <Trash2 className="w-2.5 h-2.5" />
       </button>
     </div>

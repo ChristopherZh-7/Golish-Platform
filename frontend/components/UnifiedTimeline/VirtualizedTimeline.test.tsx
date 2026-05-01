@@ -22,7 +22,7 @@ class MockResizeObserver {
   unobserve = vi.fn();
   disconnect = vi.fn();
 }
-global.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
+globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
 
 function createCommandBlock(id: string, command: string): UnifiedBlock {
   return {

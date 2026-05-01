@@ -1,62 +1,101 @@
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import {
+  ArrowUpCircle,
+  Check,
+  Copy,
+  Download,
+  ExternalLink,
+  FileText,
+  FolderOpen,
+  GitFork,
+  Loader2,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import {
-  ArrowUpCircle, Check, Copy, Download, ExternalLink,
-  FolderOpen, FileText, GitFork, Loader2, Trash2, X,
-} from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { cn } from "@/lib/utils";
 import type { ToolWithMeta } from "./OutputParserEditor";
 
 /* ── Context Menu (portal) ── */
 
-export interface CtxMenuState { tool: ToolWithMeta; x: number; y: number }
+export interface CtxMenuState {
+  tool: ToolWithMeta;
+  x: number;
+  y: number;
+}
 
-export function ContextMenu({ ctx, onAction }: {
+export function ContextMenu({
+  ctx,
+  onAction,
+}: {
   ctx: CtxMenuState;
   onAction: (action: string) => void;
 }) {
   const { t } = useTranslation();
   return createPortal(
-    <div className="fixed z-50 rounded-lg border border-border/20 bg-popover shadow-xl py-1 min-w-[140px]"
+    <div
+      className="fixed z-50 rounded-lg border border-border/20 bg-popover shadow-xl py-1 min-w-[140px]"
       style={{ left: ctx.x, top: ctx.y }}
-      onClick={(e) => e.stopPropagation()}>
-      <button type="button" onClick={() => onAction("edit")}
-        className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2">
+      onClick={(e) => e.stopPropagation()}
+    >
+      <button
+        type="button"
+        onClick={() => onAction("edit")}
+        className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2"
+      >
         <FileText className="w-3 h-3 text-muted-foreground/50" /> {t("toolManager.edit")}
       </button>
       {ctx.tool.installed ? (
-        <button type="button" onClick={() => onAction("uninstall")}
-          className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onAction("uninstall")}
+          className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2"
+        >
           <Trash2 className="w-3 h-3 text-muted-foreground/50" /> {t("common.uninstall")}
         </button>
       ) : (
-        <button type="button" onClick={() => onAction("install")}
-          className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onAction("install")}
+          className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2"
+        >
           <Download className="w-3 h-3 text-muted-foreground/50" /> {t("common.install")}
         </button>
       )}
       <div className="my-1 border-t border-border/10" />
-      <button type="button" onClick={() => onAction("copy-id")}
-        className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() => onAction("copy-id")}
+        className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2"
+      >
         <Copy className="w-3 h-3 text-muted-foreground/50" /> {t("toolManager.copyId")}
       </button>
       {ctx.tool.installed && (
-        <button type="button" onClick={() => onAction("open-dir")}
-          className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onAction("open-dir")}
+          className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2"
+        >
           <FolderOpen className="w-3 h-3 text-muted-foreground/50" /> {t("toolManager.openDir")}
         </button>
       )}
       {ctx.tool.installed && ctx.tool.runtime === "python" && (
-        <button type="button" onClick={() => onAction("install-deps")}
-          className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onAction("install-deps")}
+          className="w-full text-left px-3 py-1.5 text-[12px] text-foreground hover:bg-accent/10 transition-colors flex items-center gap-2"
+        >
           <Download className="w-3 h-3 text-muted-foreground/50" /> {t("toolManager.installDeps")}
         </button>
       )}
       <div className="my-1 border-t border-border/10" />
-      <button type="button" onClick={() => onAction("delete")}
-        className="w-full text-left px-3 py-1.5 text-[12px] text-red-400 hover:bg-red-500/10 transition-colors flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() => onAction("delete")}
+        className="w-full text-left px-3 py-1.5 text-[12px] text-red-400 hover:bg-red-500/10 transition-colors flex items-center gap-2"
+      >
         <Trash2 className="w-3 h-3" /> {t("toolManager.deleteConfig")}
       </button>
     </div>,
@@ -66,8 +105,14 @@ export function ContextMenu({ ctx, onAction }: {
 
 /* ── Uninstall Confirm ── */
 
-export function UninstallConfirmDialog({ target, onCancel, onConfirm }: {
-  target: ToolWithMeta; onCancel: () => void; onConfirm: () => void;
+export function UninstallConfirmDialog({
+  target,
+  onCancel,
+  onConfirm,
+}: {
+  target: ToolWithMeta;
+  onCancel: () => void;
+  onConfirm: () => void;
 }) {
   const { t } = useTranslation();
 
@@ -89,15 +134,35 @@ export function UninstallConfirmDialog({ target, onCancel, onConfirm }: {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onCancel}>
-      <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-sm w-full" onClick={(e) => e.stopPropagation()}>
-        <p className="text-[13px] text-foreground mb-2">{t("toolManager.uninstallConfirm", { name: target.name })}</p>
-        <p className="text-[11px] text-muted-foreground/70 mb-4 font-mono break-all">{actionDesc}</p>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onCancel}
+    >
+      <div
+        className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-sm w-full"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <p className="text-[13px] text-foreground mb-2">
+          {t("toolManager.uninstallConfirm", { name: target.name })}
+        </p>
+        <p className="text-[11px] text-muted-foreground/70 mb-4 font-mono break-all">
+          {actionDesc}
+        </p>
         <div className="flex justify-end gap-2">
-          <button type="button" onClick={onCancel}
-            className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">{t("common.cancel")}</button>
-          <button type="button" onClick={onConfirm}
-            className="text-[12px] px-3 py-1.5 rounded-lg bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors">{t("toolManager.confirmUninstall")}</button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors"
+          >
+            {t("common.cancel")}
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="text-[12px] px-3 py-1.5 rounded-lg bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors"
+          >
+            {t("toolManager.confirmUninstall")}
+          </button>
         </div>
       </div>
     </div>
@@ -106,28 +171,51 @@ export function UninstallConfirmDialog({ target, onCancel, onConfirm }: {
 
 /* ── Dep File Picker ── */
 
-export function DepPickerDialog({ tool, files, onPick, onCancel }: {
-  tool: ToolWithMeta; files: string[];
+export function DepPickerDialog({
+  tool,
+  files,
+  onPick,
+  onCancel,
+}: {
+  tool: ToolWithMeta;
+  files: string[];
   onPick: (tool: ToolWithMeta, file: string) => void;
   onCancel: () => void;
 }) {
   const { t } = useTranslation();
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onCancel}>
-      <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-sm w-full" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onCancel}
+    >
+      <div
+        className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-sm w-full"
+        onClick={(e) => e.stopPropagation()}
+      >
         <p className="text-[13px] text-foreground mb-1">{t("toolManager.selectDepFile")}</p>
-        <p className="text-[11px] text-muted-foreground/50 mb-3">{t("toolManager.depFileHint", { name: tool.name })}</p>
+        <p className="text-[11px] text-muted-foreground/50 mb-3">
+          {t("toolManager.depFileHint", { name: tool.name })}
+        </p>
         <div className="space-y-1 max-h-48 overflow-y-auto mb-4">
           {files.map((f) => (
-            <button key={f} type="button" onClick={() => onPick(tool, f)}
-              className="w-full text-left px-3 py-2 rounded-lg text-[12px] font-mono text-foreground hover:bg-accent/10 transition-colors">
+            <button
+              key={f}
+              type="button"
+              onClick={() => onPick(tool, f)}
+              className="w-full text-left px-3 py-2 rounded-lg text-[12px] font-mono text-foreground hover:bg-accent/10 transition-colors"
+            >
               {f}
             </button>
           ))}
         </div>
         <div className="flex justify-end">
-          <button type="button" onClick={onCancel}
-            className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">{t("common.cancel")}</button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors"
+          >
+            {t("common.cancel")}
+          </button>
         </div>
       </div>
     </div>
@@ -151,7 +239,10 @@ export interface ExecPickerState {
   resolve: (v: string | null) => void;
 }
 
-export function ExecPickerDialog({ state, onDismiss }: {
+export function ExecPickerDialog({
+  state,
+  onDismiss,
+}: {
   state: ExecPickerState;
   onDismiss: () => void;
 }) {
@@ -161,10 +252,16 @@ export function ExecPickerDialog({ state, onDismiss }: {
 
   useEffect(() => {
     setManual("");
-  }, [state.dirName]);
+  }, []);
 
-  const cancel = () => { state.resolve(null); onDismiss(); };
-  const pick = (value: string) => { state.resolve(value); onDismiss(); };
+  const cancel = () => {
+    state.resolve(null);
+    onDismiss();
+  };
+  const pick = (value: string) => {
+    state.resolve(value);
+    onDismiss();
+  };
 
   const submitManual = () => {
     const trimmed = manual.trim();
@@ -197,9 +294,14 @@ export function ExecPickerDialog({ state, onDismiss }: {
   const empty = state.candidates.length === 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-      onClick={cancel}>
-      <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={cancel}
+    >
+      <div
+        className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-md w-full"
+        onClick={(e) => e.stopPropagation()}
+      >
         <p className="text-[13px] text-foreground mb-1">{t("toolManager.selectExecutable")}</p>
         <p className="text-[11px] text-muted-foreground/50 mb-3">
           {empty
@@ -210,16 +312,23 @@ export function ExecPickerDialog({ state, onDismiss }: {
         {!empty && (
           <div className="space-y-1 max-h-48 overflow-y-auto mb-3">
             {state.candidates.map((f, i) => (
-              <button key={f} type="button"
+              <button
+                key={f}
+                type="button"
                 onClick={() => pick(f)}
                 className={cn(
                   "w-full text-left px-3 py-2 rounded-lg text-[12px] font-mono transition-colors",
                   i === 0
                     ? "bg-accent/15 text-accent hover:bg-accent/20 font-semibold"
-                    : "text-foreground hover:bg-accent/10",
-                )}>
+                    : "text-foreground hover:bg-accent/10"
+                )}
+              >
                 <span>{f}</span>
-                {i === 0 && <span className="ml-2 text-[10px] text-accent/70 font-normal">{t("common.recommended")}</span>}
+                {i === 0 && (
+                  <span className="ml-2 text-[10px] text-accent/70 font-normal">
+                    {t("common.recommended")}
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -233,29 +342,41 @@ export function ExecPickerDialog({ state, onDismiss }: {
             <input
               value={manual}
               onChange={(e) => setManual(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") submitManual(); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submitManual();
+              }}
               placeholder={recommended || "bin/tool"}
               className="flex-1 h-8 px-2 text-[12px] font-mono bg-background rounded-md border border-border/20 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40 transition-colors"
             />
-            <button type="button" onClick={browse}
-              className="text-[11px] px-2.5 py-1.5 rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-[var(--bg-hover)] border border-border/15 transition-colors flex items-center gap-1">
+            <button
+              type="button"
+              onClick={browse}
+              className="text-[11px] px-2.5 py-1.5 rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-[var(--bg-hover)] border border-border/15 transition-colors flex items-center gap-1"
+            >
               <FolderOpen className="w-3 h-3" /> {t("toolManager.browse")}
             </button>
           </div>
         </div>
 
         <div className="flex justify-between items-center gap-2">
-          <button type="button" onClick={cancel}
-            className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">
+          <button
+            type="button"
+            onClick={cancel}
+            className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors"
+          >
             {t("toolManager.decideLater")}
           </button>
-          <button type="button" onClick={submitManual} disabled={!manual.trim()}
+          <button
+            type="button"
+            onClick={submitManual}
+            disabled={!manual.trim()}
             className={cn(
               "text-[12px] px-3 py-1.5 rounded-lg font-medium transition-colors",
               manual.trim()
                 ? "bg-accent text-accent-foreground hover:bg-accent/90"
-                : "bg-muted/30 text-muted-foreground/30 cursor-not-allowed",
-            )}>
+                : "bg-muted/30 text-muted-foreground/30 cursor-not-allowed"
+            )}
+          >
             {t("toolManager.useManualEntry")}
           </button>
         </div>
@@ -266,23 +387,47 @@ export function ExecPickerDialog({ state, onDismiss }: {
 
 /* ── Delete Config Confirm ── */
 
-export function DeleteConfirmDialog({ target, onCancel, onConfirm }: {
-  target: ToolWithMeta; onCancel: () => void; onConfirm: (tool: ToolWithMeta) => void;
+export function DeleteConfirmDialog({
+  target,
+  onCancel,
+  onConfirm,
+}: {
+  target: ToolWithMeta;
+  onCancel: () => void;
+  onConfirm: (tool: ToolWithMeta) => void;
 }) {
   const { t } = useTranslation();
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onCancel}>
-      <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-xs w-full" onClick={(e) => e.stopPropagation()}>
-        <p className="text-[13px] text-foreground mb-1">{t("toolManager.deleteConfirmTitle", { name: target.name })}</p>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onCancel}
+    >
+      <div
+        className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-xs w-full"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <p className="text-[13px] text-foreground mb-1">
+          {t("toolManager.deleteConfirmTitle", { name: target.name })}
+        </p>
         <p className="text-[11px] text-muted-foreground/50 mb-4">
           {t("toolManager.deleteConfirmMsg")}
           {target.installed && t("toolManager.deleteKeepFiles")}
         </p>
         <div className="flex justify-end gap-2">
-          <button type="button" onClick={onCancel}
-            className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">{t("common.cancel")}</button>
-          <button type="button" onClick={() => onConfirm(target)}
-            className="text-[12px] px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors">{t("toolManager.confirmDelete")}</button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors"
+          >
+            {t("common.cancel")}
+          </button>
+          <button
+            type="button"
+            onClick={() => onConfirm(target)}
+            className="text-[12px] px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
+          >
+            {t("toolManager.confirmDelete")}
+          </button>
         </div>
       </div>
     </div>
@@ -291,20 +436,42 @@ export function DeleteConfirmDialog({ target, onCancel, onConfirm }: {
 
 /* ── Close Confirm ── */
 
-export function CloseConfirmDialog({ onCancel, onDiscard }: {
-  onCancel: () => void; onDiscard: () => void;
+export function CloseConfirmDialog({
+  onCancel,
+  onDiscard,
+}: {
+  onCancel: () => void;
+  onDiscard: () => void;
 }) {
   const { t } = useTranslation();
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onCancel}>
-      <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-xs w-full" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onCancel}
+    >
+      <div
+        className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-xs w-full"
+        onClick={(e) => e.stopPropagation()}
+      >
         <p className="text-[13px] text-foreground mb-1">{t("toolManager.unsavedChanges")}</p>
-        <p className="text-[11px] text-muted-foreground/50 mb-4">{t("toolManager.unsavedChangesMsg")}</p>
+        <p className="text-[11px] text-muted-foreground/50 mb-4">
+          {t("toolManager.unsavedChangesMsg")}
+        </p>
         <div className="flex justify-end gap-2">
-          <button type="button" onClick={onCancel}
-            className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">{t("toolManager.continueEditing")}</button>
-          <button type="button" onClick={onDiscard}
-            className="text-[12px] px-3 py-1.5 rounded-lg bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors">{t("toolManager.discardChanges")}</button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors"
+          >
+            {t("toolManager.continueEditing")}
+          </button>
+          <button
+            type="button"
+            onClick={onDiscard}
+            className="text-[12px] px-3 py-1.5 rounded-lg bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors"
+          >
+            {t("toolManager.discardChanges")}
+          </button>
         </div>
       </div>
     </div>
@@ -314,17 +481,30 @@ export function CloseConfirmDialog({ onCancel, onDiscard }: {
 /* ── Tool Updates ── */
 
 export interface ToolUpdateInfo {
-  tool_id: string; tool_name: string;
-  current_version: string; latest_version: string;
-  has_update: boolean; release_url: string;
+  tool_id: string;
+  tool_name: string;
+  current_version: string;
+  latest_version: string;
+  has_update: boolean;
+  release_url: string;
 }
 
-export function UpdatesDialog({ updates, onClose }: {
-  updates: ToolUpdateInfo[]; onClose: () => void;
+export function UpdatesDialog({
+  updates,
+  onClose,
+}: {
+  updates: ToolUpdateInfo[];
+  onClose: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
-      <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onClose}
+    >
+      <div
+        className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-5 shadow-xl max-w-md w-full"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-center gap-2 mb-3">
           <ArrowUpCircle className="w-4 h-4 text-accent" />
           <h2 className="text-[14px] font-semibold flex-1">Tool Updates</h2>
@@ -333,23 +513,36 @@ export function UpdatesDialog({ updates, onClose }: {
           </button>
         </div>
         {updates.length === 0 ? (
-          <p className="text-[11px] text-muted-foreground/50 py-4 text-center">No tools with GitHub sources found.</p>
+          <p className="text-[11px] text-muted-foreground/50 py-4 text-center">
+            No tools with GitHub sources found.
+          </p>
         ) : (
           <div className="space-y-1.5 max-h-[400px] overflow-y-auto">
             {updates.map((u) => (
-              <div key={u.tool_id} className={cn(
-                "flex items-center gap-2 px-3 py-2 rounded-lg text-[11px]",
-                u.has_update ? "bg-amber-500/5 border border-amber-500/20" : "bg-muted/10 border border-border/10",
-              )}>
+              <div
+                key={u.tool_id}
+                className={cn(
+                  "flex items-center gap-2 px-3 py-2 rounded-lg text-[11px]",
+                  u.has_update
+                    ? "bg-amber-500/5 border border-amber-500/20"
+                    : "bg-muted/10 border border-border/10"
+                )}
+              >
                 <span className="flex-1 font-medium truncate">{u.tool_name}</span>
-                <span className="text-muted-foreground/50 font-mono">{u.current_version || "?"}</span>
+                <span className="text-muted-foreground/50 font-mono">
+                  {u.current_version || "?"}
+                </span>
                 {u.has_update && (
                   <>
                     <span className="text-muted-foreground/50">→</span>
                     <span className="text-amber-400 font-mono font-medium">{u.latest_version}</span>
                     {u.release_url && (
-                      <a href={u.release_url} target="_blank" rel="noopener noreferrer"
-                        className="p-0.5 text-accent/50 hover:text-accent transition-colors">
+                      <a
+                        href={u.release_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="p-0.5 text-accent/50 hover:text-accent transition-colors"
+                      >
                         <ExternalLink className="w-3 h-3" />
                       </a>
                     )}
@@ -371,37 +564,66 @@ export function UpdatesDialog({ updates, onClose }: {
 
 /* ── GitHub Import ── */
 
-export function GitHubImportDialog({ url, onUrlChange, analyzing, onImport, onCancel }: {
-  url: string; onUrlChange: (url: string) => void;
-  analyzing: boolean; onImport: () => void; onCancel: () => void;
+export function GitHubImportDialog({
+  url,
+  onUrlChange,
+  analyzing,
+  onImport,
+  onCancel,
+}: {
+  url: string;
+  onUrlChange: (url: string) => void;
+  analyzing: boolean;
+  onImport: () => void;
+  onCancel: () => void;
 }) {
   const { t } = useTranslation();
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onCancel}>
-      <div className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-6 shadow-xl max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onCancel}
+    >
+      <div
+        className="bg-[var(--bg-hover)] rounded-xl border border-border/20 p-6 shadow-xl max-w-md w-full"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-center gap-2 mb-4">
           <GitFork className="w-5 h-5 text-accent" />
-          <h2 className="text-[15px] font-semibold text-foreground">{t("toolManager.importGithub")}</h2>
+          <h2 className="text-[15px] font-semibold text-foreground">
+            {t("toolManager.importGithub")}
+          </h2>
         </div>
-        <p className="text-[11px] text-muted-foreground/50 mb-3">{t("toolManager.importGithubHint")}</p>
+        <p className="text-[11px] text-muted-foreground/50 mb-3">
+          {t("toolManager.importGithubHint")}
+        </p>
         <input
           value={url}
           onChange={(e) => onUrlChange(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") onImport(); }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") onImport();
+          }}
           placeholder="owner/repo or https://github.com/owner/repo"
-          autoFocus
           className="w-full h-9 px-3 text-[12px] font-mono bg-background rounded-lg border border-border/20 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40 transition-colors"
         />
         <div className="flex justify-end gap-2 mt-4">
-          <button type="button" onClick={onCancel}
-            className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors"
+          >
             {t("common.cancel")}
           </button>
-          <button type="button" onClick={onImport} disabled={analyzing || !url.trim()}
-            className={cn("flex items-center gap-1.5 text-[12px] px-4 py-1.5 rounded-lg font-medium transition-colors",
+          <button
+            type="button"
+            onClick={onImport}
+            disabled={analyzing || !url.trim()}
+            className={cn(
+              "flex items-center gap-1.5 text-[12px] px-4 py-1.5 rounded-lg font-medium transition-colors",
               url.trim()
                 ? "bg-accent text-accent-foreground hover:bg-accent/90"
-                : "bg-muted/30 text-muted-foreground/30 cursor-not-allowed")}>
+                : "bg-muted/30 text-muted-foreground/30 cursor-not-allowed"
+            )}
+          >
             {analyzing && <Loader2 className="w-3 h-3 animate-spin" />}
             {t("toolManager.analyzeImport")}
           </button>

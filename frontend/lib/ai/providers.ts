@@ -1,5 +1,13 @@
 import { invoke } from "@/lib/api/client";
 import type { GolishSettings, OpenRouterProviderPreferences } from "../settings";
+import {
+  ANTHROPIC_MODELS,
+  GEMINI_MODELS,
+  GROQ_MODELS,
+  OLLAMA_MODELS,
+  VERTEX_AI_MODELS,
+  XAI_MODELS,
+} from "./models";
 import type {
   AiProvider,
   OpenAiConfig,
@@ -7,7 +15,6 @@ import type {
   VertexAiConfig,
   VertexAiEnvConfig,
 } from "./types";
-import { ANTHROPIC_MODELS, GEMINI_MODELS, GROQ_MODELS, OLLAMA_MODELS, VERTEX_AI_MODELS, XAI_MODELS } from "./models";
 
 export async function getVertexAiConfig(): Promise<VertexAiEnvConfig> {
   return invoke("get_vertex_ai_config");

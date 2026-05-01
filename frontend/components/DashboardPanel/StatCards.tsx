@@ -1,8 +1,7 @@
-import { CheckCircle2, Circle, ShieldAlert, ShieldCheck, ShieldX } from "lucide-react";
-import { cn } from "@/lib/utils";
-import { SEV_HEX as SEV_COLORS } from "@/lib/severity";
+import { type CheckCircle2, ShieldAlert, ShieldCheck, ShieldX } from "lucide-react";
 import type { ProjectMethodology } from "@/lib/dashboard";
-import type { Activity } from "lucide-react";
+import { SEV_HEX as SEV_COLORS } from "@/lib/severity";
+import { cn } from "@/lib/utils";
 
 const SEV_ORDER = ["critical", "high", "medium", "low", "info"];
 
@@ -71,7 +70,7 @@ export function MiniTimeline({ data }: { data: { date: string; count: number }[]
   }));
 
   const line = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
-  const area = line + ` L ${points[points.length - 1].x} ${h} L 0 ${h} Z`;
+  const area = `${line} L ${points[points.length - 1].x} ${h} L 0 ${h} Z`;
 
   return (
     <div className="space-y-1">
@@ -86,7 +85,9 @@ export function MiniTimeline({ data }: { data: { date: string; count: number }[]
         <path d={line} fill="none" stroke="var(--accent)" strokeWidth="1.5" opacity="0.5" />
         {points.map((p, i) => (
           <circle key={i} cx={p.x} cy={p.y} r={1.5} fill="var(--accent)" opacity="0.7">
-            <title>{data[i].date}: {data[i].count}</title>
+            <title>
+              {data[i].date}: {data[i].count}
+            </title>
           </circle>
         ))}
       </svg>
@@ -118,14 +119,31 @@ export function MethodologyRing({ projects }: { projects: ProjectMethodology[] }
     <div className="flex items-center gap-4">
       <div className="relative">
         <svg width={78} height={78}>
-          <circle cx={39} cy={39} r={r} fill="none" stroke="currentColor" strokeWidth={strokeW}
-            className="text-muted/20" />
-          <circle cx={39} cy={39} r={r} fill="none" strokeWidth={strokeW}
-            strokeDasharray={circ} strokeDashoffset={offset}
+          <circle
+            cx={39}
+            cy={39}
+            r={r}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={strokeW}
+            className="text-muted/20"
+          />
+          <circle
+            cx={39}
+            cy={39}
+            r={r}
+            fill="none"
+            strokeWidth={strokeW}
+            strokeDasharray={circ}
+            strokeDashoffset={offset}
             strokeLinecap="round"
             className={cn(
               "transition-all duration-1000 ease-out",
-              pct === 100 ? "stroke-green-500/80" : pct > 50 ? "stroke-accent/70" : "stroke-amber-500/60",
+              pct === 100
+                ? "stroke-green-500/80"
+                : pct > 50
+                  ? "stroke-accent/70"
+                  : "stroke-amber-500/60"
             )}
             transform="rotate(-90 39 39)"
           />
@@ -143,13 +161,15 @@ export function MethodologyRing({ projects }: { projects: ProjectMethodology[] }
             <div key={p.id} className="space-y-0.5">
               <div className="flex items-center justify-between text-[10px]">
                 <span className="text-foreground/70 truncate">{p.project_name}</span>
-                <span className="text-muted-foreground/40 tabular-nums">{pDone}/{pTotal}</span>
+                <span className="text-muted-foreground/40 tabular-nums">
+                  {pDone}/{pTotal}
+                </span>
               </div>
               <div className="h-1 rounded-full bg-muted/15 overflow-hidden">
                 <div
                   className={cn(
                     "h-full rounded-full transition-all duration-700",
-                    pp === 100 ? "bg-green-500/70" : pp > 50 ? "bg-accent/50" : "bg-amber-500/50",
+                    pp === 100 ? "bg-green-500/70" : pp > 50 ? "bg-accent/50" : "bg-amber-500/50"
                   )}
                   style={{ width: `${pp}%` }}
                 />
@@ -163,7 +183,12 @@ export function MethodologyRing({ projects }: { projects: ProjectMethodology[] }
 }
 
 export function MetricCard({
-  icon: Icon, value, label, detail, accent, displayValue,
+  icon: Icon,
+  value,
+  label,
+  detail,
+  accent,
+  displayValue,
 }: {
   icon: typeof CheckCircle2;
   value: number;
@@ -193,7 +218,9 @@ export function MetricCard({
         <div className={cn("p-1.5 rounded-lg", iconColors[accent])}>
           <Icon className="w-3.5 h-3.5" />
         </div>
-        <span className="text-2xl font-bold leading-none text-foreground/85 tabular-nums">{displayValue ?? fmtNum(value)}</span>
+        <span className="text-2xl font-bold leading-none text-foreground/85 tabular-nums">
+          {displayValue ?? fmtNum(value)}
+        </span>
       </div>
       <div>
         <div className="text-[11px] font-medium text-foreground/50">{label}</div>

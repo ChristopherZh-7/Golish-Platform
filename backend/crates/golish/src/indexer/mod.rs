@@ -15,4 +15,4 @@ pub mod commands;
 pub mod vtcode_bridge;
 
 // Re-export everything from golish-ai::indexer
-pub use golish_ai::indexer::*;
+pub use golish_indexer::*;

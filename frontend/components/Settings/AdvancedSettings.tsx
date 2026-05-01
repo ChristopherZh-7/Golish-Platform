@@ -1,7 +1,7 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { useEffect, useState } from "react";
-import { Switch } from "@/components/ui/switch";
 import { CustomSelect } from "@/components/ui/custom-select";
+import { Switch } from "@/components/ui/switch";
 import type { AdvancedSettings as AdvancedSettingsType, PrivacySettings } from "@/lib/settings";
 
 interface AdvancedSettingsProps {
@@ -21,9 +21,7 @@ function SimpleSelect({
   onValueChange: (value: string) => void;
   options: { value: string; label: string }[];
 }) {
-  return (
-    <CustomSelect value={value} onChange={onValueChange} options={options} />
-  );
+  return <CustomSelect value={value} onChange={onValueChange} options={options} />;
 }
 
 export function AdvancedSettings({

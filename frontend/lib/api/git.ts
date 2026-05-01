@@ -35,7 +35,7 @@ export async function gitStatus(workingDirectory: string): Promise<GitStatusSumm
 export async function gitDiff(
   workingDirectory: string,
   file: string,
-  staged?: boolean,
+  staged?: boolean
 ): Promise<GitDiffResult> {
   return invoke<GitDiffResult>("git_diff", { workingDirectory, file, staged });
 }
@@ -55,7 +55,7 @@ export async function gitUnstage(workingDirectory: string, files: string[]): Pro
 export async function gitCommit(
   workingDirectory: string,
   message: string,
-  options?: { signOff?: boolean; amend?: boolean },
+  options?: { signOff?: boolean; amend?: boolean }
 ): Promise<void> {
   return invoke("git_commit", {
     workingDirectory,
@@ -67,7 +67,7 @@ export async function gitCommit(
 
 export async function gitPush(
   workingDirectory: string,
-  options?: { force?: boolean; setUpstream?: boolean },
+  options?: { force?: boolean; setUpstream?: boolean }
 ): Promise<void> {
   return invoke("git_push", {
     workingDirectory,
@@ -79,7 +79,7 @@ export async function gitPush(
 export async function deleteWorktree(
   workingDirectory: string,
   worktreePath: string,
-  force?: boolean,
+  force?: boolean
 ): Promise<void> {
   return invoke("git_delete_worktree", { workingDirectory, worktreePath, force });
 }
@@ -91,7 +91,7 @@ export async function listGitBranches(workingDirectory: string): Promise<string[
 export async function createGitWorktree(
   workingDirectory: string,
   branch: string,
-  path: string,
+  path: string
 ): Promise<void> {
   return invoke("create_git_worktree", { workingDirectory, branch, path });
 }

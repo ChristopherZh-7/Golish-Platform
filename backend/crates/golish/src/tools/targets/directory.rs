@@ -1,6 +1,7 @@
 //! Directory-entry database helpers + the `directory_entry_list` Tauri
 //! command.
 
+use crate::error::GolishError;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -19,7 +20,7 @@ pub async fn db_directory_entry_add(
     words: Option<i32>,
     tool: &str,
     project_path: Option<&str>,
-) -> Result<DirectoryEntry, String> {
+) -> Result<DirectoryEntry, GolishError> {
     let row = sqlx::query_as::<_, DirEntryRow>(
         r#"INSERT INTO directory_entries (target_id, url, status_code, content_length, lines, words, tool, project_path)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -40,7 +41,7 @@ pub async fn db_directory_entry_add(
     .bind(project_path)
     .fetch_one(pool)
     .await
-    .map_err(|e| e.to_string())?;
+?;
 
     Ok(DirectoryEntry::from(row))
 }
@@ -49,7 +50,7 @@ pub async fn db_directory_entries_list(
     pool: &PgPool,
     target_id: Option<Uuid>,
     project_path: Option<&str>,
-) -> Result<Vec<DirectoryEntry>, String> {
+) -> Result<Vec<DirectoryEntry>, GolishError> {
     let rows = if let Some(tid) = target_id {
         sqlx::query_as::<_, DirEntryRow>(
             r#"SELECT id, target_id, url, status_code, content_length, lines, words, content_type, tool, created_at
@@ -67,7 +68,7 @@ pub async fn db_directory_entries_list(
         .fetch_all(pool)
         .await
     }
-    .map_err(|e| e.to_string())?;
+?;
 
     Ok(rows.into_iter().map(DirectoryEntry::from).collect())
 }
@@ -81,7 +82,7 @@ pub async fn directory_entry_list(
     state: tauri::State<'_, DbState>,
     target_id: Option<String>,
     project_path: Option<String>,
-) -> Result<Vec<DirectoryEntry>, String> {
+) -> Result<Vec<DirectoryEntry>, GolishError> {
     let pool = state.pool_ready().await?;
     let tid: Option<Uuid> = target_id.and_then(|s| s.parse().ok());
     db_directory_entries_list(pool, tid, project_path.as_deref()).await

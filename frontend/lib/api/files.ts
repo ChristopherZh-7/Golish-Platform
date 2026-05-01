@@ -62,7 +62,7 @@ export interface FileInfo {
 export async function listWorkspaceFiles(
   workingDirectory: string,
   query?: string,
-  limit?: number,
+  limit?: number
 ): Promise<FileInfo[]> {
   return invoke<FileInfo[]>("list_workspace_files", { workingDirectory, query, limit });
 }
@@ -73,22 +73,19 @@ export async function readFileAsBase64(path: string): Promise<string> {
 
 export async function readTextFile(
   workingDirectory: string,
-  relativePath: string,
+  relativePath: string
 ): Promise<string> {
   const fullPath = `${workingDirectory}/${relativePath}`;
   return invoke<string>("read_prompt", { path: fullPath });
 }
 
-export async function listDirectory(
-  workingDirectory: string,
-  path: string,
-): Promise<FileInfo[]> {
+export async function listDirectory(workingDirectory: string, path: string): Promise<FileInfo[]> {
   return invoke<FileInfo[]>("list_directory", { workingDirectory, path });
 }
 
 export async function readWorkspaceFile(
   workingDirectory: string,
-  relativePath: string,
+  relativePath: string
 ): Promise<string> {
   return invoke<string>("read_workspace_file", { workingDirectory, relativePath });
 }
@@ -96,7 +93,7 @@ export async function readWorkspaceFile(
 export async function writeWorkspaceFile(
   workingDirectory: string,
   relativePath: string,
-  content: string,
+  content: string
 ): Promise<void> {
   return invoke("write_workspace_file", { workingDirectory, relativePath, content });
 }
@@ -111,22 +108,16 @@ export interface FileStat {
 
 export async function statWorkspaceFile(
   workingDirectory: string,
-  relativePath: string,
+  relativePath: string
 ): Promise<FileStat> {
   return invoke<FileStat>("stat_workspace_file", { workingDirectory, relativePath });
 }
 
-export async function watchFile(
-  workingDirectory: string,
-  relativePath: string,
-): Promise<void> {
+export async function watchFile(workingDirectory: string, relativePath: string): Promise<void> {
   return invoke("watch_file", { workingDirectory, relativePath });
 }
 
-export async function unwatchFile(
-  workingDirectory: string,
-  relativePath: string,
-): Promise<void> {
+export async function unwatchFile(workingDirectory: string, relativePath: string): Promise<void> {
   return invoke("unwatch_file", { workingDirectory, relativePath });
 }
 

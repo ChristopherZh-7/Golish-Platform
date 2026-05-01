@@ -1,5 +1,6 @@
 //! Session lifecycle commands: start / end / current / resume.
 
+use crate::error::GolishError;
 use crate::state::AppState;
 use tauri::State;
 
@@ -10,24 +11,24 @@ use super::super::session::SessionMeta;
 pub async fn sidecar_start_session(
     state: State<'_, AppState>,
     initial_request: String,
-) -> Result<String, String> {
+) -> Result<String, GolishError> {
     state
         .sidecar_state
         .start_session(&initial_request)
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }
 
 /// End the current session
 #[tauri::command]
 pub async fn sidecar_end_session(
     state: State<'_, AppState>,
-) -> Result<Option<SessionMeta>, String> {
-    state.sidecar_state.end_session().map_err(|e| e.to_string())
+) -> Result<Option<SessionMeta>, GolishError> {
+    state.sidecar_state.end_session().map_err(GolishError::from)
 }
 
 /// Get the current session ID
 #[tauri::command]
-pub async fn sidecar_current_session(state: State<'_, AppState>) -> Result<Option<String>, String> {
+pub async fn sidecar_current_session(state: State<'_, AppState>) -> Result<Option<String>, GolishError> {
     Ok(state.sidecar_state.current_session_id())
 }
 
@@ -39,9 +40,9 @@ pub async fn sidecar_current_session(state: State<'_, AppState>) -> Result<Optio
 pub async fn sidecar_resume_session(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<SessionMeta, String> {
+) -> Result<SessionMeta, GolishError> {
     state
         .sidecar_state
         .resume_session(&session_id)
-        .map_err(|e| e.to_string())
+        .map_err(GolishError::from)
 }

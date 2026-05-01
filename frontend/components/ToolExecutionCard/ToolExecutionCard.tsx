@@ -1,9 +1,4 @@
-import {
-  ChevronDown,
-  ChevronRight,
-  ChevronsUpDown,
-  Loader2,
-} from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronsUpDown, Loader2 } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { AnchorChip } from "@/components/ui/AnchorChip";
 import { Badge } from "@/components/ui/badge";
@@ -54,7 +49,7 @@ function formatGenericResult(result: unknown): string | null {
   if (!obj) return null;
 
   const textKey = ["response", "output", "message", "content", "text"].find(
-    (k) => typeof obj![k] === "string" && (obj![k] as string).length > 0
+    (k) => typeof obj?.[k] === "string" && (obj?.[k] as string).length > 0
   );
   if (textKey) {
     const mainText = unescapeNewlines(obj[textKey] as string);
@@ -62,8 +57,8 @@ function formatGenericResult(result: unknown): string | null {
     if (otherKeys.length === 0) return mainText;
 
     const meta = otherKeys
-      .filter((k) => obj![k] != null && typeof obj![k] !== "object")
-      .map((k) => `${k}: ${String(obj![k])}`)
+      .filter((k) => obj?.[k] != null && typeof obj?.[k] !== "object")
+      .map((k) => `${k}: ${String(obj?.[k])}`)
       .join("  |  ");
 
     return meta ? `${meta}\n\n${mainText}` : mainText;
@@ -107,7 +102,6 @@ function parseShellResult(result: unknown): ShellResult | null {
   return null;
 }
 
-
 const PREVIEW_LIMIT = 2000;
 
 function OutputBlock({ text, isShellCommand }: { text: string; isShellCommand: boolean }) {
@@ -122,9 +116,7 @@ function OutputBlock({ text, isShellCommand }: { text: string; isShellCommand: b
         className={cn(
           "overflow-auto whitespace-pre-wrap rounded px-2 py-1.5 text-[10px] font-mono leading-relaxed",
           expanded ? "max-h-[80vh]" : "max-h-48",
-          isShellCommand
-            ? "bg-[var(--ansi-black)]/20 text-foreground/80"
-            : "bg-muted px-2 py-1",
+          isShellCommand ? "bg-[var(--ansi-black)]/20 text-foreground/80" : "bg-muted px-2 py-1"
         )}
       >
         {display}
@@ -206,9 +198,9 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
               "mt-1 mb-1.5 rounded-lg border bg-card",
               execution.status === "running"
                 ? "border-l-2 animate-[pulse-border_2s_ease-in-out_infinite]"
-                : "border border-border",
+                : "border border-border"
             ),
-        highlighted && "ring-1 ring-accent/50 bg-accent/5",
+        highlighted && "ring-1 ring-accent/50 bg-accent/5"
       )}
       style={
         !compact && execution.status === "running"
@@ -223,15 +215,27 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
         <div className={cn("flex items-center gap-2", compact ? "px-1 py-1" : "px-3 py-2")}>
           <CollapsibleTrigger className="flex flex-1 items-center gap-2 hover:bg-accent/30 rounded -ml-1 pl-1 py-0.5 min-w-0">
             {isExpanded ? (
-              <ChevronDown className={cn("text-muted-foreground flex-shrink-0", compact ? "h-3 w-3" : "h-3.5 w-3.5")} />
+              <ChevronDown
+                className={cn(
+                  "text-muted-foreground flex-shrink-0",
+                  compact ? "h-3 w-3" : "h-3.5 w-3.5"
+                )}
+              />
             ) : (
-              <ChevronRight className={cn("text-muted-foreground flex-shrink-0", compact ? "h-3 w-3" : "h-3.5 w-3.5")} />
+              <ChevronRight
+                className={cn(
+                  "text-muted-foreground flex-shrink-0",
+                  compact ? "h-3 w-3" : "h-3.5 w-3.5"
+                )}
+              />
             )}
             <ToolIcon
               className={cn("flex-shrink-0", compact ? "h-3.5 w-3.5" : "h-4 w-4")}
               style={{ color: toolColor }}
             />
-            <span className={cn("font-medium truncate", compact ? "text-xs" : "text-sm")}>{toolLabel}</span>
+            <span className={cn("font-medium truncate", compact ? "text-xs" : "text-sm")}>
+              {toolLabel}
+            </span>
             <AnchorChip sessionId={sessionId} requestId={execution.requestId} />
 
             {execution.status === "running" && !compact && (
@@ -265,12 +269,10 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
                 "text-xs font-mono truncate px-2 py-1 rounded",
                 isShellCommand
                   ? "bg-[var(--ansi-black)]/30 text-[var(--ansi-green)]/90"
-                  : "bg-muted/30 text-muted-foreground",
+                  : "bg-muted/30 text-muted-foreground"
               )}
             >
-              {isShellCommand && (
-                <span className="text-muted-foreground/50 mr-1">$</span>
-              )}
+              {isShellCommand && <span className="text-muted-foreground/50 mr-1">$</span>}
               {primary}
             </div>
           </div>
@@ -284,12 +286,10 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
                 "text-xs font-mono px-2 py-1.5 rounded mb-1.5",
                 isShellCommand
                   ? "bg-[var(--ansi-black)]/30 text-[var(--ansi-green)]/90"
-                  : "bg-muted/30 text-muted-foreground",
+                  : "bg-muted/30 text-muted-foreground"
               )}
             >
-              {isShellCommand && (
-                <span className="text-muted-foreground/50 mr-1">$</span>
-              )}
+              {isShellCommand && <span className="text-muted-foreground/50 mr-1">$</span>}
               <span className="whitespace-pre-wrap break-all">{primary}</span>
             </div>
           )}
@@ -314,20 +314,13 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
           )}
 
           {/* Streaming output / result */}
-          {outputPreview && (
-            <OutputBlock
-              text={outputPreview}
-              isShellCommand={isShellCommand}
-            />
-          )}
+          {outputPreview && <OutputBlock text={outputPreview} isShellCommand={isShellCommand} />}
 
           {/* Error display */}
           {execution.status === "error" && resultText && (
             <div className="mt-1.5 rounded bg-[var(--ansi-red)]/10 px-2 py-1.5 text-xs text-[var(--ansi-red)]">
               <span className="font-medium">Error: </span>
-              {resultText.length > 500
-                ? `${resultText.slice(0, 500)}...`
-                : resultText}
+              {resultText.length > 500 ? `${resultText.slice(0, 500)}...` : resultText}
             </div>
           )}
         </CollapsibleContent>

@@ -1,13 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import {
-  Bot,
-  Globe,
-  Home,
-  Plus,
-  Settings,
-  Shield,
-  Terminal,
-} from "lucide-react";
+import { Bot, Globe, Home, Plus, Settings, Shield, Terminal } from "lucide-react";
 import React from "react";
 import { createPortal } from "react-dom";
 import { TerminalRecordingControls } from "@/components/Terminal/TerminalRecordingControls";
@@ -16,12 +8,11 @@ import { Tabs, TabsList } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
 import { logger } from "@/lib/logger";
-import { cn } from "@/lib/utils";
 import { closeTabAndCleanup, useStore } from "@/store";
 import { type TabItemState, useTabBarState } from "@/store/selectors/tab-bar";
 import { selectDisplaySettings } from "@/store/slices";
-import { TabItem } from "./TabItem";
 import { ConvertToPaneModal } from "./ConvertToPaneModal";
+import { TabItem } from "./TabItem";
 
 const startDrag = async (e: React.MouseEvent) => {
   e.preventDefault();
@@ -173,7 +164,7 @@ export const TabBar = React.memo(function TabBar({
       el.removeEventListener("scroll", updateScrollThumb);
       observer.disconnect();
     };
-  }, [updateScrollThumb, tabs.length]);
+  }, [updateScrollThumb]);
 
   React.useEffect(() => {
     const el = tabScrollRef.current;

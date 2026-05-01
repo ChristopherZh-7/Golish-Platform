@@ -26,9 +26,7 @@ export function ContextBar({ sessionId }: ContextBarProps) {
 
   return (
     <div>
-      <div
-        className="flex items-center gap-2 px-3 py-1"
-      >
+      <div className="flex items-center gap-2 px-3 py-1">
         {/* Path badge - Warp style */}
         {pathVisible && (
           <div

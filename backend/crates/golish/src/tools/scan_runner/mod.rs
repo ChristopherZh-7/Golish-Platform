@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use golish_scan_runner as runner;
 use uuid::Uuid;
 
+use crate::error::GolishError;
 use crate::event_emitter::TauriEventEmitter;
 use crate::state::DbState;
 
@@ -51,7 +52,7 @@ impl runner::ScanStorage for MainScanStorage {
 }
 
 #[tauri::command]
-pub async fn nuclei_cancel() -> Result<(), String> {
+pub async fn nuclei_cancel() -> Result<(), GolishError> {
     runner::NUCLEI_CANCELLED.store(true, Ordering::SeqCst);
     Ok(())
 }
@@ -64,32 +65,21 @@ pub async fn scan_whatweb(
     target_id: String,
     project_path: Option<String>,
     options: Option<WhatWebOptions>,
-) -> Result<ScanResult, String> {
+) -> Result<ScanResult, GolishError> {
     let pool = state.pool_ready().await?;
-    let tid = Uuid::parse_str(&target_id).map_err(|e| e.to_string())?;
+    let tid = Uuid::parse_str(&target_id).map_err(|e| GolishError::Validation(e.to_string()))?;
     let emitter = TauriEventEmitter::handle(app);
-    runner::run_whatweb(
-        pool,
-        Some(&emitter),
-        &target_url,
-        tid,
-        project_path.as_deref(),
-        options,
-    )
-    .await
-    .map_err(|e| e.to_string())
+    Ok(runner::run_whatweb(pool, Some(&emitter), &target_url, tid, project_path.as_deref(), options).await?)
 }
 
 #[tauri::command]
 pub async fn match_pocs_for_target(
     state: tauri::State<'_, DbState>,
     target_id: String,
-) -> Result<Vec<PocMatch>, String> {
+) -> Result<Vec<PocMatch>, GolishError> {
     let pool = state.pool_ready().await?;
-    let tid = Uuid::parse_str(&target_id).map_err(|e| e.to_string())?;
-    runner::match_pocs_for_target(pool, tid)
-        .await
-        .map_err(|e| e.to_string())
+    let tid = Uuid::parse_str(&target_id).map_err(|e| GolishError::Validation(e.to_string()))?;
+    Ok(runner::match_pocs_for_target(pool, tid).await?)
 }
 
 #[tauri::command]
@@ -102,22 +92,11 @@ pub async fn scan_nuclei_targeted(
     template_ids: Vec<String>,
     severity_filter: Option<Vec<String>>,
     options: Option<NucleiScanOptions>,
-) -> Result<ScanResult, String> {
+) -> Result<ScanResult, GolishError> {
     let pool = state.pool_ready().await?;
-    let tid = Uuid::parse_str(&target_id).map_err(|e| e.to_string())?;
+    let tid = Uuid::parse_str(&target_id).map_err(|e| GolishError::Validation(e.to_string()))?;
     let emitter = TauriEventEmitter::handle(app);
-    runner::run_nuclei_targeted(
-        pool,
-        Some(&emitter),
-        &target_url,
-        tid,
-        project_path.as_deref(),
-        &template_ids,
-        severity_filter.as_deref(),
-        options,
-    )
-    .await
-    .map_err(|e| e.to_string())
+    Ok(runner::run_nuclei_targeted(pool, Some(&emitter), &target_url, tid, project_path.as_deref(), &template_ids, severity_filter.as_deref(), options).await?)
 }
 
 #[tauri::command]
@@ -129,31 +108,18 @@ pub async fn scan_feroxbuster(
     project_path: Option<String>,
     base_paths: Vec<String>,
     options: Option<FeroxScanOptions>,
-) -> Result<ScanResult, String> {
+) -> Result<ScanResult, GolishError> {
     let pool = state.pool_ready().await?;
-    let tid = Uuid::parse_str(&target_id).map_err(|e| e.to_string())?;
+    let tid = Uuid::parse_str(&target_id).map_err(|e| GolishError::Validation(e.to_string()))?;
     let emitter = TauriEventEmitter::handle(app);
-    runner::run_feroxbuster(
-        pool,
-        &MainScanStorage,
-        Some(&emitter),
-        &target_url,
-        tid,
-        project_path.as_deref(),
-        &base_paths,
-        options,
-    )
-    .await
-    .map_err(|e| e.to_string())
+    Ok(runner::run_feroxbuster(pool, &MainScanStorage, Some(&emitter), &target_url, tid, project_path.as_deref(), &base_paths, options).await?)
 }
 
 #[tauri::command]
 pub async fn get_zap_discovered_paths(
     state: tauri::State<'_, DbState>,
     target_host: String,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, GolishError> {
     let pool = state.pool_ready().await?;
-    runner::get_zap_discovered_paths(pool, &target_host)
-        .await
-        .map_err(|e| e.to_string())
+    Ok(runner::get_zap_discovered_paths(pool, &target_host).await?)
 }

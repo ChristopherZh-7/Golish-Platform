@@ -43,9 +43,15 @@ export function useToolSearch(query: string, enabled: boolean) {
       .slice(0, 12);
   }, [allTools, query, enabled, loaded]);
 
-  return { matches, allTools, reload: () => {
-    scanTools()
-      .then((r) => { if (r.success) setAllTools(r.tools); })
-      .catch(() => {});
-  }};
+  return {
+    matches,
+    allTools,
+    reload: () => {
+      scanTools()
+        .then((r) => {
+          if (r.success) setAllTools(r.tools);
+        })
+        .catch(() => {});
+    },
+  };
 }

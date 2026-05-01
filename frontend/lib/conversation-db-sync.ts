@@ -6,21 +6,21 @@
  */
 
 import { listen } from "@tauri-apps/api/event";
-import { logger } from "@/lib/logger";
 import {
+  type ChatMessageRow,
+  type ConvBatchItem,
   convList,
   convLoadMessages,
   convLoadPreferences,
   convLoadTerminalStates,
   convLoadTimeline,
   convSaveBatch,
-  type ChatMessageRow,
-  type ConvBatchItem,
   type TimelineBlockRow,
 } from "@/lib/conversation-db";
+import { logger } from "@/lib/logger";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
-import type { ChatConversation, ChatMessage, ChatToolCall } from "@/store/slices/conversation";
 import type { Session, UnifiedBlock } from "@/store";
+import type { ChatConversation, ChatMessage, ChatToolCall } from "@/store/slices/conversation";
 
 /** Normalize a project path for consistent DB lookups (strip trailing slash, resolve ~). */
 function normalizePath(p: string): string {
@@ -51,13 +51,17 @@ export function flushDbSave(): Promise<void> {
 }
 
 let _dbLoadOk = false;
-export function markDbLoadSucceeded() { _dbLoadOk = true; }
-export function isDbLoadOk() { return _dbLoadOk; }
+export function markDbLoadSucceeded() {
+  _dbLoadOk = true;
+}
+export function isDbLoadOk() {
+  return _dbLoadOk;
+}
 
 async function withRetry<T>(
   fn: () => Promise<T>,
   retries = SAVE_MAX_RETRIES,
-  baseDelay = SAVE_RETRY_BASE_MS,
+  baseDelay = SAVE_RETRY_BASE_MS
 ): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -182,9 +186,7 @@ function dbMsgToChatMessage(row: ChatMessageRow): ChatMessage {
     timestamp: row.createdAt,
     thinking: row.thinking ?? undefined,
     error: row.error ?? undefined,
-    toolCalls: row.toolCalls
-      ? (row.toolCalls as ChatToolCall[])
-      : undefined,
+    toolCalls: row.toolCalls ? (row.toolCalls as ChatToolCall[]) : undefined,
     toolCallsContentOffset: row.toolCallsContentOffset ?? undefined,
     toolCallOffsets: row.toolCallOffsets ?? undefined,
   };
@@ -193,7 +195,7 @@ function dbMsgToChatMessage(row: ChatMessageRow): ChatMessage {
 function chatMessageToDbRow(
   msg: ChatMessage,
   conversationId: string,
-  sortOrder: number,
+  sortOrder: number
 ): ChatMessageRow {
   return {
     id: msg.id,
@@ -226,7 +228,8 @@ function dbBlockToUnifiedBlock(row: TimelineBlockRow): UnifiedBlock {
   // Restore planStepIndex from data where it was embedded during save
   if (
     (row.blockType === "pipeline_progress" || row.blockType === "sub_agent_activity") &&
-    data && typeof data === "object"
+    data &&
+    typeof data === "object"
   ) {
     const d = data as Record<string, unknown>;
     const stored = d.__planStepIndex as number | undefined;
@@ -254,9 +257,7 @@ function dbBlockToUnifiedBlock(row: TimelineBlockRow): UnifiedBlock {
  * Individual conversation load failures are tolerated — only that
  * conversation is skipped rather than failing the entire load.
  */
-export async function loadFromDb(
-  projectPath: string,
-): Promise<LoadedWorkspaceState | null> {
+export async function loadFromDb(projectPath: string): Promise<LoadedWorkspaceState | null> {
   const normalized = normalizePath(projectPath);
   try {
     console.log("[ConvDbSync] Loading from DB for project:", normalized);
@@ -279,9 +280,7 @@ export async function loadFromDb(
           convLoadTerminalStates(convRow.id),
         ]);
 
-        const messages = msgRows
-          .sort((a, b) => a.sortOrder - b.sortOrder)
-          .map(dbMsgToChatMessage);
+        const messages = msgRows.sort((a, b) => a.sortOrder - b.sortOrder).map(dbMsgToChatMessage);
 
         const conv: ChatConversation = {
           id: convRow.id,
@@ -313,15 +312,15 @@ export async function loadFromDb(
                 retiredPlansJson: ts.retiredPlansJson ?? null,
                 planMessageId: ts.planMessageId ?? null,
               } satisfies LoadedTerminalData;
-            }),
+            })
           );
           terminals = termResults.flatMap((result) =>
-            result.status === "fulfilled" ? [result.value as LoadedTerminalData] : [],
+            result.status === "fulfilled" ? [result.value as LoadedTerminalData] : []
           );
         }
 
         return { conv, terminals };
-      }),
+      })
     );
 
     const conversations: ChatConversation[] = [];
@@ -344,15 +343,20 @@ export async function loadFromDb(
       messages: conversations.reduce((sum, c) => sum + c.messages.length, 0),
       terminalDataKeys: Object.keys(terminalData),
       terminalBlockCounts: Object.fromEntries(
-        Object.entries(terminalData).map(([k, v]) => [k, v.map((t) => ({ sessionId: t.sessionId, blocks: t.timelineBlocks.length, scrollback: t.scrollback.length }))])
+        Object.entries(terminalData).map(([k, v]) => [
+          k,
+          v.map((t) => ({
+            sessionId: t.sessionId,
+            blocks: t.timelineBlocks.length,
+            scrollback: t.scrollback.length,
+          })),
+        ])
       ),
     });
 
     return {
       conversations,
-      conversationOrder: conversationOrder.filter((id) =>
-        conversations.some((c) => c.id === id),
-      ),
+      conversationOrder: conversationOrder.filter((id) => conversations.some((c) => c.id === id)),
       activeConversationId: prefs?.activeConversationId ?? null,
       terminalData,
       aiModel: prefs?.aiModel as LoadedWorkspaceState["aiModel"],
@@ -375,7 +379,7 @@ function convFingerprint(
   termIds: string[],
   timelines: Record<string, UnifiedBlock[]>,
   sessions: Record<string, Session>,
-  sortOrder: number,
+  sortOrder: number
 ): string {
   let h = 5381;
   const feed = (s: string) => {
@@ -421,7 +425,7 @@ function convFingerprint(
 function buildTimelineDbBlocks(
   timeline: UnifiedBlock[],
   sessionId: string,
-  conversationId: string,
+  conversationId: string
 ): TimelineBlockRow[] {
   return timeline.map((block, idx) => {
     let data = block.data as Record<string, unknown>;
@@ -488,7 +492,7 @@ async function saveConversationsToDb(
   projectPath: string,
   activeConversationId: string | null,
   aiModel: { model: string; provider: string } | null,
-  approvalMode: string,
+  approvalMode: string
 ): Promise<void> {
   const normalized = normalizePath(projectPath);
   const convIds = conversationOrder.filter((id) => conversations[id]);
@@ -581,7 +585,7 @@ async function saveConversationsToDb(
         approvalMode: approvalMode || null,
         approvalPatterns: null,
       },
-    }),
+    })
   );
 
   for (const item of batchItems) {
@@ -613,7 +617,7 @@ export function createDbAutoSaver(
     approvalMode: string;
     terminalRestoreInProgress: boolean;
     pendingTerminalRestoreData: unknown | null;
-  },
+  }
 ): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let saving = false;
@@ -644,7 +648,7 @@ export function createDbAutoSaver(
         projectPath,
         state.activeConversationId,
         state.selectedAiModel,
-        state.approvalMode,
+        state.approvalMode
       );
     } catch (e) {
       console.error("[ConvDbSync] Save FAILED:", e);
@@ -690,7 +694,11 @@ export function createDbAutoSaver(
 
   // Rust-side emits "flush-state" before the window is destroyed (300ms grace period).
   let unlistenFlush: (() => void) | null = null;
-  listen("flush-state", () => flushNow()).then((fn) => { unlistenFlush = fn; }).catch(() => {});
+  listen("flush-state", () => flushNow())
+    .then((fn) => {
+      unlistenFlush = fn;
+    })
+    .catch(() => {});
 
   window.addEventListener("beforeunload", flushNow as EventListener);
 

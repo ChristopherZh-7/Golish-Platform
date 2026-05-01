@@ -43,7 +43,7 @@ impl SynthesisInput {
     }
 
     /// Format files list for prompt
-    fn format_files(&self) -> String {
+    pub(crate) fn format_files(&self) -> String {
         self.files
             .iter()
             .map(|p| format!("- {}", p.display()))

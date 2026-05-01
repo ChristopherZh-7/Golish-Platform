@@ -1,19 +1,27 @@
-import { useCallback, useEffect, useState } from "react";
-import { invoke, vulnLinks } from "@/lib/api";
 import {
-  AlertTriangle, BookOpen, Bot, Code, History, Loader2, MessageSquare, Shield, X,
+  AlertTriangle,
+  BookOpen,
+  Bot,
+  Code,
+  History,
+  Loader2,
+  MessageSquare,
+  Shield,
+  X,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
-import type { VulnEntry, VulnLink, DetailTab, DbVulnLinkFull } from "./types";
-import { SEV_COLORS, SEV_DOT, dbToVulnLink } from "./types";
-import { useStore } from "@/store";
-import { initAiSession, buildProviderConfig, sendPromptSession, type AiProvider } from "@/lib/ai";
+import { useCallback, useEffect, useState } from "react";
+import { type AiProvider, buildProviderConfig, initAiSession, sendPromptSession } from "@/lib/ai";
+import { invoke, vulnLinks } from "@/lib/api";
 import { getSettings } from "@/lib/settings";
-import { IntelTab } from "./IntelTab";
-import { ResearchTab } from "./ResearchTab";
-import { WikiTab } from "./WikiTab";
-import { PocTab } from "./PocTab";
+import { cn } from "@/lib/utils";
+import { useStore } from "@/store";
 import { HistoryTab } from "./HistoryTab";
+import { IntelTab } from "./IntelTab";
+import { PocTab } from "./PocTab";
+import { ResearchTab } from "./ResearchTab";
+import type { DbVulnLinkFull, DetailTab, VulnEntry, VulnLink } from "./types";
+import { dbToVulnLink, SEV_COLORS, SEV_DOT } from "./types";
+import { WikiTab } from "./WikiTab";
 
 export function VulnDetailView({
   entry,
@@ -51,14 +59,20 @@ export function VulnDetailView({
       .then((dbLink) => {
         if (stale) return;
         const freshLink = dbToVulnLink(dbLink);
-        if (freshLink.wikiPaths.length > 0 || freshLink.pocTemplates.length > 0 || freshLink.scanHistory.length > 0) {
+        if (
+          freshLink.wikiPaths.length > 0 ||
+          freshLink.pocTemplates.length > 0 ||
+          freshLink.scanHistory.length > 0
+        ) {
           onUpdateLink(() => freshLink);
         }
       })
       .catch(() => {});
-    return () => { stale = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- onUpdateLink is stable (useCallback), only re-run on cve_id change
-  }, [entry.cve_id]);
+    return () => {
+      stale = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- onUpdateLink is stable (useCallback), only re-run on cve_id change
+  }, [entry.cve_id, onUpdateLink]);
 
   const handleAiResearch = useCallback(async () => {
     setIngesting(true);
@@ -83,7 +97,8 @@ export function VulnDetailView({
       );
 
       const settings = await getSettings();
-      const researchProvider = (settings.ai.research_provider ?? settings.ai.default_provider) as AiProvider;
+      const researchProvider = (settings.ai.research_provider ??
+        settings.ai.default_provider) as AiProvider;
       const researchModel = settings.ai.research_model ?? settings.ai.default_model;
 
       const config = await buildProviderConfig(settings, workspace, {
@@ -100,9 +115,10 @@ export function VulnDetailView({
       setResearchSessionId(sessionId);
       onTabChange("research");
 
-      const product = entry.affected_products?.length > 0
-        ? entry.affected_products.join(", ")
-        : "unknown product";
+      const product =
+        entry.affected_products?.length > 0
+          ? entry.affected_products.join(", ")
+          : "unknown product";
 
       const slug = product.split(",")[0].trim().toLowerCase().replace(/\s+/g, "-");
       const prompt = `# Vulnerability Knowledge Base — Ingest Guide
@@ -202,7 +218,9 @@ Update the product page frontmatter \`status\`:
       const expectedPath = `products/${slug}/${entry.cve_id}.md`;
       onUpdateLink((l) => ({
         ...l,
-        wikiPaths: l.wikiPaths.includes(expectedPath) ? l.wikiPaths : [...l.wikiPaths, expectedPath],
+        wikiPaths: l.wikiPaths.includes(expectedPath)
+          ? l.wikiPaths
+          : [...l.wikiPaths, expectedPath],
       }));
       vulnLinks.addWikiLink(entry.cve_id, expectedPath).catch(console.error);
     } catch (e) {
@@ -212,15 +230,25 @@ Update the product page frontmatter \`status\`:
     } finally {
       setIngesting(false);
     }
-  }, [entry, onTabChange]);
+  }, [entry, onTabChange, onUpdateLink]);
 
   return (
     <>
       {/* Detail header */}
       <div className="flex items-center gap-2 px-4 py-2 border-b border-border/10 flex-shrink-0">
-        <span className={cn("w-2 h-2 rounded-full flex-shrink-0", SEV_DOT[entry.severity] || "bg-slate-500")} />
+        <span
+          className={cn(
+            "w-2 h-2 rounded-full flex-shrink-0",
+            SEV_DOT[entry.severity] || "bg-slate-500"
+          )}
+        />
         <span className="text-[12px] font-mono font-semibold text-accent">{entry.cve_id}</span>
-        <span className={cn("text-[9px] px-2 py-0.5 rounded-full border capitalize", SEV_COLORS[entry.severity] || SEV_COLORS.info)}>
+        <span
+          className={cn(
+            "text-[9px] px-2 py-0.5 rounded-full border capitalize",
+            SEV_COLORS[entry.severity] || SEV_COLORS.info
+          )}
+        >
           {entry.severity}
           {entry.cvss_score != null && ` ${entry.cvss_score}`}
         </span>
@@ -232,7 +260,11 @@ Update the product page frontmatter \`status\`:
             className="flex items-center gap-1 px-2.5 py-1 rounded text-[10px] font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors disabled:opacity-50"
             title="AI researches this CVE: searches web, writes wiki page with exploit details, PoCs, and analysis"
           >
-            {ingesting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Bot className="w-3.5 h-3.5" />}
+            {ingesting ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Bot className="w-3.5 h-3.5" />
+            )}
             AI Research
           </button>
         </div>
@@ -242,7 +274,10 @@ Update the product page frontmatter \`status\`:
         <div className="flex items-center gap-2 px-4 py-2 bg-red-500/10 border-b border-red-500/20">
           <AlertTriangle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
           <span className="text-[10px] text-red-400 flex-1">{researchError}</span>
-          <button onClick={() => setResearchError(null)} className="text-red-400/50 hover:text-red-400">
+          <button
+            onClick={() => setResearchError(null)}
+            className="text-red-400/50 hover:text-red-400"
+          >
             <X className="w-3 h-3" />
           </button>
         </div>
@@ -250,19 +285,35 @@ Update the product page frontmatter \`status\`:
 
       {/* Detail tabs */}
       <div className="flex items-center gap-0.5 px-3 py-1.5 border-b border-border/10 bg-muted/3 flex-shrink-0">
-        {([
+        {[
           { id: "intel" as const, icon: Shield, label: "Intel" },
-          { id: "wiki" as const, icon: BookOpen, label: `Wiki${link.wikiPaths.length > 0 ? ` (${link.wikiPaths.length})` : ""}` },
-          { id: "poc" as const, icon: Code, label: `PoC${link.pocTemplates.length > 0 ? ` (${link.pocTemplates.length})` : ""}` },
-          { id: "history" as const, icon: History, label: `History${link.scanHistory.length > 0 ? ` (${link.scanHistory.length})` : ""}` },
-          ...(researchSessionId || hasResearchHistory ? [{ id: "research" as const, icon: MessageSquare, label: "Research" }] : []),
-        ]).map((tab) => (
+          {
+            id: "wiki" as const,
+            icon: BookOpen,
+            label: `Wiki${link.wikiPaths.length > 0 ? ` (${link.wikiPaths.length})` : ""}`,
+          },
+          {
+            id: "poc" as const,
+            icon: Code,
+            label: `PoC${link.pocTemplates.length > 0 ? ` (${link.pocTemplates.length})` : ""}`,
+          },
+          {
+            id: "history" as const,
+            icon: History,
+            label: `History${link.scanHistory.length > 0 ? ` (${link.scanHistory.length})` : ""}`,
+          },
+          ...(researchSessionId || hasResearchHistory
+            ? [{ id: "research" as const, icon: MessageSquare, label: "Research" }]
+            : []),
+        ].map((tab) => (
           <button
             key={tab.id}
             onClick={() => onTabChange(tab.id)}
             className={cn(
               "flex items-center gap-1 px-2.5 py-1 rounded text-[10px] transition-colors",
-              detailTab === tab.id ? "bg-accent/15 text-accent" : "text-muted-foreground/40 hover:text-foreground"
+              detailTab === tab.id
+                ? "bg-accent/15 text-accent"
+                : "text-muted-foreground/40 hover:text-foreground"
             )}
           >
             <tab.icon className="w-3 h-3" />
@@ -272,17 +323,24 @@ Update the product page frontmatter \`status\`:
       </div>
 
       {/* Detail content */}
-      <div className={cn(
-        "flex-1 min-h-0",
-        detailTab === "wiki" ? "overflow-hidden" : "overflow-y-auto px-4 py-3"
-      )}>
+      <div
+        className={cn(
+          "flex-1 min-h-0",
+          detailTab === "wiki" ? "overflow-hidden" : "overflow-y-auto px-4 py-3"
+        )}
+      >
         {detailTab === "intel" && <IntelTab entry={entry} />}
-        {detailTab === "wiki" && <WikiTab link={link} cveId={entry.cve_id} onUpdateLink={onUpdateLink} />}
-        {detailTab === "poc" && <PocTab link={link} cveId={entry.cve_id} onUpdateLink={onUpdateLink} />}
+        {detailTab === "wiki" && (
+          <WikiTab link={link} cveId={entry.cve_id} onUpdateLink={onUpdateLink} />
+        )}
+        {detailTab === "poc" && (
+          <PocTab link={link} cveId={entry.cve_id} onUpdateLink={onUpdateLink} />
+        )}
         {detailTab === "history" && <HistoryTab link={link} />}
-        {detailTab === "research" && <ResearchTab sessionId={researchSessionId} cveId={entry.cve_id} />}
+        {detailTab === "research" && (
+          <ResearchTab sessionId={researchSessionId} cveId={entry.cve_id} />
+        )}
       </div>
     </>
   );
 }
-

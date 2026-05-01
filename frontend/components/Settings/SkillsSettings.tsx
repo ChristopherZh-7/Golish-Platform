@@ -1,4 +1,3 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   BookOpen,
   ChevronDown,
@@ -12,18 +11,13 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Markdown } from "@/components/Markdown/Markdown";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
-import {
-  type SkillInfo,
-  deleteSkill,
-  listSkills,
-  readSkillBody,
-  saveSkill,
-} from "@/lib/ai";
+import { deleteSkill, listSkills, readSkillBody, type SkillInfo, saveSkill } from "@/lib/ai";
 import { notify } from "@/lib/notify";
 
 interface EditingSkill {
@@ -207,9 +201,7 @@ export function SkillsSettings() {
               placeholder="my-skill"
               className="bg-background border-border text-foreground h-9 font-mono text-xs"
             />
-            <p className="text-[10px] text-muted-foreground">
-              Lowercase, hyphens, numbers only
-            </p>
+            <p className="text-[10px] text-muted-foreground">Lowercase, hyphens, numbers only</p>
           </div>
           <div className="space-y-1">
             <label className="text-xs text-muted-foreground">Scope</label>
@@ -238,9 +230,7 @@ export function SkillsSettings() {
           <label className="text-xs text-muted-foreground">Description</label>
           <Input
             value={editingSkill.description}
-            onChange={(e) =>
-              setEditingSkill({ ...editingSkill, description: e.target.value })
-            }
+            onChange={(e) => setEditingSkill({ ...editingSkill, description: e.target.value })}
             placeholder="What this skill teaches the agent..."
             className="bg-background border-border text-foreground h-9"
           />
@@ -250,15 +240,13 @@ export function SkillsSettings() {
           <label className="text-xs text-muted-foreground">Instructions (Markdown)</label>
           <Textarea
             value={editingSkill.body}
-            onChange={(e) =>
-              setEditingSkill({ ...editingSkill, body: e.target.value })
-            }
+            onChange={(e) => setEditingSkill({ ...editingSkill, body: e.target.value })}
             placeholder="You are an expert in..."
             className="bg-background border-border text-foreground font-mono text-xs min-h-[300px] resize-y"
           />
           <p className="text-[10px] text-muted-foreground">
-            {editingSkill.body.length} characters - This content is injected into the agent
-            prompt when the skill is matched.
+            {editingSkill.body.length} characters - This content is injected into the agent prompt
+            when the skill is matched.
           </p>
         </div>
       </div>
@@ -299,7 +287,9 @@ export function SkillsSettings() {
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium text-foreground font-mono">{skill.name}</span>
               {skill.has_scripts && (
-                <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4">scripts</Badge>
+                <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4">
+                  scripts
+                </Badge>
               )}
             </div>
             <p className="text-xs text-muted-foreground truncate">{skill.description}</p>
@@ -322,7 +312,13 @@ export function SkillsSettings() {
             {skill.allowed_tools && skill.allowed_tools.length > 0 && (
               <div className="flex flex-wrap gap-1">
                 {skill.allowed_tools.map((tool) => (
-                  <Badge key={tool} variant="secondary" className="text-[10px] font-mono px-1.5 py-0">{tool}</Badge>
+                  <Badge
+                    key={tool}
+                    variant="secondary"
+                    className="text-[10px] font-mono px-1.5 py-0"
+                  >
+                    {tool}
+                  </Badge>
                 ))}
               </div>
             )}
@@ -332,7 +328,12 @@ export function SkillsSettings() {
             </p>
 
             <div className="flex gap-2 pt-1">
-              <Button variant="outline" size="sm" onClick={() => startEditing(skill)} className="h-7 text-xs">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => startEditing(skill)}
+                className="h-7 text-xs"
+              >
                 <Edit3 className="w-3 h-3 mr-1" /> Edit
               </Button>
               <Button
@@ -400,7 +401,8 @@ export function SkillsSettings() {
           {projectSkills.map(renderSkillCard)}
           {projectSkills.length === 0 && (
             <p className="text-xs text-muted-foreground italic py-3 text-center">
-              No project-specific skills. These are stored in your project&apos;s <code>.golish/skills/</code> directory.
+              No project-specific skills. These are stored in your project&apos;s{" "}
+              <code>.golish/skills/</code> directory.
             </p>
           )}
         </div>
@@ -408,9 +410,9 @@ export function SkillsSettings() {
 
       <div className="text-xs text-muted-foreground border-t border-[var(--border-medium)] pt-4">
         <p>
-          <strong>Global</strong> skills are available across all projects.{" "}
-          <strong>Project</strong> skills override global ones with the same name.
-          Skills are matched by keywords and injected into agent prompts.
+          <strong>Global</strong> skills are available across all projects. <strong>Project</strong>{" "}
+          skills override global ones with the same name. Skills are matched by keywords and
+          injected into agent prompts.
         </p>
       </div>
     </div>

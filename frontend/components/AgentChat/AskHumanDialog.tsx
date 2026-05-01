@@ -1,4 +1,4 @@
-import { HelpCircle, KeyRound, List, MessageSquare, ShieldQuestion } from "lucide-react";
+import { type HelpCircle, KeyRound, List, MessageSquare, ShieldQuestion } from "lucide-react";
 import { useCallback, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -81,7 +81,16 @@ export function AskHumanDialog({ sessionId }: AskHumanDialogProps) {
       logger.error("Failed to respond to ask_human:", err);
       setIsSubmitting(false);
     }
-  }, [request, sessionId, username, password, freetext, selectedOptions, clearPendingAskHuman, resetForm]);
+  }, [
+    request,
+    sessionId,
+    username,
+    password,
+    freetext,
+    selectedOptions,
+    clearPendingAskHuman,
+    resetForm,
+  ]);
 
   const handleSkip = useCallback(async () => {
     if (!request) return;
@@ -91,7 +100,7 @@ export function AskHumanDialog({ sessionId }: AskHumanDialogProps) {
       await respondToToolApproval(sessionId, {
         request_id: request.requestId,
         approved: false,
-        reason: undefined,
+        reason: null,
         remember: false,
         always_allow: false,
       });
