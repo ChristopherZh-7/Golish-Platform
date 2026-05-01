@@ -1,103 +1,81 @@
-//! AI Agent Orchestration for Golish
+//! Backward-compatibility umbrella crate.
 //!
-//! This crate provides the core AI agent system including:
-//! - Agent bridge and lifecycle management
-//! - Agentic loop execution
-//! - Context management and pruning
-//! - Token budget management
-//! - Tool execution and policy enforcement
-//! - HITL (Human-in-the-Loop) approval system
-//! - Loop detection and protection
-//! - Sub-agent execution
-//! - Memory tools (search, store, list long-term memories)
+//! After **A1-2** of the architecture upgrade plan, the agentic loop, tool
+//! execution, task orchestration, HITL approval, tool policy, planner,
+//! db tracking, and llm_client subsystems were extracted into the new
+//! [`golish-agent-loop`](https://docs.rs/golish-agent-loop) crate. The
+//! prompt subsystem moved to `golish-prompts` in **A1-1**.
 //!
-//! # Architecture
+//! This crate continues to expose the original module paths
+//! (`golish_ai::agentic_loop::*`, `golish_ai::tool_executors::*`, …) by
+//! re-exporting from the extracted crates so existing callers keep
+//! compiling unchanged.
 //!
-//! This is a **Layer 3 (Domain)** crate:
-//! - Depends on: golish-core, golish-settings, golish-tools
-//! - Used by: golish (main application via Tauri commands)
+//! # Layering after A1-2
 //!
-//! # Core Components
+//! - **`golish-prompts`** (A1-1): prompt composition + summarisation
+//! - **`golish-agent-loop`** (A1-2): agentic runtime
+//! - **`golish-ai`** (this crate): umbrella facade + remaining bridge
+//!   layer (`agent_bridge`, `bridge_*`, `task_orchestrator::bridge_executor`)
+//!   pending **A1-3** extraction into `golish-agent-bridge`.
 //!
-//! - **AgentBridge**: Main interface for agent lifecycle and interactions
-//! - **AgenticLoop**: Core agentic execution loop
-//! - **LlmClient**: LLM provider abstraction (Anthropic, OpenAI, Gemini, etc.)
-//! - **ContextManager**: Manages conversation context and trimming
-//! - **TokenBudgetManager**: Tracks token usage and budget limits
-//! - **ToolExecutors**: Executes AI tools (file ops, shell, etc.)
-//! - **ApprovalRecorder**: HITL approval tracking and auto-approval
-//! - **LoopDetector**: Detects and prevents infinite agent loops
-//! - **SystemHooks**: Extensible hook system for agent orchestration
+//! New code should depend directly on `golish-agent-loop` /
+//! `golish-prompts`. Importing from `golish_ai::*` will start emitting
+//! `#[deprecated]` warnings once A1-4 lands.
 
-// Modules merged from standalone crates
-pub mod hitl;
-pub mod indexer;
-pub mod loop_detection;
-pub mod planner;
-pub mod tool_policy;
+#![allow(deprecated)]
 
-pub mod db_shim;
-pub mod db_traits;
-pub mod sidecar_trait;
+pub use golish_agent_loop::{
+    agent_mode, agentic_loop, db_shim, db_traits, db_tracking, eval_support, execution_mode, hitl,
+    llm_client, loop_detection, memory_file, memory_gatekeeper, planner, sidecar_trait,
+    system_hooks, tool_definitions, tool_execution, tool_executors, tool_policy,
+    tool_provider_impl,
+};
 
-// Core modules
 pub mod agent_bridge;
-pub mod agent_mode;
-pub mod agentic_loop;
-pub mod execution_mode;
-pub mod task_orchestrator;
-pub mod db_tracking;
 mod bridge_context;
 mod bridge_hitl;
 mod bridge_policy;
 mod bridge_session;
-pub mod codex_prompt;
-pub mod llm_client;
-pub mod memory_file;
-pub mod memory_gatekeeper;
-pub mod summarizer;
-pub mod system_hooks;
-pub mod system_prompt;
-pub mod tool_definitions;
-pub mod tool_execution;
-pub mod tool_executors;
-pub mod tool_provider_impl;
 
-// Internal use of golish-events modules.
-// External consumers should depend on golish-events directly.
+pub mod codex_prompt;
+pub mod contributors;
+pub mod prompt_registry;
+pub mod summarizer;
+pub mod system_prompt;
+
 pub(crate) use golish_events::event_coordinator;
 pub(crate) use golish_events::transcript;
 
-// Evaluation support (for eval framework)
-pub mod eval_support;
+/// Task orchestration facade.
+///
+/// Re-exports everything that has moved into `golish-agent-loop` while
+/// keeping `bridge_executor` as a `golish-ai`-owned submodule (it
+/// depends on `agent_bridge` and will move out together in A1-3).
+pub mod task_orchestrator {
+    pub use golish_agent_loop::task_orchestrator::*;
 
-// Prompt composition system
-pub mod contributors;
-pub mod prompt_registry;
+    pub mod bridge_executor;
+}
 
-// Test utilities (only available in test builds)
-#[cfg(test)]
-pub mod test_utils;
-
-// Public API types from this crate
-pub use agent_mode::AgentMode;
-pub use golish_events::{CoordinatorHandle, CoordinatorState, EventCoordinator};
-pub use llm_client::SharedComponentsConfig;
-pub use prompt_registry::PromptContributorRegistry;
-pub use summarizer::{
-    build_summarizer_user_prompt, generate_summary, SummaryResponse, SUMMARIZER_SYSTEM_PROMPT,
-};
-pub use tool_definitions::{
+pub use agentic_loop::{OutputClassifier, PostShellHook};
+pub use golish_agent_loop::AgentMode;
+pub use golish_agent_loop::{
     get_all_tool_definitions_with_config, get_tool_definitions_for_preset,
     get_tool_definitions_with_config, ToolConfig, ToolPreset,
 };
-pub use tool_execution::{
+pub use golish_agent_loop::{
     normalize_run_pty_cmd_args, route_tool_execution, ToolExecutionConfig, ToolExecutionContext,
     ToolExecutionError, ToolExecutionResult, ToolRoutingCategory, ToolSource,
 };
-pub use tool_provider_impl::DefaultToolProvider;
-pub use agentic_loop::{OutputClassifier, PostShellHook};
+pub use golish_agent_loop::DefaultToolProvider;
+pub use golish_agent_loop::SharedComponentsConfig;
 pub use golish_events::{
     build_summarizer_input, format_for_summarizer, read_transcript, save_summarizer_input,
-    save_summary, transcript_path, TranscriptEvent, TranscriptWriter,
+    save_summary, transcript_path, CoordinatorHandle, CoordinatorState, EventCoordinator,
+    TranscriptEvent, TranscriptWriter,
+};
+pub use prompt_registry::PromptContributorRegistry;
+pub use summarizer::{
+    build_summarizer_user_prompt, generate_summary, SummaryResponse, SUMMARIZER_SYSTEM_PROMPT,
 };

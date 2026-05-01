@@ -80,7 +80,8 @@ grep "^golish-prompts" backend/Cargo.toml
 
 ---
 
-#### A1-2 - [ ] 抽 `golish-agent-loop`(依赖 prompts + tools)
+#### A1-2 - [x] 抽 `golish-agent-loop`(依赖 prompts + tools)
+> ✅ Done 2026-05-02: golish-agent-loop crate 已注册（102 行 lib.rs），从 golish-ai 迁出 25K LOC 含 agentic_loop/task_orchestrator/tool_execution/tool_executors/loop_detection/tool_definitions/tool_provider_impl + hitl/tool_policy/system_hooks/sidecar_trait/planner/db_traits/db_shim/db_tracking/llm_client/eval_support/test_utils/execution_mode（依赖闭包）；task_orchestrator::bridge_executor 留在 golish-ai 等 A1-3；golish-ai/src/lib.rs 81 行成为 facade；`cargo check --workspace` 0 errors
 
 **检查命令**:
 ```bash
