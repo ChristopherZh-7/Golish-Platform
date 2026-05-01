@@ -1,0 +1,29 @@
+[package]
+name = "golish-vuln-intel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Vulnerability intelligence — NVD/CISA/RSS feed ingestion, GitHub PoC search, Nuclei template discovery"
+
+[dependencies]
+golish-core = { workspace = true }
+golish-db = { workspace = true }
+
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+tokio = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+url = { workspace = true }
+
+reqwest = { workspace = true }
+regex = "1"
+quick-xml = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

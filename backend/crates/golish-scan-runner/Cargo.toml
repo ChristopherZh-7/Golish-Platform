@@ -1,0 +1,26 @@
+[package]
+name = "golish-scan-runner"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Scan-runner engine — WhatWeb fingerprinting, Nuclei targeted scanning, feroxbuster directory busting"
+
+[dependencies]
+golish-core = { workspace = true }
+golish-db = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+tokio = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+regex = "1"
+async-trait = { workspace = true }
+
+[dev-dependencies]
+parking_lot = { workspace = true }
