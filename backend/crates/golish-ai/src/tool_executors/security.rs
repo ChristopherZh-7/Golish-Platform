@@ -57,7 +57,7 @@ pub async fn execute_security_analysis_tool(
                 Ok(entry) => Some((
                     json!({
                         "success": true,
-                        "log_id": entry.id.to_string(),
+                        "log_id": entry.get("id").and_then(|v| v.as_str()).unwrap_or(""),
                         "message": format!("Operation logged: {}", summary),
                     }),
                     true,
@@ -132,20 +132,30 @@ pub async fn execute_security_analysis_tool(
 
             let file_path_param = extract_string_param(args, &["file_path"]);
 
-            match golish_db::repo::js_analysis::insert(
-                pool, target_id, project_path, &url, &filename,
-                None, None,
-                &frameworks, &libraries, &endpoints_found, &secrets_found,
-                &comments, source_maps, &risk_summary, &json!({}),
+            let analysis = json!({
+                "frameworks": frameworks,
+                "libraries": libraries,
+                "endpoints_found": endpoints_found,
+                "secrets_found": secrets_found,
+                "comments": comments,
+                "source_maps": source_maps,
+                "risk_summary": risk_summary,
+            });
+            match repo.js_analysis_insert(
+                target_id, project_path.unwrap_or(""), &url, &filename, &analysis,
             ).await {
                 Ok(result) => {
                     if let Some(ref fp) = file_path_param {
-                        let _ = golish_db::repo::js_analysis::update_file_path(pool, result.id, fp).await;
+                        let id = result.get("id").and_then(|v| v.as_str())
+                            .and_then(|s| uuid::Uuid::parse_str(s).ok());
+                        if let Some(id) = id {
+                            let _ = repo.js_analysis_update_file_path(id, fp).await;
+                        }
                     }
                     Some((
                         json!({
                             "success": true,
-                            "analysis_id": result.id.to_string(),
+                            "analysis_id": result.get("id").and_then(|v| v.as_str()).unwrap_or(""),
                             "file_path": file_path_param,
                             "frameworks_count": frameworks.as_array().map(|a| a.len()).unwrap_or(0),
                             "endpoints_count": endpoints_found.as_array().map(|a| a.len()).unwrap_or(0),
@@ -184,9 +194,9 @@ pub async fn execute_security_analysis_tool(
                 let evidence = fp.get("evidence").cloned().unwrap_or_else(|| json!([]));
                 let cpe = fp.get("cpe").and_then(|v| v.as_str());
 
-                if golish_db::repo::fingerprints::upsert(
-                    pool, target_id, project_path, category, name,
-                    version, confidence, &evidence, cpe, &source,
+                if repo.fingerprints_upsert(
+                    target_id, project_path.unwrap_or(""), category, name,
+                    version, confidence as f64, Some(&evidence),
                 ).await.is_ok() {
                     saved += 1;
                 }
@@ -224,11 +234,20 @@ pub async fn execute_security_analysis_tool(
             let tester = extract_string_param(args, &["tester"]).unwrap_or_else(|| "ai".to_string());
             let notes = extract_string_param(args, &["notes"]).unwrap_or_default();
 
-            match golish_db::repo::passive_scans::insert(
-                pool, target_id, project_path,
-                &test_type, &payload, &url, &parameter,
-                &result_str, &evidence, &severity,
-                &tool_used, &tester, &notes, &json!({}),
+            let findings = json!({
+                "test_type": test_type,
+                "payload": payload,
+                "url": url,
+                "parameter": parameter,
+                "result": result_str,
+                "evidence": evidence,
+                "tool_used": tool_used,
+                "tester": tester,
+                "notes": notes,
+            });
+            match repo.passive_scans_insert(
+                target_id, project_path.unwrap_or(""),
+                &test_type, &tool_used, &findings, Some(&evidence), &severity,
             ).await {
                 Ok(entry) => {
                     let msg = if result_str == "vulnerable" || result_str == "potential" {
@@ -239,7 +258,7 @@ pub async fn execute_security_analysis_tool(
                     Some((
                         json!({
                             "success": true,
-                            "scan_id": entry.id.to_string(),
+                            "scan_id": entry.get("id").and_then(|v| v.as_str()).unwrap_or(""),
                             "message": msg,
                         }),
                         true,
@@ -268,38 +287,10 @@ pub async fn execute_security_analysis_tool(
                 .unwrap_or_else(|| vec!["all".to_string()]);
             let include_all = sections.contains(&"all".to_string());
 
-            let mut data = json!({});
-
-            if include_all || sections.contains(&"assets".to_string()) {
-                if let Ok(assets) = golish_db::repo::target_assets::list_by_target(pool, target_id).await {
-                    data["assets"] = json!(assets);
-                    data["assets_count"] = json!(assets.len());
-                }
-            }
-            if include_all || sections.contains(&"endpoints".to_string()) {
-                if let Ok(endpoints) = golish_db::repo::api_endpoints::list_by_target(pool, target_id).await {
-                    data["endpoints"] = json!(endpoints);
-                    data["endpoints_count"] = json!(endpoints.len());
-                }
-            }
-            if include_all || sections.contains(&"fingerprints".to_string()) {
-                if let Ok(fps) = golish_db::repo::fingerprints::list_by_target(pool, target_id).await {
-                    data["fingerprints"] = json!(fps);
-                }
-            }
-            if include_all || sections.contains(&"js_analysis".to_string()) {
-                if let Ok(results) = golish_db::repo::js_analysis::list_by_target(pool, target_id).await {
-                    data["js_analysis"] = json!(results);
-                }
-            }
-            if include_all || sections.contains(&"scan_logs".to_string()) {
-                if let Ok(logs) = golish_db::repo::passive_scans::list_by_target(pool, target_id, 100).await {
-                    data["scan_logs"] = json!(logs);
-                    if let Ok(stats) = golish_db::repo::passive_scans::stats_by_target(pool, target_id).await {
-                        data["scan_stats"] = stats;
-                    }
-                }
-            }
+            let data = match repo.query_target_data(target_id, &sections).await {
+                Ok(d) => d,
+                Err(e) => return Some(error_result(format!("Failed to query target data: {}", e))),
+            };
 
             Some((data, true))
         }
