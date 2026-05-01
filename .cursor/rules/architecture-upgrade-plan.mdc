@@ -352,7 +352,8 @@ ls frontend/lib/transport 2>/dev/null && ls frontend/lib/services 2>/dev/null &&
 
 ### B4. Settings Schema 版本化
 
-#### B4-1 - [ ] 加 `schema_version` 字段 + migration 链
+#### B4-1 - [x] 加 `schema_version` 字段 + migration 链
+> ✅ Done 2026-05-02: `version` → `schema_version`（serde alias 兼容）、`SCHEMA_VERSION` 常量、`migrate_settings()` 函数、前端 TS 类型同步、cargo check + tsc 0 errors
 
 **检查命令**:
 ```bash
