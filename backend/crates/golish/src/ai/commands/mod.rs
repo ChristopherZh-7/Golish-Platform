@@ -216,6 +216,10 @@ async fn configure_core_services(bridge: &mut AgentBridge, state: &AppState) {
         crate::ai::graph_bridge::GraphClientBackend::new(state.db_pool.clone()),
     );
     bridge.set_graph_backend(graph_backend);
+
+    let db_repo: std::sync::Arc<dyn golish_ai::db_traits::DbRepoProvider> =
+        std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(state.db_pool.clone()));
+    bridge.set_db_repo(db_repo);
 }
 
 fn configure_domain_hooks(bridge: &mut AgentBridge) {
@@ -246,7 +250,8 @@ async fn configure_memory_and_embeddings(
             let embedder = golish_db::embeddings::HttpEmbedder::new(
                 base, key, "text-embedding-3-small", 1536,
             );
-            bridge.set_embedder(std::sync::Arc::new(embedder));
+            let bridged = crate::ai::embedder_bridge::EmbedderBridge::new(embedder);
+            bridge.set_embedder(std::sync::Arc::new(bridged));
             tracing::info!("[agent] Semantic memory enabled (text-embedding-3-small)");
         }
     }
