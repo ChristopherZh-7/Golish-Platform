@@ -332,7 +332,8 @@ ls docs/adr 2>/dev/null | wc -l
 
 ### B3. 前端 Service Layer 分层
 
-#### B3-1 - [ ] `frontend/lib/` 三层化
+#### B3-1 - [x] `frontend/lib/` 三层化
+> ✅ Done 2026-05-02: transport/(5 files) + services/(4 files) + ui-state/(4 files) 已创建，`tsc --noEmit` 0 errors
 
 **检查命令**:
 ```bash
