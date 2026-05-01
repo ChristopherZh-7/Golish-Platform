@@ -25,6 +25,7 @@ mod types;
 mod tests;
 
 pub use archive::{find_session, list_recent_sessions, load_session};
+pub use db::SessionPersistence;
 pub use manager::GolishSessionManager;
 pub use types::{
     GolishMessageRole, GolishSessionMessage, GolishSessionSnapshot, SessionListingInfo,

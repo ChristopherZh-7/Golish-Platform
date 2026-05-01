@@ -105,9 +105,11 @@ pub struct LoopEventRefs<'a> {
 /// Async callback invoked after a shell command completes, used to store
 /// structured output (e.g. pentest tool results) without `golish-ai` depending
 /// on domain-specific crates.
+///
+/// Arguments: (command, stdout, project_path).
+/// The closure captures any external resources (e.g. a DB pool) it needs.
 pub type PostShellHook = Arc<
     dyn Fn(
-            Arc<sqlx::PgPool>,
             String,
             String,
             Option<String>,
@@ -138,6 +140,7 @@ pub struct AgenticLoopContext<'a> {
     pub tool_config: &'a ToolConfig,
     pub graph_backend: Option<Arc<dyn crate::tool_executors::graph_trait::GraphKnowledgeBase>>,
     pub sidecar_state: Option<&'a Arc<dyn SessionCaptureBackend>>,
+    pub chain_persistence: Option<Arc<dyn golish_sub_agents::SubAgentChainPersistence>>,
     pub plan_manager: &'a Arc<crate::planner::PlanManager>,
     pub api_request_stats: &'a Arc<ApiRequestStats>,
     pub additional_tool_definitions: Vec<rig::completion::ToolDefinition>,

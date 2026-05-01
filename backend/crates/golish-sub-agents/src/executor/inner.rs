@@ -643,7 +643,7 @@ where
                             temperature_override: delegate_def.temperature,
                             max_tokens_override: delegate_def.max_tokens,
                             top_p_override: delegate_def.top_p,
-                            db_pool: ctx.db_pool,
+                            chain_persistence: ctx.chain_persistence,
                             sub_agent_registry: ctx.sub_agent_registry,
                             post_shell_hook: ctx.post_shell_hook.clone(),
                         };
@@ -850,8 +850,7 @@ where
             };
 
             if success && (tool_name == "run_pty_cmd" || tool_name == "run_command") {
-                if let (Some(db_pool), Some(hook)) = (ctx.db_pool, ctx.post_shell_hook.as_ref()) {
-                    let pool = Arc::clone(db_pool);
+                if let Some(hook) = ctx.post_shell_hook.as_ref() {
                     let cmd = result_value
                         .get("command")
                         .and_then(|c| c.as_str())
@@ -868,7 +867,7 @@ where
                     };
                     let hook = Arc::clone(hook);
                     tokio::spawn(async move {
-                        hook(pool, cmd, stdout, Some(pp)).await;
+                        hook(cmd, stdout, Some(pp)).await;
                     });
                 }
             }

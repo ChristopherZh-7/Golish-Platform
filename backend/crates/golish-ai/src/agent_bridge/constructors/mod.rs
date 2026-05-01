@@ -305,8 +305,8 @@ impl AgentBridge {
                 openrouter_provider_preferences,
             },
             services: BridgeServices {
-                db_pool: None,
                 db_tracker: None,
+                chain_persistence: None,
                 indexer_state: None,
                 sidecar_state: None,
                 graph_backend: None,

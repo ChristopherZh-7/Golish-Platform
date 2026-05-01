@@ -282,6 +282,7 @@ impl AgentBridge {
             tool_config: &self.tool_config,
             graph_backend: self.services.graph_backend.clone(),
             sidecar_state: self.services.sidecar_state.as_ref(),
+            chain_persistence: self.services.chain_persistence.clone(),
             plan_manager: &self.plan_manager,
             api_request_stats: &self.api_request_stats,
             additional_tool_definitions: {

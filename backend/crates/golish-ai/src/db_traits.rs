@@ -1,24 +1,11 @@
 //! Trait abstractions and local model types for database operations.
 //!
-//! These types decouple `golish-ai` from `golish-db`. The application layer
-//! provides concrete implementations via [`DbRepoProvider`].
-//!
-//! # Migration checklist
-//!
-//! Files that still reference `golish_db::` directly (replace with these traits):
-//!
-//! - [ ] `db_tracking/mod.rs` — `DbReadyGate`, `Embedder`
-//! - [ ] `db_tracking/helpers.rs` — `DbReadyGate`
-//! - [ ] `agent_bridge/config.rs` — `DbReadyGate`, `Embedder`
-//! - [ ] `db_tracking/memory/store.rs` — gatekeeper, `ToolcallStatus`
-//! - [ ] `tool_executors/knowledge_base/save.rs` — wiki_kb repo, models
-//! - [ ] `tool_executors/knowledge_base/search.rs` — wiki_kb repo
-//! - [ ] `tool_executors/knowledge_base/query.rs` — wiki_kb repo
-//! - [ ] `tool_executors/security.rs` — audit/security repos
-//! - [ ] `planner/manager.rs` — execution_plans repo, models
-//! - [ ] `task_orchestrator/orchestrator.rs` — tasks repo
-//! - [ ] `task_orchestrator/subtask_phases.rs` — tasks/subtasks/message_chains repos
-//! - [ ] `task_orchestrator/helpers.rs` — `AgentType`
+//! This module fully decouples `golish-ai` from `golish-db` and `sqlx`.
+//! The application layer provides concrete implementations via:
+//! - [`DbRepoProvider`] — repository operations (CRUD for tasks, subtasks, plans, wiki, etc.)
+//! - [`DbTrackingBackend`] — fire-and-forget recording + memory store/search operations
+//! - [`DbReadinessGate`] — PG startup readiness gate
+//! - [`TextEmbedder`] — text embedding for semantic memory search
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -30,13 +17,20 @@ use uuid::Uuid;
 
 /// Readiness gate for the database connection pool.
 ///
-/// Replaces `golish_db::DbReadyGate`. The application layer provides a
-/// concrete implementation that wraps the embedded-PG startup signal.
+/// The application layer provides a concrete implementation that wraps
+/// the embedded-PG startup signal.
 #[async_trait]
-pub trait DbReadinessGate: Send + Sync + Clone {
+pub trait DbReadinessGate: Send + Sync {
     fn is_ready(&self) -> bool;
     fn is_failed(&self) -> bool;
     async fn wait(&mut self) -> bool;
+    fn clone_box(&self) -> Box<dyn DbReadinessGate>;
+}
+
+impl Clone for Box<dyn DbReadinessGate> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
 }
 
 // ============================================================================
@@ -44,8 +38,6 @@ pub trait DbReadinessGate: Send + Sync + Clone {
 // ============================================================================
 
 /// Text embedding for semantic search.
-///
-/// Replaces `golish_db::embeddings::Embedder`.
 #[async_trait]
 pub trait TextEmbedder: Send + Sync {
     async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>>;
@@ -61,7 +53,7 @@ pub trait TextEmbedder: Send + Sync {
 }
 
 // ============================================================================
-// Model enums (mirrors of golish_db::models enums without sqlx derives)
+// Model enums (local types without external DB-crate derives)
 // ============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,6 +176,26 @@ pub struct NewWikiChangelog {
     pub category: String,
     pub actor: String,
     pub summary: String,
+}
+
+/// Memory hit row returned by search/fetch operations.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MemoryHit {
+    pub id: Uuid,
+    pub content: String,
+    pub mem_type: String,
+    pub metadata: Option<serde_json::Value>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Execution plan summary used in briefings.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BriefingPlan {
+    pub title: String,
+    pub description: Option<String>,
+    pub steps: serde_json::Value,
+    pub current_step: i32,
+    pub status: String,
 }
 
 /// Minimal view of a DB subtask (only fields accessed by golish-ai).
@@ -352,14 +364,217 @@ fn truncate_json(v: &serde_json::Value, max_len: usize) -> String {
 }
 
 // ============================================================================
-// Repository trait — ALL golish_db::repo::* operations used by golish-ai
+// Tracking backend — ALL direct SQL in db_tracking/* goes behind this trait
+// ============================================================================
+
+/// Backend for all fire-and-forget recording and memory operations.
+///
+/// The application layer provides the concrete implementation.
+/// `DbTracker` holds an `Arc<dyn DbTrackingBackend>` and delegates
+/// every recording / memory method to it.
+#[async_trait]
+pub trait DbTrackingBackend: Send + Sync {
+    // -- Recording (fire-and-forget) ------------------------------------------
+
+    async fn record_tool_call_start(
+        &self,
+        call_id: &str,
+        session_id: Uuid,
+        tool_name: &str,
+        args: &serde_json::Value,
+    );
+
+    async fn record_tool_call_finish(
+        &self,
+        call_id: &str,
+        session_id: Uuid,
+        status: &str,
+        result: &str,
+        duration_ms: i32,
+    );
+
+    async fn record_token_usage(
+        &self,
+        session_id: Uuid,
+        model: &str,
+        provider: &str,
+        tokens_in: i32,
+        tokens_out: i32,
+        duration_ms: i32,
+    );
+
+    async fn record_terminal_output(
+        &self,
+        session_id: Uuid,
+        task_id: Option<Uuid>,
+        subtask_id: Option<Uuid>,
+        stream: &str,
+        content: &str,
+        project_path: &str,
+    );
+
+    async fn record_search_log(
+        &self,
+        session_id: Uuid,
+        task_id: Option<Uuid>,
+        subtask_id: Option<Uuid>,
+        engine: &str,
+        query: &str,
+        result: Option<&str>,
+        project_path: &str,
+    );
+
+    async fn record_audit(
+        &self,
+        action: &str,
+        category: &str,
+        details: &str,
+        source: &str,
+        session_id_str: &str,
+        project_path: Option<&str>,
+    );
+
+    async fn record_agent_call(
+        &self,
+        session_id: Uuid,
+        initiator: &str,
+        executor: &str,
+        task: &str,
+        result: Option<&str>,
+        duration_ms: i32,
+        project_path: &str,
+    );
+
+    async fn record_msg_log(
+        &self,
+        session_id: Uuid,
+        task_id: Option<Uuid>,
+        subtask_id: Option<Uuid>,
+        agent: &str,
+        msg_type: &str,
+        message: &str,
+        thinking: Option<&str>,
+        project_path: Option<&str>,
+    );
+
+    async fn record_vecstore_op(
+        &self,
+        session_id: Uuid,
+        task_id: Option<Uuid>,
+        subtask_id: Option<Uuid>,
+        action: &str,
+        query: &str,
+        result_preview: &str,
+        result_count: i32,
+        project_path: Option<&str>,
+    );
+
+    // -- Memory storage -------------------------------------------------------
+
+    async fn store_memory(
+        &self,
+        session_id: Uuid,
+        content: &str,
+        mem_type: &str,
+        doc_type: &str,
+        project_path: Option<&str>,
+        metadata: Option<&serde_json::Value>,
+        embedding_pgvector: Option<&str>,
+    );
+
+    async fn store_memory_with_tool(
+        &self,
+        session_id: Uuid,
+        content: &str,
+        mem_type: &str,
+        tool_name: Option<&str>,
+        project_path: Option<&str>,
+        metadata: Option<&serde_json::Value>,
+        embedding_pgvector: &str,
+    );
+
+    // -- Memory search (returns data) -----------------------------------------
+
+    async fn search_memories_text(
+        &self,
+        query: &str,
+        project_path: Option<&str>,
+        limit: i64,
+    ) -> Vec<MemoryHit>;
+
+    async fn search_memories_semantic(
+        &self,
+        embedding_pgvector: &str,
+        project_path: Option<&str>,
+        limit: i64,
+    ) -> Vec<ScoredMemoryHit>;
+
+    async fn search_memories_by_doc_type(
+        &self,
+        query: &str,
+        doc_type: &str,
+        sub_filter: Option<&str>,
+        project_path: Option<&str>,
+        limit: i64,
+    ) -> Vec<MemoryHit>;
+
+    async fn search_memories_text_with_category(
+        &self,
+        query: &str,
+        category: Option<&str>,
+        project_path: Option<&str>,
+        limit: i64,
+    ) -> Vec<MemoryHit>;
+
+    async fn search_memories_semantic_with_category(
+        &self,
+        category: Option<&str>,
+        project_path: Option<&str>,
+        embedding_pgvector: &str,
+        limit: i64,
+    ) -> Vec<MemoryHit>;
+
+    // -- Memory fetch ---------------------------------------------------------
+
+    async fn fetch_memories_by_keyword(
+        &self,
+        keyword: &str,
+        project_path: Option<&str>,
+        limit: i64,
+    ) -> Vec<MemoryHit>;
+
+    async fn fetch_active_plans(&self, project_path: &str) -> Vec<BriefingPlan>;
+
+    async fn list_recent_memories(
+        &self,
+        category: Option<&str>,
+        project_path: Option<&str>,
+        limit: i64,
+    ) -> Vec<MemoryHit>;
+
+    // -- Session & prompt templates -------------------------------------------
+
+    async fn ensure_session(&self, session_id: Uuid);
+
+    async fn load_prompt_template_overrides(&self) -> Vec<(String, String)>;
+}
+
+/// Scored memory hit with optional tool name attribution.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScoredMemoryHit {
+    pub hit: MemoryHit,
+    pub tool_name: Option<String>,
+    pub score: f32,
+}
+
+// ============================================================================
+// Repository trait — all structured DB operations used by golish-ai
 // ============================================================================
 
 /// Provides all database repository operations that golish-ai needs.
 ///
-/// The application layer implements this trait using `golish-db` repo
-/// functions and the `PgPool`. golish-ai callers access it through
-/// `DbTracker::repo()`.
+/// The application layer implements this trait. golish-ai callers access
+/// it through `DbTracker::repo()`.
 #[async_trait]
 pub trait DbRepoProvider: Send + Sync {
     // -- Wiki KB ----------------------------------------------------------

@@ -4,7 +4,7 @@ use tauri::State;
 
 use crate::ai::agent_mode::AgentMode;
 use crate::state::AppState;
-use golish_session::{self as golish_sess, GolishMessageRole, GolishSessionSnapshot, SessionListingInfo};
+use golish_session::{self as golish_sess, GolishMessageRole, GolishSessionSnapshot, SessionListingInfo, SessionPersistence};
 
 /// Clear the AI agent's conversation history.
 /// Call this when starting a new conversation or when the user wants to reset context.
@@ -102,7 +102,8 @@ pub async fn list_ai_sessions(
     limit: Option<usize>,
 ) -> Result<Vec<SessionListingInfo>, String> {
     let lim = limit.unwrap_or(20);
-    match golish_sess::db::list_sessions_from_db(&state.db_pool, lim).await {
+    let persistence = crate::ai::session_bridge::PgSessionPersistence::new(state.db_pool.clone());
+    match persistence.list_sessions(lim).await {
         Ok(sessions) if !sessions.is_empty() => Ok(sessions),
         _ => golish_sess::list_recent_sessions(lim)
             .await
@@ -120,7 +121,8 @@ pub async fn find_ai_session(
     state: State<'_, AppState>,
     identifier: String,
 ) -> Result<Option<SessionListingInfo>, String> {
-    match golish_sess::db::find_session_from_db(&state.db_pool, &identifier).await {
+    let persistence = crate::ai::session_bridge::PgSessionPersistence::new(state.db_pool.clone());
+    match persistence.find_session(&identifier).await {
         Ok(Some(session)) => Ok(Some(session)),
         _ => golish_sess::find_session(&identifier)
             .await
@@ -138,7 +140,8 @@ pub async fn load_ai_session(
     state: State<'_, AppState>,
     identifier: String,
 ) -> Result<Option<GolishSessionSnapshot>, String> {
-    match golish_sess::db::load_session_from_db(&state.db_pool, &identifier).await {
+    let persistence = crate::ai::session_bridge::PgSessionPersistence::new(state.db_pool.clone());
+    match persistence.load_session(&identifier).await {
         Ok(Some(session)) => Ok(Some(session)),
         _ => golish_sess::load_session(&identifier)
             .await
@@ -209,7 +212,8 @@ pub async fn export_ai_session_transcript(
     identifier: String,
     output_path: String,
 ) -> Result<(), String> {
-    let session = match golish_sess::db::load_session_from_db(&state.db_pool, &identifier).await {
+    let persistence = crate::ai::session_bridge::PgSessionPersistence::new(state.db_pool.clone());
+    let session = match persistence.load_session(&identifier).await {
         Ok(Some(s)) => s,
         _ => golish_sess::load_session(&identifier)
             .await
@@ -268,8 +272,8 @@ pub async fn restore_ai_session(
     session_id: String,
     identifier: String,
 ) -> Result<GolishSessionSnapshot, String> {
-    // Load from DB first, fall back to file
-    let session = match golish_sess::db::load_session_from_db(&state.db_pool, &identifier).await {
+    let persistence = crate::ai::session_bridge::PgSessionPersistence::new(state.db_pool.clone());
+    let session = match persistence.load_session(&identifier).await {
         Ok(Some(s)) => s,
         _ => golish_sess::load_session(&identifier)
             .await

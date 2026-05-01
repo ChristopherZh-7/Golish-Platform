@@ -114,7 +114,7 @@ pub(super) async fn maybe_run_reflector(
             temperature_override: reflector_def.temperature,
             max_tokens_override: reflector_def.max_tokens,
             top_p_override: reflector_def.top_p,
-            db_pool: ctx.events.db_tracker.map(|t| t.pool_arc()),
+            chain_persistence: ctx.chain_persistence.as_ref(),
             sub_agent_registry: Some(ctx.sub_agent_registry),
             post_shell_hook: None,
         };

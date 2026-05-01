@@ -31,7 +31,6 @@ use super::types::{AgentExecutor, PlannedSubtask};
 /// - **Task resume**: If interrupted, the task can be resumed from the last completed subtask.
 /// - **Enricher**: After each subtask, searches for additional context to inject.
 pub struct TaskOrchestrator {
-    pub(super) pool: Arc<sqlx::PgPool>,
     pub(super) repo: Arc<dyn DbRepoProvider>,
     pub(super) session_id: Uuid,
     pub(super) event_tx: mpsc::UnboundedSender<AiEvent>,
@@ -41,14 +40,12 @@ pub struct TaskOrchestrator {
 
 impl TaskOrchestrator {
     pub fn new(
-        pool: Arc<sqlx::PgPool>,
         repo: Arc<dyn DbRepoProvider>,
         session_id: Uuid,
         event_tx: mpsc::UnboundedSender<AiEvent>,
     ) -> Self {
         let (user_input_tx, user_input_rx) = mpsc::unbounded_channel();
         Self {
-            pool,
             repo,
             session_id,
             event_tx,

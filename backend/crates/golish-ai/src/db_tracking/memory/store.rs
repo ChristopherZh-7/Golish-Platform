@@ -5,10 +5,8 @@ use super::super::helpers::{await_db_ready, vec_to_pgvector};
 use super::super::DbTracker;
 
 impl DbTracker {
-    /// Store a memory observation. When an embedder is configured, generates and
-    /// stores an embedding vector alongside the text for semantic search.
     pub fn store_memory(&self, content: &str, mem_type: &str, metadata: Option<serde_json::Value>) {
-        let pool = self.pool.clone();
+        let backend = self.backend.clone();
         let session_uuid = self.session_uuid;
         let content = content.to_string();
         let mem_type = mem_type.to_string();
@@ -23,7 +21,7 @@ impl DbTracker {
 
             let embedding = if let Some(ref emb) = embedder {
                 match emb.embed(&content).await {
-                    Ok(v) => Some(v),
+                    Ok(v) => Some(vec_to_pgvector(&v)),
                     Err(e) => {
                         tracing::warn!("[db-track] Embedding generation failed, storing text-only: {e}");
                         None
@@ -33,50 +31,27 @@ impl DbTracker {
                 None
             };
 
-            let res = if let Some(ref emb_vec) = embedding {
-                let emb_str = vec_to_pgvector(emb_vec);
-                sqlx::query(
-                    r#"INSERT INTO memories
-                       (session_id, content, mem_type, doc_type, project_path, metadata, embedding)
-                       VALUES ($1, $2, $3::memory_type, 'memory', $4, $5, $6::vector)"#,
+            backend
+                .store_memory(
+                    session_uuid,
+                    &content,
+                    &mem_type,
+                    "memory",
+                    project_path.as_deref(),
+                    metadata.as_ref(),
+                    embedding.as_deref(),
                 )
-                .bind(session_uuid)
-                .bind(&content)
-                .bind(&mem_type)
-                .bind(&project_path)
-                .bind(&metadata)
-                .bind(&emb_str)
-                .execute(pool.as_ref())
-                .await
-            } else {
-                sqlx::query(
-                    r#"INSERT INTO memories (session_id, content, mem_type, doc_type, project_path, metadata)
-                       VALUES ($1, $2, $3::memory_type, 'memory', $4, $5)"#,
-                )
-                .bind(session_uuid)
-                .bind(&content)
-                .bind(&mem_type)
-                .bind(&project_path)
-                .bind(&metadata)
-                .execute(pool.as_ref())
-                .await
-            };
-
-            if let Err(e) = res {
-                tracing::warn!("[db-track] Failed to store memory: {e}");
-            }
+                .await;
         });
     }
 
-    /// Store a global memory (project_path = NULL), visible across all projects.
-    /// Use for general techniques, tool usage patterns, and reusable knowledge.
     pub fn store_memory_global(
         &self,
         content: &str,
         mem_type: &str,
         metadata: Option<serde_json::Value>,
     ) {
-        let pool = self.pool.clone();
+        let backend = self.backend.clone();
         let session_uuid = self.session_uuid;
         let content = content.to_string();
         let mem_type = mem_type.to_string();
@@ -89,45 +64,25 @@ impl DbTracker {
             }
 
             let embedding = if let Some(ref emb) = embedder {
-                emb.embed(&content).await.ok()
+                emb.embed(&content).await.ok().map(|v| vec_to_pgvector(&v))
             } else {
                 None
             };
 
-            let res = if let Some(ref emb_vec) = embedding {
-                let emb_str = vec_to_pgvector(emb_vec);
-                sqlx::query(
-                    r#"INSERT INTO memories
-                       (session_id, content, mem_type, doc_type, project_path, metadata, embedding)
-                       VALUES ($1, $2, $3::memory_type, 'memory', NULL, $4, $5::vector)"#,
+            backend
+                .store_memory(
+                    session_uuid,
+                    &content,
+                    &mem_type,
+                    "memory",
+                    None,
+                    metadata.as_ref(),
+                    embedding.as_deref(),
                 )
-                .bind(session_uuid)
-                .bind(&content)
-                .bind(&mem_type)
-                .bind(&metadata)
-                .bind(&emb_str)
-                .execute(pool.as_ref())
-                .await
-            } else {
-                sqlx::query(
-                    r#"INSERT INTO memories (session_id, content, mem_type, doc_type, project_path, metadata)
-                       VALUES ($1, $2, $3::memory_type, 'memory', NULL, $4)"#,
-                )
-                .bind(session_uuid)
-                .bind(&content)
-                .bind(&mem_type)
-                .bind(&metadata)
-                .execute(pool.as_ref())
-                .await
-            };
-
-            if let Err(e) = res {
-                tracing::warn!("[db-track] Failed to store global memory: {e}");
-            }
+                .await;
         });
     }
 
-    /// Store a memory with a specific `doc_type` (for multi-vector store: "code", "guide").
     pub fn store_memory_with_doc_type(
         &self,
         content: &str,
@@ -135,7 +90,7 @@ impl DbTracker {
         doc_type: &str,
         metadata: Option<serde_json::Value>,
     ) {
-        let pool = self.pool.clone();
+        let backend = self.backend.clone();
         let session_uuid = self.session_uuid;
         let content = content.to_string();
         let mem_type = mem_type.to_string();
@@ -150,50 +105,25 @@ impl DbTracker {
             }
 
             let embedding = if let Some(ref emb) = embedder {
-                emb.embed(&content).await.ok()
+                emb.embed(&content).await.ok().map(|v| vec_to_pgvector(&v))
             } else {
                 None
             };
 
-            let res = if let Some(ref emb_vec) = embedding {
-                let emb_str = vec_to_pgvector(emb_vec);
-                sqlx::query(
-                    r#"INSERT INTO memories
-                       (session_id, content, mem_type, doc_type, project_path, metadata, embedding)
-                       VALUES ($1, $2, $3::memory_type, $4, $5, $6, $7::vector)"#,
+            backend
+                .store_memory(
+                    session_uuid,
+                    &content,
+                    &mem_type,
+                    &doc_type,
+                    project_path.as_deref(),
+                    metadata.as_ref(),
+                    embedding.as_deref(),
                 )
-                .bind(session_uuid)
-                .bind(&content)
-                .bind(&mem_type)
-                .bind(&doc_type)
-                .bind(&project_path)
-                .bind(&metadata)
-                .bind(&emb_str)
-                .execute(pool.as_ref())
-                .await
-            } else {
-                sqlx::query(
-                    r#"INSERT INTO memories (session_id, content, mem_type, doc_type, project_path, metadata)
-                       VALUES ($1, $2, $3::memory_type, $4, $5, $6)"#,
-                )
-                .bind(session_uuid)
-                .bind(&content)
-                .bind(&mem_type)
-                .bind(&doc_type)
-                .bind(&project_path)
-                .bind(&metadata)
-                .execute(pool.as_ref())
-                .await
-            };
-
-            if let Err(e) = res {
-                tracing::warn!("[db-track] Failed to store {} memory: {e}", doc_type);
-            }
+                .await;
         });
     }
 
-    /// Store a memory with an embedding vector for semantic search.
-    /// Adapts to pgvector (native vector type) or BYTEA fallback automatically.
     pub fn store_memory_with_embedding(
         &self,
         content: &str,
@@ -209,12 +139,14 @@ impl DbTracker {
             &content[..{
                 let max = content.len().min(200);
                 let mut end = max;
-                while end > 0 && !content.is_char_boundary(end) { end -= 1; }
+                while end > 0 && !content.is_char_boundary(end) {
+                    end -= 1;
+                }
                 end
             }],
         );
 
-        let pool = self.pool.clone();
+        let backend = self.backend.clone();
         let session_uuid = self.session_uuid;
         let content = content.to_string();
         let mem_type = mem_type.to_string();
@@ -228,31 +160,20 @@ impl DbTracker {
             }
 
             let emb_str = vec_to_pgvector(&embedding);
-            let res = sqlx::query(
-                r#"INSERT INTO memories
-                   (session_id, content, mem_type, doc_type, tool_name,
-                    embedding, project_path, metadata)
-                   VALUES ($1, $2, $3::memory_type, 'tool_result', $4, $5::vector, $6, $7)"#,
-            )
-            .bind(session_uuid)
-            .bind(&content)
-            .bind(&mem_type)
-            .bind(&tool_name)
-            .bind(&emb_str)
-            .bind(&project_path)
-            .bind(&metadata)
-            .execute(pool.as_ref())
-            .await;
-
-            if let Err(e) = res {
-                tracing::warn!("[db-track] Failed to store memory with embedding: {e}");
-            }
+            backend
+                .store_memory_with_tool(
+                    session_uuid,
+                    &content,
+                    &mem_type,
+                    tool_name.as_deref(),
+                    project_path.as_deref(),
+                    metadata.as_ref(),
+                    &emb_str,
+                )
+                .await;
         });
     }
 
-    /// Run the gatekeeper pipeline: decide whether to store a tool result as
-    /// a long-term memory, build the structured content, and persist it.
-    /// This is a fire-and-forget background task.
     pub fn maybe_store_tool_memory(
         &self,
         tool_name: &str,

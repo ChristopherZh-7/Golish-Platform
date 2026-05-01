@@ -44,6 +44,56 @@ pub trait ToolProvider: Send + Sync {
     fn normalize_run_pty_cmd_args(&self, args: serde_json::Value) -> serde_json::Value;
 }
 
+/// Trait for sub-agent chain persistence operations (decoupled from sqlx).
+///
+/// Provides the message-chain DB operations the executor needs to
+/// save/restore persistent chains across sub-agent invocations.
+#[async_trait::async_trait]
+pub trait SubAgentChainPersistence: Send + Sync {
+    async fn chain_create(
+        &self,
+        session_id: uuid::Uuid,
+        task_id: Option<uuid::Uuid>,
+        subtask_id: Option<uuid::Uuid>,
+        agent_type: &str,
+        parent_chain_id: Option<uuid::Uuid>,
+        model: Option<&str>,
+    ) -> anyhow::Result<uuid::Uuid>;
+
+    async fn chain_update(
+        &self,
+        id: uuid::Uuid,
+        chain_json: &serde_json::Value,
+    ) -> anyhow::Result<()>;
+
+    async fn chain_update_usage(
+        &self,
+        id: uuid::Uuid,
+        input_tokens: i32,
+        output_tokens: i32,
+        cache_read_tokens: i32,
+        input_cost: f64,
+        output_cost: f64,
+        duration_ms: i32,
+    ) -> anyhow::Result<()>;
+
+    async fn load_prompt_template_overrides(&self) -> Vec<(String, String)>;
+}
+
+/// Async callback invoked after a shell command completes.
+///
+/// Arguments: (command, stdout, project_path).
+/// The closure captures external resources (e.g. a DB pool) it needs.
+pub type PostShellHook = Arc<
+    dyn Fn(
+            String,
+            String,
+            Option<String>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// Context needed for sub-agent execution.
 pub struct SubAgentExecutorContext<'a> {
     pub event_tx: &'a mpsc::UnboundedSender<AiEvent>,
@@ -70,26 +120,12 @@ pub struct SubAgentExecutorContext<'a> {
     pub max_tokens_override: Option<u32>,
     /// Per-agent top_p override from settings (None = not sent to provider).
     pub top_p_override: Option<f32>,
-    /// Database pool for persisting sub-agent conversation chains (PentAGI-style).
-    /// When set, the executor saves/restores chat history across invocations.
-    pub db_pool: Option<&'a Arc<sqlx::PgPool>>,
+    /// Chain persistence backend for saving/restoring sub-agent conversation
+    /// chains (PentAGI-style). Replaces the raw `sqlx::PgPool`.
+    pub chain_persistence: Option<&'a Arc<dyn SubAgentChainPersistence>>,
     /// Sub-agent registry for nested delegation (PentAGI hierarchical pattern).
     /// When set, agents with `delegatable_agents` can invoke other sub-agents.
     pub sub_agent_registry: Option<&'a Arc<RwLock<crate::definition::SubAgentRegistry>>>,
-    /// Optional hook called after a successful shell tool execution (run_pty_cmd / run_command).
-    /// Used for auto-detecting and storing structured output without coupling to pentest crate.
-    /// Arguments: (db_pool, command, stdout, project_path)
-    #[allow(clippy::type_complexity)]
-    pub post_shell_hook: Option<
-        Arc<
-            dyn Fn(
-                    Arc<sqlx::PgPool>,
-                    String,
-                    String,
-                    Option<String>,
-                ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-                + Send
-                + Sync,
-        >,
-    >,
+    /// Optional hook called after a successful shell tool execution.
+    pub post_shell_hook: Option<PostShellHook>,
 }
