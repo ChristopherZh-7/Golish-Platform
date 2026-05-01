@@ -371,7 +371,8 @@ grep -c "schema_version\|SCHEMA_VERSION" backend/crates/golish-settings/src
 
 ### B5. 集成测试 + 契约测试
 
-#### B5-1 - [ ] 每个 Layer 3 域 crate 加 `tests/api_contract.rs`
+#### B5-1 - [x] 每个 Layer 3 域 crate 加 `tests/api_contract.rs`
+> ✅ Done 2026-05-02: 6 个 crate 各有 api_contract.rs（pentest/pipeline/vuln-intel/scan-runner/projects/indexer），`cargo check --tests` 0 errors
 
 **检查命令**:
 ```bash
