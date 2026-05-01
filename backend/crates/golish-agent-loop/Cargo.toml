@@ -1,9 +1,9 @@
 [package]
-name = "golish-ai"
+name = "golish-agent-loop"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-description = "AI agent orchestration for Golish"
+description = "Agentic loop runtime extracted from golish-ai (A1-2): tool execution, loop detection, task orchestration, HITL approval, tool policy, planner, in-memory db tracking, llm-client wiring."
 
 [dependencies]
 # Foundation crates
@@ -11,14 +11,13 @@ golish-core = { workspace = true }
 golish-settings = { workspace = true }
 golish-tools = { workspace = true }
 
-# Extracted AI subsystem crates (A1-1 / A1-2)
-golish-prompts = { workspace = true }
-golish-agent-loop = { workspace = true }
+# Extracted AI subsystem dependencies
 golish-events = { path = "../golish-events" }
 golish-context = { workspace = true }
 golish-indexer = { workspace = true }
 golish-llm-providers = { workspace = true }
 golish-sub-agents = { workspace = true }
+golish-prompts = { workspace = true }
 
 # JSON repair for malformed LLM output
 golish-json-repair = { path = "../golish-json-repair" }
@@ -48,7 +47,6 @@ tokenx-rs = { workspace = true }
 # LLM integration via rig
 rig-core = { workspace = true }
 rig-anthropic-vertex = { path = "../rig-anthropic-vertex" }
-# Custom OpenAI Responses provider for reasoning models
 rig-openai-responses = { path = "../rig-openai-responses" }
 
 # HTTP client (needed for llm_client.rs)
@@ -56,6 +54,8 @@ reqwest = { workspace = true }
 
 [features]
 default = []
+# Expose `test_utils` for downstream crates' test/dev builds.
+test-utils = []
 
 [dev-dependencies]
 tempfile = { workspace = true }
