@@ -101,7 +101,8 @@ ls backend/crates/golish-agent-loop 2>/dev/null && echo "EXISTS" || echo "NOT_YE
 
 ---
 
-#### A1-3 - [ ] 抽 `golish-agent-bridge`(依赖 agent-loop)
+#### A1-3 - [x] 抽 `golish-agent-bridge`(依赖 agent-loop)
+> ✅ Verified 2026-05-02: golish-agent-bridge crate 已创建并注册 workspace，含 agent_bridge/bridge_context/bridge_executor/bridge_hitl/bridge_policy/bridge_session 6 个模块；`cargo check -p golish-agent-bridge` 0 errors；golish-ai/src/ 仅剩 lib.rs（39 行 re-export facade）
 
 **检查命令**:
 ```bash
@@ -117,7 +118,8 @@ ls backend/crates/golish-agent-bridge 2>/dev/null && echo "EXISTS" || echo "NOT_
 
 ---
 
-#### A1-4 - [ ] `golish-ai` 元 crate 化
+#### A1-4 - [x] `golish-ai` 元 crate 化
+> ✅ Verified 2026-05-02: golish-ai/src/lib.rs 39 行（≤50 ✓），src/ 仅含 lib.rs 1 个文件（≤5 ✓），全部为 pub use re-export，`cargo check --workspace` 0 errors
 
 **检查命令**:
 ```bash
@@ -160,7 +162,8 @@ grep -c "pub struct AppState" backend/crates/golish/src/state.rs
 
 ### A3. 统一错误模型(消灭 437 处 `Result<_, String>`)
 
-#### A3-1 - [ ] 域 crate 引入 `thiserror` 错误枚举
+#### A3-1 - [x] 域 crate 引入 `thiserror` 错误枚举
+> ✅ Done 2026-05-02: 4 个域 crate（pentest/vuln-intel/pipeline/scan-runner）引入 thiserror 错误枚举并替换所有内部 Result<_,String>；其余 4 个域 crate 内部无 Result<_,String>；主 crate 命令边界层 .map_err(|e| e.to_string()) 保留等 A3-2 统一；`cargo check --workspace` 0 errors
 
 **检查命令**(执行前先看现状):
 ```bash
@@ -276,7 +279,8 @@ pub enum DomainEvent {
 
 ### B1. Hexagonal / Ports & Adapters 边界
 
-#### B1-1 - [ ] `golish-pentest` 拆 `pentest-domain` + `pentest-adapters`
+#### B1-1 - [x] `golish-pentest` 拆 `pentest-domain` + `pentest-adapters`
+> ✅ Done 2026-05-02: `golish-pentest-domain` crate 已创建，含 models(449行)/search/platform + PentestRepo/ProcessAdapter traits；workspace 注册完成；golish-pentest 依赖 domain 并 re-export traits；`cargo check -p golish-pentest-domain` 0 errors；`grep "use reqwest|use sqlx" domain/src` 输出 0 行
 
 **检查命令**:
 ```bash

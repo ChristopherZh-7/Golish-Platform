@@ -108,7 +108,7 @@ impl AgentBridge {
 
         // Generate summary
         let client = self.llm.client.read().await;
-        let summary_result = crate::summarizer::generate_summary(&client, &summarizer_input).await;
+        let summary_result = golish_prompts::generate_summary(&client, &summarizer_input).await;
         drop(client);
 
         let summary = match summary_result {

@@ -1,9 +1,9 @@
 [package]
-name = "golish-ai"
+name = "golish-agent-bridge"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-description = "AI agent orchestration for Golish"
+description = "Bridge layer between the Tauri app and the agent runtime (A1-3): AgentBridge struct, bridge_* helpers, and task_orchestrator::bridge_executor."
 
 [dependencies]
 # Foundation crates
@@ -11,18 +11,15 @@ golish-core = { workspace = true }
 golish-settings = { workspace = true }
 golish-tools = { workspace = true }
 
-# Extracted AI subsystem crates (A1-1 / A1-2 / A1-3)
+# AI subsystem
 golish-prompts = { workspace = true }
 golish-agent-loop = { workspace = true }
-golish-agent-bridge = { workspace = true }
 golish-events = { path = "../golish-events" }
 golish-context = { workspace = true }
 golish-indexer = { workspace = true }
 golish-llm-providers = { workspace = true }
 golish-sub-agents = { workspace = true }
-
-# JSON repair for malformed LLM output
-golish-json-repair = { path = "../golish-json-repair" }
+golish-session = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
@@ -44,15 +41,13 @@ tracing = { workspace = true }
 dirs = { workspace = true }
 parking_lot = { workspace = true }
 regex = { workspace = true }
-tokenx-rs = { workspace = true }
 
-# LLM integration via rig
+# LLM via rig
 rig-core = { workspace = true }
 rig-anthropic-vertex = { path = "../rig-anthropic-vertex" }
-# Custom OpenAI Responses provider for reasoning models
 rig-openai-responses = { path = "../rig-openai-responses" }
 
-# HTTP client (needed for llm_client.rs)
+# HTTP client
 reqwest = { workspace = true }
 
 [features]
@@ -60,4 +55,3 @@ default = []
 
 [dev-dependencies]
 tempfile = { workspace = true }
-proptest = { workspace = true }

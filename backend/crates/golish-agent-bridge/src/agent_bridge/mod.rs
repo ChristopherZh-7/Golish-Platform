@@ -67,8 +67,8 @@ use golish_core::runtime::GolishRuntime;
 use golish_core::SessionManager;
 use golish_sub_agents::SubAgentRegistry;
 
-use crate::indexer::IndexerState;
 use crate::planner::PlanManager;
+use golish_indexer::IndexerState;
 
 use golish_core::SkillMetadata;
 
