@@ -91,15 +91,7 @@ export type ProviderConfig =
       base_url?: string;
     };
 
-export interface ApprovalPattern {
-  tool_name: string;
-  total_requests: number;
-  approvals: number;
-  denials: number;
-  always_allow: boolean;
-  last_updated: string;
-  justifications: string[];
-}
+export type { ApprovalPattern } from "@/lib/generated";
 
 export interface ProviderRequestStats {
   requests: number;

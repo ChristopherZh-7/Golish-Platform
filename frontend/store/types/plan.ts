@@ -1,17 +1,6 @@
-export type StepStatus = "pending" | "in_progress" | "completed" | "cancelled" | "failed";
-
-export interface PlanStep {
-  id?: string;
-  step: string;
-  status: StepStatus;
-}
-
-export interface PlanSummary {
-  total: number;
-  completed: number;
-  in_progress: number;
-  pending: number;
-}
+export type { StepStatus, PlanSummary } from "@/lib/generated";
+export type { PlanStep } from "@/lib/generated";
+import type { PlanStep, PlanSummary } from "@/lib/generated";
 
 export interface TaskPlan {
   explanation: string | null;
