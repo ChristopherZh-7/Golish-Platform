@@ -16,6 +16,7 @@ members = [
     "crates/golish-context",
     "crates/golish-llm-providers",
     "crates/golish-ai",
+    "crates/golish-agent-loop",
     "crates/golish-events",
     "crates/golish-sub-agents",
     "crates/golish-web",
@@ -31,8 +32,14 @@ members = [
     "crates/golish-mcp",
     "crates/golish-pentest",
     "crates/golish-pentest-mcp",
+    "crates/golish-pipeline",
+    "crates/golish-vuln-intel",
+    "crates/golish-scan-runner",
+    "crates/golish-projects",
+    "crates/golish-indexer",
     "crates/golish-db",
     "crates/golish-graphiti",
+    "crates/golish-prompts",
 ]
 # Default members for fast inner-loop development (excludes Tauri app, evals, benchmarks)
 default-members = [
@@ -49,6 +56,7 @@ default-members = [
     "crates/golish-context",
     "crates/golish-llm-providers",
     "crates/golish-ai",
+    "crates/golish-agent-loop",
     "crates/golish-events",
     "crates/golish-sub-agents",
     "crates/golish-web",
@@ -62,8 +70,14 @@ default-members = [
     "crates/golish-mcp",
     "crates/golish-pentest",
     "crates/golish-pentest-mcp",
+    "crates/golish-pipeline",
+    "crates/golish-vuln-intel",
+    "crates/golish-scan-runner",
+    "crates/golish-projects",
+    "crates/golish-indexer",
     "crates/golish-db",
     "crates/golish-graphiti",
+    "crates/golish-prompts",
 ]
 resolver = "2"
 
@@ -89,6 +103,7 @@ golish-artifacts = { path = "crates/golish-artifacts" }
 golish-session = { path = "crates/golish-session" }
 golish-context = { path = "crates/golish-context" }
 golish-ai = { path = "crates/golish-ai" }
+golish-agent-loop = { path = "crates/golish-agent-loop" }
 golish-events = { path = "crates/golish-events" }
 golish-sub-agents = { path = "crates/golish-sub-agents" }
 golish-llm-providers = { path = "crates/golish-llm-providers" }
@@ -102,8 +117,14 @@ rig-zai-sdk = { path = "crates/rig-zai-sdk" }
 rig-gemini-vertex = { path = "crates/rig-gemini-vertex" }
 golish-pentest = { path = "crates/golish-pentest" }
 golish-pentest-mcp = { path = "crates/golish-pentest-mcp" }
+golish-pipeline = { path = "crates/golish-pipeline" }
+golish-vuln-intel = { path = "crates/golish-vuln-intel" }
+golish-scan-runner = { path = "crates/golish-scan-runner" }
+golish-projects = { path = "crates/golish-projects" }
+golish-indexer = { path = "crates/golish-indexer" }
 golish-db = { path = "crates/golish-db" }
 golish-graphiti = { path = "crates/golish-graphiti" }
+golish-prompts = { path = "crates/golish-prompts" }
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate"] }
