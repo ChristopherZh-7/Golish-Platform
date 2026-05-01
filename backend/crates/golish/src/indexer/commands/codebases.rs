@@ -226,10 +226,12 @@ pub async fn add_indexed_codebase(
     tracing::info!("Added codebase to settings: {}", display_path);
 
     // Initialize indexer and index the directory
-    state
-        .indexer_state
-        .initialize_with_location(normalized_path.clone(), index_location)
-        .map_err(|e| format!("Failed to initialize indexer: {}", e))?;
+    crate::indexer::vtcode_bridge::initialize_vtcode_indexer(
+        &state.indexer_state,
+        normalized_path.clone(),
+        index_location,
+    )
+    .map_err(|e| format!("Failed to initialize indexer: {}", e))?;
 
     state
         .indexer_state
@@ -385,10 +387,12 @@ pub async fn reindex_codebase(
     }
 
     // Re-initialize and index at the configured location
-    state
-        .indexer_state
-        .initialize_with_location(normalized_path.clone(), index_location)
-        .map_err(|e| format!("Failed to initialize indexer: {}", e))?;
+    crate::indexer::vtcode_bridge::initialize_vtcode_indexer(
+        &state.indexer_state,
+        normalized_path.clone(),
+        index_location,
+    )
+    .map_err(|e| format!("Failed to initialize indexer: {}", e))?;
 
     state
         .indexer_state

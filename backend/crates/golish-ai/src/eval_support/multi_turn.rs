@@ -144,6 +144,7 @@ where
             context_manager: &context_manager,
             compaction_state: &compaction_state,
             tool_config: &tool_config,
+            graph_backend: None,
             sidecar_state: None,
             plan_manager: &plan_manager,
             api_request_stats: &api_request_stats,

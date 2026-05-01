@@ -70,8 +70,10 @@ use golish_sub_agents::SubAgentRegistry;
 use crate::indexer::IndexerState;
 use crate::planner::PlanManager;
 
-use golish_sidecar::SidecarState;
 use golish_skills::SkillMetadata;
+
+use crate::sidecar_trait::SessionCaptureBackend;
+use crate::tool_executors::graph_trait::GraphKnowledgeBase;
 
 use crate::event_coordinator::CoordinatorHandle;
 use crate::transcript::TranscriptWriter;
@@ -126,7 +128,8 @@ pub(crate) struct BridgeServices {
     pub(crate) db_pool: Option<Arc<sqlx::PgPool>>,
     pub(crate) db_tracker: Option<crate::db_tracking::DbTracker>,
     pub(crate) indexer_state: Option<Arc<IndexerState>>,
-    pub(crate) sidecar_state: Option<Arc<SidecarState>>,
+    pub(crate) sidecar_state: Option<Arc<dyn SessionCaptureBackend>>,
+    pub(crate) graph_backend: Option<Arc<dyn GraphKnowledgeBase>>,
     pub(crate) settings_manager: Option<Arc<golish_settings::SettingsManager>>,
 }
 
@@ -236,10 +239,10 @@ impl Drop for AgentBridge {
 
         if let Some(ref sidecar) = self.services.sidecar_state {
             match sidecar.end_session() {
-                Ok(Some(session)) => {
+                Ok(Some(info)) => {
                     tracing::debug!(
                         "AgentBridge::drop - sidecar session {} ended",
-                        session.session_id
+                        info.session_id
                     );
                 }
                 Ok(None) => {

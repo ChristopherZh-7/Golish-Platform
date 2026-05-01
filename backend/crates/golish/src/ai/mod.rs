@@ -1,6 +1,8 @@
 //! AI module - re-exports from golish-ai crate.
 
 pub mod commands;
+pub mod graph_bridge;
+pub mod sidecar_bridge;
 
 // Re-export all golish-ai types and modules
 pub use golish_ai::*;

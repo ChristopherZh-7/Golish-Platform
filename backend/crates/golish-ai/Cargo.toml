@@ -12,8 +12,6 @@ golish-settings = { workspace = true }
 golish-tools = { workspace = true }
 
 # Infrastructure crates
-vtcode-indexer = { workspace = true }
-golish-sidecar = { workspace = true }
 golish-db = { workspace = true }
 
 # Extracted AI subsystem crates
@@ -25,7 +23,6 @@ golish-llm-providers = { workspace = true }
 golish-sub-agents = { workspace = true }
 golish-skills = { workspace = true }
 golish-shell-exec = { workspace = true }
-golish-graphiti = { workspace = true }
 
 # JSON repair for malformed LLM output
 golish-json-repair = { path = "../golish-json-repair" }

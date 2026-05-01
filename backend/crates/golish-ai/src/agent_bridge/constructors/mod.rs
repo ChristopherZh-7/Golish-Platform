@@ -309,6 +309,7 @@ impl AgentBridge {
                 db_tracker: None,
                 indexer_state: None,
                 sidecar_state: None,
+                graph_backend: None,
                 settings_manager: None,
             },
             access: BridgeAccessControl {

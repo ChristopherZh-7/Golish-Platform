@@ -1,154 +1,95 @@
-//! Indexer state management
+//! Indexer state management with a pluggable backend.
+//!
+//! `IndexerState` wraps a `dyn IndexerBackend` behind a `RwLock` so that
+//! golish-ai never depends on a concrete indexer crate. The app layer
+//! injects the real implementation (e.g. vtcode-indexer's `SimpleIndexer`).
 
 use parking_lot::RwLock;
-use golish_settings::schema::IndexLocation;
-use std::path::PathBuf;
-use vtcode_indexer::SimpleIndexer;
+use std::path::{Path, PathBuf};
 
-use super::paths::{compute_index_dir, find_existing_index_dir};
-
-/// Load existing index entries from disk into the indexer's cache.
-/// Parses Markdown files in the index directory and re-indexes files that still exist.
-fn load_existing_index(indexer: &mut SimpleIndexer, index_dir: &PathBuf) -> anyhow::Result<usize> {
-    let mut loaded = 0;
-
-    if !index_dir.exists() {
-        return Ok(0);
-    }
-
-    // Read all .md files in the index directory
-    for entry in std::fs::read_dir(index_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
-            continue;
-        }
-
-        // Parse the markdown to extract the file path
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            // Look for "- **Path**: /path/to/file" in the markdown
-            for line in content.lines() {
-                if let Some(file_path) = line.strip_prefix("- **Path**: ") {
-                    let file_path = PathBuf::from(file_path.trim());
-                    // Re-index if the file still exists
-                    if file_path.exists() && indexer.index_file(&file_path).is_ok() {
-                        loaded += 1;
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
-    Ok(loaded)
+/// Trait for the code-indexer backend injected at application startup.
+///
+/// Implementors wrap a concrete indexer (e.g. `SimpleIndexer`) and expose
+/// the subset of operations used by the rest of the platform.
+pub trait IndexerBackend: Send + Sync {
+    fn index_file(&mut self, path: &Path) -> anyhow::Result<()>;
+    fn index_directory(&mut self, path: &Path) -> anyhow::Result<()>;
+    fn all_files(&self) -> Vec<String>;
+    fn search(
+        &self,
+        pattern: &str,
+        path_filter: Option<&str>,
+    ) -> anyhow::Result<Vec<CodeSearchResult>>;
+    fn find_files(&self, pattern: &str) -> anyhow::Result<Vec<String>>;
 }
 
-/// Manages the code indexer state
+/// A single search hit returned by [`IndexerBackend::search`].
+#[derive(Debug, Clone)]
+pub struct CodeSearchResult {
+    pub file_path: String,
+    pub line_number: usize,
+    pub line_content: String,
+    pub matches: Vec<String>,
+}
+
+/// Manages the code indexer state.
+///
+/// The backend is injected via [`Self::set_backend`]; until that is called
+/// every accessor returns "not initialized".
 pub struct IndexerState {
-    /// The file indexer for workspace navigation
-    indexer: RwLock<Option<SimpleIndexer>>,
-    /// Current workspace root
+    backend: RwLock<Option<Box<dyn IndexerBackend>>>,
     workspace_root: RwLock<Option<PathBuf>>,
 }
 
 impl IndexerState {
     pub fn new() -> Self {
         Self {
-            indexer: RwLock::new(None),
+            backend: RwLock::new(None),
             workspace_root: RwLock::new(None),
         }
     }
 
-    /// Initialize the indexer for a workspace with configurable storage location.
-    ///
-    /// # Arguments
-    /// * `workspace_path` - The workspace root directory
-    /// * `index_location` - Where to store the index (global or local)
-    pub fn initialize_with_location(
-        &self,
-        workspace_path: PathBuf,
-        index_location: IndexLocation,
-    ) -> anyhow::Result<()> {
-        tracing::info!(
-            "Initializing indexer for workspace: {:?} with location: {:?}",
-            workspace_path,
-            index_location
-        );
-
-        // First check for existing index in either location (for backward compatibility)
-        let index_dir =
-            if let Some(existing_dir) = find_existing_index_dir(&workspace_path, index_location) {
-                tracing::info!("Found existing index at: {:?}", existing_dir);
-                existing_dir
-            } else {
-                // Create new index at configured location
-                let new_dir = compute_index_dir(&workspace_path, index_location);
-                tracing::debug!("Creating index directory: {:?}", new_dir);
-                std::fs::create_dir_all(&new_dir)?;
-                tracing::debug!("Index directory created successfully");
-                new_dir
-            };
-
-        // Create the indexer with custom index directory
-        let mut indexer = SimpleIndexer::with_index_dir(workspace_path.clone(), index_dir.clone());
-
-        // Initialize the indexer storage
-        indexer.init()?;
-
-        // Load existing index from disk if available
-        let loaded = load_existing_index(&mut indexer, &index_dir).unwrap_or(0);
-        if loaded > 0 {
-            tracing::info!("Loaded {} files from existing index", loaded);
-        }
-
-        // Store state
-        *self.indexer.write() = Some(indexer);
-        *self.workspace_root.write() = Some(workspace_path.clone());
-
-        tracing::info!("Indexer initialized successfully for {:?}", workspace_path);
-        tracing::info!("Index files will be stored in: {:?}", index_dir);
-        Ok(())
+    /// Inject a ready-to-use indexer backend.
+    pub fn set_backend(&self, backend: Box<dyn IndexerBackend>, workspace_root: PathBuf) {
+        *self.backend.write() = Some(backend);
+        *self.workspace_root.write() = Some(workspace_root);
     }
 
-    /// Check if the indexer is initialized
     pub fn is_initialized(&self) -> bool {
-        self.indexer.read().is_some()
+        self.backend.read().is_some()
     }
 
-    /// Get the current workspace root
     pub fn workspace_root(&self) -> Option<PathBuf> {
         self.workspace_root.read().clone()
     }
 
-    /// Access the indexer for read operations
+    /// Access the indexer for read operations.
     pub fn with_indexer<F, R>(&self, f: F) -> anyhow::Result<R>
     where
-        F: FnOnce(&SimpleIndexer) -> anyhow::Result<R>,
+        F: FnOnce(&dyn IndexerBackend) -> anyhow::Result<R>,
     {
-        let guard = self.indexer.read();
+        let guard = self.backend.read();
         match guard.as_ref() {
-            Some(indexer) => f(indexer),
+            Some(backend) => f(backend.as_ref()),
             None => anyhow::bail!("Indexer not initialized"),
         }
     }
 
-    /// Access the indexer for write operations
+    /// Access the indexer for write operations.
     pub fn with_indexer_mut<F, R>(&self, f: F) -> anyhow::Result<R>
     where
-        F: FnOnce(&mut SimpleIndexer) -> anyhow::Result<R>,
+        F: FnOnce(&mut dyn IndexerBackend) -> anyhow::Result<R>,
     {
-        let mut guard = self.indexer.write();
+        let mut guard = self.backend.write();
         match guard.as_mut() {
-            Some(indexer) => f(indexer),
+            Some(backend) => f(backend.as_mut()),
             None => anyhow::bail!("Indexer not initialized"),
         }
     }
 
-    /// Shutdown the indexer
     pub fn shutdown(&self) {
         tracing::info!("Shutting down indexer");
-        *self.indexer.write() = None;
+        *self.backend.write() = None;
         *self.workspace_root.write() = None;
     }
 }
