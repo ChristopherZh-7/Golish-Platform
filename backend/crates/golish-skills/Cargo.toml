@@ -6,6 +6,8 @@ authors.workspace = true
 description = "Agent skills discovery, parsing, and matching for Golish"
 
 [dependencies]
+anyhow = { workspace = true }
+golish-core = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 tracing = { workspace = true }

@@ -372,3 +372,39 @@ impl GolishSessionManager {
         }
     }
 }
+
+impl golish_core::SessionManager for GolishSessionManager {
+    fn add_user_message(&mut self, content: &str) {
+        self.add_user_message(content);
+    }
+
+    fn add_assistant_message(&mut self, content: &str) {
+        self.add_assistant_message(content);
+    }
+
+    fn update_workspace_sync(&mut self, new_path: std::path::PathBuf) {
+        let new_label = new_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("workspace")
+            .to_string();
+        self.workspace_path = new_path;
+        self.workspace_label = new_label;
+    }
+
+    fn save(&self) -> anyhow::Result<()> {
+        GolishSessionManager::save(self).map(|_| ())
+    }
+
+    fn finalize(&mut self) -> anyhow::Result<std::path::PathBuf> {
+        GolishSessionManager::finalize(self)
+    }
+
+    fn set_agent_mode(&mut self, mode: String) {
+        self.set_agent_mode(mode);
+    }
+
+    fn set_sidecar_session_id(&mut self, id: String) {
+        self.set_sidecar_session_id(id);
+    }
+}

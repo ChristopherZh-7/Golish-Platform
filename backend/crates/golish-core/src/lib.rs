@@ -28,6 +28,9 @@ pub mod plan;
 pub mod prompt;
 pub mod ready_gate;
 pub mod utils;
+pub mod session_manager;
+pub mod skill_provider;
+pub mod web_fetch;
 
 // Re-exports
 pub use api_request_stats::{
@@ -52,3 +55,6 @@ pub use session::{
 pub use ready_gate::DbReadyGate;
 pub use tool::Tool;
 pub use tool_name::{ToolCategory, ToolName};
+pub use session_manager::{SessionManager, SessionManagerFactory};
+pub use skill_provider::{SkillMatch, SkillMetadata, SkillProvider};
+pub use web_fetch::{WebFetchProvider, WebFetchResult};
