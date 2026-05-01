@@ -11,8 +11,9 @@ alwaysApply: false
 - ✅ 7 个 trait 抽象 + 8 个应用层实现
 - ✅ 前端 16 个 API 模块，组件零 invoke（除 DetachedView 窗口管理）
 - ✅ 0 errors, 0 warnings
+- ✅ golish-db 重复 ready_gate.rs 已删除
 - ✅ ts-rs 类型生成基础设施已存在 (`frontend/lib/generated/`)
-- ✅ 4 个类型已迁移到 ts-rs 生成：StepStatus, PlanStep, PlanSummary, ApprovalPattern
+- ✅ 6 个类型已迁移到 ts-rs 生成：StepStatus, PlanStep, PlanSummary, ApprovalPattern, ToolSource, RiskLevel
 
 ## 剩余 A+ 任务
 
