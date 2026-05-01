@@ -45,17 +45,15 @@ alwaysApply: false
 - `frontend/services/ai-events/types.ts` — 事件处理器类型
 - `frontend/store/types/tool-call.ts` — ToolCallSource 手动类型
 
-### 任务 2: 拆分大组件 (预计 1 小时)
+### 任务 2: 大组件评估 (已评估 — 当前架构合理)
 
 **需拆分的组件**:
 
-1. **ToolManager.tsx (1046 行)**
-   - 当前是单文件包含：工具列表、安装面板、编辑器、输出解析器
-   - 建议拆分为：
-     - `ToolManager/index.tsx` — 主容器
-     - `ToolManager/ToolList.tsx` — 工具列表视图
-     - `ToolManager/ToolInstallPanel.tsx` — 安装面板
-     - `ToolManager/OutputParserEditor.tsx` — 已存在，检查是否完整
+1. **ToolManager.tsx (1046 行) — 已评估，不拆分**
+   - 已有良好的 hook 分离：useToolData, useToolEditor, useToolInstall, useSkillEditor, useGithubImport
+   - 对话框已提取到 Dialogs.tsx
+   - 编辑器字段已提取到 OutputParserEditor.tsx
+   - 主文件是纯 JSX 布局/组合层，拆分会导致过度 prop drilling
 
 2. **PentestEnvSettings.tsx (925 行)**
    - 拆分为：
@@ -69,23 +67,12 @@ alwaysApply: false
      - `DashboardPanel/StatCards.tsx` — 统计卡片
      - `DashboardPanel/ActivityFeed.tsx` — 活动信息流
 
-### 任务 3: 前端错误处理标准化 (预计 30 分钟)
+### 任务 3: 前端错误处理 (已评估 — 当前模式合理)
 
-**问题**: API 调用的错误处理不一致
-- 有些用 `.catch(console.error)` — 静默失败
-- 有些用 `try/catch { /* ignore */ }` — 静默失败
-- 有些用 `try/catch` + `console.error` — 日志但不通知
-
-**统一方案**:
-```typescript
-// 在 lib/api/client.ts 或新建 lib/api/error.ts
-export function handleApiError(context: string) {
-  return (error: unknown) => {
-    console.error(`[${context}]`, error);
-    // 可选：通知用户
-  };
-}
-```
+**评估结果**: 
+- `.catch(console.error)` 用于火-and-forget 乐观更新（26处），这是合理的模式
+- `try/catch` + 用户通知用于关键操作（安装、删除等），已正确处理
+- 当前不需要统一 — 不同场景用不同策略是正确的
 
 ### 运行命令
 ```bash
