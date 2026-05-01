@@ -13,8 +13,8 @@ pub use types::{BriefingPlan, MemoryHit, ScoredMemoryHit, ToolCallGuard};
 
 use std::sync::Arc;
 
-use golish_db::DbReadyGate;
-use golish_db::embeddings::Embedder;
+use golish_core::DbReadyGate;
+use crate::db_traits::TextEmbedder;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -31,7 +31,8 @@ pub struct DbTracker {
     pub(crate) project_path: Option<String>,
     pub(crate) task_id: Option<Uuid>,
     pub(crate) subtask_id: Option<Uuid>,
-    pub(crate) embedder: Option<Arc<dyn Embedder>>,
+    pub(crate) embedder: Option<Arc<dyn TextEmbedder>>,
+    pub(crate) repo: Option<Arc<dyn crate::db_traits::DbRepoProvider>>,
 }
 
 impl DbTracker {
@@ -44,15 +45,24 @@ impl DbTracker {
             task_id: None,
             subtask_id: None,
             embedder: None,
+            repo: None,
         }
     }
 
-    pub fn set_embedder(&mut self, embedder: Arc<dyn Embedder>) {
+    pub fn set_embedder(&mut self, embedder: Arc<dyn TextEmbedder>) {
         self.embedder = Some(embedder);
     }
 
-    pub fn embedder(&self) -> Option<&Arc<dyn Embedder>> {
+    pub fn embedder(&self) -> Option<&Arc<dyn TextEmbedder>> {
         self.embedder.as_ref()
+    }
+
+    pub fn set_repo(&mut self, repo: Arc<dyn crate::db_traits::DbRepoProvider>) {
+        self.repo = Some(repo);
+    }
+
+    pub fn repo(&self) -> Option<&dyn crate::db_traits::DbRepoProvider> {
+        self.repo.as_deref()
     }
 
     pub fn with_project_path(mut self, path: Option<String>) -> Self {

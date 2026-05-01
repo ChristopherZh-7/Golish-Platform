@@ -273,8 +273,74 @@ pub fn filter_content(result: &str) -> Option<String> {
 }
 
 fn strip_ansi(s: &str) -> String {
-    let re = regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap();
-    re.replace_all(s, "").to_string()
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for nc in chars.by_ref() {
+                    if nc.is_ascii_alphabetic() || nc == 'm' {
+                        break;
+                    }
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Build a search-friendly markdown document from tool invocation details.
+pub fn build_memory_content(
+    tool_name: &str,
+    args: &serde_json::Value,
+    result: &str,
+) -> String {
+    match tool_name {
+        "run_command" | "bash" | "shell" => {
+            let cmd = extract_str(args, "command")
+                .or_else(|| extract_str(args, "cmd"))
+                .unwrap_or_default();
+            format!(
+                "## Command Execution\n**Command:** `{cmd}`\n\n**Output:**\n```\n{result}\n```"
+            )
+        }
+        "web_search" | "tavily_search" => {
+            let query = extract_str(args, "query").unwrap_or_default();
+            format!("## Web Search\n**Query:** {query}\n\n**Results:**\n{result}")
+        }
+        "web_fetch" => {
+            let url = extract_str(args, "url").unwrap_or_default();
+            format!("## Web Fetch\n**URL:** {url}\n\n**Content:**\n{result}")
+        }
+        "write_file" | "create_file" => {
+            let path = extract_str(args, "path").unwrap_or_default();
+            format!("## File Created/Written\n**Path:** `{path}`\n\n**Summary:** {result}")
+        }
+        "edit_file" => {
+            let path = extract_str(args, "path").unwrap_or_default();
+            format!("## File Edited\n**Path:** `{path}`\n\n**Change:** {result}")
+        }
+        _ => {
+            let args_preview = truncate_json(args, 300);
+            format!("## {tool_name}\n**Args:** {args_preview}\n\n**Result:**\n{result}")
+        }
+    }
+}
+
+fn extract_str<'a>(v: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    v.get(key).and_then(|v| v.as_str())
+}
+
+fn truncate_json(v: &serde_json::Value, max_len: usize) -> String {
+    let s = v.to_string();
+    if s.len() <= max_len {
+        s
+    } else {
+        format!("{}...", &s[..max_len])
+    }
 }
 
 // ============================================================================
