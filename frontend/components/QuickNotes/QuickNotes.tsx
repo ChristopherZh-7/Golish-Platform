@@ -1,19 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@/lib/api";
+import { notes } from "@/lib/api";
+import type { Note } from "@/lib/api/notes";
 import { logAudit } from "@/lib/audit";
 import { MessageSquare, Plus, Trash2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getProjectPath } from "@/lib/projects";
 
-interface Note {
-  id: string;
-  entity_type: string;
-  entity_id: string;
-  content: string;
-  color: string;
-  created_at: number;
-  updated_at: number;
-}
 
 const COLORS = [
   { id: "yellow", bg: "bg-yellow-500/10 border-yellow-500/20", dot: "bg-yellow-400" },
@@ -41,7 +33,7 @@ export function QuickNotes({
 
   const load = useCallback(async () => {
     try {
-      const list = await invoke<Note[]>("notes_list", {
+      const list = await notes.listNotes({
         entityType,
         entityId,
         projectPath: getProjectPath(),
@@ -57,7 +49,7 @@ export function QuickNotes({
   const handleAdd = useCallback(async () => {
     if (!newContent.trim()) return;
     try {
-      await invoke("notes_add", {
+      await notes.addNote({
         entityType,
         entityId,
         content: newContent.trim(),
@@ -74,7 +66,7 @@ export function QuickNotes({
 
   const handleUpdate = useCallback(async (id: string, content: string) => {
     try {
-      await invoke("notes_update", { id, content, projectPath: getProjectPath() });
+      await notes.updateNote({ id, content, projectPath: getProjectPath() });
       setEditingId(null);
       load();
     } catch { /* ignore */ }
@@ -82,7 +74,7 @@ export function QuickNotes({
 
   const handleDelete = useCallback(async (id: string) => {
     try {
-      await invoke("notes_delete", { id, projectPath: getProjectPath() });
+      await notes.deleteNote({ id, projectPath: getProjectPath() });
       load();
     } catch { /* ignore */ }
   }, [load]);

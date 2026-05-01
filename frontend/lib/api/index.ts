@@ -21,7 +21,10 @@ import * as ai from "./ai";
 import * as settings from "./settings";
 import * as mcp from "./mcp";
 import * as context from "./context";
+import * as wordlist from "./wordlist";
+import * as notes from "./notes";
+import * as methodology from "./methodology";
 
-export { pty, git, shell, files, ai, settings, mcp, context };
+export { pty, git, shell, files, ai, settings, mcp, context, wordlist, notes, methodology };
 
-export const api = { pty, git, shell, files, ai, settings, mcp, context } as const;
+export const api = { pty, git, shell, files, ai, settings, mcp, context, wordlist, notes, methodology } as const;
