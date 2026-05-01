@@ -20,7 +20,7 @@
 
 mod cli_json;
 mod event_loop;
-pub(crate) mod formatting;
+pub mod formatting;
 mod terminal;
 
 #[cfg(test)]
