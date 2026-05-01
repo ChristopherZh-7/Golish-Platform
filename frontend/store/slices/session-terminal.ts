@@ -6,6 +6,7 @@
 import { sendNotification } from "@/lib/systemNotifications";
 import { logger } from "@/lib/logger";
 import type { CommandBlock } from "../store-types";
+import type { SessionStoreDraft } from "./session-draft-types";
 import {
   _drainOutputBuffer,
   deleteOutputBuffer,
@@ -17,11 +18,11 @@ import {
 } from "./session-helpers";
 import type { ImmerSet, StateGet } from "./types";
 
-export function createSessionTerminalActions(set: ImmerSet<any>, get: StateGet<any>) {
+export function createSessionTerminalActions(set: ImmerSet<SessionStoreDraft>, get: StateGet<SessionStoreDraft>) {
   return {
     handlePromptStart: (sessionId: string) => {
       const drainedOutput = _drainOutputBuffer(sessionId);
-      set((state: any) => {
+      set((state) => {
         const pending = state.pendingCommand[sessionId];
         if (pending?.command) {
           const session = state.sessions[sessionId];
@@ -70,7 +71,7 @@ export function createSessionTerminalActions(set: ImmerSet<any>, get: StateGet<a
 
     handleCommandStart: (sessionId: string, command: string | null) => {
       deleteOutputBuffer(sessionId);
-      set((state: any) => {
+      set((state) => {
         const session = state.sessions[sessionId];
         const effectiveCommand = command || state.lastSentCommand[sessionId] || null;
         state.pendingCommand[sessionId] = {
@@ -84,7 +85,7 @@ export function createSessionTerminalActions(set: ImmerSet<any>, get: StateGet<a
     },
 
     handleCommandEnd: (sessionId: string, exitCode: number, endTime?: number) => {
-      const currentState = get() as any;
+      const currentState = get();
       const pending = currentState.pendingCommand[sessionId];
       const command = pending?.command;
       const session = currentState.sessions[sessionId];
@@ -93,7 +94,7 @@ export function createSessionTerminalActions(set: ImmerSet<any>, get: StateGet<a
       const drainedOutput = _drainOutputBuffer(sessionId);
       const owningTabId = shouldNotify ? getOwningTabIdFromState(currentState, sessionId) : null;
 
-      set((state: any) => {
+      set((state) => {
         const pending = state.pendingCommand[sessionId];
         if (pending) {
           const session = state.sessions[sessionId];
@@ -163,8 +164,8 @@ export function createSessionTerminalActions(set: ImmerSet<any>, get: StateGet<a
         current = current.slice(current.length - MAX_OUTPUT_BUFFER_BYTES);
       }
       setOutputBuffer(sessionId, current);
-      if (!(get() as any).pendingCommand[sessionId]) {
-        set((state: any) => {
+      if (!get().pendingCommand[sessionId]) {
+        set((state) => {
           if (state.pendingCommand[sessionId]) return;
           const session = state.sessions[sessionId];
           state.pendingCommand[sessionId] = {
@@ -182,10 +183,10 @@ export function createSessionTerminalActions(set: ImmerSet<any>, get: StateGet<a
     },
 
     toggleBlockCollapse: (blockId: string) =>
-      set((state: any) => {
-        for (const timeline of Object.values<any[]>(state.timelines)) {
+      set((state) => {
+        for (const timeline of Object.values(state.timelines)) {
           const unifiedBlock = timeline.find(
-            (b: any) => b.type === "command" && b.id === blockId,
+            (b) => b.type === "command" && b.id === blockId,
           );
           if (unifiedBlock && unifiedBlock.type === "command") {
             unifiedBlock.data.isCollapsed = !unifiedBlock.data.isCollapsed;
@@ -195,17 +196,17 @@ export function createSessionTerminalActions(set: ImmerSet<any>, get: StateGet<a
       }),
 
     setLastSentCommand: (sessionId: string, command: string | null) =>
-      set((state: any) => {
+      set((state) => {
         state.lastSentCommand[sessionId] = command;
       }),
 
     clearBlocks: (sessionId: string) => {
       deleteOutputBuffer(sessionId);
-      set((state: any) => {
+      set((state) => {
         const timeline = state.timelines[sessionId];
         if (timeline) {
           state.timelines[sessionId] = timeline.filter(
-            (block: any) => block.type !== "command",
+            (block) => block.type !== "command",
           );
         }
         state.pendingCommand[sessionId] = null;
@@ -213,20 +214,20 @@ export function createSessionTerminalActions(set: ImmerSet<any>, get: StateGet<a
     },
 
     requestTerminalClear: (sessionId: string) =>
-      set((state: any) => {
+      set((state) => {
         state.terminalClearRequest[sessionId] =
           (state.terminalClearRequest[sessionId] ?? 0) + 1;
       }),
 
     setPipelineCommandSource: (sessionId: string, isPipeline: boolean) =>
-      set((state: any) => {
+      set((state) => {
         state.pipelineCommandSource[sessionId] = isPipeline;
       }),
 
     // --- Timeline helpers ---
 
     addSystemHookBlock: (sessionId: string, hooks: string[]) =>
-      set((state: any) => {
+      set((state) => {
         if (!state.timelines[sessionId]) {
           state.timelines[sessionId] = [];
         }
@@ -240,7 +241,7 @@ export function createSessionTerminalActions(set: ImmerSet<any>, get: StateGet<a
 
     clearTimeline: (sessionId: string) => {
       deleteOutputBuffer(sessionId);
-      set((state: any) => {
+      set((state) => {
         state.timelines[sessionId] = [];
         state.pendingCommand[sessionId] = null;
         if (state.agentStreamingBuffer) state.agentStreamingBuffer[sessionId] = [];

@@ -87,6 +87,17 @@ export function StaticTerminalOutput({
   // to prevent resize loops that cause the "progressive deletion" visual bug.
   const isWritingRef = useRef(false);
 
+  const applyOutputOverrides = useCallback((terminal: TerminalType) => {
+    terminal.options.fontSize = 12;
+    terminal.options.lineHeight = 1.4;
+    terminal.options.fontWeight = "normal";
+    terminal.options.letterSpacing = 0;
+    terminal.options.theme = {
+      ...terminal.options.theme,
+      background: "rgba(0,0,0,0)",
+    };
+  }, []);
+
   // Effect to create terminal (runs once on mount)
   useEffect(() => {
     if (!containerRef.current) return;
@@ -104,6 +115,7 @@ export function StaticTerminalOutput({
         scrollback: 10000,
         convertEol: true,
         allowProposedApi: true,
+        allowTransparency: true,
       });
 
       const fitAddon = new FitAddon();
@@ -111,15 +123,7 @@ export function StaticTerminalOutput({
       fitAddonRef.current = fitAddon;
 
       ThemeManager.applyToTerminal(terminal);
-
-      terminal.options.fontSize = 12;
-      terminal.options.lineHeight = 1.4;
-      terminal.options.fontWeight = "normal";
-      terminal.options.letterSpacing = 0;
-      terminal.options.theme = {
-        ...terminal.options.theme,
-        background: "rgba(0,0,0,0)",
-      };
+      applyOutputOverrides(terminal);
 
       terminal.open(containerRef.current);
       terminalRef.current = terminal;
@@ -131,6 +135,14 @@ export function StaticTerminalOutput({
         /* ignore */
       }
     }
+
+    // Subscribe to theme changes so output colors stay in sync
+    const unsubscribeTheme = ThemeManager.onChange(() => {
+      if (terminalRef.current) {
+        ThemeManager.applyToTerminal(terminalRef.current);
+        applyOutputOverrides(terminalRef.current);
+      }
+    });
 
     // Re-fit when container resizes, but skip during content writes
     const container = containerRef.current;
@@ -147,6 +159,7 @@ export function StaticTerminalOutput({
     observer.observe(container);
 
     return () => {
+      unsubscribeTheme();
       observer.disconnect();
       if (terminalRef.current) {
         terminalRef.current.dispose();
@@ -154,7 +167,7 @@ export function StaticTerminalOutput({
         fitAddonRef.current = null;
       }
     };
-  }, []);
+  }, [applyOutputOverrides]);
 
   // Effect to register link provider when sessionId/workingDirectory available
   useEffect(() => {

@@ -81,11 +81,11 @@ export function ZapNotInstalled({ onRetry }: { onRetry: () => void }) {
     setInstalling(true);
     setInstallError(null);
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
+      const { securityApi } = await import("@/lib/security");
       const { getSettings } = await import("@/lib/settings");
       const settings = await getSettings().catch(() => null);
       const proxyUrl = settings?.network?.proxy_url || null;
-      await invoke("pentest_install_runtime", { runtimeType: "brew-cask:zap", proxyUrl });
+      await securityApi.installRuntime("brew-cask:zap", proxyUrl ?? undefined);
       onRetry();
     } catch (e) {
       setInstallError(String(e));

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { usePathCompletion } from "./usePathCompletion";
 
 // Mock the tauri module
-vi.mock("@/lib/tauri", () => ({
+vi.mock("@/lib/api/shell", () => ({
   listPathCompletions: vi.fn(),
 }));
 
@@ -18,7 +18,7 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 import { logger } from "@/lib/logger";
-import { listPathCompletions } from "@/lib/tauri";
+import { listPathCompletions } from "@/lib/api/shell";
 
 const mockListPathCompletions = vi.mocked(listPathCompletions);
 

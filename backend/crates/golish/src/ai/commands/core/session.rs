@@ -10,7 +10,7 @@ use super::super::super::llm_client::{ProviderConfig, SharedComponentsConfig};
 use super::super::configure_bridge;
 use crate::runtime::TauriRuntime;
 use crate::state::AppState;
-use golish_ai::TranscriptWriter;
+use golish_events::TranscriptWriter;
 use golish_context::ContextManagerConfig;
 use golish_core::runtime::GolishRuntime;
 

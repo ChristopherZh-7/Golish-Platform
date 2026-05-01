@@ -3,7 +3,7 @@
  * These replace workspace.json read/write with PostgreSQL-backed storage.
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/api/client";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 

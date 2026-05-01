@@ -3,22 +3,14 @@ import {
   Check, FileSearch, Loader2, Play, Square, Trash2, Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import { useStore } from "@/store";
 import { StyledSelect } from "./shared";
-
-interface WordlistOption { id: string; name: string; category: string; line_count: number }
-interface SensitiveResult {
-  id: string; baseUrl: string; probePath: string; fullUrl: string;
-  statusCode: number; contentLength: number; contentType: string;
-  isConfirmed: boolean; aiVerdict: string | null; createdAt: number;
-}
-interface SensitiveProgress {
-  scanId: string; total: number; completed: number; hits: number;
-  currentUrl: string; running: boolean; dirsFound: number;
-}
+import {
+  securityApi,
+  type WordlistOption, type SensitiveResult, type SensitiveProgress,
+} from "@/lib/security";
 
 export function SensitiveScanPanel() {
   const projectPath = useStore((s) => s.currentProjectPath);
@@ -33,13 +25,13 @@ export function SensitiveScanPanel() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    invoke<WordlistOption[]>("wordlist_list").then((wl) => {
+    securityApi.wordlistList().then((wl) => {
       setWordlists(Array.isArray(wl) ? wl : []);
     }).catch(() => {});
-    invoke<SensitiveResult[]>("sensitive_scan_results", { projectPath, confirmedOnly: false }).then((r) => {
+    securityApi.sensitiveScanResults(projectPath, false).then((r) => {
       setResults(Array.isArray(r) ? r : []);
     }).catch(() => {});
-    invoke<boolean>("sensitive_scan_status").then((r) => setRunning(r)).catch(() => {});
+    securityApi.sensitiveScanStatus().then((r) => setRunning(r)).catch(() => {});
   }, [projectPath]);
 
   useEffect(() => {
@@ -47,7 +39,7 @@ export function SensitiveScanPanel() {
       setProgress(event.payload);
       setRunning(event.payload.running);
       if (!event.payload.running) {
-        invoke<SensitiveResult[]>("sensitive_scan_results", { projectPath, confirmedOnly: false }).then((r) => {
+        securityApi.sensitiveScanResults(projectPath, false).then((r) => {
           setResults(Array.isArray(r) ? r : []);
         }).catch(() => {});
       }
@@ -57,15 +49,10 @@ export function SensitiveScanPanel() {
 
   const handleStart = useCallback(async () => {
     try {
-      await invoke("sensitive_scan_start", {
-        config: {
-          targetUrl: targetUrl || "http://localhost",
-          wordlistId: selectedWordlist || null,
-          ratePerSecond,
-          useSitemapDirs,
-        },
-        projectPath,
-      });
+      await securityApi.sensitiveScanStart(
+        projectPath, targetUrl || "http://localhost",
+        selectedWordlist || "", ratePerSecond, useSitemapDirs,
+      );
       setRunning(true);
     } catch (e) {
       console.error("Sensitive scan start failed:", e);
@@ -73,11 +60,11 @@ export function SensitiveScanPanel() {
   }, [targetUrl, selectedWordlist, ratePerSecond, useSitemapDirs, projectPath]);
 
   const handleStop = useCallback(async () => {
-    await invoke("sensitive_scan_stop").catch(() => {});
+    await securityApi.sensitiveScanStop().catch(() => {});
   }, []);
 
   const handleClear = useCallback(async () => {
-    await invoke("sensitive_scan_clear", { projectPath }).catch(() => {});
+    await securityApi.sensitiveScanClear(projectPath).catch(() => {});
     setResults([]);
     setSelectedIds(new Set());
   }, [projectPath]);
@@ -101,7 +88,7 @@ export function SensitiveScanPanel() {
   const handleConfirm = useCallback(async () => {
     const ids = Array.from(selectedIds);
     if (ids.length === 0) return;
-    await invoke("sensitive_scan_confirm", { ids, confirmed: true }).catch(() => {});
+    await securityApi.sensitiveScanConfirm(ids, true).catch(() => {});
     setResults((prev) => prev.map((r) => selectedIds.has(r.id) ? { ...r, isConfirmed: true } : r));
     setSelectedIds(new Set());
   }, [selectedIds]);
@@ -152,10 +139,9 @@ ${items}`;
       if (jsonStart >= 0 && jsonEnd > jsonStart) {
         const verdicts = JSON.parse(response.substring(jsonStart, jsonEnd + 1));
         if (Array.isArray(verdicts)) {
-          const applied = await invoke<{ analyzed: number; true_positives: number }>(
-            "sensitive_scan_apply_verdicts", { verdicts, projectPath }
-          );
-          const freshResults = await invoke<SensitiveResult[]>("sensitive_scan_results", { projectPath, confirmedOnly: false });
+          const applied = await securityApi.sensitiveScanAiAnalyze(
+            projectPath);
+          const freshResults = await securityApi.sensitiveScanResults(projectPath, false);
           setResults(Array.isArray(freshResults) ? freshResults : []);
           console.info("[SensitiveScan] AI analyzed:", applied);
         }

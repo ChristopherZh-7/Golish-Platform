@@ -109,9 +109,13 @@ pub async fn project_export(
     let mut count = 0usize;
 
     // Global shared data (file-based, unchanged)
-    add_directory_to_zip(&mut zip, &base.join("wiki"), "wiki", &mut count)?;
+    let wiki_dir = golish_core::paths::wiki_dir()
+        .unwrap_or_else(|| base.join("wiki"));
+    add_directory_to_zip(&mut zip, &wiki_dir, "wiki", &mut count)?;
     add_directory_to_zip(&mut zip, &base.join("toolsconfig"), "toolsconfig", &mut count)?;
-    add_directory_to_zip(&mut zip, &base.join("skills"), "skills", &mut count)?;
+    let skills_dir = golish_core::paths::skills_dir()
+        .unwrap_or_else(|| base.join("skills"));
+    add_directory_to_zip(&mut zip, &skills_dir, "skills", &mut count)?;
 
     // Export database tables as JSON
     let targets = export_table_as_json(pool, "SELECT row_to_json(t) FROM targets t").await?;

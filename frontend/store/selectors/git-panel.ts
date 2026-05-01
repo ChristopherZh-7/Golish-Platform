@@ -12,7 +12,7 @@
  * 4. Cross-session isolation - changes to one session don't invalidate others
  */
 
-import type { GitStatusSummary } from "@/lib/tauri";
+import type { GitStatusSummary } from "@/lib/api/git";
 import { useStore } from "../index";
 
 /**

@@ -37,8 +37,9 @@ golish-mcp = { path = "../golish-mcp" }
 golish-pentest = { path = "../golish-pentest" }
 golish-db = { path = "../golish-db" }
 
-# Domain crate
+# Domain crates
 golish-ai = { path = "../golish-ai" }
+golish-events = { workspace = true }
 golish-sub-agents = { path = "../golish-sub-agents" }
 
 # Tauri (for GUI app)

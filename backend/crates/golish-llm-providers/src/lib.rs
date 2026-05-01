@@ -19,15 +19,15 @@
 
 mod model_capabilities;
 mod openai_config;
+mod provider_config;
 mod provider_trait;
 mod reasoning_models;
 
 pub use model_capabilities::*;
 pub use openai_config::*;
+pub use provider_config::*;
 pub use provider_trait::*;
 pub use reasoning_models::*;
-
-use std::path::PathBuf;
 
 use rig::providers::anthropic as rig_anthropic;
 use rig::providers::gemini as rig_gemini;
@@ -36,7 +36,6 @@ use rig::providers::ollama as rig_ollama;
 use rig::providers::openai as rig_openai;
 use rig::providers::openrouter as rig_openrouter;
 use rig::providers::xai as rig_xai;
-use serde::Deserialize;
 
 /// Convert settings-level [`OpenRouterProviderPreferences`](golish_settings::OpenRouterProviderPreferences)
 /// into the JSON value expected by the OpenRouter API, using rig-core's native
@@ -171,11 +170,165 @@ pub enum LlmClient {
     Mock,
 }
 
-// Note: A `complete!` macro was attempted here to unify completion calls across providers,
-// but it cannot work because rig_anthropic_vertex returns a different CompletionResponse type
-// than the standard rig providers. Each call site must use explicit match statements.
+/// Dispatch a closure-like body over all [`LlmClient`] variants uniformly.
+///
+/// Every variant except `Mock` binds the inner model to `$model` and evaluates `$body`.
+/// The `Mock` arm evaluates `$mock_body` instead.
+///
+/// Because only one match arm executes, captured variables are moved exactly once.
+///
+/// ```ignore
+/// dispatch_llm_client!(&*client, |m| {
+///     m.completion(request).await
+/// }, mock => Err(anyhow!("no mock")));
+/// ```
+#[macro_export]
+macro_rules! dispatch_llm_client {
+    ($client:expr, |$model:ident| $body:expr, mock => $mock_body:expr) => {
+        match $client {
+            $crate::LlmClient::VertexAnthropic($model) => $body,
+            $crate::LlmClient::VertexGemini($model) => $body,
+            $crate::LlmClient::RigOpenRouter($model) => $body,
+            $crate::LlmClient::RigOpenAi($model) => $body,
+            $crate::LlmClient::RigOpenAiResponses($model) => $body,
+            $crate::LlmClient::OpenAiReasoning($model) => $body,
+            $crate::LlmClient::RigAnthropic($model) => $body,
+            $crate::LlmClient::RigOllama($model) => $body,
+            $crate::LlmClient::RigGemini($model) => $body,
+            $crate::LlmClient::RigGroq($model) => $body,
+            $crate::LlmClient::RigXai($model) => $body,
+            $crate::LlmClient::RigZaiSdk($model) => $body,
+            $crate::LlmClient::RigNvidia($model) => $body,
+            $crate::LlmClient::Mock => $mock_body,
+        }
+    };
+}
+
+/// Like [`dispatch_llm_client!`] but splits Vertex Anthropic (extended thinking)
+/// from the generic path.
+///
+/// Use when Vertex Anthropic requires special handling (e.g. the thinking-enabled
+/// agentic loop) while all other providers share the same body.
+///
+/// ```ignore
+/// dispatch_llm_client_split!(&*client,
+///     vertex_anthropic(va) => { self.run_thinking_turn(&va, ...).await },
+///     generic(m)           => { self.run_generic_turn(&m, ...).await },
+///     mock                 => Err(anyhow!("mock")),
+/// );
+/// ```
+#[macro_export]
+macro_rules! dispatch_llm_client_split {
+    ($client:expr,
+     vertex_anthropic($va:ident) => $va_body:expr,
+     generic($g:ident) => $g_body:expr,
+     mock => $mock_body:expr $(,)?
+    ) => {
+        match $client {
+            $crate::LlmClient::VertexAnthropic($va) => $va_body,
+            $crate::LlmClient::VertexGemini($g) => $g_body,
+            $crate::LlmClient::RigOpenRouter($g) => $g_body,
+            $crate::LlmClient::RigOpenAi($g) => $g_body,
+            $crate::LlmClient::RigOpenAiResponses($g) => $g_body,
+            $crate::LlmClient::OpenAiReasoning($g) => $g_body,
+            $crate::LlmClient::RigAnthropic($g) => $g_body,
+            $crate::LlmClient::RigOllama($g) => $g_body,
+            $crate::LlmClient::RigGemini($g) => $g_body,
+            $crate::LlmClient::RigGroq($g) => $g_body,
+            $crate::LlmClient::RigXai($g) => $g_body,
+            $crate::LlmClient::RigZaiSdk($g) => $g_body,
+            $crate::LlmClient::RigNvidia($g) => $g_body,
+            $crate::LlmClient::Mock => $mock_body,
+        }
+    };
+}
 
 impl LlmClient {
+    /// Execute a one-shot (non-streaming) completion request.
+    ///
+    /// Dispatches to the correct provider variant internally, extracting text
+    /// from the response. This eliminates the need for callers to match on
+    /// all 14 `LlmClient` variants.
+    ///
+    /// Automatically handles the NVIDIA NIM workaround (system prompt serialized
+    /// as a leading user message instead of `preamble`).
+    pub async fn one_shot_completion(
+        &self,
+        system_prompt: &str,
+        user_message: &str,
+        temperature: Option<f64>,
+        max_tokens: Option<u64>,
+    ) -> anyhow::Result<String> {
+        use rig::completion::{
+            AssistantContent, CompletionModel as _, CompletionRequest, Message,
+        };
+        use rig::message::{Text as RigText, UserContent};
+        use rig::one_or_many::OneOrMany;
+
+        let is_nvidia = matches!(self, Self::RigNvidia(_));
+
+        let user_msg = Message::User {
+            content: OneOrMany::one(UserContent::Text(RigText {
+                text: user_message.to_string(),
+            })),
+        };
+
+        let (preamble, chat_history) = if is_nvidia {
+            let nvidia_history = vec![
+                Message::User {
+                    content: OneOrMany::one(UserContent::text(system_prompt)),
+                },
+                user_msg,
+            ];
+            (
+                None,
+                OneOrMany::many(nvidia_history)
+                    .expect("nvidia_history always has 2 elements"),
+            )
+        } else {
+            (
+                Some(system_prompt.to_string()),
+                OneOrMany::one(user_msg),
+            )
+        };
+
+        let request = CompletionRequest {
+            preamble,
+            chat_history,
+            documents: vec![],
+            tools: vec![],
+            temperature,
+            max_tokens,
+            tool_choice: None,
+            additional_params: None,
+            model: None,
+            output_schema: None,
+        };
+
+        dispatch_llm_client!(self, |m| {
+            let response = m
+                .completion(request)
+                .await
+                .map_err(|e| anyhow::anyhow!("LLM completion failed: {e}"))?;
+            let text = response
+                .choice
+                .iter()
+                .filter_map(|c| match c {
+                    AssistantContent::Text(t) => Some(t.text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            Ok(text)
+        }, mock => Err(anyhow::anyhow!("Mock client cannot execute completions")))
+    }
+
+    /// Returns `true` if this variant supports Anthropic extended thinking.
+    ///
+    /// Only `VertexAnthropic` supports the thinking-enabled agentic loop.
+    pub fn supports_thinking(&self) -> bool {
+        matches!(self, Self::VertexAnthropic(_))
+    }
     /// Check if this client uses an Anthropic model (Vertex AI, direct API, or Z.AI Anthropic).
     ///
     /// Returns true for providers that support Anthropic-specific features
@@ -258,271 +411,7 @@ impl LlmClient {
     }
 }
 
-/// Configuration for creating an AgentBridge with OpenRouter
-pub struct OpenRouterClientConfig<'a> {
-    pub workspace: PathBuf,
-    pub model: &'a str,
-    pub api_key: &'a str,
-    /// Provider preferences for routing and filtering (optional).
-    pub provider_preferences: Option<serde_json::Value>,
-}
-
-/// Configuration for creating an AgentBridge with Vertex AI Anthropic
-pub struct VertexAnthropicClientConfig<'a> {
-    pub workspace: PathBuf,
-    /// Path to service account JSON file. If None, uses application default credentials.
-    pub credentials_path: Option<&'a str>,
-    pub project_id: &'a str,
-    pub location: &'a str,
-    pub model: &'a str,
-}
-
-/// Configuration for creating an AgentBridge with Vertex AI Gemini
-pub struct VertexGeminiClientConfig<'a> {
-    pub workspace: PathBuf,
-    /// Path to service account JSON file. If None, uses application default credentials.
-    pub credentials_path: Option<&'a str>,
-    pub project_id: &'a str,
-    pub location: &'a str,
-    pub model: &'a str,
-    /// Whether to include thoughts in the response (for thinking models)
-    pub include_thoughts: bool,
-}
-
-/// Configuration for creating an AgentBridge with OpenAI
-pub struct OpenAiClientConfig<'a> {
-    pub workspace: PathBuf,
-    pub model: &'a str,
-    pub api_key: &'a str,
-    pub base_url: Option<&'a str>,
-    /// Reasoning effort level for reasoning models (e.g., "low", "medium", "high").
-    /// Reserved for future use with models that support reasoning effort configuration.
-    pub reasoning_effort: Option<&'a str>,
-    /// Enable OpenAI's native web search tool (web_search_preview).
-    pub enable_web_search: bool,
-    /// Web search context size: "low", "medium", or "high".
-    pub web_search_context_size: &'a str,
-}
-
-/// Configuration for creating an AgentBridge with direct Anthropic API
-pub struct AnthropicClientConfig<'a> {
-    pub workspace: PathBuf,
-    pub model: &'a str,
-    pub api_key: &'a str,
-}
-
-/// Configuration for creating an AgentBridge with Ollama
-pub struct OllamaClientConfig<'a> {
-    pub workspace: PathBuf,
-    pub model: &'a str,
-    pub base_url: Option<&'a str>,
-}
-
-/// Configuration for creating an AgentBridge with Gemini
-pub struct GeminiClientConfig<'a> {
-    pub workspace: PathBuf,
-    pub model: &'a str,
-    pub api_key: &'a str,
-}
-
-/// Configuration for creating an AgentBridge with Groq
-pub struct GroqClientConfig<'a> {
-    pub workspace: PathBuf,
-    pub model: &'a str,
-    pub api_key: &'a str,
-}
-
-/// Configuration for creating an AgentBridge with xAI (Grok)
-pub struct XaiClientConfig<'a> {
-    pub workspace: PathBuf,
-    pub model: &'a str,
-    pub api_key: &'a str,
-}
-
-/// Configuration for creating an AgentBridge with Z.AI via native SDK
-pub struct ZaiSdkClientConfig<'a> {
-    pub workspace: PathBuf,
-    pub model: &'a str,
-    pub api_key: &'a str,
-    /// Custom base URL (if None, uses default Z.AI endpoint)
-    pub base_url: Option<&'a str>,
-    /// Source channel identifier for request tracking
-    pub source_channel: Option<&'a str>,
-}
-
-/// Configuration for creating an AgentBridge with NVIDIA NIM
-pub struct NvidiaClientConfig<'a> {
-    pub workspace: PathBuf,
-    pub model: &'a str,
-    pub api_key: &'a str,
-    /// Custom base URL (if None, uses https://integrate.api.nvidia.com/v1)
-    pub base_url: Option<&'a str>,
-}
-
-fn default_web_search_context_size() -> String {
-    "medium".to_string()
-}
-
-fn default_include_thoughts() -> bool {
-    true
-}
-
-/// Unified configuration for all LLM providers.
-///
-/// Uses serde tag discrimination for clean JSON/frontend integration.
-/// This enables a single Tauri command to handle all provider initialization.
-#[allow(dead_code)] // Config enum for future multi-provider support
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "provider", rename_all = "snake_case")]
-pub enum ProviderConfig {
-    /// Anthropic Claude on Google Cloud Vertex AI
-    VertexAi {
-        workspace: String,
-        model: String,
-        #[serde(default)]
-        credentials_path: Option<String>,
-        project_id: String,
-        location: String,
-    },
-    /// Google Gemini on Vertex AI
-    VertexGemini {
-        workspace: String,
-        model: String,
-        #[serde(default)]
-        credentials_path: Option<String>,
-        project_id: String,
-        location: String,
-        #[serde(default = "default_include_thoughts")]
-        include_thoughts: bool,
-    },
-    /// OpenRouter API (access to multiple providers)
-    Openrouter {
-        workspace: String,
-        model: String,
-        api_key: String,
-        #[serde(default)]
-        provider_preferences: Option<serde_json::Value>,
-    },
-    /// OpenAI API (GPT models)
-    Openai {
-        workspace: String,
-        model: String,
-        api_key: String,
-        #[serde(default)]
-        base_url: Option<String>,
-        #[serde(default)]
-        reasoning_effort: Option<String>,
-        #[serde(default)]
-        enable_web_search: bool,
-        #[serde(default = "default_web_search_context_size")]
-        web_search_context_size: String,
-    },
-    /// Direct Anthropic API
-    Anthropic {
-        workspace: String,
-        model: String,
-        api_key: String,
-    },
-    /// Ollama local inference
-    Ollama {
-        workspace: String,
-        model: String,
-        #[serde(default)]
-        base_url: Option<String>,
-    },
-    /// Google Gemini
-    Gemini {
-        workspace: String,
-        model: String,
-        api_key: String,
-        #[serde(default = "default_include_thoughts")]
-        include_thoughts: bool,
-    },
-    /// Groq (fast inference)
-    Groq {
-        workspace: String,
-        model: String,
-        api_key: String,
-    },
-    /// xAI (Grok models)
-    Xai {
-        workspace: String,
-        model: String,
-        api_key: String,
-    },
-    /// Z.AI via native SDK
-    ZaiSdk {
-        workspace: String,
-        model: String,
-        api_key: String,
-        #[serde(default)]
-        base_url: Option<String>,
-        #[serde(default)]
-        source_channel: Option<String>,
-    },
-    /// NVIDIA NIM (OpenAI-compatible)
-    Nvidia {
-        workspace: String,
-        model: String,
-        api_key: String,
-        #[serde(default)]
-        base_url: Option<String>,
-    },
-}
-
-#[allow(dead_code)] // Methods for future multi-provider config support
-impl ProviderConfig {
-    /// Get the workspace path from any variant.
-    pub fn workspace(&self) -> &str {
-        match self {
-            Self::VertexAi { workspace, .. } => workspace,
-            Self::VertexGemini { workspace, .. } => workspace,
-            Self::Openrouter { workspace, .. } => workspace,
-            Self::Openai { workspace, .. } => workspace,
-            Self::Anthropic { workspace, .. } => workspace,
-            Self::Ollama { workspace, .. } => workspace,
-            Self::Gemini { workspace, .. } => workspace,
-            Self::Groq { workspace, .. } => workspace,
-            Self::Xai { workspace, .. } => workspace,
-            Self::ZaiSdk { workspace, .. } => workspace,
-            Self::Nvidia { workspace, .. } => workspace,
-        }
-    }
-
-    /// Get the model name from any variant.
-    pub fn model(&self) -> &str {
-        match self {
-            Self::VertexAi { model, .. } => model,
-            Self::VertexGemini { model, .. } => model,
-            Self::Openrouter { model, .. } => model,
-            Self::Openai { model, .. } => model,
-            Self::Anthropic { model, .. } => model,
-            Self::Ollama { model, .. } => model,
-            Self::Gemini { model, .. } => model,
-            Self::Groq { model, .. } => model,
-            Self::Xai { model, .. } => model,
-            Self::ZaiSdk { model, .. } => model,
-            Self::Nvidia { model, .. } => model,
-        }
-    }
-
-    /// Get the provider name as a string.
-    pub fn provider_name(&self) -> &'static str {
-        match self {
-            Self::VertexAi { .. } => "vertex_ai",
-            Self::VertexGemini { .. } => "vertex_gemini",
-            Self::Openrouter { .. } => "openrouter",
-            Self::Openai { .. } => "openai",
-            Self::Anthropic { .. } => "anthropic",
-            Self::Ollama { .. } => "ollama",
-            Self::Gemini { .. } => "gemini",
-            Self::Groq { .. } => "groq",
-            Self::Xai { .. } => "xai",
-            Self::ZaiSdk { .. } => "zai_sdk",
-            Self::Nvidia { .. } => "nvidia",
-        }
-    }
-}
+// Provider config structs and ProviderConfig enum are in provider_config.rs
 
 #[cfg(test)]
 mod tests {

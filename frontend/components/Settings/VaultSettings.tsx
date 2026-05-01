@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/api";
 import {
   ChevronDown, ChevronRight, Copy, Eye, EyeOff, Globe, KeyRound, Link2, Loader2, Plus, ShieldCheck, ShieldX, Trash2,
 } from "lucide-react";

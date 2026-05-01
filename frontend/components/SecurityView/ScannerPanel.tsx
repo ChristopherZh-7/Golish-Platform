@@ -5,24 +5,14 @@ import {
   ShieldAlert, ShieldCheck, ShieldX, Trash2, X, Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { invoke } from "@tauri-apps/api/core";
+import { securityApi } from "@/lib/security";
 import type { ZapAlert } from "@/lib/pentest/types";
 import { useTranslation } from "react-i18next";
 import { getProjectPath } from "@/lib/projects";
 import { useStore } from "@/store";
 import { useZapScanQueue } from "./hooks/useZapScanQueue";
 import type { ScanEndpoint } from "@/lib/pentest/scan-queue";
-
-interface VaultEntrySafe {
-  id: string;
-  name: string;
-  entry_type: string;
-  username: string;
-  notes: string;
-  project: string;
-  tags: string[];
-  created_at: string;
-}
+import type { VaultEntrySafe } from "@/lib/security";
 
 function PolicyDropdown({ value, onChange, options }: { value: string; onChange: (v: string) => void; options: { value: string; label: string }[] }) {
   const [open, setOpen] = useState(false);
@@ -164,8 +154,8 @@ export function ScannerPanel({ initialUrl, initialBatchUrls, onUrlConsumed }: { 
   useEffect(() => {
     const pp = getProjectPath();
     Promise.all([
-      invoke<VaultEntrySafe[]>("vault_list", { projectPath: pp }).catch(() => []),
-      invoke<string[]>("zap_list_scan_policies").catch(() => []),
+      securityApi.vaultList(pp).catch(() => []),
+      securityApi.zapListScanPolicies().catch(() => []),
     ]).then(([v, policies]) => {
       setVaultEntries(Array.isArray(v) ? v : []);
       if (Array.isArray(policies)) setScanPolicies(policies);
@@ -176,18 +166,16 @@ export function ScannerPanel({ initialUrl, initialBatchUrls, onUrlConsumed }: { 
   const applyCredential = useCallback(async () => {
     if (!selectedCredential) return;
     try {
-      const value = await invoke<string>("vault_get_value", { id: selectedCredential, projectPath: getProjectPath() });
+      const value = await securityApi.vaultGetValue(selectedCredential, getProjectPath());
       const entry = vaultEntries.find((e) => e.id === selectedCredential);
       if (entry && value) {
         if (entry.entry_type === "token" || entry.entry_type === "apiKey") {
-          await invoke("zap_api_call", {
-            component: "replacer", actionType: "action", method: "addRule",
-            params: { description: `vault-auth-${entry.name}`, enabled: "true", matchType: "REQ_HEADER", matchRegex: "false", matchString: "Authorization", replacement: `Bearer ${value}` },
+          await securityApi.zapApiCall("replacer", "action", "addRule", {
+            description: `vault-auth-${entry.name}`, enabled: "true", matchType: "REQ_HEADER", matchRegex: "false", matchString: "Authorization", replacement: `Bearer ${value}`,
           }).catch(() => {});
         } else if (entry.entry_type === "cookie") {
-          await invoke("zap_api_call", {
-            component: "replacer", actionType: "action", method: "addRule",
-            params: { description: `vault-cookie-${entry.name}`, enabled: "true", matchType: "REQ_HEADER", matchRegex: "false", matchString: "Cookie", replacement: value },
+          await securityApi.zapApiCall("replacer", "action", "addRule", {
+            description: `vault-cookie-${entry.name}`, enabled: "true", matchType: "REQ_HEADER", matchRegex: "false", matchString: "Cookie", replacement: value,
           }).catch(() => {});
         }
       }
@@ -240,7 +228,7 @@ export function ScannerPanel({ initialUrl, initialBatchUrls, onUrlConsumed }: { 
 
   useEffect(() => {
     if (!sel || sel.status !== "complete") { setScanLogs([]); return; }
-    invoke("passive_scans_by_url", { url: sel.url, limit: 500 })
+    securityApi.passiveScansByUrl(sel.url, 500)
       .then((data: any) => setScanLogs(Array.isArray(data) ? data : []))
       .catch(() => setScanLogs([]));
   }, [sel?.url, sel?.status]);
@@ -334,7 +322,7 @@ export function ScannerPanel({ initialUrl, initialBatchUrls, onUrlConsumed }: { 
           className={cn("p-1 rounded text-muted-foreground/30 hover:text-muted-foreground/60 transition-colors", showPlugins && "text-accent/60 bg-accent/10")}
           onClick={() => {
             if (!showPlugins && scannerRules.length === 0) {
-              invoke<{ id: string; name: string; enabled: boolean; quality: string }[]>("zap_get_scanners")
+              securityApi.zapGetScanners()
                 .then((r) => setScannerRules(Array.isArray(r) ? r : []))
                 .catch(() => {});
             }
@@ -373,7 +361,7 @@ export function ScannerPanel({ initialUrl, initialBatchUrls, onUrlConsumed }: { 
               onClick={() => {
                 const allEnabled = scannerRules.every((r) => r.enabled);
                 const ids = scannerRules.map((r) => r.id);
-                invoke("zap_set_scanners_enabled", { ids, enabled: !allEnabled }).then(() => {
+                securityApi.zapSetScannersEnabled(ids, !allEnabled).then(() => {
                   setScannerRules((prev) => prev.map((r) => ({ ...r, enabled: !allEnabled })));
                 }).catch(() => {});
               }}>
@@ -394,7 +382,7 @@ export function ScannerPanel({ initialUrl, initialBatchUrls, onUrlConsumed }: { 
                         rule.enabled ? "bg-accent/20 border-accent/40 text-accent" : "border-border/30 text-transparent"
                       )}
                       onClick={() => {
-                        invoke("zap_set_scanners_enabled", { ids: [rule.id], enabled: !rule.enabled }).then(() => {
+                        securityApi.zapSetScannersEnabled([rule.id], !rule.enabled).then(() => {
                           setScannerRules((prev) => prev.map((r) => r.id === rule.id ? { ...r, enabled: !r.enabled } : r));
                         }).catch(() => {});
                       }}

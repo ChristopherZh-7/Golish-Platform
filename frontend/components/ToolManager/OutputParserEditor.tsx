@@ -3,7 +3,7 @@ import {
   Trash2, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/api";
 import type { ToolConfig } from "@/lib/pentest/types";
 export type ToolWithMeta = ToolConfig & { categoryName?: string; subcategoryName?: string };
 export type ViewMode = "grid" | "list";

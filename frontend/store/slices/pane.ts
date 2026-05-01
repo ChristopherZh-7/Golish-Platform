@@ -4,8 +4,7 @@
  * Owns the per-tab pane tree (`tabLayouts`) and the in-progress pane-move
  * picker state (`paneMoveState`). Actions defined here only mutate pane-shape
  * data; cross-cutting cleanup (deleting session/streaming/AI keys when a pane
- * is closed) is performed via untyped writes so this slice never imports
- * other slices.
+ * is closed) uses a typed `PaneStoreDraft` for cross-slice field access.
  */
 
 import { logger } from "@/lib/logger";
@@ -23,7 +22,19 @@ import {
   updatePaneRatio,
 } from "@/lib/pane-utils";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
+import type { Session } from "../store-types";
 import type { SliceCreator } from "./types";
+
+/**
+ * Cross-slice fields accessed by pane actions during Immer mutations.
+ */
+interface PaneStoreDraft extends PaneState {
+  sessions?: Record<string, Session>;
+  tabHasNewActivity: Record<string, boolean>;
+  tabOrder: string[];
+  activeSessionId: string | null;
+  tabActivationHistory: string[];
+}
 
 export interface PaneState {
   /** Per-tab pane tree. Keyed by the tab's root session id. */
@@ -70,8 +81,7 @@ export const initialPaneState: PaneState = {
 
 /**
  * Drop every per-session field associated with the given session id. Called
- * by `closePane` during pane teardown. Uses `(state as any)` writes so this
- * slice doesn't depend on the shape of other slices.
+ * by `closePane` during pane teardown.
  */
 function purgeSessionStateInDraft(state: unknown, sessionId: string): void {
   const s = state as Record<string, Record<string, unknown> | undefined>;
@@ -111,11 +121,11 @@ function purgeSessionStateInDraft(state: unknown, sessionId: string): void {
   }
 }
 
-export const createPaneSlice: SliceCreator<PaneSlice> = (set, get) => ({
+export const createPaneSlice: SliceCreator<PaneSlice, PaneStoreDraft> = (set, get) => ({
   ...initialPaneState,
 
   splitPane: (tabId, paneId, direction, newPaneId, newSessionId) =>
-    set((state: any) => {
+    set((state) => {
       const layout = state.tabLayouts[tabId];
       if (!layout) return;
 
@@ -145,7 +155,7 @@ export const createPaneSlice: SliceCreator<PaneSlice> = (set, get) => ({
     }),
 
   closePane: (tabId, paneId) => {
-    const currentState = get() as any;
+    const currentState = get();
     const layout = currentState.tabLayouts[tabId];
     if (!layout) return;
 
@@ -160,7 +170,7 @@ export const createPaneSlice: SliceCreator<PaneSlice> = (set, get) => ({
       resetSessionSequence(sessionIdToRemove);
     });
 
-    set((state: any) => {
+    set((state) => {
       const layout = state.tabLayouts[tabId];
       if (!layout) return;
 
@@ -260,7 +270,7 @@ export const createPaneSlice: SliceCreator<PaneSlice> = (set, get) => ({
     }),
 
   movePaneToNewTab: (tabId, paneId) =>
-    set((state: any) => {
+    set((state) => {
       const layout = state.tabLayouts[tabId];
       if (!layout) return;
 

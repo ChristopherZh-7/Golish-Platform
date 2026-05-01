@@ -87,7 +87,7 @@ pub use compaction::{
 
 pub use context::{
     AgenticLoopContext, LoopAccessControl, LoopCaptureContext, LoopEventRefs, LoopLlmRefs,
-    OutputClassifier, PostShellHook, TerminalErrorEmitted, ToolExecutionResult,
+    McpToolExecutor, OutputClassifier, PostShellHook, TerminalErrorEmitted, ToolExecutionResult,
 };
 use context::{emit_event, emit_to_frontend};
 

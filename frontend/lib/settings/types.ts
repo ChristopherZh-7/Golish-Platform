@@ -57,18 +57,7 @@ export interface AiSettings {
   nvidia: NvidiaSettings;
 }
 
-export type AiProvider =
-  | "vertex_ai"
-  | "vertex_gemini"
-  | "openrouter"
-  | "anthropic"
-  | "openai"
-  | "ollama"
-  | "gemini"
-  | "groq"
-  | "xai"
-  | "zai_sdk"
-  | "nvidia";
+export type { AiProvider } from "../generated/AiProvider";
 
 export interface VertexAiSettings {
   credentials_path: string | null;

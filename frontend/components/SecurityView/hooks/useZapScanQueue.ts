@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { securityApi } from "@/lib/security";
 import {
   zapGetAlerts,
   zapPauseScan,
@@ -233,7 +233,7 @@ export function useZapScanQueue({
           const [prog, alerts, msgCount] = await Promise.all([
             zapScanProgress(ep.scanId as string),
             zapGetAlerts(ep.url, 0, 200),
-            invoke<number>("zap_scan_message_count", { scanId: ep.scanId as string }).catch(
+            securityApi.zapScanMessageCount(ep.scanId as string).catch(
               () => 0
             ),
           ]);

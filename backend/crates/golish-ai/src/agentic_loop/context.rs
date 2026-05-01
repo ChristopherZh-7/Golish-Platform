@@ -8,6 +8,19 @@ use golish_core::runtime::GolishRuntime;
 use golish_core::ApiRequestStats;
 use golish_tools::ToolRegistry;
 use golish_sub_agents::SubAgentRegistry;
+
+/// Trait for custom/MCP tool executors.
+///
+/// Implementors handle tool calls by name and return `Some((result, success))`
+/// when handled, or `None` to fall through to built-in tool dispatch.
+#[async_trait::async_trait]
+pub trait McpToolExecutor: Send + Sync {
+    async fn execute_tool(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> Option<(serde_json::Value, bool)>;
+}
 use golish_context::{CompactionState, ContextManager};
 use golish_sidecar::{CaptureContext, SidecarState};
 use crate::event_coordinator::CoordinatorHandle;
@@ -127,18 +140,7 @@ pub struct AgenticLoopContext<'a> {
     pub plan_manager: &'a Arc<crate::planner::PlanManager>,
     pub api_request_stats: &'a Arc<ApiRequestStats>,
     pub additional_tool_definitions: Vec<rig::completion::ToolDefinition>,
-    #[allow(clippy::type_complexity)]
-    pub custom_tool_executor: Option<
-        std::sync::Arc<
-            dyn Fn(
-                    &str,
-                    &serde_json::Value,
-                ) -> std::pin::Pin<
-                    Box<dyn std::future::Future<Output = Option<(serde_json::Value, bool)>> + Send>,
-                > + Send
-                + Sync,
-        >,
-    >,
+    pub custom_tool_executor: Option<Arc<dyn McpToolExecutor>>,
     pub cancelled: Option<&'a Arc<std::sync::atomic::AtomicBool>>,
     pub execution_monitor: Option<Arc<RwLock<crate::loop_detection::ExecutionMonitor>>>,
     pub execution_mode: crate::execution_mode::ExecutionMode,

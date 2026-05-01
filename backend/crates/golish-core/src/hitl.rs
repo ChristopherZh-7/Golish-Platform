@@ -5,6 +5,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// Minimum number of approvals required before auto-approve is considered.
 pub const HITL_AUTO_APPROVE_MIN_APPROVALS: u32 = 3;
@@ -13,8 +14,9 @@ pub const HITL_AUTO_APPROVE_MIN_APPROVALS: u32 = 3;
 pub const HITL_AUTO_APPROVE_THRESHOLD: f64 = 0.8;
 
 /// Risk level for a tool operation.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "generated/")]
 pub enum RiskLevel {
     /// Safe operations (read-only)
     Low,
@@ -69,7 +71,8 @@ impl RiskLevel {
 }
 
 /// Approval pattern/statistics for a specific tool.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "generated/")]
 pub struct ApprovalPattern {
     /// Name of the tool
     pub tool_name: String,

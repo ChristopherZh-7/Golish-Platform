@@ -1,6 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, listen } from "@/lib/api/client";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { listen } from "../tauri-listen";
 import type {
   AiConfig,
   AiEvent,
@@ -71,7 +70,7 @@ export async function shutdownAiAgent(): Promise<void> {
 }
 
 export function onAiEvent(callback: (event: AiEvent) => void): Promise<UnlistenFn> {
-  return listen<AiEvent>("ai-event", (event) => callback(event.payload));
+  return listen<AiEvent>("ai-event", callback);
 }
 
 export async function signalFrontendReady(sessionId: string): Promise<void> {

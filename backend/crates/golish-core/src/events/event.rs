@@ -7,6 +7,7 @@
 //! plan, server tools, prompt-gen, task-mode).
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use super::tool_source::ToolSource;
 use crate::hitl::{ApprovalPattern, RiskLevel};
@@ -14,8 +15,9 @@ use crate::hitl::{ApprovalPattern, RiskLevel};
 /// Simplified AI events for the frontend.
 /// We emit these directly from AgentBridge instead of converting from vtcode's ThreadEvent,
 /// since ThreadEvent uses tuple structs that are harder to work with.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[ts(export, export_to = "generated/")]
 pub enum AiEvent {
     /// Agent started processing a turn
     Started { turn_id: String },

@@ -4,9 +4,10 @@
  */
 
 import type { ToolCallSource } from "../store-types";
+import type { SessionStoreDraft } from "./session-draft-types";
 import type { ImmerSet, StateGet } from "./types";
 
-export function createSessionStreamingActions(set: ImmerSet<any>, _get: StateGet<any>) {
+export function createSessionStreamingActions(set: ImmerSet<SessionStoreDraft>, _get: StateGet<SessionStoreDraft>) {
   return {
     addStreamingToolBlock: (
       sessionId: string,
@@ -18,7 +19,7 @@ export function createSessionStreamingActions(set: ImmerSet<any>, _get: StateGet
         source?: ToolCallSource;
       },
     ) =>
-      set((state: any) => {
+      set((state) => {
         if (!state.streamingBlocks[sessionId]) {
           state.streamingBlocks[sessionId] = [];
         }
@@ -38,7 +39,7 @@ export function createSessionStreamingActions(set: ImmerSet<any>, _get: StateGet
       success: boolean,
       result?: unknown,
     ) =>
-      set((state: any) => {
+      set((state) => {
         const blocks = state.streamingBlocks[sessionId];
         if (blocks) {
           for (const block of blocks) {
@@ -55,12 +56,12 @@ export function createSessionStreamingActions(set: ImmerSet<any>, _get: StateGet
       }),
 
     clearStreamingBlocks: (sessionId: string) =>
-      set((state: any) => {
+      set((state) => {
         state.streamingBlocks[sessionId] = [];
       }),
 
     addUdiffResultBlock: (sessionId: string, response: string, durationMs: number) =>
-      set((state: any) => {
+      set((state) => {
         if (!state.streamingBlocks[sessionId]) {
           state.streamingBlocks[sessionId] = [];
         }
@@ -72,7 +73,7 @@ export function createSessionStreamingActions(set: ImmerSet<any>, _get: StateGet
       }),
 
     addStreamingSystemHooksBlock: (sessionId: string, hooks: string[]) =>
-      set((state: any) => {
+      set((state) => {
         if (!state.streamingBlocks[sessionId]) {
           state.streamingBlocks[sessionId] = [];
         }
@@ -83,10 +84,10 @@ export function createSessionStreamingActions(set: ImmerSet<any>, _get: StateGet
       }),
 
     appendToolStreamingOutput: (sessionId: string, toolId: string, chunk: string) =>
-      set((state: any) => {
+      set((state) => {
         const tools = state.activeToolCalls?.[sessionId];
         if (tools) {
-          const toolIndex = tools.findIndex((t: any) => t.id === toolId);
+          const toolIndex = tools.findIndex((t) => t.id === toolId);
           if (toolIndex !== -1) {
             tools[toolIndex] = {
               ...tools[toolIndex],

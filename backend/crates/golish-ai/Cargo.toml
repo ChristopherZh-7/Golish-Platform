@@ -13,11 +13,11 @@ golish-tools = { workspace = true }
 
 # Infrastructure crates
 vtcode-indexer = { workspace = true }
-golish-pty = { workspace = true }
 golish-sidecar = { workspace = true }
 golish-db = { workspace = true }
 
 # Extracted AI subsystem crates
+golish-events = { path = "../golish-events" }
 golish-session = { workspace = true }
 golish-context = { workspace = true }
 golish-web = { workspace = true }

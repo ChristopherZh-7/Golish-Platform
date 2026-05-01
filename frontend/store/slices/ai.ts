@@ -3,9 +3,7 @@
  *
  * Owns the agent's runtime state: streaming buffers, thinking content, the
  * global / per-session AI provider config, the live tool-call list, and the
- * `ai_tool_execution` timeline-block helpers. All cross-slice writes (into
- * `timelines`, `streamingBlocks`, `sessionTokenUsage`) are done through
- * untyped `(state: any)` so this slice never imports another slice.
+ * `ai_tool_execution` timeline-block helpers.
  */
 
 import type {
@@ -13,12 +11,25 @@ import type {
   AgentMessage,
   AiConfig,
   AiStatus,
+  Session,
+  StreamingBlock,
   TaskPlan,
   ToolCall,
   ToolCallSource,
   UnifiedBlock,
 } from "../store-types";
 import type { SliceCreator } from "./types";
+
+/**
+ * Cross-slice fields accessed by AI actions during Immer mutations.
+ */
+interface AiStoreDraft extends AiState {
+  sessions: Record<string, Session>;
+  timelines: Record<string, UnifiedBlock[]>;
+  streamingBlocks: Record<string, StreamingBlock[]>;
+  streamingTextOffset: Record<string, number>;
+  sessionTokenUsage?: Record<string, { input: number; output: number }>;
+}
 
 export interface AiState {
   /** Global (legacy) AI configuration, kept for backwards compatibility. */
@@ -134,7 +145,7 @@ export const initialAiState: AiState = {
   processedToolRequests: {},
 };
 
-export const createAiSlice: SliceCreator<AiSlice> = (set, get) => ({
+export const createAiSlice: SliceCreator<AiSlice, AiStoreDraft> = (set, get) => ({
   ...initialAiState,
 
   setAiConfig: (config) =>
@@ -148,7 +159,7 @@ export const createAiSlice: SliceCreator<AiSlice> = (set, get) => ({
     }),
 
   setSessionAiConfig: (sessionId, config) =>
-    set((state: any) => {
+    set((state) => {
       if (state.sessions?.[sessionId]) {
         const currentConfig = state.sessions[sessionId].aiConfig || {
           provider: "",
@@ -160,12 +171,12 @@ export const createAiSlice: SliceCreator<AiSlice> = (set, get) => ({
     }),
 
   getSessionAiConfig: (sessionId) => {
-    const session = (get() as any).sessions?.[sessionId];
+    const session = get().sessions?.[sessionId];
     return session?.aiConfig;
   },
 
   addAgentMessage: (sessionId, message) =>
-    set((state: any) => {
+    set((state) => {
       if (!message.workingDirectory) {
         const session = state.sessions?.[sessionId];
         if (session?.workingDirectory) {
@@ -194,14 +205,13 @@ export const createAiSlice: SliceCreator<AiSlice> = (set, get) => ({
     }),
 
   updateAgentStreaming: (sessionId, delta) =>
-    set((state: any) => {
+    set((state) => {
       if (!state.agentStreamingBuffer[sessionId]) {
         state.agentStreamingBuffer[sessionId] = [];
       }
       state.agentStreamingBuffer[sessionId].push(delta);
       state.agentStreaming[sessionId] = state.agentStreamingBuffer[sessionId].join("");
 
-      if (!state.streamingBlocks) state.streamingBlocks = {};
       if (!state.streamingBlocks[sessionId]) {
         state.streamingBlocks[sessionId] = [];
       }
@@ -223,12 +233,10 @@ export const createAiSlice: SliceCreator<AiSlice> = (set, get) => ({
   },
 
   clearAgentStreaming: (sessionId) =>
-    set((state: any) => {
+    set((state) => {
       state.agentStreamingBuffer[sessionId] = [];
       state.agentStreaming[sessionId] = "";
-      if (!state.streamingBlocks) state.streamingBlocks = {};
       state.streamingBlocks[sessionId] = [];
-      if (!state.streamingTextOffset) state.streamingTextOffset = {};
       state.streamingTextOffset[sessionId] = 0;
     }),
 
@@ -260,8 +268,8 @@ export const createAiSlice: SliceCreator<AiSlice> = (set, get) => ({
   },
 
   updateToolCallStatus: (sessionId, toolId, status, result) =>
-    set((state: any) => {
-      const timeline = state.timelines[sessionId] as UnifiedBlock[] | undefined;
+    set((state) => {
+      const timeline = state.timelines[sessionId];
       if (timeline) {
         for (const block of timeline) {
           if (block.type === "agent_message") {
@@ -277,8 +285,8 @@ export const createAiSlice: SliceCreator<AiSlice> = (set, get) => ({
     }),
 
   clearAgentMessages: (sessionId) =>
-    set((state: any) => {
-      const timeline = state.timelines[sessionId] as UnifiedBlock[] | undefined;
+    set((state) => {
+      const timeline = state.timelines[sessionId];
       if (timeline) {
         state.timelines[sessionId] = timeline.filter((block) => block.type !== "agent_message");
       }
@@ -287,7 +295,7 @@ export const createAiSlice: SliceCreator<AiSlice> = (set, get) => ({
     }),
 
   restoreAgentMessages: (sessionId, messages) =>
-    set((state: any) => {
+    set((state) => {
       state.agentStreamingBuffer[sessionId] = [];
       state.agentStreaming[sessionId] = "";
       state.timelines[sessionId] = [];
@@ -332,13 +340,12 @@ export const createAiSlice: SliceCreator<AiSlice> = (set, get) => ({
     }),
 
   appendThinkingContent: (sessionId, content) =>
-    set((state: any) => {
+    set((state) => {
       if (!state.thinkingContent[sessionId]) {
         state.thinkingContent[sessionId] = "";
       }
       state.thinkingContent[sessionId] += content;
 
-      if (!state.streamingBlocks) state.streamingBlocks = {};
       if (!state.streamingBlocks[sessionId]) {
         state.streamingBlocks[sessionId] = [];
       }
@@ -348,7 +355,7 @@ export const createAiSlice: SliceCreator<AiSlice> = (set, get) => ({
       if (lastBlock && lastBlock.type === "thinking") {
         lastBlock.content += content;
       } else {
-        state.streamingBlocks[sessionId] = blocks.filter((b: any) => b.type !== "thinking");
+        state.streamingBlocks[sessionId] = blocks.filter((b) => b.type !== "thinking");
         state.streamingBlocks[sessionId].push({ type: "thinking", content });
       }
     }),
@@ -364,11 +371,11 @@ export const createAiSlice: SliceCreator<AiSlice> = (set, get) => ({
     }),
 
   addToolExecutionBlock: (sessionId, execution) =>
-    set((state: any) => {
+    set((state) => {
       if (!state.timelines[sessionId]) {
         state.timelines[sessionId] = [];
       }
-      const timeline = state.timelines[sessionId] as UnifiedBlock[];
+      const timeline = state.timelines[sessionId];
       const exists = timeline.some(
         (b) => b.type === "ai_tool_execution" && b.data.requestId === execution.requestId,
       );
@@ -412,8 +419,8 @@ export const createAiSlice: SliceCreator<AiSlice> = (set, get) => ({
     }),
 
   completeToolExecutionBlock: (sessionId, requestId, success, result) =>
-    set((state: any) => {
-      const timeline = state.timelines[sessionId] as UnifiedBlock[] | undefined;
+    set((state) => {
+      const timeline = state.timelines[sessionId];
       if (!timeline) return;
       const block = timeline.find(
         (b) => b.type === "ai_tool_execution" && b.data.requestId === requestId,
@@ -428,8 +435,8 @@ export const createAiSlice: SliceCreator<AiSlice> = (set, get) => ({
     }),
 
   appendToolExecutionOutput: (sessionId, requestId, chunk) =>
-    set((state: any) => {
-      const timeline = state.timelines[sessionId] as UnifiedBlock[] | undefined;
+    set((state) => {
+      const timeline = state.timelines[sessionId];
       if (!timeline) return;
       const block = timeline.find(
         (b) => b.type === "ai_tool_execution" && b.data.requestId === requestId,
@@ -440,8 +447,8 @@ export const createAiSlice: SliceCreator<AiSlice> = (set, get) => ({
     }),
 
   finalizeRunningToolExecutions: (sessionId) =>
-    set((state: any) => {
-      const timeline = state.timelines[sessionId] as UnifiedBlock[] | undefined;
+    set((state) => {
+      const timeline = state.timelines[sessionId];
       if (!timeline) return;
       for (const block of timeline) {
         if (block.type === "ai_tool_execution" && block.data.status === "running") {

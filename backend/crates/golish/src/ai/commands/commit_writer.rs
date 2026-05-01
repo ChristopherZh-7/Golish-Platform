@@ -5,13 +5,9 @@
 //! be called by any other agent and has no tools. It simply takes a diff and
 //! generates a commit message.
 
-use rig::completion::{CompletionModel as _, CompletionRequest, Message};
-use rig::message::{Text, UserContent};
-use rig::one_or_many::OneOrMany;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::ai::llm_client::LlmClient;
 use crate::state::AppState;
 
 use super::ai_session_not_initialized_error;
@@ -94,10 +90,8 @@ pub async fn generate_commit_message(
         .await
         .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
 
-    // Access the LLM client (bridge is now an Arc, not a reference from the map)
     let client = bridge.client().clone();
 
-    // Build the user prompt with the diff
     let user_prompt = if let Some(summary) = file_summary {
         format!(
             "Generate a commit message for the following changes:\n\nFiles changed: {}\n\nDiff:\n```\n{}\n```",
@@ -110,111 +104,13 @@ pub async fn generate_commit_message(
         )
     };
 
-    // Build the completion request
-    let chat_history = vec![Message::User {
-        content: OneOrMany::one(UserContent::Text(Text { text: user_prompt })),
-    }];
-
-    let request = CompletionRequest {
-        preamble: Some(COMMIT_WRITER_SYSTEM_PROMPT.to_string()),
-        chat_history: OneOrMany::many(chat_history.clone())
-            .unwrap_or_else(|_| OneOrMany::one(chat_history[0].clone())),
-        documents: vec![],
-        tools: vec![],          // No tools - this is a simple completion
-        temperature: Some(0.3), // Low temperature for consistent output
-        max_tokens: Some(1024), // Commit messages should be short
-        tool_choice: None,
-        additional_params: None,
-        model: None,
-        output_schema: None,
-    };
-
-    // Make the completion call
     let client_guard = client.read().await;
-    let response_text = complete_with_client(&client_guard, request)
+    let response_text = client_guard
+        .one_shot_completion(COMMIT_WRITER_SYSTEM_PROMPT, &user_prompt, Some(0.3), Some(1024))
         .await
         .map_err(|e| format!("LLM completion failed: {}", e))?;
 
-    // Parse the JSON response
     parse_commit_response(&response_text)
-}
-
-/// Execute a completion request using the LLM client.
-async fn complete_with_client(
-    client: &LlmClient,
-    request: CompletionRequest,
-) -> anyhow::Result<String> {
-    // Extract text from the completion response
-    fn extract_text(
-        choice: &rig::one_or_many::OneOrMany<rig::completion::AssistantContent>,
-    ) -> String {
-        let mut text = String::new();
-        for content in choice.iter() {
-            if let rig::completion::AssistantContent::Text(t) = content {
-                text.push_str(&t.text);
-            }
-        }
-        text
-    }
-
-    match client {
-        LlmClient::VertexAnthropic(model) => {
-            let response = model.completion(request).await?;
-            Ok(extract_text(&response.choice))
-        }
-        LlmClient::RigOpenRouter(model) => {
-            let response = model.completion(request).await?;
-            Ok(extract_text(&response.choice))
-        }
-        LlmClient::RigOpenAi(model) => {
-            let response = model.completion(request).await?;
-            Ok(extract_text(&response.choice))
-        }
-        LlmClient::RigOpenAiResponses(model) => {
-            let response = model.completion(request).await?;
-            Ok(extract_text(&response.choice))
-        }
-        LlmClient::OpenAiReasoning(model) => {
-            let response = model.completion(request).await?;
-            Ok(extract_text(&response.choice))
-        }
-        LlmClient::RigAnthropic(model) => {
-            let response = model.completion(request).await?;
-            Ok(extract_text(&response.choice))
-        }
-        LlmClient::RigOllama(model) => {
-            let response = model.completion(request).await?;
-            Ok(extract_text(&response.choice))
-        }
-        LlmClient::RigGemini(model) => {
-            let response = model.completion(request).await?;
-            Ok(extract_text(&response.choice))
-        }
-        LlmClient::RigGroq(model) => {
-            let response = model.completion(request).await?;
-            Ok(extract_text(&response.choice))
-        }
-        LlmClient::RigXai(model) => {
-            let response = model.completion(request).await?;
-            Ok(extract_text(&response.choice))
-        }
-        LlmClient::RigZaiSdk(model) => {
-            let response = model.completion(request).await?;
-            Ok(extract_text(&response.choice))
-        }
-        LlmClient::RigNvidia(model) => {
-            let response = model.completion(request).await?;
-            Ok(extract_text(&response.choice))
-        }
-        LlmClient::VertexGemini(model) => {
-            let response = model.completion(request).await?;
-            Ok(extract_text(&response.choice))
-        }
-        LlmClient::Mock => {
-            // Return a mock response for testing
-            Ok(r#"{"summary": "chore: mock commit message", "description": ""}"#.to_string())
-        }
-    }
 }
 
 /// Parse the LLM response into a CommitMessageResponse.

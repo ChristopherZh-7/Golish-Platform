@@ -12,6 +12,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { Markdown } from "@/components/Markdown/Markdown";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -308,9 +309,9 @@ export function SkillsSettings() {
         {isExpanded && (
           <div className="px-4 pb-4 pt-1 border-t border-[var(--border-medium)] space-y-3">
             {body ? (
-              <pre className="text-xs text-muted-foreground bg-background rounded p-3 max-h-[200px] overflow-auto whitespace-pre-wrap font-mono">
-                {body}
-              </pre>
+              <div className="text-xs text-muted-foreground bg-background rounded p-3 max-h-[200px] overflow-auto">
+                <Markdown content={body} className="text-xs" />
+              </div>
             ) : (
               <div className="flex items-center gap-2 py-2">
                 <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />

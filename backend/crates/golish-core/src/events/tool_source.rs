@@ -1,10 +1,12 @@
 //! [`ToolSource`] — origin of a tool call (main agent / sub-agent / workflow).
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// Source of a tool call - indicates where the tool request originated.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[ts(export, export_to = "generated/")]
 pub enum ToolSource {
     /// Tool called by the main agent
     #[default]

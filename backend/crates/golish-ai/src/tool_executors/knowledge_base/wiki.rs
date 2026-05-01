@@ -1,9 +1,12 @@
 //! Filesystem-level helpers for the markdown wiki backing the KB.
 //!
 //! These utilities are shared across the search/read/save/query verb
-//! modules — they own the on-disk schema (`<app_data>/wiki/`), parse
-//! frontmatter, infer categories, extract cross-references, and rebuild the
-//! auto-generated `index.md`.
+//! modules — they own the on-disk schema, parse frontmatter, infer
+//! categories, extract cross-references, and rebuild the auto-generated
+//! `index.md`.
+//!
+//! The wiki root is resolved by [`golish_core::paths::wiki_dir`]:
+//! `<project_root>/resources/wiki` when present, otherwise `<app_data>/wiki`.
 
 use serde_json::json;
 
@@ -12,11 +15,13 @@ use crate::tool_executors::common::ToolResult;
 pub(super) const WIKI_CATEGORIES: &[&str] =
     &["products", "techniques", "pocs", "experience", "analysis"];
 
-/// Resolve `~/.golish/wiki` (or platform equivalent).
+/// Resolve the wiki root directory.
+///
+/// Prefers `<project_root>/resources/wiki` when the directory exists;
+/// falls back to `<app-data>/wiki` otherwise.
 pub(super) fn wiki_base_dir() -> std::path::PathBuf {
-    golish_core::paths::app_data_base()
+    golish_core::paths::wiki_dir()
         .expect("cannot resolve home directory")
-        .join("wiki")
 }
 
 /// Parse the `---` YAML-ish frontmatter block. Returns

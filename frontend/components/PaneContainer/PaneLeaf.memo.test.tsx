@@ -6,16 +6,20 @@ import { useStore } from "../../store";
 import { clearAllSessionCaches } from "../../store/selectors/session";
 
 // Mock Tauri API calls
-vi.mock("@/lib/tauri", () => ({
+vi.mock("@/lib/api/files", () => ({
   listPrompts: vi.fn().mockResolvedValue([]),
   readPromptBody: vi.fn().mockResolvedValue(""),
   listSkills: vi.fn().mockResolvedValue([]),
   readSkillBody: vi.fn().mockResolvedValue(""),
+  listWorkspaceFiles: vi.fn().mockResolvedValue([]),
+}));
+vi.mock("@/lib/api/pty", () => ({
   ptyWrite: vi.fn().mockResolvedValue(undefined),
   ptyResize: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("@/lib/api/git", () => ({
   getGitBranch: vi.fn().mockResolvedValue("main"),
   getGitStatus: vi.fn().mockResolvedValue({ changes: [] }),
-  listWorkspaceFiles: vi.fn().mockResolvedValue([]),
 }));
 
 // Mock xterm.js and addons - they don't work in jsdom

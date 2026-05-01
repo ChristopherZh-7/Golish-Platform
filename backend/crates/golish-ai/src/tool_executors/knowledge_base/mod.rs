@@ -11,8 +11,8 @@
 //! Shared filesystem helpers (frontmatter parsing, link extraction, index
 //! rebuild, `wiki_base_dir`) live in [`wiki`].
 //!
-//! Storage strategy: the markdown wiki on disk under
-//! `<app_data>/wiki/` is the source of truth; PostgreSQL provides full-text
+//! Storage strategy: the markdown wiki on disk (resolved by
+//! [`golish_core::paths::wiki_dir`]) is the source of truth; PostgreSQL provides full-text
 //! search and cross-reference tables. When the DB tracker is unavailable,
 //! search falls back to a filesystem scan via
 //! [`wiki::kb_search_filesystem_fallback`].

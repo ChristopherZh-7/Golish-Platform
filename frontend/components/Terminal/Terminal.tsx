@@ -11,7 +11,7 @@ import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager"
 import { appendRecordingData } from "@/lib/terminal/recording";
 import { ThemeManager } from "@/lib/theme";
 import { useRenderMode, useTerminalClearRequest } from "@/store";
-import { ptyResize, ptyWrite } from "../../lib/tauri";
+import { ptyResize, ptyWrite } from "@/lib/api/pty";
 import "@xterm/xterm/css/xterm.css";
 
 interface TerminalProps {

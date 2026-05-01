@@ -4,7 +4,7 @@ import {
 } from "lucide-react";
 import { SEV_TEXT } from "@/lib/severity";
 import { cn } from "@/lib/utils";
-import { invoke } from "@tauri-apps/api/core";
+import { securityApi, type CustomPassiveRule } from "@/lib/security";
 import {
   zapGetHistory, zapGetHistoryCount, zapGetMessage,
 } from "@/lib/pentest/zap-api";
@@ -21,15 +21,6 @@ interface PassiveRule {
   quality: string;
 }
 
-interface CustomPassiveRule {
-  id: string;
-  name: string;
-  pattern: string;
-  scope: "body" | "headers" | "all";
-  severity: "low" | "medium" | "high";
-  enabled: boolean;
-}
-
 interface CustomRuleMatch {
   ruleId: string;
   ruleName: string;
@@ -40,7 +31,7 @@ interface CustomRuleMatch {
 }
 
 function saveCustomRulesToDb(rules: CustomPassiveRule[], pp: string | null) {
-  invoke("custom_rules_save_all", { rules, projectPath: pp }).catch(() => {});
+  securityApi.customRulesSaveAll(rules, pp).catch(() => {});
 }
 
 export function PassiveScanPanel() {
@@ -62,11 +53,10 @@ export function PassiveScanPanel() {
     (async () => {
       setLoading(true);
       try {
-        type ZapJson = Record<string, unknown>;
         const [recordsResult, scannersResult, dbRules] = await Promise.all([
-          invoke<ZapJson>("zap_api_call", { component: "pscan", actionType: "view", method: "recordsToScan", params: {} }).catch(() => ({})),
-          invoke<ZapJson>("zap_api_call", { component: "pscan", actionType: "view", method: "scanners", params: {} }).catch(() => ({})),
-          invoke<CustomPassiveRule[]>("custom_rules_list", { projectPath: getProjectPath() }).catch(() => []),
+          securityApi.zapApiCall("pscan", "view", "recordsToScan", {}).catch(() => ({})),
+          securityApi.zapApiCall("pscan", "view", "scanners", {}).catch(() => ({})),
+          securityApi.customRulesList(getProjectPath()).catch(() => []),
         ]);
         if (cancelled) return;
         const recordsVal = (recordsResult as Record<string, unknown>)?.recordsToScan;
@@ -92,7 +82,7 @@ export function PassiveScanPanel() {
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
-        const r = await invoke<Record<string, unknown>>("zap_api_call", { component: "pscan", actionType: "view", method: "recordsToScan", params: {} });
+        const r = await securityApi.zapApiCall("pscan", "view", "recordsToScan", {});
         const val = r?.recordsToScan;
         setRecords(typeof val === "string" ? Number.parseInt(val) || 0 : 0);
       } catch { /* ignore */ }
@@ -103,7 +93,7 @@ export function PassiveScanPanel() {
   const handleToggleAll = useCallback(async (enable: boolean) => {
     try {
       const method = enable ? "enableAllScanners" : "disableAllScanners";
-      const result = await invoke<Record<string, unknown>>("zap_api_call", { component: "pscan", actionType: "action", method, params: {} });
+      const result = await securityApi.zapApiCall("pscan", "action", method, {});
       if (result?.Result === "OK") {
         setRules((prev) => prev.map((r) => ({ ...r, enabled: enable })));
         setEnabled(enable);
@@ -116,7 +106,7 @@ export function PassiveScanPanel() {
   const handleToggleRule = useCallback(async (ruleId: string, enable: boolean) => {
     try {
       const method = enable ? "enableScanners" : "disableScanners";
-      const result = await invoke<Record<string, unknown>>("zap_api_call", { component: "pscan", actionType: "action", method, params: { ids: ruleId } });
+      const result = await securityApi.zapApiCall("pscan", "action", method, { ids: ruleId });
       if (result?.Result === "OK") {
         setRules((prev) => prev.map((r) => r.id === ruleId ? { ...r, enabled: enable } : r));
       }
@@ -132,7 +122,7 @@ export function PassiveScanPanel() {
       saveCustomRulesToDb(next, projectPath);
       return next;
     });
-    invoke("custom_rules_upsert", { rule, projectPath }).catch(() => {});
+    securityApi.customRulesUpsert(rule, projectPath).catch(() => {});
     setEditing(null);
   }, [projectPath]);
 
@@ -142,7 +132,7 @@ export function PassiveScanPanel() {
       saveCustomRulesToDb(next, projectPath);
       return next;
     });
-    invoke("custom_rules_delete", { id }).catch(() => {});
+    securityApi.customRulesDelete(id).catch(() => {});
     setMatches((prev) => prev.filter((m) => m.ruleId !== id));
   }, [projectPath]);
 
@@ -192,7 +182,7 @@ export function PassiveScanPanel() {
         target: (() => { try { return new URL(m.url).host; } catch { return ""; } })(),
         description: `Pattern match: ${m.matchSnippet}`,
       }));
-      invoke("findings_import_parsed", { items, toolName: "Custom Passive Scan", projectPath: getProjectPath() }).catch(() => {});
+      securityApi.findingsImportParsed(items, "Custom Passive Scan", getProjectPath()).catch(() => {});
     }
   }, [customRules]);
 

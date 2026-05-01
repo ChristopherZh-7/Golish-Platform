@@ -70,7 +70,6 @@ use golish_sub_agents::SubAgentRegistry;
 use crate::indexer::IndexerState;
 use crate::planner::PlanManager;
 
-use golish_pty::PtyManager;
 use golish_sidecar::SidecarState;
 use golish_skills::SkillMetadata;
 
@@ -129,7 +128,6 @@ pub(crate) struct BridgeServices {
     pub(crate) indexer_state: Option<Arc<IndexerState>>,
     pub(crate) sidecar_state: Option<Arc<SidecarState>>,
     pub(crate) settings_manager: Option<Arc<golish_settings::SettingsManager>>,
-    pub(crate) pty_manager: Option<Arc<PtyManager>>,
 }
 
 /// Tool access control: policy engine, HITL approval, agent mode, loop detection.
@@ -189,25 +187,7 @@ pub struct AgentBridge {
     // -- Skills & MCP ---------------------------------------------------------
     pub(crate) skill_cache: Arc<RwLock<Vec<SkillMetadata>>>,
     pub(crate) mcp_tool_definitions: Arc<RwLock<Vec<rig::completion::ToolDefinition>>>,
-    #[allow(clippy::type_complexity)]
-    pub(crate) mcp_tool_executor: Arc<
-        RwLock<
-            Option<
-                Arc<
-                    dyn Fn(
-                            &str,
-                            &serde_json::Value,
-                        ) -> std::pin::Pin<
-                            Box<
-                                dyn std::future::Future<Output = Option<(serde_json::Value, bool)>>
-                                    + Send,
-                            >,
-                        > + Send
-                        + Sync,
-                >,
-            >,
-        >,
-    >,
+    pub(crate) mcp_tool_executor: Arc<RwLock<Option<Arc<dyn crate::agentic_loop::McpToolExecutor>>>>,
 }
 
 impl AgentBridge {

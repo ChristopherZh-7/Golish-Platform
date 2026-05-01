@@ -1,6 +1,6 @@
 import { useDeferredValue, useEffect, useState } from "react";
 import { logger } from "@/lib/logger";
-import { listPathCompletions, type PathCompletion } from "@/lib/tauri";
+import { listPathCompletions, type PathCompletion } from "@/lib/api/shell";
 
 interface UsePathCompletionOptions {
   sessionId: string;

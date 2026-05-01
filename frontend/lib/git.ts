@@ -1,4 +1,4 @@
-import type { GitStatusEntry } from "./tauri";
+import type { GitStatusEntry } from "./api/git";
 
 export type GitChangeKind =
   | "modified"

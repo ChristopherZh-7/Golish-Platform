@@ -100,9 +100,8 @@ class ThemeRegistryClass {
 
       // Save assets if provided
       if (assets && assets.length > 0) {
-        const { saveThemeAsset } = await import("../themes");
+        const { saveThemeAsset } = await import("./api");
         for (const [assetPath, data] of assets) {
-          // Extract filename from path (e.g., "assets/background.jpeg" -> "background.jpeg")
           const filename = assetPath.split("/").pop() || assetPath;
           await saveThemeAsset(id, filename, data);
         }

@@ -1,7 +1,8 @@
 import { useCallback } from "react";
 import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
-import { getGitBranch, gitStatus, ptyCreate } from "@/lib/tauri";
+import { getGitBranch, gitStatus } from "@/lib/api/git";
+import { ptyCreate } from "@/lib/api/pty";
 import { useStore } from "@/store";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 

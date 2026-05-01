@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import {
+  dashboardApi,
+  type TokenUsageStats, type AgentUsage, type ToolCallStat,
+  type TargetStore, type ProjectMethodology, type VaultEntry, type AuditEntry,
+} from "@/lib/dashboard";
+import { findingsApi, type FindingsStore, type Finding } from "@/lib/findings";
 import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import {
   Activity,
@@ -35,78 +40,6 @@ import { useTranslation } from "react-i18next";
 import { useStore } from "@/store";
 import { getProjectPath } from "@/lib/projects";
 import { type Target as PentestTarget } from "@/lib/pentest/types";
-
-interface TargetStore {
-  targets: PentestTarget[];
-}
-
-interface MethodPhase {
-  id: string;
-  name: string;
-  items: { id: string; checked: boolean }[];
-}
-
-interface ProjectMethodology {
-  id: string;
-  project_name: string;
-  template_id: string;
-  phases: MethodPhase[];
-  created_at: string;
-  updated_at: string;
-}
-
-interface VaultEntry {
-  id: string;
-  name: string;
-  entry_type: string;
-}
-
-interface Finding {
-  id: string;
-  severity: string;
-  status: string;
-  created_at: number;
-  tool?: string;
-  title?: string;
-  targetId?: string;
-}
-
-interface FindingsStore {
-  findings: Finding[];
-}
-
-interface AuditEntry {
-  id: number;
-  action: string;
-  category: string;
-  details: string;
-  source: string;
-  status: string;
-  createdAt: number;
-  targetId?: string | null;
-  entityType?: string | null;
-}
-
-interface TokenUsageStats {
-  total_tokens_in: number;
-  total_tokens_out: number;
-  total_cost_in: number;
-  total_cost_out: number;
-}
-
-interface AgentUsage {
-  agent: string;
-  total_tokens_in: number;
-  total_tokens_out: number;
-  total_cost: number;
-}
-
-interface ToolCallStat {
-  name: string;
-  total_count: number;
-  total_duration_ms: number;
-  avg_duration_ms: number;
-}
 
 interface AiStats {
   tokenUsage: TokenUsageStats | null;
@@ -319,10 +252,10 @@ export function DashboardPanel() {
 
   const loadAiStats = useCallback(async () => {
     const aiResults = await Promise.allSettled([
-      invoke<TokenUsageStats>("get_db_token_usage_stats"),
-      invoke<AgentUsage[]>("get_usage_by_agent"),
-      invoke<ToolCallStat[]>("get_tool_call_stats", {}),
-      invoke<number>("get_memory_count"),
+      dashboardApi.getTokenUsageStats(),
+      dashboardApi.getUsageByAgent(),
+      dashboardApi.getToolCallStats(),
+      dashboardApi.getMemoryCount(),
     ]);
 
     setAiStats({
@@ -339,11 +272,11 @@ export function DashboardPanel() {
     if (!pp) { setLoading(false); return; }
 
     const results = await Promise.allSettled([
-      invoke<TargetStore>("target_list", { projectPath: pp }),
-      invoke<ProjectMethodology[]>("method_list_projects", { projectPath: pp }),
-      invoke<VaultEntry[]>("vault_list", { projectPath: pp }),
-      invoke<FindingsStore>("findings_list", { projectPath: pp }),
-      invoke<AuditEntry[]>("oplog_list", { projectPath: pp, limit: 15 }),
+      dashboardApi.targetList(pp),
+      dashboardApi.methodListProjects(pp),
+      dashboardApi.vaultList(pp),
+      findingsApi.list(pp),
+      dashboardApi.oplogList(pp, 15),
     ]);
 
     const targetRaw = results[0].status === "fulfilled" ? results[0].value : null;

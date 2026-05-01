@@ -23,7 +23,11 @@ import { cn } from "@/lib/utils";
 import { getProjectPath } from "@/lib/projects";
 import { useStore } from "@/store";
 import { oplogList, oplogSearch, type AuditRow } from "@/lib/security-analysis";
-import { invoke } from "@tauri-apps/api/core";
+import {
+  auditLogApi,
+  type AgentLogEntry, type TerminalLogEntry, type SearchLogEntry,
+  type PassiveScanEntry, type WikiChangeEntry,
+} from "@/lib/audit-log";
 
 type LogTab = "operations" | "agent" | "terminal" | "search" | "passive" | "wiki";
 
@@ -109,66 +113,6 @@ function extractTargetLabel(entries: AuditRow[]): string {
   return entries[0]?.targetId?.slice(0, 12) ?? "Unknown";
 }
 
-// ── Generic log row types ──────────────────────────────────────────────
-
-interface AgentLogEntry {
-  id: string;
-  sessionId: string;
-  taskId: string | null;
-  subtaskId: string | null;
-  initiator: string;
-  executor: string;
-  task: string;
-  result: string | null;
-  durationMs: number | null;
-  createdAt: string;
-}
-
-interface TerminalLogEntry {
-  id: string;
-  sessionId: string;
-  taskId: string | null;
-  subtaskId: string | null;
-  stream: string;
-  content: string;
-  createdAt: string;
-}
-
-interface SearchLogEntry {
-  id: string;
-  sessionId: string;
-  taskId: string | null;
-  subtaskId: string | null;
-  initiator: string | null;
-  engine: string;
-  query: string;
-  result: string | null;
-  createdAt: string;
-}
-
-interface PassiveScanEntry {
-  id: string;
-  targetId: string;
-  testType: string;
-  payload: string;
-  url: string;
-  result: string;
-  severity: string;
-  toolUsed: string;
-  testedAt: string;
-}
-
-interface WikiChangeEntry {
-  id: number;
-  pagePath: string;
-  action: string;
-  title: string;
-  category: string;
-  actor: string;
-  summary: string;
-  createdAt: string;
-}
-
 // ── Sub-components for each tab ────────────────────────────────────────
 
 function AgentLogsView() {
@@ -180,7 +124,7 @@ function AgentLogsView() {
     setLoading(true);
     try {
       const pp = getProjectPath() ?? "";
-      const list = await invoke<AgentLogEntry[]>("agent_logs_list", { projectPath: pp, limit: 200 });
+      const list = await auditLogApi.agentLogsList(pp, 200);
       setEntries(list ?? []);
     } catch { setEntries([]); }
     setLoading(false);
@@ -234,7 +178,7 @@ function TerminalLogsView() {
     setLoading(true);
     try {
       const pp = getProjectPath() ?? "";
-      const list = await invoke<TerminalLogEntry[]>("terminal_logs_list", { projectPath: pp, limit: 200 });
+      const list = await auditLogApi.terminalLogsList(pp, 200);
       setEntries(list ?? []);
     } catch { setEntries([]); }
     setLoading(false);
@@ -286,7 +230,7 @@ function SearchLogsView() {
     setLoading(true);
     try {
       const pp = getProjectPath() ?? "";
-      const list = await invoke<SearchLogEntry[]>("search_logs_list", { projectPath: pp, limit: 200 });
+      const list = await auditLogApi.searchLogsList(pp, 200);
       setEntries(list ?? []);
     } catch { setEntries([]); }
     setLoading(false);
@@ -335,7 +279,7 @@ function PassiveScanLogsView() {
     setLoading(true);
     try {
       const pp = getProjectPath() ?? "";
-      const list = await invoke<PassiveScanEntry[]>("passive_scans_global", { projectPath: pp, limit: 200 });
+      const list = await auditLogApi.passiveScansGlobal(pp, 200);
       setEntries(list ?? []);
     } catch { setEntries([]); }
     setLoading(false);
@@ -388,7 +332,7 @@ function WikiChangelogsView() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await invoke<WikiChangeEntry[]>("wiki_changelog_list", { limit: 200 });
+      const list = await auditLogApi.wikiChangelogList(200);
       setEntries(list ?? []);
     } catch { setEntries([]); }
     setLoading(false);
@@ -465,7 +409,7 @@ export function AuditLogPanel() {
 
   const handleClear = useCallback(async () => {
     try {
-      await invoke("audit_clear", { projectPath: getProjectPath() });
+      await auditLogApi.auditClear(getProjectPath());
       setEntries([]);
     } catch {
       /* ignore */

@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { ptyWrite } from "@/lib/tauri";
+import { ptyWrite } from "@/lib/api/pty";
 import { useStore } from "@/store";
 import {
   type InputStateReturn,

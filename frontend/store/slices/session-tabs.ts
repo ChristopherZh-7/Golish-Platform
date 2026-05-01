@@ -6,17 +6,18 @@
 import { logger } from "@/lib/logger";
 import { countLeafPanes, getAllLeafPanes } from "@/lib/pane-utils";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
+import type { SessionStoreDraft } from "./session-draft-types";
 import {
   markTabNewActivityInDraft,
   purgeSessionStateInDraft,
 } from "./session-helpers";
 import type { ImmerSet, StateGet } from "./types";
 
-export function createSessionTabActions(set: ImmerSet<any>, get: StateGet<any>) {
+export function createSessionTabActions(set: ImmerSet<SessionStoreDraft>, get: StateGet<SessionStoreDraft>) {
   return {
     openSettingsTab: () =>
-      set((state: any) => {
-        const existingSettingsTab = Object.values<any>(state.sessions).find(
+      set((state) => {
+        const existingSettingsTab = Object.values(state.sessions).find(
           (session) => session.tabType === "settings",
         );
 
@@ -52,8 +53,8 @@ export function createSessionTabActions(set: ImmerSet<any>, get: StateGet<any>) 
       }),
 
     openHomeTab: () =>
-      set((state: any) => {
-        const existingHomeTab = Object.values<any>(state.sessions).find(
+      set((state) => {
+        const existingHomeTab = Object.values(state.sessions).find(
           (session) => session.tabType === "home",
         );
 
@@ -90,8 +91,8 @@ export function createSessionTabActions(set: ImmerSet<any>, get: StateGet<any>) 
       }),
 
     openBrowserTab: (url?: string) =>
-      set((state: any) => {
-        const existingBrowserTab = Object.values<any>(state.sessions).find(
+      set((state) => {
+        const existingBrowserTab = Object.values(state.sessions).find(
           (session) => session.tabType === "browser",
         );
 
@@ -127,8 +128,8 @@ export function createSessionTabActions(set: ImmerSet<any>, get: StateGet<any>) 
       }),
 
     openSecurityTab: () =>
-      set((state: any) => {
-        const existingTab = Object.values<any>(state.sessions).find(
+      set((state) => {
+        const existingTab = Object.values(state.sessions).find(
           (session) => session.tabType === "security",
         );
 
@@ -164,13 +165,13 @@ export function createSessionTabActions(set: ImmerSet<any>, get: StateGet<any>) 
       }),
 
     getTabSessionIds: (tabId: string) => {
-      const layout = (get() as any).tabLayouts?.[tabId];
+      const layout = get().tabLayouts?.[tabId];
       if (!layout) return [];
       return getAllLeafPanes(layout.root).map((pane) => pane.sessionId);
     },
 
     closeTab: (tabId: string) => {
-      const currentState = get() as any;
+      const currentState = get();
       const layout = currentState.tabLayouts?.[tabId];
       const sessionIdsToClean: string[] = [];
 
@@ -193,7 +194,7 @@ export function createSessionTabActions(set: ImmerSet<any>, get: StateGet<any>) 
         }
       });
 
-      set((state: any) => {
+      set((state) => {
         const layout = state.tabLayouts?.[tabId];
         if (!layout) {
           purgeSessionStateInDraft(state, tabId);
@@ -231,17 +232,17 @@ export function createSessionTabActions(set: ImmerSet<any>, get: StateGet<any>) 
     },
 
     markTabNewActivityBySession: (sessionId: string) =>
-      set((state: any) => {
+      set((state) => {
         markTabNewActivityInDraft(state, sessionId);
       }),
 
     clearTabNewActivity: (tabId: string) =>
-      set((state: any) => {
+      set((state) => {
         state.tabHasNewActivity[tabId] = false;
       }),
 
     moveTab: (tabId: string, direction: "left" | "right") =>
-      set((state: any) => {
+      set((state) => {
         const idx = state.tabOrder.indexOf(tabId);
         if (idx === -1) return;
         if (idx === 0) return;
@@ -253,7 +254,7 @@ export function createSessionTabActions(set: ImmerSet<any>, get: StateGet<any>) 
       }),
 
     reorderTab: (draggedTabId: string, targetTabId: string) =>
-      set((state: any) => {
+      set((state) => {
         if (draggedTabId === targetTabId) return;
         const fromIdx = state.tabOrder.indexOf(draggedTabId);
         const toIdx = state.tabOrder.indexOf(targetTabId);
@@ -267,7 +268,7 @@ export function createSessionTabActions(set: ImmerSet<any>, get: StateGet<any>) 
       destTabId: string,
       location: "left" | "right" | "top" | "bottom",
     ) =>
-      set((state: any) => {
+      set((state) => {
         logger.info("[store] moveTabToPane: start", {
           sourceTabId,
           destTabId,

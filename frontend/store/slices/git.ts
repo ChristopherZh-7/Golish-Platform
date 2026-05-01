@@ -4,7 +4,7 @@
  * Manages git-related state per session including status, loading state, and commit messages.
  */
 
-import type { GitStatusSummary } from "@/lib/tauri";
+import type { GitStatusSummary } from "@/lib/api/git";
 import type { SliceCreator } from "./types";
 
 // State interface

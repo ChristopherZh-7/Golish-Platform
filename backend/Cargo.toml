@@ -15,6 +15,7 @@ members = [
     "crates/golish-context",
     "crates/golish-llm-providers",
     "crates/golish-ai",
+    "crates/golish-events",
     "crates/golish-sub-agents",
     "crates/golish-web",
     "crates/golish-shell-exec",
@@ -47,6 +48,7 @@ default-members = [
     "crates/golish-context",
     "crates/golish-llm-providers",
     "crates/golish-ai",
+    "crates/golish-events",
     "crates/golish-sub-agents",
     "crates/golish-web",
     "crates/golish-shell-exec",
@@ -85,6 +87,7 @@ golish-artifacts = { path = "crates/golish-artifacts" }
 golish-session = { path = "crates/golish-session" }
 golish-context = { path = "crates/golish-context" }
 golish-ai = { path = "crates/golish-ai" }
+golish-events = { path = "crates/golish-events" }
 golish-sub-agents = { path = "crates/golish-sub-agents" }
 golish-llm-providers = { path = "crates/golish-llm-providers" }
 golish-web = { path = "crates/golish-web" }
@@ -199,7 +202,7 @@ graph-flow = "0.5"
 async-trait = "0.1"
 
 # TypeScript type generation
-ts-rs = { version = "12", features = ["serde-compat"] }
+ts-rs = { version = "12", features = ["serde-compat", "chrono-impl", "serde-json-impl"] }
 
 # File walking with gitignore support
 ignore = "0.4"

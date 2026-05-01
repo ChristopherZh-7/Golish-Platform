@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/api";
 import {
   ChevronDown, ChevronRight, Code, Copy, FileCode2, FileText,
   Loader2, Play, Search, Trash2, X, Zap,

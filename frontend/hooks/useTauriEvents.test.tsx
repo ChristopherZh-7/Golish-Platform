@@ -1,6 +1,6 @@
 import { render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { GitStatusSummary } from "../lib/tauri";
+import type { GitStatusSummary } from "../lib/api/git";
 import { useStore } from "../store";
 import { useTauriEvents } from "./useTauriEvents";
 
@@ -15,9 +15,11 @@ vi.mock("../lib/settings", () => ({
 const getGitBranchMock = vi.fn<(path: string) => Promise<string | null>>();
 const gitStatusMock = vi.fn<(workingDirectory: string) => Promise<GitStatusSummary>>();
 
-vi.mock("../lib/tauri", () => ({
+vi.mock("../lib/api/git", () => ({
   getGitBranch: (path: string) => getGitBranchMock(path),
   gitStatus: (workingDirectory: string) => gitStatusMock(workingDirectory),
+}));
+vi.mock("../lib/api/pty", () => ({
   ptyGetForegroundProcess: vi.fn().mockResolvedValue("zsh"),
 }));
 

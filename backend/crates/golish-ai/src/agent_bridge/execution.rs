@@ -24,7 +24,6 @@ use golish_core::events::AiEvent;
 use golish_sub_agents::{SubAgentContext, MAX_AGENT_DEPTH};
 
 use crate::agentic_loop::{run_agentic_loop, run_agentic_loop_generic};
-use crate::llm_client::LlmClient;
 
 use super::terminal_error::{extract_terminal_error_state, should_emit_execution_error_event};
 use super::AgentBridge;
@@ -152,81 +151,34 @@ impl AgentBridge {
 
         let client = self.llm.client.read().await;
 
-        // Vertex Anthropic supports inline images natively via the Anthropic
-        // Messages API; route there first.
-        if let LlmClient::VertexAnthropic(vertex_model) = &*client {
-            let vertex_model = vertex_model.clone();
-            drop(client);
-
-            let loop_ctx = self.build_loop_context(&loop_event_tx).await;
-            let (accumulated_response, reasoning, final_history, token_usage) = run_agentic_loop(
-                &vertex_model,
-                &system_prompt,
-                initial_history,
-                context,
-                &loop_ctx,
-            )
-            .await?;
-
-            return Ok(self
-                .finalize_execution(
-                    accumulated_response,
-                    reasoning,
-                    final_history,
-                    token_usage,
-                    start_time,
-                )
-                .await);
+        if !client.supports_thinking() {
+            tracing::warn!(
+                "execute_with_content called on non-Vertex provider; images may not work correctly"
+            );
         }
-
-        tracing::warn!(
-            "execute_with_content called on non-Vertex provider; images may not work correctly"
-        );
 
         let loop_ctx = self.build_loop_context(&loop_event_tx).await;
 
-        // Macro-like dispatch over text-capable providers using the generic loop.
-        // Each arm clones the model, drops the client lock, and forwards to the
-        // generic agentic loop. The match itself stays cheap because cloning a
-        // rig CompletionModel is just bumping reference counts internally.
-        macro_rules! run_with {
-            ($model:expr) => {{
-                let model = $model.clone();
+        golish_llm_providers::dispatch_llm_client_split!(&*client,
+            vertex_anthropic(va) => {
+                let va = va.clone();
                 drop(client);
                 let (accumulated_response, reasoning, final_history, token_usage) =
-                    run_agentic_loop_generic(
-                        &model,
-                        &system_prompt,
-                        initial_history,
-                        context,
-                        &loop_ctx,
-                    )
-                    .await?;
-                Ok(self
-                    .finalize_execution(
-                        accumulated_response,
-                        reasoning,
-                        final_history,
-                        token_usage,
-                        start_time,
-                    )
-                    .await)
-            }};
-        }
-
-        match &*client {
-            LlmClient::RigAnthropic(model) => run_with!(model),
-            LlmClient::RigGemini(model) => run_with!(model),
-            LlmClient::RigOpenAi(model) => run_with!(model),
-            LlmClient::RigOpenAiResponses(model) => run_with!(model),
-            LlmClient::OpenAiReasoning(model) => run_with!(model),
-            _ => {
+                    run_agentic_loop(&va, &system_prompt, initial_history, context, &loop_ctx).await?;
+                Ok(self.finalize_execution(accumulated_response, reasoning, final_history, token_usage, start_time).await)
+            },
+            generic(m) => {
+                let m = m.clone();
                 drop(client);
-                Err(anyhow::anyhow!(
-                    "execute_with_content not fully supported for this provider"
-                ))
-            }
-        }
+                let (accumulated_response, reasoning, final_history, token_usage) =
+                    run_agentic_loop_generic(&m, &system_prompt, initial_history, context, &loop_ctx).await?;
+                Ok(self.finalize_execution(accumulated_response, reasoning, final_history, token_usage, start_time).await)
+            },
+            mock => {
+                drop(client);
+                Err(anyhow::anyhow!("Mock client cannot execute - use for testing infrastructure only"))
+            },
+        )
     }
 
     /// Execute a text prompt with an explicit sub-agent context.
@@ -281,81 +233,24 @@ impl AgentBridge {
         let start_time = std::time::Instant::now();
         let client = self.llm.client.read().await;
 
-        let result = match &*client {
-            LlmClient::VertexAnthropic(vertex_model) => {
-                let vertex_model = vertex_model.clone();
+        let result = golish_llm_providers::dispatch_llm_client_split!(&*client,
+            vertex_anthropic(va) => {
+                let va = va.clone();
                 drop(client);
-                self.run_anthropic_thinking_turn(&vertex_model, prompt, start_time, context)
-                    .await
-            }
-            LlmClient::RigOpenRouter(model) => {
-                let model = model.clone();
+                self.run_anthropic_thinking_turn(&va, prompt, start_time, context).await
+            },
+            generic(m) => {
+                let m = m.clone();
                 drop(client);
-                self.run_generic_turn(&model, prompt, start_time, context).await
-            }
-            LlmClient::RigOpenAi(model) => {
-                let model = model.clone();
-                drop(client);
-                self.run_generic_turn(&model, prompt, start_time, context).await
-            }
-            LlmClient::RigOpenAiResponses(model) => {
-                let model = model.clone();
-                drop(client);
-                self.run_generic_turn(&model, prompt, start_time, context).await
-            }
-            LlmClient::OpenAiReasoning(model) => {
-                let model = model.clone();
-                drop(client);
-                self.run_generic_turn(&model, prompt, start_time, context).await
-            }
-            LlmClient::RigAnthropic(model) => {
-                let model = model.clone();
-                drop(client);
-                self.run_generic_turn(&model, prompt, start_time, context).await
-            }
-            LlmClient::RigOllama(model) => {
-                let model = model.clone();
-                drop(client);
-                self.run_generic_turn(&model, prompt, start_time, context).await
-            }
-            LlmClient::RigGemini(model) => {
-                let model = model.clone();
-                drop(client);
-                self.run_generic_turn(&model, prompt, start_time, context).await
-            }
-            LlmClient::RigGroq(model) => {
-                let model = model.clone();
-                drop(client);
-                self.run_generic_turn(&model, prompt, start_time, context).await
-            }
-            LlmClient::RigXai(model) => {
-                let model = model.clone();
-                drop(client);
-                self.run_generic_turn(&model, prompt, start_time, context).await
-            }
-            LlmClient::RigZaiSdk(model) => {
-                let model = model.clone();
-                drop(client);
-                self.run_generic_turn(&model, prompt, start_time, context).await
-            }
-            LlmClient::RigNvidia(model) => {
-                let model = model.clone();
-                drop(client);
-                // NVIDIA uses the OpenAI-compatible API path.
-                self.run_generic_turn(&model, prompt, start_time, context).await
-            }
-            LlmClient::VertexGemini(model) => {
-                let model = model.clone();
-                drop(client);
-                self.run_generic_turn(&model, prompt, start_time, context).await
-            }
-            LlmClient::Mock => {
+                self.run_generic_turn(&m, prompt, start_time, context).await
+            },
+            mock => {
                 drop(client);
                 Err(anyhow::anyhow!(
                     "Mock client cannot execute - use for testing infrastructure only"
                 ))
-            }
-        };
+            },
+        );
 
         // Emit error event on failure so every Started has a matching terminal
         // event (Completed or Error), unless the loop already emitted a
