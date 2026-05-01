@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use golish_core::events::AiEvent;
 use golish_core::plan::{PlanStep, PlanSummary, StepStatus};
+use crate::db_shim::{tasks, subtasks};
 use crate::db_traits::{DbRepoProvider, SubtaskStatus, TaskStatus, NewTask};
 
 use super::helpers::parse_agent_type;
@@ -70,7 +71,7 @@ impl TaskOrchestrator {
         task_input: &str,
         executor: &dyn AgentExecutor,
     ) -> Result<String> {
-        let task = self.repo.task_create(NewTask {
+        let task = tasks::create(&*self.repo, NewTask {
             session_id: self.session_id,
             title: None,
             input: task_input.to_string(),
@@ -78,7 +79,7 @@ impl TaskOrchestrator {
         .await
         .context("Failed to create task")?;
 
-        self.repo.task_update_status(task.id, TaskStatus::Running).await?;
+        tasks::update_status(&*self.repo, task.id, TaskStatus::Running).await?;
 
         self.emit(AiEvent::TaskProgress {
             task_id: task.id.to_string(),
@@ -90,7 +91,7 @@ impl TaskOrchestrator {
             Ok(output) => output,
             Err(e) => {
                 tasks::set_result(
-                    &self.pool,
+                    &*self.repo,
                     task.id,
                     &format!("Generator failed: {}", e),
                     TaskStatus::Failed,
@@ -104,7 +105,7 @@ impl TaskOrchestrator {
         for planned in &generator_output.subtasks {
             let agent_type = parse_agent_type(&planned.agent);
             let subtask = subtasks::create(
-                &self.pool,
+                &*self.repo,
                 subtasks::NewSubtask {
                     task_id: task.id,
                     session_id: self.session_id,
@@ -147,7 +148,7 @@ impl TaskOrchestrator {
         task_id: Uuid,
         executor: &dyn AgentExecutor,
     ) -> Result<String> {
-        let task = tasks::get(&self.pool, task_id)
+        let task = tasks::get(&*self.repo, task_id)
             .await?
             .context("Task not found")?;
 
@@ -155,9 +156,9 @@ impl TaskOrchestrator {
             return Ok(task.result.unwrap_or_default());
         }
 
-        tasks::update_status(&self.pool, task.id, TaskStatus::Running).await?;
+        tasks::update_status(&*self.repo, task.id, TaskStatus::Running).await?;
 
-        let db_subtasks = subtasks::list_by_task(&self.pool, task.id).await?;
+        let db_subtasks = subtasks::list_by_task(&*self.repo, task.id).await?;
 
         let completed_count = db_subtasks
             .iter()

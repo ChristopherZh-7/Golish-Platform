@@ -15,7 +15,7 @@ pub(super) async fn handle_list_cves_with_pocs(
         return error_result("Database not available");
     };
 
-    match golish_db::repo::wiki_kb::list_cves_with_pocs(tracker.pool()).await {
+    match crate::db_shim::wiki_kb::list_cves_with_pocs(tracker.repo().unwrap()).await {
         Ok(rows) => {
             let items: Vec<serde_json::Value> = rows
                 .iter()
@@ -52,7 +52,7 @@ pub(super) async fn handle_list_unresearched(
         return error_result("Database not available");
     };
 
-    match golish_db::repo::wiki_kb::list_unresearched_cves(tracker.pool(), limit).await {
+    match crate::db_shim::wiki_kb::list_unresearched_cves(tracker.repo().unwrap(), limit).await {
         Ok(rows) => {
             let items: Vec<serde_json::Value> = rows
                 .iter()
@@ -88,7 +88,7 @@ pub(super) async fn handle_poc_stats(
         return error_result("Database not available");
     };
 
-    match golish_db::repo::wiki_kb::poc_stats(tracker.pool()).await {
+    match crate::db_shim::wiki_kb::poc_stats(tracker.repo().unwrap()).await {
         Ok(stats) => (stats, true),
         Err(e) => error_result(format!("Failed to get PoC stats: {}", e)),
     }

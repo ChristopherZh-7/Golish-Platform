@@ -19,6 +19,7 @@ use super::{
 pub struct PlanManager {
     plan: Arc<RwLock<TaskPlan>>,
     db_pool: Option<Arc<sqlx::PgPool>>,
+    db_repo: Option<Arc<dyn crate::db_traits::DbRepoProvider>>,
     session_id: Option<uuid::Uuid>,
     project_path: Option<String>,
     db_plan_id: Arc<RwLock<Option<uuid::Uuid>>>,
@@ -36,6 +37,7 @@ impl PlanManager {
         Self {
             plan: Arc::new(RwLock::new(TaskPlan::default())),
             db_pool: None,
+            db_repo: None,
             session_id: None,
             project_path: None,
             db_plan_id: Arc::new(RwLock::new(None)),
@@ -61,10 +63,11 @@ impl PlanManager {
         let Some(pool) = &self.db_pool else { return false };
         let Some(project_path) = &self.project_path else { return false };
 
-        match golish_db::repo::execution_plans::list_active(pool, project_path).await {
+        let Some(repo) = &self.db_repo else { return false };
+        match crate::db_shim::execution_plans::list_active(repo.as_ref(), project_path).await {
             Ok(plans) if !plans.is_empty() => {
                 let db_plan = &plans[0];
-                let steps: Vec<golish_db::models::PlanStep> =
+                let steps: Vec<crate::db_traits::PlanStep> =
                     serde_json::from_value(db_plan.steps.clone()).unwrap_or_default();
 
                 let plan_steps: Vec<PlanStep> = steps
@@ -267,8 +270,8 @@ impl PlanManager {
         drop(plan);
 
         // Persist to DB in the background (fire-and-forget)
-        if let Some(pool) = &self.db_pool {
-            let pool = pool.clone();
+        if let Some(repo) = &self.db_repo {
+            let repo = repo.clone();
             let db_plan_id = self.db_plan_id.clone();
             let session_id = self.session_id;
             let project_path = self.project_path.clone();
@@ -289,27 +292,27 @@ impl PlanManager {
             let current_step = result.steps.iter().position(|s| s.status == StepStatus::InProgress).unwrap_or(0) as i32;
 
             let plan_status = if result.summary.completed == result.summary.total {
-                golish_db::models::PlanStatus::Completed
+                crate::db_traits::PlanStatus::Completed
             } else if result.summary.in_progress > 0 {
-                golish_db::models::PlanStatus::InProgress
+                crate::db_traits::PlanStatus::InProgress
             } else {
-                golish_db::models::PlanStatus::Planning
+                crate::db_traits::PlanStatus::Planning
             };
 
             tokio::spawn(async move {
                 let existing_id = db_plan_id.read().await.clone();
                 if let Some(id) = existing_id {
-                    if let Err(e) = golish_db::repo::execution_plans::update_steps(
-                        &pool, id, &steps_json, current_step, plan_status,
+                    if let Err(e) = crate::db_shim::execution_plans::update_steps(
+                        repo.as_ref(), id, &steps_json, current_step, plan_status,
                     ).await {
                         tracing::warn!("Failed to update plan in DB: {}", e);
                     }
                 } else {
                     let title = explanation.chars().take(100).collect::<String>();
                     let title = if title.is_empty() { "Untitled Plan".to_string() } else { title };
-                    match golish_db::repo::execution_plans::create(
-                        &pool,
-                        golish_db::models::NewExecutionPlan {
+                    match crate::db_shim::execution_plans::create(
+                        repo.as_ref(),
+                        crate::db_traits::NewExecutionPlan {
                             session_id,
                             project_path,
                             title,

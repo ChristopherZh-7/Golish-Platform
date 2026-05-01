@@ -37,11 +37,11 @@ pub(super) async fn handle_search(
     };
 
     let pages = if let Some(cat) = category {
-        golish_db::repo::wiki_kb::search_by_category(tracker.pool(), &cat, limit).await
+        crate::db_shim::wiki_kb::search_by_category(tracker.repo().unwrap(), &cat, limit).await
     } else if let Some(t) = tag {
-        golish_db::repo::wiki_kb::search_by_tag(tracker.pool(), &t, limit).await
+        crate::db_shim::wiki_kb::search_by_tag(tracker.repo().unwrap(), &t, limit).await
     } else {
-        golish_db::repo::wiki_kb::search_fts(tracker.pool(), &query, limit).await
+        crate::db_shim::wiki_kb::search_fts(tracker.repo().unwrap(), &query, limit).await
     };
 
     match pages {
