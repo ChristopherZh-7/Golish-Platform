@@ -44,6 +44,28 @@ pub use matcher::{extract_keywords, SkillMatcher};
 pub use parser::{load_skill_body, load_skill_content, parse_skill_md, validate_skill_name};
 pub use types::{MatchedSkill, SkillFileInfo, SkillFrontmatter, SkillInfo, SkillMetadata};
 
+/// Default implementation of `SkillProvider` using this crate's discovery and matching.
+pub struct DefaultSkillProvider;
+
+impl golish_core::SkillProvider for DefaultSkillProvider {
+    fn discover_skills(&self, workspace: Option<&str>) -> Vec<golish_core::SkillMetadata> {
+        discover_skills(workspace).into_iter().map(Into::into).collect()
+    }
+
+    fn match_skills(
+        &self,
+        prompt: &str,
+        cache: &[golish_core::SkillMetadata],
+    ) -> Vec<golish_core::SkillMatch> {
+        let matcher = SkillMatcher::default();
+        matcher.match_skills(prompt, cache)
+    }
+
+    fn load_skill_body(&self, path: &str) -> anyhow::Result<String> {
+        load_skill_body(path).map_err(|e| anyhow::anyhow!("{}", e))
+    }
+}
+
 /// Errors that can occur during skill operations.
 #[derive(Debug, thiserror::Error)]
 pub enum SkillsError {

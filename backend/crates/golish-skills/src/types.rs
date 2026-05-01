@@ -54,25 +54,7 @@ pub struct SkillInfo {
     pub has_assets: bool,
 }
 
-/// Lightweight metadata for matching (no body, pre-computed keywords).
-///
-/// This is used for efficient skill matching without loading
-/// the full skill body until needed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillMetadata {
-    /// Skill name
-    pub name: String,
-    /// Short description
-    pub description: String,
-    /// Full path to the skill directory
-    pub path: String,
-    /// Source: "global" or "project"
-    pub source: String,
-    /// Allowed tools for this skill
-    pub allowed_tools: Option<Vec<String>>,
-    /// Pre-computed keywords for matching
-    pub keywords: Vec<String>,
-}
+pub use golish_core::SkillMetadata;
 
 impl From<SkillInfo> for SkillMetadata {
     fn from(info: SkillInfo) -> Self {

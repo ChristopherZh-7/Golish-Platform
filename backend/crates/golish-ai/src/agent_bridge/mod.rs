@@ -64,13 +64,13 @@ use crate::loop_detection::LoopDetector;
 use crate::tool_policy::ToolPolicyManager;
 use golish_context::{CompactionState, ContextManager};
 use golish_core::runtime::GolishRuntime;
-use golish_session::GolishSessionManager;
+use golish_core::SessionManager;
 use golish_sub_agents::SubAgentRegistry;
 
 use crate::indexer::IndexerState;
 use crate::planner::PlanManager;
 
-use golish_skills::SkillMetadata;
+use golish_core::SkillMetadata;
 
 use crate::sidecar_trait::SessionCaptureBackend;
 use crate::tool_executors::graph_trait::GraphKnowledgeBase;
@@ -145,7 +145,7 @@ pub(crate) struct BridgeAccessControl {
 /// Conversation history and session persistence.
 pub(crate) struct BridgeSession {
     pub(crate) conversation_history: Arc<RwLock<Vec<Message>>>,
-    pub(crate) session_manager: Arc<RwLock<Option<GolishSessionManager>>>,
+    pub(crate) session_manager: Arc<RwLock<Option<Box<dyn SessionManager>>>>,
     pub(crate) session_persistence_enabled: Arc<RwLock<bool>>,
 }
 
@@ -186,6 +186,9 @@ pub struct AgentBridge {
     // -- Domain hooks (injected by the host crate) ----------------------------
     pub(crate) post_shell_hook: Option<crate::agentic_loop::PostShellHook>,
     pub(crate) output_classifier: Option<crate::agentic_loop::OutputClassifier>,
+    pub(crate) web_fetcher: Option<std::sync::Arc<dyn golish_core::WebFetchProvider>>,
+    pub(crate) skill_provider: Option<std::sync::Arc<dyn golish_core::SkillProvider>>,
+    pub(crate) session_factory: Option<std::sync::Arc<dyn golish_core::SessionManagerFactory>>,
 
     // -- Skills & MCP ---------------------------------------------------------
     pub(crate) skill_cache: Arc<RwLock<Vec<SkillMetadata>>>,

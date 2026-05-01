@@ -179,6 +179,7 @@ where
         execution_mode: crate::execution_mode::ExecutionMode::Chat,
         post_shell_hook: None,
         output_classifier: None,
+        web_fetcher: None,
     };
 
     let capabilities = ModelCapabilities::detect(&config.provider_name, &config.model_name);
@@ -405,6 +406,7 @@ where
         execution_mode: crate::execution_mode::ExecutionMode::Chat,
         post_shell_hook: None,
         output_classifier: None,
+        web_fetcher: None,
     };
 
     // Detect capabilities from provider/model

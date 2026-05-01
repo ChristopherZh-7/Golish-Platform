@@ -1,19 +1,13 @@
 //! Session persistence extension for AgentBridge.
-//!
-//! This module contains methods for managing conversation session persistence.
 
 use std::path::PathBuf;
 
 use rig::completion::Message;
 
 use super::agent_bridge::AgentBridge;
-use golish_session::GolishSessionManager;
+use golish_core::SessionManager;
 
 impl AgentBridge {
-    // ========================================================================
-    // Session Persistence Methods
-    // ========================================================================
-
     pub async fn set_session_persistence_enabled(&self, enabled: bool) {
         *self.session.session_persistence_enabled.write().await = enabled;
         tracing::debug!("Session persistence enabled: {}", enabled);
@@ -33,45 +27,47 @@ impl AgentBridge {
             return;
         }
 
-        let workspace = self.workspace.read().await.clone();
-        match GolishSessionManager::new(workspace, &self.llm.model_name, &self.llm.provider_name).await {
-            Ok(manager) => {
-                *manager_guard = Some(manager);
-                tracing::debug!("Session started for persistence");
-            }
-            Err(e) => {
-                tracing::warn!("Failed to start session for persistence: {}", e);
+        if let Some(ref factory) = self.session_factory {
+            let workspace = self.workspace.read().await.clone();
+            match factory
+                .create(workspace, &self.llm.model_name, &self.llm.provider_name)
+                .await
+            {
+                Ok(manager) => {
+                    *manager_guard = Some(manager);
+                    tracing::debug!("Session started for persistence");
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to start session for persistence: {}", e);
+                }
             }
         }
     }
 
     pub(crate) async fn with_session_manager<F>(&self, f: F)
     where
-        F: FnOnce(&mut GolishSessionManager),
+        F: FnOnce(&mut dyn SessionManager),
     {
         let mut guard = self.session.session_manager.write().await;
         if let Some(ref mut manager) = *guard {
-            f(manager);
+            f(manager.as_mut());
         }
     }
 
-    /// Record a user message in the current session.
     pub(crate) async fn record_user_message(&self, content: &str) {
         self.with_session_manager(|m| m.add_user_message(content))
             .await;
     }
 
-    /// Record an assistant message in the current session.
     pub(crate) async fn record_assistant_message(&self, content: &str) {
         self.with_session_manager(|m| m.add_assistant_message(content))
             .await;
     }
 
-    /// Update the session workspace path.
     pub(crate) async fn update_session_workspace(&self, new_path: PathBuf) {
         let mut guard = self.session.session_manager.write().await;
         if let Some(ref mut manager) = *guard {
-            manager.update_workspace(new_path).await;
+            manager.update_workspace_sync(new_path);
         }
     }
 
@@ -90,10 +86,11 @@ impl AgentBridge {
         self.sync_agent_mode_to_session().await;
 
         let mut manager_guard = self.session.session_manager.write().await;
-        if let Some(ref mut manager) = manager_guard.take() {
+        if let Some(ref mut manager) = *manager_guard {
             match manager.finalize() {
                 Ok(path) => {
                     tracing::info!("Session finalized: {}", path.display());
+                    *manager_guard = None;
                     return Some(path);
                 }
                 Err(e) => {
@@ -115,10 +112,6 @@ impl AgentBridge {
         }
     }
 
-    // ========================================================================
-    // Conversation History Methods
-    // ========================================================================
-
     pub async fn clear_conversation_history(&self) {
         self.finalize_session().await;
 
@@ -131,19 +124,17 @@ impl AgentBridge {
         self.session.conversation_history.read().await.len()
     }
 
-    pub async fn restore_session(&self, messages: Vec<golish_session::GolishSessionMessage>) {
+    /// Restore session from rig messages directly.
+    pub async fn restore_session_from_messages(&self, messages: Vec<Message>) {
         self.finalize_session().await;
 
-        let rig_messages: Vec<Message> =
-            messages.iter().filter_map(|m| m.to_rig_message()).collect();
-
+        let count = messages.len();
         let mut history = self.session.conversation_history.write().await;
-        *history = rig_messages;
+        *history = messages;
 
         tracing::info!(
-            "Restored session with {} messages ({} in history)",
-            messages.len(),
-            history.len()
+            "Restored session with {} messages in history",
+            count
         );
     }
 }
