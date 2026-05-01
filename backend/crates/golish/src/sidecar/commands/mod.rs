@@ -14,12 +14,12 @@
 //! - [`patches`]   — L2 staged-patch operations (list/get/discard/apply/regenerate)
 //! - [`artifacts`] — L3 project-artifact operations (list/get/preview/apply/regenerate)
 
-mod artifacts;
-mod config;
-mod content;
-mod lifecycle;
-mod patches;
-mod status;
+pub mod artifacts;
+pub mod config;
+pub mod content;
+pub mod lifecycle;
+pub mod patches;
+pub mod status;
 
 pub use artifacts::*;
 pub use config::*;

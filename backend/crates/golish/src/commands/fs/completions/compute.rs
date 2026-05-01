@@ -136,7 +136,7 @@ pub fn compute_path_completions(
 }
 
 /// Parse the partial path input and return (search_directory, prefix_to_match).
-fn parse_path_input(partial_path: &str, working_dir: &Path) -> (PathBuf, String) {
+pub(super) fn parse_path_input(partial_path: &str, working_dir: &Path) -> (PathBuf, String) {
     if partial_path.is_empty() {
         // Empty input: list current directory
         return (working_dir.to_path_buf(), String::new());
@@ -186,7 +186,7 @@ fn parse_path_input(partial_path: &str, working_dir: &Path) -> (PathBuf, String)
 /// Expand tilde to home directory. Thin wrapper around the canonical
 /// helper in [`crate::app::workspace`] kept for backwards-compatible
 /// `&str -> String` ergonomics inside this module's matchers and tests.
-fn expand_tilde(path: &str) -> String {
+pub(super) fn expand_tilde(path: &str) -> String {
     expand_tilde_string(path)
 }
 
