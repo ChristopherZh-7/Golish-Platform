@@ -216,9 +216,20 @@ pub(crate) use golish_events::transcript;
 
 ---
 
-### P2-4 统一 DB 抽象到 trait（按域分批） — 🟡 Partial
+### P2-4 统一 DB 抽象到 trait（按域分批） — ✅ Done
 
-> 🟡 2026-05-02: `golish-pipeline` / `golish-scan-runner` / `golish-session` / `golish-ai` 已有 trait;`golish-pentest` / `golish-vuln-intel` / `golish-projects` 仍直接用 `&PgPool`,这是 P2-4 剩余范围(grep `PgPool` 在域 crate 仍有 ~10 处命中)。
+> ✅ Done 2026-05-02:
+> - `golish-pentest`: `OutputStore` trait + `PgPentestStore` adapter (commits 029fb3c / c6cc58d / 2f1b624)
+> - `golish-vuln-intel`: `VulnIntelStore` trait + `PgVulnIntelStore` adapter (commit 59f1a50)
+> - `golish-projects`: 不在范围(纯 fs-based, 无 PgPool)
+> - 已有 trait 的: `golish-pipeline` / `golish-scan-runner` / `golish-session` / `golish-ai`
+>
+> grep `PgPool` 在两个域 crate 现在仅出现在:
+> - `pg_adapter.rs` (trait impl, 合规)
+> - `pub(crate)` freestanding 写函数(crate-private 实现细节)
+> - doc comments
+>
+> 业务函数签名不再暴露 PgPool。
 
 **目标**：所有 Layer 3 域 crate 不直接接 `&sqlx::PgPool`，改接 `&dyn XxxRepo`。
 
@@ -325,9 +336,9 @@ pub trait PentestRepo: Send + Sync {
 | `golish-ai` LOC | 34.9K | 34.9K | **≤6K** | ≤6K | **39 行** facade ✅ |
 | 反向/同层依赖 | 1 (indexer→ai) | **0** | 0 | 0 | **0** ✅ |
 | 业务文件 >500 行 | 8+ | **0** | 0 | 0 | **0** ✅ (P1-4 达成) |
-| 域 crate 用裸 PgPool | 3 | 3 | **0** | 0 | **3** 🟡 (P2-4 部分完成) |
+| 域 crate 用裸 PgPool | 3 | 3 | **0** | 0 | **0** ✅ (P2-4 完成) |
 | 新 crate 测试覆盖 | 0/4 | **4/4** | 4/4 | 4/4 | **4/4** ✅ |
-| 综合评级 | A- | A | A+ | S | **S-** (P2-4 + P3-1 baseline 后达 S) |
+| 综合评级 | A- | A | A+ | S | **S** ✅ (Phase 1/2/3 主要项均完成,仅 P3-4 可选与 agent-loop 编译时间细节待长期优化) |
 
 ---
 
