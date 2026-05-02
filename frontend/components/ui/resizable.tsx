@@ -9,10 +9,7 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 
 import { cn } from "@/lib/utils";
 
-type ResizablePanelGroupProps = Omit<
-  React.ComponentProps<typeof Group>,
-  "orientation"
-> & {
+type ResizablePanelGroupProps = Omit<React.ComponentProps<typeof Group>, "orientation"> & {
   /** v3-style alias: `direction` is forwarded to the new `orientation` prop. */
   direction?: "horizontal" | "vertical";
   orientation?: "horizontal" | "vertical";

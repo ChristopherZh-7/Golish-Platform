@@ -27,17 +27,14 @@ const DEFAULT_RETRY_DELAY_MS = 300;
 let requestCounter = 0;
 const inflightCommands = new Map<number, { command: string; startedAt: number }>();
 
-export function getInflightCommands(): ReadonlyMap<
-  number,
-  { command: string; startedAt: number }
-> {
+export function getInflightCommands(): ReadonlyMap<number, { command: string; startedAt: number }> {
   return inflightCommands;
 }
 
 export async function invoke<T = void>(
   command: string,
   args?: Record<string, unknown>,
-  opts?: InvokeOptions,
+  opts?: InvokeOptions
 ): Promise<T> {
   const { signal, timeoutMs, retries = 0, retryDelayMs = DEFAULT_RETRY_DELAY_MS } = opts ?? {};
 
@@ -64,7 +61,7 @@ async function invokeOnce<T>(
   command: string,
   args: Record<string, unknown> | undefined,
   signal: AbortSignal | undefined,
-  timeoutMs: number | undefined,
+  timeoutMs: number | undefined
 ): Promise<T> {
   const id = ++requestCounter;
   inflightCommands.set(id, { command, startedAt: Date.now() });
@@ -76,7 +73,7 @@ async function invokeOnce<T>(
           "INVOKE_FAILED",
           `[Transport] ${command}: ${err instanceof Error ? err.message : String(err)}`,
           command,
-          err,
+          err
         );
       }),
     ];
@@ -85,7 +82,7 @@ async function invokeOnce<T>(
       raceEntries.push(
         new Promise<never>((_, reject) => {
           setTimeout(() => reject(new TimeoutError(command, timeoutMs)), timeoutMs);
-        }),
+        })
       );
     }
 
@@ -98,7 +95,7 @@ async function invokeOnce<T>(
             return;
           }
           signal.addEventListener("abort", onAbort, { once: true });
-        }),
+        })
       );
     }
 

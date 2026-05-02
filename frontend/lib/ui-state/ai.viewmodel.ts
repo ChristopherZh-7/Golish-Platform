@@ -13,7 +13,7 @@ export interface TokenUsageSummary {
 }
 
 export function computeTokenUsage(
-  stats: { prompt_tokens?: number; completion_tokens?: number; model?: string } | null,
+  stats: { prompt_tokens?: number; completion_tokens?: number; model?: string } | null
 ): TokenUsageSummary {
   if (!stats) {
     return { promptTokens: 0, completionTokens: 0, totalTokens: 0, estimatedCostUsd: null };

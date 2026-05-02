@@ -57,10 +57,7 @@ export async function listVaultEntries(projectPath: string | null): Promise<Vaul
  * Run validation on a stored credential (e.g. attempt a probe with
  * the stored value). Returns a human-readable status string.
  */
-export async function validateVaultEntry(
-  id: string,
-  projectPath: string | null
-): Promise<string> {
+export async function validateVaultEntry(id: string, projectPath: string | null): Promise<string> {
   return invoke<string>("vault_validate", { id, projectPath });
 }
 
@@ -68,10 +65,7 @@ export async function validateVaultEntry(
  * Fetch the plaintext credential value for an entry (one-shot).
  * Triggers an audit log entry server-side.
  */
-export async function getVaultValue(
-  id: string,
-  projectPath: string | null
-): Promise<string> {
+export async function getVaultValue(id: string, projectPath: string | null): Promise<string> {
   return invoke<string>("vault_get_value", { id, projectPath });
 }
 

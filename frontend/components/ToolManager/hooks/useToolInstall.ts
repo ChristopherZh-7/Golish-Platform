@@ -1,14 +1,11 @@
-import {
-  checkRequirements,
-  checkToolUpdates,
-  listDepFiles,
-} from "@/lib/pentest/api";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   cancelDownload,
   cancelRuntimeInstall,
+  checkRequirements,
+  checkToolUpdates,
   createPythonEnv,
   deleteTool,
   downloadAndExtract,
@@ -22,6 +19,7 @@ import {
   installRequirements,
   installRuntime,
   listAvailableJava,
+  listDepFiles,
   listInstalledJava,
   listPythonEnvs,
   listToolDirFiles,

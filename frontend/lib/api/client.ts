@@ -21,10 +21,7 @@ export class ApiError extends Error {
 }
 
 let requestCounter = 0;
-const inflightCommands = new Map<
-  number,
-  { command: string; startedAt: number; traceId: string }
->();
+const inflightCommands = new Map<number, { command: string; startedAt: number; traceId: string }>();
 
 export function getInflightCommands(): ReadonlyMap<
   number,

@@ -16,7 +16,7 @@ export interface ProviderCard {
 
 export function deriveProviderCards(
   settings: GolishSettings,
-  visibility: ProviderVisibility,
+  visibility: ProviderVisibility
 ): ProviderCard[] {
   const entries: ProviderCard[] = [
     {

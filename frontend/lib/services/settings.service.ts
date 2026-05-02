@@ -7,8 +7,8 @@
  * Components should import from here instead of calling invoke() directly.
  */
 
-import { dedupInvoke, invoke } from "../transport";
 import type { GolishSettings, ProviderVisibility, TelemetryStats } from "../settings/types";
+import { dedupInvoke, invoke } from "../transport";
 
 const CACHE_TTL_MS = 5_000;
 

@@ -154,8 +154,7 @@ export function ActionButton({ tool, ...ctx }: ActionButtonProps & { tool: ToolW
   const { t } = useTranslation();
   const isBusy = ctx.busy === tool.id;
   const progress = ctx.installProgress[tool.id];
-  const hasDlProgress =
-    isBusy && ctx.dlProgress && (ctx.dlProgress.total ?? 0) > 0;
+  const hasDlProgress = isBusy && ctx.dlProgress && (ctx.dlProgress.total ?? 0) > 0;
   const dlPct = hasDlProgress
     ? (ctx.dlProgress?.downloaded ?? 0) / (ctx.dlProgress?.total ?? 1)
     : 0;
