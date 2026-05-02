@@ -5,7 +5,7 @@ use tauri::State;
 
 use super::ai_session_not_initialized_error;
 use crate::state::AppState;
-use golish_ai::loop_detection::{LoopDetectorStats, LoopProtectionConfig};
+use golish_agent_kit::loop_detection::{LoopDetectorStats, LoopProtectionConfig};
 
 /// Get the current loop protection configuration.
 #[tauri::command]

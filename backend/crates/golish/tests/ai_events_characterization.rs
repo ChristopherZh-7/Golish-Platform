@@ -7,7 +7,7 @@
 //! DO NOT modify snapshots without careful consideration of frontend impact!
 
 use chrono::{DateTime, Utc};
-use golish_ai::planner::{PlanStep, PlanSummary, StepStatus};
+use golish_agent_kit::planner::{PlanStep, PlanSummary, StepStatus};
 use golish_core::events::{AiEvent, ToolSource};
 use golish_core::hitl::{ApprovalPattern, RiskLevel};
 use serde_json::json;

@@ -23,11 +23,11 @@ pub trait McpToolExecutor: Send + Sync {
 }
 use golish_context::{CompactionState, ContextManager};
 use golish_events::event_coordinator::CoordinatorHandle;
-use golish_agent_loop::sidecar_trait::{SessionCaptureBackend, AiEventProcessor};
-use golish_agent_loop::hitl::ApprovalRecorder;
-use golish_agent_loop::loop_detection::LoopDetector;
+use golish_agent_kit::sidecar_trait::{SessionCaptureBackend, AiEventProcessor};
+use golish_agent_kit::hitl::ApprovalRecorder;
+use golish_agent_kit::loop_detection::LoopDetector;
 use golish_indexer::IndexerState;
-use golish_agent_loop::tool_policy::ToolPolicyManager;
+use golish_agent_kit::tool_policy::ToolPolicyManager;
 use super::ToolConfig;
 
 /// Marker error indicating that a terminal `AiEvent::Error` has already been emitted.
@@ -79,7 +79,7 @@ pub struct LoopLlmRefs<'a> {
     pub openai_web_search_config: Option<&'a golish_llm_providers::OpenAiWebSearchConfig>,
     pub openai_reasoning_effort: Option<&'a str>,
     pub openrouter_provider_preferences: Option<&'a serde_json::Value>,
-    pub model_factory: Option<&'a Arc<golish_agent_loop::llm_client::LlmClientFactory>>,
+    pub model_factory: Option<&'a Arc<golish_agent_kit::llm_client::LlmClientFactory>>,
 }
 
 /// Tool access control: policy engine, HITL approval, agent mode, loop detection.
@@ -87,7 +87,7 @@ pub struct LoopAccessControl<'a> {
     pub approval_recorder: &'a Arc<ApprovalRecorder>,
     pub pending_approvals: &'a Arc<RwLock<HashMap<String, oneshot::Sender<ApprovalDecision>>>>,
     pub tool_policy_manager: &'a Arc<ToolPolicyManager>,
-    pub agent_mode: &'a Arc<RwLock<golish_agent_loop::agent_mode::AgentMode>>,
+    pub agent_mode: &'a Arc<RwLock<golish_agent_kit::agent_mode::AgentMode>>,
     pub loop_detector: &'a Arc<RwLock<LoopDetector>>,
     pub coordinator: Option<&'a CoordinatorHandle>,
 }
@@ -98,7 +98,7 @@ pub struct LoopEventRefs<'a> {
     pub transcript_writer: Option<&'a Arc<golish_events::transcript::TranscriptWriter>>,
     pub transcript_base_dir: Option<&'a std::path::Path>,
     pub session_id: Option<&'a str>,
-    pub db_tracker: Option<&'a golish_agent_loop::db_tracking::DbTracker>,
+    pub db_tracker: Option<&'a golish_agent_kit::db_tracking::DbTracker>,
     pub runtime: Option<&'a Arc<dyn GolishRuntime>>,
 }
 
@@ -138,16 +138,16 @@ pub struct AgenticLoopContext<'a> {
     pub context_manager: &'a Arc<ContextManager>,
     pub compaction_state: &'a Arc<RwLock<CompactionState>>,
     pub tool_config: &'a ToolConfig,
-    pub graph_backend: Option<Arc<dyn golish_agent_loop::tool_executors::graph_trait::GraphKnowledgeBase>>,
+    pub graph_backend: Option<Arc<dyn golish_agent_kit::tool_executors::graph_trait::GraphKnowledgeBase>>,
     pub sidecar_state: Option<&'a Arc<dyn SessionCaptureBackend>>,
     pub chain_persistence: Option<Arc<dyn golish_sub_agents::SubAgentChainPersistence>>,
-    pub plan_manager: &'a Arc<golish_agent_loop::planner::PlanManager>,
+    pub plan_manager: &'a Arc<golish_agent_kit::planner::PlanManager>,
     pub api_request_stats: &'a Arc<ApiRequestStats>,
     pub additional_tool_definitions: Vec<rig::completion::ToolDefinition>,
     pub custom_tool_executor: Option<Arc<dyn McpToolExecutor>>,
     pub cancelled: Option<&'a Arc<std::sync::atomic::AtomicBool>>,
-    pub execution_monitor: Option<Arc<RwLock<golish_agent_loop::loop_detection::ExecutionMonitor>>>,
-    pub execution_mode: golish_agent_loop::execution_mode::ExecutionMode,
+    pub execution_monitor: Option<Arc<RwLock<golish_agent_kit::loop_detection::ExecutionMonitor>>>,
+    pub execution_mode: golish_agent_kit::execution_mode::ExecutionMode,
 
     // -- Domain hooks (injected by the host crate) ----------------------------
     /// Called after a successful `run_pty_cmd` execution to detect and store

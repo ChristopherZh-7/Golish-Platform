@@ -266,7 +266,7 @@ impl EvalRunner {
         workspace: &std::path::Path,
         prompt: &str,
         additional_tools: Vec<rig::completion::ToolDefinition>,
-        custom_executor: Option<golish_ai::eval_support::CustomToolExecutor>,
+        custom_executor: Option<golish_agent_runtime::eval_support::CustomToolExecutor>,
     ) -> Result<AgentOutput> {
         crate::executor::execute_eval_prompt_with_tools(
             workspace,

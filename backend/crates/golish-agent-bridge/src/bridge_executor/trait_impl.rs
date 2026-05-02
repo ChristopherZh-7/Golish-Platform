@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 
-use golish_agent_loop::task_orchestrator::{
+use golish_agent_kit::task_orchestrator::{
     prompts, AgentExecutor, AgentResult, AgentTokenUsage, ExecutionContext, GeneratorOutput,
     PlannedSubtask, RefinerOutput,
 };

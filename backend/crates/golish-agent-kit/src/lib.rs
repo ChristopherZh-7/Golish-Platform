@@ -1,14 +1,12 @@
-//! Lower-level building blocks of the agent runtime.
+//! Lower-level building blocks of the agent runtime (**Layer 4a**).
 //!
-//! Originally extracted from `golish-ai` in **A1-2** of the architecture
-//! upgrade plan. In the P3-1 follow-up the high-level streaming loop
-//! (`agentic_loop/`), evals harness (`eval_support/`) and mocks
-//! (`test_utils*`) were further split out into the sibling crate
-//! [`golish-agentic-loop`](https://docs.rs/golish-agentic-loop) so editing
-//! the loop body no longer recompiles the (much larger) infrastructure
-//! layer below.
+//! Renamed from `golish-agent-loop` in A2. The high-level streaming
+//! loop (`agentic_loop/`), evals harness and mocks live in the sibling
+//! crate [`golish_agent_runtime`](::golish_agent_runtime) so that
+//! editing loop logic does not recompile this (much larger)
+//! infrastructure layer.
 //!
-//! What lives here:
+//! # What lives here
 //!
 //! - [`task_orchestrator`] — PentAGI-style multi-phase task orchestration
 //! - [`tool_execution`]    — shared `route_tool_execution` dispatcher
@@ -28,21 +26,13 @@
 //! - [`llm_client`]        — per-provider component builders + factory
 //! - [`execution_mode`]    — Chat vs Task execution mode enum
 //!
-//! What moved out (re-exported via the umbrella `golish-ai` for backward
-//! compatibility):
-//!
-//! - `agentic_loop`   → [`golish_agentic_loop::agentic_loop`]
-//! - `eval_support`   → [`golish_agentic_loop::eval_support`]
-//! - `test_utils*`    → [`golish_agentic_loop::test_utils`]
-//!
 //! # Architecture
 //!
-//! `golish-agent-loop` sits at **Layer 4a** in the agent stack:
 //! - depends on: `golish-core`, `golish-events`, `golish-context`,
 //!   `golish-tools`, `golish-prompts`, `golish-llm-providers`,
 //!   `golish-sub-agents`, `golish-indexer`, `golish-json-repair`
-//! - consumed by: `golish-agentic-loop` (Layer 4b) and the umbrella
-//!   `golish-ai` / `golish-agent-bridge` crates.
+//! - consumed by: `golish-agent-runtime` (L4b) and the `golish-ai` /
+//!   `golish-agent-bridge` facades.
 
 pub mod db_shim;
 pub mod db_traits;
@@ -68,7 +58,7 @@ pub(crate) use golish_events::event_coordinator;
 pub mod agent_mode {
     //! Backward-compatibility alias: `AgentMode` lives in `golish-core`.
     //!
-    //! Existing modules inside `golish-agent-loop` reference
+    //! Existing modules inside `golish-agent-kit` reference
     //! `crate::agent_mode::AgentMode`. To keep those references valid
     //! without rewriting every callsite, this module simply re-exports
     //! the canonical type from `golish-core`.

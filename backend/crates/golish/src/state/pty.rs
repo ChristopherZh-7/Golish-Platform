@@ -8,8 +8,9 @@ use crate::tools::pty_interactive::PtyOutputTap;
 
 /// Terminal / PTY managed state.
 ///
-/// Reserved for Tauri `manage<PtyState>()` migration (P2-2).
-#[allow(dead_code)]
+/// Managed independently of `AppState` as of A4: PTY-related commands
+/// take `State<'_, PtyState>` directly instead of the monolithic
+/// `AppState`.
 pub struct PtyState {
     pub manager: Arc<PtyManager>,
     pub output_tap: Arc<PtyOutputTap>,
@@ -17,14 +18,30 @@ pub struct PtyState {
     pub busy_sessions: Arc<Mutex<HashSet<String>>>,
 }
 
-#[allow(dead_code)]
 impl PtyState {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             manager: Arc::new(PtyManager::new()),
             output_tap: Arc::new(PtyOutputTap::new()),
             active_session: Arc::new(Mutex::new(None)),
             busy_sessions: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
+
+    /// Build from AppState-owned `Arc`s so the two views share the same
+    /// underlying data (used by `AppState::extract_pty_state`).
+    pub fn from_shared(
+        manager: Arc<PtyManager>,
+        output_tap: Arc<PtyOutputTap>,
+        active_session: Arc<Mutex<Option<String>>>,
+        busy_sessions: Arc<Mutex<HashSet<String>>>,
+    ) -> Self {
+        Self {
+            manager,
+            output_tap,
+            active_session,
+            busy_sessions,
         }
     }
 }

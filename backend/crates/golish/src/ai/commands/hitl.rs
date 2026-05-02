@@ -5,7 +5,7 @@ use tauri::State;
 
 use super::ai_session_not_initialized_error;
 use crate::state::AppState;
-use golish_ai::hitl::{ApprovalPattern, ToolApprovalConfig};
+use golish_agent_kit::hitl::{ApprovalPattern, ToolApprovalConfig};
 use golish_core::hitl::ApprovalDecision;
 
 /// Get approval patterns for all tools.

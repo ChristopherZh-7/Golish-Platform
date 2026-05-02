@@ -7,7 +7,7 @@
 //!
 //! # Layering
 //!
-//! - depends on: `golish-agent-loop` (runtime), `golish-prompts`,
+//! - depends on: `golish-agent-kit` (runtime), `golish-prompts`,
 //!   `golish-events`, `golish-context`, `golish-sub-agents`,
 //!   `golish-llm-providers`, `golish-tools`, `golish-session`,
 //!   `golish-indexer`
@@ -22,20 +22,21 @@
 //! re-exports those modules at the crate root so the existing import
 //! paths keep working unchanged.
 
-pub use golish_agent_loop::{
+pub use golish_agent_kit::{
     agent_mode, db_shim, db_traits, db_tracking, execution_mode, hitl, llm_client,
     loop_detection, memory_file, memory_gatekeeper, planner, sidecar_trait, system_hooks,
     tool_definitions, tool_execution, tool_executors, tool_policy, tool_provider_impl,
 };
-pub use golish_agentic_loop::agentic_loop;
+pub use golish_agent_runtime::agentic_loop;
 
-pub use golish_prompts::{contributors, prompt_registry, system_prompt};
+pub use golish_prompts::{prompt_registry, system_prompt};
 
 pub(crate) use golish_events::event_coordinator;
 pub(crate) use golish_events::transcript;
 
 pub mod agent_bridge;
 pub mod bridge_executor;
+pub mod contributors;
 
 mod bridge_context;
 mod bridge_hitl;

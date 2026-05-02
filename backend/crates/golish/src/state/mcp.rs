@@ -4,18 +4,23 @@ use tokio::sync::RwLock;
 
 /// MCP (Model Context Protocol) manager managed state.
 ///
-/// Reserved for Tauri `manage<McpManaged>()` migration (refactor-roadmap P2-2);
-/// not yet wired into commands.
-#[allow(dead_code)]
+/// Managed independently of `AppState` as of A4: MCP-related commands
+/// take `State<'_, McpManaged>` directly instead of the monolithic
+/// `AppState`.
 pub struct McpManaged {
     pub manager: Arc<RwLock<Option<Arc<golish_mcp::McpManager>>>>,
 }
 
-#[allow(dead_code)]
 impl McpManaged {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             manager: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Build from an existing shared manager handle (used by `AppState::extract_mcp_managed`).
+    pub fn from_shared(manager: Arc<RwLock<Option<Arc<golish_mcp::McpManager>>>>) -> Self {
+        Self { manager }
     }
 }

@@ -59,7 +59,7 @@ pub fn init_tracing(
             filter = filter.add_directive(directive);
         }
         // Limit agentic loop streaming details to info
-        if let Ok(directive) = "golish_ai::agentic_loop=info".parse() {
+        if let Ok(directive) = "golish_agent_runtime::agentic_loop=info".parse() {
             filter = filter.add_directive(directive);
         }
     }

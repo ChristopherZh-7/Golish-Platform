@@ -1,21 +1,21 @@
 //! Status, initialization, and shutdown commands for the sidecar itself.
 
 use crate::error::GolishError;
-use crate::state::AppState;
+use crate::state::SidecarManaged;
 use tauri::State;
 
 use super::super::state::SidecarStatus;
 
 /// Get the current sidecar status
 #[tauri::command]
-pub async fn sidecar_status(state: State<'_, AppState>) -> Result<SidecarStatus, GolishError> {
+pub async fn sidecar_status(state: State<'_, SidecarManaged>) -> Result<SidecarStatus, GolishError> {
     Ok(state.sidecar_state.status())
 }
 
 /// Initialize the sidecar for a workspace
 #[tauri::command]
 pub async fn sidecar_initialize(
-    state: State<'_, AppState>,
+    state: State<'_, SidecarManaged>,
     workspace_path: String,
 ) -> Result<(), GolishError> {
     state
@@ -27,7 +27,7 @@ pub async fn sidecar_initialize(
 
 /// Shutdown the sidecar
 #[tauri::command]
-pub async fn sidecar_shutdown(state: State<'_, AppState>) -> Result<(), GolishError> {
+pub async fn sidecar_shutdown(state: State<'_, SidecarManaged>) -> Result<(), GolishError> {
     state.sidecar_state.shutdown();
     Ok(())
 }

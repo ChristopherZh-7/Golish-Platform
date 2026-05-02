@@ -5,7 +5,7 @@ use tauri::State;
 
 use super::ai_session_not_initialized_error;
 use crate::state::AppState;
-use golish_ai::tool_policy::{ToolPolicy, ToolPolicyConfig};
+use golish_agent_kit::tool_policy::{ToolPolicy, ToolPolicyConfig};
 
 /// Get the current tool policy configuration.
 #[tauri::command]

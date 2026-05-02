@@ -1,4 +1,10 @@
-//! AI module - re-exports from golish-ai crate.
+//! AI module - re-exports from the agent runtime stack.
+//!
+//! Historically this glob-re-exported the `golish-ai` umbrella crate. A3
+//! deleted that umbrella; the equivalent re-exports now come directly
+//! from the implementation crates (`golish-agent-kit`,
+//! `golish-agent-runtime`, `golish-agent-bridge`, `golish-prompts`,
+//! `golish-events`), mirroring exactly what the umbrella used to expose.
 
 pub mod commands;
 pub mod db_bridge;
@@ -8,8 +14,38 @@ pub mod session_bridge;
 pub mod sidecar_bridge;
 pub mod tracking_bridge;
 
-// Re-export all golish-ai types and modules
-pub use golish_ai::*;
+// --- A3: flat re-exports replacing `pub use golish_ai::*;` ---
+
+pub use golish_agent_kit::{
+    agent_mode, db_shim, db_traits, db_tracking, execution_mode,
+    get_all_tool_definitions_with_config, get_tool_definitions_for_preset,
+    get_tool_definitions_with_config, hitl, llm_client, loop_detection, memory_file,
+    memory_gatekeeper, normalize_run_pty_cmd_args, planner, route_tool_execution, sidecar_trait,
+    system_hooks, tool_definitions, tool_execution, tool_executors, tool_policy,
+    tool_provider_impl, AgentMode, DefaultToolProvider, SharedComponentsConfig, ToolConfig,
+    ToolExecutionConfig, ToolExecutionContext, ToolExecutionError, ToolExecutionResult, ToolPreset,
+    ToolRoutingCategory, ToolSource,
+};
+pub use golish_agent_runtime::agentic_loop::{OutputClassifier, PostShellHook};
+pub use golish_agent_runtime::{agentic_loop, eval_support};
+pub use golish_agent_bridge::{agent_bridge, AgentBridge};
+pub use golish_events::{
+    build_summarizer_input, format_for_summarizer, read_transcript, save_summarizer_input,
+    save_summary, transcript_path, CoordinatorHandle, CoordinatorState, EventCoordinator,
+    TranscriptEvent, TranscriptWriter,
+};
+pub use golish_prompts::{
+    build_summarizer_user_prompt, codex_prompt, contributors, generate_summary, prompt_registry,
+    summarizer, system_prompt, PromptContributorRegistry, SummaryResponse,
+    SUMMARIZER_SYSTEM_PROMPT,
+};
+
+/// Task orchestration facade: runtime types from [`golish_agent_kit`]
+/// plus `bridge_executor` from [`golish_agent_bridge`].
+pub mod task_orchestrator {
+    pub use golish_agent_bridge::bridge_executor;
+    pub use golish_agent_kit::task_orchestrator::*;
+}
 
 pub use commands::{
     add_tool_always_allow, clear_ai_conversation, clear_ai_conversation_session,

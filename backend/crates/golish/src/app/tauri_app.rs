@@ -22,6 +22,10 @@ pub(crate) fn configure_builder(
     history_manager: Arc<RwLock<Option<HistoryManager>>>,
 ) -> tauri::Builder<tauri::Wry> {
     let db_state = app_state.extract_db_state();
+    let telemetry_state = app_state.extract_telemetry_state();
+    let mcp_managed = app_state.extract_mcp_managed();
+    let pty_state = app_state.extract_pty_state();
+    let sidecar_managed = app_state.extract_sidecar_managed();
     let settings_mgr = app_state.settings_manager.clone();
     let pentest_cfg = app_state.pentest_config_manager.clone();
 
@@ -31,6 +35,10 @@ pub(crate) fn configure_builder(
         .plugin(tauri_plugin_notification::init())
         .manage(app_state)
         .manage(db_state)
+        .manage(telemetry_state)
+        .manage(mcp_managed)
+        .manage(pty_state)
+        .manage(sidecar_managed)
         .manage(settings_mgr)
         .manage(pentest_cfg)
         .manage(history_manager)

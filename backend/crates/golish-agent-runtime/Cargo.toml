@@ -1,15 +1,15 @@
 [package]
-name = "golish-agentic-loop"
+name = "golish-agent-runtime"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-description = "High-level agentic loop runtime split out from golish-agent-loop (P3-1 finisher): streaming tool-call loop, sub-agent dispatch, compaction, eval harness, mock test_utils."
+description = "High-level agent runtime (renamed from golish-agent-runtime in A2): streaming tool-call loop, sub-agent dispatch, compaction, eval harness, mock test_utils."
 
 [dependencies]
 # Sibling Layer-4 crate that provides the lower-level building blocks
 # (tool_executors / tool_definitions / system_hooks / tool_policy / hitl /
 #  loop_detection / sidecar_trait / planner / db_* / memory_*).
-golish-agent-loop = { workspace = true }
+golish-agent-kit = { workspace = true }
 
 # Foundation crates (kept as direct deps because the loop body itself
 # touches their public types in numerous places).
@@ -58,7 +58,7 @@ reqwest = { workspace = true }
 [features]
 default = []
 # Expose `test_utils` for downstream crates' test/dev builds.
-test-utils = ["golish-agent-loop/test-utils"]
+test-utils = ["golish-agent-kit/test-utils"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

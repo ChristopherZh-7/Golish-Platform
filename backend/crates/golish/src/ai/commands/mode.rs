@@ -127,7 +127,7 @@ pub async fn set_execution_mode(
         .get(&session_id)
         .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
 
-    let parsed: golish_ai::execution_mode::ExecutionMode = mode
+    let parsed: golish_agent_kit::execution_mode::ExecutionMode = mode
         .parse()
         .map_err(|_| format!("Invalid execution mode: '{}'. Use 'chat' or 'task'.", mode))?;
 

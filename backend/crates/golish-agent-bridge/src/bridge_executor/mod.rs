@@ -82,7 +82,7 @@ impl BridgeAgentExecutor {
         agent_def: &golish_sub_agents::SubAgentDefinition,
         subtask_title: &str,
         subtask_description: &str,
-        execution_context: &golish_agent_loop::task_orchestrator::ExecutionContext,
+        execution_context: &golish_agent_kit::task_orchestrator::ExecutionContext,
     ) -> Result<String> {
         use golish_sub_agents::{SubAgentContext, SubAgentExecutorContext};
 

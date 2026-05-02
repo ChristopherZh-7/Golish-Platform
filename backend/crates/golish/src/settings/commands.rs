@@ -130,7 +130,7 @@ pub async fn get_window_state(
 /// Returns true if Langfuse was enabled in settings and properly configured
 /// (i.e., valid API keys were available) at startup.
 #[tauri::command]
-pub fn is_langfuse_active(state: State<'_, AppState>) -> bool {
+pub fn is_langfuse_active(state: State<'_, crate::state::TelemetryState>) -> bool {
     state.langfuse_active
 }
 
@@ -139,6 +139,8 @@ pub fn is_langfuse_active(state: State<'_, AppState>) -> bool {
 /// Returns a snapshot of telemetry stats if Langfuse tracing is active.
 /// This includes counts of spans started/ended since app startup.
 #[tauri::command]
-pub fn get_telemetry_stats(state: State<'_, AppState>) -> Option<TelemetryStatsSnapshot> {
-    state.telemetry_stats.as_ref().map(|stats| stats.snapshot())
+pub fn get_telemetry_stats(
+    state: State<'_, crate::state::TelemetryState>,
+) -> Option<TelemetryStatsSnapshot> {
+    state.stats.as_ref().map(|stats| stats.snapshot())
 }

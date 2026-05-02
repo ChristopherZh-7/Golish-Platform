@@ -4,7 +4,7 @@ use rig::completion::CompletionRequest;
 use rig::message::{Message, Text, UserContent};
 use rig::one_or_many::OneOrMany;
 
-use golish_agent_loop::task_orchestrator::prompts;
+use golish_agent_kit::task_orchestrator::prompts;
 
 use super::{complete_with_client, truncate_to_char_boundary};
 use crate::agent_bridge::AgentBridge;

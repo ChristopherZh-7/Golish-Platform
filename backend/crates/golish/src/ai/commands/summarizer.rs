@@ -10,7 +10,7 @@ use super::ai_session_not_initialized_error;
 use crate::state::AppState;
 
 // Re-export types from golish-ai for Tauri command compatibility
-pub use golish_ai::SummaryResponse;
+pub use golish_prompts::SummaryResponse;
 
 /// Tauri command to generate a conversation summary.
 ///
@@ -42,14 +42,14 @@ pub async fn generate_conversation_summary(
     let client_guard = client.read().await;
 
     // Generate the summary using golish-ai's summarizer
-    golish_ai::generate_summary(&client_guard, &conversation)
+    golish_prompts::generate_summary(&client_guard, &conversation)
         .await
         .map_err(|e| GolishError::Internal(format!("Failed to generate summary: {}", e)))
 }
 
 #[cfg(test)]
 mod tests {
-    use golish_ai::SUMMARIZER_SYSTEM_PROMPT;
+    use golish_prompts::SUMMARIZER_SYSTEM_PROMPT;
 
     #[test]
     fn test_summarizer_system_prompt_not_empty() {

@@ -9,10 +9,10 @@
 
 // Tauri commands (stay in main crate due to AppState dependency).
 // Consumers access them via `crate::indexer::commands::*`; we don't re-export
-// at this level so command names don't shadow `golish_ai::indexer::*` types
+// at this level so command names don't shadow `golish_indexer::*` types
 // in `crate::indexer::*` lookups.
 pub mod commands;
 pub mod vtcode_bridge;
 
-// Re-export everything from golish-ai::indexer
+// Re-export everything from golish-indexer
 pub use golish_indexer::*;

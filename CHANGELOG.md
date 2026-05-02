@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+### ⚠ BREAKING CHANGES — Architecture
+
+- **agent stack layout** (A1–A3, 2026-05-02):
+  - `golish-prompts` no longer depends on `golish-sub-agents`.
+    `SubAgentPromptContributor` moved to
+    `golish_sub_agents::prompt_contributor::SubAgentPromptContributor`.
+    `create_default_contributors` moved to
+    `golish_agent_bridge::contributors::create_default_contributors`.
+  - Renamed `golish-agent-loop` → **`golish-agent-kit`** (Layer 4a
+    building blocks: tool executors, HITL, planner, tool policy, db
+    tracking, llm-client wiring).
+  - Renamed `golish-agentic-loop` → **`golish-agent-runtime`** (Layer
+    4b high-level streaming loop, eval harness, mocks).
+  - **Removed `golish-ai` umbrella crate.** All downstream consumers
+    now import directly from the implementation crates
+    (`golish-agent-kit`, `golish-agent-runtime`, `golish-agent-bridge`,
+    `golish-prompts`, `golish-events`).
+
+  Migration: replace `use golish_ai::X::...` with the matching
+  implementation crate. Common remappings:
+  - `golish_ai::agentic_loop::*`         → `golish_agent_runtime::agentic_loop::*`
+  - `golish_ai::eval_support::*`         → `golish_agent_runtime::eval_support::*`
+  - `golish_ai::agent_mode / db_* / execution_mode / hitl / llm_client / loop_detection / memory_* / planner / sidecar_trait / system_hooks / tool_*`
+                                          → `golish_agent_kit::*`
+  - `golish_ai::agent_bridge / AgentBridge` → `golish_agent_bridge::*`
+  - `golish_ai::task_orchestrator::bridge_executor::*` → `golish_agent_bridge::bridge_executor::*`
+  - `golish_ai::{codex_prompt, contributors, prompt_registry, summarizer, system_prompt, generate_summary, SUMMARIZER_SYSTEM_PROMPT, SummaryResponse, PromptContributorRegistry, build_summarizer_user_prompt}`
+                                          → `golish_prompts::*`
+  - `golish_ai::{build_summarizer_input, format_for_summarizer, read_transcript, save_summarizer_input, save_summary, transcript_path, CoordinatorHandle, CoordinatorState, EventCoordinator, TranscriptEvent, TranscriptWriter}`
+                                          → `golish_events::*`
+
 ## [0.2.43](https://github.com/golish-ai/golish/compare/v0.2.42...v0.2.43) (2026-03-13)
 
 

@@ -193,8 +193,8 @@ pub async fn configure_bridge(bridge: &mut AgentBridge, state: &AppState, sessio
 }
 
 async fn configure_title_gen(bridge: &mut AgentBridge) {
-    bridge.set_tool_config(golish_ai::tool_definitions::ToolConfig::with_preset(
-        golish_ai::tool_definitions::ToolPreset::None,
+    bridge.set_tool_config(golish_agent_kit::tool_definitions::ToolConfig::with_preset(
+        golish_agent_kit::tool_definitions::ToolPreset::None,
     ));
     let mut registry = bridge.tool_registry().write().await;
     registry.clear();
@@ -212,12 +212,12 @@ async fn configure_core_services(bridge: &mut AgentBridge, state: &AppState) {
     if let Err(e) = sidecar_state.initialize(workspace_path).await {
         tracing::warn!("Failed to initialize per-session sidecar: {}", e);
     }
-    let sidecar_backend: std::sync::Arc<dyn golish_ai::sidecar_trait::SessionCaptureBackend> =
+    let sidecar_backend: std::sync::Arc<dyn golish_agent_kit::sidecar_trait::SessionCaptureBackend> =
         std::sync::Arc::new(crate::ai::sidecar_bridge::SidecarCaptureBackend::new(sidecar_state));
     bridge.set_sidecar_state(sidecar_backend);
     bridge.set_settings_manager(state.settings_manager.clone());
 
-    let tracking_backend: std::sync::Arc<dyn golish_ai::db_traits::DbTrackingBackend> =
+    let tracking_backend: std::sync::Arc<dyn golish_agent_kit::db_traits::DbTrackingBackend> =
         std::sync::Arc::new(crate::ai::tracking_bridge::PgTrackingBackend::new(state.db_pool.clone()));
     let chain_persistence: std::sync::Arc<dyn golish_sub_agents::SubAgentChainPersistence> =
         std::sync::Arc::new(crate::ai::tracking_bridge::PgChainPersistence::new(state.db_pool.clone()));
@@ -229,7 +229,7 @@ async fn configure_core_services(bridge: &mut AgentBridge, state: &AppState) {
     );
     bridge.set_graph_backend(graph_backend);
 
-    let db_repo: std::sync::Arc<dyn golish_ai::db_traits::DbRepoProvider> =
+    let db_repo: std::sync::Arc<dyn golish_agent_kit::db_traits::DbRepoProvider> =
         std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(state.db_pool.clone()));
     bridge.set_db_repo(db_repo);
 }
@@ -281,7 +281,7 @@ async fn configure_memory_and_embeddings(
     }
     bridge.set_memory_file_path(memory_file_path).await;
 
-    let model_factory = golish_ai::llm_client::LlmClientFactory::new(state.settings_manager.clone());
+    let model_factory = golish_agent_kit::llm_client::LlmClientFactory::new(state.settings_manager.clone());
     bridge.set_model_factory(std::sync::Arc::new(model_factory));
 }
 
@@ -352,7 +352,7 @@ impl McpManagerToolExecutor {
 }
 
 #[async_trait::async_trait]
-impl golish_ai::agentic_loop::McpToolExecutor for McpManagerToolExecutor {
+impl golish_agent_runtime::agentic_loop::McpToolExecutor for McpManagerToolExecutor {
     async fn execute_tool(
         &self,
         tool_name: &str,

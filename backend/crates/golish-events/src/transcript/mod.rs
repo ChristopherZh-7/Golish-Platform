@@ -102,7 +102,7 @@ pub fn transcript_path(base_dir: &Path, session_id: &str) -> PathBuf {
 /// # Example
 ///
 /// ```ignore
-/// use golish_ai::transcript::read_transcript;
+/// use golish_events::read_transcript;
 /// use std::path::Path;
 ///
 /// let events = read_transcript(Path::new("/tmp/transcripts"), "session-123")?;

@@ -5,9 +5,9 @@ edition.workspace = true
 description = "SWE-bench Lite integration for Golish AI agent evaluation"
 
 [dependencies]
-# Internal crates
+# Internal crates (A3: replaced `golish-ai` umbrella with direct deps)
 golish-evals = { path = "../golish-evals" }
-golish-ai = { path = "../golish-ai" }
+golish-agent-runtime = { workspace = true }
 
 # External dependencies
 tokio.workspace = true
