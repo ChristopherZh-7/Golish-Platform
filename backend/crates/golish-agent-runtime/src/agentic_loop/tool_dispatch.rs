@@ -21,7 +21,7 @@ use golish_agent_kit::system_hooks::{format_system_hooks, HookRegistry};
 
 /// Run all `tool_calls_to_execute` and append the resulting user message
 /// (tool results + any merged system hooks) to `chat_history`.
-pub(super) async fn dispatch_tool_calls<M>(
+pub(crate) async fn dispatch_tool_calls<M>(
     tool_calls_to_execute: Vec<ToolCall>,
     ctx: &AgenticLoopContext<'_>,
     capture_ctx: &LoopCaptureContext,
