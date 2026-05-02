@@ -55,14 +55,16 @@ mod turn;
 mod unified_helpers;
 
 use assistant_message::push_assistant_message;
-use first_iter_hooks::run_first_iteration_hooks;
 use llm_stream_start::start_completion_stream;
 use reflector::{maybe_run_reflector, ReflectorOutcome};
 use stream_processor::{process_stream, StreamOutcome};
 use tool_dispatch::dispatch_tool_calls;
 use tool_list::build_tool_list;
 // `compaction` alias avoids clashing with the sibling `agentic_loop::compaction` module.
-use turn::{compaction as compaction_phase, pre_flight, PhaseOutcome, TurnState};
+use turn::{
+    compaction as compaction_phase, first_iter_hooks_phase, pre_flight, token_estimate_phase,
+    PhaseOutcome, TurnState,
+};
 #[allow(unused_imports)] // BreakReason is used for log-fields in the Break arm below
 use turn::BreakReason;
 use unified_helpers::{
@@ -71,8 +73,14 @@ use unified_helpers::{
     trace_input_for_span,
 };
 
-use helpers::estimate_message_tokens;
 pub use tool_execution::{execute_tool_direct_generic, execute_with_hitl_generic};
+
+// Keep `estimate_message_tokens` in scope for the `tests` submodule that
+// inherits via `use super::*;`. Production callers moved to the
+// `turn::phases::token_estimate` phase.
+#[cfg(test)]
+#[allow(unused_imports)]
+use helpers::estimate_message_tokens;
 
 /// Maximum number of tool call iterations before stopping
 pub const MAX_TOOL_ITERATIONS: usize = 100;
@@ -240,9 +248,7 @@ where
     let mut turn_state = TurnState::new();
     let mut consecutive_no_tool_turns: u32 = 0;
     let mut total_reflector_nudges: u32 = 0;
-    // Mutated by `run_first_iteration_hooks` once at iteration 1; see
-    // [`first_iter_hooks::FirstIterationOutcome`].
-    let mut reflector_active = true;
+    // `reflector_active` now lives in `turn_state` (set by `first_iter_hooks`).
 
     loop {
         // Phase: PreFlight — iteration bookkeeping + cancel + budget
@@ -282,11 +288,20 @@ where
             PhaseOutcome::Fail(e) => return Err(e),
         }
 
-        // First-iteration hooks: synchronous message hooks + memory gatekeeper.
-        if iteration == 1 && !config.is_sub_agent {
-            let outcome =
-                run_first_iteration_hooks(ctx, &hook_registry, &mut chat_history).await;
-            reflector_active = outcome.reflector_active;
+        // Phase: FirstIterHooks — no-op for sub-agents, on iteration 1
+        // for main agent runs the message hooks + memory gatekeeper.
+        match first_iter_hooks_phase::run(
+            &mut turn_state,
+            ctx,
+            &config,
+            &hook_registry,
+            &mut chat_history,
+        )
+        .await
+        {
+            PhaseOutcome::Continue => {}
+            PhaseOutcome::Break(_) => break,
+            PhaseOutcome::Fail(e) => return Err(e),
         }
 
         // Create span for Langfuse observability (child of agent_span)
@@ -324,22 +339,12 @@ where
             supports_thinking,
         );
 
-        // Proactive token count: estimate tokens BEFORE sending to detect
-        // compaction need early. This is a leading indicator vs the lagging
-        // provider-reported count after the response.
-        {
-            let system_prompt_tokens = tokenx_rs::estimate_token_count(system_prompt);
-            let history_tokens: usize = chat_history.iter().map(estimate_message_tokens).sum();
-            let estimated_input_tokens = (system_prompt_tokens + history_tokens) as u64;
-
-            let mut compaction_state = ctx.compaction_state.write().await;
-            compaction_state.update_tokens_estimated(estimated_input_tokens);
-            tracing::debug!(
-                "[compaction] Pre-call estimate: ~{} tokens (system={}, history={})",
-                estimated_input_tokens,
-                system_prompt_tokens,
-                history_tokens,
-            );
+        // Phase: TokenEstimate — proactively update compaction_state with
+        // an estimated input-token count before the LLM call.
+        match token_estimate_phase::run(ctx, system_prompt, &chat_history).await {
+            PhaseOutcome::Continue => {}
+            PhaseOutcome::Break(_) => break,
+            PhaseOutcome::Fail(e) => return Err(e),
         }
 
         let stream = start_completion_stream(
@@ -404,7 +409,7 @@ where
                 &text_content,
                 consecutive_no_tool_turns,
                 &mut total_reflector_nudges,
-                reflector_active,
+                turn_state.reflector_active,
                 &tools,
             )
             .await
