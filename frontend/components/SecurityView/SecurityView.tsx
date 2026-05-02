@@ -39,10 +39,21 @@ const ScanToolsPanel = lazy(() =>
   import("./ScanToolsPanel").then((m) => ({ default: m.ScanToolsPanel }))
 );
 
-import { HttpHistoryPanel } from "./HttpHistoryPanel";
-import { PassiveScanPanel } from "./PassiveScanPanel";
-import { SensitiveScanPanel } from "./SensitiveScanPanel";
-import { SiteMapPanel } from "./SiteMapPanel";
+// Conditional-render panels: lazy + Suspense (re-mounted on each tab visit;
+// they don't carry form state we need to preserve across tabs).
+const HttpHistoryPanel = lazy(() =>
+  import("./HttpHistoryPanel").then((m) => ({ default: m.HttpHistoryPanel }))
+);
+const PassiveScanPanel = lazy(() =>
+  import("./PassiveScanPanel").then((m) => ({ default: m.PassiveScanPanel }))
+);
+const SensitiveScanPanel = lazy(() =>
+  import("./SensitiveScanPanel").then((m) => ({ default: m.SensitiveScanPanel }))
+);
+const SiteMapPanel = lazy(() =>
+  import("./SiteMapPanel").then((m) => ({ default: m.SiteMapPanel }))
+);
+
 import { StatusBadge, ZapNotInstalled, ZapNotRunning } from "./shared";
 
 export type SecurityTab =
@@ -263,7 +274,11 @@ export function SecurityView({
       return null;
     }
     if (tab === "sensitive") {
-      return <SensitiveScanPanel />;
+      return (
+        <Suspense fallback={null}>
+          <SensitiveScanPanel />
+        </Suspense>
+      );
     }
     if (checkingInstall) {
       return (
@@ -296,25 +311,33 @@ export function SecurityView({
     switch (tab) {
       case "sitemap":
         return (
-          <SiteMapPanel
-            onSendToRepeater={handleSendToRepeater}
-            onSendToIntruder={handleSendToIntruder}
-            onActiveScan={handleActiveScan}
-            onBatchScan={handleBatchActiveScan}
-          />
+          <Suspense fallback={null}>
+            <SiteMapPanel
+              onSendToRepeater={handleSendToRepeater}
+              onSendToIntruder={handleSendToIntruder}
+              onActiveScan={handleActiveScan}
+              onBatchScan={handleBatchActiveScan}
+            />
+          </Suspense>
         );
       case "history":
         return (
-          <HttpHistoryPanel
-            onSendToRepeater={handleSendToRepeater}
-            onSendToIntruder={handleSendToIntruder}
-            onActiveScan={handleActiveScan}
-          />
+          <Suspense fallback={null}>
+            <HttpHistoryPanel
+              onSendToRepeater={handleSendToRepeater}
+              onSendToIntruder={handleSendToIntruder}
+              onActiveScan={handleActiveScan}
+            />
+          </Suspense>
         );
       case "scanner":
         return null;
       case "passive":
-        return <PassiveScanPanel />;
+        return (
+          <Suspense fallback={null}>
+            <PassiveScanPanel />
+          </Suspense>
+        );
       case "repeater":
         return null;
       case "intruder":
