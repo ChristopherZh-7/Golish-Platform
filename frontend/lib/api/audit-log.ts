@@ -58,6 +58,23 @@ export interface WikiChangeEntry {
   createdAt: string;
 }
 
+export interface AuditLogPayload {
+  action: string;
+  category: string;
+  details: string;
+  entityType?: string;
+  entityId?: string;
+  projectPath: string | null;
+}
+
+/**
+ * Append a single audit-log entry. Fire-and-forget — caller should
+ * NOT await unless they specifically need the persistence ack.
+ */
+export async function logAuditEntry(payload: AuditLogPayload): Promise<void> {
+  await invoke("audit_log", payload as unknown as Record<string, unknown>);
+}
+
 export const auditLogApi = {
   agentLogsList: (projectPath: string | null, limit: number) =>
     invoke<AgentLogEntry[]>("agent_logs_list", { projectPath, limit }),

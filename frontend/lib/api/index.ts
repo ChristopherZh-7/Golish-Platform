@@ -29,6 +29,7 @@ import * as modelRegistry from "./model-registry";
 import * as notes from "./notes";
 import * as pentestBrowser from "./pentest-browser";
 import * as pipeline from "./pipeline";
+import * as projects from "./projects";
 import * as pty from "./pty";
 import * as research from "./research";
 import * as security from "./security";
@@ -65,6 +66,7 @@ export {
   modelRegistry,
   pentestBrowser,
   pipeline,
+  projects,
   detachedWindow,
   wordlist,
   notes,
@@ -97,6 +99,7 @@ export const api = {
   modelRegistry,
   pentestBrowser,
   pipeline,
+  projects,
   detachedWindow,
   wordlist,
   notes,
