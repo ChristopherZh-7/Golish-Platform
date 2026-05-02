@@ -28,7 +28,7 @@ use rig::one_or_many::OneOrMany;
 ///
 /// Always pushes the assistant message even when content is otherwise empty
 /// (matters for maintaining conversation context across turns).
-pub(super) fn push_assistant_message(
+pub(crate) fn push_assistant_message(
     chat_history: &mut Vec<Message>,
     text_content: &str,
     thinking_content: &str,

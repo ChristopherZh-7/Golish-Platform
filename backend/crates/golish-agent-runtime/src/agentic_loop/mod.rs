@@ -54,21 +54,18 @@ pub mod toolcall_fixer;
 mod turn;
 mod unified_helpers;
 
-use assistant_message::push_assistant_message;
-use reflector::{maybe_run_reflector, ReflectorOutcome};
 use stream_processor::StreamProcessOutcome;
-use tool_dispatch::dispatch_tool_calls;
 use tool_list::build_tool_list;
-// `compaction` alias avoids clashing with the sibling `agentic_loop::compaction` module.
+// Phase aliases (`*_phase`) come from `turn::{...}` re-exports and avoid
+// clashing with sibling `agentic_loop::{compaction, tool_dispatch}`
+// modules whose internals these phases reach into.
 use turn::{
-    compaction as compaction_phase,
+    assistant_push_phase, compaction as compaction_phase,
     completion::{self as completion_phase, CompletionOutcome},
-    first_iter_hooks_phase, pre_flight, token_estimate_phase, PhaseOutcome, TurnState,
+    first_iter_hooks_phase, pre_flight, reflector_or_break_phase, token_estimate_phase,
+    tool_dispatch_phase, PhaseOutcome, ReflectorPhaseOutcome, TurnState,
 };
-use unified_helpers::{
-    push_unavailable_tool_results, record_agent_turn_start, record_turn_completion,
-    trace_input_for_span,
-};
+use unified_helpers::{record_agent_turn_start, record_turn_completion, trace_input_for_span};
 
 pub use tool_execution::{execute_tool_direct_generic, execute_with_hitl_generic};
 
@@ -240,12 +237,12 @@ where
     // Thinking history tracking - only used when supports_thinking is true
     let mut accumulated_thinking = String::new();
     let mut total_usage = TokenUsage::default();
-    // Iteration counter now lives in `turn::TurnState`; ADR-0010 C1-1 PoC.
-    // Other per-turn locals will migrate into `TurnState` in subsequent PRs.
+    // Loop-wide state lives in `TurnState` (see ADR-0010):
+    // - `iteration` (set by `pre_flight`)
+    // - `reflector_active` (set by `first_iter_hooks`)
+    // - `consecutive_no_tool_turns`, `total_reflector_nudges`
+    //   (managed by `reflector_or_break`).
     let mut turn_state = TurnState::new();
-    let mut consecutive_no_tool_turns: u32 = 0;
-    let mut total_reflector_nudges: u32 = 0;
-    // `reflector_active` now lives in `turn_state` (set by `first_iter_hooks`).
 
     loop {
         // Phase: PreFlight — iteration bookkeeping + cancel + budget
@@ -341,7 +338,9 @@ where
             thinking_id,
         } = outcome;
 
-        push_assistant_message(
+        // Phase: AssistantPush — append the assistant message
+        // (text + reasoning + tool calls) to the chat history.
+        assistant_push_phase::run(
             &mut chat_history,
             &text_content,
             &thinking_content,
@@ -350,65 +349,44 @@ where
             &tool_calls_to_execute,
             has_tool_calls,
             supports_thinking,
-            ctx.llm.provider_name,
+            ctx,
         );
 
-        // If no tool calls, either invoke the reflector or finish.
-        if !has_tool_calls {
-            consecutive_no_tool_turns += 1;
-
-            match maybe_run_reflector(
-                ctx,
-                &sub_agent_context,
-                &config,
-                &mut chat_history,
-                &text_content,
-                consecutive_no_tool_turns,
-                &mut total_reflector_nudges,
-                turn_state.reflector_active,
-                &tools,
-            )
-            .await
-            {
-                ReflectorOutcome::Injected => continue,
-                ReflectorOutcome::Skipped => break,
-            }
-        } else {
-            consecutive_no_tool_turns = 0;
+        // Phase: ReflectorOrBreak — when no tool calls were produced,
+        // optionally invoke the reflector and tell the scheduler whether
+        // to repeat the iteration or break the loop. Tool-call branch
+        // resets `consecutive_no_tool_turns` and falls through.
+        match reflector_or_break_phase::run(
+            &mut turn_state,
+            ctx,
+            &sub_agent_context,
+            &config,
+            &mut chat_history,
+            has_tool_calls,
+            &text_content,
+            &tools,
+        )
+        .await
+        {
+            ReflectorPhaseOutcome::Continue => {}
+            ReflectorPhaseOutcome::Repeat => continue,
+            ReflectorPhaseOutcome::Break => break,
         }
 
-        // Filter out tool calls not in the allowed tool list.
-        // In Task mode the primary only has orchestration tools; the model may
-        // hallucinate direct-tool calls from the system prompt or restored history.
-        let allowed_names: std::collections::HashSet<&str> =
-            tools.iter().map(|t| t.name.as_str()).collect();
-        let (permitted, rejected): (Vec<_>, Vec<_>) = tool_calls_to_execute
-            .into_iter()
-            .partition(|tc| allowed_names.contains(tc.function.name.as_str()));
-
-        if !rejected.is_empty() {
-            let rejected_names: Vec<&str> = rejected.iter().map(|tc| tc.function.name.as_str()).collect();
-            tracing::warn!(
-                "[tool-guard] Blocked {} tool call(s) not in allowed list: {:?}",
-                rejected.len(),
-                rejected_names,
-            );
-            push_unavailable_tool_results(&mut chat_history, &rejected);
-        }
-
-        if !permitted.is_empty() {
-            dispatch_tool_calls(
-                permitted,
-                ctx,
-                &capture_ctx,
-                model,
-                &sub_agent_context,
-                &hook_registry,
-                &llm_span,
-                &mut chat_history,
-            )
-            .await;
-        }
+        // Phase: ToolDispatch — allow-list filter, push synthetic errors
+        // for blocked calls, and dispatch the permitted batch.
+        tool_dispatch_phase::run(
+            tool_calls_to_execute,
+            &tools,
+            ctx,
+            &capture_ctx,
+            model,
+            &sub_agent_context,
+            &hook_registry,
+            &llm_span,
+            &mut chat_history,
+        )
+        .await;
     }
 
     record_turn_completion(
