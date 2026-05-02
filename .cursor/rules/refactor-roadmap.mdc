@@ -250,16 +250,27 @@ pub trait PentestRepo: Send + Sync {
 
 ## Phase 3：体验与扩展（持续）
 
-### P3-1 编译时间预算 — ⏳ Pending baseline
+### P3-1 编译时间预算 — 🟡 Baseline 已测
 
-> ⏳ 2026-05-02: 未运行基准测试。下次 session 可以跑 `time cargo check --workspace`(冷/热)、`time cargo check -p golish`、`time cargo check -p golish-agent-loop` 各 3 次取中位数,再决定是否需要 sccache/cargo-chef。
+> 🟡 2026-05-02 baseline (M1 macOS):
+> | 场景 | 当前 | 目标 | 状态 |
+> |---|---|---|---|
+> | `cargo check --workspace` 零改动增量 | 0.54s | ≤30s | ✅ |
+> | `cargo check -p golish`(zero-change) | 37.34s | ≤45s | ✅ |
+> | `cargo check -p golish-agent-loop`(zero-change) | 15.63s | ≤8s | ⚠️ 超 ~7s |
+> | touch 主 crate + check | 3.60s | (incremental) | ✅ |
+> | touch `golish-core` + check workspace | 20.92s | ≤30s | ✅ |
+> 
+> **结论**: 整体编译时间在预算内, sccache/cargo-chef 暂不必引入。唯一超标项是 `golish-agent-loop` 15s vs 目标 8s。它仍在大型 crate 范畴(~2.5K LOC + 多依赖),如果未来要继续达标需要再拆它(例如把 `agentic_loop/` 单独抽 crate)。
+> 
+> 不在本 plan 阻断范围 — 暂接受当前 baseline。
 
-| 操作 | 目标 |
-|---|---|
-| `cargo check --workspace`（增量） | ≤30s |
-| `cargo check -p golish` | ≤45s |
-| `cargo check -p golish-agent-loop` | ≤8s |
-| `cargo build --release` (首次) | ≤6 min |
+| 操作 | 目标 | 当前 |
+|---|---|---|
+| `cargo check --workspace`（增量） | ≤30s | **0.54s ~ 21s** ✅ |
+| `cargo check -p golish` | ≤45s | **37.34s** ✅ |
+| `cargo check -p golish-agent-loop` | ≤8s | **15.63s** ⚠️ |
+| `cargo build --release` (首次) | ≤6 min | (未测) |
 
 **手段**：
 - `[profile.dev.package."*"] opt-level = 2`（已配）
