@@ -11,7 +11,14 @@ export interface StepDetail {
 
 export type StepStatus = StepDetail["status"];
 
-export interface PipelineSummary {
+/**
+ * Aggregated outcome of a pipeline RUN — totals computed across all
+ * step results. Kept distinct from `PipelineSummary` (defined in
+ * `frontend/lib/pentest/pipeline-types.ts`), which is the metadata
+ * shape returned by `pipeline_list` for picker UIs. The two used to
+ * share the name; renamed here to avoid the import-order ambiguity.
+ */
+export interface PipelineRunSummary {
   total_stored: number;
   success: boolean;
 }
@@ -25,7 +32,7 @@ export function ensureStepsLength(prev: StepDetail[], idx: number, toolName: str
   return next;
 }
 
-export function computeSummary(steps: StepDetail[]): PipelineSummary {
+export function computeSummary(steps: StepDetail[]): PipelineRunSummary {
   const totalStored = steps.reduce((sum, s) => sum + s.stored, 0);
   const allOk = steps.every((s) => s.status === "completed" || s.status === "skipped");
   return { total_stored: totalStored, success: allOk };

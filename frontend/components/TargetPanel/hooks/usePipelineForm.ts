@@ -8,7 +8,7 @@ import {
   appendOutput,
   computeSummary,
   ensureStepsLength,
-  type PipelineSummary as PipelineSummaryResult,
+  type PipelineRunSummary,
   type StepDetail,
 } from "../pipelineValidation";
 
@@ -21,7 +21,7 @@ export function usePipelineForm(targetValue: string) {
     null
   );
   const [steps, setSteps] = useState<StepDetail[]>([]);
-  const [summary, setSummary] = useState<PipelineSummaryResult | null>(null);
+  const [summary, setSummary] = useState<PipelineRunSummary | null>(null);
   const activeRunId = useRef<string | null>(null);
 
   useEffect(() => {
