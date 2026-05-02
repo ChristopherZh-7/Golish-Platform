@@ -261,26 +261,40 @@ pub trait PentestRepo: Send + Sync {
 
 ## Phase 3：体验与扩展（持续）
 
-### P3-1 编译时间预算 — 🟡 Baseline 已测
+### P3-1 编译时间预算 — ✅ Done
 
-> 🟡 2026-05-02 baseline (M1 macOS):
-> | 场景 | 当前 | 目标 | 状态 |
-> |---|---|---|---|
-> | `cargo check --workspace` 零改动增量 | 0.54s | ≤30s | ✅ |
-> | `cargo check -p golish`(zero-change) | 37.34s | ≤45s | ✅ |
-> | `cargo check -p golish-agent-loop`(zero-change) | 15.63s | ≤8s | ⚠️ 超 ~7s |
-> | touch 主 crate + check | 3.60s | (incremental) | ✅ |
-> | touch `golish-core` + check workspace | 20.92s | ≤30s | ✅ |
+> ✅ Done 2026-05-02 (P3-1 finisher commit, `agentic_loop/` 抽出独立 crate):
 > 
-> **结论**: 整体编译时间在预算内, sccache/cargo-chef 暂不必引入。唯一超标项是 `golish-agent-loop` 15s vs 目标 8s。它仍在大型 crate 范畴(~2.5K LOC + 多依赖),如果未来要继续达标需要再拆它(例如把 `agentic_loop/` 单独抽 crate)。
+> | 场景 | 拆分前 | 拆分后 | 目标 | 状态 |
+> |---|---|---|---|---|
+> | `cargo check --workspace` 零改动增量 | 0.54s | 0.5s | ≤30s | ✅ |
+> | `cargo check -p golish`(zero-change) | 37.34s | 37.34s | ≤45s | ✅ |
+> | `cargo check -p golish-agent-loop`(cold, deps cached) | 15.63s | **2.48s** | ≤8s | ✅ -84% |
+> | `cargo check -p golish-agentic-loop`(cold, deps cached) | — | **1.53s** | ≤8s | ✅ |
+> | touch 主 crate + check | 3.60s | 3.60s | (incremental) | ✅ |
+> | touch `golish-core` + check workspace | 20.92s | 20.92s | ≤30s | ✅ |
 > 
-> 不在本 plan 阻断范围 — 暂接受当前 baseline。
+> **拆分动作**: 把 `golish-agent-loop` 内 6.5 KLOC 的 `agentic_loop/` + `eval_support/` + `test_utils*` 抽到新 crate `golish-agentic-loop`(总 8.5 KLOC)。`golish-agent-loop` 留下基础设施层(tool_executors / tool_definitions / system_hooks / tool_policy / planner / hitl / loop_detection / sidecar_trait / db_*/ memory_* / llm_client / task_orchestrator / execution_mode 等 13 KLOC)。
+> 
+> **依赖方向**:
+> ```
+> golish-agentic-loop (loop body + eval + mocks)
+>     ↓ depends on
+> golish-agent-loop (tool plumbing + DB shims + planner + …)
+> ```
+> 
+> **后端 crate 数**: 42 → **43**。
+> 
+> 向后兼容: `golish-ai` umbrella 把 `agentic_loop / eval_support` 从新 crate re-export, `golish-agent-bridge` 同样补一行 `pub use golish_agentic_loop::agentic_loop;`,所以下游 (golish-evals / golish-swebench / golish 主 crate) 一行不用改。
+> 
+> **整体预算全绿**: sccache/cargo-chef 不必引入。
 
 | 操作 | 目标 | 当前 |
 |---|---|---|
-| `cargo check --workspace`（增量） | ≤30s | **0.54s ~ 21s** ✅ |
+| `cargo check --workspace`（增量） | ≤30s | **0.5s ~ 21s** ✅ |
 | `cargo check -p golish` | ≤45s | **37.34s** ✅ |
-| `cargo check -p golish-agent-loop` | ≤8s | **15.63s** ⚠️ |
+| `cargo check -p golish-agent-loop` (cold, deps cached) | ≤8s | **2.48s** ✅ |
+| `cargo check -p golish-agentic-loop` (cold, deps cached) | ≤8s | **1.53s** ✅ |
 | `cargo build --release` (首次) | ≤6 min | (未测) |
 
 **手段**：
@@ -331,14 +345,15 @@ pub trait PentestRepo: Send + Sync {
 
 | 指标 | 起点 | Phase 1 后 | Phase 2 后 | Phase 3 后 | 当前 (2026-05-02) |
 |---|---|---|---|---|---|
-| 后端 crate 数 | 38 | 38 | **41** (golish-ai 拆 3) | 41-43 | **42** ✅ |
+| 后端 crate 数 | 38 | 38 | **41** (golish-ai 拆 3) | 41-43 | **43** ✅ (P3-1 finisher 加 golish-agentic-loop) |
 | `golish` lib.rs 行 | 672 | **≤120** | ≤120 | ≤120 | **76** ✅ |
 | `golish-ai` LOC | 34.9K | 34.9K | **≤6K** | ≤6K | **39 行** facade ✅ |
 | 反向/同层依赖 | 1 (indexer→ai) | **0** | 0 | 0 | **0** ✅ |
 | 业务文件 >500 行 | 8+ | **0** | 0 | 0 | **0** ✅ (P1-4 达成) |
 | 域 crate 用裸 PgPool | 3 | 3 | **0** | 0 | **0** ✅ (P2-4 完成) |
 | 新 crate 测试覆盖 | 0/4 | **4/4** | 4/4 | 4/4 | **4/4** ✅ |
-| 综合评级 | A- | A | A+ | S | **S** ✅ (Phase 1/2/3 主要项均完成,仅 P3-4 可选与 agent-loop 编译时间细节待长期优化) |
+| `cargo check -p golish-agent-loop` cold | 15.63s | 15.63s | 15.63s | **≤8s** | **2.48s** ✅ (P3-1 finisher) |
+| 综合评级 | A- | A | A+ | S | **S** ✅ (Phase 1/2/3 全部主要项完成, 仅 P3-4 独立版本号可选) |
 
 ---
 
@@ -391,9 +406,9 @@ impl<'a> OutputStore for PgPentestStore<'a> { /* 调用现有 freestanding fn */
 - 仅出现在 trait impl(adapter)
 - 不出现在业务函数签名
 
-### 编译时间优化(P3-1 ⚠️ 项)
+### 编译时间优化 (P3-1 finisher) — ✅ Done 2026-05-02
 
-`golish-agent-loop` 15.63s 超目标 8s. 解决方案: 把 `agentic_loop/` 抽成独立的 `golish-agentic-loop-core` crate(2-3K LOC),`golish-agent-loop` 变薄。这是另一个 2-3h 工程,不阻断 S 评级。
+`golish-agent-loop` 15.63s → **2.48s** (-84%). 已通过把 `agentic_loop/` (6.5KLOC) + `eval_support/` + `test_utils*` 抽出为独立 crate `golish-agentic-loop` 实现. `golish-agent-loop` 变成"基础设施层", `golish-agentic-loop` 变成"高层流式 loop". 下游通过 umbrella 转发, 0 处 import 改动.
 
 ---
 

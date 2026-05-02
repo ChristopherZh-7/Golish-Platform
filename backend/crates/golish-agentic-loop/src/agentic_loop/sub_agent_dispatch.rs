@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use golish_sub_agents::{execute_sub_agent, SubAgentContext, SubAgentExecutorContext};
 
-use crate::tool_provider_impl::DefaultToolProvider;
+use golish_agent_loop::tool_provider_impl::DefaultToolProvider;
 
 /// Execute a sub-agent with an LlmClient by dispatching to the correct model type.
 ///
@@ -75,7 +75,7 @@ pub async fn execute_sub_agent_with_client(
 /// Returns `None` if no relevant context is found or DB is not available,
 /// avoiding unnecessary prompt inflation.
 pub(crate) async fn build_sub_agent_briefing(
-    db_tracker: Option<&crate::db_tracking::DbTracker>,
+    db_tracker: Option<&golish_agent_loop::db_tracking::DbTracker>,
     agent_id: &str,
     task_description: &str,
 ) -> Option<String> {

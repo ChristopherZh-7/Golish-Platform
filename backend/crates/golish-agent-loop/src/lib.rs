@@ -1,11 +1,17 @@
-//! Agentic loop runtime extracted from `golish-ai` (A1-2 of the architecture
-//! upgrade plan).
+//! Lower-level building blocks of the agent runtime.
 //!
-//! This crate owns everything required to drive a single agent turn:
+//! Originally extracted from `golish-ai` in **A1-2** of the architecture
+//! upgrade plan. In the P3-1 follow-up the high-level streaming loop
+//! (`agentic_loop/`), evals harness (`eval_support/`) and mocks
+//! (`test_utils*`) were further split out into the sibling crate
+//! [`golish-agentic-loop`](https://docs.rs/golish-agentic-loop) so editing
+//! the loop body no longer recompiles the (much larger) infrastructure
+//! layer below.
 //!
-//! - [`agentic_loop`]      — the streaming tool-call loop and helpers
+//! What lives here:
+//!
 //! - [`task_orchestrator`] — PentAGI-style multi-phase task orchestration
-//! - [`tool_execution`]    — direct + HITL tool execution wrappers
+//! - [`tool_execution`]    — shared `route_tool_execution` dispatcher
 //! - [`tool_executors`]    — concrete executors (memory, web, security, …)
 //! - [`tool_definitions`]  — tool schema + preset selection
 //! - [`tool_provider_impl`]— default implementation of `ToolProvider`
@@ -21,28 +27,26 @@
 //! - [`memory_file`] / [`memory_gatekeeper`] — long-term memory utilities
 //! - [`llm_client`]        — per-provider component builders + factory
 //! - [`execution_mode`]    — Chat vs Task execution mode enum
-//! - [`eval_support`]      — single/multi-turn helpers for the evals harness
+//!
+//! What moved out (re-exported via the umbrella `golish-ai` for backward
+//! compatibility):
+//!
+//! - `agentic_loop`   → [`golish_agentic_loop::agentic_loop`]
+//! - `eval_support`   → [`golish_agentic_loop::eval_support`]
+//! - `test_utils*`    → [`golish_agentic_loop::test_utils`]
 //!
 //! # Architecture
 //!
-//! `golish-agent-loop` sits at **Layer 4** in the agent stack:
+//! `golish-agent-loop` sits at **Layer 4a** in the agent stack:
 //! - depends on: `golish-core`, `golish-events`, `golish-context`,
 //!   `golish-tools`, `golish-prompts`, `golish-llm-providers`,
 //!   `golish-sub-agents`, `golish-indexer`, `golish-json-repair`
-//! - consumed by: `golish-ai` (umbrella crate) and, after A1-3,
-//!   `golish-agent-bridge`
-//!
-//! Inside this crate `crate::transcript` and `crate::event_coordinator`
-//! are aliases for the corresponding `golish-events` modules so the
-//! migrated code keeps compiling without touching every `crate::*`
-//! reference. External consumers should depend on `golish-events`
-//! directly.
+//! - consumed by: `golish-agentic-loop` (Layer 4b) and the umbrella
+//!   `golish-ai` / `golish-agent-bridge` crates.
 
-pub mod agentic_loop;
 pub mod db_shim;
 pub mod db_traits;
 pub mod db_tracking;
-pub mod eval_support;
 pub mod execution_mode;
 pub mod hitl;
 pub mod llm_client;
@@ -59,11 +63,7 @@ pub mod tool_executors;
 pub mod tool_policy;
 pub mod tool_provider_impl;
 
-#[cfg(any(test, feature = "test-utils"))]
-pub mod test_utils;
-
 pub(crate) use golish_events::event_coordinator;
-pub(crate) use golish_events::transcript;
 
 pub mod agent_mode {
     //! Backward-compatibility alias: `AgentMode` lives in `golish-core`.
@@ -76,7 +76,6 @@ pub mod agent_mode {
 }
 
 pub use agent_mode::AgentMode;
-pub use agentic_loop::{OutputClassifier, PostShellHook};
 pub use execution_mode::ExecutionMode;
 pub use golish_events::{
     build_summarizer_input, format_for_summarizer, read_transcript, save_summarizer_input,

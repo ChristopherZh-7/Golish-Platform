@@ -1,26 +1,26 @@
 [package]
-name = "golish-ai"
+name = "golish-agentic-loop"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-description = "AI agent orchestration for Golish"
+description = "High-level agentic loop runtime split out from golish-agent-loop (P3-1 finisher): streaming tool-call loop, sub-agent dispatch, compaction, eval harness, mock test_utils."
 
 [dependencies]
-# Foundation crates
-golish-core = { workspace = true }
-golish-settings = { workspace = true }
-golish-tools = { workspace = true }
-
-# Extracted AI subsystem crates (A1-1 / A1-2 / A1-3 / P3-1 finisher)
-golish-prompts = { workspace = true }
+# Sibling Layer-4 crate that provides the lower-level building blocks
+# (tool_executors / tool_definitions / system_hooks / tool_policy / hitl /
+#  loop_detection / sidecar_trait / planner / db_* / memory_*).
 golish-agent-loop = { workspace = true }
-golish-agentic-loop = { workspace = true }
-golish-agent-bridge = { workspace = true }
-golish-events = { path = "../golish-events" }
+
+# Foundation crates (kept as direct deps because the loop body itself
+# touches their public types in numerous places).
+golish-core = { workspace = true }
 golish-context = { workspace = true }
-golish-indexer = { workspace = true }
+golish-events = { path = "../golish-events" }
 golish-llm-providers = { workspace = true }
+golish-tools = { workspace = true }
 golish-sub-agents = { workspace = true }
+golish-prompts = { workspace = true }
+golish-indexer = { workspace = true }
 
 # JSON repair for malformed LLM output
 golish-json-repair = { path = "../golish-json-repair" }
@@ -50,14 +50,15 @@ tokenx-rs = { workspace = true }
 # LLM integration via rig
 rig-core = { workspace = true }
 rig-anthropic-vertex = { path = "../rig-anthropic-vertex" }
-# Custom OpenAI Responses provider for reasoning models
 rig-openai-responses = { path = "../rig-openai-responses" }
 
-# HTTP client (needed for llm_client.rs)
+# HTTP client (used by retry helpers / eval_support)
 reqwest = { workspace = true }
 
 [features]
 default = []
+# Expose `test_utils` for downstream crates' test/dev builds.
+test-utils = ["golish-agent-loop/test-utils"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

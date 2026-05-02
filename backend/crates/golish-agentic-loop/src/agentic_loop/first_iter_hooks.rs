@@ -20,7 +20,7 @@ use rig::one_or_many::OneOrMany;
 use golish_core::events::AiEvent;
 
 use super::context::AgenticLoopContext;
-use super::super::system_hooks::{format_system_hooks, HookRegistry, MessageHookContext};
+use golish_agent_loop::system_hooks::{format_system_hooks, HookRegistry, MessageHookContext};
 
 /// Result of running the first-iteration hooks.
 pub(super) struct FirstIterationOutcome {
@@ -79,7 +79,7 @@ pub(super) async fn run_first_iteration_hooks(
     {
         let client = ctx.llm.client.read().await;
         let wants_memory =
-            crate::memory_gatekeeper::should_search_memory(&client, user_text).await;
+            golish_agent_loop::memory_gatekeeper::should_search_memory(&client, user_text).await;
         outcome.gatekeeper_wants_memory = wants_memory;
         if wants_memory {
             hook_messages.push(

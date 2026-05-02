@@ -16,8 +16,8 @@ use golish_sub_agents::{SubAgentContext, SubAgentExecutorContext, execute_sub_ag
 
 use super::super::sub_agent_dispatch::{build_sub_agent_briefing, execute_sub_agent_with_client};
 use super::super::{AgenticLoopContext, ToolExecutionResult};
-use crate::tool_executors::{execute_ask_human_tool, execute_plan_tool, execute_web_fetch_tool};
-use crate::tool_provider_impl::DefaultToolProvider;
+use golish_agent_loop::tool_executors::{execute_ask_human_tool, execute_plan_tool, execute_web_fetch_tool};
+use golish_agent_loop::tool_provider_impl::DefaultToolProvider;
 
 /// Execute a tool directly for generic models (after approval or auto-approved).
 pub async fn execute_tool_direct_generic<M>(
@@ -66,7 +66,7 @@ where
             | "save_guide"
     ) {
         if let Some((value, success)) =
-            crate::tool_executors::execute_memory_tool(tool_name, tool_args, ctx.events.db_tracker)
+            golish_agent_loop::tool_executors::execute_memory_tool(tool_name, tool_args, ctx.events.db_tracker)
                 .await
         {
             return Ok(ToolExecutionResult { value, success });
@@ -84,7 +84,7 @@ where
             | "list_unresearched_cves"
             | "poc_stats"
     ) {
-        if let Some((value, success)) = crate::tool_executors::execute_knowledge_base_tool(
+        if let Some((value, success)) = golish_agent_loop::tool_executors::execute_knowledge_base_tool(
             tool_name,
             tool_args,
             ctx.events.db_tracker,
@@ -107,7 +107,7 @@ where
         let ws_path = ctx.workspace.read().await;
         let project_path_str = ws_path.to_string_lossy().to_string();
         drop(ws_path);
-        if let Some((value, success)) = crate::tool_executors::execute_security_analysis_tool(
+        if let Some((value, success)) = golish_agent_loop::tool_executors::execute_security_analysis_tool(
             tool_name,
             tool_args,
             ctx.events.db_tracker,
@@ -128,7 +128,7 @@ where
             | "graph_neighbors"
             | "graph_attack_paths"
     ) {
-        if let Some((value, success)) = crate::tool_executors::execute_graph_tool(
+        if let Some((value, success)) = golish_agent_loop::tool_executors::execute_graph_tool(
             tool_name,
             tool_args,
             ctx.graph_backend.as_deref(),

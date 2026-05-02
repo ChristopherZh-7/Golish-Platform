@@ -1,15 +1,17 @@
 //! Backward-compatibility umbrella for the AI agent stack.
 //!
-//! After A1-1/A1-2/A1-3 the implementation lives in:
+//! After A1-1/A1-2/A1-3 (and the P3-1 finisher) the implementation lives in:
 //! [`golish-prompts`](golish_prompts) (prompts/summariser),
-//! [`golish-agent-loop`](golish_agent_loop) (runtime), and
+//! [`golish-agent-loop`](golish_agent_loop) (lower-level building blocks),
+//! [`golish-agentic-loop`](golish_agentic_loop) (high-level streaming
+//! loop + eval harness + mocks), and
 //! [`golish-agent-bridge`](golish_agent_bridge) (`AgentBridge` +
 //! bridge_executor). New code should depend on those crates directly.
 
 #![allow(deprecated)]
 
 pub use golish_agent_loop::{
-    agent_mode, agentic_loop, db_shim, db_traits, db_tracking, eval_support, execution_mode,
+    agent_mode, db_shim, db_traits, db_tracking, execution_mode,
     get_all_tool_definitions_with_config, get_tool_definitions_for_preset,
     get_tool_definitions_with_config, hitl, llm_client, loop_detection, memory_file,
     memory_gatekeeper, normalize_run_pty_cmd_args, planner, route_tool_execution, sidecar_trait,
@@ -18,7 +20,8 @@ pub use golish_agent_loop::{
     ToolExecutionConfig, ToolExecutionContext, ToolExecutionError, ToolExecutionResult, ToolPreset,
     ToolRoutingCategory, ToolSource,
 };
-pub use golish_agent_loop::agentic_loop::{OutputClassifier, PostShellHook};
+pub use golish_agentic_loop::{agentic_loop, eval_support};
+pub use golish_agentic_loop::agentic_loop::{OutputClassifier, PostShellHook};
 pub use golish_agent_bridge::{agent_bridge, AgentBridge};
 pub use golish_events::{
     build_summarizer_input, format_for_summarizer, read_transcript, save_summarizer_input,
