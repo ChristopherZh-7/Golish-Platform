@@ -22,6 +22,42 @@ just dev-fe
 
 This starts Vite with a mock Tauri environment (useful for rapid UI iteration without LLM costs).
 
+## Faster local Rust builds (sccache)
+
+The 44-crate Rust workspace takes ~1m 20s for a clean
+`cargo check -p golish` on an M-series Mac. CI already wires
+[`sccache`](https://github.com/mozilla/sccache) via
+[mozilla-actions/sccache-action](https://github.com/mozilla-actions/sccache-action)
+and `Swatinem/rust-cache@v2` (see `.github/workflows/check.yml`).
+
+To get the same speedup locally:
+
+```bash
+# macOS
+brew install sccache
+
+# Linux
+cargo install sccache --locked
+
+# Either platform: enable for all cargo invocations in this shell
+export RUSTC_WRAPPER=sccache
+
+# Optional: persist across shells
+echo 'export RUSTC_WRAPPER=sccache' >> ~/.zshrc   # or ~/.bashrc
+```
+
+Verify it's working:
+
+```bash
+sccache --show-stats     # before
+cargo check -p golish    # do a build
+sccache --show-stats     # after — `Cache hits` should grow
+```
+
+Typical local incremental check after warm-up: 5–15s instead of
+80s+. The cache lives at `~/Library/Caches/Mozilla.sccache`
+(macOS) or `~/.cache/sccache` (Linux).
+
 ## Adding a new tool
 
 1. Define schema in `backend/crates/golish-ai/src/tool_definitions.rs`
