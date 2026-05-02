@@ -339,6 +339,53 @@ pub trait PentestRepo: Send + Sync {
 
 ---
 
+## 下个 session 接手指南 (2026-05-02 收尾)
+
+> 截至 2026-05-02 接近 S 评级,只剩 P2-4 一个大件没完成。下次 session 直接做 P2-4 即可达 S。
+
+### P2-4 实施步骤(预计 4-6h)
+
+**Step 1**: `golish-pentest::output_store` 加 `OutputStore` trait
+```rust
+// backend/crates/golish-pentest/src/output_store/store_trait.rs (新建)
+#[async_trait::async_trait]
+pub trait OutputStore: Send + Sync {
+    async fn store_target_add(&self, fields: &HashMap<String, String>, project_path: Option<&str>) -> PentestResult<()>;
+    async fn store_target_update_recon(&self, fields: &HashMap<String, String>, project_path: Option<&str>, tool_name: &str) -> PentestResult<()>;
+    async fn store_directory_entry(&self, fields: &HashMap<String, String>, tool_name: &str, project_path: Option<&str>) -> PentestResult<()>;
+    async fn store_finding(&self, fields: &HashMap<String, String>, tool_name: &str, project_path: Option<&str>) -> PentestResult<()>;
+    async fn store_fingerprints(&self, target_id: Uuid, project_path: Option<&str>, fields: &HashMap<String, String>, source: &str);
+    async fn find_or_create_target(&self, host_value: &str, project_path: Option<&str>) -> PentestResult<Option<Uuid>>;
+}
+```
+
+**Step 2**: 主 crate 加 adapter
+```rust
+// backend/crates/golish/src/db/pg_pentest_store.rs (新建)
+pub struct PgPentestStore<'a>(pub &'a sqlx::PgPool);
+
+#[async_trait::async_trait]
+impl<'a> OutputStore for PgPentestStore<'a> { /* 调用现有 freestanding fn */ }
+```
+
+**Step 3**: 把 `maybe_detect_and_store(pool: &PgPool, ...)` 改成 `maybe_detect_and_store(store: &dyn OutputStore, ...)`
+
+**Step 4**: 6 处主 crate 调用点改为 `&PgPentestStore(pool)` adapter 包裹
+
+**Step 5**: 对 `golish-vuln-intel` 做同样的事(`VulnIntelStore` trait, `PgVulnIntelStore` adapter)
+
+**Step 6**: 加 `MockPentestStore` / `MockVulnIntelStore` 用于单元测试
+
+完成后 grep `PgPool` 在域 crate 应该:
+- 仅出现在 trait impl(adapter)
+- 不出现在业务函数签名
+
+### 编译时间优化(P3-1 ⚠️ 项)
+
+`golish-agent-loop` 15.63s 超目标 8s. 解决方案: 把 `agentic_loop/` 抽成独立的 `golish-agentic-loop-core` crate(2-3K LOC),`golish-agent-loop` 变薄。这是另一个 2-3h 工程,不阻断 S 评级。
+
+---
+
 ## 工具命令
 
 ```bash
