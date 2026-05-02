@@ -9,7 +9,7 @@ import {
   Shield,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { type AiProvider, buildProviderConfig, initAiSession, sendPromptSession } from "@/lib/ai";
 import { invoke, vulnLinks } from "@/lib/api";
 import { getSettings } from "@/lib/settings";
@@ -21,7 +21,11 @@ import { PocTab } from "./PocTab";
 import { ResearchTab } from "./ResearchTab";
 import type { DbVulnLinkFull, DetailTab, VulnEntry, VulnLink } from "./types";
 import { dbToVulnLink, SEV_COLORS, SEV_DOT } from "./types";
-import { WikiTab } from "./WikiTab";
+
+// Lazy-load WikiTab (~891 lines) — only mounted when user clicks the wiki tab.
+const WikiTab = lazy(() =>
+  import("./WikiTab").then((m) => ({ default: m.WikiTab }))
+);
 
 export function VulnDetailView({
   entry,
@@ -331,7 +335,9 @@ Update the product page frontmatter \`status\`:
       >
         {detailTab === "intel" && <IntelTab entry={entry} />}
         {detailTab === "wiki" && (
-          <WikiTab link={link} cveId={entry.cve_id} onUpdateLink={onUpdateLink} />
+          <Suspense fallback={<div className="p-4 text-sm text-muted-foreground">Loading wiki…</div>}>
+            <WikiTab link={link} cveId={entry.cve_id} onUpdateLink={onUpdateLink} />
+          </Suspense>
         )}
         {detailTab === "poc" && (
           <PocTab link={link} cveId={entry.cve_id} onUpdateLink={onUpdateLink} />
