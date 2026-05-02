@@ -1,6 +1,8 @@
 //! Tauri commands: local + remote vuln-intel search.
 
-use golish_vuln_intel::{self as intel, EntryRow, VulnEntry};
+use golish_vuln_intel::{
+    self as intel, EntryRow, PgVulnIntelStore, VulnEntry, VulnIntelStore as _,
+};
 
 use crate::error::GolishError;
 use crate::state::DbState;
@@ -51,7 +53,7 @@ pub async fn intel_search_remote(
 
     let mut entries = intel::fetch_nvd(&client, &url).await?;
     entries.sort_by(|a, b| b.published.cmp(&a.published));
-    intel::upsert_entries(pool, &entries).await?;
+    PgVulnIntelStore::new(pool).upsert_entries(&entries).await?;
     Ok(entries)
 }
 
@@ -74,6 +76,6 @@ pub async fn intel_search_remote_page(
 
     let mut entries = intel::fetch_nvd(&client, &url).await?;
     entries.sort_by(|a, b| b.published.cmp(&a.published));
-    intel::upsert_entries(pool, &entries).await?;
+    PgVulnIntelStore::new(pool).upsert_entries(&entries).await?;
     Ok(entries)
 }
