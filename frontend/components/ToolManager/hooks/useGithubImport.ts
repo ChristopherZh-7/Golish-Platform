@@ -1,6 +1,5 @@
 import { useCallback, useState } from "react";
-// biome-ignore lint/style/noRestrictedImports: TODO Phase 2D — pentest_analyze_github_tool is one of ~10 GitHub-related pentest commands not yet in the lib/pentest/api.ts wrapper; consolidate when the pentest GitHub helpers get a dedicated facade.
-import { invoke } from "@/lib/api/client";
+import { analyzeGithubTool } from "@/lib/pentest/api";
 import type { ToolWithMeta } from "../OutputParserEditor";
 
 interface UseGithubImportOptions {
@@ -36,20 +35,7 @@ export function useGithubImport(opts: UseGithubImportOptions) {
     setGithubAnalyzing(true);
     setError(null);
     try {
-      const suggestion = await invoke<{
-        name: string;
-        description: string;
-        icon: string;
-        runtime: string;
-        runtime_version: string;
-        launch_mode: string;
-        install_method: string;
-        install_source: string;
-        executable: string;
-        category: string;
-        subcategory: string;
-        readme_excerpt: string;
-      }>("pentest_analyze_github_tool", { owner, repo });
+      const suggestion = await analyzeGithubTool(owner, repo);
       const toolData: Record<string, unknown> = {
         id:
           crypto.randomUUID?.()?.replace(/-/g, "").slice(0, 8) ??
