@@ -7,9 +7,8 @@ import type { PromptPart } from "./PromptPart";
  * This is the format expected by the `send_ai_prompt_with_attachments` command.
  * For text-only prompts, the existing `send_ai_prompt_session` can still be used.
  */
-export type PromptPayload = {
-  /**
-   * The parts of the prompt (text and images).
-   */
-  parts: Array<PromptPart>;
-};
+export type PromptPayload = { 
+/**
+ * The parts of the prompt (text and images).
+ */
+parts: Array<PromptPart>, };

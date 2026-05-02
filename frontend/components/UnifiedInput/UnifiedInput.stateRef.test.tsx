@@ -158,18 +158,18 @@ describe("UnifiedInput stateRef Pattern Optimization", () => {
   describe("stateRef synchronization", () => {
     it("should have current input value available to handleSubmit immediately", async () => {
       createSession("session-1");
-      const { sendPromptSession } = await import("@/lib/ai");
+      const { ptyWrite } = await import("@/lib/api/pty");
 
       const { UnifiedInput } = await import("./UnifiedInput");
       render(<UnifiedInput sessionId="session-1" />);
 
       const input = screen.getByTestId("unified-input");
 
-      // Type and submit immediately
+      // Type and submit immediately. UnifiedInput is PTY-only so the
+      // current input value flows through ptyWrite, not sendPromptSession.
       await userEvent.type(input, "Test message{Enter}");
 
-      // The callback should have the current input value
-      expect(sendPromptSession).toHaveBeenCalledWith("session-1", "Test message");
+      expect(ptyWrite).toHaveBeenCalledWith("session-1", "Test message\n");
     });
 
     it("should have current inputMode available to handleKeyDown immediately", async () => {
@@ -180,12 +180,7 @@ describe("UnifiedInput stateRef Pattern Optimization", () => {
 
       const input = screen.getByTestId("unified-input");
 
-      // Initial mode is agent
-      expect(input).toHaveAttribute("data-mode", "agent");
-
-      // Toggle mode by directly calling setInputMode (simulating what Cmd+I would do)
-      // Note: The Cmd+I keyboard shortcut is handled by App.tsx at the window level,
-      // not by UnifiedInput, so we test the behavior through the store directly
+      // Toggle mode through the store (Cmd+I is wired in App.tsx, not here).
       act(() => {
         useStore.getState().setInputMode("session-1", "terminal");
       });
@@ -268,55 +263,36 @@ describe("UnifiedInput stateRef Pattern Optimization", () => {
       // The input should still have the correct value
       expect(input).toHaveValue("abc");
 
-      // The key test: functionality still works after multiple renders
-      // If the optimization broke something, callbacks would have stale values
-      const { sendPromptSession } = await import("@/lib/ai");
+      // The key test: stateRef-driven callbacks still see the latest input
+      // value across re-renders. UnifiedInput.handleSubmit pipes that
+      // value to ptyWrite (PTY-only routing).
+      const { ptyWrite } = await import("@/lib/api/pty");
       await userEvent.keyboard("{Enter}");
 
-      expect(sendPromptSession).toHaveBeenCalledWith("session-1", "abc");
+      expect(ptyWrite).toHaveBeenCalledWith("session-1", "abc\n");
     });
   });
 
   describe("callback correctness with stateRef", () => {
     it("handleSubmit should work correctly when called rapidly", async () => {
       createSession("session-1");
-      const { sendPromptSession } = await import("@/lib/ai");
+      const { ptyWrite } = await import("@/lib/api/pty");
 
       const { UnifiedInput } = await import("./UnifiedInput");
       render(<UnifiedInput sessionId="session-1" />);
 
       const input = screen.getByTestId("unified-input");
 
-      // Type and submit
+      // First message — handleSubmit should send it via PTY immediately.
       await userEvent.type(input, "First message{Enter}");
+      expect(ptyWrite).toHaveBeenCalledWith("session-1", "First message\n");
 
-      expect(sendPromptSession).toHaveBeenCalledWith("session-1", "First message");
+      vi.mocked(ptyWrite).mockClear();
 
-      // Clear submitting state for next test by simulating AI response
-      // The component watches for new assistant messages to clear isSubmitting
-      vi.mocked(sendPromptSession).mockClear();
-
-      // Simulate AI response completing by adding an assistant message
-      // and resetting agent state
-      act(() => {
-        useStore.getState().addAgentMessage("session-1", {
-          id: "response-1",
-          sessionId: "session-1",
-          role: "assistant",
-          content: "Response to first message",
-          timestamp: new Date().toISOString(),
-        });
-        useStore.getState().setAgentResponding("session-1", false);
-        useStore.getState().clearStreamingBlocks("session-1");
-      });
-
-      // Wait for the response effect to clear isSubmitting
-      await new Promise((resolve) => setTimeout(resolve, 50));
-
-      // Type and submit again
+      // Second message — fire another submit and verify the latest input
+      // value is captured (no stale stateRef carry-over).
       await userEvent.type(input, "Second message{Enter}");
-
-      expect(sendPromptSession).toHaveBeenCalledWith("session-1", "Second message");
+      expect(ptyWrite).toHaveBeenCalledWith("session-1", "Second message\n");
     });
 
     it("handleKeyDown should read correct popup state", async () => {

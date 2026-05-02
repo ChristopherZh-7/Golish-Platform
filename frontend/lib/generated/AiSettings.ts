@@ -17,86 +17,85 @@ import type { ZaiSdkSettings } from "./ZaiSdkSettings";
 /**
  * AI provider configuration.
  */
-export type AiSettings = {
-  /**
-   * Default AI provider
-   */
-  default_provider: AiProvider;
-  /**
-   * Default model for the selected provider
-   */
-  default_model: string;
-  /**
-   * Default reasoning effort for models that support it
-   */
-  default_reasoning_effort: ReasoningEffort | null;
-  /**
-   * Per-sub-agent model overrides (key = sub-agent id: "coder", "analyzer", etc.)
-   *
-   * Example in settings.toml:
-   * ```toml
-   * [ai.sub_agent_models.coder]
-   * provider = "openai"
-   * model = "gpt-4o"
-   * ```
-   */
-  sub_agent_models: { [key in string]: SubAgentModelConfig };
-  /**
-   * Model to use for the summarizer agent.
-   * If not specified, uses the session's current model.
-   * Example: "claude-sonnet-4-20250514"
-   */
-  summarizer_model?: string | null;
-  /**
-   * Provider for KB research agent. Falls back to default_provider if not set.
-   */
-  research_provider?: AiProvider | null;
-  /**
-   * Model for KB research agent. Falls back to default_model if not set.
-   */
-  research_model?: string | null;
-  /**
-   * Vertex AI (Anthropic) specific settings
-   */
-  vertex_ai: VertexAiSettings;
-  /**
-   * Vertex AI Gemini specific settings
-   */
-  vertex_gemini: VertexGeminiSettings;
-  /**
-   * OpenRouter specific settings
-   */
-  openrouter: OpenRouterSettings;
-  /**
-   * Direct Anthropic API settings
-   */
-  anthropic: AnthropicSettings;
-  /**
-   * OpenAI settings
-   */
-  openai: OpenAiSettings;
-  /**
-   * Ollama settings
-   */
-  ollama: OllamaSettings;
-  /**
-   * Gemini settings
-   */
-  gemini: GeminiSettings;
-  /**
-   * Groq settings
-   */
-  groq: GroqSettings;
-  /**
-   * xAI (Grok) settings
-   */
-  xai: XaiSettings;
-  /**
-   * Z.AI native SDK settings
-   */
-  zai_sdk: ZaiSdkSettings;
-  /**
-   * NVIDIA NIM settings
-   */
-  nvidia: NvidiaSettings;
-};
+export type AiSettings = { 
+/**
+ * Default AI provider.
+ */
+default_provider: AiProvider, 
+/**
+ * Default model for the selected provider.
+ */
+default_model: string, 
+/**
+ * Default reasoning effort for models that support it.
+ */
+default_reasoning_effort: ReasoningEffort | null, 
+/**
+ * Per-sub-agent model overrides (key = sub-agent id: "coder", "analyzer", etc.).
+ *
+ * Example in `settings.toml`:
+ * ```toml
+ * [ai.sub_agent_models.coder]
+ * provider = "openai"
+ * model = "gpt-4o"
+ * ```
+ */
+sub_agent_models: { [key in string]: SubAgentModelConfig }, 
+/**
+ * Model to use for the summarizer agent.
+ * If not specified, uses the session's current model.
+ * Example: `"claude-sonnet-4-20250514"`.
+ */
+summarizer_model?: string | null, 
+/**
+ * Provider for KB research agent. Falls back to `default_provider` if not set.
+ */
+research_provider?: AiProvider | null, 
+/**
+ * Model for KB research agent. Falls back to `default_model` if not set.
+ */
+research_model?: string | null, 
+/**
+ * Vertex AI (Anthropic) specific settings.
+ */
+vertex_ai: VertexAiSettings, 
+/**
+ * Vertex AI Gemini specific settings.
+ */
+vertex_gemini: VertexGeminiSettings, 
+/**
+ * OpenRouter specific settings.
+ */
+openrouter: OpenRouterSettings, 
+/**
+ * Direct Anthropic API settings.
+ */
+anthropic: AnthropicSettings, 
+/**
+ * OpenAI settings.
+ */
+openai: OpenAiSettings, 
+/**
+ * Ollama settings.
+ */
+ollama: OllamaSettings, 
+/**
+ * Gemini settings.
+ */
+gemini: GeminiSettings, 
+/**
+ * Groq settings.
+ */
+groq: GroqSettings, 
+/**
+ * xAI (Grok) settings.
+ */
+xai: XaiSettings, 
+/**
+ * Z.AI native SDK settings.
+ */
+zai_sdk: ZaiSdkSettings, 
+/**
+ * NVIDIA NIM settings.
+ */
+nvidia: NvidiaSettings, };

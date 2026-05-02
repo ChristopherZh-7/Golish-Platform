@@ -1,3 +1,4 @@
+import type { VaultEntrySafe as GeneratedVaultEntrySafe } from "@/lib/generated";
 import { invoke } from "@/lib/api/client";
 
 type ZapJson = Record<string, unknown>;
@@ -32,16 +33,18 @@ export interface SensitiveProgress {
   dirsFound: number;
 }
 
-export interface VaultEntrySafe {
-  id: string;
-  name: string;
-  entry_type: string;
-  username: string;
-  notes: string;
-  project: string;
-  tags: string[];
-  created_at: string;
-}
+/**
+ * Subset of `VaultEntrySafe` fields surfaced to the security UI
+ * (Scanner credential picker). Projected via `Pick<...>` from the
+ * canonical `ts-rs`-generated `VaultEntrySafe` so the field shape and
+ * `type` enum stay aligned with the Rust source of truth — when the
+ * backend struct changes, run `just generate-types` and this picks
+ * up the new definition automatically.
+ */
+export type VaultEntrySafe = Pick<
+  GeneratedVaultEntrySafe,
+  "id" | "name" | "type" | "username" | "notes" | "project" | "tags" | "created_at"
+>;
 
 export interface CustomPassiveRule {
   id: string;

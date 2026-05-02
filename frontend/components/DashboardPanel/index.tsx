@@ -61,7 +61,7 @@ interface AiStats {
 interface DashboardStats {
   targets: PentestTarget[];
   methodProjects: ProjectMethodology[];
-  vaultEntries: { entry_type: string }[];
+  vaultEntries: { type: string }[];
   findings: Finding[];
   recentActivity: AuditEntry[];
 }
@@ -192,7 +192,7 @@ export function DashboardPanel() {
 
     const vaultByType: Record<string, number> = {};
     for (const e of vaultEntries) {
-      vaultByType[e.entry_type] = (vaultByType[e.entry_type] || 0) + 1;
+      vaultByType[e.type] = (vaultByType[e.type] || 0) + 1;
     }
 
     return {

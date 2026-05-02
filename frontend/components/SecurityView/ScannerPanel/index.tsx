@@ -66,7 +66,7 @@ export function ScannerPanel({
       const value = await securityApi.vaultGetValue(selectedCredential, getProjectPath());
       const entry = vaultEntries.find((e) => e.id === selectedCredential);
       if (entry && value) {
-        if (entry.entry_type === "token" || entry.entry_type === "apiKey") {
+        if (entry.type === "token" || entry.type === "api_key") {
           await securityApi
             .zapApiCall("replacer", "action", "addRule", {
               description: `vault-auth-${entry.name}`,
@@ -77,7 +77,7 @@ export function ScannerPanel({
               replacement: `Bearer ${value}`,
             })
             .catch(() => {});
-        } else if (entry.entry_type === "cookie") {
+        } else if (entry.type === "cookie") {
           await securityApi
             .zapApiCall("replacer", "action", "addRule", {
               description: `vault-cookie-${entry.name}`,

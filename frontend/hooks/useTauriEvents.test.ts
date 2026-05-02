@@ -1,6 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { selectCommandBlocksFromTimeline } from "@/lib/timeline/selectors";
+import { clearAllOutputBuffers, getOutputBuffer } from "@/store/slices/session-helpers";
 import { useStore } from "../store";
 import { clearMockListeners, emitMockEvent, getListenerCount } from "../test/mocks/tauri-event";
 import { useTauriEvents } from "./useTauriEvents";
@@ -33,6 +34,10 @@ describe("useTauriEvents", () => {
 
     // Clear any existing listeners
     clearMockListeners();
+
+    // Module-scoped output buffer can leak across tests (used by appendOutput
+    // / getOutputBuffer). Wipe it so each case starts empty.
+    clearAllOutputBuffers();
 
     // Create a test session
     createTestSession("test-session");
@@ -108,7 +113,7 @@ describe("useTauriEvents", () => {
         });
       });
 
-      // Then end it - this triggers async serialization
+      // Then end it - deferred execution until prompt_start
       act(() => {
         emitMockEvent("command_block", {
           session_id: "test-session",
@@ -118,9 +123,19 @@ describe("useTauriEvents", () => {
         });
       });
 
-      // Wait for async serialization to complete
+      // prompt_start triggers deferred block creation (with 150ms delay)
+      act(() => {
+        emitMockEvent("command_block", {
+          session_id: "test-session",
+          command: null,
+          exit_code: null,
+          event_type: "prompt_start",
+        });
+      });
+
+      // Wait for deferred processing (150ms + buffer)
       await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        await new Promise((resolve) => setTimeout(resolve, 250));
       });
 
       const state = useStore.getState();
@@ -213,8 +228,7 @@ describe("useTauriEvents", () => {
         });
       });
 
-      const state = useStore.getState();
-      expect(state.pendingCommand["test-session"]?.output).toBe("line 1\nline 2\n");
+      expect(getOutputBuffer("test-session")).toBe("line 1\nline 2\n");
     });
 
     it("SHOULD auto-create pendingCommand when output received without command_start (fallback for missing shell integration)", () => {
@@ -232,7 +246,7 @@ describe("useTauriEvents", () => {
       // pendingCommand should be auto-created with null command (fallback behavior)
       expect(state.pendingCommand["test-session"]).toBeDefined();
       expect(state.pendingCommand["test-session"]?.command).toBeNull();
-      expect(state.pendingCommand["test-session"]?.output).toBe("prompt text\n");
+      expect(getOutputBuffer("test-session")).toBe("prompt text\n");
     });
   });
 
@@ -300,9 +314,7 @@ describe("useTauriEvents", () => {
         });
       });
 
-      expect(useStore.getState().pendingCommand["test-session"]?.output).toBe(
-        "PING localhost: 64 bytes\n"
-      );
+      expect(getOutputBuffer("test-session")).toBe("PING localhost: 64 bytes\n");
 
       act(() => {
         emitMockEvent("terminal_output", {
@@ -311,11 +323,11 @@ describe("useTauriEvents", () => {
         });
       });
 
-      expect(useStore.getState().pendingCommand["test-session"]?.output).toBe(
+      expect(getOutputBuffer("test-session")).toBe(
         "PING localhost: 64 bytes\nPING localhost: 64 bytes\n"
       );
 
-      // 3. Command ends - triggers async serialization
+      // 3. Command ends - deferred until prompt_start
       act(() => {
         emitMockEvent("command_block", {
           session_id: "test-session",
@@ -325,9 +337,19 @@ describe("useTauriEvents", () => {
         });
       });
 
-      // Wait for async serialization to complete
+      // prompt_start triggers deferred block creation
+      act(() => {
+        emitMockEvent("command_block", {
+          session_id: "test-session",
+          command: null,
+          exit_code: null,
+          event_type: "prompt_start",
+        });
+      });
+
+      // Wait for deferred processing (150ms + buffer)
       await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        await new Promise((resolve) => setTimeout(resolve, 250));
       });
 
       const state = useStore.getState();
@@ -457,7 +479,7 @@ describe("useTauriEvents", () => {
       expect(useStore.getState().pendingCommand["session-a"]?.command).toBe("command A");
       expect(useStore.getState().pendingCommand["session-b"]?.command).toBe("command B");
 
-      // End only session A - triggers async serialization
+      // End only session A - deferred until prompt_start
       act(() => {
         emitMockEvent("command_block", {
           session_id: "session-a",
@@ -467,9 +489,19 @@ describe("useTauriEvents", () => {
         });
       });
 
-      // Wait for async serialization to complete
+      // prompt_start triggers deferred block creation for session A
+      act(() => {
+        emitMockEvent("command_block", {
+          session_id: "session-a",
+          command: null,
+          exit_code: null,
+          event_type: "prompt_start",
+        });
+      });
+
+      // Wait for deferred processing
       await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        await new Promise((resolve) => setTimeout(resolve, 250));
       });
 
       // Session A should be complete, B still pending
@@ -510,8 +542,8 @@ describe("useTauriEvents", () => {
       });
 
       // Only session A should have output
-      expect(useStore.getState().pendingCommand["session-a"]?.output).toBe("output for A\n");
-      expect(useStore.getState().pendingCommand["session-b"]?.output).toBe("");
+      expect(getOutputBuffer("session-a")).toBe("output for A\n");
+      expect(getOutputBuffer("session-b")).toBe("");
     });
   });
 
@@ -566,9 +598,19 @@ describe("useTauriEvents", () => {
         });
       });
 
-      // Wait for async serialization to complete
+      // prompt_start triggers deferred block creation
+      act(() => {
+        emitMockEvent("command_block", {
+          session_id: "test-session",
+          command: null,
+          exit_code: null,
+          event_type: "prompt_start",
+        });
+      });
+
+      // Wait for deferred processing
       await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        await new Promise((resolve) => setTimeout(resolve, 250));
       });
 
       const state = useStore.getState();

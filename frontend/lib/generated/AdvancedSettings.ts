@@ -4,23 +4,22 @@ import type { LogLevel } from "./LogLevel";
 /**
  * Advanced/debug settings.
  */
-export type AdvancedSettings = {
-  /**
-   * Enable experimental features
-   */
-  enable_experimental: boolean;
-  /**
-   * Log level
-   */
-  log_level: LogLevel;
-  /**
-   * Enable LLM API request/response logging to ./logs/api/
-   * When enabled, raw JSON request/response data is logged per session
-   */
-  enable_llm_api_logs: boolean;
-  /**
-   * Extract and parse the raw SSE JSON instead of logging escaped strings
-   * When enabled, SSE chunks are logged as parsed JSON objects
-   */
-  extract_raw_sse: boolean;
-};
+export type AdvancedSettings = { 
+/**
+ * Enable experimental features.
+ */
+enable_experimental: boolean, 
+/**
+ * Log level.
+ */
+log_level: LogLevel, 
+/**
+ * Enable LLM API request/response logging to `./logs/api/`.
+ * When enabled, raw JSON request/response data is logged per session.
+ */
+enable_llm_api_logs: boolean, 
+/**
+ * Extract and parse the raw SSE JSON instead of logging escaped strings.
+ * When enabled, SSE chunks are logged as parsed JSON objects.
+ */
+extract_raw_sse: boolean, };

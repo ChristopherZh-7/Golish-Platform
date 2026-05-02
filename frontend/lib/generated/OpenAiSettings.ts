@@ -3,32 +3,31 @@
 /**
  * OpenAI API settings.
  */
-export type OpenAiSettings = {
-  /**
-   * OpenAI API key (supports $ENV_VAR syntax)
-   */
-  api_key: string | null;
-  /**
-   * Custom base URL for OpenAI-compatible APIs
-   */
-  base_url: string | null;
-  /**
-   * Whether to show this provider's models in the model selector
-   */
-  show_in_selector: boolean;
-  /**
-   * Enable OpenAI's native web search tool (web_search_preview).
-   *
-   * When enabled, OpenAI models will use server-side web search
-   * similar to Claude's native web tools, instead of Tavily.
-   */
-  enable_web_search: boolean;
-  /**
-   * Web search context size: "low", "medium", or "high".
-   *
-   * - "low": Faster and cheaper, but may be less accurate
-   * - "medium": Balanced (default)
-   * - "high": Better results, but slower and more expensive
-   */
-  web_search_context_size: string;
-};
+export type OpenAiSettings = { 
+/**
+ * OpenAI API key (supports $ENV_VAR syntax)
+ */
+api_key: string | null, 
+/**
+ * Custom base URL for OpenAI-compatible APIs
+ */
+base_url: string | null, 
+/**
+ * Whether to show this provider's models in the model selector
+ */
+show_in_selector: boolean, 
+/**
+ * Enable OpenAI's native web search tool (web_search_preview).
+ *
+ * When enabled, OpenAI models will use server-side web search
+ * similar to Claude's native web tools, instead of Tavily.
+ */
+enable_web_search: boolean, 
+/**
+ * Web search context size: "low", "medium", or "high".
+ *
+ * - "low": Faster and cheaper, but may be less accurate
+ * - "medium": Balanced (default)
+ * - "high": Better results, but slower and more expensive
+ */
+web_search_context_size: string, };

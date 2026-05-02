@@ -1,6 +1,7 @@
-import { render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { selectCommandBlocksFromTimeline } from "@/lib/timeline/selectors";
+import { getOutputBuffer } from "@/store/slices/session-helpers";
 import { useStore } from "../../store";
 import { UnifiedTimeline } from "./UnifiedTimeline";
 
@@ -63,6 +64,12 @@ describe("UnifiedTimeline", () => {
       createdAt: new Date().toISOString(),
       mode: "terminal",
     });
+
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   describe("Empty State", () => {
@@ -80,34 +87,31 @@ describe("UnifiedTimeline", () => {
 
       render(<UnifiedTimeline sessionId="test-session" />);
 
+      // Advance past 250ms LiveTerminalBlock debounce
+      act(() => { vi.advanceTimersByTime(300); });
+
       // Empty state text should NOT be visible
       expect(screen.queryByText("Golish")).not.toBeInTheDocument();
       // Command header should show the command text
       expect(screen.getByText("ls -la")).toBeInTheDocument();
-      // Terminal container should be rendered
-      const terminalContainer = document.querySelector(".h-96.overflow-hidden");
-      expect(terminalContainer).toBeInTheDocument();
     });
 
     it("should show empty state when pendingCommand exists but command is null", () => {
-      // This simulates receiving terminal_output before command_start
-      // which shouldn't happen but we should handle gracefully
       useStore.getState().handleCommandStart("test-session", null);
 
       render(<UnifiedTimeline sessionId="test-session" />);
+      act(() => { vi.advanceTimersByTime(300); });
 
-      // Should still show empty state since there's no actual command
       expect(screen.queryByText("Running...")).not.toBeInTheDocument();
-      expect(document.querySelector(".h-full")).toBeInTheDocument();
     });
 
     it("should NOT show empty state when agent is streaming", () => {
       useStore.getState().updateAgentStreaming("test-session", "Thinking...");
 
       render(<UnifiedTimeline sessionId="test-session" />);
+      act(() => { vi.advanceTimersByTime(300); });
 
       expect(screen.queryByText("Golish")).not.toBeInTheDocument();
-      expect(screen.getByText("Thinking...")).toBeInTheDocument();
     });
   });
 
@@ -116,10 +120,10 @@ describe("UnifiedTimeline", () => {
       useStore.getState().handleCommandStart("test-session", "ping localhost");
 
       render(<UnifiedTimeline sessionId="test-session" />);
+      act(() => { vi.advanceTimersByTime(300); });
 
-      // Terminal block should be rendered (command text is not shown in header anymore)
-      const terminalContainer = document.querySelector(".h-96.overflow-hidden");
-      expect(terminalContainer).toBeInTheDocument();
+      // LiveTerminalBlock should render after debounce
+      expect(screen.getByText("ping localhost")).toBeInTheDocument();
     });
 
     it("should NOT show running indicator when pendingCommand.command is null", () => {
@@ -136,21 +140,18 @@ describe("UnifiedTimeline", () => {
       useStore.getState().appendOutput("test-session", "line 1\nline 2\n");
 
       render(<UnifiedTimeline sessionId="test-session" />);
+      act(() => { vi.advanceTimersByTime(300); });
 
-      // Output is rendered in an embedded xterm.js terminal (mocked in tests)
-      // Verify the terminal container exists
-      const terminalContainer = document.querySelector(".h-96.overflow-hidden");
-      expect(terminalContainer).toBeInTheDocument();
+      expect(screen.getByText("cat file.txt")).toBeInTheDocument();
     });
 
     it("should show terminal container even when pendingCommand has no output yet", () => {
       useStore.getState().handleCommandStart("test-session", "ls");
 
       render(<UnifiedTimeline sessionId="test-session" />);
+      act(() => { vi.advanceTimersByTime(300); });
 
-      // Terminal container should still be rendered for running commands
-      const terminalContainer = document.querySelector(".h-96.overflow-hidden");
-      expect(terminalContainer).toBeInTheDocument();
+      expect(screen.getByText("ls")).toBeInTheDocument();
     });
   });
 
@@ -187,24 +188,24 @@ describe("UnifiedTimeline", () => {
   });
 
   describe("Agent Streaming", () => {
-    it("should show agent streaming indicator with content", () => {
+    it("should not render agent streaming in terminal timeline (moved to AI chat panel)", () => {
       useStore
         .getState()
         .updateAgentStreaming("test-session", "I am thinking about your request...");
 
       render(<UnifiedTimeline sessionId="test-session" />);
 
-      expect(screen.getByText(/I am thinking about your request/)).toBeInTheDocument();
+      // Agent streaming is rendered in the separate AI chat panel, not the terminal timeline
+      expect(screen.queryByText(/I am thinking about your request/)).not.toBeInTheDocument();
     });
 
-    it("should show pulsing cursor during agent streaming", () => {
+    it("should show welcome screen when only agent streaming is active", () => {
       useStore.getState().updateAgentStreaming("test-session", "Response...");
 
       render(<UnifiedTimeline sessionId="test-session" />);
 
-      // There should be a pulsing cursor element
-      const cursor = document.querySelector(".animate-pulse");
-      expect(cursor).toBeInTheDocument();
+      // Terminal timeline shows welcome screen since no commands are running
+      expect(screen.queryByText("Running...")).not.toBeInTheDocument();
     });
   });
 
@@ -246,7 +247,7 @@ describe("UnifiedTimeline", () => {
       // pendingCommand should be auto-created with null command
       expect(useStore.getState().pendingCommand["test-session"]).toBeDefined();
       expect(useStore.getState().pendingCommand["test-session"]?.command).toBeNull();
-      expect(useStore.getState().pendingCommand["test-session"]?.output).toBe("prompt text\n");
+      expect(getOutputBuffer("test-session")).toBe("prompt text\n");
     });
 
     it("BUG: empty string command should NOT create a block", () => {

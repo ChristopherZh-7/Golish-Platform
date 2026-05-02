@@ -60,7 +60,7 @@ describe("groupConsecutiveToolsByAny", () => {
     expect(result[2].type).toBe("tool");
   });
 
-  it("does NOT break groups on whitespace-only text", () => {
+  it("breaks groups on whitespace-only text when group is active", () => {
     const blocks: StreamingBlock[] = [
       createToolBlock("read_file", "1"),
       createTextBlock("\n"),
@@ -71,11 +71,12 @@ describe("groupConsecutiveToolsByAny", () => {
 
     const result = groupConsecutiveToolsByAny(blocks);
 
-    expect(result).toHaveLength(1);
-    expect(result[0].type).toBe("tool_group");
-    if (result[0].type === "tool_group") {
-      expect(result[0].tools).toHaveLength(3);
-    }
+    expect(result).toHaveLength(5);
+    expect(result[0].type).toBe("tool");
+    expect(result[1].type).toBe("text");
+    expect(result[2].type).toBe("tool");
+    expect(result[3].type).toBe("text");
+    expect(result[4].type).toBe("tool");
   });
 
   it("handles text before tool group", () => {
@@ -135,9 +136,9 @@ describe("groupConsecutiveToolsByAny", () => {
     const blocks: StreamingBlock[] = [
       createTextBlock("Let me check:"),
       createToolBlock("read_file", "1"),
-      createTextBlock("\n"), // whitespace - should NOT break
+      createTextBlock("\n"), // whitespace breaks active group
       createToolBlock("read_file", "2"),
-      createTextBlock("\n\n"), // whitespace - should NOT break
+      createTextBlock("\n\n"), // whitespace breaks active group
       createToolBlock("list_files", "3"),
       createTextBlock("Now analyzing..."),
       createToolBlock("read_file", "4"),
@@ -145,14 +146,15 @@ describe("groupConsecutiveToolsByAny", () => {
 
     const result = groupConsecutiveToolsByAny(blocks);
 
-    expect(result).toHaveLength(4);
+    expect(result).toHaveLength(8);
     expect(result[0].type).toBe("text"); // "Let me check:"
-    expect(result[1].type).toBe("tool_group"); // 3 tools grouped
-    if (result[1].type === "tool_group") {
-      expect(result[1].tools).toHaveLength(3);
-    }
-    expect(result[2].type).toBe("text"); // "Now analyzing..."
-    expect(result[3].type).toBe("tool"); // single tool
+    expect(result[1].type).toBe("tool"); // tool 1
+    expect(result[2].type).toBe("text"); // "\n"
+    expect(result[3].type).toBe("tool"); // tool 2
+    expect(result[4].type).toBe("text"); // "\n\n"
+    expect(result[5].type).toBe("tool"); // tool 3
+    expect(result[6].type).toBe("text"); // "Now analyzing..."
+    expect(result[7].type).toBe("tool"); // tool 4
   });
 
   it("treats run_command as a separator", () => {

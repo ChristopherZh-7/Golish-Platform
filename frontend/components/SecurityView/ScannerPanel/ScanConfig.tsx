@@ -89,7 +89,7 @@ export function CredentialDropdown({
   const ref = useRef<HTMLDivElement>(null);
   const selected = entries.find((e) => e.id === value);
   const filtered = entries.filter((e) =>
-    ["password", "token", "cookie", "apiKey"].includes(e.entry_type)
+    ["password", "token", "cookie", "api_key"].includes(e.type)
   );
 
   useEffect(() => {
@@ -155,7 +155,7 @@ export function CredentialDropdown({
               <KeyRound className="w-2.5 h-2.5 flex-shrink-0" />
               <span className="truncate">{entry.name}</span>
               <span className="text-muted-foreground/40 text-[8px] ml-auto">
-                {entry.entry_type}
+                {entry.type}
               </span>
             </button>
           ))}

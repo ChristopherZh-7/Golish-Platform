@@ -43,9 +43,14 @@ export function createSessionCoreActions(
           state.tabActivationHistory.push(session.id);
 
           if ((session.tabType ?? "terminal") === "terminal") {
-            import("@/lib/api/pty").then(({ setActiveTerminalSession }) => {
-              setActiveTerminalSession(session.id).catch(() => {});
-            });
+            // Catch the dynamic import too — partial mocks that omit
+            // `setActiveTerminalSession` (common in unit tests) would otherwise
+            // surface as noisy unhandled rejections.
+            import("@/lib/api/pty")
+              .then(({ setActiveTerminalSession }) => {
+                setActiveTerminalSession?.(session.id).catch(() => {});
+              })
+              .catch(() => {});
           }
         }
 
@@ -165,9 +170,13 @@ export function createSessionCoreActions(
 
         const session = state.sessions[sessionId];
         if (session && (session.tabType ?? "terminal") === "terminal") {
-          import("@/lib/api/pty").then(({ setActiveTerminalSession }) => {
-            setActiveTerminalSession(sessionId).catch(() => {});
-          });
+          // See note above on the import("@/lib/api/pty") swallow — keeps
+          // partial test mocks from emitting unhandled rejections.
+          import("@/lib/api/pty")
+            .then(({ setActiveTerminalSession }) => {
+              setActiveTerminalSession?.(sessionId).catch(() => {});
+            })
+            .catch(() => {});
         }
       }),
 

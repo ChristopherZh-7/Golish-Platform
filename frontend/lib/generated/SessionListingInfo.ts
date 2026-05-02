@@ -3,25 +3,12 @@
 /**
  * Session listing information for display.
  */
-export type SessionListingInfo = {
-  identifier: string;
-  path: string;
-  workspace_label: string;
-  workspace_path: string;
-  model: string;
-  provider: string;
-  started_at: string;
-  ended_at: string;
-  total_messages: number;
-  distinct_tools: Array<string>;
-  first_prompt_preview: string | null;
-  first_reply_preview: string | null;
-  /**
-   * Session status: "active", "completed", or "abandoned"
-   */
-  status: string | null;
-  /**
-   * LLM-generated session title
-   */
-  title: string | null;
-};
+export type SessionListingInfo = { identifier: string, path: string, workspace_label: string, workspace_path: string, model: string, provider: string, started_at: string, ended_at: string, total_messages: number, distinct_tools: Array<string>, first_prompt_preview: string | null, first_reply_preview: string | null, 
+/**
+ * Session status: "active", "completed", or "abandoned"
+ */
+status: string | null, 
+/**
+ * LLM-generated session title
+ */
+title: string | null, };

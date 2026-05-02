@@ -1,27 +1,13 @@
-// biome-ignore lint/style/noRestrictedImports: TODO Phase 2D — local VaultEntrySafe interface uses different field naming (type vs entryType) than @/lib/api/vault facade; needs a schema-aligned migration PR before swapping these 3 invoke() calls (vault_list / vault_validate / vault_get_value).
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { vault } from "@/lib/api";
+import type { VaultEntrySafe } from "@/lib/api/vault";
 import { logAudit } from "@/lib/audit";
 import { copyToClipboard } from "@/lib/clipboard";
 import { getProjectPath } from "@/lib/projects";
 
-export interface VaultEntrySafe {
-  id: string;
-  name: string;
-  type: "password" | "token" | "ssh_key" | "api_key" | "cookie" | "certificate" | "other";
-  username: string;
-  notes: string;
-  project: string;
-  tags: string[];
-  status: string;
-  source_url: string;
-  last_validated_at: number | null;
-  created_at: number;
-  updated_at: number;
-}
+export type { VaultEntrySafe };
 
 export const ENTRY_TYPES = [
   "password",
@@ -87,7 +73,7 @@ export function useVaultForm() {
 
   const loadEntries = useCallback(async () => {
     try {
-      const data = await invoke<VaultEntrySafe[]>("vault_list", { projectPath: getProjectPath() });
+      const data = await vault.listVaultEntries(getProjectPath());
       setEntries(Array.isArray(data) ? data : []);
     } catch (e) {
       console.error("Failed to load vault:", e);
@@ -98,7 +84,7 @@ export function useVaultForm() {
     async (id: string) => {
       setValidatingIds((prev) => new Set(prev).add(id));
       try {
-        await invoke<string>("vault_validate", { id, projectPath: getProjectPath() });
+        await vault.validateVaultEntry(id, getProjectPath());
         await loadEntries();
       } catch (e) {
         console.error("Failed to validate:", e);
@@ -201,10 +187,7 @@ export function useVaultForm() {
         return;
       }
       try {
-        const value = await invoke<string>("vault_get_value", {
-          id,
-          projectPath: getProjectPath(),
-        });
+        const value = await vault.getVaultValue(id, getProjectPath());
         setRevealedValues((v) => ({ ...v, [id]: value }));
         setRevealedIds((s) => new Set(s).add(id));
       } catch (e) {
@@ -216,10 +199,7 @@ export function useVaultForm() {
 
   const handleCopyAll = useCallback(async (entry: VaultEntrySafe) => {
     try {
-      const value = await invoke<string>("vault_get_value", {
-        id: entry.id,
-        projectPath: getProjectPath(),
-      });
+      const value = await vault.getVaultValue(entry.id, getProjectPath());
       const lines = [`Name: ${entry.name}`, `Type: ${entry.type}`];
       if (entry.username) lines.push(`Username: ${entry.username}`);
       lines.push(`Value: ${value}`);

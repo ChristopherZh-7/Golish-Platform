@@ -103,6 +103,7 @@ vi.mock("@/lib/terminal/TerminalInstanceManager", () => ({
     attachToContainer: vi.fn(),
     detach: vi.fn(),
     dispose: vi.fn(),
+    consumePendingScrollback: vi.fn().mockReturnValue(undefined),
   },
 }));
 

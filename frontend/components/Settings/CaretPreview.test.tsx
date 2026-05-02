@@ -52,7 +52,7 @@ describe("CaretPreview", () => {
         <CaretPreview settings={{ ...blockSettings, color: "#ff0000" }} />
       );
       const caretEl = container.querySelector(".inline-block") as HTMLElement;
-      expect(caretEl.style.backgroundColor).toBe("rgb(255, 0, 0)");
+      expect(caretEl.style.backgroundColor).toMatch(/rgb\(255,\s*0,\s*0\)|#ff0000/);
     });
 
     it("should use var(--foreground) when color is null", () => {

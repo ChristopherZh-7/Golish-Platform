@@ -4,17 +4,16 @@ import type { AiProvider } from "./AiProvider";
 /**
  * AI-specific project settings.
  */
-export type ProjectAiSettings = {
-  /**
-   * Override for the AI provider (e.g., "anthropic", "openai")
-   */
-  provider: AiProvider | null;
-  /**
-   * Override for the model name (e.g., "claude-sonnet-4-20250514")
-   */
-  model: string | null;
-  /**
-   * Override for agent mode ("default", "auto-approve", "planning")
-   */
-  agent_mode: string | null;
-};
+export type ProjectAiSettings = { 
+/**
+ * Override for the AI provider (e.g., "anthropic", "openai")
+ */
+provider: AiProvider | null, 
+/**
+ * Override for the model name (e.g., "claude-sonnet-4-20250514")
+ */
+model: string | null, 
+/**
+ * Override for agent mode ("default", "auto-approve", "planning")
+ */
+agent_mode: string | null, };
