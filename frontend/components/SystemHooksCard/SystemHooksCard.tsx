@@ -33,7 +33,6 @@ export const SystemHooksCard = memo(function SystemHooksCard({ hooks }: SystemHo
           <div className="mt-2 space-y-2">
             {hooks.map((hook, idx) => (
               <pre
-                // biome-ignore lint/suspicious/noArrayIndexKey: hooks have no stable id
                 key={idx}
                 className="whitespace-pre-wrap rounded-md bg-card/50 border border-border p-2 overflow-auto"
               >

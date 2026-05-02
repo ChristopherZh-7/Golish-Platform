@@ -128,7 +128,6 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
 
   // Auto-scroll only when NEW blocks appear (not on content height changes from expand/collapse)
   const prevTimelineLengthRef = useRef(timeline.length);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional triggers for auto-scroll
   useEffect(() => {
     const grew = timeline.length > prevTimelineLengthRef.current;
     prevTimelineLengthRef.current = timeline.length;

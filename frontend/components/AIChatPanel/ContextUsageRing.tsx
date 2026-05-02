@@ -14,7 +14,7 @@ export const ContextUsageRing = memo(function ContextUsageRing({
 
   return (
     <div className="relative group" title={title}>
-      <svg className="w-5 h-5 -rotate-90" viewBox="0 0 20 20">
+      <svg aria-hidden="true" className="w-5 h-5 -rotate-90" viewBox="0 0 20 20">
         <circle
           cx="10"
           cy="10"

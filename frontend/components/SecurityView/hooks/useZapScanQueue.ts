@@ -219,7 +219,6 @@ export function useZapScanQueue({
     .filter((e) => e.status === "scanning" || e.status === "paused")
     .map((e) => `${e.url}:${e.scanId}`)
     .join(",");
-  // biome-ignore lint/correctness/useExhaustiveDependencies: see comment above
   useEffect(() => {
     const active = endpoints.filter(
       (e) => (e.status === "scanning" || e.status === "paused") && e.scanId

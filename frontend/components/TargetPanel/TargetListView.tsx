@@ -177,6 +177,7 @@ export function TargetListView({
         />
         <div className="flex items-center gap-0.5 ml-1">
           <button
+            type="button"
             className="p-1.5 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
             onClick={() => {
               setShowBatch(true);
@@ -187,6 +188,7 @@ export function TargetListView({
             <Hash className="w-3.5 h-3.5" />
           </button>
           <button
+            type="button"
             className="p-1.5 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
             onClick={() => {
               setShowAdd(true);
@@ -198,6 +200,7 @@ export function TargetListView({
           </button>
           {stats.total > 0 && (
             <button
+              type="button"
               className="p-1.5 rounded hover:bg-red-500/20 text-muted-foreground hover:text-red-400 transition-colors"
               onClick={() => onClearAll(t("targets.clearConfirm"))}
               title={t("targets.clearAll")}
@@ -248,6 +251,7 @@ export function TargetListView({
           {addError && <p className="text-[11px] text-red-400">{addError}</p>}
           <div className="flex justify-end gap-2">
             <button
+              type="button"
               className="px-3 py-1 text-xs rounded bg-muted/50 hover:bg-muted text-foreground"
               onClick={() => {
                 setShowAdd(false);
@@ -257,6 +261,7 @@ export function TargetListView({
               {t("common.cancel")}
             </button>
             <button
+              type="button"
               className="px-3 py-1 text-xs rounded bg-accent text-accent-foreground hover:bg-accent/90"
               onClick={handleAdd}
             >
@@ -277,12 +282,14 @@ export function TargetListView({
           />
           <div className="flex justify-end gap-2">
             <button
+              type="button"
               className="px-3 py-1 text-xs rounded bg-muted/50 hover:bg-muted text-foreground"
               onClick={() => setShowBatch(false)}
             >
               {t("common.cancel")}
             </button>
             <button
+              type="button"
               className="px-3 py-1 text-xs rounded bg-accent text-accent-foreground hover:bg-accent/90"
               onClick={handleBatchAdd}
             >
@@ -391,6 +398,7 @@ export function TargetListView({
                               {TYPE_ICONS[target.type] || <Globe className="w-3.5 h-3.5" />}
 
                               <button
+                                type="button"
                                 className={cn(
                                   "p-0.5 rounded transition-colors",
                                   target.scope === "in"
@@ -450,6 +458,7 @@ export function TargetListView({
                               </span>
 
                               <button
+                                type="button"
                                 className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-muted-foreground hover:text-red-400 transition-all"
                                 onClick={(e) => {
                                   e.stopPropagation();

@@ -53,6 +53,7 @@ export const SplitColumn = memo(function SplitColumn({
               )}
               <span className="truncate max-w-[140px]">{rName}</span>
               <button
+                type="button"
                 className="p-0.5 rounded hover:bg-background/50 text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -62,6 +63,7 @@ export const SplitColumn = memo(function SplitColumn({
                 onPointerDown={(e) => e.stopPropagation()}
               >
                 <svg
+                  aria-hidden="true"
                   width="8"
                   height="8"
                   viewBox="0 0 10 10"
@@ -103,6 +105,7 @@ export function SplitDropZone() {
       <div className="w-1/2 m-2 rounded-xl border-2 border-dashed border-accent/60 bg-accent/8 flex items-center justify-center backdrop-blur-[2px] animate-in slide-in-from-right-2 duration-300">
         <div className="flex flex-col items-center gap-1.5 animate-pulse">
           <svg
+            aria-hidden="true"
             width="28"
             height="28"
             viewBox="0 0 24 24"

@@ -154,9 +154,7 @@ export function CredentialDropdown({
             >
               <KeyRound className="w-2.5 h-2.5 flex-shrink-0" />
               <span className="truncate">{entry.name}</span>
-              <span className="text-muted-foreground/40 text-[8px] ml-auto">
-                {entry.type}
-              </span>
+              <span className="text-muted-foreground/40 text-[8px] ml-auto">{entry.type}</span>
             </button>
           ))}
         </div>

@@ -79,8 +79,6 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop dismiss */}
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: backdrop dismiss */}
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
 
       <div className="relative bg-card border border-border rounded-lg shadow-2xl w-full max-w-md overflow-hidden">

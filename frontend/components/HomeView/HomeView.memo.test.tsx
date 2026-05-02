@@ -58,7 +58,6 @@ describe("HomeView Memoization Tests", () => {
     it("should use stable callbacks that do not change between renders", async () => {
       const { listProjectConfigs } = await import("@/lib/projects");
       vi.mocked(listProjectConfigs).mockResolvedValue([
-        // biome-ignore lint/suspicious/noExplicitAny: minimal shape for HomeView render path
         { name: "Test Project", rootPath: "/test/project" } as any,
       ]);
 
@@ -88,9 +87,7 @@ describe("HomeView Memoization Tests", () => {
     it("project rows render with stable callbacks", async () => {
       const { listProjectConfigs } = await import("@/lib/projects");
       vi.mocked(listProjectConfigs).mockResolvedValue([
-        // biome-ignore lint/suspicious/noExplicitAny: minimal shape for HomeView render path
         { name: "Project A", rootPath: "/project/a" } as any,
-        // biome-ignore lint/suspicious/noExplicitAny: minimal shape for HomeView render path
         { name: "Project B", rootPath: "/project/b" } as any,
       ]);
 

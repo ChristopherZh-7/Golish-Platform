@@ -95,7 +95,6 @@ export const ToolItem = memo(function ToolItem({
         compact && "bg-accent"
       )}
     >
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: Role and tabIndex are set when interactive */}
       <div
         onClick={onViewDetails ? () => onViewDetails(tool) : undefined}
         onKeyDown={

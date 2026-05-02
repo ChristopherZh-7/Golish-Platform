@@ -86,8 +86,6 @@ export function PaneMoveOverlay({ paneId }: PaneMoveOverlayProps) {
     <div className="absolute inset-0 z-50">
       {/* Drop zone hit areas */}
       {zones.map(({ zone, clipPath }) => (
-        /* biome-ignore lint/a11y/useKeyWithClickEvents: drop zones use ESC to cancel and mouse interaction for spatial selection */
-        /* biome-ignore lint/a11y/noStaticElementInteractions: spatial drop zones require mouse-based interaction */
         <div
           key={zone}
           className="absolute inset-0 cursor-pointer"

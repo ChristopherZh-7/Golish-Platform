@@ -25,7 +25,6 @@ function HighlightedName({ name, indices }: { name: string; indices: number[] })
   return (
     <span>
       {chars.map((char, i) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: Characters are static, never reordered
         <span key={i} className={indexSet.has(i) ? "text-primary font-semibold" : ""}>
           {char}
         </span>

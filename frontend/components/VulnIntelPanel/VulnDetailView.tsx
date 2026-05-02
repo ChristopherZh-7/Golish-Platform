@@ -257,6 +257,7 @@ Update the product page frontmatter \`status\`:
         <span className="text-[9px] text-muted-foreground/25">{entry.source}</span>
         <div className="ml-auto">
           <button
+            type="button"
             onClick={handleAiResearch}
             disabled={ingesting}
             className="flex items-center gap-1 px-2.5 py-1 rounded text-[10px] font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors disabled:opacity-50"
@@ -277,6 +278,7 @@ Update the product page frontmatter \`status\`:
           <AlertTriangle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
           <span className="text-[10px] text-red-400 flex-1">{researchError}</span>
           <button
+            type="button"
             onClick={() => setResearchError(null)}
             className="text-red-400/50 hover:text-red-400"
           >
@@ -309,6 +311,7 @@ Update the product page frontmatter \`status\`:
             : []),
         ].map((tab) => (
           <button
+            type="button"
             key={tab.id}
             onClick={() => onTabChange(tab.id)}
             className={cn(

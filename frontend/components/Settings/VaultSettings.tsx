@@ -188,6 +188,7 @@ export function VaultSettings() {
         </span>
         <div className="flex-1" />
         <button
+          type="button"
           className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] rounded-md font-medium bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
           onClick={() => setShowAdd(!showAdd)}
         >
@@ -269,12 +270,14 @@ export function VaultSettings() {
             </div>
             <div className="flex justify-end gap-2 pt-1">
               <button
+                type="button"
                 className="px-3 py-1.5 text-xs rounded bg-muted/50 hover:bg-muted text-foreground"
                 onClick={() => setShowAdd(false)}
               >
                 {t("common.cancel")}
               </button>
               <button
+                type="button"
                 className="px-3 py-1.5 text-xs rounded bg-accent text-accent-foreground hover:bg-accent/90"
                 onClick={handleAdd}
               >
@@ -383,6 +386,7 @@ export function VaultSettings() {
                               >
                                 {entry.source_url && (
                                   <button
+                                    type="button"
                                     className={cn(
                                       "p-1 rounded hover:bg-muted/30 text-muted-foreground/40 hover:text-accent",
                                       validatingIds.has(entry.id) && "pointer-events-none"
@@ -398,18 +402,21 @@ export function VaultSettings() {
                                   </button>
                                 )}
                                 <button
+                                  type="button"
                                   className="p-1 rounded hover:bg-muted/30 text-muted-foreground/40 hover:text-foreground"
                                   onClick={() => handleCopyAll(entry)}
                                 >
                                   <Copy className="w-3 h-3" />
                                 </button>
                                 <button
+                                  type="button"
                                   className="p-1 rounded hover:bg-muted/30 text-muted-foreground/40 hover:text-accent"
                                   onClick={() => handleCopyRef(entry.name)}
                                 >
                                   <Link2 className="w-3 h-3" />
                                 </button>
                                 <button
+                                  type="button"
                                   className="p-1 rounded hover:bg-red-500/15 text-muted-foreground/40 hover:text-red-400"
                                   onClick={() => handleDelete(entry.id, entry.name)}
                                 >
@@ -464,6 +471,7 @@ export function VaultSettings() {
                                       </span>
                                     )}
                                     <button
+                                      type="button"
                                       className="p-1 rounded hover:bg-muted/30 text-muted-foreground/40 hover:text-foreground flex-shrink-0"
                                       onClick={() => handleRevealToggle(entry.id)}
                                     >

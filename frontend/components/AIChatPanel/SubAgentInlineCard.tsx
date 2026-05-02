@@ -110,6 +110,7 @@ function StatusGlyph({ status }: { status: ActiveSubAgent["status"] }) {
   if (status === "running") {
     return (
       <svg
+        aria-hidden="true"
         className="w-3 h-3 text-accent animate-spin flex-shrink-0"
         viewBox="0 0 24 24"
         fill="none"
@@ -123,6 +124,7 @@ function StatusGlyph({ status }: { status: ActiveSubAgent["status"] }) {
   if (status === "completed") {
     return (
       <svg
+        aria-hidden="true"
         className="w-3 h-3 text-green-500 flex-shrink-0"
         viewBox="0 0 24 24"
         fill="none"
@@ -136,6 +138,7 @@ function StatusGlyph({ status }: { status: ActiveSubAgent["status"] }) {
   if (status === "error") {
     return (
       <svg
+        aria-hidden="true"
         className="w-3 h-3 text-red-400 flex-shrink-0"
         viewBox="0 0 24 24"
         fill="none"
@@ -150,6 +153,7 @@ function StatusGlyph({ status }: { status: ActiveSubAgent["status"] }) {
   // interrupted
   return (
     <svg
+      aria-hidden="true"
       className="w-3 h-3 text-amber-400 flex-shrink-0"
       viewBox="0 0 24 24"
       fill="none"

@@ -97,6 +97,7 @@ function StatusGlyph({ status }: { status: AgentTreeStatus }) {
     case "completed":
       return (
         <svg
+          aria-hidden="true"
           className="w-3 h-3 text-green-500 flex-shrink-0"
           viewBox="0 0 24 24"
           fill="none"
@@ -109,6 +110,7 @@ function StatusGlyph({ status }: { status: AgentTreeStatus }) {
     case "error":
       return (
         <svg
+          aria-hidden="true"
           className="w-3 h-3 text-red-400 flex-shrink-0"
           viewBox="0 0 24 24"
           fill="none"
@@ -122,6 +124,7 @@ function StatusGlyph({ status }: { status: AgentTreeStatus }) {
     case "interrupted":
       return (
         <svg
+          aria-hidden="true"
           className="w-3 h-3 text-amber-400 flex-shrink-0"
           viewBox="0 0 24 24"
           fill="none"

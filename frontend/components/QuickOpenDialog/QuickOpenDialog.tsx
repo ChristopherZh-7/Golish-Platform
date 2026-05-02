@@ -121,7 +121,6 @@ export function QuickOpenDialog({
   return createPortal(
     <>
       {/* Backdrop */}
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: backdrop dismiss */}
       <div
         role="presentation"
         className="fixed inset-0 z-50 bg-black/50"

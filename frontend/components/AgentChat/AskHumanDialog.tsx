@@ -1,5 +1,5 @@
 import { type HelpCircle, KeyRound, List, MessageSquare, ShieldQuestion } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -38,6 +38,8 @@ export function AskHumanDialog({ sessionId }: AskHumanDialogProps) {
   const [freetext, setFreetext] = useState("");
   const [selectedOptions, setSelectedOptions] = useState<Set<string>>(new Set());
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const usernameId = useId();
+  const passwordId = useId();
 
   const resetForm = useCallback(() => {
     setUsername("");
@@ -161,8 +163,11 @@ export function AskHumanDialog({ sessionId }: AskHumanDialogProps) {
           {request.inputType === "credentials" && (
             <div className="space-y-3">
               <div>
-                <label className="text-xs text-[#565f89] mb-1 block">Username</label>
+                <label htmlFor={usernameId} className="text-xs text-[#565f89] mb-1 block">
+                  Username
+                </label>
                 <input
+                  id={usernameId}
                   type="text"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
@@ -172,8 +177,11 @@ export function AskHumanDialog({ sessionId }: AskHumanDialogProps) {
                 />
               </div>
               <div>
-                <label className="text-xs text-[#565f89] mb-1 block">Password</label>
+                <label htmlFor={passwordId} className="text-xs text-[#565f89] mb-1 block">
+                  Password
+                </label>
                 <input
+                  id={passwordId}
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}

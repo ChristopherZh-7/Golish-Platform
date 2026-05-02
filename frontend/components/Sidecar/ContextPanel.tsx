@@ -192,7 +192,6 @@ export function ContextPanel({ sessionId, open, onOpenChange }: ContextPanelProp
       style={{ width: `${width}px`, minWidth: `${MIN_WIDTH}px`, maxWidth: `${MAX_WIDTH}px` }}
     >
       {/* Resize handle */}
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: resize handle is mouse-only */}
       <div
         className="absolute top-0 left-0 w-1 h-full cursor-col-resize hover:bg-[var(--ansi-blue)] transition-colors z-10 group"
         onMouseDown={startResizing}

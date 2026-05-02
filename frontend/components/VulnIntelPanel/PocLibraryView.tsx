@@ -226,6 +226,7 @@ export const PocLibraryView = memo(function PocLibraryView({
           className="min-w-[80px]"
         />
         <button
+          type="button"
           onClick={batchSearchNuclei}
           disabled={batchSearching}
           className="flex items-center gap-1.5 h-7 px-2.5 text-[10px] font-medium rounded-lg bg-orange-500/10 text-orange-400/70 hover:bg-orange-500/20 hover:text-orange-400 transition-colors disabled:opacity-30"
@@ -251,6 +252,7 @@ export const PocLibraryView = memo(function PocLibraryView({
           {!batchSearching && batchFound > 0 && <Zap className="w-3 h-3 text-orange-400/50" />}
           {!batchSearching && (
             <button
+              type="button"
               onClick={() => setBatchProgress("")}
               className="ml-auto p-0.5 text-muted-foreground/30 hover:text-foreground transition-colors"
             >
@@ -288,6 +290,7 @@ export const PocLibraryView = memo(function PocLibraryView({
                     <div className="flex items-center gap-2">
                       <span className="text-[11px] text-foreground/70 truncate">{poc.name}</span>
                       <button
+                        type="button"
                         onClick={(e) => {
                           e.stopPropagation();
                           onJumpToCve?.(cveId);
@@ -310,6 +313,7 @@ export const PocLibraryView = memo(function PocLibraryView({
                   </div>
                   <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button
+                      type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         setRunTarget({ cveId, poc });
@@ -321,6 +325,7 @@ export const PocLibraryView = memo(function PocLibraryView({
                       <Play className="w-3 h-3" />
                     </button>
                     <button
+                      type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         handleCopy(poc.content);
@@ -331,6 +336,7 @@ export const PocLibraryView = memo(function PocLibraryView({
                       <Copy className="w-3 h-3" />
                     </button>
                     <button
+                      type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         handleDeletePoc(cveId, poc.id);
@@ -356,6 +362,7 @@ export const PocLibraryView = memo(function PocLibraryView({
             ))}
             {displayCount < filtered.length && (
               <button
+                type="button"
                 onClick={() => setDisplayCount((c) => c + PAGE_SIZE)}
                 className="w-full py-2.5 text-[10px] text-accent/60 hover:text-accent hover:bg-accent/5 transition-colors"
               >
@@ -400,12 +407,14 @@ export const PocLibraryView = memo(function PocLibraryView({
             </div>
             <div className="flex justify-end gap-2 mt-4">
               <button
+                type="button"
                 onClick={() => setRunTarget(null)}
                 className="text-[11px] px-3 py-1.5 rounded-lg text-muted-foreground/50 hover:text-foreground transition-colors"
               >
                 Cancel
               </button>
               <button
+                type="button"
                 onClick={handleRunPoc}
                 disabled={!targetUrl.trim()}
                 className="flex items-center gap-1.5 text-[11px] px-4 py-1.5 rounded-lg font-medium bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 transition-colors disabled:opacity-30"

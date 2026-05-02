@@ -620,7 +620,12 @@ export function DagCanvas({
             className="relative"
             style={{ width: dagW, height: dagH, minHeight: "100%" }}
           >
-            <svg className="absolute inset-0 pointer-events-none" width={dagW} height={dagH}>
+            <svg
+              aria-hidden="true"
+              className="absolute inset-0 pointer-events-none"
+              width={dagW}
+              height={dagH}
+            >
               <DagEdges connections={pipeline.connections} nodeMap={nodeMap} />
             </svg>
             {pipeline.steps.map((step) => {

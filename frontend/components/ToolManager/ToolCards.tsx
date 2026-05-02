@@ -8,7 +8,13 @@ export function CircleProgress({ size = 28, pct }: { size?: number; pct: number 
   const circ = 2 * Math.PI * r;
   const offset = circ * (1 - Math.min(Math.max(pct, 0), 1));
   return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="flex-shrink-0">
+    <svg
+      aria-hidden="true"
+      width={size}
+      height={size}
+      viewBox={`0 0 ${size} ${size}`}
+      className="flex-shrink-0"
+    >
       <circle
         cx={size / 2}
         cy={size / 2}

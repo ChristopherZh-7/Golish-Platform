@@ -196,6 +196,7 @@ export function WordlistPanel() {
               className="text-[10px] w-24 px-1.5 py-0.5 bg-background border border-border/30 rounded outline-none"
             />
             <button
+              type="button"
               onClick={handleMerge}
               disabled={merging || !mergeName.trim()}
               className="text-[9px] text-accent hover:text-accent/80 font-medium disabled:opacity-30"
@@ -203,6 +204,7 @@ export function WordlistPanel() {
               <Merge className="w-3 h-3" />
             </button>
             <button
+              type="button"
               onClick={() => setMergeIds(new Set())}
               className="text-[9px] text-muted-foreground/30"
             >
@@ -211,12 +213,14 @@ export function WordlistPanel() {
           </div>
         )}
         <button
+          type="button"
           onClick={() => setShowImport(true)}
           className="p-1 text-muted-foreground/30 hover:text-accent transition-colors"
         >
           <Plus className="w-3 h-3" />
         </button>
         <button
+          type="button"
           onClick={load}
           className="p-1 text-muted-foreground/30 hover:text-foreground transition-colors"
         >
@@ -227,6 +231,7 @@ export function WordlistPanel() {
       {/* Category filter */}
       <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border/10 overflow-x-auto">
         <button
+          type="button"
           onClick={() => setFilterCat("all")}
           className={cn(
             "text-[9px] px-2 py-0.5 rounded-full transition-colors whitespace-nowrap",
@@ -239,6 +244,7 @@ export function WordlistPanel() {
         </button>
         {CATEGORIES.map((c) => (
           <button
+            type="button"
             key={c}
             onClick={() => setFilterCat(c)}
             className={cn(
@@ -259,6 +265,7 @@ export function WordlistPanel() {
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-medium">Import Wordlist</span>
             <button
+              type="button"
               onClick={() => setShowImport(false)}
               className="text-muted-foreground/30 hover:text-foreground"
             >
@@ -293,6 +300,7 @@ export function WordlistPanel() {
             className="w-full text-[10px] px-2 py-1 bg-background border border-border/30 rounded outline-none"
           />
           <button
+            type="button"
             onClick={handleImportFile}
             disabled={!importForm.name.trim()}
             className="flex items-center gap-1.5 text-[10px] text-accent hover:text-accent/80 font-medium disabled:opacity-30"
@@ -353,6 +361,7 @@ export function WordlistPanel() {
                 </div>
                 <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                   <button
+                    type="button"
                     onClick={() => handlePreview(wl.id)}
                     className="p-1 text-muted-foreground/30 hover:text-foreground transition-colors"
                     title="Preview"
@@ -360,6 +369,7 @@ export function WordlistPanel() {
                     <Eye className="w-3 h-3" />
                   </button>
                   <button
+                    type="button"
                     onClick={() => handleCopyPath(wl.id)}
                     className="p-1 text-muted-foreground/30 hover:text-foreground transition-colors"
                     title="Copy path"
@@ -367,6 +377,7 @@ export function WordlistPanel() {
                     <Copy className="w-3 h-3" />
                   </button>
                   <button
+                    type="button"
                     onClick={() => handleDedup(wl.id)}
                     className="p-1 text-muted-foreground/30 hover:text-accent transition-colors"
                     title="Deduplicate"
@@ -374,6 +385,7 @@ export function WordlistPanel() {
                     <RefreshCw className="w-3 h-3" />
                   </button>
                   <button
+                    type="button"
                     onClick={() => handleDelete(wl.id)}
                     className="p-1 text-muted-foreground/30 hover:text-red-400 transition-colors"
                     title="Delete"

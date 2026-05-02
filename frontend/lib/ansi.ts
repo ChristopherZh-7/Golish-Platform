@@ -7,15 +7,12 @@ export function stripAllAnsi(str: string): string {
   // OSC sequences: ESC ] ... (BEL | ST)
   result = result.replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "");
   // CSI sequences: ESC [ ... final_byte (color codes, cursor movement, etc.)
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping ANSI escape sequences
   result = result.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
   // Bare ESC sequences (cursor save/restore, ST, etc.)
   result = result.replace(/\x1b[78\\()]/g, "");
   // Catch any remaining ESC characters
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping leftover ESC bytes
   result = result.replace(/\x1b/g, "");
   // Remove other C0 control characters (except \n, \r, \t)
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control characters
   result = result.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
   // Simulate carriage return (keep last overwrite segment per line)
   result = result
@@ -74,15 +71,12 @@ export function stripOscSequences(str: string): string {
 
   // Strip ALL non-SGR CSI sequences while keeping \x1b[...m (colors/styles).
   // Covers cursor movement, erase, DEC private modes, bracketed paste, etc.
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping non-SGR CSI sequences
   result = result.replace(/\x1b\[[0-9;?]*[a-ln-zA-Z]/g, "");
 
   // Character set selection: \x1b(B, \x1b)0, etc.
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping character set escapes
   result = result.replace(/\x1b[()][A-Z0-9]/g, "");
 
   // Bare ESC sequences: cursor save/restore, ST, keypad modes, etc.
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping bare ESC sequences
   result = result.replace(/\x1b[78\\=>#]/g, "");
 
   // Simulate carriage return behavior: \r moves cursor to beginning of line,

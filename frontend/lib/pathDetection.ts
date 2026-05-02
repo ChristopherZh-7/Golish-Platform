@@ -367,7 +367,6 @@ function findBareFilenameMatches(
   // Match word-like tokens that could be filenames
   // Includes dotfiles (.gitignore) and alphanumeric names with dots/dashes
   const wordPattern = /(?:^|[\s"'`({[])(\.?[\w][\w.-]*)(?=$|[\s"'`)\]:,;])/g;
-  // biome-ignore lint/suspicious/noAssignInExpressions: standard regex exec pattern
   for (let match: RegExpExecArray | null; (match = wordPattern.exec(text)) !== null; ) {
     const word = match[1];
     const boundaryOffset = match[0].indexOf(word);

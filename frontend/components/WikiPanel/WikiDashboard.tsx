@@ -109,6 +109,7 @@ export function WikiDashboard({
               };
               return (
                 <button
+                  type="button"
                   key={ch.id}
                   onClick={() => onOpenPage(ch.page_path)}
                   className="flex items-center gap-2 w-full px-3 py-2 rounded-lg hover:bg-muted/10 transition-colors text-left"
