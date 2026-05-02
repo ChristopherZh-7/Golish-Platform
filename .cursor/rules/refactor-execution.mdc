@@ -30,7 +30,7 @@ alwaysApply: false
 | B2 CI 守门 | ✅ Done |
 | B3 重写架构文档 | ✅ Done |
 | B4 Tauri ADR | ✅ Done |
-| **C1 TurnExecutor** | **🟡 4/9 · C1-0~C1-3 落地 (ADR + PreFlight + Compaction + FirstIterHooks/TokenEstimate)，C1-4 起继续** |
+| **C1 TurnExecutor** | **🟡 5/9 · C1-0~C1-4 落地 (ADR + PreFlight + Compaction + FirstIterHooks/TokenEstimate + Completion)，C1-5 起继续** |
 
 ### 第二步：验证前面工作没崩（60 秒）
 
@@ -50,8 +50,8 @@ bash ../scripts/check_file_sizes.sh  # 必须 "all files within size budget"
 
 | PR | 工作 | 下一个做 |
 |---|---|---|
-| **C1-4** | 抽 `StreamStart` + `StreamProcess` phase | ← 先做这个 |
-| C1-5 | 抽 `AssistantPush` + `ReflectorOrBreak` + `ToolDispatch` |  |
+| ~~C1-4~~ | ~~抽 `StreamStart` + `StreamProcess` phase~~ | ✅ Done |
+| **C1-5** | 抽 `AssistantPush` + `ReflectorOrBreak` + `ToolDispatch` | ← 先做这个 |
 | C1-6 | 主 `loop` 替换为 phase 调度器，`mod.rs` ≤ 150 行 |  |
 | C1-7 | `TurnInterceptor` trait · Langfuse/HITL 搬出 |  |
 | C1-8 | 每 phase 补 1+ 单元测试 |  |
@@ -608,7 +608,7 @@ ls docs/adr/ | grep -i tauri-command-namespace
 
 ## Phase 2: 核心重构（两 session 合并 · 3-5 天）
 
-### [~] C1 · `run_agentic_loop_unified` → `TurnExecutor` 状态机（进行中：4/9 完成）— 2026-05-02
+### [~] C1 · `run_agentic_loop_unified` → `TurnExecutor` 状态机（进行中：5/9 完成）— 2026-05-02
 
 > 🟡 **进行中**：ADR + 骨架 + 第一个 phase（PreFlight）已落地
 >
@@ -646,17 +646,26 @@ ls docs/adr/ | grep -i tauri-command-namespace
 > - `use run_first_iteration_hooks` / `use estimate_message_tokens` 从 mod.rs 移除；后者保留 `#[cfg(test)]` 给 tests 模块继承
 > - `cargo check --workspace --tests` 全绿 · 30s · 0 errors / 0 warnings
 >
-> ⏳ **剩余 5 个里程碑**（每个独立 PR · ≤500 行 diff）：
+> ✅ **C1-4 Completion phase 迁移**（2026-05-02）：
+> - 新建 `turn/phases/completion.rs`（~130 行）：把原 mod.rs 主 loop 三段（Langfuse `llm_completion` span 创建 + `start_completion_stream` + `process_stream`）合并为一个 phase；返回 `CompletionOutcome::Continue { outcome, llm_span }` 携 span 给下游 phase 用，或 `CompletionOutcome::BreakAgentLoop` 让 scheduler 终止
+> - `start_completion_stream` / `StreamProcessOutcome` / `StreamOutcome` / `process_stream` 的可见性从 `pub(super)` 提升到 `pub(crate)`（让 `turn::phases::completion` 能调用 sibling 模块）
+> - 主 loop 用 `match completion_phase::run(...).await? { Continue { outcome, llm_span } => (outcome, llm_span), BreakAgentLoop => break }` 一次性吃掉旧的 ~50 行 span+stream 代码
+> - mod.rs 同步清理：删 `llm_stream_start::start_completion_stream` / `stream_processor::{process_stream, StreamOutcome}` 旧 import；turn 块用 `completion::{self as completion_phase, CompletionOutcome}` 嵌套式 use；删 `BreakReason` re-export（C1-5+ 需要再加）；解构改 `let StreamProcessOutcome { ... }`
+> - mod.rs 行数：460 → **457 行**（中间 -50 行旧逻辑 +47 行 phase 调用 + 注释；净 -3 行；剩余压缩在 C1-6）
+> - `cargo check --workspace --tests` 全绿 · 17s · 0 errors / 0 warnings
+> - `python3 scripts/check_dag.py` ✓ DAG clean across 43 crates
+> - `bash scripts/check_file_sizes.sh` ✓ all files within size budget
+>
+> ⏳ **剩余 4 个里程碑**（每个独立 PR · ≤500 行 diff）：
 >
 > | PR | 工作 |
 > |---|---|
-> | C1-4 | 抽 `StreamStart` + `StreamProcess` phase |
 > | C1-5 | 抽 `AssistantPush` + `ReflectorOrBreak` + `ToolDispatch` phase |
 > | C1-6 | 主 `loop` 替换为 phase 调度器 · mod.rs 目标 ≤150 行 |
 > | C1-7 | 引入 `TurnInterceptor` trait，Langfuse/HITL 搬出 phase body |
 > | C1-8 | 每 phase 补 1+ 单元测试（mock `TurnState` + 协作者） |
 >
-> **预计剩余耗时**：1.5-2.5 天 · 5 个 PR
+> **预计剩余耗时**：1-2 天 · 4 个 PR
 
 **前置**：Phase 1 全部完成
 
@@ -731,6 +740,6 @@ ls docs/adr/ | grep -i tauri-command-namespace
 | B2 CI 守门 | B | ✅ [x] | 待提交 | 2026-05-02 |
 | B3 重写架构文档 | B | ✅ [x] | 待提交 | 2026-05-02 |
 | B4 Tauri ADR | B | ✅ [x] | 待提交 | 2026-05-02 |
-| C1 TurnExecutor | A+B | 🟡 [~] 2/9 | 待提交 | 2026-05-02 |
+| C1 TurnExecutor | A+B | 🟡 [~] 5/9 | 待提交 | 2026-05-02 |
 
 **全部完成 = Golish B+ → S+ 迁移完成**

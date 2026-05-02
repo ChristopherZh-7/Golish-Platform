@@ -55,21 +55,18 @@ mod turn;
 mod unified_helpers;
 
 use assistant_message::push_assistant_message;
-use llm_stream_start::start_completion_stream;
 use reflector::{maybe_run_reflector, ReflectorOutcome};
-use stream_processor::{process_stream, StreamOutcome};
+use stream_processor::StreamProcessOutcome;
 use tool_dispatch::dispatch_tool_calls;
 use tool_list::build_tool_list;
 // `compaction` alias avoids clashing with the sibling `agentic_loop::compaction` module.
 use turn::{
-    compaction as compaction_phase, first_iter_hooks_phase, pre_flight, token_estimate_phase,
-    PhaseOutcome, TurnState,
+    compaction as compaction_phase,
+    completion::{self as completion_phase, CompletionOutcome},
+    first_iter_hooks_phase, pre_flight, token_estimate_phase, PhaseOutcome, TurnState,
 };
-#[allow(unused_imports)] // BreakReason is used for log-fields in the Break arm below
-use turn::BreakReason;
 use unified_helpers::{
-    log_image_and_reasoning_diagnostics, push_unavailable_tool_results,
-    record_agent_turn_start, record_last_user_text_for_span, record_turn_completion,
+    push_unavailable_tool_results, record_agent_turn_start, record_turn_completion,
     trace_input_for_span,
 };
 
@@ -267,7 +264,6 @@ where
             }
             PhaseOutcome::Fail(e) => return Err(e),
         }
-        let iteration = turn_state.iteration as usize;
 
         // Phase: Compaction — pre-turn (iteration 1) or inter-turn (>1).
         // `inter_turn_compaction` may surface a terminal error via Fail.
@@ -304,41 +300,6 @@ where
             PhaseOutcome::Fail(e) => return Err(e),
         }
 
-        // Create span for Langfuse observability (child of agent_span)
-        // Token usage fields are Empty and will be recorded when available
-        // Note: Langfuse expects prompt_tokens/completion_tokens per GenAI semantic conventions
-        // Using both gen_ai.* and langfuse.observation.* for maximum compatibility
-        let llm_span = tracing::info_span!(
-            parent: &agent_span,
-            "llm_completion",
-            "gen_ai.operation.name" = "chat_completion",
-            "gen_ai.request.model" = %ctx.llm.model_name,
-            "gen_ai.system" = %ctx.llm.provider_name,
-            "gen_ai.request.temperature" = 0.3_f64,
-            "gen_ai.request.max_tokens" = MAX_COMPLETION_TOKENS as i64,
-            "langfuse.observation.type" = "generation",
-            "langfuse.session.id" = ctx.events.session_id.unwrap_or(""),
-            iteration = iteration,
-            "gen_ai.usage.prompt_tokens" = tracing::field::Empty,
-            "gen_ai.usage.completion_tokens" = tracing::field::Empty,
-            // Use both gen_ai.* and langfuse.observation.* for input/output mapping
-            "gen_ai.reasoning" = tracing::field::Empty,
-            "gen_ai.prompt" = tracing::field::Empty,
-            "gen_ai.completion" = tracing::field::Empty,
-            "langfuse.observation.input" = tracing::field::Empty,
-            "langfuse.observation.output" = tracing::field::Empty,
-        );
-        // Note: We use explicit parent instead of span.enter() for async compatibility
-
-        record_last_user_text_for_span(&llm_span, &chat_history);
-
-        log_image_and_reasoning_diagnostics(
-            &chat_history,
-            iteration,
-            ctx.llm.provider_name,
-            supports_thinking,
-        );
-
         // Phase: TokenEstimate — proactively update compaction_state with
         // an estimated input-token count before the LLM call.
         match token_estimate_phase::run(ctx, system_prompt, &chat_history).await {
@@ -347,24 +308,19 @@ where
             PhaseOutcome::Fail(e) => return Err(e),
         }
 
-        let stream = start_completion_stream(
+        // Phase: Completion — build llm_span, start stream, consume it
+        // to a StreamProcessOutcome. Carries `llm_span` forward so
+        // downstream phases can continue to emit nested observations
+        // (C1-7 will lift this out to a TurnInterceptor).
+        let (outcome, llm_span) = match completion_phase::run(
+            &turn_state,
             ctx,
             &config,
             model,
             system_prompt,
             &chat_history,
             &tools,
-            &llm_span,
-            &accumulated_response,
-        )
-        .await?;
-
-        let outcome = match process_stream::<M>(
-            stream,
-            ctx,
-            &chat_history,
-            &llm_span,
-            iteration,
+            &agent_span,
             supports_thinking,
             &mut accumulated_response,
             &mut accumulated_thinking,
@@ -372,11 +328,11 @@ where
         )
         .await?
         {
-            StreamOutcome::Continue(outcome) => outcome,
-            StreamOutcome::BreakAgentLoop => break,
+            CompletionOutcome::Continue { outcome, llm_span } => (outcome, llm_span),
+            CompletionOutcome::BreakAgentLoop => break,
         };
 
-        let stream_processor::StreamProcessOutcome {
+        let StreamProcessOutcome {
             has_tool_calls,
             tool_calls_to_execute,
             text_content,
