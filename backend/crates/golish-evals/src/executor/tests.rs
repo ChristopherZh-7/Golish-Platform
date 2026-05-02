@@ -1,7 +1,6 @@
 //! Executor tests.
 
 use super::*;
-use super::*;
 
 /// Helper to build the main agent's system prompt for comparison.
 ///

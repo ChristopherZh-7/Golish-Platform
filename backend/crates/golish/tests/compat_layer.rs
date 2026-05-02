@@ -59,7 +59,7 @@ mod tools {
         std::fs::write(workspace.join("test.txt"), test_content)
             .expect("Failed to create test file");
 
-        let mut registry = compat::tools::ToolRegistry::new(workspace).await;
+        let registry = compat::tools::ToolRegistry::new(workspace).await;
         let result = registry
             .execute_tool("read_file", json!({"path": "test.txt"}))
             .await;
@@ -84,7 +84,7 @@ mod tools {
         let temp = TempDir::new().expect("Failed to create temp dir");
         let workspace = temp.path().to_path_buf();
 
-        let mut registry = compat::tools::ToolRegistry::new(workspace).await;
+        let registry = compat::tools::ToolRegistry::new(workspace).await;
         let result = registry
             .execute_tool("read_file", json!({"path": "nonexistent.txt"}))
             .await;
@@ -124,7 +124,7 @@ mod tools {
     async fn test_tool_registry_shell_exit_code_contract() {
         let temp = TempDir::new().expect("Failed to create temp dir");
         let workspace = temp.path().to_path_buf();
-        let mut registry = compat::tools::ToolRegistry::new(workspace).await;
+        let registry = compat::tools::ToolRegistry::new(workspace).await;
 
         // Success case
         let result = registry

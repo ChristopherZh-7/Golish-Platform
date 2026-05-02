@@ -62,9 +62,6 @@ pub mod tool_provider_impl;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
 
-#[cfg(test)]
-mod test_utils_tests;
-
 pub(crate) use golish_events::event_coordinator;
 pub(crate) use golish_events::transcript;
 

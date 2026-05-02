@@ -1,7 +1,6 @@
 //! Token-budget tests.
 
 use super::*;
-use super::*;
 
 #[tokio::test]
 async fn test_token_estimation() {

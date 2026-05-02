@@ -1,5 +1,6 @@
 use super::*;
 
+#[test]
 fn test_all_events_roundtrip() {
     let test_events = vec![
         AiEvent::Started {

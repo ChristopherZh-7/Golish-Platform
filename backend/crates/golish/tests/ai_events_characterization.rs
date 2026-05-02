@@ -444,10 +444,12 @@ fn test_workflow_error_without_step_serialization() {
     insta::assert_json_snapshot!(json);
 }
 
+#[path = "ai_events_characterization/plan_and_tool_source.rs"]
 mod plan_and_tool_source;
 
 // ============================================================================
 // Roundtrip Tests (Serialization → Deserialization)
 // ============================================================================
 
+#[path = "ai_events_characterization/roundtrip_and_deserialization.rs"]
 mod roundtrip_and_deserialization;

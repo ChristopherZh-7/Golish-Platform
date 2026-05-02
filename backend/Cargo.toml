@@ -234,7 +234,7 @@ graph-flow = "0.5"
 async-trait = "0.1"
 
 # TypeScript type generation
-ts-rs = { version = "12", features = ["serde-compat", "chrono-impl", "serde-json-impl"] }
+ts-rs = { version = "12", features = ["serde-compat", "chrono-impl", "serde-json-impl", "no-serde-warnings"] }
 
 # File walking with gitignore support
 ignore = "0.4"
