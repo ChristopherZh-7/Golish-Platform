@@ -50,7 +50,7 @@ pub async fn load_history(
     history: State<'_, Arc<RwLock<Option<HistoryManager>>>>,
     limit: usize,
     entry_type: Option<String>,
-) -> std::result::Result<Vec<HistoryEntry>, String> {
+) -> Result<Vec<HistoryEntry>> {
     let Some(ref history) = *history.read().await else {
         return Ok(vec![]);
     };
@@ -66,7 +66,7 @@ pub async fn search_history(
     include_archives: bool,
     limit: usize,
     entry_type: Option<String>,
-) -> std::result::Result<Vec<HistoryEntry>, String> {
+) -> Result<Vec<HistoryEntry>> {
     let Some(ref history) = *history.read().await else {
         return Ok(vec![]);
     };
@@ -80,7 +80,7 @@ pub async fn search_history(
 pub async fn clear_history(
     _state: State<'_, AppState>,
     history: State<'_, Arc<RwLock<Option<HistoryManager>>>>,
-) -> std::result::Result<(), String> {
+) -> Result<()> {
     let Some(ref history) = *history.read().await else {
         return Ok(());
     };

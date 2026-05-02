@@ -1,8 +1,6 @@
 //! Hunk applier tests.
 
 use super::*;
-use super::fuzzy::FuzzyMatchResult;
-use super::*;
 use crate::parser::ParsedHunk;
 
 #[test]

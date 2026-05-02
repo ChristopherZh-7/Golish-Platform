@@ -115,6 +115,24 @@ impl From<&str> for GolishError {
     }
 }
 
+impl From<zip::result::ZipError> for GolishError {
+    fn from(err: zip::result::ZipError) -> Self {
+        Self::Internal(format!("zip error: {err}"))
+    }
+}
+
+impl From<base64::DecodeError> for GolishError {
+    fn from(err: base64::DecodeError) -> Self {
+        Self::Validation(format!("base64 decode error: {err}"))
+    }
+}
+
+impl From<std::path::StripPrefixError> for GolishError {
+    fn from(err: std::path::StripPrefixError) -> Self {
+        Self::Internal(format!("path strip prefix error: {err}"))
+    }
+}
+
 impl Serialize for GolishError {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
@@ -124,6 +142,8 @@ impl Serialize for GolishError {
     }
 }
 
+/// Alias kept for the IPC boundary; downstream callers may use either name.
+#[allow(dead_code)]
 pub type IpcError = GolishError;
 
 pub type Result<T> = std::result::Result<T, GolishError>;

@@ -5,8 +5,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::models::{
-    CvePocSummary, NewWikiChangelog, VulnKbLink, VulnKbPoc, WikiChangelog,
-    WikiPageRef, WikiPageSummary,
+    CvePocSummary, NewWikiChangelog, VulnKbPoc, WikiChangelog, WikiPageRef, WikiPageSummary,
 };
 
 pub async fn upsert_poc(

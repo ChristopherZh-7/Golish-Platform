@@ -293,7 +293,10 @@ pub fn load_env_file(path: String) -> Result<usize, GolishError> {
             tracing::info!("Loaded {} environment variables from {}", count, path);
             Ok(count)
         }
-        Err(e) => Err(format!("Failed to load .env file: {}", e)),
+        Err(e) => Err(GolishError::Config(format!(
+            "Failed to load .env file: {}",
+            e
+        ))),
     }
 }
 
@@ -386,10 +389,10 @@ pub async fn set_sub_agent_model(
             tracing::info!("Sub-agent '{}' model override cleared", agent_id);
             Ok(())
         }
-        _ => Err(
+        _ => Err(GolishError::Validation(
             "Both provider and model must be set together, or both must be None to clear"
                 .to_string(),
-        ),
+        )),
     }
 }
 

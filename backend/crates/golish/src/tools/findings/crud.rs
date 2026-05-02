@@ -1,7 +1,6 @@
 //! Findings CRUD operations (Tauri commands).
 
 use crate::error::GolishError;
-use std::path::PathBuf;
 use tokio::fs;
 use uuid::Uuid;
 use crate::state::DbState;

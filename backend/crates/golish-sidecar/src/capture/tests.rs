@@ -5,8 +5,7 @@ use std::sync::Arc;
 
 use golish_core::events::AiEvent;
 
-use crate::events::{DecisionType, FeedbackType, FileOperation, SessionEvent};
-use crate::state::SidecarState;
+use crate::events::DecisionType;
 
 use super::context::CaptureContext;
 use super::diff::generate_unified_diff;

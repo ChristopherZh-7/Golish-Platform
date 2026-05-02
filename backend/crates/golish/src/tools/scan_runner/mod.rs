@@ -47,7 +47,7 @@ impl runner::ScanStorage for MainScanStorage {
         )
         .await
         .map(|_| ())
-        .map_err(runner::ScanRunnerError::Storage)
+        .map_err(|e| runner::ScanRunnerError::Storage(e.to_string()))
     }
 }
 

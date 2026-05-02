@@ -1,7 +1,6 @@
 //! State tests.
 
 use super::*;
-use super::*;
 use tempfile::TempDir;
 
 fn test_config(temp_dir: &std::path::Path) -> SidecarConfig {

@@ -29,22 +29,25 @@ pub struct GitDiffResult {
     pub diff: String,
 }
 
-fn run_git_command(args: &[&str], working_directory: &str) -> Result<std::process::Output, GolishError> {
+fn run_git_command(
+    args: &[&str],
+    working_directory: &str,
+) -> Result<std::process::Output, GolishError> {
     Command::new("git")
         .args(args)
         .current_dir(working_directory)
         .output()
-        .map_err(|e| format!("failed to run git: {e}"))
+        .map_err(|e| GolishError::Internal(format!("failed to run git: {e}")))
         .and_then(|output| {
             if output.status.success() {
                 Ok(output)
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                Err(if stderr.is_empty() {
+                Err(GolishError::Internal(if stderr.is_empty() {
                     "git command failed".to_string()
                 } else {
                     stderr
-                })
+                }))
             }
         })
 }

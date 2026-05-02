@@ -1,7 +1,7 @@
 //! Platform-specific helpers for embedded PostgreSQL.
 
 use std::path::{Path, PathBuf};
-use tracing::{info, warn};
+use tracing::info;
 
 use super::EmbeddedPg;
 

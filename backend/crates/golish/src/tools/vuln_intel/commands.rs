@@ -371,7 +371,7 @@ pub async fn intel_match_targets(
 
 #[tauri::command]
 pub async fn intel_search_github_poc(
-    state: tauri::State<'_, DbState>,
+    _state: tauri::State<'_, DbState>,
     settings_mgr: tauri::State<'_, std::sync::Arc<SettingsManager>>,
     cve_id: String,
 ) -> Result<Vec<GithubPocResult>, GolishError> {
@@ -384,7 +384,7 @@ pub async fn intel_search_github_poc(
 
 #[tauri::command]
 pub async fn intel_search_nuclei_templates(
-    state: tauri::State<'_, DbState>,
+    _state: tauri::State<'_, DbState>,
     settings_mgr: tauri::State<'_, std::sync::Arc<SettingsManager>>,
     cve_id: String,
 ) -> Result<Vec<NucleiTemplateResult>, GolishError> {
@@ -395,7 +395,7 @@ pub async fn intel_search_nuclei_templates(
 
 #[tauri::command]
 pub async fn intel_batch_search_nuclei_templates(
-    state: tauri::State<'_, DbState>,
+    _state: tauri::State<'_, DbState>,
     settings_mgr: tauri::State<'_, std::sync::Arc<SettingsManager>>,
     cve_ids: Vec<String>,
 ) -> Result<Vec<BatchNucleiResult>, GolishError> {

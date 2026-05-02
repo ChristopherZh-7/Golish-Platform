@@ -13,7 +13,7 @@ use parking_lot::Mutex;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use golish_scan_runner::{NUCLEI_CANCELLED, ScanStorage};
+use golish_scan_runner::{ScanRunnerResult, ScanStorage, NUCLEI_CANCELLED};
 
 #[derive(Default)]
 struct MockScanStorage {
@@ -33,7 +33,7 @@ impl ScanStorage for MockScanStorage {
         _words: Option<i32>,
         tool: &str,
         _project_path: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> ScanRunnerResult<()> {
         self.calls.lock().push(format!(
             "{}|{}|{}",
             tool,

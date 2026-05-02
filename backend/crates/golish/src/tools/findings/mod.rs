@@ -3,10 +3,7 @@ pub use crud::*;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tokio::fs;
 use uuid::Uuid;
-
-use crate::state::AppState;
 
 pub(super) fn evidence_dir(project_path: Option<&str>) -> PathBuf {
     if let Some(pp) = project_path {
@@ -193,4 +190,5 @@ impl From<FindingRow> for Finding {
     }
 }
 
+#[allow(dead_code)]
 const SELECT_COLS: &str = "id, title, sev::TEXT, cvss, url, target, target_id, description, steps, remediation, tags, tool, template, refs, evidence, status::TEXT, source, created_at, updated_at";
