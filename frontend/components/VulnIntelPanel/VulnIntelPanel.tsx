@@ -429,6 +429,7 @@ export function VulnIntelPanel() {
         {/* Tab bar + actions */}
         <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border/10 flex-shrink-0">
           <button
+            type="button"
             onClick={() => setViewMode("feed")}
             className={cn(
               "text-[9px] px-2 py-0.5 rounded transition-colors",
@@ -441,6 +442,7 @@ export function VulnIntelPanel() {
             Feed
           </button>
           <button
+            type="button"
             onClick={handleMatchTargets}
             className={cn(
               "text-[9px] px-2 py-0.5 rounded transition-colors",
@@ -453,6 +455,7 @@ export function VulnIntelPanel() {
             Match Targets
           </button>
           <button
+            type="button"
             onClick={() => setViewMode("feeds-config")}
             className={cn(
               "text-[9px] px-2 py-0.5 rounded transition-colors",
@@ -521,6 +524,7 @@ export function VulnIntelPanel() {
               />
               {searchQuery && (
                 <button
+                  type="button"
                   onClick={() => {
                     setSearchQuery("");
                     loadCached();
@@ -532,6 +536,7 @@ export function VulnIntelPanel() {
                 </button>
               )}
               <button
+                type="button"
                 onClick={() => setShowSearchHistory((v) => !v)}
                 className={cn(
                   "p-0.5 rounded transition-colors",
@@ -552,6 +557,7 @@ export function VulnIntelPanel() {
                     {t("vulnIntel.recentSearches", "Recent searches")}
                   </span>
                   <button
+                    type="button"
                     onClick={clearSearchHistory}
                     className="text-[9px] text-muted-foreground/30 hover:text-destructive transition-colors"
                   >
@@ -570,6 +576,7 @@ export function VulnIntelPanel() {
                     <History className="w-2.5 h-2.5 text-muted-foreground/25 flex-shrink-0" />
                     <span className="text-[10px] text-foreground/70 truncate flex-1">{q}</span>
                     <button
+                      type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         removeFromSearchHistory(q);
@@ -584,6 +591,7 @@ export function VulnIntelPanel() {
             )}
           </div>
           <button
+            type="button"
             onClick={handleFetch}
             disabled={loading}
             className="p-1 text-muted-foreground/30 hover:text-accent transition-colors"
@@ -619,6 +627,7 @@ export function VulnIntelPanel() {
                   {feed.feed_type}
                 </span>
                 <button
+                  type="button"
                   onClick={() => handleDeleteFeed(feed.id)}
                   className="p-1 text-muted-foreground/20 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
                 >
@@ -654,6 +663,7 @@ export function VulnIntelPanel() {
                 />
                 <div className="flex gap-1.5">
                   <button
+                    type="button"
                     onClick={handleAddFeed}
                     disabled={!newFeed.name.trim() || !newFeed.url.trim()}
                     className="text-[9px] text-accent hover:text-accent/80 font-medium disabled:opacity-30"
@@ -661,6 +671,7 @@ export function VulnIntelPanel() {
                     Add
                   </button>
                   <button
+                    type="button"
                     onClick={() => setShowAddFeed(false)}
                     className="text-[9px] text-muted-foreground/30"
                   >
@@ -670,6 +681,7 @@ export function VulnIntelPanel() {
               </div>
             ) : (
               <button
+                type="button"
                 onClick={() => setShowAddFeed(true)}
                 className="flex items-center gap-1 text-[9px] text-muted-foreground/30 hover:text-accent transition-colors"
               >
@@ -767,6 +779,7 @@ export function VulnIntelPanel() {
                     })}
                     {intelDisplayCount < displayEntries.length && (
                       <button
+                        type="button"
                         onClick={() => setIntelDisplayCount((c) => c + INTEL_PAGE)}
                         className="w-full py-2 mt-1 text-[10px] text-accent/60 hover:text-accent hover:bg-accent/5 rounded transition-colors"
                       >
@@ -777,6 +790,7 @@ export function VulnIntelPanel() {
                 )}
                 {displayEntries.length >= 10 && !loading && (
                   <button
+                    type="button"
                     onClick={handleLoadMore}
                     className="w-full py-2 mt-1 text-[10px] text-accent/60 hover:text-accent hover:bg-accent/5 rounded transition-colors"
                   >

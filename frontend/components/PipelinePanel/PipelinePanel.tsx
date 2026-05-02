@@ -243,12 +243,14 @@ export function PipelinePanel() {
         <GitBranch className="w-3.5 h-3.5 text-accent" />
         <h2 className="text-[13px] font-semibold text-foreground/90 flex-1">Pipelines</h2>
         <button
+          type="button"
           onClick={handleNew}
           className="flex items-center gap-1 px-2.5 py-1 text-[10px] font-medium rounded-md bg-accent/10 text-accent hover:bg-accent/20 transition-colors border border-accent/15"
         >
           <Plus className="w-3 h-3" /> New
         </button>
         <button
+          type="button"
           onClick={handleLoadTemplate}
           className="flex items-center gap-1 px-2.5 py-1 text-[10px] font-medium rounded-md text-muted-foreground/50 hover:text-foreground/70 border border-white/[0.08] hover:border-white/[0.15] transition-colors"
         >
@@ -268,6 +270,7 @@ export function PipelinePanel() {
             <div className="py-0.5">
               {pipelines.map((p) => (
                 <button
+                  type="button"
                   key={p.id}
                   onClick={() => {
                     setActive(p);
@@ -340,12 +343,14 @@ export function PipelinePanel() {
                   </span>
                 )}
                 <button
+                  type="button"
                   onClick={() => setShowToolPicker(!showToolPicker)}
                   className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-md border border-white/[0.08] text-muted-foreground/50 hover:text-foreground/70 hover:border-white/[0.15] transition-colors"
                 >
                   <Plus className="w-3 h-3" /> Add Step
                 </button>
                 <button
+                  type="button"
                   onClick={handleSave}
                   disabled={!dirty}
                   className={cn(
@@ -358,6 +363,7 @@ export function PipelinePanel() {
                   <Save className="w-3 h-3" /> Save
                 </button>
                 <button
+                  type="button"
                   onClick={handleSaveAsTemplate}
                   className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-md border border-white/[0.08] text-muted-foreground/50 hover:text-foreground/70 hover:border-white/[0.15] transition-colors"
                 >
@@ -439,6 +445,7 @@ export function PipelinePanel() {
                   <div className="flex flex-wrap gap-1.5 max-h-[100px] overflow-y-auto">
                     {tools.map((tool) => (
                       <button
+                        type="button"
                         key={tool.id}
                         onClick={() => addStep(tool)}
                         className="flex items-center gap-1.5 px-2 py-1 text-[10px] rounded-md border border-white/[0.06] bg-white/[0.02] hover:bg-accent/10 hover:border-accent/20 hover:text-accent transition-all"
@@ -459,6 +466,7 @@ export function PipelinePanel() {
                   </span>
                   {["", ...knownTypes].map((t) => (
                     <button
+                      type="button"
                       key={t || "all"}
                       onClick={() => setPreviewTargetType(t)}
                       className={cn(
@@ -503,6 +511,7 @@ export function PipelinePanel() {
                       {aiResult.total_stored} items stored
                     </span>
                     <button
+                      type="button"
                       onClick={() => setAiResult(null)}
                       className="ml-auto p-0.5 text-muted-foreground/20 hover:text-foreground transition-colors"
                     >

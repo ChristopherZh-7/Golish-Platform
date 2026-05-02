@@ -74,7 +74,7 @@ export function MiniTimeline({ data }: { data: { date: string; count: number }[]
 
   return (
     <div className="space-y-1">
-      <svg width={w} height={h} className="overflow-visible">
+      <svg aria-hidden="true" width={w} height={h} className="overflow-visible">
         <defs>
           <linearGradient id="dash-tl-fill" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.15" />
@@ -118,7 +118,7 @@ export function MethodologyRing({ projects }: { projects: ProjectMethodology[] }
   return (
     <div className="flex items-center gap-4">
       <div className="relative">
-        <svg width={78} height={78}>
+        <svg aria-hidden="true" width={78} height={78}>
           <circle
             cx={39}
             cy={39}

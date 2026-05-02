@@ -325,7 +325,6 @@ export const TabBar = React.memo(function TabBar({
 
   return (
     <TooltipProvider delayDuration={300}>
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: div is used for window drag region */}
       <div
         className="relative z-[200] flex flex-col bg-transparent"
         onMouseDown={startDrag}
@@ -438,7 +437,6 @@ export const TabBar = React.memo(function TabBar({
         {tabBarHovered && scrollThumb.visible && (
           <div className="h-[3px] mx-2">
             <div className="relative h-full w-full">
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: scrollbar thumb is drag-only */}
               <div
                 className="absolute h-full rounded-full bg-foreground/20 hover:bg-foreground/35 cursor-pointer"
                 style={{ left: `${scrollThumb.left}%`, width: `${scrollThumb.width}%` }}

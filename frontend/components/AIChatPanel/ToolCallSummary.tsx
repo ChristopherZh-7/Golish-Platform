@@ -270,6 +270,7 @@ export function ToolCallSummary({
   isMessageComplete?: boolean;
 }) {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  const sessionId = useStore((s) => s.activeSessionId);
 
   const activeDetailIds = useStore((s) => {
     const sid = s.activeSessionId;
@@ -348,8 +349,6 @@ export function ToolCallSummary({
     state.setDetailViewMode(sessionId, "tool-detail");
     backfillTimeline(state, sessionId, toolCalls);
   };
-
-  const sessionId = useStore((s) => s.activeSessionId);
 
   return (
     <div className="mt-2 space-y-1.5">

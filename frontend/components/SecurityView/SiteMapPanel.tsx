@@ -287,7 +287,9 @@ export function SiteMapPanel({
     if (onBatchScan) {
       onBatchScan(urls);
     } else if (onActiveScan) {
-      urls.forEach((url) => onActiveScan(url));
+      urls.forEach((url) => {
+        onActiveScan(url);
+      });
     }
     setScanSelection(new Set());
   }, [scanSelection, deduped, onBatchScan, onActiveScan, entryKey]);

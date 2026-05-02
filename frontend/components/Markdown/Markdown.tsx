@@ -178,7 +178,6 @@ function SyntaxHighlightedCode({ code, language, ...props }: { code: string; lan
   const theme = cachedCodeTheme || {};
   return (
     <LazySyntaxHighlighter
-      // biome-ignore lint/suspicious/noExplicitAny: SyntaxHighlighter style prop typing is incompatible
       style={theme as any}
       language={language || "text"}
       PreTag="div"

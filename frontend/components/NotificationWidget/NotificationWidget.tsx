@@ -72,7 +72,6 @@ function NotificationItem({ notification }: { notification: Notification }) {
   );
 
   return (
-    // biome-ignore lint/a11y/useSemanticElements: Cannot use button element as it contains a nested button for remove action
     <div
       role="button"
       tabIndex={0}
@@ -306,7 +305,6 @@ export const NotificationWidget = React.memo(function NotificationWidget() {
       {/* Notification panel - rendered via portal to avoid stacking context issues */}
       {isExpanded &&
         createPortal(
-          // biome-ignore lint/a11y/noStaticElementInteractions: Used for click-outside detection
           <div
             ref={panelRef}
             role="presentation"

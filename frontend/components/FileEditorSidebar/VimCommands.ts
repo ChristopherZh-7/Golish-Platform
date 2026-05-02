@@ -32,7 +32,6 @@ export function registerVimCommands() {
   if (vimCommandsRegistered) return;
   vimCommandsRegistered = true;
 
-  // biome-ignore lint/suspicious/noExplicitAny: Vim.defineEx not fully typed
   const defineEx = (Vim as any).defineEx;
   if (!defineEx) return;
 

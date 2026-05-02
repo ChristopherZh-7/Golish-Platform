@@ -97,8 +97,6 @@ export function NewWorktreeModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       {/* Backdrop */}
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop dismiss */}
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: backdrop dismiss */}
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
 
       {/* Modal */}

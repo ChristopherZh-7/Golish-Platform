@@ -287,6 +287,7 @@ export function FindingsPanel() {
           </div>
           <div className="flex items-center gap-1.5">
             <button
+              type="button"
               onClick={handleDedup}
               disabled={findings.length < 2}
               title="Merge duplicate findings"
@@ -297,6 +298,7 @@ export function FindingsPanel() {
             </button>
             <div className="relative">
               <button
+                type="button"
                 onClick={() => setShowExportMenu(!showExportMenu)}
                 disabled={findings.length === 0}
                 className="flex items-center gap-1 px-2 py-1 text-[10px] rounded-md text-muted-foreground/50 hover:text-foreground hover:bg-muted/20 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
@@ -307,6 +309,7 @@ export function FindingsPanel() {
               {showExportMenu && (
                 <div className="absolute right-0 top-full mt-1 bg-popover border border-border/20 rounded-lg shadow-xl z-50 min-w-[100px] overflow-hidden">
                   <button
+                    type="button"
                     onClick={() => {
                       exportFindings("json");
                       setShowExportMenu(false);
@@ -316,6 +319,7 @@ export function FindingsPanel() {
                     JSON
                   </button>
                   <button
+                    type="button"
                     onClick={() => {
                       exportFindings("csv");
                       setShowExportMenu(false);
@@ -328,6 +332,7 @@ export function FindingsPanel() {
               )}
             </div>
             <button
+              type="button"
               onClick={() => setShowAdd(!showAdd)}
               className="flex items-center gap-1 px-2 py-1 text-[10px] rounded-md bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
             >
@@ -343,6 +348,7 @@ export function FindingsPanel() {
             const cfg = SEVERITY_CONFIG[sev];
             return (
               <button
+                type="button"
                 key={sev}
                 onClick={() => setSeverityFilter(severityFilter === sev ? "all" : sev)}
                 className={cn(
@@ -417,12 +423,14 @@ export function FindingsPanel() {
           />
           <div className="flex justify-end gap-2">
             <button
+              type="button"
               onClick={() => setShowAdd(false)}
               className="px-2.5 py-1 text-[10px] rounded-md text-muted-foreground/50 hover:text-foreground transition-colors"
             >
               Cancel
             </button>
             <button
+              type="button"
               onClick={handleAdd}
               disabled={!addForm.title.trim()}
               className={cn(
@@ -462,6 +470,7 @@ export function FindingsPanel() {
               return (
                 <div key={finding.id} className="group">
                   <button
+                    type="button"
                     onClick={() => setExpanded(isExpanded ? null : finding.id)}
                     className="w-full flex items-center gap-2 px-4 py-2.5 text-left hover:bg-muted/10 transition-colors"
                   >
@@ -538,6 +547,7 @@ export function FindingsPanel() {
                             Evidence ({finding.evidence?.length || 0})
                           </span>
                           <button
+                            type="button"
                             onClick={() => handleAddEvidence(finding.id)}
                             className="text-[9px] text-accent/50 hover:text-accent transition-colors ml-1"
                           >
@@ -573,6 +583,7 @@ export function FindingsPanel() {
                                     </div>
                                   )}
                                   <button
+                                    type="button"
                                     onClick={() => handleRemoveEvidence(finding.id, ev.id)}
                                     className="absolute -top-1 -right-1 p-0.5 rounded-full bg-card border border-border/30 text-muted-foreground/30 hover:text-red-400 opacity-0 group-hover/ev:opacity-100 transition-opacity"
                                   >
@@ -594,6 +605,7 @@ export function FindingsPanel() {
                           ["open", "confirmed", "falsePositive", "resolved"] as FindingStatus[]
                         ).map((s) => (
                           <button
+                            type="button"
                             key={s}
                             onClick={() => handleStatusChange(finding, s)}
                             className={cn(
@@ -609,6 +621,7 @@ export function FindingsPanel() {
                         ))}
                         <div className="flex-1" />
                         <button
+                          type="button"
                           onClick={() => handleDelete(finding.id)}
                           className="p-1 text-muted-foreground/20 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
                         >

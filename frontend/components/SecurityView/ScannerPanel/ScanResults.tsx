@@ -196,6 +196,7 @@ export function ScanDetailTabs({ alerts, scanLogs }: { alerts: ZapAlert[]; scanL
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="flex items-center gap-1 px-4 py-1.5 border-b border-border/10 flex-shrink-0">
         <button
+          type="button"
           className={cn(
             "px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors",
             tab === "alerts"
@@ -207,6 +208,7 @@ export function ScanDetailTabs({ alerts, scanLogs }: { alerts: ZapAlert[]; scanL
           {t("security.alertsTab", "Alerts")} ({alerts.length})
         </button>
         <button
+          type="button"
           className={cn(
             "px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors",
             tab === "tests"

@@ -23,6 +23,7 @@ export function VulnKbTopBar({
       <span className="text-[11px] font-medium mr-3">{t("vulnKb.title", "Vulnerability KB")}</span>
       {tabs.map((tab) => (
         <button
+          type="button"
           key={tab.id}
           onClick={() => onTabChange(tab.id)}
           className={cn(

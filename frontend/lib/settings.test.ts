@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GolishSettings } from "./settings/types";
 import {
   getSettingsCached,
   invalidateSettingsCache,
@@ -10,6 +9,7 @@ import {
   setSetting,
   updateSettings,
 } from "./settings/api";
+import type { GolishSettings } from "./settings/types";
 
 // The invoke mock is set up in vitest.config.ts
 // We'll mock it per-test to control behavior

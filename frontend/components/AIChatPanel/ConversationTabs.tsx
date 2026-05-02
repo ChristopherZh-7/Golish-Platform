@@ -109,7 +109,6 @@ export const ConversationTabs = memo(function ConversationTabs({
       {tabsHovered && scrollThumb.visible && (
         <div className="h-[3px] mx-2">
           <div className="relative h-full w-full">
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: scrollbar thumb is drag-only */}
             <div
               className="absolute h-full rounded-full bg-foreground/20 hover:bg-foreground/35 cursor-pointer"
               style={{ left: `${scrollThumb.left}%`, width: `${scrollThumb.width}%` }}

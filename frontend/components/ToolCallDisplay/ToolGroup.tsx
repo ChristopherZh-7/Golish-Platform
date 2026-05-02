@@ -237,7 +237,6 @@ const ToolGroupItem = memo(function ToolGroupItem({
   const primaryArg = formatPrimaryArg(tool);
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: Role and tabIndex are set when interactive
     <div
       onClick={onViewDetails ? () => onViewDetails(tool) : undefined}
       onKeyDown={

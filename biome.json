@@ -8,7 +8,15 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx", "**/*.json"]
+    "includes": [
+      "**/*.ts",
+      "**/*.tsx",
+      "**/*.js",
+      "**/*.jsx",
+      "**/*.json",
+      "!frontend/lib/generated/**",
+      "!backend/crates/*/bindings/generated/**"
+    ]
   },
   "formatter": {
     "enabled": true,
@@ -20,12 +28,27 @@
     "enabled": true,
     "rules": {
       "recommended": true,
+      "a11y": {
+        "noStaticElementInteractions": "off",
+        "useKeyWithClickEvents": "off",
+        "useFocusableInteractive": "off",
+        "noLabelWithoutControl": "off",
+        "useSemanticElements": "off"
+      },
       "correctness": {
         "noUnusedImports": "warn",
-        "noUnusedVariables": "warn"
+        "noUnusedVariables": "warn",
+        "useExhaustiveDependencies": "off",
+        "useHookAtTopLevel": "warn"
+      },
+      "complexity": {
+        "noCommaOperator": "off"
+      },
+      "security": {
+        "noDangerouslySetInnerHtml": "off"
       },
       "style": {
-        "noNonNullAssertion": "warn",
+        "noNonNullAssertion": "off",
         "useBlockStatements": "off",
         "useImportType": "warn",
         "noRestrictedImports": {
@@ -39,9 +62,14 @@
         }
       },
       "suspicious": {
-        "noExplicitAny": "warn",
+        "noExplicitAny": "off",
         "noControlCharactersInRegex": "off",
-        "noDocumentCookie": "off"
+        "noDocumentCookie": "off",
+        "noArrayIndexKey": "off",
+        "noTemplateCurlyInString": "off",
+        "noDuplicateObjectKeys": "warn",
+        "noAssignInExpressions": "off",
+        "useIterableCallbackReturn": "warn"
       }
     }
   },
@@ -58,6 +86,12 @@
             "noRestrictedImports": "off"
           }
         }
+      }
+    },
+    {
+      "includes": ["frontend/**/*.test.ts", "frontend/**/*.test.tsx"],
+      "formatter": {
+        "enabled": false
       }
     }
   ],

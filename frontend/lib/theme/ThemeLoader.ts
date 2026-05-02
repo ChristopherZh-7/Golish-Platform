@@ -122,9 +122,7 @@ export async function applyTheme(theme: GolishTheme): Promise<void> {
 function validateTheme(theme: GolishTheme): void {
   const ajv = new Ajv({ allErrors: true, strict: false });
   const localSchema = { ...schema };
-  // biome-ignore lint/suspicious/noExplicitAny: Schema manipulation requires any
   delete (localSchema as any).$schema;
-  // biome-ignore lint/suspicious/noExplicitAny: AJV compile requires any
   const validate = ajv.compile(localSchema as any);
   const valid = validate(theme);
 
@@ -135,7 +133,6 @@ function validateTheme(theme: GolishTheme): void {
 }
 
 // Convert known external theme formats into GolishTheme
-// biome-ignore lint/suspicious/noExplicitAny: Input theme format is unknown
 function normalizeTheme(raw: any): GolishTheme {
   // If already in Golish format
   if (raw?.colors?.ui && raw?.colors?.ansi) return raw as GolishTheme;

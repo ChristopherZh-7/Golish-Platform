@@ -720,7 +720,9 @@ export function ProjectOverview({ sessionId }: { sessionId: string }) {
 
     return () => {
       cancelled = true;
-      cleanups.forEach((fn) => fn());
+      cleanups.forEach((fn) => {
+        fn();
+      });
     };
   }, [fetchTargets, pushItem, pushStep, completeStep, failStep, nextId]);
 

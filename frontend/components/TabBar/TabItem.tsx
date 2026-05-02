@@ -255,7 +255,6 @@ export const TabItem = React.memo(function TabItem({
                         )}
                       />
                     ) : (
-                      /* biome-ignore lint/a11y/noStaticElementInteractions: span is used for inline text with double-click rename */
                       <span
                         className={cn(
                           "truncate",

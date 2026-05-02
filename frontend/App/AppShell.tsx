@@ -484,6 +484,7 @@ export function AppShell(props: AppShellProps) {
                 title="Open AI Chat"
               >
                 <svg
+                  aria-hidden="true"
                   xmlns="http://www.w3.org/2000/svg"
                   width="16"
                   height="16"
@@ -589,6 +590,7 @@ export function AppShell(props: AppShellProps) {
               }}
             >
               <svg
+                aria-hidden="true"
                 width="12"
                 height="12"
                 viewBox="0 0 24 24"
