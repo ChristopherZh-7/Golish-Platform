@@ -9,7 +9,7 @@
  *   logger.error("failed:", error) // like console.error
  */
 
-import { invoke } from "@/lib/api/client";
+import { getLastTraceId, invoke } from "@/lib/api/client";
 import { isTauri } from "@/lib/env";
 
 type LogLevel = "debug" | "info" | "warn" | "error";
@@ -59,9 +59,15 @@ async function writeLog(level: LogLevel, args: unknown[]): Promise<void> {
   // Format message for file logging
   const message = formatArgs(args);
 
+  // Attach the most recent in-flight IPC trace id (if any) so backend
+  // log entries can be correlated with the originating frontend call.
+  // `null` is fine — backend treats `context` as optional.
+  const traceId = getLastTraceId();
+  const context = traceId ? `trace=${traceId}` : null;
+
   // Write to backend log file (fire and forget, don't block on logging)
   try {
-    await invoke("write_frontend_log", { level, message, context: null });
+    await invoke("write_frontend_log", { level, message, context });
   } catch (err) {
     // Don't throw on logging failures - just log to console as fallback
     console.error("[logger] Failed to write to backend log:", err);
