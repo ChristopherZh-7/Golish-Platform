@@ -23,12 +23,24 @@ const VaultSettings = lazy(() =>
   import("@/components/Settings/VaultSettings").then((m) => ({ default: m.VaultSettings }))
 );
 
-import { IntruderPanel } from "@/components/SecurityView/IntruderPanel";
+// Heavy panels rendered with `invisible-mount` (kept mounted across tab
+// switches to preserve form state). Lazy-load + visited-once gating below
+// keeps them out of the initial bundle until the user touches the tab.
+const IntruderPanel = lazy(() =>
+  import("@/components/SecurityView/IntruderPanel").then((m) => ({ default: m.IntruderPanel }))
+);
+const RepeaterPanel = lazy(() =>
+  import("./RepeaterPanel").then((m) => ({ default: m.RepeaterPanel }))
+);
+const ScannerPanel = lazy(() =>
+  import("./ScannerPanel").then((m) => ({ default: m.ScannerPanel }))
+);
+const ScanToolsPanel = lazy(() =>
+  import("./ScanToolsPanel").then((m) => ({ default: m.ScanToolsPanel }))
+);
+
 import { HttpHistoryPanel } from "./HttpHistoryPanel";
 import { PassiveScanPanel } from "./PassiveScanPanel";
-import { RepeaterPanel } from "./RepeaterPanel";
-import { ScannerPanel } from "./ScannerPanel";
-import { ScanToolsPanel } from "./ScanToolsPanel";
 import { SensitiveScanPanel } from "./SensitiveScanPanel";
 import { SiteMapPanel } from "./SiteMapPanel";
 import { StatusBadge, ZapNotInstalled, ZapNotRunning } from "./shared";
@@ -76,6 +88,13 @@ export function SecurityView({
   const [intruderRequest, setIntruderRequest] = useState<string | null>(null);
   const [pendingScanUrl, setPendingScanUrl] = useState<string | null>(null);
 
+  // Visited-once gating: lazy panels stay un-mounted until the user touches
+  // the tab. After the first visit they remain mounted to preserve state.
+  const [visitedRepeater, setVisitedRepeater] = useState(false);
+  const [visitedIntruder, setVisitedIntruder] = useState(false);
+  const [visitedScanTools, setVisitedScanTools] = useState(false);
+  const [visitedScanner, setVisitedScanner] = useState(false);
+
   const handleSendToRepeater = useCallback((rawRequest: string) => {
     setRepeaterRequest(rawRequest);
     setActiveTab("repeater");
@@ -97,6 +116,15 @@ export function SecurityView({
     setPendingScanUrls(urls);
     setActiveTab("scanner");
   }, []);
+
+  // Mark the panel as visited the first time its tab becomes active so the
+  // lazy chunk is fetched on demand instead of as part of the initial bundle.
+  useEffect(() => {
+    if (effectiveTab === "repeater") setVisitedRepeater(true);
+    if (effectiveTab === "intruder") setVisitedIntruder(true);
+    if (effectiveTab === "scantools") setVisitedScanTools(true);
+    if (effectiveTab === "scanner") setVisitedScanner(true);
+  }, [effectiveTab]);
 
   useEffect(() => {
     let cancelled = false;
@@ -376,51 +404,67 @@ export function SecurityView({
 
       <div className="flex-1 overflow-hidden relative">
         {renderContent(effectiveTab)}
-        <div
-          className={cn(
-            "absolute inset-0",
-            effectiveTab === "repeater" && isRunning ? "" : "invisible pointer-events-none"
-          )}
-        >
-          <RepeaterPanel
-            injectedRequest={repeaterRequest}
-            onInjectedConsumed={() => setRepeaterRequest(null)}
-          />
-        </div>
-        <div
-          className={cn(
-            "absolute inset-0",
-            effectiveTab === "intruder" && isRunning ? "" : "invisible pointer-events-none"
-          )}
-        >
-          <IntruderPanel
-            injectedRequest={intruderRequest}
-            onInjectedConsumed={() => setIntruderRequest(null)}
-          />
-        </div>
-        <div
-          className={cn(
-            "absolute inset-0",
-            effectiveTab === "scantools" ? "" : "invisible pointer-events-none"
-          )}
-        >
-          <ScanToolsPanel initialTarget={initialScanTarget} />
-        </div>
-        <div
-          className={cn(
-            "absolute inset-0",
-            effectiveTab === "scanner" && isRunning ? "" : "invisible pointer-events-none"
-          )}
-        >
-          <ScannerPanel
-            initialUrl={pendingScanUrl}
-            initialBatchUrls={pendingScanUrls}
-            onUrlConsumed={() => {
-              setPendingScanUrl(null);
-              setPendingScanUrls([]);
-            }}
-          />
-        </div>
+        {visitedRepeater && (
+          <div
+            className={cn(
+              "absolute inset-0",
+              effectiveTab === "repeater" && isRunning ? "" : "invisible pointer-events-none"
+            )}
+          >
+            <Suspense fallback={null}>
+              <RepeaterPanel
+                injectedRequest={repeaterRequest}
+                onInjectedConsumed={() => setRepeaterRequest(null)}
+              />
+            </Suspense>
+          </div>
+        )}
+        {visitedIntruder && (
+          <div
+            className={cn(
+              "absolute inset-0",
+              effectiveTab === "intruder" && isRunning ? "" : "invisible pointer-events-none"
+            )}
+          >
+            <Suspense fallback={null}>
+              <IntruderPanel
+                injectedRequest={intruderRequest}
+                onInjectedConsumed={() => setIntruderRequest(null)}
+              />
+            </Suspense>
+          </div>
+        )}
+        {visitedScanTools && (
+          <div
+            className={cn(
+              "absolute inset-0",
+              effectiveTab === "scantools" ? "" : "invisible pointer-events-none"
+            )}
+          >
+            <Suspense fallback={null}>
+              <ScanToolsPanel initialTarget={initialScanTarget} />
+            </Suspense>
+          </div>
+        )}
+        {visitedScanner && (
+          <div
+            className={cn(
+              "absolute inset-0",
+              effectiveTab === "scanner" && isRunning ? "" : "invisible pointer-events-none"
+            )}
+          >
+            <Suspense fallback={null}>
+              <ScannerPanel
+                initialUrl={pendingScanUrl}
+                initialBatchUrls={pendingScanUrls}
+                onUrlConsumed={() => {
+                  setPendingScanUrl(null);
+                  setPendingScanUrls([]);
+                }}
+              />
+            </Suspense>
+          </div>
+        )}
       </div>
     </div>
   );
