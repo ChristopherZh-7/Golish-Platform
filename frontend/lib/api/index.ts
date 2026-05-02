@@ -28,6 +28,7 @@ import * as methodology from "./methodology";
 import * as modelRegistry from "./model-registry";
 import * as notes from "./notes";
 import * as pentestBrowser from "./pentest-browser";
+import * as pipeline from "./pipeline";
 import * as pty from "./pty";
 import * as research from "./research";
 import * as security from "./security";
@@ -63,6 +64,7 @@ export {
   auditLog,
   modelRegistry,
   pentestBrowser,
+  pipeline,
   detachedWindow,
   wordlist,
   notes,
@@ -94,6 +96,7 @@ export const api = {
   auditLog,
   modelRegistry,
   pentestBrowser,
+  pipeline,
   detachedWindow,
   wordlist,
   notes,

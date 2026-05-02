@@ -1,3 +1,4 @@
+// biome-ignore lint/style/noRestrictedImports: TODO Phase 2D — kb_research_load lives in commands_facade::workspace (wiki domain) but no lib/api/wiki.ts facade exists yet; consolidate when wiki domain gets a dedicated facade module.
 import { invoke } from "@tauri-apps/api/core";
 import { AlertTriangle, Bot, Loader2, MessageSquare, Trash2, Zap } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";

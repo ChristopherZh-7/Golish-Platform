@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import type React from "react";
 import { useEffect } from "react";
+// biome-ignore lint/style/noRestrictedImports: TODO Phase 2D — output_detect_tool / output_parse / findings_import_parsed not yet in lib/api/ facade (need dedicated output-parser + findings facade extension); migrate when those domains get their wrappers.
 import { invoke } from "@/lib/api/client";
 import { createDetached } from "@/lib/api/window";
 import { logger } from "@/lib/logger";

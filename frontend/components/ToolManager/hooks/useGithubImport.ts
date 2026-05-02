@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+// biome-ignore lint/style/noRestrictedImports: TODO Phase 2D — pentest_analyze_github_tool is one of ~10 GitHub-related pentest commands not yet in the lib/pentest/api.ts wrapper; consolidate when the pentest GitHub helpers get a dedicated facade.
 import { invoke } from "@/lib/api/client";
 import type { ToolWithMeta } from "../OutputParserEditor";
 
