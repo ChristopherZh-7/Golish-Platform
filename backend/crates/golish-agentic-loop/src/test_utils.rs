@@ -26,7 +26,7 @@ use golish_llm_providers::LlmClient;
 #[cfg(test)]
 use golish_tools::ToolRegistry;
 #[cfg(test)]
-use crate::agent_mode::AgentMode;
+use golish_agent_loop::agent_mode::AgentMode;
 
 /// A mock response that the MockCompletionModel will return.
 #[derive(Debug, Clone)]

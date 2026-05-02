@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use golish_sub_agents::{SubAgentContext, MAX_AGENT_DEPTH};
 
 use super::context::AgenticLoopContext;
-use super::super::tool_definitions::{
+use golish_agent_loop::tool_definitions::{
     get_all_tool_definitions_with_config, get_ask_human_tool_definition,
     get_run_command_tool_definition, get_sub_agent_tool_definitions, sanitize_schema,
 };

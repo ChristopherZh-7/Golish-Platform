@@ -17,6 +17,7 @@ members = [
     "crates/golish-llm-providers",
     "crates/golish-ai",
     "crates/golish-agent-loop",
+    "crates/golish-agentic-loop",
     "crates/golish-agent-bridge",
     "crates/golish-events",
     "crates/golish-sub-agents",
@@ -60,6 +61,7 @@ default-members = [
     "crates/golish-llm-providers",
     "crates/golish-ai",
     "crates/golish-agent-loop",
+    "crates/golish-agentic-loop",
     "crates/golish-agent-bridge",
     "crates/golish-events",
     "crates/golish-sub-agents",
@@ -110,6 +112,7 @@ golish-session = { path = "crates/golish-session" }
 golish-context = { path = "crates/golish-context" }
 golish-ai = { path = "crates/golish-ai" }
 golish-agent-loop = { path = "crates/golish-agent-loop" }
+golish-agentic-loop = { path = "crates/golish-agentic-loop" }
 golish-agent-bridge = { path = "crates/golish-agent-bridge" }
 golish-events = { path = "crates/golish-events" }
 golish-sub-agents = { path = "crates/golish-sub-agents" }

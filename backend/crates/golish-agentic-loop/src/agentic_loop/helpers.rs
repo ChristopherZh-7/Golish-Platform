@@ -8,7 +8,7 @@ use rig::one_or_many::OneOrMany;
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use crate::loop_detection::LoopDetectionResult;
+use golish_agent_loop::loop_detection::LoopDetectionResult;
 use golish_core::events::AiEvent;
 
 /// Estimate the token count of a message for heuristic token estimation.

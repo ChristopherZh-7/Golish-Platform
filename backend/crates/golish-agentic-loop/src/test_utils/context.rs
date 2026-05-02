@@ -4,10 +4,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::sync::{mpsc, oneshot, RwLock};
 
-use crate::hitl::ApprovalRecorder;
-use crate::loop_detection::LoopDetector;
-use crate::planner::PlanManager;
-use crate::tool_policy::{ToolPolicy, ToolPolicyConfig, ToolPolicyManager};
+use golish_agent_loop::hitl::ApprovalRecorder;
+use golish_agent_loop::loop_detection::LoopDetector;
+use golish_agent_loop::planner::PlanManager;
+use golish_agent_loop::tool_policy::{ToolPolicy, ToolPolicyConfig, ToolPolicyManager};
 use golish_context::context_manager::ContextTrimConfig;
 use golish_context::token_budget::TokenBudgetConfig;
 use golish_context::{CompactionState, ContextManager};
@@ -18,11 +18,11 @@ use golish_llm_providers::LlmClient;
 use golish_sub_agents::SubAgentRegistry;
 use golish_tools::ToolRegistry;
 
-use crate::agent_mode::AgentMode;
+use golish_agent_loop::agent_mode::AgentMode;
 use crate::agentic_loop::{
     AgenticLoopContext, LoopAccessControl, LoopCaptureContext, LoopEventRefs, LoopLlmRefs,
 };
-use crate::tool_definitions::ToolConfig;
+use golish_agent_loop::tool_definitions::ToolConfig;
 
 // ============================================================================
 // Mock Runtime for Testing
@@ -304,7 +304,7 @@ impl TestContext {
             custom_tool_executor: None,
             cancelled: None,
             execution_monitor: None,
-            execution_mode: crate::execution_mode::ExecutionMode::Chat,
+            execution_mode: golish_agent_loop::execution_mode::ExecutionMode::Chat,
             post_shell_hook: None,
             output_classifier: None,
             web_fetcher: None,

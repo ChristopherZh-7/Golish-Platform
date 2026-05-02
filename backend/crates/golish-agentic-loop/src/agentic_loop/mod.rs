@@ -22,9 +22,9 @@ use {
     std::sync::Arc,
 };
 
-use super::system_hooks::HookRegistry;
-use super::tool_definitions::ToolConfig;
-use super::tool_executors::normalize_run_pty_cmd_args;
+use golish_agent_loop::system_hooks::HookRegistry;
+use golish_agent_loop::tool_definitions::ToolConfig;
+use golish_agent_loop::tool_executors::normalize_run_pty_cmd_args;
 use golish_context::token_budget::TokenUsage;
 use golish_core::events::AiEvent;
 use golish_sub_agents::SubAgentContext;

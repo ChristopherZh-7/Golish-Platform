@@ -143,7 +143,7 @@ async fn perform_compaction(
     drop(workspace);
 
     let summarizer_input =
-        match crate::transcript::build_summarizer_input(&transcript_dir, session_id).await {
+        match golish_events::transcript::build_summarizer_input(&transcript_dir, session_id).await {
             Ok(input) => input,
             Err(e) => {
                 tracing::warn!("[compaction] Failed to build summarizer input: {}", e);
@@ -159,7 +159,7 @@ async fn perform_compaction(
         };
 
     if let Err(e) =
-        crate::transcript::save_summarizer_input(&artifacts_dir, session_id, &summarizer_input)
+        golish_events::transcript::save_summarizer_input(&artifacts_dir, session_id, &summarizer_input)
     {
         tracing::warn!("[compaction] Failed to save summarizer input: {}", e);
     }
@@ -193,7 +193,7 @@ async fn perform_compaction(
 
     tracing::info!("[compaction] Summary generated: {} chars", summary.len());
 
-    if let Err(e) = crate::transcript::save_summary(&summaries_dir, session_id, &summary) {
+    if let Err(e) = golish_events::transcript::save_summary(&summaries_dir, session_id, &summary) {
         tracing::warn!("[compaction] Failed to save summary: {}", e);
     }
 
