@@ -52,3 +52,27 @@ impl TurnState {
         Self::default()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_state_starts_at_iteration_zero_with_active_reflector() {
+        let s = TurnState::default();
+        assert_eq!(s.iteration, 0, "first pre_flight call must produce iteration=1");
+        assert!(s.reflector_active, "reflector starts active until first_iter_hooks decides otherwise");
+        assert_eq!(s.consecutive_no_tool_turns, 0);
+        assert_eq!(s.total_reflector_nudges, 0);
+    }
+
+    #[test]
+    fn new_matches_default() {
+        let a = TurnState::new();
+        let b = TurnState::default();
+        assert_eq!(a.iteration, b.iteration);
+        assert_eq!(a.reflector_active, b.reflector_active);
+        assert_eq!(a.consecutive_no_tool_turns, b.consecutive_no_tool_turns);
+        assert_eq!(a.total_reflector_nudges, b.total_reflector_nudges);
+    }
+}

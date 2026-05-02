@@ -70,3 +70,92 @@ pub async fn run(
 
     PhaseOutcome::Continue
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    use golish_llm_providers::LlmClient;
+    use tokio::sync::RwLock;
+
+    use crate::test_utils::TestContextBuilder;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn happy_path_increments_iteration_and_returns_continue() {
+        let test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let ctx = test_ctx.as_agentic_context_with_client(&client);
+        let mut state = TurnState::new();
+
+        let outcome = run(&mut state, &ctx, &Span::none()).await;
+
+        assert!(matches!(outcome, PhaseOutcome::Continue));
+        assert_eq!(state.iteration, 1, "first call must produce iteration=1");
+
+        let outcome2 = run(&mut state, &ctx, &Span::none()).await;
+        assert!(matches!(outcome2, PhaseOutcome::Continue));
+        assert_eq!(state.iteration, 2, "second call advances counter");
+    }
+
+    #[tokio::test]
+    async fn cancellation_flag_breaks_with_cancelled_reason_and_emits_error() {
+        let mut test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let cancel_flag = Arc::new(AtomicBool::new(true));
+        let mut ctx = test_ctx.as_agentic_context_with_client(&client);
+        ctx.cancelled = Some(&cancel_flag);
+        let mut state = TurnState::new();
+
+        let outcome = run(&mut state, &ctx, &Span::none()).await;
+
+        assert!(matches!(
+            outcome,
+            PhaseOutcome::Break(BreakReason::Cancelled)
+        ));
+        let cancel_events = test_ctx.find_events(|e| {
+            matches!(e, AiEvent::Error { error_type, .. } if error_type == "cancelled")
+        });
+        assert_eq!(cancel_events.len(), 1, "exactly one cancelled error event");
+    }
+
+    #[tokio::test]
+    async fn cancellation_flag_unset_does_not_break() {
+        let test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let mut ctx = test_ctx.as_agentic_context_with_client(&client);
+        ctx.cancelled = Some(&cancel_flag);
+        let mut state = TurnState::new();
+
+        let outcome = run(&mut state, &ctx, &Span::none()).await;
+
+        assert!(matches!(outcome, PhaseOutcome::Continue));
+        assert!(!cancel_flag.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn iteration_over_budget_breaks_with_max_iterations() {
+        let mut test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let ctx = test_ctx.as_agentic_context_with_client(&client);
+        let mut state = TurnState {
+            iteration: MAX_TOOL_ITERATIONS as u32,
+            ..TurnState::default()
+        };
+
+        let outcome = run(&mut state, &ctx, &Span::none()).await;
+
+        assert!(matches!(
+            outcome,
+            PhaseOutcome::Break(BreakReason::MaxIterations)
+        ));
+        assert_eq!(state.iteration, (MAX_TOOL_ITERATIONS as u32) + 1);
+        let max_iter_events = test_ctx.find_events(|e| {
+            matches!(e, AiEvent::Error { error_type, .. } if error_type == "max_iterations")
+        });
+        assert_eq!(max_iter_events.len(), 1);
+    }
+}

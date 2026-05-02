@@ -33,3 +33,60 @@ pub async fn run(
 
     PhaseOutcome::Continue
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use golish_llm_providers::LlmClient;
+    use rig::message::{Text, UserContent};
+    use rig::one_or_many::OneOrMany;
+    use tokio::sync::RwLock;
+
+    use crate::test_utils::TestContextBuilder;
+
+    use super::*;
+
+    fn user_message(text: &str) -> Message {
+        Message::User {
+            content: OneOrMany::one(UserContent::Text(Text {
+                text: text.to_string(),
+            })),
+        }
+    }
+
+    #[tokio::test]
+    async fn estimates_match_system_plus_history_and_write_compaction_state() {
+        let test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let ctx = test_ctx.as_agentic_context_with_client(&client);
+        let history = vec![user_message("hello world this is a test prompt")];
+        let system_prompt = "You are a helpful assistant.";
+
+        let outcome = run(&ctx, system_prompt, &history).await;
+        assert!(matches!(outcome, PhaseOutcome::Continue));
+
+        let snapshot = ctx.compaction_state.read().await;
+        let recorded = snapshot
+            .last_input_tokens
+            .expect("token estimate must be recorded into compaction_state");
+        assert!(
+            recorded > 0,
+            "non-trivial system prompt + history should yield > 0 tokens, got {}",
+            recorded
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_inputs_record_zero_tokens() {
+        let test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let ctx = test_ctx.as_agentic_context_with_client(&client);
+
+        let outcome = run(&ctx, "", &[]).await;
+        assert!(matches!(outcome, PhaseOutcome::Continue));
+
+        let snapshot = ctx.compaction_state.read().await;
+        assert_eq!(snapshot.last_input_tokens, Some(0));
+    }
+}
