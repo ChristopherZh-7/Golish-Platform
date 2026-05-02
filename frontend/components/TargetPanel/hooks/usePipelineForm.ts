@@ -1,7 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { targets } from "@/lib/api";
+import { pipeline, targets } from "@/lib/api";
 import type { PipelineSummary } from "@/lib/pentest/pipeline-types";
 import { getProjectPath } from "@/lib/projects";
 import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
@@ -30,9 +29,7 @@ export function usePipelineForm(targetValue: string) {
     let cancelled = false;
     (async () => {
       try {
-        const list = await invoke<PipelineSummary[]>("pipeline_list", {
-          projectPath: getProjectPath(),
-        });
+        const list = await pipeline.listPipelines(getProjectPath());
         if (!cancelled) {
           setPipelines(Array.isArray(list) ? list : []);
           if (list.length > 0 && !selected) setSelected(list[0]);

@@ -53,6 +53,28 @@ export async function listVaultEntries(projectPath: string | null): Promise<Vaul
   return invoke<VaultEntrySafe[]>("vault_list", { projectPath });
 }
 
+/**
+ * Run validation on a stored credential (e.g. attempt a probe with
+ * the stored value). Returns a human-readable status string.
+ */
+export async function validateVaultEntry(
+  id: string,
+  projectPath: string | null
+): Promise<string> {
+  return invoke<string>("vault_validate", { id, projectPath });
+}
+
+/**
+ * Fetch the plaintext credential value for an entry (one-shot).
+ * Triggers an audit log entry server-side.
+ */
+export async function getVaultValue(
+  id: string,
+  projectPath: string | null
+): Promise<string> {
+  return invoke<string>("vault_get_value", { id, projectPath });
+}
+
 export async function deleteVaultEntry(id: string, projectPath: string | null): Promise<void> {
   await invoke("vault_delete", { id, projectPath });
 }

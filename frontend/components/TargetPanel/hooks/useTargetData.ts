@@ -1,16 +1,12 @@
-import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { targets } from "@/lib/api";
+import type { TargetStore } from "@/lib/api/targets";
 import { logAudit } from "@/lib/audit";
 import type { Target } from "@/lib/pentest/types";
 import { getProjectPath } from "@/lib/projects";
 import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import { useStore } from "@/store";
-
-interface TargetStore {
-  targets: Target[];
-}
 
 interface AddForm {
   name: string;
@@ -25,12 +21,13 @@ export function useTargetData() {
 
   const loadTargets = useCallback(async () => {
     try {
-      const data = await invoke<TargetStore>("target_list", { projectPath: getProjectPath() });
+      const data = await targets.listTargets(getProjectPath());
       setStore(data?.targets ? data : { targets: [] });
     } catch (e) {
       console.error("Failed to load targets:", e);
       setTimeout(() => {
-        invoke<TargetStore>("target_list", { projectPath: getProjectPath() })
+        targets
+          .listTargets(getProjectPath())
           .then((data) => setStore(data?.targets ? data : { targets: [] }))
           .catch(() => {});
       }, 3000);
@@ -98,8 +95,9 @@ export function useTargetData() {
     async (batchInput: string) => {
       if (!batchInput.trim()) return;
       try {
-        const added = await invoke<Target[]>("target_batch_add", {
+        const added = await targets.batchAddTargets({
           values: batchInput,
+          group: "",
           projectPath: getProjectPath(),
         });
         loadTargets();
