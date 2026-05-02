@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::Result;
 use rig::completion::CompletionModel as RigCompletionModel;
 
-use golish_ai::eval_support::EvalConfig as AiEvalConfig;
+use golish_agent_runtime::eval_support::EvalConfig as AiEvalConfig;
 
 use crate::config::{EvalConfig, EvalProvider};
 use crate::runner::{AgentOutput, ToolCall as EvalToolCall, VerboseConfig};
@@ -162,7 +162,7 @@ where
         None => build_production_system_prompt(workspace, provider),
     };
 
-    let eval_output = golish_ai::eval_support::run_eval_agentic_loop(
+    let eval_output = golish_agent_runtime::eval_support::run_eval_agentic_loop(
         &model,
         &effective_system_prompt,
         prompt,

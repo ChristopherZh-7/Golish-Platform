@@ -45,8 +45,11 @@ golish-db = { path = "../golish-db" }
 golish-graphiti = { path = "../golish-graphiti" }
 vtcode-indexer = { workspace = true }
 
-# Domain crates
-golish-ai = { path = "../golish-ai" }
+# Agent runtime stack (A3: replaced the `golish-ai` umbrella with direct deps)
+golish-agent-kit = { workspace = true }
+golish-agent-runtime = { workspace = true }
+golish-agent-bridge = { workspace = true }
+golish-prompts = { workspace = true }
 golish-events = { workspace = true }
 golish-sub-agents = { path = "../golish-sub-agents" }
 

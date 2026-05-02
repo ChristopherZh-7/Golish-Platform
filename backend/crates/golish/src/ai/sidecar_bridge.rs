@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use golish_ai::sidecar_trait::{AiEventProcessor, EndedSessionInfo, SessionCaptureBackend};
+use golish_agent_kit::sidecar_trait::{AiEventProcessor, EndedSessionInfo, SessionCaptureBackend};
 use golish_core::events::AiEvent;
 use golish_sidecar::capture::CaptureContext;
 use golish_sidecar::events::SessionEvent;

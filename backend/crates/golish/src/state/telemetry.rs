@@ -4,14 +4,14 @@ use crate::telemetry::TelemetryStats;
 
 /// Telemetry / observability managed state.
 ///
-/// Reserved for Tauri `manage<TelemetryState>()` migration (P2-2).
-#[allow(dead_code)]
+/// Managed independently of `AppState` as of A4: commands that only need
+/// `langfuse_active` / `stats` take `State<'_, TelemetryState>` directly
+/// instead of the monolithic `AppState`.
 pub struct TelemetryState {
     pub langfuse_active: bool,
     pub stats: Option<Arc<TelemetryStats>>,
 }
 
-#[allow(dead_code)]
 impl TelemetryState {
     pub fn new(langfuse_active: bool, stats: Option<Arc<TelemetryStats>>) -> Self {
         Self {

@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::Result;
 use rig::completion::CompletionModel as RigCompletionModel;
 
-use golish_ai::eval_support::EvalConfig as AiEvalConfig;
+use golish_agent_runtime::eval_support::EvalConfig as AiEvalConfig;
 
 use crate::config::{EvalConfig, EvalProvider};
 use crate::runner::{AgentOutput, ToolCall as EvalToolCall, VerboseConfig};
@@ -22,7 +22,7 @@ pub async fn execute_eval_prompt_with_tools(
     provider: EvalProvider,
     model_override: Option<&str>,
     additional_tools: Vec<rig::completion::ToolDefinition>,
-    custom_executor: Option<golish_ai::eval_support::CustomToolExecutor>,
+    custom_executor: Option<golish_agent_runtime::eval_support::CustomToolExecutor>,
 ) -> Result<AgentOutput> {
     let config = EvalConfig::load_for_provider(provider)
         .await?
@@ -60,7 +60,7 @@ async fn execute_with_vertex_claude_and_tools(
     verbose_config: &VerboseConfig,
     config: &EvalConfig,
     additional_tools: Vec<rig::completion::ToolDefinition>,
-    custom_executor: Option<golish_ai::eval_support::CustomToolExecutor>,
+    custom_executor: Option<golish_agent_runtime::eval_support::CustomToolExecutor>,
 ) -> Result<AgentOutput> {
     use rig_anthropic_vertex::{models, Client};
 
@@ -105,7 +105,7 @@ async fn execute_with_zai_and_tools(
     verbose_config: &VerboseConfig,
     config: &EvalConfig,
     additional_tools: Vec<rig::completion::ToolDefinition>,
-    custom_executor: Option<golish_ai::eval_support::CustomToolExecutor>,
+    custom_executor: Option<golish_agent_runtime::eval_support::CustomToolExecutor>,
 ) -> Result<AgentOutput> {
     let zai_config = config
         .zai
@@ -135,7 +135,7 @@ async fn execute_with_openai_and_tools(
     verbose_config: &VerboseConfig,
     config: &EvalConfig,
     additional_tools: Vec<rig::completion::ToolDefinition>,
-    custom_executor: Option<golish_ai::eval_support::CustomToolExecutor>,
+    custom_executor: Option<golish_agent_runtime::eval_support::CustomToolExecutor>,
 ) -> Result<AgentOutput> {
     use rig::client::CompletionClient;
     use rig::providers::openai as rig_openai;
@@ -169,7 +169,7 @@ async fn execute_with_model_and_tools<M>(
     model_name: &str,
     provider: EvalProvider,
     additional_tools: Vec<rig::completion::ToolDefinition>,
-    custom_executor: Option<golish_ai::eval_support::CustomToolExecutor>,
+    custom_executor: Option<golish_agent_runtime::eval_support::CustomToolExecutor>,
 ) -> Result<AgentOutput>
 where
     M: RigCompletionModel + Sync,
@@ -193,7 +193,7 @@ where
         None => build_production_system_prompt(workspace, provider),
     };
 
-    let eval_output = golish_ai::eval_support::run_eval_agentic_loop_with_tools(
+    let eval_output = golish_agent_runtime::eval_support::run_eval_agentic_loop_with_tools(
         &model,
         &effective_system_prompt,
         prompt,

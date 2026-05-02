@@ -40,6 +40,12 @@ impl DbState {
         &self.pool
     }
 
+    /// Return a cheap Arc clone of the underlying pool (zero-cost; matches
+    /// the `AppState::db_pool.clone()` pattern used before A4).
+    pub fn pool_arc(&self) -> Arc<PgPool> {
+        self.pool.clone()
+    }
+
     pub fn ready_gate(&self) -> &DbReadyGate {
         &self.ready
     }

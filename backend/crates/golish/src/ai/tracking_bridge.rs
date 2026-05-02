@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use golish_ai::db_traits::*;
+use golish_agent_kit::db_traits::*;
 
 // ============================================================================
 // PgTrackingBackend
@@ -423,7 +423,7 @@ impl From<PgBriefingPlanRow> for BriefingPlan {
 pub struct CoreDbReadyGate(pub golish_core::DbReadyGate);
 
 #[async_trait]
-impl golish_ai::db_traits::DbReadinessGate for CoreDbReadyGate {
+impl golish_agent_kit::db_traits::DbReadinessGate for CoreDbReadyGate {
     fn is_ready(&self) -> bool {
         self.0.is_ready()
     }
@@ -433,7 +433,7 @@ impl golish_ai::db_traits::DbReadinessGate for CoreDbReadyGate {
     async fn wait(&mut self) -> bool {
         self.0.wait().await
     }
-    fn clone_box(&self) -> Box<dyn golish_ai::db_traits::DbReadinessGate> {
+    fn clone_box(&self) -> Box<dyn golish_agent_kit::db_traits::DbReadinessGate> {
         Box::new(self.clone())
     }
 }

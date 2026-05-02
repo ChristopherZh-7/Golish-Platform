@@ -8,7 +8,7 @@
 //! - `Planning`: Only read-only tools are allowed; write operations are denied
 //!
 //! Lives in `golish-core` because it is a cross-cutting type consumed by
-//! `golish-prompts`, `golish-agent-loop`, `golish-agent-bridge`, eval support,
+//! `golish-prompts`, `golish-agent-kit`, `golish-agent-bridge`, eval support,
 //! and the main Tauri app.
 
 use serde::{Deserialize, Serialize};

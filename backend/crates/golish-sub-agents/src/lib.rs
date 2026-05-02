@@ -45,6 +45,7 @@ pub(crate) mod executor_helpers;
 pub(crate) mod executor_types;
 pub(crate) mod executor_udiff;
 pub mod file_loader;
+pub mod prompt_contributor;
 pub mod prompt_registry;
 pub mod schemas;
 pub mod transcript;
@@ -70,3 +71,6 @@ pub use executor_types::{PostShellHook, SubAgentChainPersistence};
 
 // Re-export prompt registry
 pub use prompt_registry::{PromptContext, PromptRegistry};
+
+// Re-export prompt contributor (moved from golish-prompts in A1)
+pub use prompt_contributor::SubAgentPromptContributor;

@@ -51,7 +51,10 @@ pub async fn run_benchmark(
             EnvFilter::from_default_env()
                 .add_directive("golish=error".parse().unwrap())
                 .add_directive("golish_evals=error".parse().unwrap())
-                .add_directive("golish_ai=error".parse().unwrap())
+                .add_directive("golish_agent_kit=error".parse().unwrap())
+                .add_directive("golish_agent_runtime=error".parse().unwrap())
+                .add_directive("golish_agent_bridge=error".parse().unwrap())
+                .add_directive("golish_prompts=error".parse().unwrap())
                 .add_directive("golish_benchmarks=error".parse().unwrap()),
         )
         .try_init();

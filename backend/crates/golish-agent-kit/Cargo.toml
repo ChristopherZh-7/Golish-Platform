@@ -1,9 +1,9 @@
 [package]
-name = "golish-agent-loop"
+name = "golish-agent-kit"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-description = "Agentic loop runtime extracted from golish-ai (A1-2): tool execution, loop detection, task orchestration, HITL approval, tool policy, planner, in-memory db tracking, llm-client wiring."
+description = "Agent runtime building blocks (renamed from golish-agent-kit in A2): tool execution, loop detection, task orchestration, HITL approval, tool policy, planner, in-memory db tracking, llm-client wiring."
 
 [dependencies]
 # Foundation crates

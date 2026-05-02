@@ -5,24 +5,14 @@
 
 pub mod db;
 pub mod mcp;
-pub mod pentest;
 pub mod pty;
 pub mod sidecar;
 pub mod telemetry;
 
 pub use db::DbState;
-// The following re-exports are reserved for an upcoming Tauri `manage<T>()`
-// migration (see refactor-roadmap P2-2). Allow dead-code until consumers wire
-// these per-domain states into command signatures.
-#[allow(unused_imports)]
 pub use mcp::McpManaged;
-#[allow(unused_imports)]
-pub use pentest::PentestToolState;
-#[allow(unused_imports)]
 pub use pty::PtyState;
-#[allow(unused_imports)]
 pub use sidecar::SidecarManaged;
-#[allow(unused_imports)]
 pub use telemetry::TelemetryState;
 
 use crate::error::GolishError;
@@ -117,5 +107,30 @@ impl AppState {
     /// Extract a `DbState` that shares the same pool + gate.
     pub fn extract_db_state(&self) -> DbState {
         DbState::new(self.db_pool.clone(), self.db_ready.clone())
+    }
+
+    /// Extract a `TelemetryState` that shares the same stats + langfuse flag.
+    pub fn extract_telemetry_state(&self) -> TelemetryState {
+        TelemetryState::new(self.langfuse_active, self.telemetry_stats.clone())
+    }
+
+    /// Extract an `McpManaged` that shares the same MCP manager slot.
+    pub fn extract_mcp_managed(&self) -> McpManaged {
+        McpManaged::from_shared(self.mcp_manager.clone())
+    }
+
+    /// Extract a `PtyState` that shares the same PTY manager + session data.
+    pub fn extract_pty_state(&self) -> PtyState {
+        PtyState::from_shared(
+            self.pty_manager.clone(),
+            self.pty_output_tap.clone(),
+            self.active_terminal_session.clone(),
+            self.pentest_busy_sessions.clone(),
+        )
+    }
+
+    /// Extract a `SidecarManaged` that shares the same config + runtime state.
+    pub fn extract_sidecar_managed(&self) -> SidecarManaged {
+        SidecarManaged::from_shared(self.sidecar_config.clone(), self.sidecar_state.clone())
     }
 }

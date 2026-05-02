@@ -56,7 +56,7 @@ pub async fn send_ai_prompt_session(
     );
 
     match mode {
-        golish_ai::execution_mode::ExecutionMode::Chat => {
+        golish_agent_kit::execution_mode::ExecutionMode::Chat => {
             bridge.execute(&prompt).await.map_err(|e| {
                 tracing::error!(
                     message = "[send_ai_prompt_session] Chat execution error",
@@ -66,8 +66,8 @@ pub async fn send_ai_prompt_session(
                 GolishError::Internal(e.to_string())
             })
         }
-        golish_ai::execution_mode::ExecutionMode::Task => {
-            use golish_ai::task_orchestrator::bridge_executor::{classify_user_intent, UserIntent};
+        golish_agent_kit::execution_mode::ExecutionMode::Task => {
+            use golish_agent_bridge::bridge_executor::{classify_user_intent, UserIntent};
 
             let intent = classify_user_intent(&bridge, &prompt).await;
 
@@ -112,7 +112,8 @@ async fn execute_task_mode(
     prompt: &str,
     state: &AppState,
 ) -> anyhow::Result<String> {
-    use golish_ai::task_orchestrator::{bridge_executor::BridgeAgentExecutor, TaskOrchestrator};
+    use golish_agent_bridge::bridge_executor::BridgeAgentExecutor;
+    use golish_agent_kit::task_orchestrator::TaskOrchestrator;
     use golish_core::events::AiEvent;
 
     let uuid_session_id = uuid::Uuid::new_v4();
@@ -142,7 +143,7 @@ async fn execute_task_mode(
     });
 
     let start_time = std::time::Instant::now();
-    let db_repo: std::sync::Arc<dyn golish_ai::db_traits::DbRepoProvider> =
+    let db_repo: std::sync::Arc<dyn golish_agent_kit::db_traits::DbRepoProvider> =
         std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(state.db_pool.clone()));
     let mut orchestrator = TaskOrchestrator::new(db_repo, uuid_session_id, event_tx);
     let executor = BridgeAgentExecutor::new(bridge.clone());

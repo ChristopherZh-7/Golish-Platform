@@ -31,7 +31,7 @@
 //! # Usage
 //!
 //! ```ignore
-//! use golish_ai::system_hooks::{HookRegistry, format_system_hooks};
+//! use golish_agent_kit::system_hooks::{HookRegistry, format_system_hooks};
 //!
 //! // Create registry with built-in hooks
 //! let registry = HookRegistry::new();

@@ -1,7 +1,7 @@
 //! L2: Staged patch commands (list / get / discard / apply / regenerate).
 
 use crate::error::GolishError;
-use crate::state::AppState;
+use crate::state::{AppState, SidecarManaged};
 use tauri::State;
 
 use super::super::commits::{PatchManager, StagedPatch};
@@ -32,7 +32,7 @@ fn resolve_git_root(session: &Session) -> Result<std::path::PathBuf, GolishError
 /// Get all staged patches for a session
 #[tauri::command]
 pub async fn sidecar_get_staged_patches(
-    state: State<'_, AppState>,
+    state: State<'_, SidecarManaged>,
     session_id: String,
 ) -> Result<Vec<StagedPatch>, GolishError> {
     let sessions_dir = state.sidecar_state.config().sessions_dir();
@@ -47,7 +47,7 @@ pub async fn sidecar_get_staged_patches(
 /// Get all applied patches for a session
 #[tauri::command]
 pub async fn sidecar_get_applied_patches(
-    state: State<'_, AppState>,
+    state: State<'_, SidecarManaged>,
     session_id: String,
 ) -> Result<Vec<StagedPatch>, GolishError> {
     let sessions_dir = state.sidecar_state.config().sessions_dir();
@@ -62,7 +62,7 @@ pub async fn sidecar_get_applied_patches(
 /// Get a specific patch by ID
 #[tauri::command]
 pub async fn sidecar_get_patch(
-    state: State<'_, AppState>,
+    state: State<'_, SidecarManaged>,
     session_id: String,
     patch_id: u32,
 ) -> Result<Option<StagedPatch>, GolishError> {
@@ -81,7 +81,7 @@ pub async fn sidecar_get_patch(
 /// Discard a staged patch
 #[tauri::command]
 pub async fn sidecar_discard_patch(
-    state: State<'_, AppState>,
+    state: State<'_, SidecarManaged>,
     session_id: String,
     patch_id: u32,
 ) -> Result<bool, GolishError> {
@@ -241,7 +241,7 @@ pub async fn sidecar_apply_all_patches(
 /// Get staged patches for the current session
 #[tauri::command]
 pub async fn sidecar_get_current_staged_patches(
-    state: State<'_, AppState>,
+    state: State<'_, SidecarManaged>,
 ) -> Result<Vec<StagedPatch>, GolishError> {
     let session_id = state
         .sidecar_state
@@ -323,7 +323,7 @@ pub async fn sidecar_regenerate_patch(
 /// Update a patch's commit message manually (without LLM)
 #[tauri::command]
 pub async fn sidecar_update_patch_message(
-    state: State<'_, AppState>,
+    state: State<'_, SidecarManaged>,
     session_id: String,
     patch_id: u32,
     new_message: String,

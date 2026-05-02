@@ -17,7 +17,7 @@ use golish_sub_agents::SubAgentContext;
 use super::context::{is_cancelled, AgenticLoopContext, LoopCaptureContext};
 use super::single_tool_call::execute_single_tool_call;
 use super::sub_agent_dispatch::partition_tool_calls;
-use golish_agent_loop::system_hooks::{format_system_hooks, HookRegistry};
+use golish_agent_kit::system_hooks::{format_system_hooks, HookRegistry};
 
 /// Run all `tool_calls_to_execute` and append the resulting user message
 /// (tool results + any merged system hooks) to `chat_history`.

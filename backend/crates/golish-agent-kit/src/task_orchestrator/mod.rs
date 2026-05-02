@@ -26,7 +26,7 @@
 //! [`AgentExecutor`]) lives in the `golish-ai` umbrella crate because it
 //! depends on `agent_bridge`. After A1-3 it will move into
 //! `golish-agent-bridge` and remain re-exported as
-//! `golish_ai::task_orchestrator::bridge_executor` for backward
+//! `golish_agent_bridge::bridge_executor` for backward
 //! compatibility.
 
 pub mod prompts;

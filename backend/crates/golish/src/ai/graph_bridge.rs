@@ -9,7 +9,7 @@ use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use golish_ai::tool_executors::graph_trait::{
+use golish_agent_kit::tool_executors::graph_trait::{
     GraphEntityView, GraphKnowledgeBase, GraphRelationView,
 };
 use golish_graphiti::GraphClient;

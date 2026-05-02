@@ -10,7 +10,7 @@ use super::helpers::handle_loop_detection;
 use super::llm_helpers::{summarize_tool_output, mentor_one_shot};
 use super::tool_execution::execute_with_hitl_generic;
 use super::{normalize_run_pty_cmd_args, toolcall_fixer, SUMMARIZE_THRESHOLD_TOKENS};
-use golish_agent_loop::system_hooks::{HookRegistry, PostToolContext};
+use golish_agent_kit::system_hooks::{HookRegistry, PostToolContext};
 
 pub(super) async fn execute_single_tool_call<M>(
     tool_call: ToolCall,
@@ -72,12 +72,12 @@ where
         handle_loop_detection(&loop_result, &tool_id, &tool_call_id, ctx.events.event_tx)
     {
         let loop_info = match &loop_result {
-            golish_agent_loop::loop_detection::LoopDetectionResult::Blocked {
+            golish_agent_kit::loop_detection::LoopDetectionResult::Blocked {
                 repeat_count,
                 max_count,
                 ..
             } => format!("repeat_count={}, max={}", repeat_count, max_count),
-            golish_agent_loop::loop_detection::LoopDetectionResult::MaxIterationsReached {
+            golish_agent_kit::loop_detection::LoopDetectionResult::MaxIterationsReached {
                 iterations,
                 max_iterations,
                 ..
@@ -265,8 +265,8 @@ where
                 repeat_count,
             );
             let advice = {
-                let mentor_system = golish_agent_loop::task_orchestrator::prompts::mentor_system_prompt();
-                let mentor_user = golish_agent_loop::task_orchestrator::prompts::mentor_user_prompt(
+                let mentor_system = golish_agent_kit::task_orchestrator::prompts::mentor_system_prompt();
+                let mentor_user = golish_agent_kit::task_orchestrator::prompts::mentor_user_prompt(
                     tool_name,
                     &repeated_tool,
                     repeat_count,

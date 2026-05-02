@@ -1,7 +1,7 @@
 //! Read-only commands exposing per-session content (state.md, log.md, metadata).
 
 use crate::error::GolishError;
-use crate::state::AppState;
+use crate::state::SidecarManaged;
 use tauri::State;
 
 use super::super::session::{Session, SessionMeta};
@@ -9,7 +9,7 @@ use super::super::session::{Session, SessionMeta};
 /// Get the state.md content for a session (body only)
 #[tauri::command]
 pub async fn sidecar_get_session_state(
-    state: State<'_, AppState>,
+    state: State<'_, SidecarManaged>,
     session_id: String,
 ) -> Result<String, GolishError> {
     state
@@ -22,7 +22,7 @@ pub async fn sidecar_get_session_state(
 /// Get the injectable context for the current session
 #[tauri::command]
 pub async fn sidecar_get_injectable_context(
-    state: State<'_, AppState>,
+    state: State<'_, SidecarManaged>,
 ) -> Result<Option<String>, GolishError> {
     state
         .sidecar_state
@@ -34,7 +34,7 @@ pub async fn sidecar_get_injectable_context(
 /// Get the metadata for a session
 #[tauri::command]
 pub async fn sidecar_get_session_meta(
-    state: State<'_, AppState>,
+    state: State<'_, SidecarManaged>,
     session_id: String,
 ) -> Result<SessionMeta, GolishError> {
     state
@@ -46,7 +46,7 @@ pub async fn sidecar_get_session_meta(
 
 /// List all sessions
 #[tauri::command]
-pub async fn sidecar_list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionMeta>, GolishError> {
+pub async fn sidecar_list_sessions(state: State<'_, SidecarManaged>) -> Result<Vec<SessionMeta>, GolishError> {
     state
         .sidecar_state
         .list_sessions()
@@ -57,7 +57,7 @@ pub async fn sidecar_list_sessions(state: State<'_, AppState>) -> Result<Vec<Ses
 /// Get the session log (append-only event log)
 #[tauri::command]
 pub async fn sidecar_get_session_log(
-    state: State<'_, AppState>,
+    state: State<'_, SidecarManaged>,
     session_id: String,
 ) -> Result<String, GolishError> {
     let sessions_dir = state.sidecar_state.config().sessions_dir();

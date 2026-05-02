@@ -1,40 +1,29 @@
-//! High-level agentic loop runtime, split out from `golish-agent-loop` to
-//! finish P3-1 (compile-time budget).
+//! High-level agent runtime (**Layer 4b**).
 //!
-//! # Why a separate crate?
+//! Renamed from `golish-agentic-loop` in A2. Split out from
+//! `golish-agent-kit` (Layer 4a) to keep the compile-time budget honest:
+//! the streaming loop body is ~6.5 KLOC with heavy generic
+//! instantiations from rig-core, so editing it used to re-check the
+//! whole infrastructure layer (~13 KLOC). Separating the two crates
+//! restores incremental editing.
 //!
-//! `golish-agent-loop` originally hosted both:
-//! 1. **Low-level building blocks** — tool executors, tool definitions,
-//!    HITL recorder, loop detector, tool policy, sidecar trait, system
-//!    hooks, planner, in-memory db tracking, llm-client wiring, …
-//! 2. **The high-level streaming loop** — `agentic_loop/` (~6.5 KLOC) plus
-//!    its eval harness (`eval_support/`) and mocks (`test_utils*`).
+//! # What lives here
 //!
-//! Touching anything in (2) used to recompile the whole package
-//! (~13 KLOC + heavy generic instantiations from rig-core), missing the
-//! 8s `cargo check` budget recorded in the architecture roadmap. Splitting
-//! (2) into this crate restores incremental editing of the loop body
-//! without re-checking the lower layer.
+//! - [`agentic_loop`]   — streaming tool-call loop (`run_agentic_loop*`)
+//! - [`eval_support`]   — evals harness built on top of the loop
+//! - [`test_utils`]     — shared mocks (feature `test-utils` or `cfg(test)`)
 //!
 //! # Layering
 //!
 //! ```text
-//!                     ┌────────────────────────────┐
-//!                     │  golish-agentic-loop (this)│
-//!                     │  agentic_loop / eval_support│
-//!                     │  test_utils                 │
-//!                     └────────────┬───────────────┘
-//!                                  │ depends on
-//!                                  ▼
-//!                     ┌────────────────────────────┐
-//!                     │  golish-agent-loop          │
-//!                     │  tool_executors / tool_*    │
-//!                     │  hitl / loop_detection / …  │
-//!                     └────────────────────────────┘
+//!   golish-agent-runtime (this, L4b)   ← run_agentic_loop_unified, eval harness
+//!              │
+//!              ▼ depends on
+//!   golish-agent-kit            (L4a)  ← tool_executors, hitl, planner, tool_policy
 //! ```
 //!
-//! Down-stream consumers (`golish-agent-bridge`, `golish-ai`, evals) keep
-//! the original import paths via re-exports in their facades.
+//! Down-stream consumers (`golish-agent-bridge`, `golish-ai` umbrella,
+//! evals) import from here directly.
 
 pub mod agentic_loop;
 pub mod eval_support;
