@@ -126,3 +126,88 @@ where
         StreamOutcome::BreakAgentLoop => Ok(CompletionOutcome::BreakAgentLoop),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use golish_llm_providers::LlmClient;
+    use rig::message::{Text, UserContent};
+    use rig::one_or_many::OneOrMany;
+    use tokio::sync::RwLock;
+
+    use crate::test_utils::{MockCompletionModel, MockResponse, TestContextBuilder};
+
+    use super::*;
+
+    fn user_message(text: &str) -> Message {
+        Message::User {
+            content: OneOrMany::one(UserContent::Text(Text {
+                text: text.to_string(),
+            })),
+        }
+    }
+
+    #[test]
+    fn break_outcome_variant_signals_loop_termination() {
+        let outcome = CompletionOutcome::BreakAgentLoop;
+        assert!(matches!(outcome, CompletionOutcome::BreakAgentLoop));
+    }
+
+    #[tokio::test]
+    async fn smoke_test_drives_mock_stream_and_returns_continue_with_text() {
+        let test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let ctx = test_ctx.as_agentic_context_with_client(&client);
+        let config = AgenticLoopConfig::main_agent_generic();
+        let model =
+            MockCompletionModel::new(vec![MockResponse::text("Hello from completion phase test.")]);
+        let history = vec![user_message("Say hello.")];
+        let state = TurnState {
+            iteration: 1,
+            ..TurnState::default()
+        };
+
+        let mut accumulated_response = String::new();
+        let mut accumulated_thinking = String::new();
+        let mut total_usage = TokenUsage::default();
+
+        let outcome = run(
+            &state,
+            &ctx,
+            &config,
+            &model,
+            "You are a test bot.",
+            &history,
+            &[],
+            &Span::none(),
+            false,
+            &mut accumulated_response,
+            &mut accumulated_thinking,
+            &mut total_usage,
+        )
+        .await
+        .expect("completion phase must succeed for a healthy mock model");
+
+        match outcome {
+            CompletionOutcome::Continue { outcome, .. } => {
+                assert!(
+                    !outcome.has_tool_calls,
+                    "text-only response must not produce tool calls"
+                );
+                assert!(
+                    outcome.text_content.contains("Hello from completion phase test."),
+                    "text content must come from the mock model, got: {:?}",
+                    outcome.text_content
+                );
+            }
+            CompletionOutcome::BreakAgentLoop => {
+                panic!("text-only mock response must not break the loop")
+            }
+        }
+        assert!(
+            accumulated_response.contains("Hello from completion phase test."),
+            "accumulated_response must reflect the streamed text"
+        );
+    }
+}
