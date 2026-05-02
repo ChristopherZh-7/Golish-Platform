@@ -35,7 +35,11 @@ dist-ssr
 backend/target/
 backend/crates/*/target/
 **/*.rs.bk
-Cargo.lock
+# NOTE: Cargo.lock IS committed. Golish ships as a binary application
+# (the Tauri desktop app), and applications must lock dependency
+# versions for reproducible builds across dev machines and CI.
+# Library crates (golish-* in workspace) inherit the workspace
+# Cargo.lock at backend/Cargo.lock — do not commit per-crate lockfiles.
 
 # Tauri
 backend/gen/
