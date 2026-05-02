@@ -4,8 +4,6 @@ use std::path::PathBuf;
 
 use super::*;
 
-use super::*;
-
 #[test]
 fn test_eval_config_default() {
     let config = EvalConfig::default();
