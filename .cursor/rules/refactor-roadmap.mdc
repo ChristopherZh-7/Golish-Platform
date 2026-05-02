@@ -25,7 +25,9 @@ alwaysApply: false
 
 > **目标**：消灭显眼的拓扑瑕疵，让架构图变干净；不动主体逻辑。
 
-### P1-1 修复反向依赖：`golish-indexer → golish-ai`
+### P1-1 修复反向依赖：`golish-indexer → golish-ai` — ✅ Done
+
+> ✅ Done 2026-05-02: `golish-indexer` 已不再依赖 `golish-ai`(grep `golish-ai` `backend/crates/golish-indexer/Cargo.toml` 无结果)。embedding 客户端代码已迁出。
 
 **问题**：`backend/crates/golish-indexer/Cargo.toml` 依赖了上层的 `golish-ai`，破坏 4 层 DAG。
 
@@ -39,7 +41,9 @@ alwaysApply: false
 
 ---
 
-### P1-2 模块化 Tauri command 注册
+### P1-2 模块化 Tauri command 注册 — ✅ Done
+
+> ✅ Done 2026-05-02: `wc -l backend/crates/golish/src/lib.rs` = 76 行(目标 ≤120,达成)。`tauri::generate_handler![…]` 已迁到 `commands_registry.rs`。
 
 **问题**：`backend/crates/golish/src/lib.rs` 单个 `generate_handler![]` 宏 600+ 行，违反 SRP。
 
@@ -52,7 +56,9 @@ alwaysApply: false
 
 ---
 
-### P1-3 补全新 crate 的测试（4 个）
+### P1-3 补全新 crate 的测试（4 个） — ✅ Done
+
+> ✅ Done 2026-05-02: 4 个 crate 全部有 `tests/api_contract.rs` + 各自的领域测试(`storage_and_progress.rs` / `pure_helpers.rs` / `crud_roundtrip.rs` / `state_lifecycle.rs`)。
 
 **目标**：每个 crate ≥ 1 个集成测试 + 1 个 trait mock。
 
@@ -67,24 +73,30 @@ alwaysApply: false
 
 ---
 
-### P1-4 收尾既有大文件拆分
+### P1-4 收尾既有大文件拆分 — ✅ Done
+
+> ✅ Done 2026-05-02: 所有原始榜单上的文件已拆 + 后续两个新增违规也拆完(`codebases.rs` 555→89/168/122/83/104, `loader.rs` 503→258/206/56)。完成判据 `find ... awk '$1>500'` 输出空。
 
 **目标**：所有 .rs 业务文件 ≤500 行（测试文件不限）。
 
-依据 `wc -l backend/crates/**/*.rs` 当前榜单（排除 tests/ 与 *_tests.rs）：
+依据 `wc -l backend/crates/**/*.rs` 当前榜单（排除 tests/ 与 *_tests.rs）:
 
-| 文件 | 行 | 拆分方向 |
-|---|---|---|
-| `golish-llm-providers/src/lib.rs` | 500 | 按 provider 折分 (openai.rs / anthropic.rs / vertex.rs / openrouter.rs) |
-| `golish-sub-agents/src/defaults/prompts.rs` | 1171 | 按 agent 拆 (`prompts/{architect,coder,security,…}.rs`) |
-| `golish-scan-runner/src/nuclei.rs` | 701 | 拆 `nuclei/{runner,parser,poc_match}.rs` |
-| `golish-ai/src/task_orchestrator/bridge_executor.rs` | 678 | 见 Phase 2 整体拆分 |
+| 文件 | 原行数 | 拆分方向 | 状态 |
+|---|---|---|---|
+| `golish-llm-providers/src/lib.rs` | 500 | 按 provider 折分 | ✅ |
+| `golish-sub-agents/src/defaults/prompts.rs` | 1171 | 按 agent 拆 | ✅ |
+| `golish-scan-runner/src/nuclei.rs` | 701 | 拆 `nuclei/{runner,parser,poc_match}.rs` | ✅ |
+| `golish-ai/src/task_orchestrator/bridge_executor.rs` | 678 | A1 整体拆分 | ✅ |
+| `golish/src/indexer/commands/codebases.rs` | 555 | 拆 5 文件 (mod/list/crud/lifecycle/memory) | ✅ |
+| `golish-settings/src/loader.rs` | 503 | 拆 3 文件 (mod/env/migration) | ✅ |
 
 **完成判据**：`find backend/crates -name "*.rs" -not -path "*/tests/*" -not -name "*_tests.rs" | xargs wc -l | awk '$1>500'` 输出空。
 
 ---
 
-### P1-5 删除遗留死代码
+### P1-5 删除遗留死代码 — ✅ Done
+
+> ✅ Done 2026-05-02: 所有原始清单已删除并 commit。
 
 依据 git status 已删除：
 - ✅ `golish/src/projects/schema.rs`、`storage.rs`（已迁 `golish-projects`）
@@ -97,7 +109,9 @@ alwaysApply: false
 
 ---
 
-### P1-6 前端 store 卫生
+### P1-6 前端 store 卫生 — ✅ Done
+
+> ✅ Done 2026-05-02: `wc -l frontend/store/index.ts` = 54 行(目标 ≤80,达成)。slices 已成立。
 
 **问题**：`frontend/store/index.ts` 根状态散落 `chatPanelVisible / zapRunning / appIsFocused` 等单字段。
 
@@ -114,7 +128,9 @@ alwaysApply: false
 
 > **目标**：拆掉两个最大的耦合点 — `golish-ai` megacrate 与 god-state `AppState`。
 
-### P2-1 拆分 `golish-ai`（最大工程）
+### P2-1 拆分 `golish-ai`（最大工程） — ✅ Done
+
+> ✅ Done 2026-05-02: 4 个 crate 全部拆出(commit 09d7a0b / 8e2426d 系列)。`golish-ai/src/lib.rs` = 39 行 facade。详见 `architecture-upgrade-plan.mdc` A1-1 ~ A1-4。
 
 当前 34.9K LOC / 159 文件，拆分为 4 个 crate：
 
@@ -153,7 +169,9 @@ golish-agent-bridge  (生命周期 + Tauri-friendly API, ~7K LOC)
 
 ---
 
-### P2-2 把 `AppState` 拆成域聚合根
+### P2-2 把 `AppState` 拆成域聚合根 — ✅ Done
+
+> ✅ Done 2026-05-02: AppState 已拆成 7 个独立 manage<T>(commit 6df0b08 [A2-1])。详见 `architecture-upgrade-plan.mdc` A2-1。
 
 **问题**：`backend/crates/golish/src/state.rs` 17 字段，每个字段被独立的命令子集消费。
 
@@ -182,7 +200,9 @@ golish-agent-bridge  (生命周期 + Tauri-friendly API, ~7K LOC)
 
 ---
 
-### P2-3 `golish-events` 脱离 `golish-ai`
+### P2-3 `golish-events` 脱离 `golish-ai` — ✅ Done
+
+> ✅ Done 2026-05-02: `golish-events` 是 Layer 1 独立 crate, `golish-ai/lib.rs` 已成 facade。下游通过 `golish_events::*` 直接 import,无需再走 `golish_ai::*`。
 
 **问题**：`golish-ai/src/lib.rs:68-69` 写着：
 ```rust
@@ -196,7 +216,9 @@ pub(crate) use golish_events::transcript;
 
 ---
 
-### P2-4 统一 DB 抽象到 trait（按域分批）
+### P2-4 统一 DB 抽象到 trait（按域分批） — 🟡 Partial
+
+> 🟡 2026-05-02: `golish-pipeline` / `golish-scan-runner` / `golish-session` / `golish-ai` 已有 trait;`golish-pentest` / `golish-vuln-intel` / `golish-projects` 仍直接用 `&PgPool`,这是 P2-4 剩余范围(grep `PgPool` 在域 crate 仍有 ~10 处命中)。
 
 **目标**：所有 Layer 3 域 crate 不直接接 `&sqlx::PgPool`，改接 `&dyn XxxRepo`。
 
@@ -228,7 +250,9 @@ pub trait PentestRepo: Send + Sync {
 
 ## Phase 3：体验与扩展（持续）
 
-### P3-1 编译时间预算
+### P3-1 编译时间预算 — ⏳ Pending baseline
+
+> ⏳ 2026-05-02: 未运行基准测试。下次 session 可以跑 `time cargo check --workspace`(冷/热)、`time cargo check -p golish`、`time cargo check -p golish-agent-loop` 各 3 次取中位数,再决定是否需要 sccache/cargo-chef。
 
 | 操作 | 目标 |
 |---|---|
@@ -244,7 +268,14 @@ pub trait PentestRepo: Send + Sync {
 
 ---
 
-### P3-2 前端代码分割（lazy chunks）
+### P3-2 前端代码分割（lazy chunks） — ✅ Done (主要项)
+
+> ✅ Done 2026-05-02 (commit df2459f): SecurityView 4 个 invisible-mount panel(Repeater/Intruder/Scanner/ScanTools) + VulnIntelPanel 的 WikiTab 已转 React.lazy + visited-once 门控。
+> 
+> 新增 5 个独立 chunk(共 113.55 kB / 30.02 kB gzip):
+> - RepeaterPanel 17.35 kB, IntruderPanel 14.61 kB, ScannerPanel 31.48 kB, ScanToolsPanel 30.97 kB, WikiTab 19.14 kB
+> 
+> ToolManager.tsx (1044) 早已在 `App/lazyRegistry.ts` 中 lazy 化(verified)。
 
 `frontend/components` 下 600+ 文件全部 eager-import。Vite bundle 当前 (`dist/index-*.js` 346KB) 还可以，但 `ToolManager.tsx` (1046 行) / `WikiTab.tsx` (720 行) / `RepeaterPanel.tsx` (604 行) 等大组件应转 `React.lazy(() => import(…))`。
 
@@ -252,7 +283,9 @@ pub trait PentestRepo: Send + Sync {
 
 ---
 
-### P3-3 ts-rs 100% 覆盖
+### P3-3 ts-rs 100% 覆盖 — ✅ Done (主要项)
+
+> ✅ Done 2026-05-02: `grep "TODO.*replace.*generated" frontend/lib/ frontend/store/` 无结果。剩余 store-types.ts 是 view-model 设计性保留(plan 标注允许)。
 
 剩余手写类型清单：
 - `frontend/lib/ai/types.ts` 中标注 `// TODO: replace with generated`
@@ -274,16 +307,16 @@ pub trait PentestRepo: Send + Sync {
 
 ## 量化目标对照表
 
-| 指标 | 当前 | Phase 1 后 | Phase 2 后 | Phase 3 后 |
-|---|---|---|---|---|
-| 后端 crate 数 | 38 | 38 | **41** (golish-ai 拆 3) | 41-43 |
-| `golish` lib.rs 行 | 672 | **≤120** | ≤120 | ≤120 |
-| `golish-ai` LOC | 34.9K | 34.9K | **≤6K** | ≤6K |
-| 反向/同层依赖 | 1 (indexer→ai) | **0** | 0 | 0 |
-| 业务文件 >500 行 | 8+ | **0** | 0 | 0 |
-| 域 crate 用裸 PgPool | 3 | 3 | **0** | 0 |
-| 新 crate 测试覆盖 | 0/4 | **4/4** | 4/4 | 4/4 |
-| 综合评级 | A- | A | A+ | S |
+| 指标 | 起点 | Phase 1 后 | Phase 2 后 | Phase 3 后 | 当前 (2026-05-02) |
+|---|---|---|---|---|---|
+| 后端 crate 数 | 38 | 38 | **41** (golish-ai 拆 3) | 41-43 | **42** ✅ |
+| `golish` lib.rs 行 | 672 | **≤120** | ≤120 | ≤120 | **76** ✅ |
+| `golish-ai` LOC | 34.9K | 34.9K | **≤6K** | ≤6K | **39 行** facade ✅ |
+| 反向/同层依赖 | 1 (indexer→ai) | **0** | 0 | 0 | **0** ✅ |
+| 业务文件 >500 行 | 8+ | **0** | 0 | 0 | **0** ✅ (P1-4 达成) |
+| 域 crate 用裸 PgPool | 3 | 3 | **0** | 0 | **3** 🟡 (P2-4 部分完成) |
+| 新 crate 测试覆盖 | 0/4 | **4/4** | 4/4 | 4/4 | **4/4** ✅ |
+| 综合评级 | A- | A | A+ | S | **S-** (P2-4 + P3-1 baseline 后达 S) |
 
 ---
 
