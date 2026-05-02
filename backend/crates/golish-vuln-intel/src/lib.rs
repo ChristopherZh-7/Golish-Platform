@@ -3,8 +3,8 @@
 //! This crate owns all vuln-feed ingestion (NVD, CISA KEV, RSS), GitHub PoC
 //! search, and Nuclei template discovery/import. It has **no** Tauri
 //! dependency — the application layer wires it up through thin command
-//! wrappers, building `reqwest::Client` instances from settings and passing
-//! `&PgPool` directly.
+//! wrappers, building `reqwest::Client` instances from settings and
+//! passing a [`VulnIntelStore`] (typically a [`PgVulnIntelStore`]).
 //!
 //! ## Layout
 //! - [`types`]           — public DTOs (`VulnFeed`, `VulnEntry`) + DB row helpers.
@@ -22,6 +22,8 @@ pub mod github_client;
 pub mod github_poc;
 pub mod nuclei_discover;
 pub mod nuclei_search;
+mod pg_adapter;
+mod store_trait;
 pub mod types;
 
 pub use error::{VulnIntelError, VulnIntelResult};
@@ -33,7 +35,6 @@ pub use nuclei_search::{
     batch_search_nuclei_templates, extract_nuclei_severity, search_nuclei_templates,
     BatchNucleiResult, NucleiTemplateResult,
 };
-pub use types::{
-    default_feeds, ensure_default_feeds, nvd_recent_url, upsert_entries, EntryRow, FeedRow,
-    VulnEntry, VulnFeed,
-};
+pub use pg_adapter::PgVulnIntelStore;
+pub use store_trait::VulnIntelStore;
+pub use types::{default_feeds, nvd_recent_url, EntryRow, FeedRow, VulnEntry, VulnFeed};

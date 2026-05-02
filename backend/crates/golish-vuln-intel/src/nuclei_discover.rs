@@ -142,7 +142,7 @@ fn emit_progress(emitter: Option<&EventEmitterHandle>, progress: &NucleiDiscover
 /// if tree is too large. Imports CVE templates AND technology/misconfiguration
 /// templates.
 pub async fn discover_all_nuclei(
-    pool: &sqlx::PgPool,
+    store: &dyn crate::store_trait::VulnIntelStore,
     client: &reqwest::Client,
     headers: &HeaderMap,
     emitter: Option<&EventEmitterHandle>,
@@ -190,14 +190,10 @@ pub async fn discover_all_nuclei(
         },
     );
 
-    let existing_ids: std::collections::HashSet<String> = sqlx::query_scalar::<_, String>(
-        "SELECT cve_id FROM vuln_kb_pocs WHERE source = 'nuclei_template'",
-    )
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default()
-    .into_iter()
-    .collect();
+    let existing_ids = store
+        .fetch_existing_poc_identifiers()
+        .await
+        .unwrap_or_default();
     tracing::info!(existing = existing_ids.len(), "[nuclei-discover] Existing Nuclei templates in DB");
 
     let new_paths: Vec<&String> = yaml_paths
@@ -289,20 +285,20 @@ pub async fn discover_all_nuclei(
             path
         );
 
-        match golish_db::repo::wiki_kb::upsert_poc_full(
-            pool,
-            &identifier,
-            &template_name,
-            "nuclei",
-            "yaml",
-            &content,
-            "nuclei_template",
-            &source_url,
-            &severity,
-            &description,
-            &tags,
-        )
-        .await
+        match store
+            .upsert_nuclei_poc(
+                &identifier,
+                &template_name,
+                "nuclei",
+                "yaml",
+                &content,
+                "nuclei_template",
+                &source_url,
+                &severity,
+                &description,
+                &tags,
+            )
+            .await
         {
             Ok(_) => imported += 1,
             Err(e) => {

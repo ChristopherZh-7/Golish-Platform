@@ -120,7 +120,7 @@ pub fn default_feeds() -> Vec<VulnFeed> {
     ]
 }
 
-pub async fn ensure_default_feeds(pool: &sqlx::PgPool) -> crate::VulnIntelResult<()> {
+pub(crate) async fn ensure_default_feeds(pool: &sqlx::PgPool) -> crate::VulnIntelResult<()> {
     for feed in default_feeds() {
         sqlx::query(
             "INSERT INTO vuln_feeds (id, name, feed_type, url, enabled) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO NOTHING",
@@ -146,7 +146,7 @@ pub fn nvd_recent_url(days_back: i64) -> String {
     )
 }
 
-pub async fn upsert_entries(pool: &sqlx::PgPool, entries: &[VulnEntry]) -> crate::VulnIntelResult<()> {
+pub(crate) async fn upsert_entries(pool: &sqlx::PgPool, entries: &[VulnEntry]) -> crate::VulnIntelResult<()> {
     for e in entries {
         let refs_json =
             serde_json::to_value(&e.references).unwrap_or_else(|_| serde_json::json!([]));

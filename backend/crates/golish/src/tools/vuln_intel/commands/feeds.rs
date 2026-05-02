@@ -1,6 +1,6 @@
 //! Tauri commands: vuln-feed CRUD.
 
-use golish_vuln_intel::{self as intel, FeedRow, VulnFeed};
+use golish_vuln_intel::{FeedRow, PgVulnIntelStore, VulnFeed, VulnIntelStore as _};
 
 use crate::error::GolishError;
 use crate::state::DbState;
@@ -10,7 +10,7 @@ pub async fn intel_list_feeds(
     state: tauri::State<'_, DbState>,
 ) -> Result<Vec<VulnFeed>, GolishError> {
     let pool = state.pool_ready().await?;
-    intel::ensure_default_feeds(pool).await?;
+    PgVulnIntelStore::new(pool).ensure_default_feeds().await?;
     let rows: Vec<FeedRow> = sqlx::query_as(
         "SELECT id, name, feed_type, url, enabled, last_fetched FROM vuln_feeds",
     )
