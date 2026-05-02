@@ -197,7 +197,13 @@ describe("UnifiedInput Callback Stability", () => {
       // The key point: the callback should work correctly throughout these state changes
     });
 
-    it("should work correctly with current state after streaming ends", async () => {
+    // SKIP: outdated since the AI submit path moved to AIChatPanel/useChatSend.
+    // UnifiedInput.handleSubmit now exclusively writes to the PTY, so it
+    // neither calls sendPromptSession nor disables the send button while the
+    // agent is responding (the textarea stays usable on purpose so users can
+    // pre-type the next message). Re-enable when the AI submit path moves
+    // back into UnifiedInput.
+    it.skip("should work correctly with current state after streaming ends", async () => {
       createSession("session-1");
       const { sendPromptSession } = await import("@/lib/ai");
 
@@ -206,40 +212,24 @@ describe("UnifiedInput Callback Stability", () => {
       render(<UnifiedInput sessionId="session-1" />);
 
       const input = screen.getByTestId("unified-input");
-      // Get submit button - it doesn't have accessible name, find by type="button" without aria-label
-      const buttons = screen.getAllByRole("button");
-      const submitButton = buttons.find(
-        (btn) => !btn.getAttribute("aria-label")?.includes("Switch")
-      );
-      expect(submitButton).toBeDefined();
+      const submitButton = screen.getByTestId("send-button");
 
-      // Type something and submit
       await userEvent.type(input, "Hello world");
       expect(input).toHaveValue("Hello world");
 
-      // Simulate starting a response
       act(() => {
         useStore.getState().setAgentResponding("session-1", true);
       });
-
-      // Button should be disabled during response
       expect(submitButton).toBeDisabled();
 
-      // Simulate end of response
       act(() => {
         useStore.getState().setAgentResponding("session-1", false);
       });
 
-      // Type a new message
       await userEvent.clear(input);
       await userEvent.type(input, "New message");
+      await userEvent.click(submitButton);
 
-      // Submit should work with the new input value
-      if (submitButton) {
-        await userEvent.click(submitButton);
-      }
-
-      // The callback should have used the current input value ("New message")
       expect(sendPromptSession).toHaveBeenCalledWith("session-1", "New message");
     });
   });
@@ -267,7 +257,7 @@ describe("UnifiedInput Callback Stability", () => {
 
     it("should correctly read current input value when Enter is pressed", async () => {
       createSession("session-1");
-      const { sendPromptSession } = await import("@/lib/ai");
+      const { ptyWrite } = await import("@/lib/api/pty");
 
       const { UnifiedInput } = await import("./UnifiedInput");
 
@@ -275,14 +265,21 @@ describe("UnifiedInput Callback Stability", () => {
 
       const input = screen.getByTestId("unified-input");
 
-      // Type a message and press Enter
+      // Type a message and press Enter — UnifiedInput.handleSubmit always
+      // routes to ptyWrite (AI submit lives in AIChatPanel/useChatSend).
       await userEvent.type(input, "Test message{Enter}");
 
-      // The handler should have read the current input value
-      expect(sendPromptSession).toHaveBeenCalledWith("session-1", "Test message");
+      expect(ptyWrite).toHaveBeenCalledWith("session-1", "Test message\n");
     });
 
-    it("should correctly handle mode toggle shortcut regardless of input content", async () => {
+    // Skipped: `useUnifiedInputState` now hardcodes `inputMode = "terminal"`
+    // (see useUnifiedInputState.ts:57/108/176 + REFACTOR_PLAN.md §"Hardcoded
+    // mode"). AI-mode lives in `AIChatPanel` and `useChatSend`; the store's
+    // `setInputMode` action no longer feeds back into UnifiedInput's
+    // `data-mode` attribute, so toggling via the store can never produce
+    // `data-mode="auto"`. Re-enable only if/when UnifiedInput regains a
+    // multi-mode toggle path.
+    it.skip("should correctly handle mode toggle via store API (stale: hardcoded terminal)", async () => {
       createSession("session-1");
 
       const { UnifiedInput } = await import("./UnifiedInput");
@@ -291,16 +288,11 @@ describe("UnifiedInput Callback Stability", () => {
 
       const input = screen.getByTestId("unified-input");
 
-      // Initial mode should be agent (from session setup)
-      expect(input).toHaveAttribute("data-mode", "agent");
-
-      // Type something
       await userEvent.type(input, "some text");
+      act(() => {
+        useStore.getState().setInputMode("session-1", "auto");
+      });
 
-      // Toggle mode with Cmd+I (cycles: terminal → agent → auto → terminal)
-      await userEvent.keyboard("{Meta>}i{/Meta}");
-
-      // Mode should have toggled from agent → auto
       expect(input).toHaveAttribute("data-mode", "auto");
     });
   });

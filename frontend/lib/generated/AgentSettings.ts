@@ -3,25 +3,24 @@
 /**
  * Agent behavior settings.
  */
-export type AgentSettings = {
-  /**
-   * Auto-save conversations
-   */
-  session_persistence: boolean;
-  /**
-   * Session retention in days (0 = forever)
-   */
-  session_retention_days: number;
-  /**
-   * Enable pattern learning for auto-approval
-   */
-  pattern_learning: boolean;
-  /**
-   * Minimum approvals before auto-approve
-   */
-  min_approvals_for_auto: number;
-  /**
-   * Approval rate threshold (0.0 - 1.0)
-   */
-  approval_threshold: number;
-};
+export type AgentSettings = { 
+/**
+ * Auto-save conversations.
+ */
+session_persistence: boolean, 
+/**
+ * Session retention in days (0 = forever).
+ */
+session_retention_days: number, 
+/**
+ * Enable pattern learning for auto-approval.
+ */
+pattern_learning: boolean, 
+/**
+ * Minimum approvals before auto-approve.
+ */
+min_approvals_for_auto: number, 
+/**
+ * Approval rate threshold (0.0 - 1.0).
+ */
+approval_threshold: number, };

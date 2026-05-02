@@ -3,25 +3,24 @@
 /**
  * Window state settings (persisted across sessions).
  */
-export type WindowSettings = {
-  /**
-   * Window width in pixels
-   */
-  width: number;
-  /**
-   * Window height in pixels
-   */
-  height: number;
-  /**
-   * Window X position (None = centered)
-   */
-  x: number | null;
-  /**
-   * Window Y position (None = centered)
-   */
-  y: number | null;
-  /**
-   * Whether the window is maximized
-   */
-  maximized: boolean;
-};
+export type WindowSettings = { 
+/**
+ * Window width in pixels.
+ */
+width: number, 
+/**
+ * Window height in pixels.
+ */
+height: number, 
+/**
+ * Window X position (None = centered).
+ */
+x: number | null, 
+/**
+ * Window Y position (None = centered).
+ */
+y: number | null, 
+/**
+ * Whether the window is maximized.
+ */
+maximized: boolean, };

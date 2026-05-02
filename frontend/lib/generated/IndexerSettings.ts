@@ -4,9 +4,8 @@ import type { IndexLocation } from "./IndexLocation";
 /**
  * Code indexer settings.
  */
-export type IndexerSettings = {
-  /**
-   * Where to store index files: "global" or "local"
-   */
-  index_location: IndexLocation;
-};
+export type IndexerSettings = { 
+/**
+ * Where to store index files: `"global"` or `"local"`.
+ */
+index_location: IndexLocation, };

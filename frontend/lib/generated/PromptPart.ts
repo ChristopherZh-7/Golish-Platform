@@ -3,20 +3,16 @@
 /**
  * A part of a multi-modal prompt payload.
  */
-export type PromptPart =
-  | { type: "text"; text: string }
-  | {
-      type: "image";
-      /**
-       * Base64 encoded data or data URL.
-       */
-      data: string;
-      /**
-       * MIME type (e.g., "image/png", "image/jpeg").
-       */
-      media_type?: string | null;
-      /**
-       * Original filename (for display purposes).
-       */
-      filename?: string | null;
-    };
+export type PromptPart = { "type": "text", text: string, } | { "type": "image", 
+/**
+ * Base64 encoded data or data URL.
+ */
+data: string, 
+/**
+ * MIME type (e.g., "image/png", "image/jpeg").
+ */
+media_type?: string | null, 
+/**
+ * Original filename (for display purposes).
+ */
+filename?: string | null, };

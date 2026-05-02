@@ -3,33 +3,32 @@
 /**
  * Approval pattern/statistics for a specific tool.
  */
-export type ApprovalPattern = {
-  /**
-   * Name of the tool
-   */
-  tool_name: string;
-  /**
-   * Total number of approval requests
-   */
-  total_requests: number;
-  /**
-   * Number of approvals
-   */
-  approvals: number;
-  /**
-   * Number of denials
-   */
-  denials: number;
-  /**
-   * Whether this tool has been marked as "always allow"
-   */
-  always_allow: boolean;
-  /**
-   * Last time this pattern was updated
-   */
-  last_updated: string;
-  /**
-   * Justifications provided (for auditing)
-   */
-  justifications: Array<string>;
-};
+export type ApprovalPattern = { 
+/**
+ * Name of the tool
+ */
+tool_name: string, 
+/**
+ * Total number of approval requests
+ */
+total_requests: number, 
+/**
+ * Number of approvals
+ */
+approvals: number, 
+/**
+ * Number of denials
+ */
+denials: number, 
+/**
+ * Whether this tool has been marked as "always allow"
+ */
+always_allow: boolean, 
+/**
+ * Last time this pattern was updated
+ */
+last_updated: string, 
+/**
+ * Justifications provided (for auditing)
+ */
+justifications: Array<string>, };

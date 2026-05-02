@@ -5,10 +5,4 @@ import type { GolishMessageRole } from "./GolishMessageRole";
  * A simplified message format for Golish sessions.
  * This provides a bridge between rig's Message type and golish-core's SessionMessage.
  */
-export type GolishSessionMessage = {
-  role: GolishMessageRole;
-  content: string;
-  tool_call_id?: string | null;
-  tool_name?: string | null;
-  tokens_used?: number | null;
-};
+export type GolishSessionMessage = { role: GolishMessageRole, content: string, tool_call_id?: string | null, tool_name?: string | null, tokens_used?: number | null, };

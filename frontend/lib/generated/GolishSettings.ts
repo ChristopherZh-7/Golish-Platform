@@ -25,82 +25,81 @@ import type { UiSettings } from "./UiSettings";
  * migration: the loader detects an older version and applies a chain
  * of migration functions before deserialisation.
  */
-export type GolishSettings = {
-  /**
-   * Schema version — must match SCHEMA_VERSION after loading.
-   * Older files are auto-migrated by `migrate_settings()` in the loader.
-   */
-  schema_version: number;
-  /**
-   * AI provider configuration
-   */
-  ai: AiSettings;
-  /**
-   * API keys for external services
-   */
-  api_keys: ApiKeysSettings;
-  /**
-   * Tool enablement settings
-   */
-  tools: ToolsSettings;
-  /**
-   * User interface preferences
-   */
-  ui: UiSettings;
-  /**
-   * Terminal configuration
-   */
-  terminal: TerminalSettings;
-  /**
-   * Agent behavior settings
-   */
-  agent: AgentSettings;
-  /**
-   * MCP server definitions
-   */
-  mcp_servers: { [key in string]: McpServerConfig };
-  /**
-   * Repository trust levels
-   */
-  trust: TrustSettings;
-  /**
-   * Privacy and telemetry settings
-   */
-  privacy: PrivacySettings;
-  /**
-   * Advanced/debug settings
-   */
-  advanced: AdvancedSettings;
-  /**
-   * Sidecar context capture settings
-   */
-  sidecar: SidecarSettings;
-  /**
-   * Code indexer settings
-   */
-  indexer: IndexerSettings;
-  /**
-   * Context window management settings
-   */
-  context: ContextSettings;
-  /**
-   * Telemetry and observability settings
-   */
-  telemetry: TelemetrySettings;
-  /**
-   * Network settings (proxy, etc.)
-   */
-  network: NetworkSettings;
-  /**
-   * Native OS notification settings
-   */
-  notifications: NotificationsSettings;
-  /**
-   * List of indexed codebase paths (deprecated, migrated to `codebases`)
-   */
-  indexed_codebases?: Array<string>;
-  /**
-   * Indexed codebases with configuration (new format)
-   */
-  codebases: Array<CodebaseConfig>;
-};
+export type GolishSettings = { 
+/**
+ * Schema version — must match [`SCHEMA_VERSION`] after loading.
+ * Older files are auto-migrated by `migrate_settings()` in the loader.
+ */
+schema_version: number, 
+/**
+ * AI provider configuration.
+ */
+ai: AiSettings, 
+/**
+ * API keys for external services.
+ */
+api_keys: ApiKeysSettings, 
+/**
+ * Tool enablement settings.
+ */
+tools: ToolsSettings, 
+/**
+ * User interface preferences.
+ */
+ui: UiSettings, 
+/**
+ * Terminal configuration.
+ */
+terminal: TerminalSettings, 
+/**
+ * Agent behavior settings.
+ */
+agent: AgentSettings, 
+/**
+ * MCP server definitions.
+ */
+mcp_servers: { [key in string]: McpServerConfig }, 
+/**
+ * Repository trust levels.
+ */
+trust: TrustSettings, 
+/**
+ * Privacy and telemetry settings.
+ */
+privacy: PrivacySettings, 
+/**
+ * Advanced/debug settings.
+ */
+advanced: AdvancedSettings, 
+/**
+ * Sidecar context capture settings.
+ */
+sidecar: SidecarSettings, 
+/**
+ * Code indexer settings.
+ */
+indexer: IndexerSettings, 
+/**
+ * Context window management settings.
+ */
+context: ContextSettings, 
+/**
+ * Telemetry and observability settings.
+ */
+telemetry: TelemetrySettings, 
+/**
+ * Network settings (proxy, etc.).
+ */
+network: NetworkSettings, 
+/**
+ * Native OS notification settings.
+ */
+notifications: NotificationsSettings, 
+/**
+ * List of indexed codebase paths (deprecated, migrated to `codebases`).
+ */
+indexed_codebases?: Array<string>, 
+/**
+ * Indexed codebases with configuration (new format).
+ */
+codebases: Array<CodebaseConfig>, };

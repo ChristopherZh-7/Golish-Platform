@@ -206,26 +206,26 @@ describe("UnifiedTimeline React.memo Optimization", () => {
       expect(session1Initial).toBe(session1After);
     });
 
-    it("should return stable streamingBlocks reference when blocks don't change", async () => {
+    it("should return stable timeline reference when inputs don't change", async () => {
       createSession("stable-ref-test");
 
       const { selectSessionState } = await import("../../store/selectors/session");
 
-      // Set some streaming blocks via updateAgentStreaming
+      // updateAgentStreaming touches agentStreaming/streamingBlocks but does
+      // NOT mutate state.timelines, so the cached selector should hand back
+      // the exact same `timeline` array reference across calls.
       useStore.getState().updateAgentStreaming("stable-ref-test", "Hello");
+      const result1 = selectSessionState(useStore.getState(), "stable-ref-test");
 
-      const state1 = useStore.getState();
-      const result1 = selectSessionState(state1, "stable-ref-test");
+      // Drive a couple more streaming-only updates — still nothing the
+      // selector inputs care about.
+      useStore.getState().updateAgentStreaming("stable-ref-test", "Hello world");
+      useStore.getState().updateAgentStreaming("stable-ref-test", "Hello world!");
 
-      // Change something unrelated (run a command that adds to timeline)
-      useStore.getState().handleCommandStart("stable-ref-test", "ls");
-      useStore.getState().appendOutput("stable-ref-test", "files\n");
-      useStore.getState().handleCommandEnd("stable-ref-test", 0);
+      const result2 = selectSessionState(useStore.getState(), "stable-ref-test");
 
-      const state2 = useStore.getState();
-      const result2 = selectSessionState(state2, "stable-ref-test");
-
-      // Cached selector should return the same reference when inputs don't change
+      // Cached selector should hand back the exact same timeline reference
+      // because state.timelines hasn't been touched.
       expect(result1.timeline).toBe(result2.timeline);
     });
   });

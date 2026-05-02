@@ -197,7 +197,11 @@ describe("UnifiedInput: typing while agent is busy", () => {
     expect(input).toHaveValue("next message");
   });
 
-  it("send button is disabled while agent is responding", async () => {
+  // SKIP: send-button-disabled-while-busy logic was removed.
+  // UnifiedInput is now PTY-only (AI submit lives in AIChatPanel/useChatSend),
+  // and `isInputDisabled` is `isSessionDead` only — agent activity no longer
+  // disables the send button (or the textarea) so users can pre-type.
+  it.skip("send button is disabled while agent is responding", async () => {
     createSession("s1");
     const { UnifiedInput } = await import("./UnifiedInput");
     render(<UnifiedInput sessionId="s1" />);
@@ -213,30 +217,27 @@ describe("UnifiedInput: typing while agent is busy", () => {
     expect(submitButton).toBeDisabled();
   });
 
-  it("send button re-enables after agent finishes and input has content", async () => {
+  // SKIP: same reason — the send button never disables on agent activity.
+  it.skip("send button re-enables after agent finishes and input has content", async () => {
     createSession("s1");
     const { UnifiedInput } = await import("./UnifiedInput");
     render(<UnifiedInput sessionId="s1" />);
 
     const input = screen.getByTestId("unified-input");
 
-    // Start agent response
     act(() => {
       useStore.getState().setAgentResponding("s1", true);
     });
 
-    // Type while agent is busy
     await userEvent.type(input, "prepared message");
 
     const submitButton = getSubmitButton();
     expect(submitButton).toBeDisabled();
 
-    // Agent finishes
     act(() => {
       useStore.getState().setAgentResponding("s1", false);
     });
 
-    // Now the send button should be enabled since we have content
     expect(submitButton).not.toBeDisabled();
   });
 
@@ -254,7 +255,12 @@ describe("UnifiedInput: typing while agent is busy", () => {
     expect(input).toBeDisabled();
   });
 
-  it("Enter does not submit while agent is busy", async () => {
+  // SKIP: outdated. Today UnifiedInput.handleSubmit pipes Enter straight
+  // through to ptyWrite without consulting agent-busy state — the AI guard
+  // lives in AIChatPanel/useChatSend now. The behaviour we want here
+  // ("don't submit AI prompt while busy") is asserted in
+  // useChatSend.test.* instead.
+  it.skip("Enter does not submit while agent is busy", async () => {
     createSession("s1");
     const { sendPromptSession } = await import("@/lib/ai");
 
@@ -263,47 +269,41 @@ describe("UnifiedInput: typing while agent is busy", () => {
 
     const input = screen.getByTestId("unified-input");
 
-    // Type a message first
     await userEvent.type(input, "queued message");
 
-    // Make agent busy
     act(() => {
       useStore.getState().setAgentResponding("s1", true);
     });
 
-    // Press Enter — should not submit
     await userEvent.keyboard("{Enter}");
 
     expect(sendPromptSession).not.toHaveBeenCalled();
-    // Text should still be in the input
     expect(input).toHaveValue("queued message");
   });
 
-  it("typed message submits after agent finishes", async () => {
+  it("typed message submits via PTY after agent finishes", async () => {
     createSession("s1");
-    const { sendPromptSession } = await import("@/lib/ai");
+    const { ptyWrite } = await import("@/lib/api/pty");
 
     const { UnifiedInput } = await import("./UnifiedInput");
     render(<UnifiedInput sessionId="s1" />);
 
     const input = screen.getByTestId("unified-input");
 
-    // Agent starts responding
     act(() => {
       useStore.getState().setAgentResponding("s1", true);
     });
 
-    // User types while agent is active
     await userEvent.type(input, "follow-up");
 
-    // Agent finishes
     act(() => {
       useStore.getState().setAgentResponding("s1", false);
     });
 
-    // Now Enter should submit
     await userEvent.keyboard("{Enter}");
 
-    expect(sendPromptSession).toHaveBeenCalledWith("s1", "follow-up");
+    // UnifiedInput is PTY-only after the AIChatPanel split; assert that
+    // Enter writes to the terminal rather than the (legacy) AI submit path.
+    expect(ptyWrite).toHaveBeenCalledWith("s1", "follow-up\n");
   });
 });

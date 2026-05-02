@@ -15,6 +15,8 @@ vi.mock("@/lib/indexer", () => ({
 
 vi.mock("@/lib/projects", () => ({
   saveProject: vi.fn().mockResolvedValue(undefined),
+  deleteProject: vi.fn().mockResolvedValue(undefined),
+  listProjectConfigs: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("@/lib/api/git", () => ({
@@ -28,10 +30,8 @@ describe("HomeView Memoization Tests", () => {
 
   describe("ProjectRow memoization", () => {
     it("ProjectRow should be wrapped in React.memo", async () => {
-      // Import the component
-      const module = await import("./HomeView");
+      const module = await import("./ProjectCards");
 
-      // Check if ProjectRow is exported and is a memo component
       const ProjectRow = (module as Record<string, unknown>).ProjectRow;
       expect(ProjectRow).toBeDefined();
 
@@ -43,10 +43,8 @@ describe("HomeView Memoization Tests", () => {
 
   describe("RecentDirectoryRow memoization", () => {
     it("RecentDirectoryRow should be wrapped in React.memo", async () => {
-      // Import the component
-      const module = await import("./HomeView");
+      const module = await import("./ProjectCards");
 
-      // Check if RecentDirectoryRow is exported and is a memo component
       const RecentDirectoryRow = (module as Record<string, unknown>).RecentDirectoryRow;
       expect(RecentDirectoryRow).toBeDefined();
 
@@ -58,39 +56,24 @@ describe("HomeView Memoization Tests", () => {
 
   describe("Callback stability", () => {
     it("should use stable callbacks that do not change between renders", async () => {
-      const { listProjectsForHome, listRecentDirectories } = await import("@/lib/indexer");
-      vi.mocked(listProjectsForHome).mockResolvedValue([
-        {
-          name: "Test Project",
-          path: "/test/project",
-          last_activity: "1 hour ago",
-          warnings: 0,
-          branches: [
-            {
-              name: "main",
-              path: "/test/project",
-              last_activity: "1 hour ago",
-              file_count: 5,
-              insertions: 10,
-              deletions: 3,
-            },
-          ],
-        },
+      const { listProjectConfigs } = await import("@/lib/projects");
+      vi.mocked(listProjectConfigs).mockResolvedValue([
+        // biome-ignore lint/suspicious/noExplicitAny: minimal shape for HomeView render path
+        { name: "Test Project", rootPath: "/test/project" } as any,
       ]);
-      vi.mocked(listRecentDirectories).mockResolvedValue([]);
 
       const { HomeView } = await import("./HomeView");
 
       const { rerender } = render(<HomeView />);
 
-      // Wait for loading to complete
-      await screen.findByText("Projects");
+      // The HomeView re-design surfaces a `Recent projects` heading once
+      // the saved-projects list resolves; we use that as the readiness
+      // marker since the old `Projects` label has been removed.
+      await screen.findByText("Recent projects");
 
-      // Verify component renders without errors after rerender
       rerender(<HomeView />);
 
-      // Component should still render correctly
-      expect(screen.getByText("Projects")).toBeDefined();
+      expect(screen.getByText("Recent projects")).toBeDefined();
     });
   });
 
@@ -102,36 +85,24 @@ describe("HomeView Memoization Tests", () => {
      * These should be replaced with stable callbacks using useCallback
      * that are passed down to memoized children.
      */
-    it("ProjectRow should receive stable onToggle callback", async () => {
-      // This test verifies the pattern is implemented correctly
-      // by checking the component renders without issues when props change
-      const { listProjectsForHome, listRecentDirectories } = await import("@/lib/indexer");
-      vi.mocked(listProjectsForHome).mockResolvedValue([
-        {
-          name: "Project A",
-          path: "/project/a",
-          last_activity: "1 hour ago",
-          warnings: 0,
-          branches: [],
-        },
-        {
-          name: "Project B",
-          path: "/project/b",
-          last_activity: "2 hours ago",
-          warnings: 0,
-          branches: [],
-        },
+    it("project rows render with stable callbacks", async () => {
+      const { listProjectConfigs } = await import("@/lib/projects");
+      vi.mocked(listProjectConfigs).mockResolvedValue([
+        // biome-ignore lint/suspicious/noExplicitAny: minimal shape for HomeView render path
+        { name: "Project A", rootPath: "/project/a" } as any,
+        // biome-ignore lint/suspicious/noExplicitAny: minimal shape for HomeView render path
+        { name: "Project B", rootPath: "/project/b" } as any,
       ]);
-      vi.mocked(listRecentDirectories).mockResolvedValue([]);
 
       const { HomeView } = await import("./HomeView");
 
       render(<HomeView />);
 
-      // Wait for loading to complete
-      await screen.findByText("Projects");
+      // Wait for the recent-projects section to mount, then both project
+      // names should be visible (they're rendered as plain text inside the
+      // saved-projects list).
+      await screen.findByText("Recent projects");
 
-      // Both projects should render
       expect(screen.getByText("Project A")).toBeDefined();
       expect(screen.getByText("Project B")).toBeDefined();
     });

@@ -4,31 +4,30 @@ import type { CaretSettings } from "./CaretSettings";
 /**
  * Terminal configuration.
  */
-export type TerminalSettings = {
-  /**
-   * Default shell override
-   */
-  shell: string | null;
-  /**
-   * Font family
-   */
-  font_family: string;
-  /**
-   * Font size in pixels
-   */
-  font_size: number;
-  /**
-   * Scrollback buffer lines
-   */
-  scrollback: number;
-  /**
-   * Additional commands that trigger fullterm mode.
-   * These are merged with the built-in defaults (claude, cc, codex, etc.).
-   * Most TUI apps are auto-detected via ANSI sequences; this is for edge cases.
-   */
-  fullterm_commands?: Array<string>;
-  /**
-   * Input caret customization
-   */
-  caret: CaretSettings;
-};
+export type TerminalSettings = { 
+/**
+ * Default shell override.
+ */
+shell: string | null, 
+/**
+ * Font family.
+ */
+font_family: string, 
+/**
+ * Font size in pixels.
+ */
+font_size: number, 
+/**
+ * Scrollback buffer lines.
+ */
+scrollback: number, 
+/**
+ * Additional commands that trigger fullterm mode.
+ * These are merged with the built-in defaults (claude, cc, codex, etc.).
+ * Most TUI apps are auto-detected via ANSI sequences; this is for edge cases.
+ */
+fullterm_commands?: Array<string>, 
+/**
+ * Input caret customization.
+ */
+caret: CaretSettings, };

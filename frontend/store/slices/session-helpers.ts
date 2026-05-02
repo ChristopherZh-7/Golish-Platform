@@ -44,6 +44,14 @@ export function deleteOutputBuffer(sessionId: string): void {
   _outputBuffer.delete(sessionId);
 }
 
+/**
+ * Clear all session output buffers. Tests use this to avoid module-level
+ * state leaking between cases (`_outputBuffer` is a module-scoped Map).
+ */
+export function clearAllOutputBuffers(): void {
+  _outputBuffer.clear();
+}
+
 // ---------------------------------------------------------------------------
 // Draft helpers (operate on the Immer draft directly)
 // ---------------------------------------------------------------------------

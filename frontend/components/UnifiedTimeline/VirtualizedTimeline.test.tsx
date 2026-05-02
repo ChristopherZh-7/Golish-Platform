@@ -65,12 +65,14 @@ describe("VirtualizedTimeline", () => {
   });
 
   describe("small timelines (below threshold)", () => {
-    it("renders all blocks directly without virtualization", () => {
+    it("renders all command blocks directly without virtualization", () => {
       const containerRef = createRef<HTMLDivElement>();
+      // VirtualizedTimeline currently only renders `command` blocks itself
+      // (other block types are rendered by sibling components in
+      // UnifiedTimeline). We pass two command blocks so the count is stable.
       const blocks: UnifiedBlock[] = [
         createCommandBlock("cmd-1", "ls"),
         createCommandBlock("cmd-2", "pwd"),
-        createAgentMessage("msg-1", "Hello"),
       ];
 
       const { container } = render(
@@ -85,10 +87,10 @@ describe("VirtualizedTimeline", () => {
         </div>
       );
 
-      // Check that blocks are rendered in a space-y-2 container (non-virtualized mode)
-      expect(container.querySelector(".space-y-2")).toBeInTheDocument();
-      // All 3 blocks should be rendered as children
-      expect(container.querySelector(".space-y-2")?.children.length).toBe(3);
+      // The non-virtualized branch wraps children in a `divide-y` container.
+      const wrapper = container.querySelector(".divide-y");
+      expect(wrapper).toBeInTheDocument();
+      expect(wrapper?.children.length).toBe(2);
     });
 
     it("renders empty state for no blocks", () => {
@@ -105,10 +107,9 @@ describe("VirtualizedTimeline", () => {
         </div>
       );
 
-      // Should render empty space-y-2 container
-      const spaceContainer = container.querySelector(".space-y-2");
-      expect(spaceContainer).toBeInTheDocument();
-      expect(spaceContainer?.children).toHaveLength(0);
+      const wrapper = container.querySelector(".divide-y");
+      expect(wrapper).toBeInTheDocument();
+      expect(wrapper?.children).toHaveLength(0);
     });
   });
 
@@ -177,43 +178,25 @@ describe("VirtualizedTimeline", () => {
         </div>
       );
 
-      // Command block should render in the container
-      expect(container.querySelector(".space-y-2")).toBeInTheDocument();
-      expect(container.querySelector(".space-y-2")?.children.length).toBe(1);
+      const wrapper = container.querySelector(".divide-y");
+      expect(wrapper).toBeInTheDocument();
+      expect(wrapper?.children.length).toBe(1);
     });
 
-    it("renders agent message blocks without errors", () => {
-      const containerRef = createRef<HTMLDivElement>();
-      const blocks: UnifiedBlock[] = [createAgentMessage("msg-1", "Test response")];
-
-      const { container } = render(
-        <div ref={containerRef} style={{ height: 500, overflow: "auto" }}>
-          <VirtualizedTimeline
-            blocks={blocks}
-            sessionId="test-session"
-            containerRef={containerRef}
-            shouldScrollToBottom={false}
-            workingDirectory="/test/dir"
-          />
-        </div>
-      );
-
-      // Agent message should render in the container
-      expect(container.querySelector(".space-y-2")).toBeInTheDocument();
-      expect(container.querySelector(".space-y-2")?.children.length).toBe(1);
-    });
-
-    it("renders system hook blocks without errors", () => {
+    it("ignores non-command blocks (rendered elsewhere in UnifiedTimeline)", () => {
+      // VirtualizedTimeline today returns null for any block whose type
+      // isn't `command`; agent_message / system_hook are rendered by
+      // sibling components. The wrapper should still mount (so
+      // virtualization plumbing stays consistent), just with no children.
       const containerRef = createRef<HTMLDivElement>();
       const blocks: UnifiedBlock[] = [
+        createAgentMessage("msg-1", "Test response"),
         {
           id: "hook-1",
           type: "system_hook",
           timestamp: new Date().toISOString(),
-          data: {
-            hooks: ["Test hook content here"],
-          },
-        },
+          data: { hooks: ["Test hook content"] },
+        } as UnifiedBlock,
       ];
 
       const { container } = render(
@@ -228,9 +211,10 @@ describe("VirtualizedTimeline", () => {
         </div>
       );
 
-      // System hook should render in the container
-      expect(container.querySelector(".space-y-2")).toBeInTheDocument();
-      expect(container.querySelector(".space-y-2")?.children.length).toBe(1);
+      const wrapper = container.querySelector(".divide-y");
+      expect(wrapper).toBeInTheDocument();
+      // Both blocks should be filtered out; React renders them as null.
+      expect(wrapper?.querySelectorAll("div").length ?? 0).toBe(0);
     });
   });
 
