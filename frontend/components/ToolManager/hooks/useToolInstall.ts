@@ -1,5 +1,8 @@
-// biome-ignore lint/style/noRestrictedImports: TODO Phase 2D — pentest_check_requirements / pentest_list_dep_files / pentest_check_tool_updates not yet in lib/pentest/api.ts wrapper; consolidate with the Tool Manager domain.
-import { invoke } from "@tauri-apps/api/core";
+import {
+  checkRequirements,
+  checkToolUpdates,
+  listDepFiles,
+} from "@/lib/pentest/api";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -459,7 +462,7 @@ export function useToolInstall(
         if (tool.runtime === "python" && tool.runtimeVersion) {
           const toolDir = installedToolDir || tool.executable?.split("/")[0] || tool.name;
           try {
-            const hasReqs = await invoke<boolean>("pentest_check_requirements", { toolDir });
+            const hasReqs = await checkRequirements(toolDir);
             if (hasReqs) {
               setInstallProgress((p) => ({
                 ...p,
@@ -586,7 +589,7 @@ export function useToolInstall(
       if (tool.runtime !== "python" || !tool.runtimeVersion) return;
       const toolDir = tool.executable?.split("/")[0] || tool.name;
       try {
-        const files = await invoke<string[]>("pentest_list_dep_files", { toolDir });
+        const files = await listDepFiles(toolDir);
         if (files.length === 0) {
           setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.noDepFiles") }));
           setTimeout(
@@ -626,7 +629,7 @@ export function useToolInstall(
   const checkForUpdates = useCallback(async () => {
     setCheckingUpdates(true);
     try {
-      const updates = await invoke<ToolUpdateInfo[]>("pentest_check_tool_updates");
+      const updates = await checkToolUpdates<ToolUpdateInfo>();
       setToolUpdates(updates);
       setShowUpdates(true);
     } catch {

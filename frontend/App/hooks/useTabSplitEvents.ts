@@ -1,8 +1,8 @@
 import { listen } from "@tauri-apps/api/event";
 import type React from "react";
 import { useEffect } from "react";
-// biome-ignore lint/style/noRestrictedImports: TODO Phase 2D — output_detect_tool / output_parse / findings_import_parsed not yet in lib/api/ facade (need dedicated output-parser + findings facade extension); migrate when those domains get their wrappers.
-import { invoke } from "@/lib/api/client";
+import { findingsApi } from "@/lib/api/findings";
+import { detectTool, parse as parseToolOutput } from "@/lib/api/output-parser";
 import { createDetached } from "@/lib/api/window";
 import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
@@ -59,21 +59,9 @@ export function useTabSplitEvents({
         e as CustomEvent<{ command: string; output: string; sessionId: string }>
       ).detail;
       try {
-        const detected = await invoke<{
-          tool_id: string;
-          tool_name: string;
-          output_config: {
-            format: string;
-            produces: string[];
-            patterns: unknown[];
-            fields: Record<string, string>;
-            detect?: string;
-          };
-        } | null>("output_detect_tool", { command, rawOutput: output });
+        const detected = await detectTool(command, output);
         if (!detected) return;
-        const parsed = await invoke<{
-          items: { data_type: string; fields: Record<string, string> }[];
-        }>("output_parse", {
+        const parsed = await parseToolOutput({
           rawOutput: output,
           config: detected.output_config,
           toolId: detected.tool_id,
@@ -88,11 +76,11 @@ export function useTabSplitEvents({
             .filter((it) => it.data_type === "vulnerability")
             .map((it) => it.fields);
           if (vulnItems.length > 0) {
-            const added = await invoke<number>("findings_import_parsed", {
-              items: vulnItems,
-              toolName: detected.tool_name,
-              projectPath: pp,
-            });
+            const added = await findingsApi.importParsed(
+              vulnItems,
+              detected.tool_name,
+              pp
+            );
             if (added > 0) {
               notify.success(`${detected.tool_name}: ${added} findings imported`);
             }
