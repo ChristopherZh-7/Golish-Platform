@@ -194,6 +194,9 @@ fn parse_plan_status(s: &str) -> Result<golish_db::models::PlanStatus, GolishErr
         "completed" => Ok(golish_db::models::PlanStatus::Completed),
         "failed" => Ok(golish_db::models::PlanStatus::Failed),
         "cancelled" => Ok(golish_db::models::PlanStatus::Cancelled),
-        _ => Err(format!("Invalid plan status: {}", s)),
+        _ => Err(GolishError::Validation(format!(
+            "Invalid plan status: {}",
+            s
+        ))),
     }
 }

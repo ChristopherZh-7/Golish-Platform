@@ -1,7 +1,6 @@
 //! Project settings tests.
 
 use super::*;
-use super::*;
 use tempfile::TempDir;
 
 #[tokio::test]

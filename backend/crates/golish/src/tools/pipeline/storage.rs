@@ -54,7 +54,7 @@ impl PipelineStorage for MainStorage {
             parent_id,
         )
         .await
-        .map_err(PipelineError::Storage)?;
+        .map_err(|e| PipelineError::Storage(e.to_string()))?;
         Ok(!existed)
     }
 
@@ -72,7 +72,7 @@ impl PipelineStorage for MainStorage {
             .ok_or_else(|| PipelineError::Storage("No host/ip field".into()))?;
 
         let hostname = extract_hostname(host_val);
-        let target =         targets::db_target_add(
+        let target = targets::db_target_add(
             pool,
             &hostname,
             &hostname,
@@ -82,7 +82,7 @@ impl PipelineStorage for MainStorage {
             None,
         )
         .await
-        .map_err(PipelineError::Storage)?;
+        .map_err(|e| PipelineError::Storage(e.to_string()))?;
         let target_uuid: Uuid = target.id.parse().map_err(|e: uuid::Error| PipelineError::Storage(e.to_string()))?;
 
         let mut update = targets::ReconUpdate::new();
@@ -133,7 +133,9 @@ impl PipelineStorage for MainStorage {
             update.webserver = ws.clone();
         }
 
-        targets::db_target_update_recon_extended(pool, target_uuid, &update).await.map_err(PipelineError::Storage)?;
+        targets::db_target_update_recon_extended(pool, target_uuid, &update)
+            .await
+            .map_err(|e| PipelineError::Storage(e.to_string()))?;
 
         let tool_source = item
             .fields
@@ -191,7 +193,7 @@ impl PipelineStorage for MainStorage {
             project_path,
         )
         .await
-        .map_err(PipelineError::Storage)?;
+        .map_err(|e| PipelineError::Storage(e.to_string()))?;
         Ok(!existed)
     }
 

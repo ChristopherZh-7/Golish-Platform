@@ -29,11 +29,11 @@ pub async fn wiki_list() -> Result<Vec<WikiEntry>, GolishError> {
 pub async fn wiki_read(path: String) -> Result<String, GolishError> {
     let full = wiki_base_dir().join(&path);
     if !full.exists() {
-        return Err(format!("file not found: {path}"));
+        return Err(GolishError::NotFound(format!("file not found: {path}")));
     }
     fs::read_to_string(&full)
         .await
-        .map_err(|e| format!("read failed: {e}"))
+        .map_err(|e| GolishError::Internal(format!("read failed: {e}")))
 }
 
 #[tauri::command]
@@ -122,16 +122,18 @@ pub async fn wiki_rename(old_path: String, new_path: String) -> Result<(), Golis
     let from = base.join(&old_path);
     let to = base.join(&new_path);
     if !from.exists() {
-        return Err(format!("source not found: {old_path}"));
+        return Err(GolishError::NotFound(format!(
+            "source not found: {old_path}"
+        )));
     }
     if let Some(parent) = to.parent() {
         fs::create_dir_all(parent)
             .await
-            .map_err(|e| format!("mkdir failed: {e}"))?;
+            .map_err(|e| GolishError::Internal(format!("mkdir failed: {e}")))?;
     }
     fs::rename(&from, &to)
         .await
-        .map_err(|e| format!("rename failed: {e}"))
+        .map_err(|e| GolishError::Internal(format!("rename failed: {e}")))
 }
 
 #[tauri::command]
@@ -139,5 +141,5 @@ pub async fn wiki_create_dir(path: String) -> Result<(), GolishError> {
     let full = wiki_base_dir().join(&path);
     fs::create_dir_all(&full)
         .await
-        .map_err(|e| format!("mkdir failed: {e}"))
+        .map_err(|e| GolishError::Internal(format!("mkdir failed: {e}")))
 }

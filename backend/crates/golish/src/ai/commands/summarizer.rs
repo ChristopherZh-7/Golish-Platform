@@ -44,7 +44,7 @@ pub async fn generate_conversation_summary(
     // Generate the summary using golish-ai's summarizer
     golish_ai::generate_summary(&client_guard, &conversation)
         .await
-        .map_err(|e| format!("Failed to generate summary: {}", e))
+        .map_err(|e| GolishError::Internal(format!("Failed to generate summary: {}", e)))
 }
 
 #[cfg(test)]

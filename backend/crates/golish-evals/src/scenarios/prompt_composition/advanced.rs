@@ -2,10 +2,7 @@
 
 use async_trait::async_trait;
 
-use crate::config::EvalProvider;
 use crate::metrics::{LlmJudgeMetric, Metric};
-use crate::outcome::EvalReport;
-use crate::runner::EvalRunner;
 use crate::scenarios::Scenario;
 
 /// Tests that behavior differs when instructions are present vs absent.

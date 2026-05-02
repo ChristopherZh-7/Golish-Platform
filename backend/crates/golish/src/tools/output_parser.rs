@@ -199,7 +199,11 @@ pub async fn output_parse(
         "text" => parse_text(&raw_output, &config.patterns),
         "json_lines" => parse_json_lines(&raw_output, &config.fields),
         "json" => parse_json(&raw_output, &config.fields),
-        other => return Err(format!("Unsupported format: {other}")),
+        other => {
+            return Err(GolishError::Validation(format!(
+                "Unsupported format: {other}"
+            )))
+        }
     };
 
     debug!(
@@ -217,7 +221,8 @@ pub async fn output_parse(
 }
 
 fn toolsconfig_dir() -> Result<std::path::PathBuf, GolishError> {
-    golish_core::paths::toolsconfig_dir().ok_or_else(|| "cannot resolve home directory".to_string())
+    golish_core::paths::toolsconfig_dir()
+        .ok_or_else(|| GolishError::Internal("cannot resolve home directory".to_string()))
 }
 
 #[tauri::command]
@@ -308,7 +313,11 @@ pub async fn output_parse_and_store(
         "text" => parse_text(&raw_output, &config.patterns),
         "json_lines" => parse_json_lines(&raw_output, &config.fields),
         "json" => parse_json(&raw_output, &config.fields),
-        other => return Err(format!("Unsupported format: {other}")),
+        other => {
+            return Err(GolishError::Validation(format!(
+                "Unsupported format: {other}"
+            )))
+        }
     };
 
     let parse_result = ParseResult {

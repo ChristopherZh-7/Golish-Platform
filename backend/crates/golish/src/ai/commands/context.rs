@@ -140,5 +140,5 @@ pub async fn retry_compaction(
         .await
         .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
 
-    bridge.retry_compaction().await
+    bridge.retry_compaction().await.map_err(GolishError::Internal)
 }

@@ -6,7 +6,6 @@
 
 use crate::error::GolishError;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 use sqlx::PgPool;
 use tauri::{Emitter, State};
@@ -48,7 +47,7 @@ impl ScanResultStore for PgScanStore {
         .bind(project_path)
         .execute(&self.pool)
         .await
-        .map_err(GolishError::from)?;
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -65,7 +64,9 @@ impl ScanResultStore for PgScanStore {
     }
 
     async fn load_wordlist_lines(&self, wordlist_id: &str) -> Result<Vec<String>, String> {
-        let path = super::wordlists::wordlist_path(wordlist_id.to_string()).await.map_err(GolishError::from)?;
+        let path = super::wordlists::wordlist_path(wordlist_id.to_string())
+            .await
+            .map_err(|e: GolishError| e.to_string())?;
         let content = tokio::fs::read_to_string(&path)
             .await
             .map_err(|e| format!("Failed to read wordlist: {e}"))?;

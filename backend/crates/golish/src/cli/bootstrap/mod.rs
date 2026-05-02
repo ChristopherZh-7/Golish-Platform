@@ -4,9 +4,9 @@
 //! as the Tauri GUI application, ensuring feature parity between CLI and GUI.
 
 mod agent_init;
-use agent_init::{initialize_agent, initialize_mcp_integration, resolve_api_key};
+use agent_init::initialize_agent;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -17,9 +17,8 @@ use crate::history::{HistoryConfig, HistoryManager};
 use crate::indexer::IndexerState;
 use crate::pty::PtyManager;
 use crate::runtime::CliRuntime;
-use crate::settings::{get_with_env_fallback, GolishSettings, SettingsManager};
+use crate::settings::SettingsManager;
 use crate::sidecar::SidecarState;
-use golish_ai::llm_client::SharedComponentsConfig;
 use golish_core::runtime::{GolishRuntime, RuntimeEvent};
 
 use super::args::Args;

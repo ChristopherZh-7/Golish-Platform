@@ -51,8 +51,10 @@ fn load_hidden_dirs() -> Vec<String> {
     serde_json::from_str::<Vec<String>>(&contents).unwrap_or_default()
 }
 
-fn save_hidden_dirs(dirs: &[String]) -> Result<(), String> {
-    let path = hidden_dirs_path().ok_or("Could not determine home directory")?;
+fn save_hidden_dirs(dirs: &[String]) -> Result<(), GolishError> {
+    let path = hidden_dirs_path().ok_or_else(|| {
+        GolishError::Internal("Could not determine home directory".to_string())
+    })?;
     let contents = serde_json::to_string(dirs).map_err(GolishError::from)?;
     std::fs::write(&path, contents).map_err(GolishError::from)
 }
@@ -60,7 +62,7 @@ fn save_hidden_dirs(dirs: &[String]) -> Result<(), String> {
 /// Remove a directory from the recent directories list by adding it to
 /// the hidden-dirs exclusion list.
 #[tauri::command]
-pub async fn remove_recent_directory(path: String) -> Result<(), String> {
+pub async fn remove_recent_directory(path: String) -> Result<(), GolishError> {
     let mut hidden = load_hidden_dirs();
     if !hidden.contains(&path) {
         hidden.push(path);
@@ -71,7 +73,9 @@ pub async fn remove_recent_directory(path: String) -> Result<(), String> {
 
 /// List recent directories from AI session history.
 #[tauri::command]
-pub async fn list_recent_directories(limit: Option<usize>) -> Result<Vec<RecentDirectory>, String> {
+pub async fn list_recent_directories(
+    limit: Option<usize>,
+) -> Result<Vec<RecentDirectory>, GolishError> {
     let hidden_dirs = load_hidden_dirs();
 
     let sessions = golish_session::list_recent_sessions(limit.unwrap_or(20))

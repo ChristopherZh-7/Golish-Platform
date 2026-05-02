@@ -2,12 +2,10 @@
 
 use std::path::PathBuf;
 
-use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use rig::completion::{AssistantContent, Message};
 use rig::message::UserContent;
 use rig::one_or_many::OneOrMany;
-use serde_json::json;
 
 use crate::archive::list_recent_sessions;
 use crate::manager::GolishSessionManager;
@@ -15,7 +13,6 @@ use crate::types::{
     strip_xml_tags, truncate, GolishMessageRole, GolishSessionMessage, GolishSessionSnapshot,
     SessionListingInfo,
 };
-
 
 use rig::message::Text;
 use serial_test::serial;
