@@ -1,111 +1,22 @@
 /**
- * AI API — re-exports all AI session/provider/approval/persistence functions
- * through a unified entry point.
+ * AI agent IPC wrappers — re-exports the entire `frontend/lib/ai/`
+ * subdirectory so the facade stays in sync with upstream automatically
+ * (mirrors the glob pattern used for `mcp`, `indexer`, etc. in
+ * ADR-0009 Phase 2A).
+ *
+ * The implementation files still live under `frontend/lib/ai/`:
+ * - `persistence.ts` — chat session save/load/agent definitions/HITL config
+ * - `session.ts`     — agent lifecycle, prompt streaming, sub-agents
+ * - `approval.ts`    — tool approval policy, agent mode, execution mode
+ * - `providers.ts`   — provider initialization (Anthropic/OpenAI/Vertex/Z.AI)
+ * - `models.ts`, `tool-source.ts`, `streaming-buffer.ts`,
+ *   `generation-suppress.ts`, `types.ts` — domain helpers
+ *
+ * Future cleanup (Phase 2D): move the implementation files into
+ * `frontend/lib/api/ai/` and turn `frontend/lib/ai/<x>.ts` into compat
+ * re-exports, mirroring the mcp/indexer/sidecar pattern. Deferred
+ * because the AI domain is the largest (~70+ functions, 84+ invoke
+ * call sites) and warrants a dedicated migration PR.
  */
 
-export {
-  addToolAlwaysAllow,
-  calculateApprovalRate,
-  getApprovalPatterns,
-  getExecutionMode,
-  getHitlConfig,
-  getProjectSettings,
-  getToolApprovalPattern,
-  qualifiesForAutoApprove,
-  removeToolAlwaysAllow,
-  resetApprovalPatterns,
-  respondToToolApproval,
-  saveProjectAgentMode,
-  saveProjectModel,
-  setAgentMode,
-  setExecutionMode,
-  setHitlConfig,
-  setUseAgents,
-} from "../ai/approval";
-export {
-  createTextPayload,
-  deleteAgentDefinition,
-  deleteRule,
-  deleteSkill,
-  exportAiSessionTranscript,
-  extractText,
-  finalizeAiSession,
-  findAiSession,
-  generateCommitMessage,
-  getApiRequestStats,
-  getAuditLog,
-  getDbTokenUsageStats,
-  getMemoryCount,
-  getPlan,
-  getToolCallStats,
-  getVisionCapabilities,
-  hasImages,
-  isAiSessionPersistenceEnabled,
-  listAgentDefinitions,
-  listAiSessions,
-  listRecentMemories,
-  listRules,
-  listSkills,
-  loadAiSession,
-  readAgentPrompt,
-  readRuleBody,
-  readSkillBody,
-  restoreAiConversation,
-  restoreAiSession,
-  saveAgentDefinition,
-  saveRule,
-  saveSkill,
-  searchMemories,
-  seedAgents,
-  sendPromptWithAttachments,
-  setAiSessionPersistence,
-} from "../ai/persistence";
-export {
-  buildProviderConfig,
-  getOpenAiApiKey,
-  getVertexAiConfig,
-  initAiAgentUnified,
-  initClaudeOpus,
-  initOpenAiAgent,
-  initVertexAiAgent,
-  initVertexClaudeOpus,
-  initWithAnthropic,
-  initWithGemini,
-  initWithGroq,
-  initWithOllama,
-  initWithXai,
-} from "../ai/providers";
-export {
-  cancelAiGeneration,
-  checkReconTools,
-  clearAiConversation,
-  clearAiConversationSession,
-  clearSubAgentModel,
-  executeTool,
-  getAiConversationLength,
-  getAiConversationLengthSession,
-  getAvailableSubAgents,
-  getAvailableTools,
-  getAvailableWorkflows,
-  getOpenRouterApiKey,
-  getSessionAiConfig,
-  getSubAgentModel,
-  initAiAgent,
-  initAiSession,
-  isAiInitialized,
-  isAiSessionInitialized,
-  loadEnvFile,
-  onAiEvent,
-  retryCompaction,
-  runReconPipeline,
-  runWorkflowToCompletion,
-  sendPrompt,
-  sendPromptSession,
-  setSubAgentModel,
-  shutdownAiAgent,
-  shutdownAiSession,
-  signalFrontendReady,
-  startWorkflow,
-  triggerAutoRecon,
-  updateAiWorkspace,
-} from "../ai/session";
+export * from "../ai";

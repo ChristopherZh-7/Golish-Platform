@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
-import { invoke } from "@/lib/api/client";
+import { addVaultEntry, listVaultEntries, updateVaultEntry } from "@/lib/api/vault";
 import { notify } from "@/lib/notify";
 import { getProjectPath } from "@/lib/projects";
 
@@ -12,12 +12,6 @@ interface DetectedCredential {
   value: string;
   field_name: string;
   zap_message_id: number;
-}
-
-interface VaultEntry {
-  id: string;
-  name: string;
-  tags: string[];
 }
 
 const CRED_TYPE_MAP: Record<string, string> = {
@@ -47,9 +41,7 @@ export function useCredentialCapture() {
 
     (async () => {
       try {
-        const existing = await invoke<VaultEntry[]>("vault_list", {
-          projectPath: getProjectPath(),
-        });
+        const existing = await listVaultEntries(getProjectPath());
         if (Array.isArray(existing)) {
           for (const e of existing) {
             if (e.tags?.includes("auto-captured")) {
@@ -73,7 +65,7 @@ export function useCredentialCapture() {
 
         try {
           if (existing) {
-            await invoke("vault_update", {
+            await updateVaultEntry({
               id: existing.id,
               value: cred.value,
               username: cred.username || null,
@@ -85,7 +77,7 @@ export function useCredentialCapture() {
               message: `${cred.host} — ${cred.field_name}`,
             });
           } else {
-            const added = await invoke<{ id: string }>("vault_add", {
+            const added = await addVaultEntry({
               name,
               entryType,
               value: cred.value,
