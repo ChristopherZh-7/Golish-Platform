@@ -73,3 +73,117 @@ pub async fn run(
         ReflectorOutcome::Skipped => ReflectorPhaseOutcome::Break,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use golish_llm_providers::LlmClient;
+    use tokio::sync::RwLock;
+
+    use crate::test_utils::TestContextBuilder;
+
+    use super::*;
+
+    fn config_with_reflector(enabled: bool) -> AgenticLoopConfig {
+        let mut cfg = AgenticLoopConfig::main_agent_generic();
+        cfg.enable_reflector = enabled;
+        cfg
+    }
+
+    #[tokio::test]
+    async fn tool_calls_present_resets_counter_and_continues() {
+        let test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let ctx = test_ctx.as_agentic_context_with_client(&client);
+        let mut state = TurnState {
+            consecutive_no_tool_turns: 2,
+            ..TurnState::default()
+        };
+        let mut history: Vec<Message> = vec![];
+        let sub_ctx = SubAgentContext::default();
+        let cfg = config_with_reflector(true);
+
+        let outcome = run(
+            &mut state,
+            &ctx,
+            &sub_ctx,
+            &cfg,
+            &mut history,
+            true,
+            "any text",
+            &[],
+        )
+        .await;
+
+        assert!(matches!(outcome, ReflectorPhaseOutcome::Continue));
+        assert_eq!(
+            state.consecutive_no_tool_turns, 0,
+            "tool calls present must reset the no-tool counter"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_tool_calls_with_inactive_reflector_breaks_after_increment() {
+        let test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let ctx = test_ctx.as_agentic_context_with_client(&client);
+        let mut state = TurnState {
+            reflector_active: false,
+            consecutive_no_tool_turns: 0,
+            ..TurnState::default()
+        };
+        let mut history: Vec<Message> = vec![];
+        let sub_ctx = SubAgentContext::default();
+        let cfg = config_with_reflector(true);
+
+        let outcome = run(
+            &mut state,
+            &ctx,
+            &sub_ctx,
+            &cfg,
+            &mut history,
+            false,
+            "I cannot help with that.",
+            &[],
+        )
+        .await;
+
+        assert!(matches!(outcome, ReflectorPhaseOutcome::Break));
+        assert_eq!(
+            state.consecutive_no_tool_turns, 1,
+            "no-tool-call branch increments counter even when reflector is inactive"
+        );
+        assert_eq!(
+            state.total_reflector_nudges, 0,
+            "nudge counter must NOT increment when reflector is skipped"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_tool_calls_with_empty_text_breaks_immediately() {
+        let test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let ctx = test_ctx.as_agentic_context_with_client(&client);
+        let mut state = TurnState::default();
+        let mut history: Vec<Message> = vec![];
+        let sub_ctx = SubAgentContext::default();
+        let cfg = config_with_reflector(true);
+
+        let outcome = run(
+            &mut state,
+            &ctx,
+            &sub_ctx,
+            &cfg,
+            &mut history,
+            false,
+            "   ",
+            &[],
+        )
+        .await;
+
+        assert!(matches!(outcome, ReflectorPhaseOutcome::Break));
+        assert_eq!(state.consecutive_no_tool_turns, 1);
+        assert_eq!(state.total_reflector_nudges, 0);
+    }
+}

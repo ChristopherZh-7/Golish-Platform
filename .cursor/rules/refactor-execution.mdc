@@ -30,7 +30,7 @@ alwaysApply: false
 | B2 CI 守门 | ✅ Done |
 | B3 重写架构文档 | ✅ Done |
 | B4 Tauri ADR | ✅ Done |
-| **C1 TurnExecutor** | **🟡 8/9 · C1-0~C1-7 落地 · mod.rs 141 行 + TurnInterceptor trait，C1-8 单测收尾** |
+| **C1 TurnExecutor** | **✅ 9/9 · C1-0~C1-8 全部落地 · mod.rs 141 行 + TurnInterceptor trait + 27 phase 单测** |
 
 ### 第二步：验证前面工作没崩（60 秒）
 
@@ -54,7 +54,9 @@ bash ../scripts/check_file_sizes.sh  # 必须 "all files within size budget"
 | ~~C1-5~~ | ~~抽 `AssistantPush` + `ReflectorOrBreak` + `ToolDispatch`~~ | ✅ Done |
 | ~~C1-6~~ | ~~主 `loop` 替换为 phase 调度器，`mod.rs` ≤ 150 行~~ | ✅ Done (141 行) |
 | ~~C1-7~~ | ~~`TurnInterceptor` trait · Langfuse 收尾搬出~~ | ✅ Done |
-| **C1-8** | 每 phase 补 1+ 单元测试 | ← 先做这个 |
+| ~~C1-8~~ | ~~每 phase 补 1+ 单元测试~~ | ✅ Done (27 tests) |
+
+C1 全部完成 — 所有 9 个里程碑落地。下一阶段（C2 / Phase 3）由后续 session 接手时另起 ADR。
 
 每个 PR 的标准流程：
 1. 照 `C1-1` 的模式（见 `turn/phases/pre_flight.rs` 模板）在 `turn/phases/` 下新建 phase 文件
@@ -608,9 +610,9 @@ ls docs/adr/ | grep -i tauri-command-namespace
 
 ## Phase 2: 核心重构（两 session 合并 · 3-5 天）
 
-### [~] C1 · `run_agentic_loop_unified` → `TurnExecutor` 状态机（进行中：8/9 完成）— 2026-05-02
+### [x] C1 · `run_agentic_loop_unified` → `TurnExecutor` 状态机 — ✅ Done 2026-05-02 (9/9)
 
-> 🟡 **进行中**：ADR + 骨架 + 第一个 phase（PreFlight）已落地
+> ✅ **全部完成**：ADR-0010 + 8 phase + interceptor + 27 unit tests 全部落地
 >
 > ✅ **已完成**：
 > 1. **C1-0 设计 ADR**：`docs/adr/0010-turn-executor-state-machine.md` · ~220 行
@@ -696,13 +698,26 @@ ls docs/adr/ | grep -i tauri-command-namespace
 > - `bash scripts/check_file_sizes.sh` ✓ all files within size budget
 > - **HITL 不搬动的理由**：HITL 已经独立在 `tool_execution::hitl` 模块，`dispatch_tool_calls` → `single_tool_call::execute_single_tool_call` → HITL 这条链不在 phase body 里，已经"搬出来了"。强行包成 interceptor 反而引入间接层
 >
-> ⏳ **剩余 1 个里程碑**：
->
-> | PR | 工作 |
-> |---|---|
-> | C1-8 | 每 phase 补 1+ 单元测试（mock `TurnState` + 协作者） |
->
-> **预计剩余耗时**：0.5 天 · 1 个 PR
+> ✅ **C1-8 每 phase 补 1+ 单元测试**（2026-05-02）：
+> - 27 个 unit test inline 进 11 个 turn 模块文件（每 phase ≥ 2 test，集中 colocation 而非外部 `*_tests.rs`）：
+>   - `state.rs` × 2（`Default` invariants · `new()` ≡ `default()`）
+>   - `phases/mod.rs` × 2（`BreakReason` distinct + Copy · `PhaseOutcome` 三 variant 模式匹配）
+>   - `pre_flight.rs` × 4（happy iteration++ · cancel 触发 Break+AiEvent · cancel-unset 不 Break · iter > MAX_TOOL_ITERATIONS 触发 Break+AiEvent）
+>   - `compaction.rs` × 2（iter==1 走 pre_turn 路径 · iter>1 走 inter_turn 路径，无 session_id 都 Continue）
+>   - `first_iter_hooks.rs` × 2（iter>1 短路无副作用 · `is_sub_agent` 短路）
+>   - `token_estimate.rs` × 2（system+history → `compaction_state.last_input_tokens` > 0 · 空输入 → 0）
+>   - `completion.rs` × 2（`CompletionOutcome::BreakAgentLoop` 类型测 · MockCompletionModel smoke 测 stream → Continue+text）
+>   - `assistant_push.rs` × 3（empty 不 push · text-only push · text+tool_calls 合并 push）
+>   - `reflector_or_break.rs` × 3（has_tool_calls=true 重置计数+Continue · reflector_active=false → Break · 空 text → Break，nudge counter 不动）
+>   - `tool_dispatch.rs` × 2（empty 输入 no-op · 全部 rejected → 一条 User msg 含 N 个 ToolResult error）
+>   - `interceptor.rs` × 3（`LangfuseInterceptor::after_turn` 不 panic · `TurnSpans` 字段构造 · `Vec<Box<dyn TurnInterceptor>>` 多态调用）
+> - **测试基础设施重用**：所有需要 ctx 的测试用现成 `TestContextBuilder` + `LlmClient::Mock`，零新 mock 代码；`completion::run` smoke 复用 `MockCompletionModel`
+> - `cargo test -p golish-agent-runtime --lib turn::` 27 passed · 0 failed · 0.01s
+> - `cargo check --workspace --tests` 全绿 · 48s · 0 errors / 0 warnings
+> - `python3 scripts/check_dag.py` ✓ DAG clean across 43 crates
+> - `bash scripts/check_file_sizes.sh` ✓ all files within size budget（最大 phase 文件 213 行 / 500 行 budget）
+> - **测试关键决策**：把 tests inline 进 phase 文件（非外部 `*_tests.rs`）让"哪些 phase 缺测"一眼可见；后续新 phase 加测必须 colocate
+> - **跳过的测试维度**：`completion::run` 的 streaming retry 路径、`tool_dispatch` 的 dispatched 路径（permitted 非空）— 这两条是 sibling crate 测试覆盖的范围，phase test 只测 phase 自身的 partition/glue 逻辑，避免 e2e 重复
 
 **前置**：Phase 1 全部完成
 
@@ -777,6 +792,6 @@ ls docs/adr/ | grep -i tauri-command-namespace
 | B2 CI 守门 | B | ✅ [x] | 待提交 | 2026-05-02 |
 | B3 重写架构文档 | B | ✅ [x] | 待提交 | 2026-05-02 |
 | B4 Tauri ADR | B | ✅ [x] | 待提交 | 2026-05-02 |
-| C1 TurnExecutor | A+B | 🟡 [~] 8/9 | 待提交 | 2026-05-02 |
+| C1 TurnExecutor | A+B | ✅ [x] 9/9 | 待提交 | 2026-05-02 |
 
 **全部完成 = Golish B+ → S+ 迁移完成**

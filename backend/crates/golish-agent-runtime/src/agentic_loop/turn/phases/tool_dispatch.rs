@@ -66,3 +66,102 @@ pub async fn run<M>(
         .await;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use golish_llm_providers::LlmClient;
+    use rig::message::{ToolFunction, UserContent};
+    use serde_json::json;
+    use tokio::sync::RwLock;
+
+    use crate::test_utils::{MockCompletionModel, TestContextBuilder};
+
+    use super::*;
+
+    fn make_tool_call(id: &str, name: &str) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            call_id: Some(id.to_string()),
+            function: ToolFunction {
+                name: name.to_string(),
+                arguments: json!({}),
+            },
+            signature: None,
+            additional_params: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_inputs_are_a_noop() {
+        let test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let ctx = test_ctx.as_agentic_context_with_client(&client);
+        let capture = test_ctx.create_capture_context();
+        let model = MockCompletionModel::with_text("ignored");
+        let sub_ctx = SubAgentContext::default();
+        let registry = HookRegistry::new();
+        let mut history: Vec<Message> = vec![];
+
+        run(
+            vec![],
+            &[],
+            &ctx,
+            &capture,
+            &model,
+            &sub_ctx,
+            &registry,
+            &Span::none(),
+            &mut history,
+        )
+        .await;
+
+        assert!(history.is_empty(), "no tool calls => no history mutation");
+    }
+
+    #[tokio::test]
+    async fn calls_outside_allow_list_push_unavailable_error_results() {
+        let test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let ctx = test_ctx.as_agentic_context_with_client(&client);
+        let capture = test_ctx.create_capture_context();
+        let model = MockCompletionModel::with_text("ignored");
+        let sub_ctx = SubAgentContext::default();
+        let registry = HookRegistry::new();
+        let mut history: Vec<Message> = vec![];
+
+        run(
+            vec![
+                make_tool_call("tc-1", "blocked_tool"),
+                make_tool_call("tc-2", "another_blocked"),
+            ],
+            &[],
+            &ctx,
+            &capture,
+            &model,
+            &sub_ctx,
+            &registry,
+            &Span::none(),
+            &mut history,
+        )
+        .await;
+
+        assert_eq!(
+            history.len(),
+            1,
+            "rejected tool calls produce exactly one User message containing tool results"
+        );
+        let Message::User { content } = &history[0] else {
+            panic!("expected User message holding ToolResult content");
+        };
+        let tool_result_count = content
+            .iter()
+            .filter(|c| matches!(c, UserContent::ToolResult(_)))
+            .count();
+        assert_eq!(
+            tool_result_count, 2,
+            "both rejected calls must surface as ToolResult error entries"
+        );
+    }
+}
