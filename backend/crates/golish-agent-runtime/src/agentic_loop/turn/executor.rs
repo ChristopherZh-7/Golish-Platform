@@ -33,9 +33,9 @@ use super::super::context::{AgenticLoopContext, LoopCaptureContext};
 use super::super::stream_processor::StreamProcessOutcome;
 use super::super::tool_list::build_tool_list;
 use super::super::unified_helpers::{
-    record_agent_turn_start, record_final_output_and_usage, record_turn_completion,
-    trace_input_for_span,
+    record_agent_turn_start, record_turn_completion, trace_input_for_span,
 };
+use super::interceptor::{LangfuseInterceptor, TurnInterceptor, TurnSpans};
 use super::{
     assistant_push_phase, compaction as compaction_phase,
     completion::{self as completion_phase, CompletionOutcome},
@@ -81,7 +81,9 @@ where
 
     // Build the Langfuse span tree: `chat_message` (trace) ⊃ `agent`
     // (root observation) ⊃ each iteration's `llm_completion` /
-    // `tool_call` spans (created inside their respective phases).
+    // `tool_call` spans (created inside their respective phases). The
+    // pair is wrapped in a `TurnSpans` so interceptors can write
+    // trailing fields onto them after the loop terminates.
     let trace_input_truncated = trace_input_for_span(&initial_history);
 
     let chat_message_span = tracing::info_span!(
@@ -102,6 +104,16 @@ where
         model = %ctx.llm.model_name,
         provider = %ctx.llm.provider_name,
     );
+
+    let spans = TurnSpans {
+        chat_message_span,
+        agent_span,
+    };
+
+    // Cross-cutting hooks (Langfuse trailing fields, future HITL
+    // recording, eval logging). Today there is exactly one — the trait
+    // is in place so adding more does not require touching phase code.
+    let interceptors: Vec<Box<dyn TurnInterceptor>> = vec![Box::new(LangfuseInterceptor)];
 
     // Nested `.instrument()` ensures both spans are entered for the
     // whole loop body, so OpenTelemetry exports the right parent chain.
@@ -137,7 +149,7 @@ where
             // Phase 1: PreFlight — iteration counter + cancel + budget.
             // Runs BEFORE pre_turn_compaction so cancellation is observed
             // one step earlier than the legacy code path.
-            match pre_flight::run(&mut turn_state, ctx, &agent_span).await {
+            match pre_flight::run(&mut turn_state, ctx, &spans.agent_span).await {
                 PhaseOutcome::Continue => {}
                 PhaseOutcome::Break(reason) => {
                     tracing::debug!(?reason, "pre-flight phase requested loop break");
@@ -196,7 +208,7 @@ where
                 system_prompt,
                 &chat_history,
                 &tools,
-                &agent_span,
+                &spans.agent_span,
                 supports_thinking,
                 &mut accumulated_response,
                 &mut accumulated_thinking,
@@ -281,17 +293,18 @@ where
             total_usage,
         ))
     }
-    .instrument(agent_span.clone())
-    .instrument(chat_message_span.clone())
+    .instrument(spans.agent_span.clone())
+    .instrument(spans.chat_message_span.clone())
     .await?;
 
-    record_final_output_and_usage(
-        ctx,
-        &accumulated_response,
-        &total_usage,
-        &chat_message_span,
-        &agent_span,
-    );
+    // Run all registered interceptors' `after_turn` hooks. Today this
+    // is just `LangfuseInterceptor` writing trailing trace fields, but
+    // the loop is in place for future cross-cutting concerns.
+    for interceptor in &interceptors {
+        interceptor
+            .after_turn(ctx, &spans, &accumulated_response, &total_usage)
+            .await;
+    }
 
     let reasoning = if accumulated_thinking.is_empty() {
         None
