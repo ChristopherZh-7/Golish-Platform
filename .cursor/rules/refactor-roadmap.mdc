@@ -331,13 +331,17 @@ pub trait PentestRepo: Send + Sync {
 
 ---
 
-### P3-4 独立 crate 版本化（可选）
+### P3-4 独立 crate 版本化 — ⏭️ 主动跳过 (Won't Do)
 
-`workspace.package.version = "0.2.43"` 让 38 crate 同步发版。如未来 `golish-pentest`、`golish-vuln-intel` 想独立发布到 crates.io：
-
-1. 移除 `version.workspace = true`。
-2. 引入 `release-please` per-package 配置（项目根已有 `release-please-config.json`）。
-3. 拆分 CHANGELOG.md。
+> ⏭️ 2026-05-02 决策: **不做**。本项目是闭源 Tauri 桌面应用, 不发布到 crates.io, 所有 crate 都带 `golish-` 前缀。workspace lockstep (`version.workspace = true`) 反而是优势:
+> 
+> - 版本号一致, 发版只需 release-please 改一处 (`backend/Cargo.toml` workspace.package.version)
+> - 不需要 per-package CHANGELOG 拆分(monorepo 模式 release-please 历史丢失风险高)
+> - 不需要 cherry-pick 各 crate 的 commit 归属(易出错)
+> 
+> 如未来某个 crate (例如 `golish-vuln-intel`) 真要单独发布到 crates.io, 那时**只把它一个**改成独立版本号即可, 不必现在批量改 43 个。
+> 
+> 此项不在 S 评级阻断范围, 也不计入"未办事项"。
 
 ---
 
@@ -353,7 +357,7 @@ pub trait PentestRepo: Send + Sync {
 | 域 crate 用裸 PgPool | 3 | 3 | **0** | 0 | **0** ✅ (P2-4 完成) |
 | 新 crate 测试覆盖 | 0/4 | **4/4** | 4/4 | 4/4 | **4/4** ✅ |
 | `cargo check -p golish-agent-loop` cold | 15.63s | 15.63s | 15.63s | **≤8s** | **2.48s** ✅ (P3-1 finisher) |
-| 综合评级 | A- | A | A+ | S | **S** ✅ (Phase 1/2/3 全部主要项完成, 仅 P3-4 独立版本号可选) |
+| 综合评级 | A- | A | A+ | S | **S** ✅ (Phase 1/2/3 全部主要项完成, P3-4 主动跳过) |
 
 ---
 
