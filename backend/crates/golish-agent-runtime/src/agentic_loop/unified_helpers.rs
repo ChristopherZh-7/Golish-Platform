@@ -166,7 +166,7 @@ pub(super) fn log_image_and_reasoning_diagnostics(
     );
 }
 
-pub(super) fn push_unavailable_tool_results(
+pub(crate) fn push_unavailable_tool_results(
     chat_history: &mut Vec<Message>,
     rejected: &[ToolCall],
 ) {

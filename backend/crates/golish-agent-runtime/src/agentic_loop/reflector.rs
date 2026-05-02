@@ -20,7 +20,7 @@ use super::config::AgenticLoopConfig;
 use super::context::AgenticLoopContext;
 
 /// Outcome of [`maybe_run_reflector`].
-pub(super) enum ReflectorOutcome {
+pub(crate) enum ReflectorOutcome {
     /// A correction was injected into `chat_history` — the loop should `continue`.
     Injected,
     /// No reflection happened — caller decides next step.
@@ -31,7 +31,7 @@ pub(super) enum ReflectorOutcome {
 /// invoke the reflector sub-agent and append a corrective user message.
 ///
 /// `total_reflector_nudges` is incremented when reflection actually fires.
-pub(super) async fn maybe_run_reflector(
+pub(crate) async fn maybe_run_reflector(
     ctx: &AgenticLoopContext<'_>,
     sub_agent_context: &SubAgentContext,
     config: &AgenticLoopConfig,

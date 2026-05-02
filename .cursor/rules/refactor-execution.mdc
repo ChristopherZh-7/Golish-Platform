@@ -30,7 +30,7 @@ alwaysApply: false
 | B2 CI 守门 | ✅ Done |
 | B3 重写架构文档 | ✅ Done |
 | B4 Tauri ADR | ✅ Done |
-| **C1 TurnExecutor** | **🟡 5/9 · C1-0~C1-4 落地 (ADR + PreFlight + Compaction + FirstIterHooks/TokenEstimate + Completion)，C1-5 起继续** |
+| **C1 TurnExecutor** | **🟡 6/9 · C1-0~C1-5 落地 (ADR + PreFlight + Compaction + FirstIterHooks/TokenEstimate + Completion + AssistantPush/ReflectorOrBreak/ToolDispatch)，C1-6 起继续** |
 
 ### 第二步：验证前面工作没崩（60 秒）
 
@@ -51,8 +51,8 @@ bash ../scripts/check_file_sizes.sh  # 必须 "all files within size budget"
 | PR | 工作 | 下一个做 |
 |---|---|---|
 | ~~C1-4~~ | ~~抽 `StreamStart` + `StreamProcess` phase~~ | ✅ Done |
-| **C1-5** | 抽 `AssistantPush` + `ReflectorOrBreak` + `ToolDispatch` | ← 先做这个 |
-| C1-6 | 主 `loop` 替换为 phase 调度器，`mod.rs` ≤ 150 行 |  |
+| ~~C1-5~~ | ~~抽 `AssistantPush` + `ReflectorOrBreak` + `ToolDispatch`~~ | ✅ Done |
+| **C1-6** | 主 `loop` 替换为 phase 调度器，`mod.rs` ≤ 150 行 | ← 先做这个 |
 | C1-7 | `TurnInterceptor` trait · Langfuse/HITL 搬出 |  |
 | C1-8 | 每 phase 补 1+ 单元测试 |  |
 
@@ -608,7 +608,7 @@ ls docs/adr/ | grep -i tauri-command-namespace
 
 ## Phase 2: 核心重构（两 session 合并 · 3-5 天）
 
-### [~] C1 · `run_agentic_loop_unified` → `TurnExecutor` 状态机（进行中：5/9 完成）— 2026-05-02
+### [~] C1 · `run_agentic_loop_unified` → `TurnExecutor` 状态机（进行中：6/9 完成）— 2026-05-02
 
 > 🟡 **进行中**：ADR + 骨架 + 第一个 phase（PreFlight）已落地
 >
@@ -656,16 +656,29 @@ ls docs/adr/ | grep -i tauri-command-namespace
 > - `python3 scripts/check_dag.py` ✓ DAG clean across 43 crates
 > - `bash scripts/check_file_sizes.sh` ✓ all files within size budget
 >
-> ⏳ **剩余 4 个里程碑**（每个独立 PR · ≤500 行 diff）：
+> ✅ **C1-5 AssistantPush + ReflectorOrBreak + ToolDispatch phase 迁移**（2026-05-02）：
+> - 新建 3 个 phase 文件：
+>   - `turn/phases/assistant_push.rs`（~43 行）：透传到 `assistant_message::push_assistant_message`，作为后续 hook 插点
+>   - `turn/phases/reflector_or_break.rs`（~75 行）：处理 no-tool-call 分支；新引入本地 `ReflectorPhaseOutcome` 枚举（`Continue` / `Repeat` / `Break`），不污染通用 `PhaseOutcome`
+>   - `turn/phases/tool_dispatch.rs`（~68 行）：allow-list 过滤 + `push_unavailable_tool_results` + `dispatch_tool_calls`
+> - `TurnState` 新增两个字段：`consecutive_no_tool_turns: u32`、`total_reflector_nudges: u32`，更新 doc 注释明确"loop-wide"语义
+> - widen 5 个 helper 可见性：`push_assistant_message` / `maybe_run_reflector` / `ReflectorOutcome` / `dispatch_tool_calls` / `push_unavailable_tool_results` 从 `pub(super)` 升 `pub(crate)`
+> - 主 loop 三块（push_assistant_message + reflector match + allow-list partition + dispatch）压缩为三个 `phase::run(...)` 调用（match `ReflectorPhaseOutcome::Repeat => continue, Break => break`）
+> - mod.rs 同步清理：删 `assistant_message::push_assistant_message` / `reflector::{maybe_run_reflector, ReflectorOutcome}` / `tool_dispatch::dispatch_tool_calls` / `unified_helpers::push_unavailable_tool_results` 旧 import；删 `consecutive_no_tool_turns` / `total_reflector_nudges` local var；turn re-export 加 `assistant_push_phase`、`reflector_or_break_phase`、`tool_dispatch_phase`、`ReflectorPhaseOutcome`
+> - mod.rs 行数：457 → **435 行**（-22 行；剩余压缩到 ≤150 在 C1-6 调度器化时一次性完成）
+> - `cargo check --workspace --tests` 全绿 · 38s · 0 errors / 0 warnings
+> - `python3 scripts/check_dag.py` ✓ DAG clean across 43 crates
+> - `bash scripts/check_file_sizes.sh` ✓ all files within size budget
+>
+> ⏳ **剩余 3 个里程碑**（每个独立 PR · ≤500 行 diff）：
 >
 > | PR | 工作 |
 > |---|---|
-> | C1-5 | 抽 `AssistantPush` + `ReflectorOrBreak` + `ToolDispatch` phase |
 > | C1-6 | 主 `loop` 替换为 phase 调度器 · mod.rs 目标 ≤150 行 |
 > | C1-7 | 引入 `TurnInterceptor` trait，Langfuse/HITL 搬出 phase body |
 > | C1-8 | 每 phase 补 1+ 单元测试（mock `TurnState` + 协作者） |
 >
-> **预计剩余耗时**：1-2 天 · 4 个 PR
+> **预计剩余耗时**：1 天 · 3 个 PR
 
 **前置**：Phase 1 全部完成
 
@@ -740,6 +753,6 @@ ls docs/adr/ | grep -i tauri-command-namespace
 | B2 CI 守门 | B | ✅ [x] | 待提交 | 2026-05-02 |
 | B3 重写架构文档 | B | ✅ [x] | 待提交 | 2026-05-02 |
 | B4 Tauri ADR | B | ✅ [x] | 待提交 | 2026-05-02 |
-| C1 TurnExecutor | A+B | 🟡 [~] 5/9 | 待提交 | 2026-05-02 |
+| C1 TurnExecutor | A+B | 🟡 [~] 6/9 | 待提交 | 2026-05-02 |
 
 **全部完成 = Golish B+ → S+ 迁移完成**

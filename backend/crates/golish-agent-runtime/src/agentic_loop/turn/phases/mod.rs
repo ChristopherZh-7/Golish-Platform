@@ -7,11 +7,14 @@
 //! Extracted phases are added one PR at a time — see the migration
 //! plan in `docs/adr/0010-turn-executor-state-machine.md`.
 
+pub mod assistant_push;
 pub mod compaction;
 pub mod completion;
 pub mod first_iter_hooks;
 pub mod pre_flight;
+pub mod reflector_or_break;
 pub mod token_estimate;
+pub mod tool_dispatch;
 
 /// Why a phase asked the loop to break.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
