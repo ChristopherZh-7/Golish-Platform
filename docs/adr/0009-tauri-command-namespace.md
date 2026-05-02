@@ -2,10 +2,44 @@
 
 ## Status
 
-**Proposed** (2026-05-02). Not yet implemented — this ADR enumerates the
-options and their trade-offs so a decision can be made deliberately in a
-future cycle. Until then, all commands live in the flat registry in
-`backend/crates/golish/src/commands_registry.rs`.
+**Accepted** (2026-05-02, revised same day). Phase 1 (Option A backend
+activation) is landing in this cycle; Phase 2 (frontend facade
+consolidation) is already partly in place at `frontend/lib/api/` and
+will be completed after Phase 1 stabilizes.
+
+### Execution decision
+
+The chosen path is **A + B hybrid, staged**:
+
+1. **Phase 1 — Backend bundles (Option A, this PR)**: activate the
+   per-domain `commands_facade/*.rs` files that already ship with the
+   `pub use` lists, and replace the 12 scattered `use A::commands::*;`
+   glob imports in `commands_registry.rs` with a single
+   `use crate::commands_facade::*;`. Tauri's `generate_handler!` still
+   needs all command identifiers at the call site, so the flat
+   `generate_handler![…]` macro remains — but the **source of truth
+   for "what commands does domain X expose"** moves to
+   `commands_facade/<domain>.rs`.
+2. **Phase 2 — Frontend facade (Option B, partially shipped)**:
+   `frontend/lib/api/{ai,git,pty,mcp,…}.ts` already exist and
+   `frontend/lib/api/index.ts` exposes `api.git.getGitBranch(…)` style
+   calls for 15 domains. Remaining work: extend coverage to all 44 crates
+   of backend commands and add an ESLint rule that forbids bare
+   `invoke("…")` calls outside `lib/api/`.
+3. **Phase 3 — (optional, future) Option C codegen**: defer. Reassess
+   once frontend `lib/api/` coverage is 100% and we have real
+   `#[tauri::command(audit = "…")]` metadata demands.
+
+### Why A+B and not C right now
+
+- `ts-rs` already generates typed request/response shapes into
+  `frontend/lib/generated/`; Option C's TS-client generation
+  would duplicate that.
+- The main DX pain (no IDE autocomplete, easy typo collisions) is
+  solved by Phase 2 ergonomics once coverage hits 100%.
+- Option C is a **reversible-only-with-effort** commitment; we want
+  to see what attack-surface metadata we actually need before
+  designing the attribute system.
 
 ## Context
 
@@ -143,7 +177,7 @@ hand-edited files if the experiment fails).
 - **If we pick C**: solves the whole problem but is a one-time
   architecture spend.
 
-## Recommendation for next cycle
+## Recommendation for next cycle (historical, superseded by Execution decision above)
 
 Sequence:
 
@@ -156,6 +190,40 @@ Sequence:
 
 This ADR will be revisited when Option A ships or when command count
 exceeds 700.
+
+## Implementation notes (Phase 1)
+
+After activation the backend structure is:
+
+```
+backend/crates/golish/src/
+├── commands_facade/
+│   ├── mod.rs           # `pub mod ai; pub mod git_pty; …` (activated)
+│   ├── ai.rs            # pub use crate::ai::commands::…::…
+│   ├── git_pty.rs       # pub use crate::commands::proc::…::…
+│   ├── indexer.rs       # pub use crate::indexer::commands::…::…
+│   ├── settings.rs
+│   ├── sidecar.rs
+│   ├── pentest.rs
+│   ├── pipeline.rs
+│   ├── vuln_intel.rs
+│   ├── mcp.rs           # newly extracted from workspace.rs
+│   └── workspace.rs     # targets/wiki/vault/findings/... (no longer
+│                         #   contains mcp)
+└── commands_registry.rs # single `use crate::commands_facade::*;` +
+                         # flat generate_handler![…] (Tauri limit)
+```
+
+Rule of thumb going forward:
+
+- **Adding a new command** → declare it in its home module
+  (e.g. `ai::commands::foo::bar`), `pub use` it in
+  `commands_facade/<domain>.rs`, add it to `generate_handler![…]` in
+  `commands_registry.rs`.
+- **Renaming/removing** → the `pub use` line in the facade is the
+  single-item diff reviewers should look for.
+- **Discovering** the command surface of domain X → read
+  `commands_facade/<domain>.rs` top to bottom; one file, one domain.
 
 ## References
 
