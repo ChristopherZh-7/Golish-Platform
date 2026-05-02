@@ -349,19 +349,18 @@ pub async fn output_parse_and_store(
     let pp = project_path.as_deref();
     let tname = tool_name.as_deref().unwrap_or("unknown");
 
-    use golish_pentest::output_store;
+    use golish_pentest::output_store::OutputStore as _;
+    let store = crate::db::PgPentestStore::new(pool);
     for item in &items {
         let result = match db_action.as_str() {
-            "target_add" => output_store::store_target_add(pool, &item.fields, pp).await,
+            "target_add" => store.store_target_add(&item.fields, pp).await,
             "target_update_recon" => {
-                output_store::store_target_update_recon(pool, &item.fields, pp, tname).await
+                store.store_target_update_recon(&item.fields, pp, tname).await
             }
             "directory_entry_add" => {
-                output_store::store_directory_entry(pool, &item.fields, tname, pp).await
+                store.store_directory_entry(&item.fields, tname, pp).await
             }
-            "finding_add" => {
-                output_store::store_finding(pool, &item.fields, tname, pp).await
-            }
+            "finding_add" => store.store_finding(&item.fields, tname, pp).await,
             other => {
                 skipped_count += 1;
                 errors.push(format!("Unknown db_action: {other}"));
@@ -403,5 +402,9 @@ pub async fn store_recon_fingerprints(
     item: &ParsedItem,
     source: &str,
 ) {
-    golish_pentest::output_store::store_fingerprints(pool, target_id, project_path, &item.fields, source).await;
+    use golish_pentest::output_store::OutputStore as _;
+    let store = crate::db::PgPentestStore::new(pool);
+    store
+        .store_fingerprints(target_id, project_path, &item.fields, source)
+        .await;
 }

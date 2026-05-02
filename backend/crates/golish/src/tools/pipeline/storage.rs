@@ -142,14 +142,13 @@ impl PipelineStorage for MainStorage {
             .get("_tool")
             .map(|s| s.as_str())
             .unwrap_or("httpx");
-        golish_pentest::output_store::store_fingerprints(
-            pool,
-            target_uuid,
-            project_path,
-            &item.fields,
-            tool_source,
-        )
-        .await;
+        {
+            use golish_pentest::output_store::OutputStore as _;
+            let store = crate::db::PgPentestStore::new(pool);
+            store
+                .store_fingerprints(target_uuid, project_path, &item.fields, tool_source)
+                .await;
+        }
 
         Ok(is_new_port)
     }

@@ -20,6 +20,7 @@
 pub mod ai;
 pub use golish_cli_output as cli_output;
 pub mod compat;
+pub(crate) mod db;
 mod error;
 pub(crate) mod event_emitter;
 pub mod history;
