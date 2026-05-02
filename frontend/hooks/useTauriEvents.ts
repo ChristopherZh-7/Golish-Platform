@@ -32,7 +32,6 @@ let activeGeneration = 0;
 export function useTauriEvents() {
   const store = useStore;
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: store.getState is stable zustand API
   useEffect(() => {
     const generation = ++activeGeneration;
     const isStale = () => generation !== activeGeneration;

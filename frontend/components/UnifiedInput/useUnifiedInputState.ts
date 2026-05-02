@@ -249,7 +249,6 @@ export function useInputState({ sessionId }: { sessionId: string }) {
     }
   }, [isProcessRunning]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: input triggers re-measurement of textarea scrollHeight
   useEffect(() => {
     adjustTextareaHeight();
   }, [input, adjustTextareaHeight]);

@@ -78,7 +78,7 @@ export function WikiTab({
       .read(selectedPath)
       .then((content) => setArticleContents((prev) => ({ ...prev, [selectedPath]: content })))
       .catch(() => setArticleContents((prev) => ({ ...prev, [selectedPath]: "" })));
-  }, [selectedPath, selectedPath ? articleContents[selectedPath] : undefined]);
+  }, [selectedPath, articleContents[selectedPath]]);
 
   // Ensure DB index is up-to-date before fetching metadata
   const reindexDone = useRef(false);
@@ -399,6 +399,7 @@ export function WikiTab({
       return (
         <div key={node.path}>
           <button
+            type="button"
             onClick={() => toggleDir(node.path)}
             className="flex items-center gap-1 w-full px-1.5 py-1 rounded text-left hover:bg-muted/10 transition-colors text-muted-foreground/50"
             style={{ paddingLeft: `${depth * 12 + 6}px` }}
@@ -425,6 +426,7 @@ export function WikiTab({
     return (
       <div key={node.path} className="group/file flex items-center">
         <button
+          type="button"
           onClick={() => setSelectedPath(node.path)}
           className={cn(
             "flex items-center gap-1.5 flex-1 px-1.5 py-1 rounded text-left transition-colors",
@@ -444,6 +446,7 @@ export function WikiTab({
         </button>
         {!isLinked && (
           <button
+            type="button"
             onClick={() => handleLinkWiki(node.path)}
             className="p-0.5 text-accent/0 group-hover/file:text-accent/50 hover:!text-accent transition-colors flex-shrink-0"
             title="Link to this CVE"
@@ -475,6 +478,7 @@ export function WikiTab({
           </span>
           <div className="flex items-center gap-0.5">
             <button
+              type="button"
               onClick={() => {
                 setCreating(!creating);
                 setAdding(false);
@@ -485,6 +489,7 @@ export function WikiTab({
               <Plus className="w-3 h-3" />
             </button>
             <button
+              type="button"
               onClick={() => {
                 setAdding(!adding);
                 setCreating(false);
@@ -527,6 +532,7 @@ export function WikiTab({
             />
             <div className="flex gap-1">
               <button
+                type="button"
                 onClick={handleCreatePage}
                 disabled={!createPath.trim()}
                 className="text-[8px] text-emerald-400 disabled:opacity-30"
@@ -534,6 +540,7 @@ export function WikiTab({
                 Create
               </button>
               <button
+                type="button"
                 onClick={() => {
                   setCreating(false);
                   setCreatePath("");
@@ -564,6 +571,7 @@ export function WikiTab({
             />
             <div className="flex gap-1">
               <button
+                type="button"
                 onClick={() => {
                   handleLinkWiki(newPath.trim());
                   setAdding(false);
@@ -575,6 +583,7 @@ export function WikiTab({
                 Link
               </button>
               <button
+                type="button"
                 onClick={() => {
                   setAdding(false);
                   setNewPath("");
@@ -595,6 +604,7 @@ export function WikiTab({
             </div>
             {searchResults.map((r) => (
               <button
+                type="button"
                 key={r.path}
                 onClick={() => navigateToWikiPage(r.path)}
                 className="flex flex-col w-full px-2 py-1 hover:bg-muted/10 transition-colors text-left"
@@ -639,6 +649,7 @@ export function WikiTab({
                       return (
                         <div key={info.path} className="group/file flex items-center">
                           <button
+                            type="button"
                             onClick={() => setSelectedPath(info.path)}
                             className={cn(
                               "flex items-center gap-1.5 flex-1 px-2 py-1 rounded text-left transition-colors min-w-0",
@@ -669,6 +680,7 @@ export function WikiTab({
                             )}
                           </button>
                           <button
+                            type="button"
                             onClick={() => handleUnlinkWiki(info.path)}
                             className="p-0.5 text-destructive/0 group-hover/file:text-destructive/40 hover:!text-destructive transition-colors flex-shrink-0"
                             title="Unlink"
@@ -692,6 +704,7 @@ export function WikiTab({
                   {suggestedPages.map((info) => (
                     <div key={info.path} className="group/sugg flex items-center">
                       <button
+                        type="button"
                         onClick={() => setSelectedPath(info.path)}
                         className="flex items-center gap-1.5 flex-1 px-2 py-1 rounded text-left text-muted-foreground/35 hover:text-foreground/60 hover:bg-muted/10 transition-colors min-w-0"
                       >
@@ -700,6 +713,7 @@ export function WikiTab({
                         <span className="text-[6px] text-muted-foreground/15">{info.category}</span>
                       </button>
                       <button
+                        type="button"
                         onClick={() => handleLinkWiki(info.path)}
                         className="p-0.5 text-accent/0 group-hover/sugg:text-accent/50 hover:!text-accent transition-colors flex-shrink-0"
                         title="Link to this CVE"
@@ -729,6 +743,7 @@ export function WikiTab({
         {/* Bottom toggle */}
         <div className="px-2 py-1.5 border-t border-border/5 flex items-center gap-1">
           <button
+            type="button"
             onClick={() => setBrowseAll(!browseAll)}
             className="text-[8px] text-muted-foreground/30 hover:text-muted-foreground/60 transition-colors"
           >
@@ -759,6 +774,7 @@ export function WikiTab({
               )}
               {linkedSet.has(selectedPath) ? (
                 <button
+                  type="button"
                   onClick={() => handleUnlinkWiki(selectedPath)}
                   className="text-[8px] px-1.5 py-0.5 rounded text-destructive/50 hover:text-destructive hover:bg-destructive/10 transition-colors"
                 >
@@ -766,6 +782,7 @@ export function WikiTab({
                 </button>
               ) : (
                 <button
+                  type="button"
                   onClick={() => handleLinkWiki(selectedPath)}
                   className="text-[8px] px-1.5 py-0.5 rounded text-accent/50 hover:text-accent hover:bg-accent/10 transition-colors"
                 >
@@ -775,12 +792,14 @@ export function WikiTab({
               {isEditing ? (
                 <>
                   <button
+                    type="button"
                     onClick={handleSaveEdit}
                     className="text-[9px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 transition-colors"
                   >
                     Save
                   </button>
                   <button
+                    type="button"
                     onClick={() => setEditingPath(null)}
                     className="text-[9px] px-2 py-0.5 rounded text-muted-foreground/40 hover:text-muted-foreground/60 transition-colors"
                   >
@@ -790,12 +809,14 @@ export function WikiTab({
               ) : (
                 <>
                   <button
+                    type="button"
                     onClick={() => handleStartEdit(selectedPath)}
                     className="text-[9px] px-2 py-0.5 rounded text-muted-foreground/30 hover:text-accent transition-colors"
                   >
                     Edit
                   </button>
                   <button
+                    type="button"
                     onClick={() => handleDeletePage(selectedPath)}
                     className="text-[9px] px-2 py-0.5 rounded text-destructive/30 hover:text-destructive transition-colors"
                   >
@@ -854,6 +875,7 @@ export function WikiTab({
                   <div className="space-y-0.5">
                     {backlinks.map((bl) => (
                       <button
+                        type="button"
                         key={bl.source_path}
                         onClick={() => navigateToWikiPage(bl.source_path)}
                         className="flex items-center gap-1.5 w-full px-1.5 py-1 rounded text-left hover:bg-muted/10 transition-colors"

@@ -88,7 +88,6 @@ function ThinkingBlockUI({ content, isExpanded, isThinking, onToggle }: Thinking
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom when content changes (only while actively thinking)
-  // biome-ignore lint/correctness/useExhaustiveDependencies: content is needed to trigger scroll on update
   useEffect(() => {
     if (isThinking && isExpanded && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;

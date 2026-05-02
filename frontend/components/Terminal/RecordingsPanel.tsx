@@ -165,6 +165,7 @@ export function RecordingsPanel({ onClose }: { onClose: () => void }) {
           <span className="text-sm font-medium">Terminal Recordings</span>
         </div>
         <button
+          type="button"
           onClick={onClose}
           className="p-1 rounded hover:bg-muted/30 text-muted-foreground/50 hover:text-muted-foreground"
         >
@@ -195,6 +196,7 @@ export function RecordingsPanel({ onClose }: { onClose: () => void }) {
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-medium truncate">{rec.title}</span>
                     <button
+                      type="button"
                       className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-muted-foreground/40 hover:text-red-400 transition-all"
                       onClick={(e) => {
                         e.stopPropagation();
@@ -223,6 +225,7 @@ export function RecordingsPanel({ onClose }: { onClose: () => void }) {
             <>
               <div className="flex items-center gap-2 px-3 py-2 border-b border-border/10">
                 <button
+                  type="button"
                   onClick={handleRestart}
                   className="p-1 rounded hover:bg-muted/30 text-muted-foreground/50"
                   title="Restart"
@@ -230,6 +233,7 @@ export function RecordingsPanel({ onClose }: { onClose: () => void }) {
                   <SkipBack className="w-3.5 h-3.5" />
                 </button>
                 <button
+                  type="button"
                   onClick={handlePlay}
                   className={cn(
                     "p-1.5 rounded-md transition-colors",

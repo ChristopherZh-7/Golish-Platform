@@ -35,7 +35,6 @@ export function ImageModal({ src, alt, open, onClose }: ImageModalProps) {
   if (!open) return null;
 
   return (
-    // biome-ignore lint/a11y/useKeyWithClickEvents: Escape key handled via global listener
     <div
       role="dialog"
       aria-modal="true"
@@ -62,8 +61,6 @@ export function ImageModal({ src, alt, open, onClose }: ImageModalProps) {
       </button>
 
       {/* Image container - click on image doesn't close */}
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: stopPropagation only, no action */}
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: prevents close when clicking image */}
       <div
         className="relative max-w-[90vw] max-h-[90vh] flex items-center justify-center"
         onClick={(e) => e.stopPropagation()}

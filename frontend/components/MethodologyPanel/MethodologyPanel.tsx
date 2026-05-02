@@ -222,6 +222,7 @@ export function MethodologyPanel() {
         {/* Header */}
         <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border/30 flex-shrink-0">
           <button
+            type="button"
             className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
             onClick={() => {
               setView("list");
@@ -259,6 +260,7 @@ export function MethodologyPanel() {
             return (
               <div key={phase.id} className="rounded-lg border border-border/20 overflow-hidden">
                 <button
+                  type="button"
                   className="w-full flex items-center gap-2 px-3 py-2 hover:bg-muted/30 transition-colors text-left"
                   onClick={() => togglePhase(phase.id)}
                 >
@@ -282,6 +284,7 @@ export function MethodologyPanel() {
                       <div key={item.id} className="py-1.5 px-1">
                         <div className="flex items-start gap-2">
                           <button
+                            type="button"
                             className="mt-0.5 flex-shrink-0"
                             onClick={() => handleToggleItem(phase.id, item.id, !item.checked)}
                           >
@@ -339,6 +342,7 @@ export function MethodologyPanel() {
                               </div>
                             ) : (
                               <button
+                                type="button"
                                 className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground/40 hover:text-muted-foreground/70 transition-colors"
                                 onClick={() => setEditingNotes(item.id)}
                               >
@@ -369,6 +373,7 @@ export function MethodologyPanel() {
         <span className="text-sm font-medium">{t("methodology.title", "Methodology")}</span>
         <div className="flex-1" />
         <button
+          type="button"
           className="flex items-center gap-1 px-2 py-1 text-xs rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
           onClick={() => setShowNewProject(true)}
         >
@@ -413,6 +418,7 @@ export function MethodologyPanel() {
                       </div>
                     </div>
                     <button
+                      type="button"
                       className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-opacity"
                       onClick={(e) => {
                         e.stopPropagation();
@@ -482,6 +488,7 @@ export function MethodologyPanel() {
             </div>
             <div className="flex justify-end gap-2 px-4 py-3 border-t border-border/30">
               <button
+                type="button"
                 className="px-3 py-1.5 text-xs rounded-md hover:bg-muted/50 transition-colors"
                 onClick={() => {
                   setShowNewProject(false);
@@ -492,6 +499,7 @@ export function MethodologyPanel() {
                 {t("common.cancel", "Cancel")}
               </button>
               <button
+                type="button"
                 className="px-3 py-1.5 text-xs rounded-md bg-accent text-accent-foreground hover:bg-accent/90 transition-colors font-medium"
                 onClick={handleCreateProject}
                 disabled={!newProjectName.trim() || !newTemplateId}

@@ -1,5 +1,5 @@
-import type { VaultEntrySafe as GeneratedVaultEntrySafe } from "@/lib/generated";
 import { invoke } from "@/lib/api/client";
+import type { VaultEntrySafe as GeneratedVaultEntrySafe } from "@/lib/generated";
 
 type ZapJson = Record<string, unknown>;
 

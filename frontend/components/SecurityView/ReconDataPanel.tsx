@@ -64,6 +64,7 @@ export function ReconDataPanel() {
           />
         </div>
         <button
+          type="button"
           onClick={loadData}
           className="px-2.5 py-1 rounded-md text-[10px] font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors"
         >
@@ -75,6 +76,7 @@ export function ReconDataPanel() {
       <div className="flex items-center gap-1 px-4 py-1.5 border-b border-border/5 flex-shrink-0">
         {subTabs.map((st) => (
           <button
+            type="button"
             key={st.id}
             onClick={() => setSubTab(st.id)}
             className={cn(
@@ -326,6 +328,7 @@ export function JsAnalysisPanel() {
           />
         </div>
         <button
+          type="button"
           onClick={loadData}
           className="px-2.5 py-1 rounded-md text-[10px] font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors"
         >

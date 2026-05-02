@@ -205,7 +205,6 @@ export function FileEditorSidebarPanel({ open, onOpenChange }: FileEditorSidebar
   useEffect(() => {
     if (!vimMode || !editorRef.current?.view) return;
 
-    // biome-ignore lint/suspicious/noExplicitAny: CodeMirror vim internals not fully typed
     const cm = (editorRef.current.view as any).cm;
     if (!cm) return;
 
@@ -337,7 +336,6 @@ export function FileEditorSidebarPanel({ open, onOpenChange }: FileEditorSidebar
         maxWidth: `${MAX_WIDTH}px`,
       }}
     >
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: resize handle is mouse-only */}
       <div
         className="absolute top-0 left-0 w-1 h-full cursor-col-resize hover:bg-primary/50 transition-colors z-10 group"
         onMouseDown={onStartResize}

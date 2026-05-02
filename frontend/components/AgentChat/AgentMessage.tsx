@@ -339,7 +339,6 @@ export const AgentMessage = memo(function AgentMessage({
             if (block.type === "text") {
               return (
                 <div
-                  // biome-ignore lint/suspicious/noArrayIndexKey: blocks are in fixed order
                   key={`text-${blockIndex}`}
                   className={cn(prevWasTool && "mt-6", nextIsTool && "mb-2")}
                 >
@@ -365,7 +364,6 @@ export const AgentMessage = memo(function AgentMessage({
             if (block.type === "udiff_result") {
               return (
                 <UdiffResultBlock
-                  // biome-ignore lint/suspicious/noArrayIndexKey: blocks are in fixed order
                   key={`udiff-${blockIndex}`}
                   response={block.response}
                   durationMs={block.durationMs}
@@ -373,18 +371,11 @@ export const AgentMessage = memo(function AgentMessage({
               );
             }
             if (block.type === "system_hooks") {
-              return (
-                <SystemHooksCard
-                  // biome-ignore lint/suspicious/noArrayIndexKey: blocks are in fixed order
-                  key={`hooks-${blockIndex}`}
-                  hooks={block.hooks}
-                />
-              );
+              return <SystemHooksCard key={`hooks-${blockIndex}`} hooks={block.hooks} />;
             }
             if (block.type === "thinking") {
               return (
                 <div
-                  // biome-ignore lint/suspicious/noArrayIndexKey: blocks are in fixed order
                   key={`thinking-${blockIndex}`}
                   className={cn(prevWasTool && "mt-6", nextIsTool && "mb-2")}
                 >

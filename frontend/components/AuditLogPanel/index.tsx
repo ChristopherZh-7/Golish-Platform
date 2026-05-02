@@ -432,6 +432,7 @@ export function AuditLogPanel() {
         {activeTab === "operations" && (
           <>
             <button
+              type="button"
               onClick={() => setShowSearch(!showSearch)}
               className={cn(
                 "p-1 rounded transition-colors",
@@ -444,6 +445,7 @@ export function AuditLogPanel() {
             </button>
             <div className="relative">
               <button
+                type="button"
                 onClick={() => setShowFilter(!showFilter)}
                 className={cn(
                   "p-1 rounded transition-colors",
@@ -458,6 +460,7 @@ export function AuditLogPanel() {
                 <div className="absolute right-0 top-full mt-1 z-50 w-36 rounded-lg border border-border/30 bg-popover shadow-xl py-1">
                   {CATEGORY_OPTIONS.map((c) => (
                     <button
+                      type="button"
                       key={c}
                       onClick={() => {
                         setFilterCategory(c);
@@ -479,6 +482,7 @@ export function AuditLogPanel() {
           </>
         )}
         <button
+          type="button"
           onClick={load}
           className="p-1 text-muted-foreground/30 hover:text-foreground transition-colors"
         >
@@ -486,6 +490,7 @@ export function AuditLogPanel() {
         </button>
         {activeTab === "operations" && (
           <button
+            type="button"
             onClick={handleClear}
             className="p-1 text-muted-foreground/30 hover:text-red-400 transition-colors"
           >
@@ -499,6 +504,7 @@ export function AuditLogPanel() {
           const Icon = tab.icon;
           return (
             <button
+              type="button"
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
               className={cn(

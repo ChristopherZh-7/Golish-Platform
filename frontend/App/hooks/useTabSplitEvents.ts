@@ -24,7 +24,6 @@ export function useTabSplitEvents({
   setRightActiveTab,
   setShowSplitDropZone,
 }: UseTabSplitEventsProps) {
-  // biome-ignore lint/correctness/useExhaustiveDependencies: preserve original empty deps; setters are stable
   useEffect(() => {
     const handleSplitTab = (e: Event) => {
       const tabId = (e as CustomEvent<string>).detail;

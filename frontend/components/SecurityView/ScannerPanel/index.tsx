@@ -245,6 +245,7 @@ export function ScannerPanel({
           ]}
         />
         <button
+          type="button"
           className={cn(
             "p-1 rounded text-muted-foreground/30 hover:text-muted-foreground/60 transition-colors",
             showPlugins && "text-accent/60 bg-accent/10"
@@ -298,6 +299,7 @@ export function ScannerPanel({
             </span>
             <div className="flex-1" />
             <button
+              type="button"
               className="text-[9px] text-accent/50 hover:text-accent/80 transition-colors"
               onClick={() => {
                 const allEnabled = scannerRules.every((r) => r.enabled);
@@ -329,6 +331,7 @@ export function ScannerPanel({
                     className="flex items-center gap-2 px-4 py-1 hover:bg-[var(--bg-hover)]/20 transition-colors"
                   >
                     <button
+                      type="button"
                       className={cn(
                         "w-3.5 h-3.5 rounded border flex items-center justify-center transition-colors flex-shrink-0",
                         rule.enabled

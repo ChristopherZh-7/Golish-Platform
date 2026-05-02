@@ -100,6 +100,7 @@ export function QuickNotes({
   if (compact && notes.length === 0 && !showAdd) {
     return (
       <button
+        type="button"
         onClick={() => {
           setShowAdd(true);
           requestAnimationFrame(() => textRef.current?.focus());
@@ -142,6 +143,7 @@ export function QuickNotes({
                       {note.content}
                     </div>
                     <button
+                      type="button"
                       onClick={() => handleDelete(note.id)}
                       className="p-0.5 opacity-0 group-hover:opacity-100 text-muted-foreground/30 hover:text-red-400 transition-all flex-shrink-0"
                     >
@@ -177,6 +179,7 @@ export function QuickNotes({
               {COLORS.map((c) => (
                 <button
                   key={c.id}
+                  type="button"
                   onClick={() => setNewColor(c.id)}
                   className={cn(
                     "w-3 h-3 rounded-full transition-all",
@@ -190,12 +193,14 @@ export function QuickNotes({
             </div>
             <div className="flex-1" />
             <button
+              type="button"
               onClick={() => setShowAdd(false)}
               className="text-[9px] text-muted-foreground/40 hover:text-foreground transition-colors"
             >
               <X className="w-3 h-3" />
             </button>
             <button
+              type="button"
               onClick={handleAdd}
               disabled={!newContent.trim()}
               className="text-[9px] text-accent hover:text-accent/80 font-medium disabled:opacity-30 transition-colors"
@@ -206,6 +211,7 @@ export function QuickNotes({
         </div>
       ) : (
         <button
+          type="button"
           onClick={() => {
             setShowAdd(true);
             requestAnimationFrame(() => textRef.current?.focus());

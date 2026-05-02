@@ -228,6 +228,7 @@ export function ZapNotRunning({
             <div className="flex items-center gap-2 bg-background/50 rounded-md px-3 py-2 border border-border/10">
               <code className="text-[12px] font-mono text-accent/80 flex-1">{proxyAddr}</code>
               <button
+                type="button"
                 onClick={copyProxy}
                 className="p-1 rounded text-muted-foreground/40 hover:text-foreground transition-colors"
               >
@@ -258,6 +259,7 @@ export function ZapNotRunning({
             </p>
             <div className="flex items-center gap-2">
               <button
+                type="button"
                 onClick={handleDownloadCert}
                 disabled={certLoading}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-medium bg-[var(--bg-hover)]/50 text-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50"
@@ -270,6 +272,7 @@ export function ZapNotRunning({
                 {t("browser.downloadCert", "Download")}
               </button>
               <button
+                type="button"
                 onClick={handleInstallCert}
                 disabled={certLoading}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors disabled:opacity-50"

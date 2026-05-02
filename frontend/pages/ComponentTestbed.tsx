@@ -454,7 +454,6 @@ export function ComponentTestbed() {
               <ScrollArea className="h-48 w-full rounded-md border border-[#27293d] p-4">
                 <div className="space-y-4">
                   {Array.from({ length: 20 }).map((_, i) => (
-                    // biome-ignore lint/suspicious/noArrayIndexKey: static demo content
                     <div key={i} className="text-sm">
                       Scrollable item {i + 1}
                     </div>

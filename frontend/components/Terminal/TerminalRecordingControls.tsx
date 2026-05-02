@@ -53,6 +53,7 @@ export const TerminalRecordingControls = memo(function TerminalRecordingControls
 
   return (
     <button
+      type="button"
       onClick={handleToggle}
       className={cn(
         "flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition-all",

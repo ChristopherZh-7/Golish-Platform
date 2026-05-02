@@ -155,6 +155,7 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
       {completedTurns.length > 0 && !isResponding && (
         <div className="flex items-center justify-end">
           <button
+            type="button"
             onClick={handleClearHistory}
             disabled={clearing}
             className="flex items-center gap-1 text-[9px] text-destructive/50 hover:text-destructive transition-colors disabled:opacity-30"
@@ -276,6 +277,7 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
           )}
           <div className="flex gap-2">
             <button
+              type="button"
               onClick={() => {
                 setDismissedApprovalId(pendingApproval.id);
                 respondToToolApproval(sid, {
@@ -291,6 +293,7 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
               Approve
             </button>
             <button
+              type="button"
               onClick={() => {
                 setDismissedApprovalId(pendingApproval.id);
                 respondToToolApproval(sid, {
@@ -308,6 +311,7 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
               Run Everything
             </button>
             <button
+              type="button"
               onClick={() => {
                 setDismissedApprovalId(pendingApproval.id);
                 respondToToolApproval(sid, {
@@ -337,6 +341,7 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
             <div className="flex flex-wrap gap-1.5">
               {pendingAskHuman.options.map((opt) => (
                 <button
+                  type="button"
                   key={opt}
                   onClick={() => {
                     setDismissedAskHumanId(pendingAskHuman.requestId);
@@ -377,6 +382,7 @@ export function ResearchTab({ sessionId, cveId }: { sessionId: string | null; cv
                 className="flex-1 px-2.5 py-1 rounded text-[10px] bg-muted/10 border border-border/10 text-foreground placeholder:text-muted-foreground/30 focus:outline-none focus:ring-1 focus:ring-accent/30"
               />
               <button
+                type="button"
                 onClick={() => {
                   if (askHumanInput.trim()) {
                     setDismissedAskHumanId(pendingAskHuman.requestId);

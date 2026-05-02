@@ -144,7 +144,6 @@ function DetachedTerminal({ sessionId, title }: { sessionId: string; title: stri
 
   return (
     <div className="h-screen w-screen flex flex-col bg-background text-foreground overflow-hidden">
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: drag region */}
       <div
         className="h-[31px] flex-shrink-0 flex items-center select-none border-b border-border/10"
         onMouseDown={startWindowDrag}
@@ -155,7 +154,6 @@ function DetachedTerminal({ sessionId, title }: { sessionId: string; title: stri
           Detached
         </span>
         <div className="flex-1" />
-        {/* biome-ignore lint/a11y/noStaticElementInteractions: prevent drag */}
         <div onMouseDown={stopPropagation}>
           <button
             type="button"
@@ -164,6 +162,7 @@ function DetachedTerminal({ sessionId, title }: { sessionId: string; title: stri
             title="Close window"
           >
             <svg
+              aria-hidden="true"
               width="8"
               height="8"
               viewBox="0 0 8 8"
@@ -238,7 +237,6 @@ function DetachedSecurity({
 
   return (
     <div className="h-screen w-screen flex flex-col bg-background text-foreground overflow-hidden">
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: drag region */}
       <div
         className="h-[31px] flex-shrink-0 flex items-center select-none border-b border-border/10"
         onMouseDown={startWindowDrag}
@@ -249,7 +247,6 @@ function DetachedSecurity({
           Detached
         </span>
         <div className="flex-1" />
-        {/* biome-ignore lint/a11y/noStaticElementInteractions: prevent drag */}
         <div className="flex items-center gap-1" onMouseDown={stopPropagation}>
           <button
             type="button"
@@ -258,6 +255,7 @@ function DetachedSecurity({
             title="Dock back to main window"
           >
             <svg
+              aria-hidden="true"
               width="10"
               height="10"
               viewBox="0 0 10 10"
@@ -284,6 +282,7 @@ function DetachedSecurity({
             title="Close window"
           >
             <svg
+              aria-hidden="true"
               width="8"
               height="8"
               viewBox="0 0 8 8"

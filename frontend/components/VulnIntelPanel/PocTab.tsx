@@ -429,6 +429,7 @@ int main(int argc, char *argv[]) {
           {t("vulnIntel.pocTemplates", "PoC Templates")}
         </span>
         <button
+          type="button"
           onClick={handleNewPoc}
           className="flex items-center gap-1 text-[9px] text-accent/60 hover:text-accent transition-colors"
         >
@@ -484,6 +485,7 @@ int main(int argc, char *argv[]) {
           />
           <div className="flex items-center gap-2">
             <button
+              type="button"
               onClick={handleSavePoc}
               disabled={!formName.trim() || !formContent.trim()}
               className="px-3 py-1 rounded text-[9px] font-medium text-accent bg-accent/10 hover:bg-accent/20 transition-colors disabled:opacity-30"
@@ -491,6 +493,7 @@ int main(int argc, char *argv[]) {
               {editing.id ? t("vulnIntel.updatePoc", "Update") : t("vulnIntel.savePoc", "Save PoC")}
             </button>
             <button
+              type="button"
               onClick={() => setEditing(null)}
               className="px-3 py-1 rounded text-[9px] text-muted-foreground/40 hover:text-foreground transition-colors"
             >
@@ -507,6 +510,7 @@ int main(int argc, char *argv[]) {
             GitHub PoC
           </span>
           <button
+            type="button"
             onClick={searchGithubPoc}
             disabled={ghSearching}
             className="flex items-center gap-1 text-[9px] text-accent/60 hover:text-accent transition-colors disabled:opacity-30"
@@ -583,6 +587,7 @@ int main(int argc, char *argv[]) {
           <div className="flex items-center gap-2">
             {nucleiSearched && nucleiResults.filter((t) => t.content).length > 0 && (
               <button
+                type="button"
                 onClick={importAllNucleiTemplates}
                 className="flex items-center gap-1 text-[9px] text-emerald-400/60 hover:text-emerald-400 transition-colors"
               >
@@ -590,6 +595,7 @@ int main(int argc, char *argv[]) {
               </button>
             )}
             <button
+              type="button"
               onClick={searchNucleiTemplates}
               disabled={nucleiSearching}
               className="flex items-center gap-1 text-[9px] text-accent/60 hover:text-accent transition-colors disabled:opacity-30"
@@ -658,6 +664,7 @@ int main(int argc, char *argv[]) {
                   <div className="flex items-center gap-1 flex-shrink-0">
                     {tmpl.content && !alreadyImported && (
                       <button
+                        type="button"
                         onClick={() => importNucleiTemplate(tmpl)}
                         disabled={nucleiImporting === tmpl.name}
                         className="px-1.5 py-0.5 rounded text-[8px] font-medium text-accent/70 bg-accent/10 hover:bg-accent/20 transition-colors disabled:opacity-30"
@@ -715,6 +722,7 @@ int main(int argc, char *argv[]) {
                 <span className="text-[8px] text-muted-foreground/20">{poc.language}</span>
                 <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                   <button
+                    type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       handleCopyContent(poc.content);
@@ -724,6 +732,7 @@ int main(int argc, char *argv[]) {
                     <Copy className="w-3 h-3" />
                   </button>
                   <button
+                    type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       handleEditPoc(poc);
@@ -733,6 +742,7 @@ int main(int argc, char *argv[]) {
                     <FileCode2 className="w-3 h-3" />
                   </button>
                   <button
+                    type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       handleDeletePoc(poc.id);

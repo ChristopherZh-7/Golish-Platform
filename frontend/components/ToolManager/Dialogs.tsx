@@ -508,7 +508,7 @@ export function UpdatesDialog({
         <div className="flex items-center gap-2 mb-3">
           <ArrowUpCircle className="w-4 h-4 text-accent" />
           <h2 className="text-[14px] font-semibold flex-1">Tool Updates</h2>
-          <button onClick={onClose} className="p-0.5 rounded hover:bg-muted/50">
+          <button type="button" onClick={onClose} className="p-0.5 rounded hover:bg-muted/50">
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
