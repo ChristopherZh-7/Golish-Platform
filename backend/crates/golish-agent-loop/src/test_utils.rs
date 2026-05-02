@@ -17,6 +17,17 @@ use rig::one_or_many::OneOrMany;
 use rig::streaming::{RawStreamingChoice, RawStreamingToolCall, StreamingCompletionResponse};
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+use tokio::sync::{mpsc, RwLock};
+#[cfg(test)]
+use golish_core::events::AiEvent;
+#[cfg(test)]
+use golish_llm_providers::LlmClient;
+#[cfg(test)]
+use golish_tools::ToolRegistry;
+#[cfg(test)]
+use crate::agent_mode::AgentMode;
+
 /// A mock response that the MockCompletionModel will return.
 #[derive(Debug, Clone)]
 pub struct MockResponse {

@@ -1,5 +1,6 @@
 use super::*;
 
+#[test]
 fn test_fuzzy_match_multiple_similar_blocks() {
     // Content with multiple similar blocks should detect ambiguity
     let content = "fn process_a() {\n    let x = 1;\n}\nfn process_b() {\n    let x = 1;\n}";
