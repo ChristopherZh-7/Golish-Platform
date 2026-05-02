@@ -33,10 +33,7 @@ export interface ParsedItem {
  * Detect which tool generated a given (command, output) pair, returning
  * its parser config or null if no signature matched.
  */
-export async function detectTool(
-  command: string,
-  rawOutput: string
-): Promise<DetectedTool | null> {
+export async function detectTool(command: string, rawOutput: string): Promise<DetectedTool | null> {
   return invoke<DetectedTool | null>("output_detect_tool", { command, rawOutput });
 }
 
@@ -49,5 +46,8 @@ export async function parse(args: {
   toolId: string;
   toolName: string;
 }): Promise<{ items: ParsedItem[] }> {
-  return invoke<{ items: ParsedItem[] }>("output_parse", args as unknown as Record<string, unknown>);
+  return invoke<{ items: ParsedItem[] }>(
+    "output_parse",
+    args as unknown as Record<string, unknown>
+  );
 }

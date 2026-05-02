@@ -13,7 +13,7 @@ export class TransportError extends Error {
     code: TransportErrorCode,
     message: string,
     public readonly command: string,
-    public readonly cause?: unknown,
+    public readonly cause?: unknown
   ) {
     super(message);
     this.name = "TransportError";
@@ -21,11 +21,7 @@ export class TransportError extends Error {
   }
 }
 
-export type TransportErrorCode =
-  | "INVOKE_FAILED"
-  | "TIMEOUT"
-  | "ABORTED"
-  | "BACKEND_UNREACHABLE";
+export type TransportErrorCode = "INVOKE_FAILED" | "TIMEOUT" | "ABORTED" | "BACKEND_UNREACHABLE";
 
 export class TimeoutError extends TransportError {
   constructor(command: string, timeoutMs: number) {

@@ -205,7 +205,11 @@ export function useAiChatEvents({
             case "workflow_completed":
               setActiveWorkflow((p) =>
                 p?.id === event.workflow_id
-                  ? { ...p, status: "completed" as const, totalDurationMs: Number(event.total_duration_ms) }
+                  ? {
+                      ...p,
+                      status: "completed" as const,
+                      totalDurationMs: Number(event.total_duration_ms),
+                    }
                   : p
               );
               break;

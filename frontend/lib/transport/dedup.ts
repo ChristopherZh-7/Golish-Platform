@@ -5,7 +5,7 @@
  * only one actual IPC call is made; all callers share the same Promise.
  */
 
-import { invoke, type InvokeOptions } from "./invoke";
+import { type InvokeOptions, invoke } from "./invoke";
 
 const inflight = new Map<string, Promise<unknown>>();
 
@@ -20,7 +20,7 @@ function buildKey(command: string, args?: Record<string, unknown>): string {
 export async function dedupInvoke<T = void>(
   command: string,
   args?: Record<string, unknown>,
-  opts?: InvokeOptions,
+  opts?: InvokeOptions
 ): Promise<T> {
   const key = buildKey(command, args);
 

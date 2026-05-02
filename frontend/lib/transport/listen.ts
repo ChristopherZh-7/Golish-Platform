@@ -10,9 +10,6 @@ import { listen as tauriListen } from "../tauri-listen";
 
 export type { UnlistenFn };
 
-export function listen<T>(
-  channel: string,
-  handler: (payload: T) => void,
-): Promise<UnlistenFn> {
+export function listen<T>(channel: string, handler: (payload: T) => void): Promise<UnlistenFn> {
   return tauriListen<T>(channel, (event) => handler(event.payload));
 }

@@ -11,11 +11,11 @@
 export { dedupInvoke } from "./dedup";
 export {
   AbortedError,
-  TimeoutError,
-  TransportError,
   isTimeoutError,
   isTransportError,
+  TimeoutError,
+  TransportError,
   type TransportErrorCode,
 } from "./errors";
-export { getInflightCommands, invoke, type InvokeOptions } from "./invoke";
+export { getInflightCommands, type InvokeOptions, invoke } from "./invoke";
 export { listen, type UnlistenFn } from "./listen";
