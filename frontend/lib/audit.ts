@@ -1,4 +1,12 @@
-import { invoke } from "@/lib/api/client";
+/**
+ * Store-aware `logAudit` helper — auto-injects projectPath from
+ * the global store, then fire-and-forget delegates to the typed
+ * facade in `@/lib/api/audit-log`.
+ *
+ * IPC layer lives at `@/lib/api/audit-log`. See ADR-0009 Phase 2D-2.
+ */
+
+import { logAuditEntry } from "@/lib/api/audit-log";
 import { getProjectPath } from "@/lib/projects";
 
 interface AuditPayload {
@@ -10,8 +18,5 @@ interface AuditPayload {
 }
 
 export function logAudit(payload: AuditPayload): void {
-  invoke("audit_log", {
-    ...payload,
-    projectPath: getProjectPath(),
-  }).catch(() => {});
+  logAuditEntry({ ...payload, projectPath: getProjectPath() }).catch(() => {});
 }
