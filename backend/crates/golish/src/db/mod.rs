@@ -1,14 +1,14 @@
 //! Database adapters (Postgres-specific implementations of domain traits).
 //!
-//! Separates the main `golish` crate's knowledge of Postgres from the
-//! domain crates. Each domain trait that lives in `golish-*-domain` (or
-//! more colloquially in the relevant Layer 3 crate) gets a `Pg*Store`
-//! adapter here that forwards to either `sqlx::query` directly or to
-//! freestanding functions in the domain crate.
+//! Currently re-exports adapters that live alongside the domain traits in
+//! their respective Layer-3 crates so the rest of the main crate has a
+//! single import path:
 //!
-//! See `.cursor/rules/refactor-roadmap.mdc` (P2-4) for the migration
-//! plan.
+//! ```rust,ignore
+//! use crate::db::PgPentestStore;
+//! ```
+//!
+//! When more domain crates migrate to the trait + adapter pattern (P2-4),
+//! their `Pg*Store` re-exports go here.
 
-pub mod pg_pentest_store;
-
-pub use pg_pentest_store::PgPentestStore;
+pub use golish_pentest::output_store::PgPentestStore;

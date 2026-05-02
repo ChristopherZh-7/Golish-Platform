@@ -239,8 +239,9 @@ fn configure_domain_hooks(bridge: &mut AgentBridge, state: &AppState) {
     bridge.set_post_shell_hook(std::sync::Arc::new(move |cmd, stdout, project_path| {
         let pool = pool.clone();
         Box::pin(async move {
-            let _ = golish_pentest::output_store::maybe_detect_and_store(
-                &pool,
+            let store = crate::db::PgPentestStore::new(&pool);
+            let _ = golish_pentest::output_store::maybe_detect_and_store_via(
+                &store,
                 &cmd,
                 &stdout,
                 project_path.as_deref(),
