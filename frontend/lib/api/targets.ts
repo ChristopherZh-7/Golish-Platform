@@ -1,4 +1,12 @@
+import type { TargetStore } from "../dashboard";
+import type { Target } from "../pentest/types";
 import { invoke } from "./client";
+
+export type { TargetStore };
+
+export async function listTargets(projectPath: string | null): Promise<TargetStore> {
+  return invoke<TargetStore>("target_list", { projectPath });
+}
 
 export async function addTarget(params: {
   name: string;
@@ -13,8 +21,8 @@ export async function batchAddTargets(params: {
   values: string;
   group: string;
   projectPath: string | null;
-}): Promise<void> {
-  await invoke("target_batch_add", params);
+}): Promise<Target[]> {
+  return invoke<Target[]>("target_batch_add", params);
 }
 
 export async function deleteTarget(id: string, projectPath: string | null): Promise<void> {

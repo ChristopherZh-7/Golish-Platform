@@ -1,3 +1,4 @@
+// biome-ignore lint/style/noRestrictedImports: convertFileSrc is a Tauri webview utility (asset URL conversion), not invoke().
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   AlertTriangle,

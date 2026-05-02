@@ -1,3 +1,4 @@
+// biome-ignore lint/style/noRestrictedImports: TODO Phase 2D — local VaultEntrySafe interface uses different field naming (type vs entryType) than @/lib/api/vault facade; needs a schema-aligned migration PR before swapping these 3 invoke() calls (vault_list / vault_validate / vault_get_value).
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useState } from "react";

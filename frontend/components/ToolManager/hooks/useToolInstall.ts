@@ -1,3 +1,4 @@
+// biome-ignore lint/style/noRestrictedImports: TODO Phase 2D — pentest_check_requirements / pentest_list_dep_files / pentest_check_tool_updates not yet in lib/pentest/api.ts wrapper; consolidate with the Tool Manager domain.
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";

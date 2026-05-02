@@ -395,6 +395,7 @@ export function useInputState({ sessionId }: { sessionId: string }) {
       }
 
       try {
+        // biome-ignore lint/style/noRestrictedImports: TODO Phase 2D — dynamic import for code-splitting; pentest_read_tool_config is in lib/pentest/api.ts but used here as a try/fallback pattern; refactor to facade once lazy-loading semantics are preserved.
         const { invoke } = await import("@tauri-apps/api/core");
         let rawJson = "";
         try {
