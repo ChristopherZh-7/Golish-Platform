@@ -11,6 +11,7 @@
 //! phase scheduling.
 
 mod executor;
+mod interceptor;
 mod phases;
 mod state;
 
