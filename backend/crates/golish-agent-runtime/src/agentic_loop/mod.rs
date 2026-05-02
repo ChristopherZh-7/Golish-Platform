@@ -55,14 +55,14 @@ mod turn;
 mod unified_helpers;
 
 use assistant_message::push_assistant_message;
-use compaction_loop::{inter_turn_compaction, pre_turn_compaction};
 use first_iter_hooks::run_first_iteration_hooks;
 use llm_stream_start::start_completion_stream;
 use reflector::{maybe_run_reflector, ReflectorOutcome};
 use stream_processor::{process_stream, StreamOutcome};
 use tool_dispatch::dispatch_tool_calls;
 use tool_list::build_tool_list;
-use turn::{pre_flight, PhaseOutcome, TurnState};
+// `compaction` alias avoids clashing with the sibling `agentic_loop::compaction` module.
+use turn::{compaction as compaction_phase, pre_flight, PhaseOutcome, TurnState};
 #[allow(unused_imports)] // BreakReason is used for log-fields in the Break arm below
 use turn::BreakReason;
 use unified_helpers::{
@@ -259,18 +259,27 @@ where
                 tracing::debug!(?reason, "pre-flight phase requested loop break");
                 break;
             }
+            PhaseOutcome::Fail(e) => return Err(e),
         }
         let iteration = turn_state.iteration as usize;
 
-        // Compaction at start of turn (using tokens from the previous turn).
-        // Important when the agent completes in a single iteration.
-        if iteration == 1 {
-            pre_turn_compaction(ctx, &mut chat_history).await;
-        }
-
-        // Compaction check between iterations (after iteration 1).
-        if iteration > 1 {
-            inter_turn_compaction(ctx, &mut chat_history, iteration, &accumulated_response).await?;
+        // Phase: Compaction — pre-turn (iteration 1) or inter-turn (>1).
+        // `inter_turn_compaction` may surface a terminal error via Fail.
+        match compaction_phase::run(
+            &turn_state,
+            ctx,
+            &mut chat_history,
+            &accumulated_response,
+        )
+        .await
+        {
+            PhaseOutcome::Continue => {}
+            PhaseOutcome::Break(_) => {
+                // Compaction phase does not request break today; keep
+                // the arm for exhaustiveness as scheduler evolves.
+                break;
+            }
+            PhaseOutcome::Fail(e) => return Err(e),
         }
 
         // First-iteration hooks: synchronous message hooks + memory gatekeeper.

@@ -30,7 +30,7 @@ alwaysApply: false
 | B2 CI 守门 | ✅ Done |
 | B3 重写架构文档 | ✅ Done |
 | B4 Tauri ADR | ✅ Done |
-| **C1 TurnExecutor** | **🟡 2/9 · C1-0 ADR + C1-1 PreFlight PoC 已落地，C1-2 起继续** |
+| **C1 TurnExecutor** | **🟡 3/9 · C1-0 ADR + C1-1 PreFlight + C1-2 Compaction 已落地，C1-3 起继续** |
 
 ### 第二步：验证前面工作没崩（60 秒）
 
@@ -50,9 +50,8 @@ bash ../scripts/check_file_sizes.sh  # 必须 "all files within size budget"
 
 | PR | 工作 | 下一个做 |
 |---|---|---|
-| **C1-2** | 抽 `CompactionPre` + `CompactionInter` phase | ← 先做这个 |
-| C1-3 | 抽 `FirstIterHooks` + `TokenEstimate` |  |
-| C1-4 | 抽 `StreamStart` + `StreamProcess` |  |
+| **C1-3** | 抽 `FirstIterHooks` + `TokenEstimate` phase | ← 先做这个 |
+| C1-4 | 抽 `StreamStart` + `StreamProcess` phase |  |
 | C1-5 | 抽 `AssistantPush` + `ReflectorOrBreak` + `ToolDispatch` |  |
 | C1-6 | 主 `loop` 替换为 phase 调度器，`mod.rs` ≤ 150 行 |  |
 | C1-7 | `TurnInterceptor` trait · Langfuse/HITL 搬出 |  |
@@ -610,7 +609,7 @@ ls docs/adr/ | grep -i tauri-command-namespace
 
 ## Phase 2: 核心重构（两 session 合并 · 3-5 天）
 
-### [~] C1 · `run_agentic_loop_unified` → `TurnExecutor` 状态机（进行中：2/9 完成）— 2026-05-02
+### [~] C1 · `run_agentic_loop_unified` → `TurnExecutor` 状态机（进行中：3/9 完成）— 2026-05-02
 
 > 🟡 **进行中**：ADR + 骨架 + 第一个 phase（PreFlight）已落地
 >
@@ -633,11 +632,17 @@ ls docs/adr/ | grep -i tauri-command-namespace
 >
 > **当前 mod.rs 行数变化**：495 → 483（-12 行；其余在 C1-2~C1-5 继续）
 >
-> ⏳ **剩余 7 个里程碑**（每个独立 PR · ≤500 行 diff）：
+> ✅ **C1-2 Compaction phase 迁移**（2026-05-02）：
+> - 新建 `turn/phases/compaction.rs`：根据 `iteration` 选 `pre_turn_compaction` / `inter_turn_compaction`，后者的 `TerminalErrorEmitted` 通过 `PhaseOutcome::Fail` 上抛
+> - 扩展 `PhaseOutcome` 枚举，新增 `Fail(anyhow::Error)` 变体（之前只有 Continue/Break）
+> - 主 loop 的 compaction 分支从内联 if-else 变为单个 `match compaction_phase::run(...)` 语句（~8 行 → 10 行，语义清晰度增）
+> - `use turn::{compaction as compaction_phase, ...}` 用别名避开与 sibling `agentic_loop::compaction` mod 的名字冲突
+> - `cargo check --workspace --tests` 全绿 · 30s · 0 errors / 0 warnings
+>
+> ⏳ **剩余 6 个里程碑**（每个独立 PR · ≤500 行 diff）：
 >
 > | PR | 工作 |
 > |---|---|
-> | C1-2 | 抽 `CompactionPre` + `CompactionInter` phase |
 > | C1-3 | 抽 `FirstIterHooks` + `TokenEstimate` phase |
 > | C1-4 | 抽 `StreamStart` + `StreamProcess` phase |
 > | C1-5 | 抽 `AssistantPush` + `ReflectorOrBreak` + `ToolDispatch` phase |
@@ -645,7 +650,7 @@ ls docs/adr/ | grep -i tauri-command-namespace
 > | C1-7 | 引入 `TurnInterceptor` trait，Langfuse/HITL 搬出 phase body |
 > | C1-8 | 每 phase 补 1+ 单元测试（mock `TurnState` + 协作者） |
 >
-> **预计剩余耗时**：2-4 天 · 7 个 PR
+> **预计剩余耗时**：2-3 天 · 6 个 PR
 
 **前置**：Phase 1 全部完成
 
