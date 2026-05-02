@@ -43,7 +43,7 @@ use self::usage::record_token_usage;
 /// Per-iteration accumulated stream state, returned to the agentic loop after
 /// the stream has been fully consumed (and any trailing pending tool call has
 /// been finalized).
-pub(super) struct StreamProcessOutcome {
+pub(crate) struct StreamProcessOutcome {
     pub has_tool_calls: bool,
     pub tool_calls_to_execute: Vec<ToolCall>,
     pub text_content: String,
@@ -55,7 +55,7 @@ pub(super) struct StreamProcessOutcome {
 /// Outcome enum for the agentic loop: either keep going with the accumulated
 /// stream state, or break out (the stream produced no usable content and a
 /// terminal error has already been emitted to the user).
-pub(super) enum StreamOutcome {
+pub(crate) enum StreamOutcome {
     Continue(StreamProcessOutcome),
     BreakAgentLoop,
 }
@@ -64,7 +64,7 @@ pub(super) enum StreamOutcome {
 ///
 /// Mutates the supplied accumulators (`accumulated_response`, `accumulated_thinking`,
 /// `total_usage`) so they keep growing across iterations of the outer agent loop.
-pub(super) async fn process_stream<M>(
+pub(crate) async fn process_stream<M>(
     mut stream: StreamingCompletionResponse<M::StreamingResponse>,
     ctx: &AgenticLoopContext<'_>,
     chat_history: &[Message],

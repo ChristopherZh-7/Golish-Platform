@@ -14,7 +14,7 @@ mod phases;
 mod state;
 
 pub use phases::{
-    compaction, first_iter_hooks as first_iter_hooks_phase, pre_flight,
-    token_estimate as token_estimate_phase, BreakReason, PhaseOutcome,
+    compaction, completion, first_iter_hooks as first_iter_hooks_phase, pre_flight,
+    token_estimate as token_estimate_phase, PhaseOutcome,
 };
 pub use state::TurnState;
