@@ -1,7 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import type React from "react";
 import { useEffect, useState } from "react";
-import { invoke } from "@/lib/api/client";
+import { browserClose } from "@/lib/api/pentest-browser";
 import { shellIntegrationInstall, shellIntegrationStatus } from "@/lib/api/shell";
 import { logger } from "@/lib/logger";
 import { runTauriUnlistenFn } from "@/lib/run-tauri-unlisten";
@@ -332,9 +332,9 @@ export function useAppLifecycle({
     setAppIsFocused(document.hasFocus());
     setAppIsVisible(document.visibilityState === "visible");
 
-    invoke("pentest_browser_close").catch(() => {});
+    browserClose().catch(() => {});
     const handleBrowserCleanup = () => {
-      invoke("pentest_browser_close").catch(() => {});
+      browserClose().catch(() => {});
     };
     window.addEventListener("beforeunload", handleBrowserCleanup);
 
