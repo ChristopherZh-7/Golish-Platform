@@ -44,7 +44,7 @@ const STREAM_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// terminal `AiEvent::Error` and returns a [`TerminalErrorEmitted`] with the
 /// supplied `accumulated_response` and a clone of `chat_history` attached so
 /// the bridge can persist partial state.
-pub(super) async fn start_completion_stream<M>(
+pub(crate) async fn start_completion_stream<M>(
     ctx: &AgenticLoopContext<'_>,
     config: &AgenticLoopConfig,
     model: &M,

@@ -8,6 +8,7 @@
 //! plan in `docs/adr/0010-turn-executor-state-machine.md`.
 
 pub mod compaction;
+pub mod completion;
 pub mod first_iter_hooks;
 pub mod pre_flight;
 pub mod token_estimate;
