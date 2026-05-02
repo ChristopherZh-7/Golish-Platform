@@ -7,7 +7,6 @@
  * Components should import from here instead of calling invoke() directly.
  */
 
-import { invoke, listen, type UnlistenFn } from "../transport";
 import type {
   AiConfig,
   AiEvent,
@@ -16,6 +15,7 @@ import type {
   ToolDefinition,
   WorkflowInfo,
 } from "../ai/types";
+import { invoke, listen, type UnlistenFn } from "../transport";
 
 export async function initAgent(config: AiConfig): Promise<void> {
   return invoke("init_ai_agent", {
@@ -58,9 +58,7 @@ export async function getAvailableSubAgents(): Promise<SubAgentInfo[]> {
   return invoke("list_sub_agents");
 }
 
-export async function getSessionConfig(
-  sessionId: string,
-): Promise<SessionAiConfigInfo | null> {
+export async function getSessionConfig(sessionId: string): Promise<SessionAiConfigInfo | null> {
   return invoke("get_session_ai_config", { sessionId });
 }
 
@@ -82,10 +80,7 @@ export async function shutdownSession(sessionId: string): Promise<void> {
   return invoke("shutdown_ai_session", { sessionId });
 }
 
-export async function sendPromptSession(
-  sessionId: string,
-  prompt: string,
-): Promise<string> {
+export async function sendPromptSession(sessionId: string, prompt: string): Promise<string> {
   return invoke("send_ai_prompt_session", { sessionId, prompt });
 }
 

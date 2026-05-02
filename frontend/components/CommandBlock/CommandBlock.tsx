@@ -22,7 +22,12 @@ interface CommandBlockProps {
   source?: "manual" | "pipeline";
 }
 
-export function CommandBlock({ block, sessionId: _sessionId, onToggleCollapse, source }: CommandBlockProps) {
+export function CommandBlock({
+  block,
+  sessionId: _sessionId,
+  onToggleCollapse,
+  source,
+}: CommandBlockProps) {
   const isSuccess = block.exitCode === 0;
   const [outputExpanded, setOutputExpanded] = useState(false);
 

@@ -74,7 +74,8 @@ export const securityApi = {
   zapScanMessageCount: (scanId: string) => invoke<number>("zap_scan_message_count", { scanId }),
 
   // Vault
-  vaultList: (projectPath: string | null) => invoke<VaultEntrySafe[]>("vault_list", { projectPath }),
+  vaultList: (projectPath: string | null) =>
+    invoke<VaultEntrySafe[]>("vault_list", { projectPath }),
   vaultGetValue: (id: string, projectPath: string | null) =>
     invoke<string>("vault_get_value", { id, projectPath }),
 
@@ -110,7 +111,8 @@ export const securityApi = {
       useSitemapDirs,
     }),
   sensitiveScanStop: () => invoke("sensitive_scan_stop"),
-  sensitiveScanClear: (projectPath: string | null) => invoke("sensitive_scan_clear", { projectPath }),
+  sensitiveScanClear: (projectPath: string | null) =>
+    invoke("sensitive_scan_clear", { projectPath }),
   sensitiveScanConfirm: (ids: string[], confirmed: boolean) =>
     invoke("sensitive_scan_confirm", { ids, confirmed }),
   sensitiveScanAiAnalyze: (projectPath: string | null) =>

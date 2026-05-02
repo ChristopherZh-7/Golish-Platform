@@ -16,8 +16,8 @@ import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CustomSelect } from "@/components/ui/custom-select";
 import { invoke } from "@/lib/api";
-import { copyToClipboard } from "@/lib/clipboard";
 import * as vulnLinksApi from "@/lib/api/vuln-links";
+import { copyToClipboard } from "@/lib/clipboard";
 import type { DbVulnLinkFull, PocTemplate, VulnLink } from "./types";
 import { dbToVulnLink } from "./types";
 

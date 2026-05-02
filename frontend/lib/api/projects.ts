@@ -109,7 +109,10 @@ export async function savePentestConfig(
   projectName: string,
   config: PentestProjectConfig
 ): Promise<void> {
-  await invoke("save_pentest_config", { projectName, config: config as unknown as Record<string, unknown> });
+  await invoke("save_pentest_config", {
+    projectName,
+    config: config as unknown as Record<string, unknown>,
+  });
 }
 
 export async function listCaptures(projectName: string): Promise<CaptureOverview> {

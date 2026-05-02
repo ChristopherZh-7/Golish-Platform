@@ -76,11 +76,7 @@ export function useTabSplitEvents({
             .filter((it) => it.data_type === "vulnerability")
             .map((it) => it.fields);
           if (vulnItems.length > 0) {
-            const added = await findingsApi.importParsed(
-              vulnItems,
-              detected.tool_name,
-              pp
-            );
+            const added = await findingsApi.importParsed(vulnItems, detected.tool_name, pp);
             if (added > 0) {
               notify.success(`${detected.tool_name}: ${added} findings imported`);
             }

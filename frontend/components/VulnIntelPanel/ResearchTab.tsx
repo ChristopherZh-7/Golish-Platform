@@ -1,9 +1,9 @@
-import { vulnIntelApi } from "@/lib/api/vuln-intel";
 import { AlertTriangle, Bot, Loader2, MessageSquare, Trash2, Zap } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Markdown } from "@/components/Markdown";
 import { respondToToolApproval, setAgentMode } from "@/lib/ai";
 import { research } from "@/lib/api";
+import { vulnIntelApi } from "@/lib/api/vuln-intel";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
 
