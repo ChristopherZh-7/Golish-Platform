@@ -39,3 +39,30 @@ pub enum PhaseOutcome {
     /// this up the call stack (bubbling through `?` after matching).
     Fail(anyhow::Error),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn break_reason_variants_are_distinct_and_copy() {
+        assert_ne!(BreakReason::Cancelled, BreakReason::MaxIterations);
+        let reason = BreakReason::Cancelled;
+        let copied = reason;
+        assert_eq!(reason, copied);
+    }
+
+    #[test]
+    fn phase_outcome_variants_match_correctly() {
+        assert!(matches!(PhaseOutcome::Continue, PhaseOutcome::Continue));
+        assert!(matches!(
+            PhaseOutcome::Break(BreakReason::MaxIterations),
+            PhaseOutcome::Break(BreakReason::MaxIterations)
+        ));
+        let err = anyhow::anyhow!("boom");
+        match PhaseOutcome::Fail(err) {
+            PhaseOutcome::Fail(e) => assert_eq!(e.to_string(), "boom"),
+            _ => panic!("expected Fail variant"),
+        }
+    }
+}

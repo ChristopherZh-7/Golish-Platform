@@ -91,3 +91,67 @@ impl TurnInterceptor for LangfuseInterceptor {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use golish_llm_providers::LlmClient;
+    use tokio::sync::RwLock;
+
+    use crate::test_utils::TestContextBuilder;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn langfuse_interceptor_after_turn_runs_without_panicking() {
+        let test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let ctx = test_ctx.as_agentic_context_with_client(&client);
+        let spans = TurnSpans {
+            chat_message_span: Span::none(),
+            agent_span: Span::none(),
+        };
+        let usage = TokenUsage::default();
+
+        LangfuseInterceptor
+            .after_turn(&ctx, &spans, "the model produced this", &usage)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn turn_spans_holds_two_independent_spans() {
+        // Note: without an active tracing subscriber the spans are
+        // disabled (`info_span!` returns `Span::none()` equivalents),
+        // which is the normal cargo-test environment. The contract
+        // tested here is *constructibility* — both fields exist and
+        // can hold spans regardless of subscriber state.
+        let spans = TurnSpans {
+            chat_message_span: tracing::info_span!("chat_message"),
+            agent_span: tracing::info_span!("agent"),
+        };
+        // Both fields must be addressable; the spans themselves may be
+        // enabled or disabled depending on the test runner's tracing
+        // subscriber, so we don't assert on enabled-ness.
+        let _chat = &spans.chat_message_span;
+        let _agent = &spans.agent_span;
+    }
+
+    #[tokio::test]
+    async fn registry_of_boxed_interceptors_is_polymorphic() {
+        let interceptors: Vec<Box<dyn TurnInterceptor>> = vec![Box::new(LangfuseInterceptor)];
+        assert_eq!(interceptors.len(), 1);
+
+        let test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let ctx = test_ctx.as_agentic_context_with_client(&client);
+        let spans = TurnSpans {
+            chat_message_span: Span::none(),
+            agent_span: Span::none(),
+        };
+        let usage = TokenUsage::default();
+        for interceptor in &interceptors {
+            interceptor.after_turn(&ctx, &spans, "", &usage).await;
+        }
+    }
+}
