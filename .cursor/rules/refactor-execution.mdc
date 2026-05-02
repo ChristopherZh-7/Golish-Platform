@@ -30,7 +30,7 @@ alwaysApply: false
 | B2 CI 守门 | ✅ Done |
 | B3 重写架构文档 | ✅ Done |
 | B4 Tauri ADR | ✅ Done |
-| **C1 TurnExecutor** | **🟡 6/9 · C1-0~C1-5 落地 (ADR + PreFlight + Compaction + FirstIterHooks/TokenEstimate + Completion + AssistantPush/ReflectorOrBreak/ToolDispatch)，C1-6 起继续** |
+| **C1 TurnExecutor** | **🟡 7/9 · C1-0~C1-6 落地 · mod.rs 141 行（达成 ≤150 目标），C1-7 起继续** |
 
 ### 第二步：验证前面工作没崩（60 秒）
 
@@ -52,8 +52,8 @@ bash ../scripts/check_file_sizes.sh  # 必须 "all files within size budget"
 |---|---|---|
 | ~~C1-4~~ | ~~抽 `StreamStart` + `StreamProcess` phase~~ | ✅ Done |
 | ~~C1-5~~ | ~~抽 `AssistantPush` + `ReflectorOrBreak` + `ToolDispatch`~~ | ✅ Done |
-| **C1-6** | 主 `loop` 替换为 phase 调度器，`mod.rs` ≤ 150 行 | ← 先做这个 |
-| C1-7 | `TurnInterceptor` trait · Langfuse/HITL 搬出 |  |
+| ~~C1-6~~ | ~~主 `loop` 替换为 phase 调度器，`mod.rs` ≤ 150 行~~ | ✅ Done (141 行) |
+| **C1-7** | `TurnInterceptor` trait · Langfuse/HITL 搬出 | ← 先做这个 |
 | C1-8 | 每 phase 补 1+ 单元测试 |  |
 
 每个 PR 的标准流程：
@@ -608,7 +608,7 @@ ls docs/adr/ | grep -i tauri-command-namespace
 
 ## Phase 2: 核心重构（两 session 合并 · 3-5 天）
 
-### [~] C1 · `run_agentic_loop_unified` → `TurnExecutor` 状态机（进行中：6/9 完成）— 2026-05-02
+### [~] C1 · `run_agentic_loop_unified` → `TurnExecutor` 状态机（进行中：7/9 完成）— 2026-05-02
 
 > 🟡 **进行中**：ADR + 骨架 + 第一个 phase（PreFlight）已落地
 >
@@ -670,15 +670,25 @@ ls docs/adr/ | grep -i tauri-command-namespace
 > - `python3 scripts/check_dag.py` ✓ DAG clean across 43 crates
 > - `bash scripts/check_file_sizes.sh` ✓ all files within size budget
 >
-> ⏳ **剩余 3 个里程碑**（每个独立 PR · ≤500 行 diff）：
+> ✅ **C1-6 主 loop → phase 调度器**（2026-05-02）：
+> - 新建 `turn/executor.rs`（~308 行）：`pub async fn run_turn_loop` 拥有完整运行周期 — span tree 创建 → setup → 8-phase 调度循环 → finalize（`record_final_output_and_usage`）。phase 调度块每个 ≤ 20 行 + 注释 + match arms，从顶到底可一屏读完
+> - widen 5 个 production helper 到 `pub(crate)`：`build_tool_list` / `trace_input_for_span` / `record_agent_turn_start` / `record_turn_completion` / `record_final_output_and_usage`（让 `turn::executor` 能跨 sibling mod 调用）
+> - mod.rs 重写为 thin public surface：删除 ~270 行旧 setup/loop/finalize 代码，整段搬入 executor.rs；`run_agentic_loop_unified` 现在只是一个 `turn::run_turn_loop(...).await` 单行 wrapper（保持完整 doc + signature）
+> - turn/mod.rs 加 `mod executor; pub use executor::run_turn_loop;`
+> - **mod.rs 行数：435 → 141 行**（-294 / -67.6%；**击穿 ADR-0010 设定的 ≤150 LOC 目标，多压缩 9 行**）
+> - `cargo check --workspace --tests` 全绿 · 41s · 0 errors / 0 warnings
+> - `python3 scripts/check_dag.py` ✓ DAG clean across 43 crates
+> - `bash scripts/check_file_sizes.sh` ✓ all files within size budget
+> - 注：`ToolConfig` / `normalize_run_pty_cmd_args` 必须保持 production import（`super::*` 被 sibling `context.rs` / `single_tool_call.rs` 引用），不能 `cfg(test)` gate
+>
+> ⏳ **剩余 2 个里程碑**（每个独立 PR · ≤500 行 diff）：
 >
 > | PR | 工作 |
 > |---|---|
-> | C1-6 | 主 `loop` 替换为 phase 调度器 · mod.rs 目标 ≤150 行 |
 > | C1-7 | 引入 `TurnInterceptor` trait，Langfuse/HITL 搬出 phase body |
 > | C1-8 | 每 phase 补 1+ 单元测试（mock `TurnState` + 协作者） |
 >
-> **预计剩余耗时**：1 天 · 3 个 PR
+> **预计剩余耗时**：0.5-1 天 · 2 个 PR
 
 **前置**：Phase 1 全部完成
 
@@ -753,6 +763,6 @@ ls docs/adr/ | grep -i tauri-command-namespace
 | B2 CI 守门 | B | ✅ [x] | 待提交 | 2026-05-02 |
 | B3 重写架构文档 | B | ✅ [x] | 待提交 | 2026-05-02 |
 | B4 Tauri ADR | B | ✅ [x] | 待提交 | 2026-05-02 |
-| C1 TurnExecutor | A+B | 🟡 [~] 6/9 | 待提交 | 2026-05-02 |
+| C1 TurnExecutor | A+B | 🟡 [~] 7/9 | 待提交 | 2026-05-02 |
 
 **全部完成 = Golish B+ → S+ 迁移完成**

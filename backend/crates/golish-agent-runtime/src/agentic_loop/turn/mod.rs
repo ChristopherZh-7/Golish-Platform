@@ -10,9 +10,11 @@
 //! `mod.rs` of `agentic_loop` eventually shrinks to ~150 LOC of
 //! phase scheduling.
 
+mod executor;
 mod phases;
 mod state;
 
+pub use executor::run_turn_loop;
 pub use phases::{
     assistant_push as assistant_push_phase, compaction, completion,
     first_iter_hooks as first_iter_hooks_phase, pre_flight,

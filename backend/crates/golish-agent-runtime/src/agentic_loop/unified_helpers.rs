@@ -9,7 +9,7 @@ use golish_sub_agents::SubAgentContext;
 
 use super::{AgenticLoopConfig, AgenticLoopContext};
 
-pub(super) fn trace_input_for_span(history: &[Message]) -> String {
+pub(crate) fn trace_input_for_span(history: &[Message]) -> String {
     let trace_input = history
         .iter()
         .rev()
@@ -86,7 +86,7 @@ pub(super) fn record_last_user_text_for_span(llm_span: &Span, chat_history: &[Me
     llm_span.record("langfuse.observation.input", prompt_for_span.as_str());
 }
 
-pub(super) fn record_agent_turn_start(
+pub(crate) fn record_agent_turn_start(
     ctx: &AgenticLoopContext<'_>,
     chat_history: &[Message],
 ) {
@@ -194,7 +194,7 @@ pub(crate) fn push_unavailable_tool_results(
     }
 }
 
-pub(super) fn record_turn_completion(
+pub(crate) fn record_turn_completion(
     ctx: &AgenticLoopContext<'_>,
     config: &AgenticLoopConfig,
     sub_agent_context: &SubAgentContext,
@@ -225,7 +225,7 @@ pub(super) fn record_turn_completion(
     );
 }
 
-pub(super) fn record_final_output_and_usage(
+pub(crate) fn record_final_output_and_usage(
     ctx: &AgenticLoopContext<'_>,
     accumulated_response: &str,
     total_usage: &TokenUsage,

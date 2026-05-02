@@ -23,7 +23,7 @@ use golish_agent_kit::tool_definitions::{
 };
 
 /// Build the list of tool definitions exposed to the model for one turn.
-pub(super) async fn build_tool_list(
+pub(crate) async fn build_tool_list(
     ctx: &AgenticLoopContext<'_>,
     sub_agent_context: &SubAgentContext,
 ) -> Vec<rig::completion::ToolDefinition> {
