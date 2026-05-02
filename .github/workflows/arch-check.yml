@@ -40,3 +40,15 @@ jobs:
 
       - name: Run file-size guard
         run: bash scripts/check_file_sizes.sh
+
+  store-slices:
+    name: Frontend store slice budget
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run store-slice guard
+        run: bash scripts/check_store_slices.sh
