@@ -2,7 +2,9 @@
 
 use chrono::{Duration, Utc};
 
-use golish_vuln_intel::{self as intel, EntryRow, FeedRow, VulnEntry};
+use golish_vuln_intel::{
+    self as intel, EntryRow, FeedRow, PgVulnIntelStore, VulnEntry, VulnIntelStore as _,
+};
 
 use crate::error::GolishError;
 use crate::settings::SettingsManager;
@@ -14,7 +16,8 @@ pub async fn intel_fetch(
     settings_mgr: tauri::State<'_, std::sync::Arc<SettingsManager>>,
 ) -> Result<Vec<VulnEntry>, GolishError> {
     let pool = state.pool_ready().await?;
-    intel::ensure_default_feeds(pool).await?;
+    let store = PgVulnIntelStore::new(pool);
+    store.ensure_default_feeds().await?;
 
     let feeds: Vec<FeedRow> = sqlx::query_as(
         "SELECT id, name, feed_type, url, enabled, last_fetched FROM vuln_feeds WHERE enabled = true",
@@ -73,7 +76,7 @@ pub async fn intel_fetch(
     intel::enrich_missing_cvss(&client, &mut all_entries).await;
     all_entries.sort_by(|a, b| b.published.cmp(&a.published));
 
-    intel::upsert_entries(pool, &all_entries).await?;
+    store.upsert_entries(&all_entries).await?;
 
     Ok(all_entries)
 }
@@ -114,7 +117,9 @@ pub async fn intel_fetch_page(
     );
 
     let new_entries = intel::fetch_nvd(&client, &url).await?;
-    intel::upsert_entries(pool, &new_entries).await?;
+    PgVulnIntelStore::new(pool)
+        .upsert_entries(&new_entries)
+        .await?;
 
     let rows: Vec<EntryRow> = sqlx::query_as(
         "SELECT cve_id, title, description, sev, cvss_score, published, source, refs, affected_products \

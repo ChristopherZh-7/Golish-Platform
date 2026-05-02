@@ -2,6 +2,7 @@
 
 use golish_vuln_intel::{
     self as intel, BatchNucleiResult, GithubPocResult, NucleiDiscoverResult, NucleiTemplateResult,
+    PgVulnIntelStore,
 };
 
 use super::shared::github_client_from_settings;
@@ -53,5 +54,6 @@ pub async fn intel_discover_all_nuclei(
     let (client, token) = github_client_from_settings(&settings_mgr).await?;
     let headers = intel::github_headers(&token);
     let emitter = TauriEventEmitter::handle(app);
-    Ok(intel::discover_all_nuclei(pool, &client, &headers, Some(&emitter)).await?)
+    let store = PgVulnIntelStore::new(pool);
+    Ok(intel::discover_all_nuclei(&store, &client, &headers, Some(&emitter)).await?)
 }
