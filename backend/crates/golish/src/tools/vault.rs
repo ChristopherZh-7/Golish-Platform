@@ -1,129 +1,12 @@
 use crate::error::GolishError;
-use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::state::DbState;
 
-fn derive_key() -> Vec<u8> {
-    let seed = format!(
-        "golish-vault-{}",
-        dirs::home_dir()
-            .map(|h| h.to_string_lossy().to_string())
-            .unwrap_or_default()
-    );
-    let mut key = Vec::with_capacity(32);
-    let bytes = seed.as_bytes();
-    for i in 0..32 {
-        key.push(bytes[i % bytes.len()].wrapping_add(i as u8).wrapping_mul(7));
-    }
-    key
-}
-
-pub fn obfuscate_value(plain: &str) -> String {
-    obfuscate(plain)
-}
-
-pub fn deobfuscate_value(encoded: &str) -> Result<String, GolishError> {
-    deobfuscate(encoded)
-}
-
-fn obfuscate(plain: &str) -> String {
-    let key = derive_key();
-    let encrypted: Vec<u8> = plain
-        .as_bytes()
-        .iter()
-        .enumerate()
-        .map(|(i, b)| b ^ key[i % key.len()])
-        .collect();
-    B64.encode(&encrypted)
-}
-
-fn deobfuscate(encoded: &str) -> Result<String, GolishError> {
-    let key = derive_key();
-    let data = B64.decode(encoded)?;
-    let plain: Vec<u8> = data
-        .iter()
-        .enumerate()
-        .map(|(i, b)| b ^ key[i % key.len()])
-        .collect();
-    String::from_utf8(plain).map_err(GolishError::from)
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VaultEntry {
-    pub id: String,
-    pub name: String,
-    #[serde(rename = "type")]
-    pub entry_type: VaultEntryType,
-    pub value: String,
-    #[serde(default)]
-    pub username: String,
-    #[serde(default)]
-    pub notes: String,
-    #[serde(default)]
-    pub project: String,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    pub created_at: u64,
-    pub updated_at: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VaultEntrySafe {
-    pub id: String,
-    pub name: String,
-    #[serde(rename = "type")]
-    pub entry_type: VaultEntryType,
-    pub username: String,
-    pub notes: String,
-    pub project: String,
-    pub tags: Vec<String>,
-    pub status: String,
-    pub source_url: String,
-    pub last_validated_at: Option<u64>,
-    pub created_at: u64,
-    pub updated_at: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum VaultEntryType {
-    Password,
-    Token,
-    #[serde(rename = "ssh_key")]
-    SshKey,
-    #[serde(rename = "api_key")]
-    ApiKey,
-    Cookie,
-    Certificate,
-    Other,
-}
-
-impl VaultEntryType {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Password => "password",
-            Self::Token => "token",
-            Self::SshKey => "ssh_key",
-            Self::ApiKey => "api_key",
-            Self::Cookie => "cookie",
-            Self::Certificate => "certificate",
-            Self::Other => "other",
-        }
-    }
-    fn from_str(s: &str) -> Self {
-        match s {
-            "token" => Self::Token,
-            "ssh_key" => Self::SshKey,
-            "api_key" => Self::ApiKey,
-            "cookie" => Self::Cookie,
-            "certificate" => Self::Certificate,
-            "other" => Self::Other,
-            _ => Self::Password,
-        }
-    }
-}
+pub use golish_core::vault::{
+    deobfuscate, deobfuscate as deobfuscate_value, obfuscate, obfuscate as obfuscate_value,
+    VaultEntry, VaultEntrySafe, VaultEntryType,
+};
 
 fn now_ts() -> u64 {
     std::time::SystemTime::now()
@@ -262,7 +145,7 @@ pub async fn vault_get_value(
         .fetch_one(pool)
         .await
 ?;
-    deobfuscate(&enc)
+    Ok(deobfuscate(&enc)?)
 }
 
 #[tauri::command]
@@ -455,5 +338,5 @@ pub async fn vault_resolve(
         .await
     }
     .map_err(|_| format!("Vault entry '{}' not found", name))?;
-    deobfuscate(&enc)
+    Ok(deobfuscate(&enc)?)
 }
