@@ -34,6 +34,7 @@
 //! `docs/development.md#adding-a-new-tauri-command-ipc`.
 
 pub mod ai;
+pub mod findings;
 pub mod git_pty;
 pub mod indexer;
 pub mod mcp;
@@ -41,5 +42,7 @@ pub mod pentest;
 pub mod pipeline;
 pub mod settings;
 pub mod sidecar;
+pub mod vault;
 pub mod vuln_intel;
+pub mod wiki;
 pub mod workspace;

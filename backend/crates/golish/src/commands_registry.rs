@@ -11,6 +11,7 @@
 // the matching facade file. Keep this block alphabetical.
 
 use commands_facade::ai::*;
+use commands_facade::findings::*;
 use commands_facade::git_pty::*;
 use commands_facade::indexer::*;
 use commands_facade::mcp::*;
@@ -18,7 +19,9 @@ use commands_facade::pentest::*;
 use commands_facade::pipeline::*;
 use commands_facade::settings::*;
 use commands_facade::sidecar::*;
+use commands_facade::vault::*;
 use commands_facade::vuln_intel::*;
+use commands_facade::wiki::*;
 use commands_facade::workspace::*;
 
 /// Attach the platform-wide `invoke_handler` to a configured Tauri
