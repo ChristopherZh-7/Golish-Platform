@@ -1,3 +1,15 @@
 {
-  "mcpServers": {}
+  "mcpServers": {
+    "bajie-mcp": {
+      "command": "node",
+      "args": [
+        "/Users/christopherzheng/.cursor/bajie-mcp-server/index.mjs"
+      ],
+      "env": {
+        "bajie_INSTANCE_ID": "bajie-win-84d69c0e-3e8d-4683-b38b-",
+        "bajie_QUEUE_ROOT": "/Users/christopherzheng/.cursor/bajie-mcp-messages"
+      },
+      "disabled": false
+    }
+  }
 }
