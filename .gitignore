@@ -110,3 +110,25 @@ golish-go-testbed/
 *.certSigningRequest
 *.cer
 *.mobileprovision
+
+# Pentest scan outputs (these are project-specific recon results, never
+# commit to repo; archive elsewhere if you need them).
+nmap_scan*.txt
+nmap_scan*.xml
+*.nmap
+zap_report*.html
+zap_report*.json
+nuclei_*.json
+nuclei_*.txt
+
+# Editor / tooling backup files (e.g. .cursor extension auto-renames)
+*.bak
+*.bak-*
+.cursor/**/*.bak*
+.cursor/**/*.bak-*
+
+# Stray vite build artifacts at repo root (build output should land in
+# `dist/` only; this catches the rare cases where vite drops a hashed
+# bundle next to `index.html`).
+/index-*.js
+/index-*.css
