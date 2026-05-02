@@ -8,7 +8,9 @@
 //! plan in `docs/adr/0010-turn-executor-state-machine.md`.
 
 pub mod compaction;
+pub mod first_iter_hooks;
 pub mod pre_flight;
+pub mod token_estimate;
 
 /// Why a phase asked the loop to break.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
