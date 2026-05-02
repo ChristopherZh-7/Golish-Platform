@@ -4,9 +4,10 @@
 //! returns a `PhaseOutcome` telling the scheduler whether to continue,
 //! skip to the next iteration, or break the loop.
 //!
-//! First extracted phase is `pre_flight` (PoC for ADR-0010). Additional
-//! phases land in subsequent PRs — see the migration plan.
+//! Extracted phases are added one PR at a time — see the migration
+//! plan in `docs/adr/0010-turn-executor-state-machine.md`.
 
+pub mod compaction;
 pub mod pre_flight;
 
 /// Why a phase asked the loop to break.
@@ -28,4 +29,7 @@ pub enum PhaseOutcome {
     /// finalization work; this variant just carries the reason for
     /// observability.
     Break(BreakReason),
+    /// An unrecoverable error occurred. The scheduler must propagate
+    /// this up the call stack (bubbling through `?` after matching).
+    Fail(anyhow::Error),
 }
