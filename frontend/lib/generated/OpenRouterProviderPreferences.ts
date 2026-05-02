@@ -8,63 +8,62 @@
  *
  * All fields are optional. Only non-None fields are sent to the API.
  */
-export type OpenRouterProviderPreferences = {
-  /**
-   * Provider priority ordering. Try these providers first, in order.
-   * Example: ["deepinfra", "deepseek"]
-   */
-  order: Array<string> | null;
-  /**
-   * Hard allowlist: only use these providers.
-   * Example: ["deepinfra", "atlascloud"]
-   */
-  only: Array<string> | null;
-  /**
-   * Blocklist: never use these providers.
-   * Example: ["google vertex"]
-   */
-  ignore: Array<string> | null;
-  /**
-   * Whether to allow fallback to other providers when preferred ones are unavailable.
-   * Defaults to true if not specified.
-   */
-  allow_fallbacks: boolean | null;
-  /**
-   * Only route to providers that support all request parameters.
-   */
-  require_parameters: boolean | null;
-  /**
-   * Data collection policy: "allow" or "deny".
-   * "deny" restricts to providers that do not store user data non-transiently.
-   */
-  data_collection: string | null;
-  /**
-   * Require Zero Data Retention endpoints only.
-   */
-  zdr: boolean | null;
-  /**
-   * Sort providers by: "price", "throughput", or "latency".
-   */
-  sort: string | null;
-  /**
-   * Minimum throughput threshold in tokens/sec.
-   */
-  preferred_min_throughput: number | null;
-  /**
-   * Maximum latency threshold in seconds.
-   */
-  preferred_max_latency: number | null;
-  /**
-   * Maximum price per prompt token (in USD per million tokens).
-   */
-  max_price_prompt: number | null;
-  /**
-   * Maximum price per completion token (in USD per million tokens).
-   */
-  max_price_completion: number | null;
-  /**
-   * Filter by quantization levels.
-   * Valid values: "int4", "int8", "fp8", "fp16", "bf16", "fp32", "unknown"
-   */
-  quantizations: Array<string> | null;
-};
+export type OpenRouterProviderPreferences = { 
+/**
+ * Provider priority ordering. Try these providers first, in order.
+ * Example: ["deepinfra", "deepseek"]
+ */
+order: Array<string> | null, 
+/**
+ * Hard allowlist: only use these providers.
+ * Example: ["deepinfra", "atlascloud"]
+ */
+only: Array<string> | null, 
+/**
+ * Blocklist: never use these providers.
+ * Example: ["google vertex"]
+ */
+ignore: Array<string> | null, 
+/**
+ * Whether to allow fallback to other providers when preferred ones are unavailable.
+ * Defaults to true if not specified.
+ */
+allow_fallbacks: boolean | null, 
+/**
+ * Only route to providers that support all request parameters.
+ */
+require_parameters: boolean | null, 
+/**
+ * Data collection policy: "allow" or "deny".
+ * "deny" restricts to providers that do not store user data non-transiently.
+ */
+data_collection: string | null, 
+/**
+ * Require Zero Data Retention endpoints only.
+ */
+zdr: boolean | null, 
+/**
+ * Sort providers by: "price", "throughput", or "latency".
+ */
+sort: string | null, 
+/**
+ * Minimum throughput threshold in tokens/sec.
+ */
+preferred_min_throughput: number | null, 
+/**
+ * Maximum latency threshold in seconds.
+ */
+preferred_max_latency: number | null, 
+/**
+ * Maximum price per prompt token (in USD per million tokens).
+ */
+max_price_prompt: number | null, 
+/**
+ * Maximum price per completion token (in USD per million tokens).
+ */
+max_price_completion: number | null, 
+/**
+ * Filter by quantization levels.
+ * Valid values: "int4", "int8", "fp8", "fp16", "bf16", "fp32", "unknown"
+ */
+quantizations: Array<string> | null, };

@@ -3,17 +3,16 @@
 /**
  * API keys for external services.
  */
-export type ApiKeysSettings = {
-  /**
-   * Tavily API key for web search
-   */
-  tavily: string | null;
-  /**
-   * GitHub token for repository access
-   */
-  github: string | null;
-  /**
-   * Brave Search API key
-   */
-  brave: string | null;
-};
+export type ApiKeysSettings = { 
+/**
+ * Tavily API key for web search.
+ */
+tavily: string | null, 
+/**
+ * GitHub token for repository access.
+ */
+github: string | null, 
+/**
+ * Brave Search API key.
+ */
+brave: string | null, };

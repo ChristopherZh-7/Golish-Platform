@@ -22,7 +22,7 @@ describe("Appearance Slice", () => {
     it("should have all visibility settings defaulting to true and behavior flags to false", () => {
       const settings = store.getState().displaySettings;
       expect(settings.hideAiSettingsInShellMode).toBe(false);
-      expect(settings.uiScale).toBe(1.0);
+      expect(settings.uiScale).toBe(1.1);
       const { hideAiSettingsInShellMode: _, uiScale: _s, ...visibilitySettings } = settings;
       for (const value of Object.values(visibilitySettings)) {
         expect(value).toBe(true);

@@ -4,28 +4,27 @@
  * Langfuse tracing configuration.
  *
  * Langfuse provides LLM observability via OpenTelemetry.
- * See: https://langfuse.com/docs/integrations/opentelemetry
+ * See: <https://langfuse.com/docs/integrations/opentelemetry>.
  */
-export type LangfuseSettings = {
-  /**
-   * Enable Langfuse tracing
-   */
-  enabled: boolean;
-  /**
-   * Langfuse host URL (defaults to https://cloud.langfuse.com)
-   */
-  host: string | null;
-  /**
-   * Langfuse public key (supports $ENV_VAR syntax, or set LANGFUSE_PUBLIC_KEY env var)
-   */
-  public_key: string | null;
-  /**
-   * Langfuse secret key (supports $ENV_VAR syntax, or set LANGFUSE_SECRET_KEY env var)
-   */
-  secret_key: string | null;
-  /**
-   * Sampling ratio (0.0 to 1.0, default 1.0 = sample everything)
-   * Use lower values for high-traffic production deployments
-   */
-  sampling_ratio: number | null;
-};
+export type LangfuseSettings = { 
+/**
+ * Enable Langfuse tracing.
+ */
+enabled: boolean, 
+/**
+ * Langfuse host URL (defaults to `https://cloud.langfuse.com`).
+ */
+host: string | null, 
+/**
+ * Langfuse public key (supports `$ENV_VAR` syntax, or set `LANGFUSE_PUBLIC_KEY` env var).
+ */
+public_key: string | null, 
+/**
+ * Langfuse secret key (supports `$ENV_VAR` syntax, or set `LANGFUSE_SECRET_KEY` env var).
+ */
+secret_key: string | null, 
+/**
+ * Sampling ratio (0.0 to 1.0, default 1.0 = sample everything).
+ * Use lower values for high-traffic production deployments.
+ */
+sampling_ratio: number | null, };

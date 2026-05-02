@@ -1,30 +1,21 @@
+import type { VaultEntrySafe } from "@/lib/generated";
 import { invoke } from "./client";
 
 /**
  * Vault entry create/update/delete/list/status IPC wrappers.
  *
- * Field set kept in sync with the Rust `vault_*` Tauri commands in
- * `backend/crates/golish/src/tools/vault.rs`. When the backend
- * signature changes, update both this file and the Rust handler
- * argument list (Tauri auto-converts snake_case to camelCase across
- * the IPC boundary).
+ * `VaultEntrySafe` is **not** declared here — it is auto-generated from
+ * `golish-core/src/vault.rs::VaultEntrySafe` by `ts-rs` (run
+ * `just generate-types` whenever the Rust struct changes). This guarantees
+ * the field set stays in sync with the JSON actually serialized over IPC,
+ * including the `entry_type → type` rename.
+ *
+ * Argument types (`AddVaultEntryParams` etc.) below stay hand-written
+ * because Tauri's auto camelCase→snake_case conversion only applies to
+ * *arguments* (front → back), and they don't 1:1 mirror any Rust struct.
  */
 
-/** Result row returned by `vault_list` and `vault_add`. */
-export interface VaultEntrySafe {
-  id: string;
-  name: string;
-  entryType: string;
-  username: string | null;
-  notes: string | null;
-  project: string | null;
-  tags: string[];
-  status: string;
-  sourceUrl: string | null;
-  lastValidatedAt: number | null;
-  createdAt: number;
-  updatedAt: number;
-}
+export type { VaultEntrySafe };
 
 export interface AddVaultEntryParams {
   name: string;

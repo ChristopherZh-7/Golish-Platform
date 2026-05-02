@@ -17,6 +17,10 @@ vi.mock("@/lib/terminal", () => ({
     dispose: vi.fn(),
     scrollToBottom: vi.fn(),
     serializeAndDispose: vi.fn().mockResolvedValue(""),
+    enableInput: vi.fn(),
+    disableInput: vi.fn(),
+    fit: vi.fn(),
+    focus: vi.fn(),
   },
   virtualTerminalManager: {
     create: vi.fn(),

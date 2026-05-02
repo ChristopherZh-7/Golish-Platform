@@ -266,7 +266,6 @@ describe("AppearanceSettings", () => {
       expect(screen.getByText("Status Bar")).toBeInTheDocument();
       expect(screen.getByText("Input Mode Toggle")).toBeInTheDocument();
       expect(screen.getByText("Status & Model Badge")).toBeInTheDocument();
-      expect(screen.getByText("Agent Mode Selector")).toBeInTheDocument();
       expect(screen.getByText("Token Usage")).toBeInTheDocument();
       expect(screen.getByText("MCP Servers Badge")).toBeInTheDocument();
     });

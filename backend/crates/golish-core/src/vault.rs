@@ -5,6 +5,7 @@
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 fn derive_key() -> Vec<u8> {
     let seed = format!(
@@ -62,11 +63,20 @@ pub struct VaultEntry {
     pub updated_at: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Sanitized vault entry returned to the UI (no plaintext value).
+///
+/// Field names are deliberately snake_case (matches storage schema) and
+/// `entry_type` is exposed as `type` over the wire via `#[serde(rename = "type")]`.
+/// The `#[derive(TS)]` + `#[ts(export)]` exports a TypeScript counterpart to
+/// `frontend/lib/generated/VaultEntrySafe.ts` so the frontend never has to
+/// hand-mirror this shape again. Run `just generate-types` after editing.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "generated/")]
 pub struct VaultEntrySafe {
     pub id: String,
     pub name: String,
     #[serde(rename = "type")]
+    #[ts(rename = "type")]
     pub entry_type: VaultEntryType,
     pub username: String,
     pub notes: String,
@@ -74,19 +84,29 @@ pub struct VaultEntrySafe {
     pub tags: Vec<String>,
     pub status: String,
     pub source_url: String,
+    /// Unix seconds. Override the default `bigint` mapping because timestamps
+    /// fit comfortably in JS `number` (Number.MAX_SAFE_INTEGER = 2^53 is well
+    /// beyond seconds since epoch for the next ~285M years) and the frontend
+    /// arithmetic (`entry.created_at * 1000`) treats them as `number`.
+    #[ts(type = "number | null")]
     pub last_validated_at: Option<u64>,
+    #[ts(type = "number")]
     pub created_at: u64,
+    #[ts(type = "number")]
     pub updated_at: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "generated/")]
 pub enum VaultEntryType {
     Password,
     Token,
     #[serde(rename = "ssh_key")]
+    #[ts(rename = "ssh_key")]
     SshKey,
     #[serde(rename = "api_key")]
+    #[ts(rename = "api_key")]
     ApiKey,
     Cookie,
     Certificate,

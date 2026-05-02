@@ -169,7 +169,7 @@ describe("BlockCaret", () => {
       );
 
       const caret = container.querySelector("[aria-hidden='true']") as HTMLElement;
-      expect(caret.style.backgroundColor).toBe("rgb(255, 0, 0)");
+      expect(caret.style.backgroundColor).toMatch(/rgb\(255,\s*0,\s*0\)|#ff0000/);
 
       document.body.removeChild(textarea);
     });

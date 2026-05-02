@@ -5,6 +5,7 @@ import { clearMockListeners, emitMockEvent, getListenerCount } from "../test/moc
 import {
   getSessionSequenceCount,
   resetAllSequences,
+  resetLastSignaledAt,
   resetSessionSequence,
   useAiEvents,
 } from "./useAiEvents";
@@ -60,8 +61,10 @@ describe("useAiEvents", () => {
     // Clear any existing listeners
     clearMockListeners();
 
-    // Reset sequence tracking
+    // Reset sequence tracking + signalFrontendReady cooldown so each test
+    // starts from a clean module state (both Maps live at module scope).
     resetAllSequences();
+    resetLastSignaledAt();
 
     // Create a test session
     createTestSession("test-session");

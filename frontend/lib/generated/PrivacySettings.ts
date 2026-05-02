@@ -3,13 +3,12 @@
 /**
  * Privacy and telemetry settings.
  */
-export type PrivacySettings = {
-  /**
-   * Enable anonymous usage statistics
-   */
-  usage_statistics: boolean;
-  /**
-   * Log prompts for debugging (local only)
-   */
-  log_prompts: boolean;
-};
+export type PrivacySettings = { 
+/**
+ * Enable anonymous usage statistics.
+ */
+usage_statistics: boolean, 
+/**
+ * Log prompts for debugging (local only).
+ */
+log_prompts: boolean, };

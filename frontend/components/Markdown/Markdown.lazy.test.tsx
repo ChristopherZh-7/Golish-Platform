@@ -185,9 +185,9 @@ const copyMe = "test";
       // Wait for the component to fully render
       await waitFor(
         () => {
-          // The copy button should be present (it's part of the CodeBlock component)
-          // It might be inside a relative positioned div with the code
-          const codeWrapper = document.querySelector(".relative.group");
+          // The CodeBlock wrapper carries the `group` class so the copy
+          // button can fade in on hover (it lives inside the wrapper).
+          const codeWrapper = document.querySelector(".group");
           expect(codeWrapper).toBeInTheDocument();
         },
         { timeout: 3000 }

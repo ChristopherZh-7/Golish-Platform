@@ -3,23 +3,22 @@
 /**
  * Context window management settings.
  */
-export type ContextSettings = {
-  /**
-   * Enable context window management
-   */
-  enabled: boolean;
-  /**
-   * Context utilization threshold (0.0-1.0) at which compaction is triggered
-   */
-  compaction_threshold: number;
-  /**
-   * DEPRECATED: No longer used. Compaction replaces pruning.
-   * Kept for backwards compatibility with existing config files.
-   */
-  protected_turns: number;
-  /**
-   * DEPRECATED: No longer used. Compaction replaces pruning.
-   * Kept for backwards compatibility with existing config files.
-   */
-  cooldown_seconds: bigint;
-};
+export type ContextSettings = { 
+/**
+ * Enable context window management.
+ */
+enabled: boolean, 
+/**
+ * Context utilization threshold (0.0-1.0) at which compaction is triggered.
+ */
+compaction_threshold: number, 
+/**
+ * DEPRECATED: No longer used. Compaction replaces pruning.
+ * Kept for backwards compatibility with existing config files.
+ */
+protected_turns: number, 
+/**
+ * DEPRECATED: No longer used. Compaction replaces pruning.
+ * Kept for backwards compatibility with existing config files.
+ */
+cooldown_seconds: bigint, };

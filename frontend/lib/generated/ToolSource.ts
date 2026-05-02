@@ -3,19 +3,12 @@
 /**
  * Source of a tool call - indicates where the tool request originated.
  */
-export type ToolSource =
-  | { type: "main" }
-  | { type: "sub_agent"; agent_id: string; agent_name: string }
-  | {
-      type: "workflow";
-      workflow_id: string;
-      workflow_name: string;
-      /**
-       * Current step name (if within a step)
-       */
-      step_name: string | null;
-      /**
-       * Current step index (0-based)
-       */
-      step_index: number | null;
-    };
+export type ToolSource = { "type": "main" } | { "type": "sub_agent", agent_id: string, agent_name: string, } | { "type": "workflow", workflow_id: string, workflow_name: string, 
+/**
+ * Current step name (if within a step)
+ */
+step_name: string | null, 
+/**
+ * Current step index (0-based)
+ */
+step_index: number | null, };

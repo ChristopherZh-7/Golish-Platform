@@ -7,6 +7,10 @@ vi.mock("@/lib/terminal", () => ({
     getOrCreate: vi.fn(),
     attachToContainer: vi.fn(),
     detach: vi.fn(),
+    fit: vi.fn(),
+    enableInput: vi.fn(),
+    disableInput: vi.fn(),
+    focus: vi.fn(),
   },
 }));
 
@@ -23,7 +27,7 @@ describe("LiveTerminalBlock", () => {
       expect(CODE_STYLE).toEqual({
         fontSize: "12px",
         lineHeight: 1.4,
-        fontFamily: "JetBrains Mono, Menlo, Monaco, Consolas, monospace",
+        fontFamily: "SF Mono, Menlo, Monaco, JetBrains Mono, Consolas, monospace",
       });
     });
 

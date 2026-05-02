@@ -11,414 +11,220 @@ import type { ToolSource } from "./ToolSource";
  * We emit these directly from AgentBridge instead of converting from vtcode's ThreadEvent,
  * since ThreadEvent uses tuple structs that are harder to work with.
  */
-export type AiEvent =
-  | { type: "started"; turn_id: string }
-  | { type: "user_message"; content: string }
-  | { type: "system_hooks_injected"; hooks: Array<string> }
-  | { type: "text_delta"; delta: string; accumulated: string }
-  | {
-      type: "tool_request";
-      tool_name: string;
-      args: JsonValue;
-      request_id: string;
-      /**
-       * Source of this tool call (main agent, sub-agent, or workflow)
-       */
-      source: ToolSource;
-    }
-  | {
-      type: "tool_approval_request";
-      request_id: string;
-      tool_name: string;
-      args: JsonValue;
-      /**
-       * Current approval stats for this tool (if any)
-       */
-      stats: ApprovalPattern | null;
-      /**
-       * Risk level of this operation
-       */
-      risk_level: RiskLevel;
-      /**
-       * Whether this tool can be auto-approved in the future
-       */
-      can_learn: boolean;
-      /**
-       * Suggestion message (e.g., "2 more approvals needed for auto-approve")
-       */
-      suggestion: string | null;
-      /**
-       * Source of this tool call (main agent, sub-agent, or workflow)
-       */
-      source: ToolSource;
-    }
-  | {
-      type: "tool_auto_approved";
-      request_id: string;
-      tool_name: string;
-      args: JsonValue;
-      /**
-       * Reason for auto-approval
-       */
-      reason: string;
-      /**
-       * Source of this tool call (main agent, sub-agent, or workflow)
-       */
-      source: ToolSource;
-    }
-  | {
-      type: "tool_denied";
-      request_id: string;
-      tool_name: string;
-      args: JsonValue;
-      /**
-       * Reason for denial
-       */
-      reason: string;
-      /**
-       * Source of this tool call (main agent, sub-agent, or workflow)
-       */
-      source: ToolSource;
-    }
-  | {
-      type: "tool_result";
-      tool_name: string;
-      result: JsonValue;
-      success: boolean;
-      request_id: string;
-      /**
-       * Source of this tool call (main agent, sub-agent, or workflow)
-       */
-      source: ToolSource;
-    }
-  | {
-      type: "tool_output_chunk";
-      request_id: string;
-      tool_name: string;
-      /**
-       * Raw output chunk (may contain ANSI codes)
-       */
-      chunk: string;
-      /**
-       * Which stream this came from: "stdout" or "stderr"
-       */
-      stream: string;
-      /**
-       * Source of this tool call (main agent, sub-agent, or workflow)
-       */
-      source: ToolSource;
-    }
-  | { type: "reasoning"; content: string }
-  | {
-      type: "completed";
-      response: string;
-      /**
-       * Accumulated reasoning/thinking content (for models with extended thinking)
-       */
-      reasoning: string | null;
-      input_tokens: number | null;
-      output_tokens: number | null;
-      duration_ms: bigint | null;
-    }
-  | { type: "error"; message: string; error_type: string }
-  | {
-      type: "ask_human_request";
-      request_id: string;
-      /**
-       * The question or information the AI needs
-       */
-      question: string;
-      /**
-       * Type of input expected: "credentials", "choice", "freetext", "confirmation"
-       */
-      input_type: string;
-      /**
-       * Options for "choice" type (empty for other types)
-       */
-      options: Array<string>;
-      /**
-       * Additional context about why this is needed
-       */
-      context: string;
-    }
-  | {
-      type: "ask_human_response";
-      request_id: string;
-      /**
-       * The user's text response
-       */
-      response: string;
-      /**
-       * Whether the user skipped this request
-       */
-      skipped: boolean;
-    }
-  | {
-      type: "sub_agent_started";
-      agent_id: string;
-      agent_name: string;
-      task: string;
-      depth: number;
-      parent_request_id: string;
-    }
-  | {
-      type: "sub_agent_tool_request";
-      agent_id: string;
-      tool_name: string;
-      args: JsonValue;
-      request_id: string;
-      parent_request_id: string;
-    }
-  | {
-      type: "sub_agent_tool_result";
-      agent_id: string;
-      tool_name: string;
-      success: boolean;
-      result: JsonValue;
-      request_id: string;
-      parent_request_id: string;
-    }
-  | {
-      type: "sub_agent_text_delta";
-      agent_id: string;
-      delta: string;
-      accumulated: string;
-      parent_request_id: string;
-    }
-  | {
-      type: "sub_agent_completed";
-      agent_id: string;
-      response: string;
-      duration_ms: bigint;
-      parent_request_id: string;
-    }
-  | { type: "sub_agent_error"; agent_id: string; error: string; parent_request_id: string }
-  | { type: "context_warning"; utilization: number; total_tokens: number; max_tokens: number }
-  | {
-      type: "tool_response_truncated";
-      tool_name: string;
-      original_tokens: number;
-      truncated_tokens: number;
-    }
-  | { type: "warning"; message: string }
-  | {
-      type: "compaction_started";
-      /**
-       * Number of tokens before compaction
-       */
-      tokens_before: bigint;
-      /**
-       * Number of messages before compaction
-       */
-      messages_before: number;
-    }
-  | {
-      type: "compaction_completed";
-      /**
-       * Number of tokens before compaction
-       */
-      tokens_before: bigint;
-      /**
-       * Number of messages before compaction
-       */
-      messages_before: number;
-      /**
-       * Number of messages after compaction
-       */
-      messages_after: number;
-      /**
-       * Length of the generated summary
-       */
-      summary_length: number;
-      /**
-       * The generated summary text
-       */
-      summary: string | null;
-      /**
-       * The summarizer input that was used
-       */
-      summarizer_input: string | null;
-    }
-  | {
-      type: "compaction_failed";
-      /**
-       * Number of tokens before compaction
-       */
-      tokens_before: bigint;
-      /**
-       * Number of messages before compaction
-       */
-      messages_before: number;
-      /**
-       * Error message
-       */
-      error: string;
-      /**
-       * The summarizer input that was used
-       */
-      summarizer_input: string | null;
-    }
-  | {
-      type: "loop_warning";
-      tool_name: string;
-      current_count: number;
-      max_count: number;
-      message: string;
-    }
-  | {
-      type: "loop_blocked";
-      tool_name: string;
-      repeat_count: number;
-      max_count: number;
-      message: string;
-    }
-  | { type: "max_iterations_reached"; iterations: number; max_iterations: number; message: string }
-  | { type: "workflow_started"; workflow_id: string; workflow_name: string; session_id: string }
-  | {
-      type: "workflow_step_started";
-      workflow_id: string;
-      step_name: string;
-      step_index: number;
-      total_steps: number;
-    }
-  | {
-      type: "workflow_step_completed";
-      workflow_id: string;
-      step_name: string;
-      output: string | null;
-      duration_ms: bigint;
-    }
-  | {
-      type: "workflow_completed";
-      workflow_id: string;
-      final_output: string;
-      total_duration_ms: bigint;
-    }
-  | { type: "workflow_error"; workflow_id: string; step_name: string | null; error: string }
-  | {
-      type: "plan_updated";
-      /**
-       * Plan version (increments with each update)
-       */
-      version: number;
-      /**
-       * Summary statistics
-       */
-      summary: PlanSummary;
-      /**
-       * The updated steps
-       */
-      steps: Array<PlanStep>;
-      /**
-       * Optional explanation
-       */
-      explanation: string | null;
-    }
-  | {
-      type: "server_tool_started";
-      /**
-       * Unique identifier for this tool use
-       */
-      request_id: string;
-      /**
-       * Tool name (web_search or web_fetch)
-       */
-      tool_name: string;
-      /**
-       * Tool input parameters
-       */
-      input: JsonValue;
-    }
-  | {
-      type: "web_search_result";
-      /**
-       * Tool use ID that this result corresponds to
-       */
-      request_id: string;
-      /**
-       * Search results (array of {url, title, content, page_age})
-       */
-      results: JsonValue;
-    }
-  | {
-      type: "web_fetch_result";
-      /**
-       * Tool use ID that this result corresponds to
-       */
-      request_id: string;
-      /**
-       * URL that was fetched
-       */
-      url: string;
-      /**
-       * Preview of fetched content (truncated for events)
-       */
-      content_preview: string;
-    }
-  | {
-      type: "prompt_generation_started";
-      /**
-       * The sub-agent this prompt is being generated for
-       */
-      agent_id: string;
-      /**
-       * The parent request that triggered this sub-agent
-       */
-      parent_request_id: string;
-      /**
-       * The system prompt sent to the architect LLM (the meta-prompt template)
-       */
-      architect_system_prompt: string;
-      /**
-       * The user message sent to the architect LLM (task + context)
-       */
-      architect_user_message: string;
-    }
-  | {
-      type: "prompt_generation_completed";
-      /**
-       * The sub-agent this prompt is being generated for
-       */
-      agent_id: string;
-      /**
-       * The parent request that triggered this sub-agent
-       */
-      parent_request_id: string;
-      /**
-       * The generated system prompt (None if generation failed)
-       */
-      generated_prompt: string | null;
-      /**
-       * Whether generation succeeded
-       */
-      success: boolean;
-      /**
-       * Duration of the generation call in milliseconds
-       */
-      duration_ms: bigint;
-    }
-  | { type: "task_progress"; task_id: string; status: string; message: string }
-  | {
-      type: "subtask_created";
-      task_id: string;
-      subtask_id: string;
-      title: string;
-      agent: string | null;
-    }
-  | {
-      type: "subtask_completed";
-      task_id: string;
-      subtask_id: string;
-      title: string;
-      result: string;
-    }
-  | {
-      type: "subtask_waiting_for_input";
-      task_id: string;
-      subtask_id: string;
-      title: string;
-      prompt: string;
-    }
-  | { type: "subtask_user_input"; task_id: string; subtask_id: string; input: string }
-  | { type: "task_resumed"; task_id: string; subtask_index: number; total_subtasks: number }
-  | { type: "enricher_result"; task_id: string; subtask_id: string; context_added: string };
+export type AiEvent = { "type": "started", turn_id: string, } | { "type": "user_message", content: string, } | { "type": "system_hooks_injected", hooks: Array<string>, } | { "type": "text_delta", delta: string, accumulated: string, } | { "type": "tool_request", tool_name: string, args: JsonValue, request_id: string, 
+/**
+ * Source of this tool call (main agent, sub-agent, or workflow)
+ */
+source: ToolSource, } | { "type": "tool_approval_request", request_id: string, tool_name: string, args: JsonValue, 
+/**
+ * Current approval stats for this tool (if any)
+ */
+stats: ApprovalPattern | null, 
+/**
+ * Risk level of this operation
+ */
+risk_level: RiskLevel, 
+/**
+ * Whether this tool can be auto-approved in the future
+ */
+can_learn: boolean, 
+/**
+ * Suggestion message (e.g., "2 more approvals needed for auto-approve")
+ */
+suggestion: string | null, 
+/**
+ * Source of this tool call (main agent, sub-agent, or workflow)
+ */
+source: ToolSource, } | { "type": "tool_auto_approved", request_id: string, tool_name: string, args: JsonValue, 
+/**
+ * Reason for auto-approval
+ */
+reason: string, 
+/**
+ * Source of this tool call (main agent, sub-agent, or workflow)
+ */
+source: ToolSource, } | { "type": "tool_denied", request_id: string, tool_name: string, args: JsonValue, 
+/**
+ * Reason for denial
+ */
+reason: string, 
+/**
+ * Source of this tool call (main agent, sub-agent, or workflow)
+ */
+source: ToolSource, } | { "type": "tool_result", tool_name: string, result: JsonValue, success: boolean, request_id: string, 
+/**
+ * Source of this tool call (main agent, sub-agent, or workflow)
+ */
+source: ToolSource, } | { "type": "tool_output_chunk", request_id: string, tool_name: string, 
+/**
+ * Raw output chunk (may contain ANSI codes)
+ */
+chunk: string, 
+/**
+ * Which stream this came from: "stdout" or "stderr"
+ */
+stream: string, 
+/**
+ * Source of this tool call (main agent, sub-agent, or workflow)
+ */
+source: ToolSource, } | { "type": "reasoning", content: string, } | { "type": "completed", response: string, 
+/**
+ * Accumulated reasoning/thinking content (for models with extended thinking)
+ */
+reasoning: string | null, input_tokens: number | null, output_tokens: number | null, duration_ms: bigint | null, } | { "type": "error", message: string, error_type: string, } | { "type": "ask_human_request", request_id: string, 
+/**
+ * The question or information the AI needs
+ */
+question: string, 
+/**
+ * Type of input expected: "credentials", "choice", "freetext", "confirmation"
+ */
+input_type: string, 
+/**
+ * Options for "choice" type (empty for other types)
+ */
+options: Array<string>, 
+/**
+ * Additional context about why this is needed
+ */
+context: string, } | { "type": "ask_human_response", request_id: string, 
+/**
+ * The user's text response
+ */
+response: string, 
+/**
+ * Whether the user skipped this request
+ */
+skipped: boolean, } | { "type": "sub_agent_started", agent_id: string, agent_name: string, task: string, depth: number, parent_request_id: string, } | { "type": "sub_agent_tool_request", agent_id: string, tool_name: string, args: JsonValue, request_id: string, parent_request_id: string, } | { "type": "sub_agent_tool_result", agent_id: string, tool_name: string, success: boolean, result: JsonValue, request_id: string, parent_request_id: string, } | { "type": "sub_agent_text_delta", agent_id: string, delta: string, accumulated: string, parent_request_id: string, } | { "type": "sub_agent_completed", agent_id: string, response: string, duration_ms: bigint, parent_request_id: string, } | { "type": "sub_agent_error", agent_id: string, error: string, parent_request_id: string, } | { "type": "context_warning", utilization: number, total_tokens: number, max_tokens: number, } | { "type": "tool_response_truncated", tool_name: string, original_tokens: number, truncated_tokens: number, } | { "type": "warning", message: string, } | { "type": "compaction_started", 
+/**
+ * Number of tokens before compaction
+ */
+tokens_before: bigint, 
+/**
+ * Number of messages before compaction
+ */
+messages_before: number, } | { "type": "compaction_completed", 
+/**
+ * Number of tokens before compaction
+ */
+tokens_before: bigint, 
+/**
+ * Number of messages before compaction
+ */
+messages_before: number, 
+/**
+ * Number of messages after compaction
+ */
+messages_after: number, 
+/**
+ * Length of the generated summary
+ */
+summary_length: number, 
+/**
+ * The generated summary text
+ */
+summary: string | null, 
+/**
+ * The summarizer input that was used
+ */
+summarizer_input: string | null, } | { "type": "compaction_failed", 
+/**
+ * Number of tokens before compaction
+ */
+tokens_before: bigint, 
+/**
+ * Number of messages before compaction
+ */
+messages_before: number, 
+/**
+ * Error message
+ */
+error: string, 
+/**
+ * The summarizer input that was used
+ */
+summarizer_input: string | null, } | { "type": "loop_warning", tool_name: string, current_count: number, max_count: number, message: string, } | { "type": "loop_blocked", tool_name: string, repeat_count: number, max_count: number, message: string, } | { "type": "max_iterations_reached", iterations: number, max_iterations: number, message: string, } | { "type": "workflow_started", workflow_id: string, workflow_name: string, session_id: string, } | { "type": "workflow_step_started", workflow_id: string, step_name: string, step_index: number, total_steps: number, } | { "type": "workflow_step_completed", workflow_id: string, step_name: string, output: string | null, duration_ms: bigint, } | { "type": "workflow_completed", workflow_id: string, final_output: string, total_duration_ms: bigint, } | { "type": "workflow_error", workflow_id: string, step_name: string | null, error: string, } | { "type": "plan_updated", 
+/**
+ * Plan version (increments with each update)
+ */
+version: number, 
+/**
+ * Summary statistics
+ */
+summary: PlanSummary, 
+/**
+ * The updated steps
+ */
+steps: Array<PlanStep>, 
+/**
+ * Optional explanation
+ */
+explanation: string | null, } | { "type": "server_tool_started", 
+/**
+ * Unique identifier for this tool use
+ */
+request_id: string, 
+/**
+ * Tool name (web_search or web_fetch)
+ */
+tool_name: string, 
+/**
+ * Tool input parameters
+ */
+input: JsonValue, } | { "type": "web_search_result", 
+/**
+ * Tool use ID that this result corresponds to
+ */
+request_id: string, 
+/**
+ * Search results (array of {url, title, content, page_age})
+ */
+results: JsonValue, } | { "type": "web_fetch_result", 
+/**
+ * Tool use ID that this result corresponds to
+ */
+request_id: string, 
+/**
+ * URL that was fetched
+ */
+url: string, 
+/**
+ * Preview of fetched content (truncated for events)
+ */
+content_preview: string, } | { "type": "prompt_generation_started", 
+/**
+ * The sub-agent this prompt is being generated for
+ */
+agent_id: string, 
+/**
+ * The parent request that triggered this sub-agent
+ */
+parent_request_id: string, 
+/**
+ * The system prompt sent to the architect LLM (the meta-prompt template)
+ */
+architect_system_prompt: string, 
+/**
+ * The user message sent to the architect LLM (task + context)
+ */
+architect_user_message: string, } | { "type": "prompt_generation_completed", 
+/**
+ * The sub-agent this prompt is being generated for
+ */
+agent_id: string, 
+/**
+ * The parent request that triggered this sub-agent
+ */
+parent_request_id: string, 
+/**
+ * The generated system prompt (None if generation failed)
+ */
+generated_prompt: string | null, 
+/**
+ * Whether generation succeeded
+ */
+success: boolean, 
+/**
+ * Duration of the generation call in milliseconds
+ */
+duration_ms: bigint, } | { "type": "task_progress", task_id: string, status: string, message: string, } | { "type": "subtask_created", task_id: string, subtask_id: string, title: string, agent: string | null, } | { "type": "subtask_completed", task_id: string, subtask_id: string, title: string, result: string, } | { "type": "subtask_waiting_for_input", task_id: string, subtask_id: string, title: string, prompt: string, } | { "type": "subtask_user_input", task_id: string, subtask_id: string, input: string, } | { "type": "task_resumed", task_id: string, subtask_index: number, total_subtasks: number, } | { "type": "enricher_result", task_id: string, subtask_id: string, context_added: string, };

@@ -123,6 +123,8 @@ const mockManagerAttach = vi.fn();
 const mockManagerDetach = vi.fn();
 const mockManagerDispose = vi.fn();
 
+const mockManagerConsumePendingScrollback = vi.fn().mockReturnValue(undefined);
+
 vi.mock("@/lib/terminal/TerminalInstanceManager", () => ({
   TerminalInstanceManager: {
     get: (...args: unknown[]) => mockManagerGet(...args),
@@ -130,6 +132,7 @@ vi.mock("@/lib/terminal/TerminalInstanceManager", () => ({
     attachToContainer: (...args: unknown[]) => mockManagerAttach(...args),
     detach: (...args: unknown[]) => mockManagerDetach(...args),
     dispose: (...args: unknown[]) => mockManagerDispose(...args),
+    consumePendingScrollback: (...args: unknown[]) => mockManagerConsumePendingScrollback(...args),
   },
 }));
 

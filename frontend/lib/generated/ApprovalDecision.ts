@@ -3,25 +3,24 @@
 /**
  * User's decision on an approval request.
  */
-export type ApprovalDecision = {
-  /**
-   * The request ID this decision is for
-   */
-  request_id: string;
-  /**
-   * Whether the tool was approved
-   */
-  approved: boolean;
-  /**
-   * Optional reason/justification for the decision
-   */
-  reason: string | null;
-  /**
-   * Whether to remember this decision for future auto-approval
-   */
-  remember: boolean;
-  /**
-   * Whether to always allow this specific tool
-   */
-  always_allow: boolean;
-};
+export type ApprovalDecision = { 
+/**
+ * The request ID this decision is for
+ */
+request_id: string, 
+/**
+ * Whether the tool was approved
+ */
+approved: boolean, 
+/**
+ * Optional reason/justification for the decision
+ */
+reason: string | null, 
+/**
+ * Whether to remember this decision for future auto-approval
+ */
+remember: boolean, 
+/**
+ * Whether to always allow this specific tool
+ */
+always_allow: boolean, };

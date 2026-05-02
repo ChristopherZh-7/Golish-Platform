@@ -4,18 +4,17 @@ import type { OpenRouterProviderPreferences } from "./OpenRouterProviderPreferen
 /**
  * OpenRouter API settings.
  */
-export type OpenRouterSettings = {
-  /**
-   * OpenRouter API key (supports $ENV_VAR syntax)
-   */
-  api_key: string | null;
-  /**
-   * Whether to show this provider's models in the model selector
-   */
-  show_in_selector: boolean;
-  /**
-   * Provider preferences for routing and filtering (optional).
-   * See https://openrouter.ai/docs/guides/routing/provider-selection
-   */
-  provider_preferences?: OpenRouterProviderPreferences | null;
-};
+export type OpenRouterSettings = { 
+/**
+ * OpenRouter API key (supports $ENV_VAR syntax)
+ */
+api_key: string | null, 
+/**
+ * Whether to show this provider's models in the model selector
+ */
+show_in_selector: boolean, 
+/**
+ * Provider preferences for routing and filtering (optional).
+ * See https://openrouter.ai/docs/guides/routing/provider-selection
+ */
+provider_preferences?: OpenRouterProviderPreferences | null, };

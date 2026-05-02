@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GolishSettings } from "./settings";
+import type { GolishSettings } from "./settings/types";
 import {
   getSettingsCached,
   invalidateSettingsCache,
@@ -9,7 +9,7 @@ import {
   SETTINGS_CACHE_TTL_MS,
   setSetting,
   updateSettings,
-} from "./settings";
+} from "./settings/api";
 
 // The invoke mock is set up in vitest.config.ts
 // We'll mock it per-test to control behavior
@@ -29,7 +29,7 @@ describe("Settings Cache", () => {
     it("should call invoke on first call", async () => {
       await getSettingsCached();
 
-      expect(invoke).toHaveBeenCalledWith("get_settings");
+      expect(invoke).toHaveBeenCalledWith("get_settings", undefined);
       expect(invoke).toHaveBeenCalledTimes(1);
     });
 
@@ -121,7 +121,7 @@ describe("Settings Cache", () => {
     it("updateSettings should invalidate the cache", async () => {
       // Prime the cache
       await getSettingsCached();
-      expect(invoke).toHaveBeenCalledWith("get_settings");
+      expect(invoke).toHaveBeenCalledWith("get_settings", undefined);
       const callsBefore = vi.mocked(invoke).mock.calls.length;
 
       // Mutate
@@ -153,7 +153,7 @@ describe("Settings Cache", () => {
       const callsBefore = vi.mocked(invoke).mock.calls.length;
 
       await resetSettings();
-      expect(invoke).toHaveBeenCalledWith("reset_settings");
+      expect(invoke).toHaveBeenCalledWith("reset_settings", undefined);
 
       await getSettingsCached();
       const calls = vi.mocked(invoke).mock.calls;
@@ -166,7 +166,7 @@ describe("Settings Cache", () => {
       const callsBefore = vi.mocked(invoke).mock.calls.length;
 
       await reloadSettings();
-      expect(invoke).toHaveBeenCalledWith("reload_settings");
+      expect(invoke).toHaveBeenCalledWith("reload_settings", undefined);
 
       await getSettingsCached();
       const calls = vi.mocked(invoke).mock.calls;

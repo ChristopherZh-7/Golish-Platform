@@ -114,36 +114,41 @@ describe("useCreateTerminalTab", () => {
   });
 
   describe("startup performance optimization", () => {
-    it("should return immediately after pty_create without waiting for settings or AI", async () => {
+    // SKIP block: AI initialisation has been removed from useCreateTerminalTab
+    // (it lives in AIChatPanel now — see the source file's comment "AI is
+    // managed by the right-side AI chat panel, not per-terminal"). The four
+    // assertions below cover behaviour that no longer exists in this hook:
+    //   - aiConfig.status transitions ("initializing" → "ready")
+    //   - get_settings / get_project_settings parallel calls
+    //   - settings caching across tabs
+    // They should be re-homed to the AIChatPanel test suite once that work
+    // is scheduled. See docs/risks/d1-vitest-react19.md.
+    it.skip("should return immediately after pty_create without waiting for settings or AI", async () => {
       const { result } = renderHook(() => useCreateTerminalTab());
 
       await act(async () => {
         await result.current.createTerminalTab("/test/path");
       });
 
-      // pty_create should be the only call that blocks the return
       const ptyCreateCall = invokeCallTimes.find((c) => c.command === "pty_create");
       expect(ptyCreateCall).toBeDefined();
 
-      // Session should be added with initializing status
       const session = useStore.getState().sessions["test-session-id"];
       expect(session).toBeDefined();
       expect(session.aiConfig?.status).toBe("initializing");
     });
 
-    it("should fetch settings and project settings in parallel in background", async () => {
+    it.skip("should fetch settings and project settings in parallel in background", async () => {
       const { result } = renderHook(() => useCreateTerminalTab());
 
       await act(async () => {
         await result.current.createTerminalTab("/test/path");
       });
 
-      // Wait for background work to complete
       await act(async () => {
         await flushBackgroundWork();
       });
 
-      // Both settings and project_settings should have been called
       const getSettingsCall = invokeCallTimes.find((c) => c.command === "get_settings");
       const getProjectSettingsCall = invokeCallTimes.find(
         (c) => c.command === "get_project_settings"
@@ -152,20 +157,17 @@ describe("useCreateTerminalTab", () => {
       expect(getSettingsCall).toBeDefined();
       expect(getProjectSettingsCall).toBeDefined();
 
-      // They should be called at approximately the same time (parallel)
       if (getSettingsCall && getProjectSettingsCall) {
         const timeDiff = Math.abs(getSettingsCall.time - getProjectSettingsCall.time);
         expect(timeDiff).toBeLessThan(5);
       }
     });
 
-    it("should use cached settings on subsequent tab creations", async () => {
+    it.skip("should use cached settings on subsequent tab creations", async () => {
       const { result } = renderHook(() => useCreateTerminalTab());
 
-      // Reset tracking
       invokeCallTimes = [];
 
-      // Create first tab and wait for background work
       await act(async () => {
         await result.current.createTerminalTab("/test/path1");
       });
@@ -178,7 +180,6 @@ describe("useCreateTerminalTab", () => {
       ).length;
       expect(firstSettingsCallCount).toBe(1);
 
-      // Create second tab and wait for background work
       await act(async () => {
         await result.current.createTerminalTab("/test/path2");
       });
@@ -186,11 +187,10 @@ describe("useCreateTerminalTab", () => {
         await flushBackgroundWork();
       });
 
-      // Should not have called get_settings again (using cache)
       const totalSettingsCallCount = invokeCallTimes.filter(
         (c) => c.command === "get_settings"
       ).length;
-      expect(totalSettingsCallCount).toBe(1); // Still just 1 call total
+      expect(totalSettingsCallCount).toBe(1);
     });
 
     it("should call git branch and git status in parallel in background", async () => {
@@ -219,24 +219,22 @@ describe("useCreateTerminalTab", () => {
       }
     });
 
-    it("should eventually update AI status to ready after background init", async () => {
+    it.skip("should eventually update AI status to ready after background init", async () => {
       const { result } = renderHook(() => useCreateTerminalTab());
 
       await act(async () => {
         await result.current.createTerminalTab("/test/path");
       });
 
-      // Initially should be "initializing"
+      // Skipped: AI status transitions have moved to AIChatPanel.
       expect(useStore.getState().sessions["test-session-id"]?.aiConfig?.status).toBe(
         "initializing"
       );
 
-      // Wait for background work
       await act(async () => {
         await flushBackgroundWork();
       });
 
-      // Should now be "ready" (or "error" if AI init fails, but our mock succeeds)
       expect(useStore.getState().sessions["test-session-id"]?.aiConfig?.status).toBe("ready");
     });
   });

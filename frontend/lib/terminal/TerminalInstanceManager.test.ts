@@ -36,6 +36,7 @@ describe("TerminalInstanceManager", () => {
       element: terminalEl,
       open: vi.fn(),
       dispose: vi.fn(),
+      loadAddon: vi.fn(),
     };
 
     const fitAddon = {
@@ -78,6 +79,7 @@ describe("TerminalInstanceManager", () => {
       element: null,
       open: vi.fn(),
       dispose: vi.fn(),
+      loadAddon: vi.fn(),
     };
 
     const fitAddon = {
@@ -99,6 +101,7 @@ describe("TerminalInstanceManager", () => {
       element: terminalEl,
       open: vi.fn(),
       dispose: vi.fn(),
+      loadAddon: vi.fn(),
     };
 
     const fitAddon = {

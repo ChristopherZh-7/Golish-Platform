@@ -4,9 +4,8 @@ import type { LangfuseSettings } from "./LangfuseSettings";
 /**
  * Telemetry and observability settings.
  */
-export type TelemetrySettings = {
-  /**
-   * Langfuse integration settings
-   */
-  langfuse: LangfuseSettings;
-};
+export type TelemetrySettings = { 
+/**
+ * Langfuse integration settings.
+ */
+langfuse: LangfuseSettings, };

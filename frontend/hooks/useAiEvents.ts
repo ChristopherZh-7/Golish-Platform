@@ -46,6 +46,15 @@ export function resetAllSequences(): void {
 }
 
 /**
+ * Reset signal_frontend_ready cooldown tracking. Tests rely on this so each
+ * test can re-trigger signalFrontendReady without being throttled by prior
+ * tests in the same module.
+ */
+export function resetLastSignaledAt(): void {
+  lastSignaledAt.clear();
+}
+
+/**
  * Get the number of sessions being tracked.
  * Useful for testing and debugging memory management.
  */

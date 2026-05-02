@@ -3,13 +3,12 @@
 /**
  * Configuration for an indexed codebase.
  */
-export type CodebaseConfig = {
-  /**
-   * Path to the codebase (supports ~ for home directory)
-   */
-  path: string;
-  /**
-   * Memory file associated with this codebase: "AGENTS.md", "CLAUDE.md", or None
-   */
-  memory_file: string | null;
-};
+export type CodebaseConfig = { 
+/**
+ * Path to the codebase (supports `~` for home directory).
+ */
+path: string, 
+/**
+ * Memory file associated with this codebase: `"AGENTS.md"`, `"CLAUDE.md"`, or `None`.
+ */
+memory_file: string | null, };

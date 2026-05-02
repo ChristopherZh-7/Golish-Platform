@@ -5,25 +5,24 @@ import type { PlanSummary } from "./PlanSummary";
 /**
  * A complete task plan with steps and metadata.
  */
-export type TaskPlan = {
-  /**
-   * Optional high-level explanation of the plan.
-   */
-  explanation: string | null;
-  /**
-   * The steps in the plan.
-   */
-  steps: Array<PlanStep>;
-  /**
-   * Summary statistics.
-   */
-  summary: PlanSummary;
-  /**
-   * Version number (increments on each update).
-   */
-  version: number;
-  /**
-   * When the plan was last updated.
-   */
-  updated_at: string;
-};
+export type TaskPlan = { 
+/**
+ * Optional high-level explanation of the plan.
+ */
+explanation: string | null, 
+/**
+ * The steps in the plan.
+ */
+steps: Array<PlanStep>, 
+/**
+ * Summary statistics.
+ */
+summary: PlanSummary, 
+/**
+ * Version number (increments on each update).
+ */
+version: number, 
+/**
+ * When the plan was last updated.
+ */
+updated_at: string, };
