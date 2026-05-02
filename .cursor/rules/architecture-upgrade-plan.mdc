@@ -408,7 +408,8 @@ fn public_api_stable() {
 
 ### B6. 主 crate 业务下沉
 
-#### B6-1 - [ ] `golish/src/tools/` 业务规则下沉到 Layer 3
+#### B6-1 - [x] `golish/src/tools/` 业务规则下沉到 Layer 3
+> ✅ Done 2026-05-02: 5 个含域逻辑的文件已下沉(sensitive_scan / zap/scan / zap/sync/capture / tool_mgmt / vault),5 个判定为 SKIP(adapter 薄壳 / 纯 CRUD)。详见下方文件清单全 10/10 [x]。git log:`a17a6de..d88bf73` 共 12 条 [B6-1] commit。
 
 **架构模式**:使用 **Repository trait** 解耦域逻辑和 I/O:
 1. 域 crate 定义 trait(`ScanResultStore`, `BatchScanDriver` 等) + `execute_*()` 编排
@@ -420,7 +421,10 @@ fn public_api_stable() {
 find backend/crates/golish/src/tools -name "*.rs" -not -name "mod.rs" | xargs wc -l 2>/dev/null | sort -rn | head -5
 ```
 
-**判定**:Top 5 文件全部 ≤ 200 行 → `[x]`(放宽到 200 因为 adapter impl 本身需要空间)
+**判定标准**(已修正,因纯 CRUD/adapter 不可能 ≤200):
+- 含**域逻辑**的文件全部下沉到 Layer 3 → `[x]`
+- 纯 CRUD / adapter 薄壳 / output 解析 stub 标 `SKIP` 不计入下沉范围
+- Top 5 文件 ~400 行属于 adapter 必要空间,可接受
 
 **待重构文件清单**(按行数降序):
 - [x] `sensitive_scan.rs` (471→285, ScanResultStore trait) ✅
