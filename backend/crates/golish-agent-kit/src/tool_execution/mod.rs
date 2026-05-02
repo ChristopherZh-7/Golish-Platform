@@ -28,7 +28,7 @@
 //! ## Usage
 //!
 //! ```ignore
-//! use golish_ai::tool_execution::{route_tool_execution, ToolExecutionConfig, ToolSource};
+//! use golish_agent_kit::tool_execution::{route_tool_execution, ToolExecutionConfig, ToolSource};
 //!
 //! let config = ToolExecutionConfig {
 //!     require_hitl: true,

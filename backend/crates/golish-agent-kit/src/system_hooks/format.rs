@@ -9,7 +9,7 @@
 /// # Example
 ///
 /// ```
-/// use golish_ai::system_hooks::format_system_hooks;
+/// use golish_agent_kit::system_hooks::format_system_hooks;
 ///
 /// let messages = vec!["First hook".to_string(), "Second hook".to_string()];
 /// let formatted = format_system_hooks(&messages);

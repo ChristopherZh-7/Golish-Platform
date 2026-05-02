@@ -14,10 +14,10 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-use golish_ai::agent_mode::AgentMode;
-use golish_ai::contributors::create_default_contributors;
-use golish_ai::prompt_registry::PromptContributorRegistry;
-use golish_ai::system_prompt::build_system_prompt_with_contributions;
+use golish_agent_kit::agent_mode::AgentMode;
+use golish_agent_bridge::contributors::create_default_contributors;
+use golish_prompts::prompt_registry::PromptContributorRegistry;
+use golish_prompts::system_prompt::build_system_prompt_with_contributions;
 use golish_core::PromptContext;
 use golish_sub_agents::SubAgentRegistry;
 

@@ -99,7 +99,7 @@ pub(super) async fn maybe_run_reflector(
     });
 
     let correction = {
-        use golish_agent_loop::tool_provider_impl::DefaultToolProvider;
+        use golish_agent_kit::tool_provider_impl::DefaultToolProvider;
         let tool_provider = DefaultToolProvider::with_db_tracker(ctx.events.db_tracker);
         let sub_ctx = golish_sub_agents::SubAgentExecutorContext {
             event_tx: ctx.events.event_tx,

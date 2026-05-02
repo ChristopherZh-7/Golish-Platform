@@ -21,10 +21,15 @@
 //!   `PromptContributor`, `PromptSection`, `PromptContext`)
 //! - Depends on `golish-llm-providers` for `LlmClient` (used by
 //!   `summarizer`)
-//! - Depends on `golish-sub-agents` for the `SubAgentRegistry` consumed
-//!   by `SubAgentPromptContributor`
 //!
-//! Consumers (`golish-agent-loop`, `golish-agent-bridge`, the main
+//! After A1 this crate no longer depends on `golish-sub-agents`:
+//! `SubAgentPromptContributor` has moved into
+//! `golish-sub-agents::prompt_contributor`, and the
+//! `create_default_contributors` helper lives in
+//! `golish-agent-bridge::contributors`. Those changes remove the last
+//! illegal back-edge from this layer.
+//!
+//! Consumers (`golish-agent-kit`, `golish-agent-bridge`, the main
 //! `golish` Tauri app) should `use golish_prompts::*` directly. The
 //! `golish-ai` umbrella crate currently re-exports this surface for
 //! backward compatibility.
@@ -37,8 +42,7 @@ pub mod system_prompt;
 
 pub use codex_prompt::build_codex_style_prompt;
 pub use contributors::{
-    ProviderBuiltinToolsContributor, SkillsPromptContributor, SubAgentPromptContributor,
-    TavilyToolsContributor,
+    ProviderBuiltinToolsContributor, SkillsPromptContributor, TavilyToolsContributor,
 };
 pub use prompt_registry::PromptContributorRegistry;
 pub use summarizer::{

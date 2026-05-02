@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::State;
 
-use crate::state::AppState;
+use crate::state::{AppState, McpManaged};
 
 /// Information about a configured MCP server for the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,7 +70,7 @@ pub struct McpToolInfo {
 #[tauri::command]
 pub async fn mcp_list_servers(
     workspace_path: Option<String>,
-    state: State<'_, AppState>,
+    state: State<'_, McpManaged>,
 ) -> Result<Vec<McpServerInfo>, GolishError> {
     use golish_mcp::{load_mcp_config, McpTransportType};
 
@@ -103,7 +103,7 @@ pub async fn mcp_list_servers(
         .unwrap_or_default();
 
     // Get live status from the global MCP manager (if initialized)
-    let manager_guard = state.mcp_manager.read().await;
+    let manager_guard = state.manager.read().await;
     let manager = manager_guard.as_ref();
 
     let mut servers = Vec::new();
@@ -158,8 +158,8 @@ pub async fn mcp_list_servers(
 ///
 /// This retrieves tools from the global MCP manager.
 #[tauri::command]
-pub async fn mcp_list_tools(state: State<'_, AppState>) -> Result<Vec<McpToolInfo>, GolishError> {
-    let manager_guard = state.mcp_manager.read().await;
+pub async fn mcp_list_tools(state: State<'_, McpManaged>) -> Result<Vec<McpToolInfo>, GolishError> {
+    let manager_guard = state.manager.read().await;
     let manager = manager_guard
         .as_ref()
         .ok_or_else(|| GolishError::Internal("MCP manager not initialized yet".into()))?;

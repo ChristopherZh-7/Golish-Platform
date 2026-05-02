@@ -11,7 +11,7 @@ use sqlx::PgPool;
 use tauri::{Emitter, State};
 use uuid::Uuid;
 
-use crate::state::AppState;
+use crate::state::DbState;
 pub use golish_pentest::sensitive_scan::{
     ScanProgress, SensitiveScanConfig, SensitiveScanResult, DEFAULT_SENSITIVE_PATHS,
 };
@@ -81,7 +81,7 @@ impl ScanResultStore for PgScanStore {
 #[tauri::command]
 pub async fn sensitive_scan_start(
     app: tauri::AppHandle,
-    app_state: State<'_, AppState>,
+    app_state: State<'_, DbState>,
     config: SensitiveScanConfig,
     project_path: Option<String>,
 ) -> Result<String, GolishError> {
@@ -91,7 +91,7 @@ pub async fn sensitive_scan_start(
     SCAN_RUNNING.store(true, Ordering::SeqCst);
     SCAN_CANCELLED.store(false, Ordering::SeqCst);
 
-    let pool = app_state.db_pool_ready().await?.clone();
+    let pool = app_state.pool_ready().await?.clone();
     let scan_id = Uuid::new_v4().to_string();
     let pp = project_path.clone();
     let sid = scan_id.clone();
@@ -143,11 +143,11 @@ pub async fn sensitive_scan_status() -> Result<bool, GolishError> {
 
 #[tauri::command]
 pub async fn sensitive_scan_results(
-    app_state: State<'_, AppState>,
+    app_state: State<'_, DbState>,
     project_path: Option<String>,
     confirmed_only: Option<bool>,
 ) -> Result<Vec<SensitiveScanResult>, GolishError> {
-    let pool = app_state.db_pool_ready().await?;
+    let pool = app_state.pool_ready().await?;
     let rows = if confirmed_only.unwrap_or(false) {
         sqlx::query_as::<_, SensitiveScanRow>(
             "SELECT id, base_url, probe_path, full_url, status_code, content_length, content_type, \
@@ -173,10 +173,10 @@ pub async fn sensitive_scan_results(
 
 #[tauri::command]
 pub async fn sensitive_scan_clear(
-    app_state: State<'_, AppState>,
+    app_state: State<'_, DbState>,
     project_path: Option<String>,
 ) -> Result<(), GolishError> {
-    let pool = app_state.db_pool_ready().await?;
+    let pool = app_state.pool_ready().await?;
     sqlx::query("DELETE FROM sensitive_scan_results WHERE project_path = $1")
         .bind(project_path.as_deref())
         .execute(pool).await?;
@@ -188,11 +188,11 @@ pub async fn sensitive_scan_clear(
 
 #[tauri::command]
 pub async fn sensitive_scan_confirm(
-    app_state: State<'_, AppState>,
+    app_state: State<'_, DbState>,
     ids: Vec<String>,
     confirmed: bool,
 ) -> Result<(), GolishError> {
-    let pool = app_state.db_pool_ready().await?;
+    let pool = app_state.pool_ready().await?;
     for id in &ids {
         let uuid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
         sqlx::query("UPDATE sensitive_scan_results SET is_confirmed = $1 WHERE id = $2")
@@ -210,11 +210,11 @@ pub async fn sensitive_scan_default_paths() -> Result<Vec<String>, GolishError> 
 #[tauri::command]
 pub async fn sensitive_scan_apply_verdicts(
     app: tauri::AppHandle,
-    app_state: State<'_, AppState>,
+    app_state: State<'_, DbState>,
     verdicts: Vec<serde_json::Value>,
     project_path: Option<String>,
 ) -> Result<serde_json::Value, GolishError> {
-    let pool = app_state.db_pool_ready().await?;
+    let pool = app_state.pool_ready().await?;
     let rows = sqlx::query_as::<_, SensitiveScanRow>(
         "SELECT id, base_url, probe_path, full_url, status_code, content_length, content_type, \
          is_confirmed, ai_verdict, created_at FROM sensitive_scan_results WHERE project_path = $1",

@@ -8,7 +8,7 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use golish_ai::db_traits::*;
+use golish_agent_kit::db_traits::*;
 
 pub struct GolishDbRepoProvider {
     pool: Arc<PgPool>,

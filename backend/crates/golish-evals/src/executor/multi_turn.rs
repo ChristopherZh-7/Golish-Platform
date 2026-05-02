@@ -6,7 +6,7 @@ use std::path::Path;
 use anyhow::Result;
 use rig::completion::CompletionModel as RigCompletionModel;
 
-use golish_ai::eval_support::EvalConfig as AiEvalConfig;
+use golish_agent_runtime::eval_support::EvalConfig as AiEvalConfig;
 
 use crate::config::{EvalConfig, EvalProvider};
 use crate::runner::{AgentOutput, ToolCall as EvalToolCall, VerboseConfig};
@@ -157,7 +157,7 @@ where
 
     // Run multi-turn evaluation
     let multi_output =
-        golish_ai::eval_support::run_multi_turn_eval(&model, &system_prompt, prompts, ai_config)
+        golish_agent_runtime::eval_support::run_multi_turn_eval(&model, &system_prompt, prompts, ai_config)
             .await?;
 
     tracing::info!(

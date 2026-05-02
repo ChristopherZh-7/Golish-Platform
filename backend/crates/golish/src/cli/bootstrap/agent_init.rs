@@ -9,7 +9,7 @@ use crate::ai::agent_bridge::AgentBridge;
 use crate::indexer::IndexerState;
 use crate::settings::{get_with_env_fallback, GolishSettings};
 use crate::sidecar::SidecarState;
-use golish_ai::llm_client::SharedComponentsConfig;
+use golish_agent_kit::llm_client::SharedComponentsConfig;
 use golish_core::runtime::GolishRuntime;
 
 use super::super::args::Args;
@@ -177,7 +177,7 @@ pub(super) async fn initialize_agent(
 
     // Inject dependencies (same as init_ai_agent command in Tauri)
     bridge.set_indexer_state(indexer_state);
-    let sidecar_backend: std::sync::Arc<dyn golish_ai::sidecar_trait::SessionCaptureBackend> =
+    let sidecar_backend: std::sync::Arc<dyn golish_agent_kit::sidecar_trait::SessionCaptureBackend> =
         std::sync::Arc::new(crate::ai::sidecar_bridge::SidecarCaptureBackend::new(sidecar_state));
     bridge.set_sidecar_state(sidecar_backend);
 
@@ -248,7 +248,7 @@ pub(super) async fn initialize_mcp_integration(
         tool_definitions.len()
     );
 
-    let executor: Arc<dyn golish_ai::agentic_loop::McpToolExecutor> =
+    let executor: Arc<dyn golish_agent_runtime::agentic_loop::McpToolExecutor> =
         Arc::new(crate::ai::commands::McpManagerToolExecutor::new(Arc::clone(&manager)));
 
     bridge.set_mcp_tools(tool_definitions).await;

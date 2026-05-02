@@ -17,7 +17,7 @@ fn openai_reasoning_sub_context() -> SubAgentContext {
 #[tokio::test]
 async fn test_openai_reasoning_emits_reasoning_event() {
     let test_ctx = TestContextBuilder::new()
-        .agent_mode(golish_agent_loop::agent_mode::AgentMode::AutoApprove)
+        .agent_mode(golish_agent_kit::agent_mode::AgentMode::AutoApprove)
         .build()
         .await;
 
@@ -90,7 +90,7 @@ async fn test_openai_reasoning_emits_reasoning_event() {
 #[tokio::test]
 async fn test_openai_tool_call_only_response_completes() {
     let test_ctx = TestContextBuilder::new()
-        .agent_mode(golish_agent_loop::agent_mode::AgentMode::AutoApprove)
+        .agent_mode(golish_agent_kit::agent_mode::AgentMode::AutoApprove)
         .build()
         .await;
 
@@ -166,7 +166,7 @@ async fn test_openai_tool_call_only_response_completes() {
 #[tokio::test]
 async fn test_openai_thinking_returned_in_result() {
     let test_ctx = TestContextBuilder::new()
-        .agent_mode(golish_agent_loop::agent_mode::AgentMode::AutoApprove)
+        .agent_mode(golish_agent_kit::agent_mode::AgentMode::AutoApprove)
         .build()
         .await;
 
@@ -257,7 +257,7 @@ fn test_openai_reasoning_loop_config_detection() {
 #[tokio::test]
 async fn test_openai_reasoning_includes_reasoning_in_history_for_text_only_turns() {
     let test_ctx = TestContextBuilder::new()
-        .agent_mode(golish_agent_loop::agent_mode::AgentMode::AutoApprove)
+        .agent_mode(golish_agent_kit::agent_mode::AgentMode::AutoApprove)
         .build()
         .await;
 

@@ -6,7 +6,7 @@ use crate::error::GolishError;
 use tauri::State;
 
 use crate::state::AppState;
-use golish_ai::planner::TaskPlan;
+use golish_agent_kit::planner::TaskPlan;
 
 use super::ai_session_not_initialized_error;
 

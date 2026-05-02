@@ -22,12 +22,17 @@ use {
     std::sync::Arc,
 };
 
-use golish_agent_loop::system_hooks::HookRegistry;
-use golish_agent_loop::tool_definitions::ToolConfig;
-use golish_agent_loop::tool_executors::normalize_run_pty_cmd_args;
+use golish_agent_kit::system_hooks::HookRegistry;
+use golish_agent_kit::tool_definitions::ToolConfig;
+use golish_agent_kit::tool_executors::normalize_run_pty_cmd_args;
 use golish_context::token_budget::TokenUsage;
-use golish_core::events::AiEvent;
 use golish_sub_agents::SubAgentContext;
+
+// `AiEvent` is no longer emitted directly from this function (the
+// pre-flight phase handles its cases); it is still needed by the
+// `agentic_loop::tests` submodule which inherits via `use super::*;`.
+#[cfg(test)]
+use golish_core::events::AiEvent;
 
 mod assistant_message;
 mod compaction_loop;
@@ -46,6 +51,7 @@ mod tool_dispatch;
 mod tool_execution;
 mod tool_list;
 pub mod toolcall_fixer;
+mod turn;
 mod unified_helpers;
 
 use assistant_message::push_assistant_message;
@@ -56,6 +62,9 @@ use reflector::{maybe_run_reflector, ReflectorOutcome};
 use stream_processor::{process_stream, StreamOutcome};
 use tool_dispatch::dispatch_tool_calls;
 use tool_list::build_tool_list;
+use turn::{pre_flight, PhaseOutcome, TurnState};
+#[allow(unused_imports)] // BreakReason is used for log-fields in the Break arm below
+use turn::BreakReason;
 use unified_helpers::{
     log_image_and_reasoning_diagnostics, push_unavailable_tool_results,
     record_agent_turn_start, record_last_user_text_for_span, record_turn_completion,
@@ -127,7 +136,7 @@ pub use config::AgenticLoopConfig;
 ///
 /// # Example
 /// ```ignore
-/// use golish_ai::agentic_loop::{run_agentic_loop_unified, AgenticLoopConfig};
+/// use golish_agent_runtime::agentic_loop::{run_agentic_loop_unified, AgenticLoopConfig};
 ///
 /// // For Anthropic models (with thinking support)
 /// let config = AgenticLoopConfig::main_agent_anthropic();
@@ -226,7 +235,9 @@ where
     // Thinking history tracking - only used when supports_thinking is true
     let mut accumulated_thinking = String::new();
     let mut total_usage = TokenUsage::default();
-    let mut iteration = 0;
+    // Iteration counter now lives in `turn::TurnState`; ADR-0010 C1-1 PoC.
+    // Other per-turn locals will migrate into `TurnState` in subsequent PRs.
+    let mut turn_state = TurnState::new();
     let mut consecutive_no_tool_turns: u32 = 0;
     let mut total_reflector_nudges: u32 = 0;
     // Mutated by `run_first_iteration_hooks` once at iteration 1; see
@@ -234,46 +245,27 @@ where
     let mut reflector_active = true;
 
     loop {
-        iteration += 1;
-
-        // Reset compaction state for this turn (preserves last_input_tokens)
-        {
-            let mut compaction_state = ctx.compaction_state.write().await;
-            compaction_state.reset_turn();
+        // Phase: PreFlight — iteration bookkeeping + cancel + budget
+        // (see ADR-0010). Side-effects on `turn_state.iteration` and
+        // the shared compaction snapshot.
+        //
+        // Note: pre-flight now runs BEFORE `pre_turn_compaction`
+        // (historically they were interleaved). The observable behavior
+        // change is that cancellation and the max-iteration budget are
+        // checked one extra step earlier, which is desirable.
+        match pre_flight::run(&mut turn_state, ctx, &agent_span).await {
+            PhaseOutcome::Continue => {}
+            PhaseOutcome::Break(reason) => {
+                tracing::debug!(?reason, "pre-flight phase requested loop break");
+                break;
+            }
         }
+        let iteration = turn_state.iteration as usize;
 
         // Compaction at start of turn (using tokens from the previous turn).
         // Important when the agent completes in a single iteration.
         if iteration == 1 {
             pre_turn_compaction(ctx, &mut chat_history).await;
-        }
-
-        if let Some(flag) = &ctx.cancelled {
-            if flag.load(std::sync::atomic::Ordering::SeqCst) {
-                tracing::info!("Agent loop cancelled by user (iteration {})", iteration);
-                let _ = ctx.events.event_tx.send(AiEvent::Error {
-                    message: "Agent stopped by user".to_string(),
-                    error_type: "cancelled".to_string(),
-                });
-                break;
-            }
-        }
-
-        if iteration > MAX_TOOL_ITERATIONS {
-            // Record max iterations event in Langfuse
-            let _max_iter_event = tracing::info_span!(
-                parent: &agent_span,
-                "max_iterations_reached",
-                "langfuse.observation.type" = "event",
-                "langfuse.session.id" = ctx.events.session_id.unwrap_or(""),
-                max_iterations = MAX_TOOL_ITERATIONS,
-            );
-
-            let _ = ctx.events.event_tx.send(AiEvent::Error {
-                message: "Maximum tool iterations reached".to_string(),
-                error_type: "max_iterations".to_string(),
-            });
-            break;
         }
 
         // Compaction check between iterations (after iteration 1).

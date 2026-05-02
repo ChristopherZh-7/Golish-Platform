@@ -5,8 +5,11 @@ edition.workspace = true
 description = "Evaluation framework for Golish AI agent testing"
 
 [dependencies]
-# Internal crates
-golish-ai = { path = "../golish-ai" }
+# Internal crates (A3: replaced `golish-ai` umbrella with direct deps)
+golish-agent-kit = { workspace = true }
+golish-agent-runtime = { workspace = true }
+golish-agent-bridge = { workspace = true }
+golish-prompts = { workspace = true }
 golish-core = { path = "../golish-core" }
 golish-settings = { path = "../golish-settings" }
 golish-sub-agents = { path = "../golish-sub-agents" }

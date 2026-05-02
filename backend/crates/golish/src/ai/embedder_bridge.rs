@@ -1,5 +1,5 @@
 //! Bridge between `golish_db::embeddings::Embedder` and
-//! `golish_ai::db_traits::TextEmbedder`.
+//! `golish_agent_kit::db_traits::TextEmbedder`.
 
 use async_trait::async_trait;
 
@@ -14,7 +14,7 @@ impl<E: golish_db::embeddings::Embedder> EmbedderBridge<E> {
 }
 
 #[async_trait]
-impl<E: golish_db::embeddings::Embedder> golish_ai::db_traits::TextEmbedder for EmbedderBridge<E> {
+impl<E: golish_db::embeddings::Embedder> golish_agent_kit::db_traits::TextEmbedder for EmbedderBridge<E> {
     async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
         self.inner.embed(text).await
     }

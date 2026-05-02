@@ -2,12 +2,18 @@
 //!
 //! Automatically generates documentation for available sub-agents
 //! based on the current SubAgentRegistry state.
+//!
+//! Moved here from `golish-prompts::contributors::sub_agents` as part of
+//! the A1 DAG cleanup: this contributor inherently depends on
+//! `SubAgentRegistry`, so it belongs next to the registry itself, and
+//! `golish-prompts` can drop its back-edge into `golish-sub-agents`.
 
 use std::sync::Arc;
 
 use golish_core::{PromptContext, PromptContributor, PromptPriority, PromptSection};
-use golish_sub_agents::SubAgentRegistry;
 use tokio::sync::RwLock;
+
+use crate::SubAgentRegistry;
 
 /// Contributor that generates documentation for available sub-agents.
 ///
@@ -86,7 +92,7 @@ impl PromptContributor for SubAgentPromptContributor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use golish_sub_agents::SubAgentDefinition;
+    use crate::SubAgentDefinition;
 
     fn create_test_registry() -> Arc<RwLock<SubAgentRegistry>> {
         let mut registry = SubAgentRegistry::new();

@@ -270,7 +270,7 @@ impl Scenario for SWEBenchScenario {
         struct SwebenchTestExecutor;
 
         #[async_trait::async_trait]
-        impl golish_ai::agentic_loop::McpToolExecutor for SwebenchTestExecutor {
+        impl golish_agent_runtime::agentic_loop::McpToolExecutor for SwebenchTestExecutor {
             async fn execute_tool(
                 &self,
                 tool_name: &str,
@@ -284,7 +284,7 @@ impl Scenario for SWEBenchScenario {
             }
         }
 
-        let custom_executor: Option<golish_ai::eval_support::CustomToolExecutor> =
+        let custom_executor: Option<golish_agent_runtime::eval_support::CustomToolExecutor> =
             if container_name.is_some() {
                 Some(std::sync::Arc::new(SwebenchTestExecutor))
             } else {

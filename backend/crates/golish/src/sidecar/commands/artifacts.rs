@@ -1,7 +1,7 @@
 //! L3: Project artifact commands (list / get / preview / discard / apply / regenerate).
 
 use crate::error::GolishError;
-use crate::state::AppState;
+use crate::state::{AppState, SidecarManaged};
 use tauri::State;
 
 use super::super::commits::PatchManager;
@@ -32,7 +32,7 @@ fn resolve_git_root(session: &Session) -> Result<std::path::PathBuf, GolishError
 /// Get all pending artifacts for a session
 #[tauri::command]
 pub async fn sidecar_get_pending_artifacts(
-    state: State<'_, AppState>,
+    state: State<'_, SidecarManaged>,
     session_id: String,
 ) -> Result<Vec<ArtifactFile>, GolishError> {
     let sessions_dir = state.sidecar_state.config().sessions_dir();
@@ -47,7 +47,7 @@ pub async fn sidecar_get_pending_artifacts(
 /// Get all applied artifacts for a session
 #[tauri::command]
 pub async fn sidecar_get_applied_artifacts(
-    state: State<'_, AppState>,
+    state: State<'_, SidecarManaged>,
     session_id: String,
 ) -> Result<Vec<ArtifactFile>, GolishError> {
     let sessions_dir = state.sidecar_state.config().sessions_dir();
@@ -62,7 +62,7 @@ pub async fn sidecar_get_applied_artifacts(
 /// Get a specific pending artifact by filename
 #[tauri::command]
 pub async fn sidecar_get_artifact(
-    state: State<'_, AppState>,
+    state: State<'_, SidecarManaged>,
     session_id: String,
     filename: String,
 ) -> Result<Option<ArtifactFile>, GolishError> {
@@ -81,7 +81,7 @@ pub async fn sidecar_get_artifact(
 /// Discard a pending artifact
 #[tauri::command]
 pub async fn sidecar_discard_artifact(
-    state: State<'_, AppState>,
+    state: State<'_, SidecarManaged>,
     session_id: String,
     filename: String,
 ) -> Result<bool, GolishError> {
@@ -111,7 +111,7 @@ pub async fn sidecar_discard_artifact(
 /// Preview an artifact (show diff against current target file)
 #[tauri::command]
 pub async fn sidecar_preview_artifact(
-    state: State<'_, AppState>,
+    state: State<'_, SidecarManaged>,
     session_id: String,
     filename: String,
 ) -> Result<String, GolishError> {
@@ -130,7 +130,7 @@ pub async fn sidecar_preview_artifact(
 /// Get pending artifacts for the current session
 #[tauri::command]
 pub async fn sidecar_get_current_pending_artifacts(
-    state: State<'_, AppState>,
+    state: State<'_, SidecarManaged>,
 ) -> Result<Vec<ArtifactFile>, GolishError> {
     let session_id = state
         .sidecar_state
@@ -149,7 +149,7 @@ pub async fn sidecar_get_current_pending_artifacts(
 /// Apply a pending artifact (copy to target, git add, move to applied)
 #[tauri::command]
 pub async fn sidecar_apply_artifact(
-    state: State<'_, AppState>,
+    state: State<'_, SidecarManaged>,
     session_id: String,
     filename: String,
 ) -> Result<String, GolishError> {
@@ -180,7 +180,7 @@ pub async fn sidecar_apply_artifact(
 /// Apply all pending artifacts
 #[tauri::command]
 pub async fn sidecar_apply_all_artifacts(
-    state: State<'_, AppState>,
+    state: State<'_, SidecarManaged>,
     session_id: String,
 ) -> Result<Vec<(String, String)>, GolishError> {
     let sessions_dir = state.sidecar_state.config().sessions_dir();

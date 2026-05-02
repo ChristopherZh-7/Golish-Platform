@@ -8,7 +8,6 @@ description = "Prompt composition system: contributors, registry, system prompt,
 [dependencies]
 golish-core = { workspace = true }
 golish-llm-providers = { workspace = true }
-golish-sub-agents = { workspace = true }
 
 anyhow = { workspace = true }
 dirs = { workspace = true }
