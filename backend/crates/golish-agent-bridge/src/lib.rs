@@ -23,10 +23,11 @@
 //! paths keep working unchanged.
 
 pub use golish_agent_loop::{
-    agent_mode, agentic_loop, db_shim, db_traits, db_tracking, execution_mode, hitl, llm_client,
+    agent_mode, db_shim, db_traits, db_tracking, execution_mode, hitl, llm_client,
     loop_detection, memory_file, memory_gatekeeper, planner, sidecar_trait, system_hooks,
     tool_definitions, tool_execution, tool_executors, tool_policy, tool_provider_impl,
 };
+pub use golish_agentic_loop::agentic_loop;
 
 pub use golish_prompts::{contributors, prompt_registry, system_prompt};
 

@@ -21,7 +21,7 @@ use super::super::{
     emit_event, emit_to_frontend, AgenticLoopContext, LoopCaptureContext, ToolExecutionResult,
     APPROVAL_TIMEOUT_SECS,
 };
-use crate::tool_policy::{PolicyConstraintResult, ToolPolicy};
+use golish_agent_loop::tool_policy::{PolicyConstraintResult, ToolPolicy};
 
 
 /// Execute a tool with HITL approval check for generic models.
@@ -51,7 +51,7 @@ where
 
     // Planning mode: only allow read-only tools
     if agent_mode.is_planning() {
-        use crate::tool_policy::ALLOW_TOOLS;
+        use golish_agent_loop::tool_policy::ALLOW_TOOLS;
         if !ALLOW_TOOLS.contains(&tool_name) {
             let denied_event = AiEvent::ToolDenied {
                 request_id: tool_id.to_string(),
