@@ -2,37 +2,24 @@
 // macros emitted by `#[tauri::command]` (which are `#[macro_export]`-ed
 // to the crate root, not into sub-modules) are in scope at the call
 // site of `tauri::generate_handler!`.
+//
+// Per ADR-0009 Phase 1: a single facade import replaces the 12
+// scattered `use A::commands::*; use B::*;` globs. The facade files
+// under `commands_facade/<domain>.rs` are now the authoritative
+// per-domain command surface. Adding/renaming/removing a command
+// means touching exactly two files: the command's home module and
+// the matching facade file. Keep this block alphabetical.
 
-use ai::commands::*;
-use commands::*;
-use indexer::commands::*;
-use mcp::*;
-use models::commands::*;
-use projects::commands::*;
-use settings::commands::*;
-use sidecar::commands::*;
-use tools::pentest::*;
-use tools::wiki::*;
-use tools::targets::*;
-use tools::vault::*;
-use tools::project_io::*;
-use tools::methodology::*;
-use tools::recordings::*;
-use tools::output_parser::*;
-use tools::findings::*;
-use tools::pipeline::*;
-use tools::scan_queue::*;
-use tools::custom_rules::*;
-use tools::notes::*;
-use tools::audit::*;
-use tools::wordlists::*;
-use tools::vuln_intel::*;
-use tools::conversation_store::*;
-use tools::conversation_store::batch::*;
-use tools::execution_plans::*;
-use tools::security_analysis::*;
-use tools::scan_runner::*;
-use tools::sensitive_scan::*;
+use commands_facade::ai::*;
+use commands_facade::git_pty::*;
+use commands_facade::indexer::*;
+use commands_facade::mcp::*;
+use commands_facade::pentest::*;
+use commands_facade::pipeline::*;
+use commands_facade::settings::*;
+use commands_facade::sidecar::*;
+use commands_facade::vuln_intel::*;
+use commands_facade::workspace::*;
 
 /// Attach the platform-wide `invoke_handler` to a configured Tauri
 /// builder. Caller chains `.build(...)` and `.run(...)` afterwards.
