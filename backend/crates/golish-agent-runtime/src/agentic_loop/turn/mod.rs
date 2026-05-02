@@ -13,5 +13,5 @@
 mod phases;
 mod state;
 
-pub use phases::{pre_flight, BreakReason, PhaseOutcome};
+pub use phases::{compaction, pre_flight, BreakReason, PhaseOutcome};
 pub use state::TurnState;
