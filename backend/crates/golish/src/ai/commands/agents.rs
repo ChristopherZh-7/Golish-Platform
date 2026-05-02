@@ -146,13 +146,13 @@ pub async fn delete_agent_definition(
     let agent = agents
         .iter()
         .find(|a| a.id == agent_id)
-        .ok_or_else(|| format!("Agent '{}' not found", agent_id))?;
+        .ok_or_else(|| GolishError::NotFound(format!("Agent '{}' not found", agent_id)))?;
 
     if agent.is_system {
-        return Err(format!(
+        return Err(GolishError::Validation(format!(
             "Cannot delete system agent '{}'. System agents are required for runtime operation.",
             agent_id
-        ));
+        )));
     }
 
     match &agent.source {
@@ -160,10 +160,10 @@ pub async fn delete_agent_definition(
             std::fs::remove_file(path)?;
             Ok(())
         }
-        AgentSource::BuiltIn => Err(format!(
+        AgentSource::BuiltIn => Err(GolishError::Validation(format!(
             "Cannot delete built-in agent '{}'. Create a file override first.",
             agent_id
-        )),
+        ))),
     }
 }
 

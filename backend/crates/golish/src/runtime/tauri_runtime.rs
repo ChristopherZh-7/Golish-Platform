@@ -1,4 +1,3 @@
-use crate::error::GolishError;
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use golish_core::events::{AiEvent, AiEventEnvelope};

@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use crate::brave::BraveSearchState;
 use crate::tavily::TavilyState;
 
-use golish_core::utils::{get_required_str, get_optional_usize, get_optional_u32};
+use golish_core::utils::{get_optional_u32, get_required_str};
 use super::{WebSearchTool, WebSearchAnswerTool, WebExtractTool};
 
 /// Web crawling tool using Tavily API.

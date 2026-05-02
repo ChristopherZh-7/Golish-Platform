@@ -368,6 +368,5 @@ fn test_parser_default_trait() {
 // Alternate Screen Buffer tests (CSI sequences)
 // ===========================================
 
-#[test]
 mod terminal_modes;
 mod virtualenv_and_filtered_output;

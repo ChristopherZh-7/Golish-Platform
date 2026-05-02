@@ -11,10 +11,18 @@ pub mod sidecar;
 pub mod telemetry;
 
 pub use db::DbState;
+// The following re-exports are reserved for an upcoming Tauri `manage<T>()`
+// migration (see refactor-roadmap P2-2). Allow dead-code until consumers wire
+// these per-domain states into command signatures.
+#[allow(unused_imports)]
 pub use mcp::McpManaged;
+#[allow(unused_imports)]
 pub use pentest::PentestToolState;
+#[allow(unused_imports)]
 pub use pty::PtyState;
+#[allow(unused_imports)]
 pub use sidecar::SidecarManaged;
+#[allow(unused_imports)]
 pub use telemetry::TelemetryState;
 
 use crate::error::GolishError;

@@ -53,7 +53,7 @@ pub async fn save_project(form: ProjectFormData) -> Result<(), GolishError> {
 
     storage_save(&config)
         .await
-        .map_err(|e| format!("Failed to save project: {}", e))
+        .map_err(|e| GolishError::Internal(format!("Failed to save project: {}", e)))
 }
 
 /// Delete a project configuration by name, including associated DB records.
@@ -128,7 +128,7 @@ pub async fn delete_project_config(
 
     storage_delete(&name)
         .await
-        .map_err(|e| format!("Failed to delete project: {}", e))
+        .map_err(|e| GolishError::Internal(format!("Failed to delete project: {}", e)))
 }
 
 /// List all saved project configurations.
@@ -136,7 +136,7 @@ pub async fn delete_project_config(
 pub async fn list_project_configs() -> Result<Vec<ProjectData>, GolishError> {
     let projects = storage_list()
         .await
-        .map_err(|e| format!("Failed to list projects: {}", e))?;
+        .map_err(|e| GolishError::Internal(format!("Failed to list projects: {}", e)))?;
 
     Ok(projects.into_iter().map(ProjectData::from).collect())
 }
@@ -146,25 +146,30 @@ pub async fn list_project_configs() -> Result<Vec<ProjectData>, GolishError> {
 pub async fn get_project_config(name: String) -> Result<Option<ProjectData>, GolishError> {
     let project = storage_load(&name)
         .await
-        .map_err(|e| format!("Failed to load project: {}", e))?;
+        .map_err(|e| GolishError::Internal(format!("Failed to load project: {}", e)))?;
 
     Ok(project.map(ProjectData::from))
 }
 
 /// Save workspace state (conversations, chat history) for a project.
 #[tauri::command]
-pub async fn save_project_workspace(project_name: String, state_json: String) -> Result<(), GolishError> {
+pub async fn save_project_workspace(
+    project_name: String,
+    state_json: String,
+) -> Result<(), GolishError> {
     save_workspace(&project_name, &state_json)
         .await
-        .map_err(|e| format!("Failed to save workspace: {}", e))
+        .map_err(|e| GolishError::Internal(format!("Failed to save workspace: {}", e)))
 }
 
 /// Load workspace state for a project. Returns None if no saved state exists.
 #[tauri::command]
-pub async fn load_project_workspace(project_name: String) -> Result<Option<String>, GolishError> {
+pub async fn load_project_workspace(
+    project_name: String,
+) -> Result<Option<String>, GolishError> {
     load_workspace(&project_name)
         .await
-        .map_err(|e| format!("Failed to load workspace: {}", e))
+        .map_err(|e| GolishError::Internal(format!("Failed to load workspace: {}", e)))
 }
 
 // ============================================================================
@@ -281,7 +286,8 @@ pub async fn read_project_file(
         .await
 ?;
 
-    String::from_utf8(content).map_err(|e| format!("File is not valid UTF-8: {}", e))
+    String::from_utf8(content)
+        .map_err(|e| GolishError::Internal(format!("File is not valid UTF-8: {}", e)))
 }
 
 /// Initialize project directory structure (idempotent).

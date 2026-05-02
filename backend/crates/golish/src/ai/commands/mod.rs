@@ -78,12 +78,17 @@ impl Default for AiState {
 /// Error message for uninitialized AI agent.
 pub const AI_NOT_INITIALIZED_ERROR: &str = "AI agent not initialized. Call init_ai_agent first.";
 
-/// Error message for session without AI agent.
-pub fn ai_session_not_initialized_error(session_id: &str) -> String {
-    format!(
+/// Build a `GolishError` for an uninitialized session.
+pub fn ai_session_not_initialized_error(session_id: &str) -> GolishError {
+    GolishError::Internal(format!(
         "AI agent not initialized for session '{}'. Call init_ai_session first.",
         session_id
-    )
+    ))
+}
+
+/// Build a `GolishError` for the legacy uninitialized agent.
+pub fn ai_not_initialized_error() -> GolishError {
+    GolishError::Internal(AI_NOT_INITIALIZED_ERROR.to_string())
 }
 
 impl AiState {
@@ -141,7 +146,7 @@ impl AiState {
     ) -> Result<tokio::sync::RwLockReadGuard<'_, Option<AgentBridge>>, GolishError> {
         let guard = self.bridge.read().await;
         if guard.is_none() {
-            return Err(AI_NOT_INITIALIZED_ERROR.to_string());
+            return Err(ai_not_initialized_error());
         }
         Ok(guard)
     }
@@ -152,7 +157,7 @@ impl AiState {
         F: FnOnce(&AgentBridge) -> T,
     {
         let guard = self.bridge.read().await;
-        let bridge = guard.as_ref().ok_or(AI_NOT_INITIALIZED_ERROR)?;
+        let bridge = guard.as_ref().ok_or_else(ai_not_initialized_error)?;
         Ok(f(bridge))
     }
 }

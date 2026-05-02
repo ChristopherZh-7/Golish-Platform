@@ -529,13 +529,13 @@ pub async fn detect_memory_files(path: String) -> Result<Option<String>, String>
 pub async fn migrate_codebase_index(
     path: String,
     state: State<'_, AppState>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, GolishError> {
     tracing::info!("migrate_codebase_index called with path: {}", path);
 
     let expanded_path = expand_home_dir(&path);
     let normalized_path = expanded_path
         .canonicalize()
-        .map_err(|e| format!("Invalid path: {}", e))?;
+        .map_err(|e| GolishError::Validation(format!("Invalid path: {}", e)))?;
 
     let settings = state.settings_manager.get().await;
     let target_location = settings.indexer.index_location;

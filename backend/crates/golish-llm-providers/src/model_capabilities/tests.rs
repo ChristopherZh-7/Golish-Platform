@@ -1,7 +1,6 @@
 //! Capability detection tests.
 
 use super::*;
-use super::*;
 
 // ========== ModelCapabilities::detect() tests ==========
 

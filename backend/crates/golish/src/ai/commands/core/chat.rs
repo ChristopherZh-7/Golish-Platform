@@ -63,7 +63,7 @@ pub async fn send_ai_prompt_session(
                     session_id = %session_id,
                     error = %e,
                 );
-                e.to_string()
+                GolishError::Internal(e.to_string())
             })
         }
         golish_ai::execution_mode::ExecutionMode::Task => {
@@ -82,7 +82,7 @@ pub async fn send_ai_prompt_session(
                         session_id = %session_id,
                         error = %e,
                     );
-                    e.to_string()
+                    GolishError::Internal(e.to_string())
                 })
             } else {
                 execute_task_mode(bridge, &session_id, &prompt, &state)
@@ -93,7 +93,7 @@ pub async fn send_ai_prompt_session(
                             session_id = %session_id,
                             error = %e,
                         );
-                        e.to_string()
+                        GolishError::Internal(e.to_string())
                     })
             }
         }

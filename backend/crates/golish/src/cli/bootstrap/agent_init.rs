@@ -3,11 +3,11 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use crate::ai::agent_bridge::AgentBridge;
 use crate::indexer::IndexerState;
-use crate::settings::{get_with_env_fallback, GolishSettings, SettingsManager};
+use crate::settings::{get_with_env_fallback, GolishSettings};
 use crate::sidecar::SidecarState;
 use golish_ai::llm_client::SharedComponentsConfig;
 use golish_core::runtime::GolishRuntime;
@@ -202,6 +202,7 @@ pub(super) async fn initialize_agent(
 /// Initialize MCP integration for the agent bridge.
 /// Loads config, connects to enabled servers, and sets up tool definitions + executor.
 /// Returns the MCP manager so it can be stored for shutdown.
+#[allow(dead_code)]
 pub(super) async fn initialize_mcp_integration(
     bridge: &mut AgentBridge,
     workspace: &Path,
@@ -257,6 +258,7 @@ pub(super) async fn initialize_mcp_integration(
 }
 
 /// Resolve API key from CLI args, settings, or environment variables.
+#[allow(dead_code)]
 pub(super) fn resolve_api_key(settings: &GolishSettings, provider: &str, args: &Args) -> Result<String> {
     // 1. CLI argument takes precedence
     if let Some(ref key) = args.api_key {

@@ -94,7 +94,7 @@ pub fn get_indexer_workspace(state: State<'_, AppState>) -> Option<String> {
 
 /// Get the count of indexed files.
 #[tauri::command]
-pub fn get_indexed_file_count(state: State<'_, AppState>) -> Result<usize, String> {
+pub fn get_indexed_file_count(state: State<'_, AppState>) -> Result<usize, GolishError> {
     state
         .indexer_state
         .with_indexer(|indexer| {
@@ -107,7 +107,7 @@ pub fn get_indexed_file_count(state: State<'_, AppState>) -> Result<usize, Strin
 /// Get all indexed file paths as absolute paths.
 /// Returns an empty array if the indexer is not initialized (graceful degradation).
 #[tauri::command]
-pub fn get_all_indexed_files(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+pub fn get_all_indexed_files(state: State<'_, AppState>) -> Result<Vec<String>, GolishError> {
     // Return empty array if indexer not initialized - don't error
     if !state.indexer_state.is_initialized() {
         return Ok(Vec::new());
@@ -127,11 +127,14 @@ pub fn get_all_indexed_files(state: State<'_, AppState>) -> Result<Vec<String>, 
 pub async fn index_file(
     file_path: String,
     state: State<'_, AppState>,
-) -> Result<IndexResult, String> {
+) -> Result<IndexResult, GolishError> {
     let path = PathBuf::from(&file_path);
 
     if !path.exists() {
-        return Err(format!("File does not exist: {}", file_path));
+        return Err(GolishError::Validation(format!(
+            "File does not exist: {}",
+            file_path
+        )));
     }
 
     state
@@ -154,14 +157,17 @@ pub async fn index_file(
 pub async fn index_directory(
     dir_path: String,
     state: State<'_, AppState>,
-) -> Result<IndexResult, String> {
+) -> Result<IndexResult, GolishError> {
     tracing::info!("index_directory called with path: {}", dir_path);
 
     let path = PathBuf::from(&dir_path);
 
     if !path.exists() {
         tracing::error!("Directory does not exist: {}", dir_path);
-        return Err(format!("Directory does not exist: {}", dir_path));
+        return Err(GolishError::Validation(format!(
+            "Directory does not exist: {}",
+            dir_path
+        )));
     }
 
     tracing::debug!("Directory exists, checking indexer state...");
@@ -183,7 +189,7 @@ pub async fn index_directory(
         })
         .map_err(|e| {
             tracing::error!("Failed to index directory: {}", e);
-            e.to_string()
+            GolishError::from(e)
         })?;
 
     // Get the actual file count after indexing
@@ -217,7 +223,7 @@ pub async fn search_code(
     pattern: String,
     path_filter: Option<String>,
     state: State<'_, AppState>,
-) -> Result<Vec<IndexSearchResult>, String> {
+) -> Result<Vec<IndexSearchResult>, GolishError> {
     state
         .indexer_state
         .with_indexer(|indexer| {
@@ -240,7 +246,7 @@ pub async fn search_code(
 pub async fn search_files(
     pattern: String,
     state: State<'_, AppState>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, GolishError> {
     state
         .indexer_state
         .with_indexer(|indexer| {

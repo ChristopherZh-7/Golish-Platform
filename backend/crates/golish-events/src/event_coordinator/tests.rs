@@ -9,10 +9,8 @@ use golish_core::runtime::{GolishRuntime, RuntimeEvent};
 
 use crate::transcript::TranscriptWriter;
 
-use super::commands::CoordinatorState;
 use super::coordinator::EventCoordinator;
 use super::handle::CoordinatorHandle;
-use super::*;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

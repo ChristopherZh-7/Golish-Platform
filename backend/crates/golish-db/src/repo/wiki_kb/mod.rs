@@ -4,10 +4,7 @@ pub use poc::*;
 use anyhow::Result;
 use sqlx::PgPool;
 
-use crate::models::{
-    CvePocSummary, NewWikiChangelog, NewWikiPage, VulnKbLink, VulnKbPoc, WikiChangelog, WikiPage,
-    WikiPageRef, WikiPageSummary,
-};
+use crate::models::{NewWikiPage, VulnKbLink, WikiPage};
 
 pub async fn upsert_page(pool: &PgPool, page: &NewWikiPage) -> Result<WikiPage> {
     let word_count = page.content.split_whitespace().count() as i32;

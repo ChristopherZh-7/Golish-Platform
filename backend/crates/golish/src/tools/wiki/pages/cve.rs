@@ -15,21 +15,23 @@ pub async fn wiki_create_cve(
     let base = wiki_base_dir();
     let folder = base.join(&cve_id);
     if folder.exists() {
-        return Err(format!("folder already exists: {cve_id}"));
+        return Err(GolishError::Validation(format!(
+            "folder already exists: {cve_id}"
+        )));
     }
     fs::create_dir_all(&folder)
         .await
-        .map_err(|e| format!("mkdir failed: {e}"))?;
+        .map_err(|e| GolishError::Internal(format!("mkdir failed: {e}")))?;
 
     let (readme, poc_name, poc_content) = cve_scaffold(&cve_id, &title, poc_lang.as_deref());
 
     fs::write(folder.join("README.md"), &readme)
         .await
-        .map_err(|e| format!("write README failed: {e}"))?;
+        .map_err(|e| GolishError::Internal(format!("write README failed: {e}")))?;
 
     fs::write(folder.join(&poc_name), &poc_content)
         .await
-        .map_err(|e| format!("write POC failed: {e}"))?;
+        .map_err(|e| GolishError::Internal(format!("write POC failed: {e}")))?;
 
     Ok(format!("{cve_id}/README.md"))
 }

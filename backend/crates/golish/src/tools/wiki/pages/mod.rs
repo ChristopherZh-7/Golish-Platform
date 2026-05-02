@@ -20,6 +20,7 @@ mod frontmatter;
 mod lifecycle;
 mod templates;
 
+#[allow(unused_imports)]
 pub use frontmatter::WikiEntry;
 
 // Re-export both the user-facing async commands and the `__cmd__*` shims
@@ -35,5 +36,7 @@ pub use lifecycle::{wiki_init, wiki_reindex, __cmd__wiki_init, __cmd__wiki_reind
 
 // Re-exports kept available to sibling wiki modules (search/dashboard) via
 // `pub(in crate::tools::wiki)`.
+#[allow(unused_imports)]
 pub(in crate::tools::wiki) use frontmatter::{extract_frontmatter, infer_category_from_path};
+#[allow(unused_imports)]
 pub(in crate::tools::wiki) use templates::WIKI_CATEGORIES;

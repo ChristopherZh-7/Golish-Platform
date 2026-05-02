@@ -26,7 +26,7 @@ fn resolve_git_root(session: &Session) -> Result<std::path::PathBuf, GolishError
                     std::path::PathBuf::from(String::from_utf8_lossy(&o.stdout).trim().to_string())
                 })
         })
-        .ok_or_else(|| "No git repository found".to_string())
+        .ok_or_else(|| GolishError::Internal("No git repository found".to_string()))
 }
 
 /// Get all staged patches for a session
