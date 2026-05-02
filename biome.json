@@ -27,7 +27,16 @@
       "style": {
         "noNonNullAssertion": "warn",
         "useBlockStatements": "off",
-        "useImportType": "warn"
+        "useImportType": "warn",
+        "noRestrictedImports": {
+          "level": "warn",
+          "options": {
+            "paths": {
+              "@tauri-apps/api/core": "Direct invoke() from Tauri is forbidden outside frontend/lib/api/. Use api.<domain>.<verb> from @/lib/api or a typed wrapper from @/lib/api/<domain>. See ADR-0009 Phase 2 and docs/development.md#adding-a-new-tauri-command-ipc.",
+              "@/lib/api/client": "Direct facade-client invoke() from outside frontend/lib/api/ is discouraged. Use api.<domain>.<verb> from @/lib/api or a typed wrapper. See ADR-0009 Phase 2."
+            }
+          }
+        }
       },
       "suspicious": {
         "noExplicitAny": "warn",
@@ -36,6 +45,28 @@
       }
     }
   },
+  "overrides": [
+    {
+      "includes": [
+        "frontend/lib/api/**",
+        "frontend/lib/transport/**",
+        "frontend/lib/ai/**",
+        "frontend/lib/pentest/**",
+        "frontend/lib/settings/**",
+        "frontend/lib/theme/**",
+        "frontend/lib/terminal/**",
+        "frontend/**/*.test.ts",
+        "frontend/**/*.test.tsx"
+      ],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": "off"
+          }
+        }
+      }
+    }
+  ],
   "javascript": {
     "formatter": {
       "quoteStyle": "double",
