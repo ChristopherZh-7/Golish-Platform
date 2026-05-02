@@ -2,6 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import type React from "react";
 import { useEffect } from "react";
 import { invoke } from "@/lib/api/client";
+import { createDetached } from "@/lib/api/window";
 import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
 import { getProjectPath } from "@/lib/projects";
@@ -113,7 +114,7 @@ export function useTabSplitEvents({
       if (tabType === "security") {
         const pseudoId = `security-all-${Date.now()}`;
         try {
-          await invoke("create_detached_window", {
+          await createDetached({
             sessionId: pseudoId,
             tabType: "security-all",
             title: "Security — Detached",
@@ -138,7 +139,7 @@ export function useTabSplitEvents({
         "Terminal";
 
       try {
-        await invoke("create_detached_window", {
+        await createDetached({
           sessionId: tabId,
           tabType,
           title: `${title} — Detached`,
@@ -183,7 +184,7 @@ export function useTabSplitEvents({
       const pseudoId = `security-${tabId}-${Date.now()}`;
 
       try {
-        await invoke("create_detached_window", {
+        await createDetached({
           sessionId: pseudoId,
           tabType: `security-${tabId}`,
           title: `${title} — Detached`,

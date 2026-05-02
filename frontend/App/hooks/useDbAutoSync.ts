@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
-import { invoke } from "@/lib/api/client";
+import { browserClose } from "@/lib/api/pentest-browser";
 import { createDbAutoSaver } from "../../lib/conversation-db-sync";
 import { useStore } from "../../store";
 
@@ -34,7 +34,7 @@ export function useDbAutoSync(): void {
   // Ensure pentest browser resources are closed on normal unload and Tauri flush-state.
   useEffect(() => {
     const closePentestBrowser = () => {
-      invoke("pentest_browser_close").catch(() => {});
+      browserClose().catch(() => {});
     };
 
     closePentestBrowser();

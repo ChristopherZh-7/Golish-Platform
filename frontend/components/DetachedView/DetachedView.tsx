@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { SecurityTab } from "@/components/SecurityView/SecurityView";
 import { Terminal } from "@/components/Terminal/Terminal";
-import { invoke } from "@/lib/api";
+import { closeDetached } from "@/lib/api/window";
 import { runTauriUnlistenFn, runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import { ThemeManager } from "@/lib/theme";
 import "@xterm/xterm/css/xterm.css";
@@ -113,7 +113,7 @@ async function closeDetachedWindow(sessionId: string) {
     /* ignore */
   }
   try {
-    await invoke("close_detached_window", { sessionId });
+    await closeDetached(sessionId);
   } catch {
     /* ignore */
   }

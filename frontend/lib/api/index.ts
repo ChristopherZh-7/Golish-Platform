@@ -27,6 +27,7 @@ import * as mcp from "./mcp";
 import * as methodology from "./methodology";
 import * as modelRegistry from "./model-registry";
 import * as notes from "./notes";
+import * as pentestBrowser from "./pentest-browser";
 import * as pty from "./pty";
 import * as research from "./research";
 import * as security from "./security";
@@ -38,6 +39,7 @@ import * as targets from "./targets";
 import * as vault from "./vault";
 import * as vulnIntel from "./vuln-intel";
 import * as vulnLinks from "./vuln-links";
+import * as detachedWindow from "./window";
 import * as wordlist from "./wordlist";
 
 export {
@@ -60,6 +62,8 @@ export {
   history,
   auditLog,
   modelRegistry,
+  pentestBrowser,
+  detachedWindow,
   wordlist,
   notes,
   methodology,
@@ -89,6 +93,8 @@ export const api = {
   history,
   auditLog,
   modelRegistry,
+  pentestBrowser,
+  detachedWindow,
   wordlist,
   notes,
   methodology,
