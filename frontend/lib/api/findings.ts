@@ -65,4 +65,14 @@ export const findingsApi = {
   evidencePath: (findingId: string, evidenceId: string, projectPath: ProjectPath) =>
     invoke<string>("findings_evidence_path", { findingId, evidenceId, projectPath }),
   deduplicate: (projectPath: ProjectPath) => invoke<number>("findings_deduplicate", { projectPath }),
+  /**
+   * Bulk-import findings parsed by the output parser. Items must be
+   * vulnerability-shaped objects (each map of field name → value).
+   * Returns the number of new findings actually inserted (dedup-aware).
+   */
+  importParsed: (
+    items: Record<string, string>[],
+    toolName: string,
+    projectPath: ProjectPath
+  ) => invoke<number>("findings_import_parsed", { items, toolName, projectPath }),
 };

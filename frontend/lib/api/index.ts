@@ -27,6 +27,7 @@ import * as mcp from "./mcp";
 import * as methodology from "./methodology";
 import * as modelRegistry from "./model-registry";
 import * as notes from "./notes";
+import * as outputParser from "./output-parser";
 import * as pentestBrowser from "./pentest-browser";
 import * as pipeline from "./pipeline";
 import * as projects from "./projects";
@@ -67,6 +68,7 @@ export {
   pentestBrowser,
   pipeline,
   projects,
+  outputParser,
   detachedWindow,
   wordlist,
   notes,
@@ -100,6 +102,7 @@ export const api = {
   pentestBrowser,
   pipeline,
   projects,
+  outputParser,
   detachedWindow,
   wordlist,
   notes,
