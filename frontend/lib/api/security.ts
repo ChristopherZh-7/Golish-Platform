@@ -1,7 +1,30 @@
 import { invoke } from "@/lib/api/client";
-import type { VaultEntrySafe as GeneratedVaultEntrySafe } from "@/lib/generated";
 
 type ZapJson = Record<string, unknown>;
+
+type VaultEntryType =
+  | "password"
+  | "token"
+  | "ssh_key"
+  | "api_key"
+  | "cookie"
+  | "certificate"
+  | "other";
+
+interface GeneratedVaultEntrySafe {
+  id: string;
+  name: string;
+  type: VaultEntryType;
+  username: string;
+  notes: string;
+  project: string;
+  tags: string[];
+  status: string;
+  source_url: string;
+  last_validated_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
 
 export interface WordlistOption {
   id: string;
@@ -35,11 +58,10 @@ export interface SensitiveProgress {
 
 /**
  * Subset of `VaultEntrySafe` fields surfaced to the security UI
- * (Scanner credential picker). Projected via `Pick<...>` from the
- * canonical `ts-rs`-generated `VaultEntrySafe` so the field shape and
- * `type` enum stay aligned with the Rust source of truth — when the
- * backend struct changes, run `just generate-types` and this picks
- * up the new definition automatically.
+ * (Scanner credential picker). The full `GeneratedVaultEntrySafe`
+ * shape is inlined above; this is the projection consumers actually
+ * use — keep the picked fields in sync with the Rust struct in
+ * `backend/crates/golish-vault` if you change either side.
  */
 export type VaultEntrySafe = Pick<
   GeneratedVaultEntrySafe,
