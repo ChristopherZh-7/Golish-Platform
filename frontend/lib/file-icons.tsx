@@ -50,7 +50,7 @@ import { cn } from "@/lib/utils";
 const iconClass = "h-4 w-4 shrink-0";
 
 /** Get appropriate icon based on file extension */
-export function getFileIcon(name: string, className?: string) {
+function getFileIcon(name: string, className?: string) {
   const cls = className ?? iconClass;
   const lowerName = name.toLowerCase();
   const ext = lowerName.split(".").pop() ?? "";

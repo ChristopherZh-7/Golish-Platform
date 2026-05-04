@@ -27,7 +27,7 @@ export interface TabLayout {
 /**
  * Create a new leaf pane node.
  */
-export function createLeafPane(paneId: PaneId, sessionId: string): PaneNode {
+function createLeafPane(paneId: PaneId, sessionId: string): PaneNode {
   return { type: "leaf", id: paneId, sessionId };
 }
 
@@ -145,32 +145,6 @@ export function findPaneById(root: PaneNode, paneId: PaneId): PaneNode | null {
     return findPaneById(root.children[1], paneId);
   }
   return null;
-}
-
-/**
- * Find a pane's parent split node.
- */
-export function findPaneParent(
-  root: PaneNode,
-  paneId: PaneId
-): { parent: PaneNode & { type: "split" }; childIndex: 0 | 1 } | null {
-  if (root.type === "leaf") {
-    return null;
-  }
-
-  const [first, second] = root.children;
-
-  if (first.id === paneId) {
-    return { parent: root, childIndex: 0 };
-  }
-  if (second.id === paneId) {
-    return { parent: root, childIndex: 1 };
-  }
-
-  // Recurse
-  const inFirst = findPaneParent(first, paneId);
-  if (inFirst) return inFirst;
-  return findPaneParent(second, paneId);
 }
 
 /**
@@ -301,7 +275,7 @@ export function getFirstLeafPane(root: PaneNode): PaneId {
 /**
  * Get the last (rightmost/bottommost) leaf pane.
  */
-export function getLastLeafPane(root: PaneNode): PaneId {
+function getLastLeafPane(root: PaneNode): PaneId {
   if (root.type === "leaf") {
     return root.id;
   }

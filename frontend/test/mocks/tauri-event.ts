@@ -12,7 +12,7 @@ interface EventListener<T = unknown> {
 const listeners: EventListener[] = [];
 
 // Mock listen function
-export async function listen<T>(
+async function listen<T>(
   eventName: string,
   callback: EventCallback<T>
 ): Promise<UnlistenFn> {
@@ -49,6 +49,3 @@ export function getListenerCount(eventName: string): number {
 
 // Export mock for vi.mock usage
 export const mockListen = vi.fn(listen);
-
-// Re-export type for type compatibility
-export type { UnlistenFn };
