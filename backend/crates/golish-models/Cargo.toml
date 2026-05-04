@@ -11,9 +11,5 @@ golish-settings = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
-
-# TypeScript type generation
-ts-rs = { workspace = true }
-
 # For LazyLock
 once_cell = "1.21"

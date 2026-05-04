@@ -5,7 +5,6 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 /// Minimum number of approvals required before auto-approve is considered.
 pub const HITL_AUTO_APPROVE_MIN_APPROVALS: u32 = 3;
@@ -14,9 +13,8 @@ pub const HITL_AUTO_APPROVE_MIN_APPROVALS: u32 = 3;
 pub const HITL_AUTO_APPROVE_THRESHOLD: f64 = 0.8;
 
 /// Risk level for a tool operation.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "generated/")]
 pub enum RiskLevel {
     /// Safe operations (read-only)
     Low,
@@ -71,8 +69,7 @@ impl RiskLevel {
 }
 
 /// Approval pattern/statistics for a specific tool.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "generated/")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalPattern {
     /// Name of the tool
     pub tool_name: String,
@@ -141,8 +138,7 @@ impl ApprovalPattern {
 }
 
 /// User's decision on an approval request.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "generated/")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalDecision {
     /// The request ID this decision is for
     pub request_id: String,
@@ -157,8 +153,7 @@ pub struct ApprovalDecision {
 }
 
 /// Configuration for tool approval behavior.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "generated/")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolApprovalConfig {
     /// Tools that are always allowed without approval
     pub always_allow: Vec<String>,

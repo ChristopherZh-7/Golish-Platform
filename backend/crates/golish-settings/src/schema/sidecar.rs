@@ -7,12 +7,10 @@
 //! `SynthesisGrokSettings`) so the synthesis ecosystem lives in one place.
 
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 /// Sidecar context capture settings.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct SidecarSettings {
     /// Enable context capture during AI sessions.
     pub enabled: bool,
@@ -59,9 +57,8 @@ impl Default for SidecarSettings {
 }
 
 /// Vertex AI settings for sidecar synthesis.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct SynthesisVertexSettings {
     /// Google Cloud project ID (falls back to `ai.vertex_ai.project_id` if not set).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -91,9 +88,8 @@ impl Default for SynthesisVertexSettings {
 }
 
 /// OpenAI settings for sidecar synthesis.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct SynthesisOpenAiSettings {
     /// API key (falls back to `api_keys` or env var).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -118,9 +114,8 @@ impl Default for SynthesisOpenAiSettings {
 }
 
 /// Grok settings for sidecar synthesis.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct SynthesisGrokSettings {
     /// API key (falls back to env var `GROK_API_KEY`).
     #[serde(skip_serializing_if = "Option::is_none")]

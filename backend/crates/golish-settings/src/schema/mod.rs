@@ -23,8 +23,6 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
-
 mod ai;
 mod defaults;
 mod enums;
@@ -55,9 +53,8 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// interpolation support. `schema_version` enables forward-compatible
 /// migration: the loader detects an older version and applies a chain
 /// of migration functions before deserialisation.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct GolishSettings {
     /// Schema version — must match [`SCHEMA_VERSION`] after loading.
     /// Older files are auto-migrated by `migrate_settings()` in the loader.

@@ -1,15 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use ts_rs::TS;
 
 // =============================================================================
 // Enums for type-safe settings
 // =============================================================================
 
 /// AI provider selection
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "generated/")]
 pub enum AiProvider {
     #[default]
     VertexAi,
@@ -69,9 +67,8 @@ impl std::str::FromStr for AiProvider {
 }
 
 /// UI theme selection
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "generated/")]
 pub enum Theme {
     #[default]
     Dark,
@@ -91,9 +88,8 @@ impl fmt::Display for Theme {
 }
 
 /// Logging level
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "generated/")]
 pub enum LogLevel {
     Error,
     Warn,
@@ -104,9 +100,8 @@ pub enum LogLevel {
 }
 
 /// Index storage location configuration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "generated/")]
 pub enum IndexLocation {
     /// Store indexes globally in ~/.golish/<codebase-name>/index (new default)
     #[default]
@@ -129,9 +124,8 @@ impl fmt::Display for LogLevel {
 }
 
 /// Reasoning effort level for models that support it (e.g., OpenAI o-series, GPT-5)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "generated/")]
 pub enum ReasoningEffort {
     Low,
     Medium,

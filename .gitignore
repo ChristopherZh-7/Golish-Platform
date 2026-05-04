@@ -36,6 +36,10 @@ dist-ssr
 backend/target/
 backend/crates/*/target/
 **/*.rs.bk
+
+# Cargo build-time generated artifacts (Tauri command bridge)
+backend/crates/*/.gen/
+
 # NOTE: Cargo.lock IS committed. Golish ships as a binary application
 # (the Tauri desktop app), and applications must lock dependency
 # versions for reproducible builds across dev machines and CI.
