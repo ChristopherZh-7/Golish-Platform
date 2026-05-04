@@ -1,5 +1,4 @@
 import { invoke } from "@/lib/api/client";
-import type { VaultEntrySafe as GeneratedVaultEntrySafe } from "@/lib/generated";
 import type { Target as PentestTarget } from "@/lib/pentest/types";
 
 export interface TokenUsageStats {
@@ -39,11 +38,16 @@ export interface ProjectMethodology {
 /**
  * Minimal vault projection used by the dashboard summary.
  *
- * Projected via `Pick<...>` from the canonical `ts-rs`-generated
- * `VaultEntrySafe` so the field shape and `type` enum stay in lockstep
- * with the Rust source of truth (`golish-core/src/vault.rs`).
+ * Mirrors the `id` / `name` / `type` fields of the Rust `VaultEntrySafe`
+ * struct (`golish-core/src/vault.rs`) over IPC. The `type` enum string
+ * literals are kept aligned with `golish-core/src/vault.rs::VaultEntryType`
+ * — when the Rust enum gains a variant, add it here too.
  */
-type VaultEntry = Pick<GeneratedVaultEntrySafe, "id" | "name" | "type">;
+type VaultEntry = {
+  id: string;
+  name: string;
+  type: "password" | "token" | "ssh_key" | "api_key" | "cookie" | "certificate" | "other";
+};
 
 export interface AuditEntry {
   id: number;
