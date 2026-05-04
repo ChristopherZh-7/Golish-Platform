@@ -6,10 +6,69 @@
  */
 
 import { invoke } from "@/lib/api/client";
-import type { AiProvider, ModelCapabilities, OwnedModelDefinition } from "../generated";
 
-// Re-export generated types for convenience
-export type { AiProvider, ModelCapabilities, OwnedModelDefinition };
+// ---------------------------------------------------------------------------
+// Inlined mirrors of Rust types — used to live in `frontend/lib/generated/`
+// (ts-rs output). After the M2.5 codegen removal these are hand-maintained;
+// keep in sync manually with their Rust sources whenever the structs change.
+// ---------------------------------------------------------------------------
+
+/**
+ * AI provider selection.
+ *
+ * Mirror of `backend/crates/golish-core/src/types.rs::AiProvider`.
+ */
+export type AiProvider =
+  | "vertex_ai"
+  | "vertex_gemini"
+  | "openrouter"
+  | "anthropic"
+  | "openai"
+  | "ollama"
+  | "gemini"
+  | "groq"
+  | "xai"
+  | "zai_sdk"
+  | "nvidia";
+
+/**
+ * Capabilities that vary across LLM models.
+ *
+ * Mirror of `backend/crates/golish-models/src/capabilities.rs::ModelCapabilities`.
+ * Provides explicit metadata about what a model supports — replaces the
+ * runtime string-matching heuristics that used to live in the frontend.
+ */
+export interface ModelCapabilities {
+  /** Whether the model supports the temperature parameter. */
+  supports_temperature: boolean;
+  /** Whether thinking/reasoning should be tracked in message history. */
+  supports_thinking_history: boolean;
+  /** Whether the model supports image/vision inputs. */
+  supports_vision: boolean;
+  /** Whether the model supports native web search tools. */
+  supports_web_search: boolean;
+  /** Whether this is a reasoning model (uses OpenAI reasoning client). */
+  is_reasoning_model: boolean;
+  /** Whether this is a coding-optimized model (codex variants). */
+  is_codex_model: boolean;
+  /** Context window size in tokens. */
+  context_window: number;
+  /** Maximum output tokens. */
+  max_output_tokens: number;
+}
+
+/**
+ * Owned version of ModelDefinition for serialization to frontend.
+ *
+ * Mirror of `backend/crates/golish-models/src/registry.rs::OwnedModelDefinition`.
+ * This is the primary type exposed via Tauri commands.
+ */
+export interface OwnedModelDefinition {
+  id: string;
+  display_name: string;
+  provider: AiProvider;
+  capabilities: ModelCapabilities;
+}
 
 /**
  * Provider metadata for UI display.
