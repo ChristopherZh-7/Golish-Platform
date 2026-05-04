@@ -57,9 +57,25 @@ export interface AiSettings {
   nvidia: NvidiaSettings;
 }
 
-import type { AiProvider } from "../generated/AiProvider";
-
-export type { AiProvider } from "../generated/AiProvider";
+/**
+ * AI provider selection.
+ *
+ * Mirror of `backend/crates/golish-core/src/types.rs::AiProvider`. After
+ * the M2.5 ts-rs codegen removal this enum is hand-maintained — keep
+ * the literal union in sync with the Rust source manually.
+ */
+export type AiProvider =
+  | "vertex_ai"
+  | "vertex_gemini"
+  | "openrouter"
+  | "anthropic"
+  | "openai"
+  | "ollama"
+  | "gemini"
+  | "groq"
+  | "xai"
+  | "zai_sdk"
+  | "nvidia";
 
 export interface VertexAiSettings {
   credentials_path: string | null;
