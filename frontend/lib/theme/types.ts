@@ -101,7 +101,7 @@ export interface ThemeRadii {
 
 export type CursorStyle = "block" | "underline" | "bar";
 
-export interface BackgroundSettings {
+interface BackgroundSettings {
   image?: string;
   size?: string;
   position?: string;
