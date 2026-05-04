@@ -17,7 +17,7 @@ pub use chat::{
     __cmd__send_ai_prompt_with_attachments, __cmd__signal_frontend_ready,
 };
 #[doc(hidden)]
-pub use lifecycle::{__cmd__init_ai_agent, __cmd__init_ai_agent_unified};
+pub use lifecycle::__cmd__init_ai_agent;
 #[doc(hidden)]
 pub use session::{
     __cmd__cancel_ai_generation, __cmd__get_session_ai_config, __cmd__init_ai_session,

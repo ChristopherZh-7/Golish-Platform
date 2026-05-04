@@ -14,7 +14,7 @@ use crate::state::AppState;
 /// * `prompt` - The user's message
 #[tauri::command]
 pub async fn send_ai_prompt(state: State<'_, AppState>, prompt: String) -> Result<String, GolishError> {
-    let bridge_guard = state.ai_state.get_bridge().await?;
+    let bridge_guard = state.ai_state.get_legacy_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
 
     bridge.execute(&prompt).await.map_err(GolishError::from)
@@ -27,7 +27,7 @@ pub async fn execute_ai_tool(
     tool_name: String,
     args: serde_json::Value,
 ) -> Result<serde_json::Value, GolishError> {
-    let bridge_guard = state.ai_state.get_bridge().await?;
+    let bridge_guard = state.ai_state.get_legacy_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
 
     bridge
@@ -41,7 +41,7 @@ pub async fn execute_ai_tool(
 pub async fn get_available_tools(
     state: State<'_, AppState>,
 ) -> Result<Vec<serde_json::Value>, GolishError> {
-    let bridge_guard = state.ai_state.get_bridge().await?;
+    let bridge_guard = state.ai_state.get_legacy_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
     Ok(bridge.available_tools().await)
 }
@@ -59,7 +59,7 @@ pub struct SubAgentInfo {
 /// Get the list of available sub-agents.
 #[tauri::command]
 pub async fn list_sub_agents(state: State<'_, AppState>) -> Result<Vec<SubAgentInfo>, GolishError> {
-    let bridge_guard = state.ai_state.get_bridge().await?;
+    let bridge_guard = state.ai_state.get_legacy_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
     let registry = bridge.sub_agent_registry().read().await;
 

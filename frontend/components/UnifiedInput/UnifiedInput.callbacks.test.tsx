@@ -40,6 +40,7 @@ vi.mock("@/lib/api/files", () => ({
   readPrompt: vi.fn(() => Promise.resolve("prompt content")),
   readSkillBody: vi.fn(() => Promise.resolve("skill content")),
   readFileAsBase64: vi.fn(() => Promise.resolve("base64data")),
+  listWorkspaceFiles: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("@/lib/notify", () => ({

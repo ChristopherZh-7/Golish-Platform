@@ -1,4 +1,3 @@
-import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-shell";
 import {
   AlertCircle,
@@ -17,6 +16,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
+import { onEvent } from "@/lib/events";
 import { logger } from "@/lib/logger";
 import * as mcp from "@/lib/mcp";
 import { notify } from "@/lib/notify";
@@ -62,10 +62,8 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
 
   // Listen for MCP background initialization events and auto-refresh
   useEffect(() => {
-    const unlisten = listen<mcp.McpEvent>("mcp-event", (event) => {
-      const payload = event.payload;
+    const unlisten = onEvent("mcp-event", (payload) => {
       if (payload.type === "ready") {
-        // MCP servers finished connecting - refresh the UI
         loadData();
       } else if (payload.type === "error") {
         logger.error("[mcp-event] Error:", payload.message);

@@ -22,10 +22,11 @@ TS_LIMIT=800
 # don't clash with Bash associative-array indexing.
 ts_baseline() {
     case "$1" in
-        "frontend/components/ToolManager/ToolManager.tsx") echo 1044 ;;
+        # Removed (now within budget):
+        #   - frontend/components/ToolManager/ToolManager.tsx (was 1044, now < 800 via QW5 split)
+        #   - frontend/components/ProjectOverview/ProjectOverview.tsx (was 838, now < 800 via QW5 split)
         "frontend/components/VulnIntelPanel/WikiTab.tsx") echo 891 ;;
         "frontend/components/SecurityView/ScanToolsPanel.tsx") echo 843 ;;
-        "frontend/components/ProjectOverview/ProjectOverview.tsx") echo 838 ;;
         "frontend/components/VulnIntelPanel/VulnIntelPanel.tsx") echo 819 ;;
         *) echo "" ;;
     esac

@@ -1,6 +1,6 @@
-import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { onCustomEvent } from "@/lib/events";
 import {
   cancelDownload,
   cancelRuntimeInstall,
@@ -84,8 +84,8 @@ export function useToolInstall(
       rafId = null;
       lastUpdate = Date.now();
     };
-    listen<{ downloaded: number; total: number }>("download-progress", (e) => {
-      pending = e.payload;
+    onCustomEvent<{ downloaded: number; total: number }>("download-progress", (payload) => {
+      pending = payload;
       const now = Date.now();
       if (now - lastUpdate >= 250) flush();
       else if (!rafId) rafId = window.setTimeout(flush, 250 - (now - lastUpdate));

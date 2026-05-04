@@ -1,0 +1,111 @@
+{
+  "tool": {
+    "id": "waybackurls",
+    "name": "waybackurls",
+    "description": "Fetch all the URLs that the Wayback Machine knows about for a domain (lighter alternative to gau)",
+    "executable": "waybackurls",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "url-history",
+    "tier": "recommended",
+    "tags": ["recon", "wayback", "url", "passive"],
+    "install": {
+      "method": "homebrew",
+      "source": "waybackurls"
+    },
+    "params": [
+      {
+        "label": "Domain",
+        "flag": "",
+        "type": "string",
+        "description": "Single domain or read from stdin",
+        "placeholder": "target.com"
+      },
+      {
+        "label": "Subdomains",
+        "flag": "-no-subs",
+        "type": "boolean",
+        "description": "Don't include subdomains (default = include)"
+      },
+      {
+        "label": "Date Range",
+        "flag": "-dates",
+        "type": "boolean",
+        "description": "Include first-seen / last-seen dates"
+      },
+      {
+        "label": "Get Versions",
+        "flag": "-get-versions",
+        "type": "boolean",
+        "description": "List archived versions of a single URL"
+      }
+    ],
+    "skills": [
+      {
+        "id": "default",
+        "name": "All wayback URLs",
+        "description": "Default - includes subdomains",
+        "args": "{{domain}}",
+        "tags": ["passive"]
+      },
+      {
+        "id": "main-only",
+        "name": "Main domain only",
+        "description": "Skip subdomains",
+        "args": "{{domain}} -no-subs",
+        "tags": ["filter"]
+      },
+      {
+        "id": "with-dates",
+        "name": "URLs with dates",
+        "description": "Include first/last seen dates",
+        "args": "{{domain}} -dates -o wayback.txt",
+        "tags": ["dates"]
+      },
+      {
+        "id": "from-domains-file",
+        "name": "From domain list (stdin)",
+        "description": "Read multiple domains from a file",
+        "args": "< domains.txt",
+        "tags": ["bulk"]
+      },
+      {
+        "id": "to-httpx",
+        "name": "Pipe to httpx (find live)",
+        "description": "Fetch wayback URLs and check which are still live",
+        "args": "{{domain}} | httpx -silent | tee live.txt",
+        "tags": ["pipeline"]
+      },
+      {
+        "id": "to-dalfox",
+        "name": "Pipe to dalfox (XSS)",
+        "description": "Direct XSS scan on historic URLs",
+        "args": "{{domain}} | dalfox pipe --silence",
+        "tags": ["pipeline", "xss"]
+      },
+      {
+        "id": "params-only",
+        "name": "Only URLs with params (for fuzz)",
+        "description": "Filter URLs that have ? param",
+        "args": "{{domain}} | grep '?' | sort -u",
+        "tags": ["fuzz", "filter"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["url"],
+      "detect": "waybackurls|^https?://",
+      "db_action": "endpoint_add",
+      "patterns": [
+        {
+          "type": "url",
+          "regex": "^(https?://\\S+)$",
+          "fields": {
+            "1": "url"
+          }
+        }
+      ]
+    }
+  }
+}

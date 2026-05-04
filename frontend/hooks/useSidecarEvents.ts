@@ -1,5 +1,5 @@
-import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
+import { onEvent } from "@/lib/events";
 import { logger } from "@/lib/logger";
 import type { SidecarEventType } from "@/lib/sidecar";
 
@@ -11,7 +11,7 @@ import type { SidecarEventType } from "@/lib/sidecar";
  * - Patch operations: patch_created, patch_applied, patch_discarded, patch_message_updated
  * - Artifact operations: artifact_created, artifact_applied, artifact_discarded
  *
- * @param onEvent Callback invoked for each sidecar event
+ * @param handler Callback invoked for each sidecar event
  *
  * @example
  * ```tsx
@@ -27,13 +27,12 @@ import type { SidecarEventType } from "@/lib/sidecar";
  * });
  * ```
  */
-export function useSidecarEvents(onEvent: (event: SidecarEventType) => void): void {
-  const callbackRef = useRef(onEvent);
+export function useSidecarEvents(handler: (event: SidecarEventType) => void): void {
+  const callbackRef = useRef(handler);
 
-  // Keep callback ref up to date
   useEffect(() => {
-    callbackRef.current = onEvent;
-  }, [onEvent]);
+    callbackRef.current = handler;
+  }, [handler]);
 
   useEffect(() => {
     let isMounted = true;
@@ -41,9 +40,9 @@ export function useSidecarEvents(onEvent: (event: SidecarEventType) => void): vo
 
     const setupListener = async () => {
       try {
-        unlisten = await listen<SidecarEventType>("sidecar-event", (event) => {
+        unlisten = await onEvent("sidecar-event", (payload) => {
           if (isMounted) {
-            callbackRef.current(event.payload);
+            callbackRef.current(payload);
           }
         });
       } catch (error) {

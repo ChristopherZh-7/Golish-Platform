@@ -1,0 +1,186 @@
+{
+  "tool": {
+    "id": "gobuster",
+    "name": "gobuster",
+    "description": "Directory, DNS, vhost, and S3 bucket brute-forcer in Go",
+    "executable": "gobuster",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "web",
+    "subcategory": "fuzzer",
+    "tier": "recommended",
+    "tags": ["web", "dir-brute", "dns", "vhost"],
+    "install": {
+      "method": "homebrew",
+      "source": "gobuster"
+    },
+    "params": [
+      {
+        "label": "Mode",
+        "flag": "",
+        "type": "select",
+        "required": true,
+        "description": "Sub-command mode (placed first)",
+        "options": [
+          { "value": "dir", "label": "dir - directory/file brute" },
+          { "value": "dns", "label": "dns - subdomain brute" },
+          { "value": "vhost", "label": "vhost - virtual host brute" },
+          { "value": "fuzz", "label": "fuzz - HTTP fuzzer" },
+          { "value": "s3", "label": "s3 - AWS S3 bucket brute" },
+          { "value": "gcs", "label": "gcs - GCP storage brute" },
+          { "value": "tftp", "label": "tftp - TFTP file brute" }
+        ]
+      },
+      {
+        "label": "URL / Domain",
+        "flag": "-u",
+        "type": "string",
+        "required": true,
+        "description": "Target URL (dir/vhost/fuzz) or domain (dns)",
+        "placeholder": "https://target.com"
+      },
+      {
+        "label": "Wordlist",
+        "flag": "-w",
+        "type": "string",
+        "required": true,
+        "description": "Wordlist path",
+        "placeholder": "/usr/share/wordlists/dirb/common.txt"
+      },
+      {
+        "label": "Threads",
+        "flag": "-t",
+        "type": "string",
+        "description": "Number of concurrent threads (default 10)",
+        "default": "10"
+      },
+      {
+        "label": "Extensions (dir mode)",
+        "flag": "-x",
+        "type": "string",
+        "description": "Comma-separated extensions to append (e.g. php,html,txt)",
+        "placeholder": "php,html,txt"
+      },
+      {
+        "label": "Status Codes",
+        "flag": "-s",
+        "type": "string",
+        "description": "Show only these HTTP status codes (comma list)",
+        "placeholder": "200,204,301,302,307,401,403"
+      },
+      {
+        "label": "Blacklist Codes",
+        "flag": "-b",
+        "type": "string",
+        "description": "Hide these status codes",
+        "placeholder": "404"
+      },
+      {
+        "label": "Cookie",
+        "flag": "-c",
+        "type": "string",
+        "description": "Cookie header value",
+        "placeholder": "session=abcd"
+      },
+      {
+        "label": "User-Agent",
+        "flag": "-a",
+        "type": "string",
+        "description": "Custom User-Agent",
+        "placeholder": "Mozilla/5.0"
+      },
+      {
+        "label": "Headers",
+        "flag": "-H",
+        "type": "string",
+        "description": "Custom header (key:value, repeatable)",
+        "placeholder": "X-Auth: token"
+      },
+      {
+        "label": "Follow Redirects",
+        "flag": "-r",
+        "type": "boolean",
+        "description": "Follow HTTP 3xx redirects"
+      },
+      {
+        "label": "Skip TLS Verify",
+        "flag": "-k",
+        "type": "boolean",
+        "description": "Skip SSL/TLS certificate verification"
+      },
+      {
+        "label": "Output File",
+        "flag": "-o",
+        "type": "string",
+        "description": "Output file path",
+        "placeholder": "gobuster.txt"
+      },
+      {
+        "label": "Quiet",
+        "flag": "-q",
+        "type": "boolean",
+        "description": "Don't print banner & progress"
+      },
+      {
+        "label": "Verbose",
+        "flag": "-v",
+        "type": "boolean",
+        "description": "Verbose output"
+      }
+    ],
+    "skills": [
+      {
+        "id": "dir-common",
+        "name": "Directory brute (common.txt)",
+        "description": "Standard directory enumeration",
+        "args": "dir -u {{target}} -w /usr/share/wordlists/dirb/common.txt -t 30",
+        "tags": ["dir"]
+      },
+      {
+        "id": "dir-ext",
+        "name": "Directory brute with extensions",
+        "description": "Brute with PHP/HTML/TXT extensions",
+        "args": "dir -u {{target}} -w /usr/share/wordlists/dirb/common.txt -x php,html,txt -t 30",
+        "tags": ["dir", "files"]
+      },
+      {
+        "id": "subdomains",
+        "name": "Subdomain brute",
+        "description": "DNS subdomain enumeration",
+        "args": "dns -d {{domain}} -w /usr/share/wordlists/seclists/Discovery/DNS/subdomains-top1million-5000.txt -t 50",
+        "tags": ["dns", "subdomain"]
+      },
+      {
+        "id": "vhost",
+        "name": "Vhost brute",
+        "description": "Virtual host enumeration",
+        "args": "vhost -u https://{{target}} -w /usr/share/wordlists/seclists/Discovery/DNS/subdomains-top1million-5000.txt -t 30",
+        "tags": ["vhost"]
+      },
+      {
+        "id": "s3-buckets",
+        "name": "S3 bucket brute",
+        "description": "Discover open AWS S3 buckets",
+        "args": "s3 -w /usr/share/wordlists/buckets.txt -t 30",
+        "tags": ["aws", "cloud"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["url", "endpoint"],
+      "detect": "Gobuster v|Status:\\s+\\d",
+      "db_action": "endpoint_add",
+      "patterns": [
+        {
+          "type": "endpoint",
+          "regex": "^(\\S+)\\s+\\(Status:\\s+(\\d+)\\)\\s+\\[Size:\\s+(\\d+)\\]",
+          "fields": {
+            "1": "path",
+            "2": "status",
+            "3": "size"
+          }
+        }
+      ]
+    }
+  }
+}

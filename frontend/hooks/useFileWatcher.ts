@@ -1,13 +1,8 @@
-import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
+import { onEvent } from "@/lib/events";
 import { readWorkspaceFile, unwatchAllFiles, unwatchFile, watchFile } from "@/lib/file-editor";
 import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import { fileTabIdFromPath, useFileEditorSidebarStore } from "@/store/file-editor-sidebar";
-
-interface FileChangedPayload {
-  path: string;
-  modifiedAt: string | null;
-}
 
 /**
  * Watches open file tabs for external filesystem changes.
@@ -82,10 +77,8 @@ export function useFileWatcher() {
     };
   }, []);
 
-  // Listen for file-changed events from the backend
   useEffect(() => {
-    const unlisten = listen<FileChangedPayload>("file-changed", async (event) => {
-      const { path, modifiedAt } = event.payload;
+    const unlisten = onEvent("file-changed", async ({ path, modifiedAt }) => {
       const store = useFileEditorSidebarStore.getState();
       const tabId = fileTabIdFromPath(path);
       const tab = store.tabs[tabId];

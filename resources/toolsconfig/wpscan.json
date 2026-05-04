@@ -1,0 +1,225 @@
+{
+  "tool": {
+    "id": "wpscan",
+    "name": "wpscan",
+    "description": "WordPress vulnerability scanner - users, plugins, themes, and known CVEs",
+    "executable": "wpscan",
+    "runtime": "ruby",
+    "runtimeVersion": "3.2",
+    "launchMode": "cli",
+    "category": "web",
+    "subcategory": "cms",
+    "tier": "recommended",
+    "tags": ["web", "wordpress", "cms", "vulnerability"],
+    "install": {
+      "method": "gem",
+      "source": "wpscan"
+    },
+    "params": [
+      {
+        "label": "URL",
+        "flag": "--url",
+        "type": "string",
+        "required": true,
+        "description": "WordPress site URL",
+        "placeholder": "https://target.com"
+      },
+      {
+        "label": "Enumerate",
+        "flag": "-e",
+        "type": "select",
+        "description": "What to enumerate",
+        "options": [
+          { "value": "vp", "label": "vp - vulnerable plugins" },
+          { "value": "ap", "label": "ap - all plugins" },
+          { "value": "p", "label": "p - popular plugins" },
+          { "value": "vt", "label": "vt - vulnerable themes" },
+          { "value": "at", "label": "at - all themes" },
+          { "value": "t", "label": "t - popular themes" },
+          { "value": "tt", "label": "tt - timthumbs" },
+          { "value": "cb", "label": "cb - config backups" },
+          { "value": "dbe", "label": "dbe - db exports" },
+          { "value": "u", "label": "u - users" },
+          { "value": "m", "label": "m - media IDs" },
+          { "value": "vp,vt,u", "label": "common: vp+vt+u" }
+        ]
+      },
+      {
+        "label": "API Token",
+        "flag": "--api-token",
+        "type": "string",
+        "description": "wpscan.com API token (free tier 25/day)",
+        "placeholder": "YOUR_TOKEN"
+      },
+      {
+        "label": "Detection Mode",
+        "flag": "--detection-mode",
+        "type": "select",
+        "description": "How aggressively to fingerprint",
+        "default": "mixed",
+        "options": [
+          { "value": "passive", "label": "passive" },
+          { "value": "aggressive", "label": "aggressive" },
+          { "value": "mixed", "label": "mixed" }
+        ]
+      },
+      {
+        "label": "Plugins Detection",
+        "flag": "--plugins-detection",
+        "type": "select",
+        "description": "Plugin enumeration detection mode",
+        "options": [
+          { "value": "passive", "label": "passive" },
+          { "value": "aggressive", "label": "aggressive" },
+          { "value": "mixed", "label": "mixed" }
+        ]
+      },
+      {
+        "label": "User Agent",
+        "flag": "--user-agent",
+        "type": "string",
+        "description": "Custom User-Agent",
+        "placeholder": "Mozilla/5.0"
+      },
+      {
+        "label": "Random User Agent",
+        "flag": "--random-user-agent",
+        "type": "boolean",
+        "description": "Use random User-Agent each request"
+      },
+      {
+        "label": "Cookie",
+        "flag": "--cookie-string",
+        "type": "string",
+        "description": "Cookie string sent with each request",
+        "placeholder": "wp_session=abcd"
+      },
+      {
+        "label": "HTTP Auth",
+        "flag": "--http-auth",
+        "type": "string",
+        "description": "Basic auth user:pass",
+        "placeholder": "admin:admin"
+      },
+      {
+        "label": "Threads",
+        "flag": "--max-threads",
+        "type": "string",
+        "description": "Max threads (default 5)",
+        "default": "5"
+      },
+      {
+        "label": "Throttle",
+        "flag": "--throttle",
+        "type": "string",
+        "description": "Wait N ms between requests",
+        "placeholder": "200"
+      },
+      {
+        "label": "Disable TLS Check",
+        "flag": "--disable-tls-checks",
+        "type": "boolean",
+        "description": "Skip SSL/TLS validation"
+      },
+      {
+        "label": "Username Wordlist",
+        "flag": "-U",
+        "type": "string",
+        "description": "Username list for password attack",
+        "placeholder": "admin"
+      },
+      {
+        "label": "Password Wordlist",
+        "flag": "-P",
+        "type": "string",
+        "description": "Password list for /wp-login.php attack",
+        "placeholder": "rockyou.txt"
+      },
+      {
+        "label": "Output File",
+        "flag": "-o",
+        "type": "string",
+        "description": "Output file path",
+        "placeholder": "wpscan.json"
+      },
+      {
+        "label": "Format",
+        "flag": "-f",
+        "type": "select",
+        "description": "Output format",
+        "options": [
+          { "value": "cli", "label": "cli" },
+          { "value": "cli-no-color", "label": "cli-no-color" },
+          { "value": "json", "label": "json" }
+        ]
+      }
+    ],
+    "skills": [
+      {
+        "id": "vuln-enum",
+        "name": "Vulnerable plugin/theme/user enum",
+        "description": "Standard WordPress recon (no API token = limited CVE info)",
+        "args": "--url {{target}} -e vp,vt,u --random-user-agent",
+        "tags": ["recon"]
+      },
+      {
+        "id": "with-api",
+        "name": "Full enum with API token",
+        "description": "Use wpscan API for detailed CVE info",
+        "args": "--url {{target}} -e vp,vt,u --api-token {{token}} --random-user-agent",
+        "tags": ["api", "thorough"]
+      },
+      {
+        "id": "user-enum",
+        "name": "User enumeration only",
+        "description": "Discover author IDs / usernames",
+        "args": "--url {{target}} -e u --random-user-agent",
+        "tags": ["users"]
+      },
+      {
+        "id": "passive",
+        "name": "Passive scan only",
+        "description": "Most stealthy mode",
+        "args": "--url {{target}} --detection-mode passive --random-user-agent",
+        "tags": ["stealth"]
+      },
+      {
+        "id": "login-brute",
+        "name": "wp-login.php password attack",
+        "description": "Brute force login (slow, throttled)",
+        "args": "--url {{target}} -U {{user}} -P {{passes}} --max-threads 2 --throttle 500",
+        "tags": ["brute"]
+      },
+      {
+        "id": "json-report",
+        "name": "JSON report",
+        "description": "Save full scan as JSON",
+        "args": "--url {{target}} -e vp,vt,u -f json -o wpscan.json",
+        "tags": ["report"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["vulnerability", "info"],
+      "detect": "WPScan|WordPress (Version|Theme|Plugin)",
+      "db_action": "finding_add",
+      "patterns": [
+        {
+          "type": "version",
+          "regex": "WordPress version (\\S+) identified",
+          "fields": {
+            "1": "version"
+          }
+        },
+        {
+          "type": "user",
+          "regex": "\\|\\s+(\\d+)\\s+\\|\\s+(\\S+)\\s+\\|",
+          "fields": {
+            "1": "id",
+            "2": "username"
+          }
+        }
+      ]
+    }
+  }
+}

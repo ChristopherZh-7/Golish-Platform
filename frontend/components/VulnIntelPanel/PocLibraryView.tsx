@@ -18,6 +18,7 @@ import { CustomSelect } from "@/components/ui/custom-select";
 import { invoke } from "@/lib/api";
 import * as vulnLinksApi from "@/lib/api/vuln-links";
 import { copyToClipboard } from "@/lib/clipboard";
+import { onCustomEvent } from "@/lib/events";
 import type { DbVulnLinkFull, PocTemplate, VulnLink } from "./types";
 import { dbToVulnLink } from "./types";
 
@@ -52,28 +53,25 @@ export const PocLibraryView = memo(function PocLibraryView({
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    import("@tauri-apps/api/event").then(({ listen }) => {
-      listen<{ phase: string; current: number; total: number; cve_id: string | null }>(
-        "nuclei-discover-progress",
-        (e) => {
-          const { phase, current, total, cve_id } = e.payload;
-          let msg = "";
-          if (phase === "listing") {
-            msg = "Fetching nuclei-templates file tree...";
-          } else if (phase === "listing_fallback") {
-            msg = `Scanning directories: ${current}/${total}${cve_id ? ` — ${cve_id}` : ""}`;
-          } else if (phase === "downloading") {
-            const pct = total > 0 ? Math.round((current / total) * 100) : 0;
-            msg = `Downloading templates: ${current}/${total} (${pct}%)${cve_id ? ` — ${cve_id}` : ""}`;
-          } else if (phase === "done") {
-            msg = `Finished processing ${total} template files.`;
-          }
-          _discoverState.progress = msg;
-          setBatchProgress(msg);
+    onCustomEvent<{ phase: string; current: number; total: number; cve_id: string | null }>(
+      "nuclei-discover-progress",
+      ({ phase, current, total, cve_id }) => {
+        let msg = "";
+        if (phase === "listing") {
+          msg = "Fetching nuclei-templates file tree...";
+        } else if (phase === "listing_fallback") {
+          msg = `Scanning directories: ${current}/${total}${cve_id ? ` — ${cve_id}` : ""}`;
+        } else if (phase === "downloading") {
+          const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+          msg = `Downloading templates: ${current}/${total} (${pct}%)${cve_id ? ` — ${cve_id}` : ""}`;
+        } else if (phase === "done") {
+          msg = `Finished processing ${total} template files.`;
         }
-      ).then((fn) => {
-        unlisten = fn;
-      });
+        _discoverState.progress = msg;
+        setBatchProgress(msg);
+      }
+    ).then((fn) => {
+      unlisten = fn;
     });
     return () => {
       unlisten?.();

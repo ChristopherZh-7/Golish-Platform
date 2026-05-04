@@ -1,0 +1,166 @@
+{
+  "tool": {
+    "id": "searchsploit",
+    "name": "searchsploit",
+    "description": "Offline command-line search of the Exploit-DB archive (CVE / vendor / product / nmap-XML)",
+    "executable": "searchsploit",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "exploit",
+    "subcategory": "edb",
+    "tier": "essential",
+    "tags": ["exploit", "edb", "cve", "search"],
+    "install": {
+      "method": "github",
+      "source": "offensive-security/exploitdb"
+    },
+    "params": [
+      {
+        "label": "Search Term",
+        "flag": "",
+        "type": "string",
+        "required": true,
+        "description": "Free-form search (vendor + product + version, or CVE)",
+        "placeholder": "windows smb 2017"
+      },
+      {
+        "label": "CVE",
+        "flag": "--cve",
+        "type": "string",
+        "description": "Search by CVE number",
+        "placeholder": "2017-0144"
+      },
+      {
+        "label": "Title Only",
+        "flag": "-t",
+        "type": "boolean",
+        "description": "Match in title only (faster, less noise)"
+      },
+      {
+        "label": "Strict Match",
+        "flag": "-s",
+        "type": "boolean",
+        "description": "Strict match (don't tokenize)"
+      },
+      {
+        "label": "Exclude",
+        "flag": "--exclude",
+        "type": "string",
+        "description": "Pipe-separated terms to exclude",
+        "placeholder": "PoC|/dos/"
+      },
+      {
+        "label": "Path",
+        "flag": "-p",
+        "type": "string",
+        "description": "Show full path of an EDB-ID",
+        "placeholder": "42315"
+      },
+      {
+        "label": "Mirror",
+        "flag": "-m",
+        "type": "string",
+        "description": "Copy exploit file to current dir by EDB-ID",
+        "placeholder": "42315"
+      },
+      {
+        "label": "Examine",
+        "flag": "-x",
+        "type": "string",
+        "description": "Open exploit file in $PAGER by EDB-ID",
+        "placeholder": "42315"
+      },
+      {
+        "label": "Web Link",
+        "flag": "-w",
+        "type": "boolean",
+        "description": "Print exploit-db.com URL"
+      },
+      {
+        "label": "JSON Output",
+        "flag": "-j",
+        "type": "boolean",
+        "description": "Output JSON"
+      },
+      {
+        "label": "Update",
+        "flag": "-u",
+        "type": "boolean",
+        "description": "Update local exploit-db database"
+      },
+      {
+        "label": "Nmap XML",
+        "flag": "--nmap",
+        "type": "string",
+        "description": "Read nmap XML, search exploits per host/service",
+        "placeholder": "scan.xml"
+      }
+    ],
+    "skills": [
+      {
+        "id": "search-product",
+        "name": "Search by product / version",
+        "description": "Free-form search title only",
+        "args": "-t {{product}} {{version}}",
+        "tags": ["search"]
+      },
+      {
+        "id": "search-cve",
+        "name": "Search by CVE",
+        "description": "Find exploits for a specific CVE",
+        "args": "--cve {{cve}}",
+        "tags": ["cve"]
+      },
+      {
+        "id": "exclude-noise",
+        "name": "Search excluding DoS/PoC",
+        "description": "Skip noisy categories",
+        "args": "-t {{term}} --exclude=\"/dos/|/poc/\"",
+        "tags": ["search"]
+      },
+      {
+        "id": "fetch-exploit",
+        "name": "Mirror exploit by EDB-ID",
+        "description": "Copy exploit code to current dir",
+        "args": "-m {{edb_id}}",
+        "tags": ["fetch"]
+      },
+      {
+        "id": "examine",
+        "name": "Read exploit by EDB-ID",
+        "description": "Open in pager",
+        "args": "-x {{edb_id}}",
+        "tags": ["read"]
+      },
+      {
+        "id": "nmap-xml",
+        "name": "Search exploits from nmap XML",
+        "description": "Match nmap XML services to known exploits",
+        "args": "--nmap {{nmap_xml}}",
+        "tags": ["pipeline"]
+      },
+      {
+        "id": "update",
+        "name": "Update DB",
+        "description": "Pull latest exploit-db files",
+        "args": "-u",
+        "tags": ["maintenance"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["info", "exploit"],
+      "detect": "Exploit Title|searchsploit|EDB-ID",
+      "patterns": [
+        {
+          "type": "exploit",
+          "regex": "^(.+?)\\s+\\|\\s+(\\S+\\.(?:py|rb|c|sh|txt|html|pl|php|java|nse))",
+          "fields": {
+            "1": "title",
+            "2": "path"
+          }
+        }
+      ]
+    }
+  }
+}

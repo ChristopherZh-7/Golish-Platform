@@ -1,6 +1,6 @@
-import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
 import { addVaultEntry, listVaultEntries, updateVaultEntry } from "@/lib/api/vault";
+import { onCustomEvent } from "@/lib/events";
 import { notify } from "@/lib/notify";
 import { getProjectPath } from "@/lib/projects";
 
@@ -53,8 +53,7 @@ export function useCredentialCapture() {
         /* vault might not be ready yet */
       }
 
-      unlisten = await listen<DetectedCredential>("credential-detected", async (event) => {
-        const cred = event.payload;
+      unlisten = await onCustomEvent<DetectedCredential>("credential-detected", async (cred) => {
         const name = `${cred.host} - ${cred.field_name}`;
         const newHash = hashValue(cred.value);
         const existing = knownEntries.get(name);

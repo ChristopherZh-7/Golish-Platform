@@ -19,7 +19,7 @@ pub async fn get_approval_patterns(
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_approval_patterns().await);
     }
-    let bridge_guard = state.ai_state.get_bridge().await?;
+    let bridge_guard = state.ai_state.get_legacy_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
     Ok(bridge.get_approval_patterns().await)
 }
@@ -36,7 +36,7 @@ pub async fn get_tool_approval_pattern(
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_tool_approval_pattern(&tool_name).await);
     }
-    let bridge_guard = state.ai_state.get_bridge().await?;
+    let bridge_guard = state.ai_state.get_legacy_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
     Ok(bridge.get_tool_approval_pattern(&tool_name).await)
 }
@@ -52,7 +52,7 @@ pub async fn get_hitl_config(
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_hitl_config().await);
     }
-    let bridge_guard = state.ai_state.get_bridge().await?;
+    let bridge_guard = state.ai_state.get_legacy_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
     Ok(bridge.get_hitl_config().await)
 }
@@ -69,7 +69,7 @@ pub async fn set_hitl_config(
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return bridge.set_hitl_config(config).await.map_err(GolishError::from);
     }
-    let bridge_guard = state.ai_state.get_bridge().await?;
+    let bridge_guard = state.ai_state.get_legacy_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
     bridge.set_hitl_config(config).await.map_err(GolishError::from)
 }
@@ -86,7 +86,7 @@ pub async fn add_tool_always_allow(
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return bridge.add_tool_always_allow(&tool_name).await.map_err(GolishError::from);
     }
-    let bridge_guard = state.ai_state.get_bridge().await?;
+    let bridge_guard = state.ai_state.get_legacy_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
     bridge.add_tool_always_allow(&tool_name).await.map_err(GolishError::from)
 }
@@ -103,7 +103,7 @@ pub async fn remove_tool_always_allow(
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return bridge.remove_tool_always_allow(&tool_name).await.map_err(GolishError::from);
     }
-    let bridge_guard = state.ai_state.get_bridge().await?;
+    let bridge_guard = state.ai_state.get_legacy_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
     bridge.remove_tool_always_allow(&tool_name).await.map_err(GolishError::from)
 }
@@ -119,7 +119,7 @@ pub async fn reset_approval_patterns(
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return bridge.reset_approval_patterns().await.map_err(GolishError::from);
     }
-    let bridge_guard = state.ai_state.get_bridge().await?;
+    let bridge_guard = state.ai_state.get_legacy_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
     bridge.reset_approval_patterns().await.map_err(GolishError::from)
 }

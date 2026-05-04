@@ -1,0 +1,164 @@
+{
+  "tool": {
+    "id": "subfinder",
+    "name": "subfinder",
+    "description": "Passive subdomain discovery tool from ProjectDiscovery (uses public sources)",
+    "executable": "subfinder",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "subdomain",
+    "tier": "recommended",
+    "tags": ["recon", "subdomain", "passive"],
+    "install": {
+      "method": "homebrew",
+      "source": "subfinder"
+    },
+    "params": [
+      {
+        "label": "Domain",
+        "flag": "-d",
+        "type": "string",
+        "description": "Single domain to enumerate",
+        "placeholder": "target.com"
+      },
+      {
+        "label": "Domain List",
+        "flag": "-dL",
+        "type": "string",
+        "description": "File with one domain per line",
+        "placeholder": "domains.txt"
+      },
+      {
+        "label": "Sources",
+        "flag": "-s",
+        "type": "string",
+        "description": "Comma-separated source list (e.g. crtsh,virustotal,shodan)",
+        "placeholder": "crtsh,virustotal"
+      },
+      {
+        "label": "All Sources",
+        "flag": "-all",
+        "type": "boolean",
+        "description": "Use all sources (slower, more results)"
+      },
+      {
+        "label": "Recursive",
+        "flag": "-recursive",
+        "type": "boolean",
+        "description": "Use recursion-supporting sources"
+      },
+      {
+        "label": "Resolve",
+        "flag": "-nW",
+        "type": "boolean",
+        "description": "Skip wildcard subdomains (filter dead/wild)"
+      },
+      {
+        "label": "Resolvers",
+        "flag": "-rL",
+        "type": "string",
+        "description": "Custom DNS resolvers list",
+        "placeholder": "resolvers.txt"
+      },
+      {
+        "label": "Timeout",
+        "flag": "-timeout",
+        "type": "string",
+        "description": "Source timeout (seconds)",
+        "default": "30"
+      },
+      {
+        "label": "Max Time",
+        "flag": "-max-time",
+        "type": "string",
+        "description": "Total time per domain (minutes)",
+        "default": "10"
+      },
+      {
+        "label": "Threads",
+        "flag": "-t",
+        "type": "string",
+        "description": "Threads for resolve",
+        "default": "10"
+      },
+      {
+        "label": "Output File",
+        "flag": "-o",
+        "type": "string",
+        "description": "Save subdomains to file",
+        "placeholder": "subs.txt"
+      },
+      {
+        "label": "JSON Output",
+        "flag": "-oJ",
+        "type": "boolean",
+        "description": "Write JSONL with source metadata"
+      },
+      {
+        "label": "Silent",
+        "flag": "-silent",
+        "type": "boolean",
+        "description": "Show only subdomains in output"
+      },
+      {
+        "label": "Verbose",
+        "flag": "-v",
+        "type": "boolean",
+        "description": "Show source per subdomain"
+      }
+    ],
+    "skills": [
+      {
+        "id": "quick-passive",
+        "name": "Quick passive enum",
+        "description": "Fast passive subdomain enum (default sources)",
+        "args": "-d {{domain}} -silent",
+        "tags": ["passive", "fast"]
+      },
+      {
+        "id": "deep-all-sources",
+        "name": "Deep enum (all sources)",
+        "description": "Use every source, longer timeout",
+        "args": "-d {{domain}} -all -recursive -silent -o subs.txt",
+        "tags": ["thorough", "slow"]
+      },
+      {
+        "id": "bulk-domains",
+        "name": "Bulk domain enum",
+        "description": "Enumerate multiple domains from file",
+        "args": "-dL {{domain_list}} -silent -o subs.txt",
+        "tags": ["bulk"]
+      },
+      {
+        "id": "json-pipeline",
+        "name": "JSON for pipeline",
+        "description": "JSONL output for downstream processing",
+        "args": "-d {{domain}} -all -oJ -o subs.jsonl",
+        "tags": ["pipeline"]
+      },
+      {
+        "id": "to-httpx",
+        "name": "Pipe to httpx",
+        "description": "Pipe live subdomains directly to httpx",
+        "args": "-d {{domain}} -silent | httpx -silent",
+        "tags": ["pipeline", "httpx"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["host", "subdomain"],
+      "detect": "subfinder|^[\\w\\-]+(\\.[\\w\\-]+)+$",
+      "db_action": "host_add",
+      "patterns": [
+        {
+          "type": "subdomain",
+          "regex": "^([a-zA-Z0-9_\\-\\.]+\\.[a-zA-Z]{2,})$",
+          "fields": {
+            "1": "hostname"
+          }
+        }
+      ]
+    }
+  }
+}

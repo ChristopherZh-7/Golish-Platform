@@ -16,6 +16,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getRootDomain } from "@/lib/domain";
+import { onCustomEvent } from "@/lib/events";
 import type { HttpHistoryEntry, HttpMessageDetail } from "@/lib/pentest/types";
 import type { SiteMapData, SiteMapEntry } from "@/lib/pentest/zap-api";
 import { zapGetHistory, zapGetMessage, zapGetSiteMapData } from "@/lib/pentest/zap-api";
@@ -205,12 +206,9 @@ export function SiteMapPanel({
 
   useEffect(() => {
     loadEntries();
-    // Listen for backend event when new sitemap data arrives
     let unlisten: (() => void) | null = null;
-    import("@tauri-apps/api/event").then(({ listen }) => {
-      listen("sitemap-updated", () => loadEntries()).then((fn) => {
-        unlisten = fn;
-      });
+    onCustomEvent("sitemap-updated", () => loadEntries()).then((fn) => {
+      unlisten = fn;
     });
     // Fallback: poll every 15s in case events are missed
     intervalRef.current = setInterval(loadEntries, 15000);

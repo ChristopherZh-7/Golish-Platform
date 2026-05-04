@@ -1,0 +1,226 @@
+{
+  "tool": {
+    "id": "dalfox",
+    "name": "dalfox",
+    "description": "Powerful XSS scanner and parameter analysis tool with DOM/blind/stored detection",
+    "executable": "dalfox",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "web",
+    "subcategory": "scanner",
+    "tier": "recommended",
+    "tags": ["web", "xss", "scanner", "fuzzer"],
+    "install": {
+      "method": "homebrew",
+      "source": "dalfox"
+    },
+    "params": [
+      {
+        "label": "Mode",
+        "flag": "",
+        "type": "select",
+        "required": true,
+        "description": "Sub-command (placed first)",
+        "options": [
+          { "value": "url", "label": "url - single URL" },
+          { "value": "file", "label": "file - URL list" },
+          { "value": "pipe", "label": "pipe - read from stdin" },
+          { "value": "sxss", "label": "sxss - stored XSS check" },
+          { "value": "server", "label": "server - daemon mode" }
+        ]
+      },
+      {
+        "label": "Target",
+        "flag": "",
+        "type": "string",
+        "required": true,
+        "description": "Target URL or file path",
+        "placeholder": "https://target.com/?id=1"
+      },
+      {
+        "label": "Method",
+        "flag": "-X",
+        "type": "select",
+        "description": "HTTP method",
+        "options": [
+          { "value": "GET", "label": "GET" },
+          { "value": "POST", "label": "POST" },
+          { "value": "PUT", "label": "PUT" }
+        ]
+      },
+      {
+        "label": "Data",
+        "flag": "-d",
+        "type": "string",
+        "description": "POST data",
+        "placeholder": "name=test&id=1"
+      },
+      {
+        "label": "Cookie",
+        "flag": "-C",
+        "type": "string",
+        "description": "Cookie header",
+        "placeholder": "session=abcd"
+      },
+      {
+        "label": "Headers",
+        "flag": "-H",
+        "type": "string",
+        "description": "Custom header (repeatable)",
+        "placeholder": "X-Token: foo"
+      },
+      {
+        "label": "Custom Payload",
+        "flag": "--custom-payload",
+        "type": "string",
+        "description": "File with custom XSS payloads",
+        "placeholder": "payloads.txt"
+      },
+      {
+        "label": "Blind XSS Server",
+        "flag": "-b",
+        "type": "string",
+        "description": "Callback URL for blind XSS",
+        "placeholder": "https://xss.report/c/yourid"
+      },
+      {
+        "label": "Worker",
+        "flag": "-w",
+        "type": "string",
+        "description": "Concurrent workers (default 100)",
+        "default": "100"
+      },
+      {
+        "label": "Delay",
+        "flag": "--delay",
+        "type": "string",
+        "description": "Delay between requests in ms",
+        "placeholder": "100"
+      },
+      {
+        "label": "Timeout",
+        "flag": "--timeout",
+        "type": "string",
+        "description": "Request timeout (seconds)",
+        "default": "10"
+      },
+      {
+        "label": "User-Agent",
+        "flag": "--user-agent",
+        "type": "string",
+        "description": "Custom UA",
+        "placeholder": "Mozilla/5.0"
+      },
+      {
+        "label": "Skip Headless",
+        "flag": "--skip-headless",
+        "type": "boolean",
+        "description": "Disable headless browser DOM verification (faster, less accurate)"
+      },
+      {
+        "label": "Mining Dom",
+        "flag": "--mining-dom",
+        "type": "boolean",
+        "description": "Mining DOM-based parameters from page"
+      },
+      {
+        "label": "Mining Dict",
+        "flag": "--mining-dict",
+        "type": "boolean",
+        "description": "Mining parameters from dictionary"
+      },
+      {
+        "label": "Found Action",
+        "flag": "--found-action",
+        "type": "string",
+        "description": "Shell command on each finding (e.g. send to Slack)",
+        "placeholder": "curl -X POST ..."
+      },
+      {
+        "label": "Output File",
+        "flag": "-o",
+        "type": "string",
+        "description": "Output file path",
+        "placeholder": "dalfox.txt"
+      },
+      {
+        "label": "Format",
+        "flag": "--format",
+        "type": "select",
+        "description": "Output format",
+        "options": [
+          { "value": "plain", "label": "plain" },
+          { "value": "json", "label": "json" },
+          { "value": "jsonl", "label": "jsonl" }
+        ]
+      },
+      {
+        "label": "Silence",
+        "flag": "--silence",
+        "type": "boolean",
+        "description": "Show only PoC results"
+      }
+    ],
+    "skills": [
+      {
+        "id": "single-url",
+        "name": "Quick single-URL scan",
+        "description": "Scan a single URL for reflected XSS",
+        "args": "url {{target}} --silence",
+        "tags": ["xss", "fast"]
+      },
+      {
+        "id": "url-list",
+        "name": "Bulk scan from file",
+        "description": "Scan a list of URLs",
+        "args": "file {{url_list}} --silence -o dalfox.txt",
+        "tags": ["bulk"]
+      },
+      {
+        "id": "pipe-mode",
+        "name": "Pipe mode (from waybackurls / gau)",
+        "description": "Read URLs from stdin",
+        "args": "pipe --silence",
+        "tags": ["pipeline"]
+      },
+      {
+        "id": "blind-xss",
+        "name": "Blind XSS with callback",
+        "description": "Inject blind XSS payload to callback server",
+        "args": "url {{target}} -b {{callback}} --silence",
+        "tags": ["blind", "xss"]
+      },
+      {
+        "id": "post-form",
+        "name": "POST data XSS",
+        "description": "Test POST parameters",
+        "args": "url {{target}} -X POST -d 'name=test&id=1' --silence",
+        "tags": ["post", "xss"]
+      },
+      {
+        "id": "json-pipeline",
+        "name": "JSONL pipeline output",
+        "description": "Output JSONL for downstream tools",
+        "args": "file {{url_list}} --format jsonl -o dalfox.jsonl",
+        "tags": ["pipeline"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["vulnerability"],
+      "detect": "Dalfox|\\[POC\\]|VULN|\\[V\\]",
+      "db_action": "finding_add",
+      "patterns": [
+        {
+          "type": "xss",
+          "regex": "\\[POC\\]\\[(\\w+)\\]\\[(\\S+)\\]\\s+(.+)",
+          "fields": {
+            "1": "type",
+            "2": "param",
+            "3": "url"
+          }
+        }
+      ]
+    }
+  }
+}

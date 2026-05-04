@@ -72,19 +72,19 @@ this on every PR.
 └─────────────────────┬─────────────────────────────────────────────┘
                       │
 ┌─────────────────────▼─────────────────────────────────────────────┐
-│ L2 Simple infrastructure (only depends on L1)                     │
-│   golish-events · golish-session · golish-indexer · golish-models │
-│   golish-llm-providers · golish-db · golish-pty · golish-web      │
-│   golish-pentest · golish-vuln-intel · golish-scan-runner         │
-│   golish-shell-exec · golish-skills · golish-synthesis            │
-│   golish-artifacts · golish-cli-output · golish-pentest-mcp       │
-│   rig-openai-responses · rig-zai-sdk                              │
+│ L2 Simple infrastructure · 20 crates · 5 sub-clusters             │
+│   persistence: db · models · session · indexer                    │
+│   os:          pty · shell-exec · events                          │
+│   llm:         llm-providers · rig-openai-responses · rig-zai-sdk │
+│   pentest:     pentest · vuln-intel · scan-runner · pentest-mcp   │
+│   assets:      skills · synthesis · artifacts ·                   │
+│                cli-output · web · tools                           │
 └─────────────────────┬─────────────────────────────────────────────┘
                       │
 ┌─────────────────────▼─────────────────────────────────────────────┐
 │ L1 Foundation (no internal golish-* deps)                         │
-│   golish-core · golish-settings · golish-context · golish-models  │
-│   golish-mcp · golish-projects · golish-graphiti                  │
+│   golish-core · golish-settings · golish-context · golish-mcp     │
+│   golish-projects · golish-graphiti                               │
 │   golish-json-repair · golish-udiff                               │
 │   golish-pentest-domain · golish-vuln-intel-domain                │
 │   rig-anthropic-vertex · rig-gemini-vertex                        │
@@ -100,7 +100,6 @@ this on every PR.
 | `golish-core` | Shared types, events, `PromptContributor`, `ToolName`, `GolishRuntime` trait, session types |
 | `golish-settings` | `GolishSettings` + TOML loader/migration + template |
 | `golish-context` | Token budget + context window tracking |
-| `golish-models` | Model metadata tables (IDs, capabilities) |
 | `golish-mcp` | MCP protocol client + `McpManager` + transport (stdio/http/sse) |
 | `golish-projects` | Project directory discovery + metadata |
 | `golish-graphiti` | Knowledge graph trait |
@@ -113,27 +112,59 @@ this on every PR.
 
 #### L2 — Simple infrastructure (only L1 deps)
 
+L2 contains 20 crates organized into **5 functional sub-clusters** for
+discoverability. The cluster boundary is purely **documentary** — the DAG
+guard (`scripts/check_dag.py`) only enforces the layer constraint (a
+crate at L_n must depend only on crates at L_{≤n}). Sibling deps within
+the same layer are OK; cluster grouping does not add edges.
+
+##### L2.persistence (4) — data / session / index / model registry
+
 | Crate | Depends on | Purpose |
 |---|---|---|
-| `golish-events` | core | Agent event coordinator + transcript writer |
+| `golish-db` | core | Postgres pool + migrations + gatekeeper |
+| `golish-models` | settings | Model metadata tables (IDs, capabilities, `AiProvider` mapping) |
 | `golish-session` | core | Session archive + manager |
 | `golish-indexer` | settings | File tree indexing via `vtcode-indexer` |
-| `golish-llm-providers` | models, settings | Provider config + model capability checks |
-| `golish-db` | core | Postgres pool + migrations + gatekeeper |
+
+##### L2.os (3) — process / PTY / event scheduling
+
+| Crate | Depends on | Purpose |
+|---|---|---|
 | `golish-pty` | core, settings | PTY manager (`portable-pty` wrapper) |
-| `golish-web` | core | HTTP fetch + readability |
-| `golish-tools` | core, settings, shell-exec, web | Tool registry + ast-grep + file/dir ops |
+| `golish-shell-exec` | core | Background shell execution |
+| `golish-events` | core | Agent event coordinator + transcript writer |
+
+##### L2.llm (3) — LLM provider clients
+
+| Crate | Depends on | Purpose |
+|---|---|---|
+| `golish-llm-providers` | models, settings | Provider config + model capability checks |
+| `rig-openai-responses` | json-repair | Rig provider fork (OpenAI reasoning models) |
+| `rig-zai-sdk` | json-repair | Rig provider fork (Z.AI GLM) |
+
+> Note: `rig-anthropic-vertex` and `rig-gemini-vertex` are L1 (zero
+> internal `golish-*` deps) — they're listed in the L1 catalog above.
+
+##### L2.pentest (4) — penetration testing domain
+
+| Crate | Depends on | Purpose |
+|---|---|---|
 | `golish-pentest` | core, db, pentest-domain | Pentest engine |
 | `golish-vuln-intel` | core, db, vuln-intel-domain | Vuln intel client + sploitus |
 | `golish-scan-runner` | core, db | External scanner adapters (nuclei, whatweb, nmap, zap) |
-| `golish-shell-exec` | core | Background shell execution |
+| `golish-pentest-mcp` | core | Pentest-specific MCP tools |
+
+##### L2.assets (6) — skills / synthesis / output / tools
+
+| Crate | Depends on | Purpose |
+|---|---|---|
 | `golish-skills` | core | Skill discovery + activation |
 | `golish-synthesis` | settings | LLM-driven synthesis prompts |
 | `golish-artifacts` | settings | Artifact synthesis (patches → PR) |
 | `golish-cli-output` | core | CLI colored output utilities |
-| `golish-pentest-mcp` | core | Pentest-specific MCP tools |
-| `rig-openai-responses` | json-repair | Rig provider fork (OpenAI reasoning models) |
-| `rig-zai-sdk` | json-repair | Rig provider fork (Z.AI GLM) |
+| `golish-web` | core | HTTP fetch + readability |
+| `golish-tools` | core, settings, shell-exec, web | Tool registry + ast-grep + file/dir ops |
 
 #### L3 — Domain services
 

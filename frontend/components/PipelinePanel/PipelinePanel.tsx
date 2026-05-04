@@ -1,4 +1,3 @@
-import { listen } from "@tauri-apps/api/event";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -15,6 +14,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { checkReconTools, type ReconToolCheck } from "@/lib/ai";
 import { invoke, targets } from "@/lib/api";
+import { onEvent } from "@/lib/events";
 import { scanTools } from "@/lib/pentest/api";
 import type { Pipeline, PipelineStep } from "@/lib/pentest/pipeline-types";
 import type { ToolConfig } from "@/lib/pentest/types";
@@ -192,15 +192,7 @@ export function PipelinePanel() {
   );
 
   useEffect(() => {
-    const ul = listen<{
-      pipeline_id: string;
-      step_index: number;
-      total_steps: number;
-      tool_name: string;
-      status: string;
-      store_stats?: { stored_count: number };
-    }>("pipeline-event", (ev) => {
-      const p = ev.payload;
+    const ul = onEvent("pipeline-event", (p) => {
       if (p.status === "running") {
         setAiRunning(true);
         setAiProgress({ step: p.step_index + 1, total: p.total_steps, tool: p.tool_name });

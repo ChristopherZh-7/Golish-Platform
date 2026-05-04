@@ -1,4 +1,3 @@
-import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-shell";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -6,6 +5,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { ptyResize, ptyWrite } from "@/lib/api/pty";
+import { onCustomEvent, onEvent } from "@/lib/events";
 import { logger } from "@/lib/logger";
 import { appendRecordingData } from "@/lib/terminal/recording";
 import { SyncOutputBuffer } from "@/lib/terminal/SyncOutputBuffer";
@@ -16,11 +16,6 @@ import "@xterm/xterm/css/xterm.css";
 
 interface TerminalProps {
   sessionId: string;
-}
-
-interface TerminalOutputEvent {
-  session_id: string;
-  data: string;
 }
 
 export function Terminal({ sessionId }: TerminalProps) {
@@ -332,24 +327,22 @@ export function Terminal({ sessionId }: TerminalProps) {
     });
     cleanupFnsRef.current.push(() => resizeDisposable.dispose());
 
-    // Set up event listeners asynchronously
     (async () => {
-      // Set up terminal output listener
-      const unlistenOutput = await listen<TerminalOutputEvent>("terminal_output", (event) => {
+      const unlistenOutput = await onEvent("terminal_output", (payload) => {
         if (aborted) return;
-        if (event.payload.session_id === sessionId && syncBufferRef.current) {
-          syncBufferRef.current.write(event.payload.data);
-          appendRecordingData(sessionId, event.payload.data);
+        if (payload.session_id === sessionId && syncBufferRef.current) {
+          syncBufferRef.current.write(payload.data);
+          appendRecordingData(sessionId, payload.data);
         }
       });
 
       // Set up synchronized output listener (DEC 2026)
-      const unlistenSync = await listen<{ session_id: string; enabled: boolean }>(
+      const unlistenSync = await onCustomEvent<{ session_id: string; enabled: boolean }>(
         "synchronized_output",
-        (event) => {
+        (payload) => {
           if (aborted) return;
-          if (event.payload.session_id === sessionId && syncBufferRef.current) {
-            syncBufferRef.current.setSyncEnabled(event.payload.enabled);
+          if (payload.session_id === sessionId && syncBufferRef.current) {
+            syncBufferRef.current.setSyncEnabled(payload.enabled);
           }
         }
       );

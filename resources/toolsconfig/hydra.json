@@ -1,0 +1,213 @@
+{
+  "tool": {
+    "id": "hydra",
+    "name": "hydra",
+    "description": "Fast network logon brute-forcer for many protocols (SSH, FTP, HTTP, SMB, RDP, etc.)",
+    "executable": "hydra",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "brute",
+    "subcategory": "online",
+    "tier": "essential",
+    "tags": ["brute", "password", "network", "auth"],
+    "install": {
+      "method": "homebrew",
+      "source": "hydra"
+    },
+    "params": [
+      {
+        "label": "Target",
+        "flag": "",
+        "type": "string",
+        "required": true,
+        "description": "Target host or IP",
+        "placeholder": "192.168.1.10"
+      },
+      {
+        "label": "Service",
+        "flag": "",
+        "type": "select",
+        "required": true,
+        "description": "Service / protocol to attack (appended after target)",
+        "options": [
+          { "value": "ssh", "label": "ssh" },
+          { "value": "ftp", "label": "ftp" },
+          { "value": "telnet", "label": "telnet" },
+          { "value": "smb", "label": "smb" },
+          { "value": "rdp", "label": "rdp" },
+          { "value": "vnc", "label": "vnc" },
+          { "value": "mysql", "label": "mysql" },
+          { "value": "postgres", "label": "postgres" },
+          { "value": "mssql", "label": "mssql" },
+          { "value": "redis", "label": "redis" },
+          { "value": "mongodb", "label": "mongodb" },
+          { "value": "imap", "label": "imap" },
+          { "value": "pop3", "label": "pop3" },
+          { "value": "smtp", "label": "smtp" },
+          { "value": "http-get", "label": "http-get" },
+          { "value": "http-post-form", "label": "http-post-form" },
+          { "value": "https-get", "label": "https-get" },
+          { "value": "https-post-form", "label": "https-post-form" }
+        ]
+      },
+      {
+        "label": "Username",
+        "flag": "-l",
+        "type": "string",
+        "description": "Single username",
+        "placeholder": "admin"
+      },
+      {
+        "label": "User List",
+        "flag": "-L",
+        "type": "string",
+        "description": "Path to username file",
+        "placeholder": "users.txt"
+      },
+      {
+        "label": "Password",
+        "flag": "-p",
+        "type": "string",
+        "description": "Single password",
+        "placeholder": "password"
+      },
+      {
+        "label": "Password List",
+        "flag": "-P",
+        "type": "string",
+        "description": "Path to password file",
+        "placeholder": "rockyou.txt"
+      },
+      {
+        "label": "Combo File",
+        "flag": "-C",
+        "type": "string",
+        "description": "user:pass combo file (replaces -L/-P)",
+        "placeholder": "combos.txt"
+      },
+      {
+        "label": "Tasks",
+        "flag": "-t",
+        "type": "string",
+        "description": "Parallel connect tasks per target (default 16)",
+        "default": "16",
+        "placeholder": "16"
+      },
+      {
+        "label": "Port",
+        "flag": "-s",
+        "type": "string",
+        "description": "Override default port",
+        "placeholder": "2222"
+      },
+      {
+        "label": "Stop on First",
+        "flag": "-f",
+        "type": "boolean",
+        "description": "Exit after first valid login per host"
+      },
+      {
+        "label": "Stop Globally",
+        "flag": "-F",
+        "type": "boolean",
+        "description": "Exit after first valid login (any host)"
+      },
+      {
+        "label": "Output File",
+        "flag": "-o",
+        "type": "string",
+        "description": "Save output to file",
+        "placeholder": "hydra.txt"
+      },
+      {
+        "label": "Verbose",
+        "flag": "-V",
+        "type": "boolean",
+        "description": "Show login+pass for each attempt"
+      },
+      {
+        "label": "Try Empty / Login as Pass",
+        "flag": "-e",
+        "type": "select",
+        "description": "Add common bypasses",
+        "options": [
+          { "value": "n", "label": "n - empty password" },
+          { "value": "s", "label": "s - login as password" },
+          { "value": "r", "label": "r - reverse login" },
+          { "value": "ns", "label": "ns - empty + same" },
+          { "value": "nsr", "label": "nsr - all three" }
+        ]
+      }
+    ],
+    "skills": [
+      {
+        "id": "ssh-userlist",
+        "name": "SSH Brute (user list + passlist)",
+        "description": "SSH user/pass brute force, exit on first hit",
+        "args": "-L {{users}} -P {{passes}} -t 4 -f {{target}} ssh",
+        "tags": ["ssh"]
+      },
+      {
+        "id": "ssh-single-user",
+        "name": "SSH Brute (single user)",
+        "description": "SSH brute on root with passlist",
+        "args": "-l root -P {{passes}} -t 4 -f {{target}} ssh",
+        "tags": ["ssh"]
+      },
+      {
+        "id": "ftp-brute",
+        "name": "FTP Brute",
+        "description": "FTP user/pass brute",
+        "args": "-L {{users}} -P {{passes}} -f {{target}} ftp",
+        "tags": ["ftp"]
+      },
+      {
+        "id": "rdp-brute",
+        "name": "RDP Brute (single user)",
+        "description": "RDP brute against Administrator",
+        "args": "-l Administrator -P {{passes}} -t 1 -f {{target}} rdp",
+        "tags": ["rdp", "windows"]
+      },
+      {
+        "id": "http-form",
+        "name": "HTTP POST Login Form",
+        "description": "Brute web login form (custom :form_path:body:fail_marker)",
+        "args": "-l {{user}} -P {{passes}} {{target}} http-post-form \"/login:user=^USER^&pass=^PASS^:Invalid\"",
+        "tags": ["web", "http"]
+      },
+      {
+        "id": "smb-domain",
+        "name": "SMB Domain Brute",
+        "description": "SMB brute with stop-on-first per host",
+        "args": "-L {{users}} -P {{passes}} -t 1 -f {{target}} smb",
+        "tags": ["smb", "windows"]
+      },
+      {
+        "id": "redis-noauth",
+        "name": "Redis No-Auth Check",
+        "description": "Try empty password on Redis",
+        "args": "-l '' -p '' -t 1 -f {{target}} redis",
+        "tags": ["redis"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["credential"],
+      "detect": "Hydra v|login:.+password:",
+      "db_action": "credential_add",
+      "patterns": [
+        {
+          "type": "credential",
+          "regex": "\\[(\\d+)\\]\\[(\\w+)\\]\\s+host:\\s+(\\S+)\\s+login:\\s+(\\S+)\\s+password:\\s+(\\S+)",
+          "fields": {
+            "1": "port",
+            "2": "service",
+            "3": "host",
+            "4": "username",
+            "5": "password"
+          }
+        }
+      ]
+    }
+  }
+}

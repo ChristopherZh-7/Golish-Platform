@@ -1,10 +1,10 @@
-import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { vault } from "@/lib/api";
 import type { VaultEntrySafe } from "@/lib/api/vault";
 import { logAudit } from "@/lib/audit";
 import { copyToClipboard } from "@/lib/clipboard";
+import { onCustomEvent } from "@/lib/events";
 import { getProjectPath } from "@/lib/projects";
 
 export type { VaultEntrySafe };
@@ -102,8 +102,7 @@ export function useVaultForm() {
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     (async () => {
-      unlisten = await listen<{ host: string }>("credential-expired", async (event) => {
-        const host = event.payload.host;
+      unlisten = await onCustomEvent<{ host: string }>("credential-expired", async ({ host }) => {
         for (const entry of entries) {
           const entryHost = entry.project || entry.name.split(" - ")[0];
           if (entryHost.includes(host) || host.includes(entryHost)) {

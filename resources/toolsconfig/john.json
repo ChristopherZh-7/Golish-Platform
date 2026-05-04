@@ -1,0 +1,192 @@
+{
+  "tool": {
+    "id": "john",
+    "name": "john",
+    "description": "John the Ripper - offline password hash cracker for many formats (NTLM, MD5, SHA, bcrypt, etc.)",
+    "executable": "john",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "brute",
+    "subcategory": "offline",
+    "tier": "recommended",
+    "tags": ["brute", "password", "hash", "offline"],
+    "install": {
+      "method": "homebrew",
+      "source": "john-jumbo"
+    },
+    "params": [
+      {
+        "label": "Hash File",
+        "flag": "",
+        "type": "string",
+        "required": true,
+        "description": "Path to hashes file (one hash per line, or formatted)",
+        "placeholder": "hashes.txt"
+      },
+      {
+        "label": "Format",
+        "flag": "--format=",
+        "type": "select",
+        "description": "Hash format (run --list=formats for full list)",
+        "options": [
+          { "value": "raw-md5", "label": "raw-md5" },
+          { "value": "raw-sha1", "label": "raw-sha1" },
+          { "value": "raw-sha256", "label": "raw-sha256" },
+          { "value": "raw-sha512", "label": "raw-sha512" },
+          { "value": "md5crypt", "label": "md5crypt ($1$)" },
+          { "value": "sha512crypt", "label": "sha512crypt ($6$)" },
+          { "value": "bcrypt", "label": "bcrypt ($2$)" },
+          { "value": "nt", "label": "nt (NTLM)" },
+          { "value": "lm", "label": "lm (LanMan)" },
+          { "value": "netntlmv2", "label": "netntlmv2" },
+          { "value": "krb5tgs", "label": "krb5tgs (Kerberoasting)" },
+          { "value": "ZIP", "label": "ZIP archive" },
+          { "value": "rar", "label": "RAR archive" },
+          { "value": "pdf", "label": "PDF" },
+          { "value": "pkzip", "label": "pkzip" }
+        ]
+      },
+      {
+        "label": "Wordlist",
+        "flag": "--wordlist=",
+        "type": "string",
+        "description": "Wordlist for dictionary attack",
+        "placeholder": "/usr/share/wordlists/rockyou.txt"
+      },
+      {
+        "label": "Rules",
+        "flag": "--rules",
+        "type": "string",
+        "description": "Apply mangling rules (default = all built-in)",
+        "placeholder": "Best64"
+      },
+      {
+        "label": "Mask",
+        "flag": "--mask=",
+        "type": "string",
+        "description": "Mask attack pattern (e.g. ?l?l?l?l?d?d)",
+        "placeholder": "?u?l?l?l?l?d?d"
+      },
+      {
+        "label": "Incremental",
+        "flag": "--incremental",
+        "type": "select",
+        "description": "Brute force mode",
+        "options": [
+          { "value": "Digits", "label": "Digits" },
+          { "value": "Lower", "label": "Lower" },
+          { "value": "Alpha", "label": "Alpha" },
+          { "value": "Alnum", "label": "Alnum" },
+          { "value": "ASCII", "label": "ASCII" }
+        ]
+      },
+      {
+        "label": "Single Mode",
+        "flag": "--single",
+        "type": "boolean",
+        "description": "Single crack mode (uses GECOS / login)"
+      },
+      {
+        "label": "Show Cracked",
+        "flag": "--show",
+        "type": "boolean",
+        "description": "Show passwords already cracked"
+      },
+      {
+        "label": "Restore Session",
+        "flag": "--restore",
+        "type": "string",
+        "description": "Restore named session",
+        "placeholder": "myjob"
+      },
+      {
+        "label": "Session Name",
+        "flag": "--session=",
+        "type": "string",
+        "description": "Save current run with this name",
+        "placeholder": "myjob"
+      },
+      {
+        "label": "Forks",
+        "flag": "--fork=",
+        "type": "string",
+        "description": "Number of parallel processes (CPU cores)",
+        "placeholder": "4"
+      },
+      {
+        "label": "Pot File",
+        "flag": "--pot=",
+        "type": "string",
+        "description": "Custom pot file (cracked store)",
+        "placeholder": "custom.pot"
+      }
+    ],
+    "skills": [
+      {
+        "id": "auto-detect",
+        "name": "Auto-detect & wordlist",
+        "description": "Let john detect format, run rockyou",
+        "args": "--wordlist=/usr/share/wordlists/rockyou.txt {{hashes}}",
+        "tags": ["dict"]
+      },
+      {
+        "id": "ntlm-rules",
+        "name": "NTLM with rules",
+        "description": "Crack NTLM with rockyou + mangling rules",
+        "args": "--format=nt --wordlist=/usr/share/wordlists/rockyou.txt --rules {{hashes}}",
+        "tags": ["ntlm", "windows"]
+      },
+      {
+        "id": "shadow-md5crypt",
+        "name": "Linux /etc/shadow MD5",
+        "description": "Crack md5crypt from shadow file",
+        "args": "--format=md5crypt --wordlist=/usr/share/wordlists/rockyou.txt {{hashes}}",
+        "tags": ["linux"]
+      },
+      {
+        "id": "kerberoast",
+        "name": "Kerberoast TGS",
+        "description": "Crack Kerberos TGS hashes (Active Directory)",
+        "args": "--format=krb5tgs --wordlist=/usr/share/wordlists/rockyou.txt {{hashes}}",
+        "tags": ["ad", "kerberos"]
+      },
+      {
+        "id": "zip-archive",
+        "name": "ZIP archive crack",
+        "description": "Use zip2john + john to crack ZIP password",
+        "args": "--format=ZIP --wordlist=/usr/share/wordlists/rockyou.txt {{hashes}}",
+        "tags": ["archive"]
+      },
+      {
+        "id": "mask-attack",
+        "name": "Mask attack",
+        "description": "Pattern-based brute (8 chars, lower+digit)",
+        "args": "--mask=?l?l?l?l?l?l?d?d {{hashes}}",
+        "tags": ["mask"]
+      },
+      {
+        "id": "show-cracked",
+        "name": "Show cracked",
+        "description": "Display all already-cracked passwords",
+        "args": "--show {{hashes}}",
+        "tags": ["report"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["credential"],
+      "detect": "John the Ripper|password hash|hashes loaded",
+      "db_action": "credential_add",
+      "patterns": [
+        {
+          "type": "credential",
+          "regex": "^(\\S+)\\s+\\((\\S+)\\)$",
+          "fields": {
+            "1": "password",
+            "2": "user_or_hash_id"
+          }
+        }
+      ]
+    }
+  }
+}
