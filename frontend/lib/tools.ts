@@ -14,7 +14,14 @@ import {
   Terminal,
   Wrench,
 } from "lucide-react";
-import type { RiskLevel } from "@/lib/generated/RiskLevel";
+
+/**
+ * Risk level for a tool operation. Mirrors the canonical Rust enum
+ * `golish-core/src/tools/risk.rs::RiskLevel` (via Tauri IPC). Defined
+ * locally so the frontend does not depend on the generated `lib/generated/`
+ * directory (which is being removed per M2.5).
+ */
+export type RiskLevel = "low" | "medium" | "high" | "critical";
 
 const TOOL_COLORS: Record<string, string> = {
   run_command: "var(--ansi-green)",
@@ -186,8 +193,6 @@ export function isEditFileResult(result: unknown): result is { diff: string; pat
     typeof (result as { diff: unknown }).diff === "string"
   );
 }
-
-export type { RiskLevel } from "./generated/RiskLevel";
 
 /** Read-only tools that pose minimal risk */
 const READ_ONLY_TOOLS = [

@@ -1,21 +1,51 @@
-import type { VaultEntrySafe } from "@/lib/generated";
 import { invoke } from "./client";
 
 /**
  * Vault entry create/update/delete/list/status IPC wrappers.
  *
- * `VaultEntrySafe` is **not** declared here — it is auto-generated from
- * `golish-core/src/vault.rs::VaultEntrySafe` by `ts-rs` (run
- * `just generate-types` whenever the Rust struct changes). This guarantees
- * the field set stays in sync with the JSON actually serialized over IPC,
- * including the `entry_type → type` rename.
+ * The shape of `VaultEntrySafe` (and its `type` enum) mirrors
+ * `golish-core/src/vault.rs::VaultEntrySafe` — the canonical Rust
+ * struct returned by all `vault_*` Tauri commands. Field names are
+ * snake_case to match the JSON over the wire (Rust serializes with
+ * `#[serde(rename = "type")]` for `entry_type`).
  *
  * Argument types (`AddVaultEntryParams` etc.) below stay hand-written
  * because Tauri's auto camelCase→snake_case conversion only applies to
  * *arguments* (front → back), and they don't 1:1 mirror any Rust struct.
+ *
+ * Whenever the Rust struct changes, update the field set / enum literals
+ * here in lockstep. (Previously this came from `lib/generated/` ts-rs
+ * codegen which is being removed per M2.5.)
  */
 
-export type { VaultEntrySafe };
+export type VaultEntryType =
+  | "password"
+  | "token"
+  | "ssh_key"
+  | "api_key"
+  | "cookie"
+  | "certificate"
+  | "other";
+
+export interface VaultEntrySafe {
+  id: string;
+  name: string;
+  type: VaultEntryType;
+  username: string;
+  notes: string;
+  project: string;
+  tags: string[];
+  status: string;
+  source_url: string;
+  /**
+   * Unix seconds. Nullable when the entry has never been validated.
+   * Frontend arithmetic (e.g. `entry.last_validated_at * 1000`) treats
+   * this as `number` (timestamps fit in `Number.MAX_SAFE_INTEGER`).
+   */
+  last_validated_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
 
 export interface AddVaultEntryParams {
   name: string;
