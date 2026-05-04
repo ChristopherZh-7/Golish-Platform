@@ -1,9 +1,8 @@
-import { emit } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { targets } from "@/lib/api";
 import type { TargetStore } from "@/lib/api/targets";
 import { logAudit } from "@/lib/audit";
-import { onCustomEvent, onEvent } from "@/lib/events";
+import { onCustomEvent, onEvent, sendCustomEvent } from "@/lib/events";
 import type { Target } from "@/lib/pentest/types";
 import { getProjectPath } from "@/lib/projects";
 import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
@@ -74,7 +73,7 @@ export function useTargetData() {
           projectPath: getProjectPath(),
         });
         loadTargets();
-        emit("targets-changed").catch(() => {});
+        sendCustomEvent("targets-changed").catch(() => {});
         logAudit({ action: "target_added", category: "targets", details: addForm.value.trim() });
         return null;
       } catch (e) {

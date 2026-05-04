@@ -213,6 +213,11 @@ export const HomeView = memo(function HomeView() {
 
         if (data.targets && data.targets.length > 0) {
           const { targets: targetsApi } = await import("@/lib/api");
+          // NOTE: intentionally uses dynamic `import("@tauri-apps/api/event")` for
+          // `emit` rather than `sendCustomEvent` from `@/lib/events` — static import
+          // of `@/lib/events` here destabilises the `HomeView.test.tsx` module graph
+          // (savedProjects becomes undefined on render, see vitest mock plan).
+          // Investigate in a follow-up dedicated to `HomeView` mock setup.
           const { emit } = await import("@tauri-apps/api/event");
           try {
             await targetsApi.batchAddTargets({
