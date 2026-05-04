@@ -7,8 +7,6 @@
 //! tracing pipeline used to observe it.
 
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
-
 use super::defaults::{
     default_compaction_threshold, default_context_enabled, default_cooldown_seconds,
     default_protected_turns,
@@ -16,9 +14,8 @@ use super::defaults::{
 use super::enums::IndexLocation;
 
 /// Code indexer settings.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct IndexerSettings {
     /// Where to store index files: `"global"` or `"local"`.
     pub index_location: IndexLocation,
@@ -33,9 +30,8 @@ impl Default for IndexerSettings {
 }
 
 /// Context window management settings.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct ContextSettings {
     /// Enable context window management.
     #[serde(default = "default_context_enabled")]
@@ -68,9 +64,8 @@ impl Default for ContextSettings {
 }
 
 /// Telemetry and observability settings.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct TelemetrySettings {
     /// Langfuse integration settings.
     pub langfuse: LangfuseSettings,
@@ -80,9 +75,8 @@ pub struct TelemetrySettings {
 ///
 /// Langfuse provides LLM observability via OpenTelemetry.
 /// See: <https://langfuse.com/docs/integrations/opentelemetry>.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct LangfuseSettings {
     /// Enable Langfuse tracing.
     pub enabled: bool,
@@ -106,9 +100,8 @@ pub struct LangfuseSettings {
 }
 
 /// Native OS notification settings.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct NotificationsSettings {
     /// Enable native OS notifications for agent/command completion.
     pub native_enabled: bool,
@@ -134,8 +127,7 @@ impl Default for NotificationsSettings {
 }
 
 /// Configuration for an indexed codebase.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, TS)]
-#[ts(export, export_to = "generated/")]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CodebaseConfig {
     /// Path to the codebase (supports `~` for home directory).
     pub path: String,

@@ -8,14 +8,11 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
-
 use super::enums::LogLevel;
 
 /// MCP (Model Context Protocol) server configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct McpServerConfig {
     /// Command to start the server.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -35,9 +32,8 @@ pub struct McpServerConfig {
 }
 
 /// Repository trust settings.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct TrustSettings {
     /// Paths with full trust (all tools allowed).
     #[serde(default)]
@@ -62,9 +58,8 @@ pub struct TrustSettings {
 }
 
 /// Privacy and telemetry settings.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct PrivacySettings {
     /// Enable anonymous usage statistics.
     pub usage_statistics: bool,
@@ -74,9 +69,8 @@ pub struct PrivacySettings {
 }
 
 /// Advanced/debug settings.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct AdvancedSettings {
     /// Enable experimental features.
     pub enable_experimental: bool,

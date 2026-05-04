@@ -5,18 +5,15 @@ use std::{
 
 use serde::Serialize;
 use tokio::sync::RwLock;
-use ts_rs::TS;
 
-#[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "generated/")]
+#[derive(Debug, Clone, Serialize)]
 pub struct ProviderRequestStatsSnapshot {
     pub requests: u64,
     pub last_sent_at: Option<u64>,
     pub last_received_at: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "generated/")]
+#[derive(Debug, Clone, Serialize)]
 pub struct ApiRequestStatsSnapshot {
     pub providers: HashMap<String, ProviderRequestStatsSnapshot>,
 }

@@ -10,13 +10,10 @@ use rig::completion::{AssistantContent, Message};
 use rig::message::UserContent;
 use rig::one_or_many::OneOrMany;
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
-
 
 /// Role of a message in the conversation (simplified for Golish).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-#[ts(export, export_to = "generated/")]
 pub enum GolishMessageRole {
     User,
     Assistant,
@@ -26,8 +23,7 @@ pub enum GolishMessageRole {
 
 /// A simplified message format for Golish sessions.
 /// This provides a bridge between rig's Message type and golish-core's SessionMessage.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "generated/")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GolishSessionMessage {
     pub role: GolishMessageRole,
     pub content: String,
@@ -153,8 +149,7 @@ impl GolishSessionMessage {
 
 /// Golish session snapshot containing conversation data.
 #[cfg_attr(not(feature = "tauri"), allow(dead_code))]
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "generated/")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GolishSessionSnapshot {
     /// Session metadata
     pub workspace_label: String,
@@ -191,8 +186,7 @@ pub struct GolishSessionSnapshot {
 
 /// Session listing information for display.
 #[cfg_attr(not(feature = "tauri"), allow(dead_code))]
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "generated/")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionListingInfo {
     pub identifier: String,
     pub path: PathBuf,
