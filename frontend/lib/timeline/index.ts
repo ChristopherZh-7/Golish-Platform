@@ -1,20 +1,12 @@
 /**
  * Timeline utilities for unified timeline rendering.
  *
- * This module provides shared utilities for processing timeline blocks,
- * extracting sub-agents, and finalizing streaming content.
+ * Most consumers import directly from the sub-modules
+ * (e.g. `@/lib/timeline/selectors`, `@/lib/timeline/blockHeightEstimation`,
+ * `@/lib/timeline/streamingBlockFinalization`). This barrel keeps a small
+ * surface for the sub-agent extraction helpers used by the AgentMessage
+ * renderer; previous re-exports of selectors / height estimation /
+ * streaming finalization were unused (M2.3 cleanup).
  */
 
-export { estimateBlockHeight } from "./blockHeightEstimation";
-export {
-  memoizedSelectAgentMessages,
-  memoizedSelectCommandBlocks,
-  selectAgentMessagesFromTimeline,
-  selectCommandBlocksFromTimeline,
-} from "./selectors";
-export { extractToolCalls, finalizeStreamingBlocks } from "./streamingBlockFinalization";
-export {
-  type ExtractedBlocks,
-  extractSubAgentBlocks,
-  type RenderBlock,
-} from "./subAgentExtraction";
+export { extractSubAgentBlocks, type RenderBlock } from "./subAgentExtraction";
