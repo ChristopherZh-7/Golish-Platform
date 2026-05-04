@@ -359,7 +359,7 @@ const primaryArgKeys: Record<string, string> = {
  * Extracts the primary argument from a tool call for inline display.
  * Returns null if no primary arg is defined or found.
  */
-export function getPrimaryArgument(tool: AnyToolCall): string | null {
+function getPrimaryArgument(tool: AnyToolCall): string | null {
   const key = primaryArgKeys[tool.name];
   if (!key) return null;
 

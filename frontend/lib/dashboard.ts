@@ -43,7 +43,7 @@ export interface ProjectMethodology {
  * `VaultEntrySafe` so the field shape and `type` enum stay in lockstep
  * with the Rust source of truth (`golish-core/src/vault.rs`).
  */
-export type VaultEntry = Pick<GeneratedVaultEntrySafe, "id" | "name" | "type">;
+type VaultEntry = Pick<GeneratedVaultEntrySafe, "id" | "name" | "type">;
 
 export interface AuditEntry {
   id: number;

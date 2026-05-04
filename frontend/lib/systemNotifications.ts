@@ -261,7 +261,7 @@ async function handleNotificationClick(notification: Options): Promise<void> {
 // Notification Sending
 // =============================================================================
 
-export interface SendNotificationOptions {
+interface SendNotificationOptions {
   title: string;
   body: string;
   tabId: string;

@@ -55,7 +55,7 @@ export function getToolIcon(name: string): LucideIcon {
 }
 
 /** Base properties shared by all tool call types */
-export interface BaseToolCall {
+interface BaseToolCall {
   name: string;
   executedByAgent?: boolean;
 }
@@ -139,7 +139,7 @@ export function formatToolResult(result: unknown): string {
 }
 
 /** Type guard to check if a result is a shell command result */
-export function isShellCommandResult(
+function isShellCommandResult(
   result: unknown
 ): result is { stdout: string; stderr: string; exit_code: number; command?: string } {
   return (
@@ -221,7 +221,7 @@ const SHELL_TOOLS = ["run_pty_cmd", "create_pty_session", "send_pty_input"];
 const DESTRUCTIVE_TOOLS = ["delete_file", "execute_code"];
 
 /** Tools that can modify files or execute code (dangerous operations) */
-export const DANGEROUS_TOOLS = [
+const DANGEROUS_TOOLS = [
   "write_file",
   "edit_file",
   "apply_patch",

@@ -1,7 +1,7 @@
 import { invoke } from "@/lib/api/client";
 import { getProjectPath } from "@/lib/projects";
 
-export interface RecordingEvent {
+interface RecordingEvent {
   elapsed: number; // seconds since start
   data: string;
 }

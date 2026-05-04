@@ -239,7 +239,7 @@ export function isLikelyFilePath(text: string): boolean {
 // Index-Aware Path Detection
 // =============================================================================
 
-export interface DetectedPathWithResolution extends DetectedPath {
+interface DetectedPathWithResolution extends DetectedPath {
   /** Resolved absolute path (if found in index) */
   absolutePath?: string;
   /** Whether this path was validated against the file index */
