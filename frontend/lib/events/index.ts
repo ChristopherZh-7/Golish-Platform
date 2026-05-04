@@ -1,5 +1,5 @@
 export { type EventChannel, EventChannels } from "./channels";
-export { onCustomEvent, onEvent } from "./listener";
+export { onCustomEvent, onEvent, sendCustomEvent, sendEvent } from "./listener";
 export type {
   AlternateScreenPayload,
   CommandBlockPayload,

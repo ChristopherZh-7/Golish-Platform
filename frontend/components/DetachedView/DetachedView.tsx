@@ -1,10 +1,9 @@
-import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { SecurityTab } from "@/components/SecurityView/SecurityView";
 import { Terminal } from "@/components/Terminal/Terminal";
 import { closeDetached } from "@/lib/api/window";
-import { onCustomEvent } from "@/lib/events";
+import { onCustomEvent, sendEvent } from "@/lib/events";
 import { runTauriUnlistenFn, runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import { ThemeManager } from "@/lib/theme";
 import "@xterm/xterm/css/xterm.css";
@@ -44,7 +43,7 @@ export function DetachedView({ sessionId, tabType }: DetachedViewProps) {
     const currentWindow = getCurrentWindow();
     const unlisten = currentWindow.onCloseRequested(async () => {
       try {
-        await emit("detached-window-closed", { session_id: sessionId });
+        await sendEvent("detached-window-closed", { session_id: sessionId });
       } catch {
         /* ignore */
       }
@@ -109,7 +108,7 @@ const stopPropagation = (e: React.MouseEvent) => {
 
 async function closeDetachedWindow(sessionId: string) {
   try {
-    await emit("detached-window-closed", { session_id: sessionId });
+    await sendEvent("detached-window-closed", { session_id: sessionId });
   } catch {
     /* ignore */
   }
