@@ -4,12 +4,10 @@
 //! text and image attachments, following patterns from the Vercel AI SDK.
 
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 /// A part of a multi-modal prompt payload.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[ts(export, export_to = "generated/")]
 pub enum PromptPart {
     /// Text content.
     Text { text: String },
@@ -30,8 +28,7 @@ pub enum PromptPart {
 ///
 /// This is the format expected by the `send_ai_prompt_with_attachments` command.
 /// For text-only prompts, the existing `send_ai_prompt_session` can still be used.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "generated/")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptPayload {
     /// The parts of the prompt (text and images).
     pub parts: Vec<PromptPart>,

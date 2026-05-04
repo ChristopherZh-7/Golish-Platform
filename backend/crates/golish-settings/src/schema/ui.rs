@@ -6,23 +6,19 @@
 //! agent-runtime knobs (session retention, auto-approval thresholds).
 
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
-
 use super::enums::Theme;
 
 /// Tool enablement settings.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct ToolsSettings {
     /// Enable web search tools (Tavily).
     pub web_search: bool,
 }
 
 /// User interface preferences.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct UiSettings {
     /// Theme.
     pub theme: Theme,
@@ -50,9 +46,8 @@ impl Default for UiSettings {
 }
 
 /// Window state settings (persisted across sessions).
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct WindowSettings {
     /// Window width in pixels.
     pub width: u32,
@@ -85,9 +80,8 @@ impl Default for WindowSettings {
 }
 
 /// Caret (text cursor) customization for the input area.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct CaretSettings {
     /// Caret style: `"block"` or `"default"` (native browser caret).
     pub style: String,
@@ -119,9 +113,8 @@ impl Default for CaretSettings {
 }
 
 /// Terminal configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct TerminalSettings {
     /// Default shell override.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -161,9 +154,8 @@ impl Default for TerminalSettings {
 }
 
 /// Agent behavior settings.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct AgentSettings {
     /// Auto-save conversations.
     pub session_persistence: bool,

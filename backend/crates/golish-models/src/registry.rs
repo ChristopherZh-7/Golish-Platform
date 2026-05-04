@@ -8,8 +8,6 @@ use golish_settings::schema::AiProvider;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::RwLock;
-use ts_rs::TS;
-
 use crate::capabilities::ModelCapabilities;
 use crate::providers::*;
 
@@ -33,8 +31,7 @@ pub struct ModelDefinition {
 }
 
 /// A dynamically discovered model (e.g., from Ollama).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "generated/")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DynamicModelDefinition {
     /// Model identifier
     pub id: String,
@@ -60,8 +57,7 @@ impl From<DynamicModelDefinition> for OwnedModelDefinition {
 /// Owned version of ModelDefinition for serialization to frontend.
 ///
 /// This is the primary type exposed via Tauri commands.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "generated/")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnedModelDefinition {
     pub id: String,
     pub display_name: String,

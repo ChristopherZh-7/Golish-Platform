@@ -8,8 +8,6 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
-
 use super::enums::{AiProvider, ReasoningEffort};
 use super::llm::{
     AnthropicSettings, GeminiSettings, GroqSettings, NvidiaSettings, OllamaSettings,
@@ -22,8 +20,7 @@ use super::llm::{
 /// Allows overriding the model and LLM parameters for specific sub-agents
 /// (e.g., "coder", "analyzer"). When fields are `None`, the sub-agent
 /// inherits from the main agent's defaults.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, TS)]
-#[ts(export, export_to = "generated/")]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SubAgentModelConfig {
     /// Provider override (None = inherit from main agent).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -50,9 +47,8 @@ pub struct SubAgentModelConfig {
 }
 
 /// AI provider configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct AiSettings {
     /// Default AI provider.
     pub default_provider: AiProvider,
@@ -153,9 +149,8 @@ impl Default for AiSettings {
 ///
 /// When configured, proxy settings are applied to all outgoing HTTP requests
 /// including LLM API calls, web fetch, and Tavily search.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct NetworkSettings {
     /// HTTP/HTTPS proxy URL (e.g., `"http://127.0.0.1:7890"` or `"socks5://proxy:1080"`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -173,9 +168,8 @@ pub struct NetworkSettings {
 }
 
 /// API keys for external services.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
-#[ts(export, export_to = "generated/")]
 pub struct ApiKeysSettings {
     /// Tavily API key for web search.
     #[serde(skip_serializing_if = "Option::is_none")]
