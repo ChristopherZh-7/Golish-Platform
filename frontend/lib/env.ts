@@ -2,11 +2,11 @@ export function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
-export type Platform = "macos" | "windows" | "linux";
+type Platform = "macos" | "windows" | "linux";
 
 let cachedPlatform: Platform | null = null;
 
-export function getPlatform(): Platform {
+function getPlatform(): Platform {
   if (cachedPlatform) return cachedPlatform;
   const ua = navigator.userAgent.toLowerCase();
   if (ua.includes("win")) cachedPlatform = "windows";

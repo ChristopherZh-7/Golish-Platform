@@ -156,7 +156,7 @@ function escapeRegex(str: string): string {
  * @param filename - Filename to search for (e.g., "main.rs")
  * @returns Array of absolute paths matching the filename
  */
-export async function findFilesByName(filename: string): Promise<string[]> {
+async function findFilesByName(filename: string): Promise<string[]> {
   try {
     // The backend's find_files uses regex matching, so we need to escape
     // the filename and create a pattern that matches the filename at the end of a path
