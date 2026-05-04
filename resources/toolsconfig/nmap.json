@@ -1,0 +1,178 @@
+{
+  "tool": {
+    "id": "nmap",
+    "name": "nmap",
+    "description": "Network exploration tool and security/port scanner",
+    "executable": "nmap",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "port-scan",
+    "tier": "essential",
+    "tags": ["recon", "port-scan", "network", "fingerprint"],
+    "install": {
+      "method": "homebrew",
+      "source": "nmap"
+    },
+    "params": [
+      {
+        "label": "Target",
+        "flag": "",
+        "type": "string",
+        "required": true,
+        "description": "Target host, CIDR, or hostname (e.g. 192.168.1.0/24, scanme.nmap.org)",
+        "placeholder": "scanme.nmap.org"
+      },
+      {
+        "label": "Scan Type",
+        "flag": "",
+        "type": "select",
+        "description": "Choose scan technique",
+        "options": [
+          { "value": "-sS", "label": "TCP SYN (stealth)" },
+          { "value": "-sT", "label": "TCP Connect" },
+          { "value": "-sU", "label": "UDP Scan" },
+          { "value": "-sn", "label": "Ping sweep (no port scan)" },
+          { "value": "-sV", "label": "Service/version detection" }
+        ]
+      },
+      {
+        "label": "Ports",
+        "flag": "-p",
+        "type": "string",
+        "description": "Port spec (e.g. 22,80,443 or 1-65535 or - for all)",
+        "placeholder": "1-1000"
+      },
+      {
+        "label": "Top Ports",
+        "flag": "--top-ports",
+        "type": "string",
+        "description": "Scan N most common ports",
+        "placeholder": "100"
+      },
+      {
+        "label": "Timing Template",
+        "flag": "-T",
+        "type": "select",
+        "description": "0=paranoid, 5=insane",
+        "default": "3",
+        "options": [
+          { "value": "0", "label": "T0 - paranoid" },
+          { "value": "1", "label": "T1 - sneaky" },
+          { "value": "2", "label": "T2 - polite" },
+          { "value": "3", "label": "T3 - normal" },
+          { "value": "4", "label": "T4 - aggressive" },
+          { "value": "5", "label": "T5 - insane" }
+        ]
+      },
+      {
+        "label": "OS Detection",
+        "flag": "-O",
+        "type": "boolean",
+        "description": "Enable OS fingerprinting (requires root)"
+      },
+      {
+        "label": "Aggressive",
+        "flag": "-A",
+        "type": "boolean",
+        "description": "Enable OS detection, version, script scanning, and traceroute"
+      },
+      {
+        "label": "Default Scripts",
+        "flag": "-sC",
+        "type": "boolean",
+        "description": "Run default NSE scripts"
+      },
+      {
+        "label": "Script",
+        "flag": "--script",
+        "type": "string",
+        "description": "Specific NSE script(s) to run (e.g. vuln, http-enum)",
+        "placeholder": "vuln"
+      },
+      {
+        "label": "Output File",
+        "flag": "-oA",
+        "type": "string",
+        "description": "Output basename (creates .nmap, .gnmap, .xml)",
+        "placeholder": "scan_result"
+      },
+      {
+        "label": "Verbose",
+        "flag": "-v",
+        "type": "boolean",
+        "description": "Increase verbosity"
+      }
+    ],
+    "skills": [
+      {
+        "id": "quick-scan",
+        "name": "Quick Top-100 Scan",
+        "description": "Fast scan of top 100 ports",
+        "args": "{{target}} --top-ports 100 -T4",
+        "tags": ["recon", "fast"]
+      },
+      {
+        "id": "full-tcp",
+        "name": "Full TCP Scan",
+        "description": "Scan all 65535 TCP ports with service detection",
+        "args": "-sS -sV -p- -T4 {{target}}",
+        "tags": ["thorough", "slow"]
+      },
+      {
+        "id": "stealth-syn",
+        "name": "Stealth SYN Scan",
+        "description": "TCP SYN scan with timing T2",
+        "args": "-sS -T2 -p 1-1000 {{target}}",
+        "tags": ["stealth"]
+      },
+      {
+        "id": "vuln-scripts",
+        "name": "Run Vuln NSE Scripts",
+        "description": "Run vulnerability NSE scripts on common ports",
+        "args": "-sV --script vuln {{target}}",
+        "tags": ["vuln-scan"]
+      },
+      {
+        "id": "discover-hosts",
+        "name": "Host Discovery (Ping Sweep)",
+        "description": "Find live hosts in CIDR without port scanning",
+        "args": "-sn {{target}}",
+        "tags": ["discovery"]
+      },
+      {
+        "id": "aggressive-all",
+        "name": "Aggressive Full Recon",
+        "description": "OS, version, scripts, traceroute - one command",
+        "args": "-A -T4 {{target}}",
+        "tags": ["thorough"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["host", "port", "service"],
+      "detect": "Nmap scan report|PORT\\s+STATE\\s+SERVICE",
+      "db_action": "host_add",
+      "patterns": [
+        {
+          "type": "open_port",
+          "regex": "^(\\d+)/(tcp|udp)\\s+open\\s+(\\S+)(?:\\s+(.+))?$",
+          "fields": {
+            "1": "port",
+            "2": "protocol",
+            "3": "service",
+            "4": "version"
+          }
+        },
+        {
+          "type": "host_status",
+          "regex": "Nmap scan report for ([\\w\\.-]+)(?:\\s+\\(([\\d\\.]+)\\))?",
+          "fields": {
+            "1": "hostname",
+            "2": "ip"
+          }
+        }
+      ]
+    }
+  }
+}

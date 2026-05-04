@@ -1,6 +1,6 @@
-import { listen } from "@tauri-apps/api/event";
 import { Check, FileSearch, Loader2, Play, Square, Trash2, Zap } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { onCustomEvent } from "@/lib/events";
 import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import {
   type SensitiveProgress,
@@ -44,10 +44,10 @@ export function SensitiveScanPanel() {
   }, [projectPath]);
 
   useEffect(() => {
-    const unlisten = listen<SensitiveProgress>("sensitive-scan-progress", (event) => {
-      setProgress(event.payload);
-      setRunning(event.payload.running);
-      if (!event.payload.running) {
+    const unlisten = onCustomEvent<SensitiveProgress>("sensitive-scan-progress", (payload) => {
+      setProgress(payload);
+      setRunning(payload.running);
+      if (!payload.running) {
         securityApi
           .sensitiveScanResults(projectPath, false)
           .then((r) => {

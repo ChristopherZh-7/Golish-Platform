@@ -126,6 +126,13 @@ zap_report*.json
 nuclei_*.json
 nuclei_*.txt
 
+# Pentest wordlists (data, not code; downloaded on-demand via
+# scripts/download_wordlists.sh from danielmiessler/SecLists).
+# Keep README.md and .gitkeep tracked so the directory survives.
+resources/wordlists/*
+!resources/wordlists/README.md
+!resources/wordlists/.gitkeep
+
 # Editor / tooling backup files (e.g. .cursor extension auto-renames)
 *.bak
 *.bak-*

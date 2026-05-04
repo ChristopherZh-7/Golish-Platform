@@ -1,8 +1,8 @@
-import { listen } from "@tauri-apps/api/event";
 import type React from "react";
 import { useEffect, useState } from "react";
 import { browserClose } from "@/lib/api/pentest-browser";
 import { shellIntegrationInstall, shellIntegrationStatus } from "@/lib/api/shell";
+import { onCustomEvent } from "@/lib/events";
 import { logger } from "@/lib/logger";
 import { runTauriUnlistenFn } from "@/lib/run-tauri-unlisten";
 import { useAiEvents } from "../../hooks/useAiEvents";
@@ -352,17 +352,17 @@ export function useAppLifecycle({
     const unlisteners: Array<() => void> = [];
     (async () => {
       unlisteners.push(
-        await listen("menu-open-project", () => {
+        await onCustomEvent("menu-open-project", () => {
           openHomeTab();
         })
       );
       unlisteners.push(
-        await listen("menu-new-project", () => {
+        await onCustomEvent("menu-new-project", () => {
           openHomeTab();
         })
       );
       unlisteners.push(
-        await listen("menu-settings", () => {
+        await onCustomEvent("menu-settings", () => {
           openSettingsTab();
         })
       );

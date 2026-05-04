@@ -1,0 +1,232 @@
+{
+  "tool": {
+    "id": "netexec",
+    "name": "netexec",
+    "description": "Network service exploitation tool (successor to crackmapexec) - SMB, WinRM, RDP, SSH, FTP, MSSQL, LDAP, VNC bulk auth + post-exploit",
+    "executable": "nxc",
+    "runtime": "python",
+    "runtimeVersion": "3.11",
+    "launchMode": "cli",
+    "category": "post-exploit",
+    "subcategory": "lateral-movement",
+    "tier": "essential",
+    "tags": ["ad", "lateral", "smb", "winrm", "post-exploit"],
+    "install": {
+      "method": "pip",
+      "source": "netexec"
+    },
+    "params": [
+      {
+        "label": "Protocol",
+        "flag": "",
+        "type": "select",
+        "required": true,
+        "description": "Service protocol (placed first)",
+        "options": [
+          { "value": "smb", "label": "smb" },
+          { "value": "winrm", "label": "winrm" },
+          { "value": "rdp", "label": "rdp" },
+          { "value": "ssh", "label": "ssh" },
+          { "value": "ftp", "label": "ftp" },
+          { "value": "mssql", "label": "mssql" },
+          { "value": "ldap", "label": "ldap" },
+          { "value": "vnc", "label": "vnc" },
+          { "value": "wmi", "label": "wmi" },
+          { "value": "nfs", "label": "nfs" }
+        ]
+      },
+      {
+        "label": "Targets",
+        "flag": "",
+        "type": "string",
+        "required": true,
+        "description": "IP, CIDR, hostname, or file (positional)",
+        "placeholder": "192.168.1.0/24"
+      },
+      {
+        "label": "Username",
+        "flag": "-u",
+        "type": "string",
+        "description": "Single username or path to user list",
+        "placeholder": "administrator"
+      },
+      {
+        "label": "Password",
+        "flag": "-p",
+        "type": "string",
+        "description": "Single password or path to password list",
+        "placeholder": "Pass123"
+      },
+      {
+        "label": "NTLM Hash",
+        "flag": "-H",
+        "type": "string",
+        "description": "Pass-the-Hash with NTLM hash",
+        "placeholder": "aad3b435b51404eeaad3b435b51404ee:..."
+      },
+      {
+        "label": "Domain",
+        "flag": "-d",
+        "type": "string",
+        "description": "AD domain (or use --local-auth for local)",
+        "placeholder": "lab.local"
+      },
+      {
+        "label": "Local Auth",
+        "flag": "--local-auth",
+        "type": "boolean",
+        "description": "Authenticate against local SAM (not domain)"
+      },
+      {
+        "label": "Kerberos",
+        "flag": "-k",
+        "type": "boolean",
+        "description": "Use Kerberos auth"
+      },
+      {
+        "label": "Use Cache",
+        "flag": "--use-kcache",
+        "type": "boolean",
+        "description": "Use Kerberos credential cache"
+      },
+      {
+        "label": "Module",
+        "flag": "-M",
+        "type": "string",
+        "description": "Run a built-in module (e.g. spider_plus, lsassy, mimikatz)",
+        "placeholder": "spider_plus"
+      },
+      {
+        "label": "Module Options",
+        "flag": "-o",
+        "type": "string",
+        "description": "Module options (KEY=VALUE space-separated)",
+        "placeholder": "EXFILE=secrets.txt"
+      },
+      {
+        "label": "Shares",
+        "flag": "--shares",
+        "type": "boolean",
+        "description": "Enumerate shares + permissions"
+      },
+      {
+        "label": "Sessions",
+        "flag": "--sessions",
+        "type": "boolean",
+        "description": "Enumerate logged-on sessions"
+      },
+      {
+        "label": "Loggedon Users",
+        "flag": "--loggedon-users",
+        "type": "boolean",
+        "description": "Enumerate currently logged-on users"
+      },
+      {
+        "label": "Users",
+        "flag": "--users",
+        "type": "boolean",
+        "description": "Enumerate domain users"
+      },
+      {
+        "label": "Groups",
+        "flag": "--groups",
+        "type": "boolean",
+        "description": "Enumerate domain groups"
+      },
+      {
+        "label": "Pass Pol",
+        "flag": "--pass-pol",
+        "type": "boolean",
+        "description": "Dump password policy"
+      },
+      {
+        "label": "Execute",
+        "flag": "-x",
+        "type": "string",
+        "description": "Execute command on target",
+        "placeholder": "whoami"
+      },
+      {
+        "label": "Threads",
+        "flag": "--threads",
+        "type": "string",
+        "description": "Concurrent targets",
+        "default": "100"
+      },
+      {
+        "label": "Continue on Success",
+        "flag": "--continue-on-success",
+        "type": "boolean",
+        "description": "Don't stop on first valid login per target"
+      }
+    ],
+    "skills": [
+      {
+        "id": "smb-spray",
+        "name": "SMB password spray (one user, many hosts)",
+        "description": "Spray a single password across CIDR",
+        "args": "smb {{cidr}} -u {{user}} -p {{pass}} --continue-on-success",
+        "tags": ["spray", "smb"]
+      },
+      {
+        "id": "smb-pth",
+        "name": "Pass-the-Hash via SMB",
+        "description": "Use NTLM hash to auth across hosts",
+        "args": "smb {{cidr}} -u {{user}} -H {{hash}} --local-auth",
+        "tags": ["pth", "smb"]
+      },
+      {
+        "id": "winrm-exec",
+        "name": "WinRM remote command",
+        "description": "Run command on each WinRM-enabled host",
+        "args": "winrm {{cidr}} -u {{user}} -p {{pass}} -x \"whoami\"",
+        "tags": ["winrm", "exec"]
+      },
+      {
+        "id": "smb-shares",
+        "name": "Enumerate shares",
+        "description": "List shares + ACL with given creds",
+        "args": "smb {{cidr}} -u {{user}} -p {{pass}} --shares",
+        "tags": ["recon"]
+      },
+      {
+        "id": "lsassy-dump",
+        "name": "Lsassy LSASS dump",
+        "description": "Use lsassy module to dump LSASS via SMB",
+        "args": "smb {{cidr}} -u {{user}} -p {{pass}} -M lsassy",
+        "tags": ["dump", "credentials"]
+      },
+      {
+        "id": "ldap-users",
+        "name": "LDAP user enum (no creds)",
+        "description": "Anonymous LDAP enumeration",
+        "args": "ldap {{target}} -u '' -p '' --users",
+        "tags": ["ad", "ldap"]
+      },
+      {
+        "id": "ssh-spray",
+        "name": "SSH spray",
+        "description": "SSH credential spraying",
+        "args": "ssh {{cidr}} -u {{users}} -p {{passes}} --continue-on-success",
+        "tags": ["ssh", "spray"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["credential", "host", "info"],
+      "detect": "NetExec|nxc|\\[\\+\\]\\s+(\\w+\\\\)?\\w+:",
+      "db_action": "credential_add",
+      "patterns": [
+        {
+          "type": "credential",
+          "regex": "\\[\\+\\]\\s+(\\S+)\\s+(\\S+):(\\S+)\\s",
+          "fields": {
+            "1": "host",
+            "2": "username",
+            "3": "password_or_hash"
+          }
+        }
+      ]
+    }
+  }
+}

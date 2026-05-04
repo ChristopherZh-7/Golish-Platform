@@ -1,0 +1,181 @@
+{
+  "tool": {
+    "id": "gowitness",
+    "name": "gowitness",
+    "description": "Web screenshot utility using Chrome Headless - bulk capture, indexed DB, HTML report",
+    "executable": "gowitness",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "visual",
+    "tier": "recommended",
+    "tags": ["recon", "screenshot", "visual", "bulk"],
+    "install": {
+      "method": "homebrew",
+      "source": "gowitness"
+    },
+    "params": [
+      {
+        "label": "Mode",
+        "flag": "",
+        "type": "select",
+        "required": true,
+        "description": "Sub-command",
+        "options": [
+          { "value": "single", "label": "single - one URL" },
+          { "value": "file", "label": "file - URL list file" },
+          { "value": "scan", "label": "scan - CIDR scan + screenshot" },
+          { "value": "report", "label": "report - serve HTML report" },
+          { "value": "server", "label": "server - REST API server" }
+        ]
+      },
+      {
+        "label": "URL",
+        "flag": "-u",
+        "type": "string",
+        "description": "single mode: URL",
+        "placeholder": "https://target.com"
+      },
+      {
+        "label": "File",
+        "flag": "-f",
+        "type": "string",
+        "description": "file mode: URLs file",
+        "placeholder": "urls.txt"
+      },
+      {
+        "label": "CIDR",
+        "flag": "--cidr",
+        "type": "string",
+        "description": "scan mode: target CIDR",
+        "placeholder": "10.0.0.0/24"
+      },
+      {
+        "label": "Ports",
+        "flag": "--ports",
+        "type": "string",
+        "description": "scan mode: ports list",
+        "default": "80,443",
+        "placeholder": "80,443,8080,8443"
+      },
+      {
+        "label": "Threads",
+        "flag": "-t",
+        "type": "string",
+        "description": "Concurrent screenshots",
+        "default": "4"
+      },
+      {
+        "label": "Timeout",
+        "flag": "--timeout",
+        "type": "string",
+        "description": "Per-URL timeout (seconds)",
+        "default": "10"
+      },
+      {
+        "label": "Resolution",
+        "flag": "--resolution-x",
+        "type": "string",
+        "description": "Screenshot width",
+        "default": "1440"
+      },
+      {
+        "label": "Resolution Y",
+        "flag": "--resolution-y",
+        "type": "string",
+        "description": "Screenshot height",
+        "default": "900"
+      },
+      {
+        "label": "Output Dir",
+        "flag": "--screenshot-path",
+        "type": "string",
+        "description": "Where to save PNGs",
+        "default": "screenshots/"
+      },
+      {
+        "label": "DB File",
+        "flag": "--db-uri",
+        "type": "string",
+        "description": "SQLite DB path",
+        "placeholder": "gowitness.sqlite3"
+      },
+      {
+        "label": "Disable DB",
+        "flag": "--disable-db",
+        "type": "boolean",
+        "description": "Don't write to SQLite"
+      },
+      {
+        "label": "User Agent",
+        "flag": "--user-agent",
+        "type": "string",
+        "description": "Custom UA",
+        "placeholder": "Mozilla/5.0"
+      },
+      {
+        "label": "No Cert Verify",
+        "flag": "--ignore-cert-errors",
+        "type": "boolean",
+        "description": "Ignore SSL errors"
+      },
+      {
+        "label": "Report Address",
+        "flag": "--address",
+        "type": "string",
+        "description": "report server bind",
+        "default": "localhost:7171"
+      }
+    ],
+    "skills": [
+      {
+        "id": "single-url",
+        "name": "Single URL screenshot",
+        "description": "Capture one site",
+        "args": "single -u {{target}}",
+        "tags": ["fast"]
+      },
+      {
+        "id": "bulk-file",
+        "name": "Bulk from file",
+        "description": "Screenshot all URLs in a file",
+        "args": "file -f {{urls}} -t 8",
+        "tags": ["bulk"]
+      },
+      {
+        "id": "cidr-scan",
+        "name": "CIDR scan + screenshot",
+        "description": "Scan a network and screenshot live web hosts",
+        "args": "scan --cidr {{cidr}} --ports 80,443,8080,8443",
+        "tags": ["recon", "discovery"]
+      },
+      {
+        "id": "from-httpx",
+        "name": "Pipe httpx → gowitness",
+        "description": "Use httpx output as URL list",
+        "args": "file -f live.txt -t 8 --screenshot-path shots/",
+        "tags": ["pipeline"]
+      },
+      {
+        "id": "report-server",
+        "name": "Serve HTML report",
+        "description": "Browse all screenshots in browser",
+        "args": "report serve --address localhost:7171",
+        "tags": ["report"]
+      },
+      {
+        "id": "ignore-ssl",
+        "name": "Capture self-signed sites",
+        "description": "Skip SSL cert verify",
+        "args": "file -f {{urls}} --ignore-cert-errors",
+        "tags": ["bulk", "ssl"]
+      }
+    ],
+    "output": {
+      "format": "binary",
+      "produces": ["screenshot"],
+      "detect": "gowitness|preflighting",
+      "patterns": []
+    }
+  }
+}

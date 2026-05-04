@@ -2,7 +2,8 @@
 //!
 //! Expected command domains exposed here (documentation only; the
 //! authoritative list is whatever `crate::ai::commands` re-exports):
-//! - **Lifecycle**: `init_ai_agent*`, `shutdown_ai_agent`, `is_ai_initialized`
+//! - **Lifecycle**: `init_ai_agent` (unified, takes `ProviderConfig`),
+//!   `shutdown_ai_agent`, `is_ai_initialized`
 //! - **Chat**: `send_ai_prompt*`, `clear_ai_conversation*`, `cancel_ai_generation`
 //! - **Tools**: `execute_ai_tool`, `get_available_tools`, `list_sub_agents`,
 //!   `*_sub_agent_model`, `get_vision_capabilities`, `signal_frontend_ready`

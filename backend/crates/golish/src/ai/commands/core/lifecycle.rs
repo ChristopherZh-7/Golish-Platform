@@ -1,4 +1,14 @@
-//! AI agent lifecycle commands: init / unified-init.
+//! AI agent lifecycle commands: unified provider-config init.
+//!
+//! Historically there were four init commands (`init_ai_agent`,
+//! `init_ai_agent_openai`, `init_ai_agent_vertex`,
+//! `init_ai_agent_unified`). They were collapsed into a single
+//! `init_ai_agent(config: ProviderConfig)` in QW2 (2026-05) — the
+//! `ProviderConfig` enum (defined in `golish-llm-providers`) carries
+//! the provider-specific fields with serde tag dispatch, so the single
+//! command handles every provider. The legacy bridge field
+//! (`state.ai_state.bridge`) is still written here pending the
+//! per-session bridge migration tracked separately.
 
 use crate::error::GolishError;
 use std::sync::Arc;
@@ -13,79 +23,23 @@ use crate::state::AppState;
 use golish_core::runtime::GolishRuntime;
 
 
-/// Initialize the AI agent with the specified configuration.
-///
-/// If an existing AI agent is running, its session will be finalized and the
-/// sidecar session will be ended before the new agent is initialized.
-///
-/// # Arguments
-/// * `workspace` - Path to the workspace directory
-/// * `provider` - LLM provider name (e.g., "openrouter", "anthropic")
-/// * `model` - Model identifier (e.g., "anthropic/claude-3.5-sonnet")
-/// * `api_key` - API key for the provider
-#[tauri::command]
-pub async fn init_ai_agent(
-    state: State<'_, AppState>,
-    app: AppHandle,
-    workspace: String,
-    provider: String,
-    model: String,
-    api_key: String,
-) -> Result<(), GolishError> {
-    // Clean up existing session before replacing the bridge
-    // This ensures sessions are properly finalized when switching models/providers
-    {
-        let bridge_guard = state.ai_state.bridge.read().await;
-        if bridge_guard.is_some() {
-            // End the sidecar session (the bridge's Drop impl will finalize its session)
-            if let Err(e) = state.sidecar_state.end_session() {
-                tracing::warn!("Failed to end sidecar session during agent reinit: {}", e);
-            } else {
-                tracing::debug!("Sidecar session ended during agent reinit");
-            }
-        }
-    }
-
-    // Phase 5: Use runtime-based constructor
-    // TauriRuntime handles event emission via Tauri's event system
-    let app_for_tools = app.clone();
-    let runtime: Arc<dyn GolishRuntime> = Arc::new(TauriRuntime::new(app));
-
-    // Store runtime in AiState (for potential future use by other components)
-    *state.ai_state.runtime.write().await = Some(runtime.clone());
-
-    // Create bridge with runtime (Phase 5 - new path)
-    let mut bridge =
-        AgentBridge::new_with_runtime(workspace.into(), &provider, &model, &api_key, runtime)
-            .await
-?;
-
-    configure_bridge(&mut bridge, &state, "legacy", Some(app_for_tools)).await;
-
-    // Replace the bridge (old bridge's Drop impl will finalize its session)
-    *state.ai_state.bridge.write().await = Some(bridge);
-
-    tracing::info!(
-        "AI agent initialized with provider: {}, model: {}",
-        provider,
-        model
-    );
-    Ok(())
-}
-
 /// Initialize the AI agent using unified provider configuration.
 ///
-/// This is the unified initialization command that can handle any provider
-/// using the ProviderConfig enum. It routes to the appropriate AgentBridge
-/// constructor based on the provider variant.
+/// `ProviderConfig` is a serde-tagged enum that carries provider-specific
+/// fields (VertexAi / Openrouter / Openai / Anthropic / Ollama / Gemini /
+/// Groq / Xai / ZaiSdk / Nvidia / VertexGemini). One command handles every
+/// provider — the constructor on `AgentBridge::from_provider_config`
+/// routes to the right backend.
 ///
-/// If an existing AI agent is running, its session will be finalized and the
-/// sidecar session will be ended before the new agent is initialized.
+/// If an existing AI agent is running, its sidecar session is ended and
+/// its bridge is replaced. The previous bridge's `Drop` impl finalises
+/// any in-flight session.
 ///
 /// # Arguments
-/// * `config` - Provider-specific configuration (VertexAi, Openrouter, Openai, etc.)
+/// * `config` - Provider-specific configuration (snake_case fields per
+///   `ProviderConfig` definition in `golish-llm-providers`)
 #[tauri::command]
-pub async fn init_ai_agent_unified(
+pub async fn init_ai_agent(
     state: State<'_, AppState>,
     app: AppHandle,
     config: ProviderConfig,

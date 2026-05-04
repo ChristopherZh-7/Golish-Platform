@@ -1,10 +1,10 @@
-import { listen } from "@tauri-apps/api/event";
 import { FileText, GitCommit, GripVertical, Package, RefreshCw, ScrollText, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Markdown } from "@/components/Markdown/Markdown";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useThrottledResize } from "@/hooks/useThrottledResize";
+import { onEvent } from "@/lib/events";
 import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import {
   type Artifact,
@@ -15,7 +15,6 @@ import {
   getSessionState,
   getStagedPatches,
   previewArtifact,
-  type SidecarEventType,
   type StagedPatch,
 } from "@/lib/sidecar";
 import { cn } from "@/lib/utils";
@@ -136,9 +135,8 @@ export function ContextPanel({ sessionId, open, onOpenChange }: ContextPanelProp
   useEffect(() => {
     if (!open) return;
 
-    const unlisten = listen<SidecarEventType>("sidecar-event", (event) => {
-      const eventType = event.payload.event_type;
-      // Auto-refresh on session and patch/artifact events
+    const unlisten = onEvent("sidecar-event", (payload) => {
+      const eventType = payload.event_type;
       if (
         eventType === "session_started" ||
         eventType === "session_ended" ||

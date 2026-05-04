@@ -13,6 +13,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { copyToClipboard } from "@/lib/clipboard";
+import { onCustomEvent } from "@/lib/events";
 import { formatBytes as formatSize } from "@/lib/format";
 import type { HttpHistoryEntry, HttpMessageDetail } from "@/lib/pentest/types";
 import { zapGetHistory, zapGetHistoryCount, zapGetMessage } from "@/lib/pentest/zap-api";
@@ -86,10 +87,8 @@ export function HttpHistoryPanel({
   useEffect(() => {
     loadHistory();
     let unlisten: (() => void) | null = null;
-    import("@tauri-apps/api/event").then(({ listen }) => {
-      listen("sitemap-updated", () => loadHistory()).then((fn) => {
-        unlisten = fn;
-      });
+    onCustomEvent("sitemap-updated", () => loadHistory()).then((fn) => {
+      unlisten = fn;
     });
     intervalRef.current = setInterval(loadHistory, 15000);
     return () => {

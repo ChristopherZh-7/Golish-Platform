@@ -78,12 +78,15 @@ use crate::tool_executors::graph_trait::GraphKnowledgeBase;
 use crate::event_coordinator::CoordinatorHandle;
 use crate::transcript::TranscriptWriter;
 
+mod backends;
 mod config;
 mod constructors;
 mod events;
 mod execution;
 mod prepare;
 mod terminal_error;
+
+pub use backends::BridgeBackends;
 
 // ============================================================================
 // Composed Subsystems

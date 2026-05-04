@@ -1,0 +1,213 @@
+{
+  "tool": {
+    "id": "nuclei",
+    "name": "nuclei",
+    "description": "Template-based vulnerability scanner with thousands of community templates",
+    "executable": "nuclei",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "web",
+    "subcategory": "scanner",
+    "tier": "essential",
+    "tags": ["web", "scanner", "vulnerability", "templates"],
+    "install": {
+      "method": "homebrew",
+      "source": "nuclei"
+    },
+    "params": [
+      {
+        "label": "Target URL",
+        "flag": "-u",
+        "type": "string",
+        "description": "Single target URL",
+        "placeholder": "https://target.com"
+      },
+      {
+        "label": "Targets List",
+        "flag": "-l",
+        "type": "string",
+        "description": "File with one target per line",
+        "placeholder": "targets.txt"
+      },
+      {
+        "label": "Templates",
+        "flag": "-t",
+        "type": "string",
+        "description": "Specific template path (file or directory)",
+        "placeholder": "cves/"
+      },
+      {
+        "label": "Tags",
+        "flag": "-tags",
+        "type": "string",
+        "description": "Comma-separated tags to include",
+        "placeholder": "cve,rce,xss"
+      },
+      {
+        "label": "Exclude Tags",
+        "flag": "-etags",
+        "type": "string",
+        "description": "Comma-separated tags to exclude",
+        "placeholder": "dos,intrusive"
+      },
+      {
+        "label": "Severity",
+        "flag": "-severity",
+        "type": "select",
+        "description": "Filter by severity",
+        "options": [
+          { "value": "info", "label": "info" },
+          { "value": "low", "label": "low" },
+          { "value": "medium", "label": "medium" },
+          { "value": "high", "label": "high" },
+          { "value": "critical", "label": "critical" },
+          { "value": "high,critical", "label": "high + critical" },
+          { "value": "medium,high,critical", "label": "medium and above" }
+        ]
+      },
+      {
+        "label": "Author",
+        "flag": "-author",
+        "type": "string",
+        "description": "Filter templates by author",
+        "placeholder": "pdteam"
+      },
+      {
+        "label": "Concurrency",
+        "flag": "-c",
+        "type": "string",
+        "description": "Templates concurrency (default 25)",
+        "default": "25",
+        "placeholder": "25"
+      },
+      {
+        "label": "Bulk Size",
+        "flag": "-bs",
+        "type": "string",
+        "description": "Targets per template (default 25)",
+        "default": "25"
+      },
+      {
+        "label": "Rate Limit",
+        "flag": "-rl",
+        "type": "string",
+        "description": "Max requests per second",
+        "placeholder": "150"
+      },
+      {
+        "label": "Timeout",
+        "flag": "-timeout",
+        "type": "string",
+        "description": "Per-request timeout (seconds)",
+        "default": "10"
+      },
+      {
+        "label": "Headers",
+        "flag": "-H",
+        "type": "string",
+        "description": "Custom header (repeatable)",
+        "placeholder": "Cookie: session=abcd"
+      },
+      {
+        "label": "Proxy",
+        "flag": "-proxy",
+        "type": "string",
+        "description": "HTTP proxy URL",
+        "placeholder": "http://127.0.0.1:8080"
+      },
+      {
+        "label": "Output File",
+        "flag": "-o",
+        "type": "string",
+        "description": "Save results to file",
+        "placeholder": "nuclei.txt"
+      },
+      {
+        "label": "JSONL Output",
+        "flag": "-jsonl",
+        "type": "boolean",
+        "description": "Write findings as JSONL"
+      },
+      {
+        "label": "Markdown Export",
+        "flag": "-me",
+        "type": "string",
+        "description": "Export findings to a markdown directory",
+        "placeholder": "report-md/"
+      },
+      {
+        "label": "Update Templates",
+        "flag": "-ut",
+        "type": "boolean",
+        "description": "Update nuclei-templates before scan"
+      },
+      {
+        "label": "Silent",
+        "flag": "-silent",
+        "type": "boolean",
+        "description": "Show only results"
+      },
+      {
+        "label": "Stats",
+        "flag": "-stats",
+        "type": "boolean",
+        "description": "Display live progress stats"
+      }
+    ],
+    "skills": [
+      {
+        "id": "quick-cve",
+        "name": "Quick CVE Scan",
+        "description": "Run CVE-tagged templates with high+critical severity",
+        "args": "-u {{target}} -tags cve -severity high,critical -silent",
+        "tags": ["cve", "fast"]
+      },
+      {
+        "id": "full-scan",
+        "name": "Full Template Scan",
+        "description": "Run all loaded templates",
+        "args": "-u {{target}} -stats",
+        "tags": ["thorough", "slow"]
+      },
+      {
+        "id": "exposures",
+        "name": "Sensitive Exposures",
+        "description": "Detect exposed configs, panels, files",
+        "args": "-u {{target}} -tags exposure,config,panel -silent",
+        "tags": ["recon"]
+      },
+      {
+        "id": "tech-detect",
+        "name": "Technology Fingerprint",
+        "description": "Identify the tech stack of the target",
+        "args": "-u {{target}} -tags tech -silent",
+        "tags": ["recon"]
+      },
+      {
+        "id": "list-jsonl",
+        "name": "Bulk Targets to JSONL",
+        "description": "Scan a list of targets and write JSONL output",
+        "args": "-l {{targets_file}} -severity medium,high,critical -jsonl -o nuclei.jsonl",
+        "tags": ["bulk", "report"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["vulnerability"],
+      "detect": "\\[(critical|high|medium|low|info)\\]|nuclei",
+      "db_action": "finding_add",
+      "patterns": [
+        {
+          "type": "finding",
+          "regex": "\\[(\\S+)\\]\\s+\\[(\\S+)\\]\\s+\\[(\\S+)\\]\\s+(\\S+)",
+          "fields": {
+            "1": "template",
+            "2": "protocol",
+            "3": "severity",
+            "4": "url"
+          }
+        }
+      ]
+    }
+  }
+}

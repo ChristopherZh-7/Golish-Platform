@@ -19,7 +19,7 @@ pub async fn get_context_summary(
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_context_summary().await);
     }
-    let guard = state.ai_state.get_bridge().await?;
+    let guard = state.ai_state.get_legacy_bridge().await?;
     Ok(guard.as_ref().unwrap().get_context_summary().await)
 }
 
@@ -34,7 +34,7 @@ pub async fn get_token_usage_stats(
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_token_usage_stats().await);
     }
-    let guard = state.ai_state.get_bridge().await?;
+    let guard = state.ai_state.get_legacy_bridge().await?;
     Ok(guard.as_ref().unwrap().get_token_usage_stats().await)
 }
 
@@ -49,7 +49,7 @@ pub async fn get_token_alert_level(
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_token_alert_level().await);
     }
-    let guard = state.ai_state.get_bridge().await?;
+    let guard = state.ai_state.get_legacy_bridge().await?;
     Ok(guard.as_ref().unwrap().get_token_alert_level().await)
 }
 
@@ -64,7 +64,7 @@ pub async fn get_context_utilization(
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_context_utilization().await);
     }
-    let guard = state.ai_state.get_bridge().await?;
+    let guard = state.ai_state.get_legacy_bridge().await?;
     Ok(guard.as_ref().unwrap().get_context_utilization().await)
 }
 
@@ -79,7 +79,7 @@ pub async fn get_remaining_tokens(
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_remaining_tokens().await);
     }
-    let guard = state.ai_state.get_bridge().await?;
+    let guard = state.ai_state.get_legacy_bridge().await?;
     Ok(guard.as_ref().unwrap().get_remaining_tokens().await)
 }
 
@@ -95,7 +95,7 @@ pub async fn reset_context_manager(
         bridge.reset_context_manager().await;
         return Ok(());
     }
-    let guard = state.ai_state.get_bridge().await?;
+    let guard = state.ai_state.get_legacy_bridge().await?;
     guard.as_ref().unwrap().reset_context_manager().await;
     Ok(())
 }
@@ -111,7 +111,7 @@ pub async fn get_context_trim_config(
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_context_trim_config());
     }
-    state.ai_state.with_bridge(|b| b.get_context_trim_config()).await
+    state.ai_state.with_legacy_bridge(|b| b.get_context_trim_config()).await
 }
 
 /// Check if context management is enabled.
@@ -125,7 +125,7 @@ pub async fn is_context_management_enabled(
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.is_context_management_enabled());
     }
-    state.ai_state.with_bridge(|b| b.is_context_management_enabled()).await
+    state.ai_state.with_legacy_bridge(|b| b.is_context_management_enabled()).await
 }
 
 /// Retry context compaction for a specific session.

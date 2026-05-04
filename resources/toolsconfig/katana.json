@@ -1,0 +1,212 @@
+{
+  "tool": {
+    "id": "katana",
+    "name": "katana",
+    "description": "Next-gen web crawler from ProjectDiscovery (headless + JS endpoint extraction + sitemap / robots / wayback / form parsing)",
+    "executable": "katana",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "crawler",
+    "tier": "recommended",
+    "tags": ["recon", "crawler", "web", "endpoints"],
+    "install": {
+      "method": "homebrew",
+      "source": "katana"
+    },
+    "params": [
+      {
+        "label": "URL",
+        "flag": "-u",
+        "type": "string",
+        "description": "Single target URL",
+        "placeholder": "https://target.com"
+      },
+      {
+        "label": "URL List",
+        "flag": "-list",
+        "type": "string",
+        "description": "File of URLs",
+        "placeholder": "urls.txt"
+      },
+      {
+        "label": "Depth",
+        "flag": "-d",
+        "type": "string",
+        "description": "Crawl depth",
+        "default": "3"
+      },
+      {
+        "label": "Headless",
+        "flag": "-headless",
+        "type": "boolean",
+        "description": "Use headless Chrome (extracts JS endpoints)"
+      },
+      {
+        "label": "JS Crawl",
+        "flag": "-jc",
+        "type": "boolean",
+        "description": "Parse and crawl JS files for endpoints"
+      },
+      {
+        "label": "Crawl Scope",
+        "flag": "-cs",
+        "type": "string",
+        "description": "Regex pattern - in-scope URLs",
+        "placeholder": "target\\.com"
+      },
+      {
+        "label": "Crawl Out Scope",
+        "flag": "-cos",
+        "type": "string",
+        "description": "Regex - out-of-scope URLs",
+        "placeholder": "logout|signout"
+      },
+      {
+        "label": "Field",
+        "flag": "-f",
+        "type": "select",
+        "description": "Output field",
+        "options": [
+          { "value": "url", "label": "url - URLs only" },
+          { "value": "qurl", "label": "qurl - URLs with query" },
+          { "value": "path", "label": "path - paths only" },
+          { "value": "fqdn", "label": "fqdn - domains only" },
+          { "value": "rdn", "label": "rdn - root domain" },
+          { "value": "rurl", "label": "rurl - root URL" },
+          { "value": "ufile", "label": "ufile - URL with file" },
+          { "value": "key", "label": "key - param keys" },
+          { "value": "value", "label": "value - param values" },
+          { "value": "kv", "label": "kv - key=value pairs" },
+          { "value": "dir", "label": "dir - directory paths" }
+        ]
+      },
+      {
+        "label": "Match Regex",
+        "flag": "-mr",
+        "type": "string",
+        "description": "Match URLs by regex",
+        "placeholder": "/admin"
+      },
+      {
+        "label": "Filter Regex",
+        "flag": "-fr",
+        "type": "string",
+        "description": "Filter out URLs by regex",
+        "placeholder": "logout|signout"
+      },
+      {
+        "label": "Timeout",
+        "flag": "-timeout",
+        "type": "string",
+        "description": "Request timeout (seconds)",
+        "default": "10"
+      },
+      {
+        "label": "Concurrency",
+        "flag": "-c",
+        "type": "string",
+        "description": "Concurrent fetchers",
+        "default": "10"
+      },
+      {
+        "label": "Parallelism",
+        "flag": "-p",
+        "type": "string",
+        "description": "URLs per second budget",
+        "default": "10"
+      },
+      {
+        "label": "Headers",
+        "flag": "-H",
+        "type": "string",
+        "description": "Custom header (repeatable)",
+        "placeholder": "Cookie: session=abcd"
+      },
+      {
+        "label": "Output File",
+        "flag": "-o",
+        "type": "string",
+        "description": "Save URLs to file",
+        "placeholder": "urls.txt"
+      },
+      {
+        "label": "JSONL",
+        "flag": "-jsonl",
+        "type": "boolean",
+        "description": "JSONL with full metadata"
+      },
+      {
+        "label": "Silent",
+        "flag": "-silent",
+        "type": "boolean",
+        "description": "Only output URLs"
+      },
+      {
+        "label": "Form Extract",
+        "flag": "-fx",
+        "type": "boolean",
+        "description": "Parse and submit HTML forms"
+      }
+    ],
+    "skills": [
+      {
+        "id": "default-crawl",
+        "name": "Default crawl",
+        "description": "Standard crawl, depth 3",
+        "args": "-u {{target}} -silent",
+        "tags": ["crawl"]
+      },
+      {
+        "id": "headless-js",
+        "name": "Headless + JS endpoints",
+        "description": "Render JS, parse JS files for endpoints",
+        "args": "-u {{target}} -headless -jc -silent",
+        "tags": ["js", "thorough"]
+      },
+      {
+        "id": "scope-only",
+        "name": "Scope-restricted crawl",
+        "description": "Stay in target domain only",
+        "args": "-u {{target}} -cs \"{{domain_regex}}\" -fr \"logout|signout\" -silent",
+        "tags": ["scope"]
+      },
+      {
+        "id": "qurls-only",
+        "name": "URLs with query params (for fuzzing)",
+        "description": "Output only URLs that have ?params - feed dalfox / sqlmap",
+        "args": "-u {{target}} -f qurl -silent",
+        "tags": ["pipeline"]
+      },
+      {
+        "id": "to-dalfox",
+        "name": "Pipe to dalfox (XSS)",
+        "description": "Crawl + dalfox XSS scan in one pipe",
+        "args": "-u {{target}} -f qurl -silent | dalfox pipe --silence",
+        "tags": ["pipeline", "xss"]
+      },
+      {
+        "id": "jsonl-pipeline",
+        "name": "JSONL output for downstream",
+        "description": "Full metadata JSONL",
+        "args": "-u {{target}} -jsonl -o katana.jsonl",
+        "tags": ["pipeline"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["url", "endpoint"],
+      "detect": "katana|^https?://",
+      "db_action": "endpoint_add",
+      "patterns": [
+        {
+          "type": "endpoint",
+          "regex": "^(https?://\\S+)$",
+          "fields": {
+            "1": "url"
+          }
+        }
+      ]
+    }
+  }
+}

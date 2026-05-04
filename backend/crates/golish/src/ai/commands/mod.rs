@@ -138,10 +138,21 @@ impl AiState {
         self.bridges.write().await.remove(session_id)
     }
 
-    // ========== Legacy single bridge methods (for backwards compatibility) ==========
+    // ========== Legacy single-bridge methods ==========
+    //
+    // These access `self.bridge` (the legacy non-keyed bridge stored on
+    // `init_ai_agent`). Every command that still calls them is on the
+    // migration shortlist documented at the top of this module — switch
+    // to `get_session_bridge(session_id)` / `has_session_bridge` once the
+    // command's IPC signature carries a `session_id`.
 
-    /// DEPRECATED: Use `resolve_bridge(Some(session_id))` instead.
-    pub async fn get_bridge(
+    /// Returns a read guard on the legacy single bridge, erroring if
+    /// `init_ai_agent` has not been called.
+    ///
+    /// **Legacy** — prefer `get_session_bridge(session_id)`. Renamed
+    /// from `get_bridge` in QW1 (2026-05) so call sites are obviously
+    /// "legacy path" at a glance.
+    pub async fn get_legacy_bridge(
         &self,
     ) -> Result<tokio::sync::RwLockReadGuard<'_, Option<AgentBridge>>, GolishError> {
         let guard = self.bridge.read().await;
@@ -151,8 +162,14 @@ impl AiState {
         Ok(guard)
     }
 
-    /// DEPRECATED: Use `resolve_bridge(Some(session_id))` instead.
-    pub async fn with_bridge<F, T>(&self, f: F) -> Result<T, GolishError>
+    /// Convenience wrapper that maps an `FnOnce` over the legacy
+    /// single bridge without the caller needing to deal with the read
+    /// guard or `Option`.
+    ///
+    /// **Legacy** — prefer `get_session_bridge(session_id)` and call
+    /// the closure manually after pattern-matching. Renamed from
+    /// `with_bridge` in QW1 (2026-05).
+    pub async fn with_legacy_bridge<F, T>(&self, f: F) -> Result<T, GolishError>
     where
         F: FnOnce(&AgentBridge) -> T,
     {
@@ -172,7 +189,7 @@ impl AiState {
 /// IMPORTANT: Each session gets its own SidecarState instance to enable
 /// per-session isolation and avoid blocking between tabs when agents run concurrently.
 pub async fn configure_bridge(bridge: &mut AgentBridge, state: &AppState, session_id: &str, app_handle: Option<tauri::AppHandle>) {
-    let is_title_gen = session_id.starts_with("title-gen-");
+    let is_title_gen = golish_core::is_title_gen_session_id(session_id);
 
     if is_title_gen {
         configure_title_gen(bridge).await;
@@ -203,8 +220,6 @@ async fn configure_title_gen(bridge: &mut AgentBridge) {
 }
 
 async fn configure_core_services(bridge: &mut AgentBridge, state: &AppState) {
-    bridge.set_indexer_state(state.indexer_state.clone());
-
     let workspace_path = bridge.workspace().read().await.clone();
     let sidecar_state = std::sync::Arc::new(golish_sidecar::SidecarState::with_config(
         state.sidecar_config.clone(),
@@ -214,9 +229,11 @@ async fn configure_core_services(bridge: &mut AgentBridge, state: &AppState) {
     }
     let sidecar_backend: std::sync::Arc<dyn golish_agent_kit::sidecar_trait::SessionCaptureBackend> =
         std::sync::Arc::new(crate::ai::sidecar_bridge::SidecarCaptureBackend::new(sidecar_state));
-    bridge.set_sidecar_state(sidecar_backend);
-    bridge.set_settings_manager(state.settings_manager.clone());
 
+    // db tracking + readiness + chain persistence travel together and use
+    // a generic readiness-gate bound that can't go through `BridgeBackends`,
+    // so call `set_db_backend` directly first — `db_repo` / `embedder`
+    // applied via `apply_backends` below need the live tracker to exist.
     let tracking_backend: std::sync::Arc<dyn golish_agent_kit::db_traits::DbTrackingBackend> =
         std::sync::Arc::new(crate::ai::tracking_bridge::PgTrackingBackend::new(state.db_pool.clone()));
     let chain_persistence: std::sync::Arc<dyn golish_sub_agents::SubAgentChainPersistence> =
@@ -227,11 +244,17 @@ async fn configure_core_services(bridge: &mut AgentBridge, state: &AppState) {
     let graph_backend = std::sync::Arc::new(
         crate::ai::graph_bridge::GraphClientBackend::new(state.db_pool.clone()),
     );
-    bridge.set_graph_backend(graph_backend);
-
     let db_repo: std::sync::Arc<dyn golish_agent_kit::db_traits::DbRepoProvider> =
         std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(state.db_pool.clone()));
-    bridge.set_db_repo(db_repo);
+
+    bridge.apply_backends(golish_agent_bridge::BridgeBackends {
+        indexer: Some(state.indexer_state.clone()),
+        sidecar: Some(sidecar_backend),
+        settings: Some(state.settings_manager.clone()),
+        graph: Some(graph_backend),
+        db_repo: Some(db_repo),
+        ..Default::default()
+    });
 }
 
 fn configure_domain_hooks(bridge: &mut AgentBridge, state: &AppState) {

@@ -1,0 +1,186 @@
+{
+  "tool": {
+    "id": "impacket",
+    "name": "impacket",
+    "description": "Collection of Python classes for working with network protocols - psexec, secretsdump, GetNPUsers, mimikatz over SMB, and more",
+    "executable": "impacket-secretsdump",
+    "runtime": "python",
+    "runtimeVersion": "3.11",
+    "launchMode": "cli",
+    "category": "post-exploit",
+    "subcategory": "ad-tools",
+    "tier": "essential",
+    "tags": ["ad", "smb", "kerberos", "post-exploit", "credentials"],
+    "install": {
+      "method": "pip",
+      "source": "impacket"
+    },
+    "params": [
+      {
+        "label": "Tool Name",
+        "flag": "",
+        "type": "select",
+        "required": true,
+        "description": "Which impacket sub-tool to invoke (run separately)",
+        "options": [
+          { "value": "secretsdump", "label": "secretsdump - dump SAM/LSA/NTDS" },
+          { "value": "psexec", "label": "psexec - admin SMB shell" },
+          { "value": "wmiexec", "label": "wmiexec - WMI shell" },
+          { "value": "smbexec", "label": "smbexec - SMB pipe shell" },
+          { "value": "atexec", "label": "atexec - schtasks shell" },
+          { "value": "GetNPUsers", "label": "GetNPUsers - AS-REP roasting" },
+          { "value": "GetUserSPNs", "label": "GetUserSPNs - Kerberoasting" },
+          { "value": "ticketer", "label": "ticketer - golden/silver ticket" },
+          { "value": "addcomputer", "label": "addcomputer - add machine acct" },
+          { "value": "rpcdump", "label": "rpcdump - RPC enumeration" },
+          { "value": "smbclient", "label": "smbclient - SMB browse" },
+          { "value": "lookupsid", "label": "lookupsid - SID enumeration" },
+          { "value": "ntlmrelayx", "label": "ntlmrelayx - NTLM relay" }
+        ]
+      },
+      {
+        "label": "Target",
+        "flag": "",
+        "type": "string",
+        "required": true,
+        "description": "Target spec, varies per sub-tool (e.g. user@host, host)",
+        "placeholder": "lab.local/admin:Pass@10.0.0.5"
+      },
+      {
+        "label": "NTLM Hash",
+        "flag": "-hashes",
+        "type": "string",
+        "description": "Pass-the-Hash format LM:NT",
+        "placeholder": "aad3b...:8846f..."
+      },
+      {
+        "label": "Just DCSync",
+        "flag": "-just-dc",
+        "type": "boolean",
+        "description": "(secretsdump) only DCSync NTDS"
+      },
+      {
+        "label": "Just DC NTLM",
+        "flag": "-just-dc-ntlm",
+        "type": "boolean",
+        "description": "(secretsdump) only NTLM hashes"
+      },
+      {
+        "label": "User File",
+        "flag": "-usersfile",
+        "type": "string",
+        "description": "(GetNPUsers) file with usernames",
+        "placeholder": "users.txt"
+      },
+      {
+        "label": "No Pass",
+        "flag": "-no-pass",
+        "type": "boolean",
+        "description": "Don't ask for password"
+      },
+      {
+        "label": "Domain Controller",
+        "flag": "-dc-ip",
+        "type": "string",
+        "description": "DC IP to query",
+        "placeholder": "10.0.0.10"
+      },
+      {
+        "label": "Kerberos",
+        "flag": "-k",
+        "type": "boolean",
+        "description": "Use Kerberos auth (with ccache)"
+      },
+      {
+        "label": "AES Key",
+        "flag": "-aesKey",
+        "type": "string",
+        "description": "AES key for Kerberos",
+        "placeholder": "abc123..."
+      },
+      {
+        "label": "Output File",
+        "flag": "-outputfile",
+        "type": "string",
+        "description": "Save dump to file",
+        "placeholder": "ntds.dump"
+      }
+    ],
+    "skills": [
+      {
+        "id": "secretsdump-dcsync",
+        "name": "DCSync NTDS dump",
+        "description": "Pull all hashes from DC via DCSync",
+        "args": "secretsdump -just-dc {{domain}}/{{user}}:{{pass}}@{{dc_ip}}",
+        "tags": ["dcsync", "ad"]
+      },
+      {
+        "id": "secretsdump-local",
+        "name": "Local SAM/LSA dump (SMB admin)",
+        "description": "Dump local hashes from a host via SMB",
+        "args": "secretsdump {{user}}:{{pass}}@{{target}}",
+        "tags": ["local", "sam"]
+      },
+      {
+        "id": "psexec-shell",
+        "name": "PsExec admin shell",
+        "description": "Spawn SYSTEM shell via SMB (admin needed)",
+        "args": "psexec {{user}}:{{pass}}@{{target}}",
+        "tags": ["shell", "admin"]
+      },
+      {
+        "id": "wmiexec-shell",
+        "name": "WMIExec shell (no SMB writeback)",
+        "description": "Stealthier than psexec",
+        "args": "wmiexec {{user}}:{{pass}}@{{target}}",
+        "tags": ["shell", "stealth"]
+      },
+      {
+        "id": "asrep-roast",
+        "name": "AS-REP roasting",
+        "description": "Find users without preauth + dump TGTs",
+        "args": "GetNPUsers {{domain}}/ -no-pass -usersfile {{users}} -dc-ip {{dc_ip}}",
+        "tags": ["asrep", "ad"]
+      },
+      {
+        "id": "kerberoast",
+        "name": "Kerberoast SPNs",
+        "description": "Request TGS for all SPNs",
+        "args": "GetUserSPNs -request {{domain}}/{{user}}:{{pass}} -dc-ip {{dc_ip}}",
+        "tags": ["kerberos", "ad"]
+      },
+      {
+        "id": "ntlmrelay",
+        "name": "NTLM relay (responder mate)",
+        "description": "Relay captured auth to SMB target list",
+        "args": "ntlmrelayx -tf targets.txt -smb2support",
+        "tags": ["relay"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["credential", "info"],
+      "detect": "Impacket|secretsdump|GetNPUsers|GetUserSPNs",
+      "db_action": "credential_add",
+      "patterns": [
+        {
+          "type": "ntlm_hash",
+          "regex": "^(\\S+):(\\d+):([0-9a-fA-F]{32}):([0-9a-fA-F]{32}):::",
+          "fields": {
+            "1": "username",
+            "2": "rid",
+            "3": "lm_hash",
+            "4": "nt_hash"
+          }
+        },
+        {
+          "type": "kerberos_hash",
+          "regex": "^(\\$krb5(?:tgs|asrep)\\$.+)$",
+          "fields": {
+            "1": "krb_hash"
+          }
+        }
+      ]
+    }
+  }
+}

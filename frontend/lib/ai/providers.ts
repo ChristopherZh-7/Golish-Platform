@@ -1,115 +1,30 @@
 import { invoke } from "@/lib/api/client";
 import type { GolishSettings, OpenRouterProviderPreferences } from "../settings";
-import {
-  ANTHROPIC_MODELS,
-  GEMINI_MODELS,
-  GROQ_MODELS,
-  OLLAMA_MODELS,
-  VERTEX_AI_MODELS,
-  XAI_MODELS,
-} from "./models";
-import type {
-  AiProvider,
-  OpenAiConfig,
-  ProviderConfig,
-  VertexAiConfig,
-  VertexAiEnvConfig,
-} from "./types";
+import type { AiProvider, ProviderConfig, VertexAiEnvConfig } from "./types";
 
 export async function getVertexAiConfig(): Promise<VertexAiEnvConfig> {
   return invoke("get_vertex_ai_config");
-}
-
-export async function initClaudeOpus(workspace: string, apiKey: string): Promise<void> {
-  return invoke("init_ai_agent", {
-    workspace,
-    provider: "openrouter",
-    model: "anthropic/claude-opus-4.5",
-    apiKey,
-  });
-}
-
-export async function initVertexAiAgent(config: VertexAiConfig): Promise<void> {
-  return invoke("init_ai_agent_vertex", {
-    workspace: config.workspace,
-    credentialsPath: config.credentialsPath,
-    projectId: config.projectId,
-    location: config.location,
-    model: config.model,
-  });
-}
-
-export async function initVertexClaudeOpus(
-  workspace: string,
-  credentialsPath: string,
-  projectId: string,
-  location: string = "us-east5"
-): Promise<void> {
-  return initVertexAiAgent({
-    workspace,
-    credentialsPath,
-    projectId,
-    location,
-    model: VERTEX_AI_MODELS.CLAUDE_OPUS_4_5,
-  });
 }
 
 export async function getOpenAiApiKey(): Promise<string | null> {
   return invoke("get_openai_api_key");
 }
 
-export async function initOpenAiAgent(config: OpenAiConfig): Promise<void> {
-  return invoke("init_ai_agent_openai", {
-    workspace: config.workspace,
-    model: config.model,
-    apiKey: config.apiKey,
-    baseUrl: config.baseUrl,
-    reasoningEffort: config.reasoningEffort,
-  });
-}
-
-export async function initAiAgentUnified(config: ProviderConfig): Promise<void> {
-  return invoke("init_ai_agent_unified", { config });
-}
-
-export async function initWithAnthropic(
-  workspace: string,
-  apiKey: string,
-  model: string = ANTHROPIC_MODELS.CLAUDE_SONNET_4_5
-): Promise<void> {
-  return initAiAgentUnified({ provider: "anthropic", workspace, model, api_key: apiKey });
-}
-
-export async function initWithOllama(
-  workspace: string,
-  model: string = OLLAMA_MODELS.LLAMA_3_2,
-  baseUrl?: string
-): Promise<void> {
-  return initAiAgentUnified({ provider: "ollama", workspace, model, base_url: baseUrl });
-}
-
-export async function initWithGemini(
-  workspace: string,
-  apiKey: string,
-  model: string = GEMINI_MODELS.GEMINI_2_5_FLASH
-): Promise<void> {
-  return initAiAgentUnified({ provider: "gemini", workspace, model, api_key: apiKey });
-}
-
-export async function initWithGroq(
-  workspace: string,
-  apiKey: string,
-  model: string = GROQ_MODELS.LLAMA_4_SCOUT
-): Promise<void> {
-  return initAiAgentUnified({ provider: "groq", workspace, model, api_key: apiKey });
-}
-
-export async function initWithXai(
-  workspace: string,
-  apiKey: string,
-  model: string = XAI_MODELS.GROK_4_1_FAST_REASONING
-): Promise<void> {
-  return initAiAgentUnified({ provider: "xai", workspace, model, api_key: apiKey });
+/**
+ * Unified AI agent init — single entry point covering every provider.
+ *
+ * The backend `init_ai_agent` IPC accepts a tagged `ProviderConfig` enum
+ * (see `golish-llm-providers/src/provider_config.rs`) so this function
+ * is the only init wrapper the frontend needs. The four legacy wrappers
+ * (`init_ai_agent` (4-field), `init_ai_agent_openai`,
+ * `init_ai_agent_vertex`, `init_ai_agent_unified`) were collapsed in
+ * QW2 (2026-05). Per-provider helpers (`initWithAnthropic` / `initWithOllama` /
+ * `initWithGemini` / `initWithGroq` / `initWithXai`) were removed in QW6
+ * (2026-05) — they had zero call sites; callers should pass a fully-formed
+ * `ProviderConfig` directly.
+ */
+export async function initAiAgent(config: ProviderConfig): Promise<void> {
+  return invoke("init_ai_agent", { config });
 }
 
 export async function getAnthropicApiKey(): Promise<string | null> {

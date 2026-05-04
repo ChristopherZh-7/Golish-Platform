@@ -13,6 +13,11 @@ Rules:
 - **Upward edges** (dep_layer > crate_layer) are hard errors.
 - Anything in the workspace outside the `LAYER_TABLE` is an error
   (forces authors to place new crates on the map explicitly).
+- **L2 sub-cluster coverage** (added in QW6, 2026-05): every L2 crate
+  must appear in `L2_CLUSTER` with one of `ALLOWED_L2_CLUSTERS` as
+  value. The cluster grouping is documentary (mirrors
+  `docs/architecture.md` `### Crate catalog · L2`) — it does **not**
+  add edges to the DAG, but it forces docs and code to stay in sync.
 
 Scope:
 - Only inspects `golish-*` dependency declarations. External `rig-*`
@@ -23,7 +28,7 @@ Scope:
 
 Exit code:
 - 0: clean
-- 1: one or more illegal edges or a cycle detected
+- 1: one or more illegal edges, a cycle, or an L2 cluster mismatch
 """
 
 from __future__ import annotations
@@ -89,6 +94,46 @@ LAYER_TABLE: dict[str, float] = {
     # L6 Application
     "golish": 6.0,
 }
+
+# ---------------------------------------------------------------------------
+# L2 sub-cluster table — purely documentary.
+# ---------------------------------------------------------------------------
+# Mirrors the `### Crate catalog · L2` section of `docs/architecture.md`.
+# The DAG guard only enforces the layer constraint (a crate at L_n may
+# depend only on crates at L_{≤n}); sub-clusters are for human discoverability.
+# Every L2 crate must appear in this table — adding a new L2 crate without
+# registering it here will fail the docs guard below.
+L2_CLUSTER: dict[str, str] = {
+    # persistence — data / session / index / model registry
+    "golish-db": "persistence",
+    "golish-models": "persistence",
+    "golish-session": "persistence",
+    "golish-indexer": "persistence",
+    # os — process / PTY / event scheduling
+    "golish-pty": "os",
+    "golish-shell-exec": "os",
+    "golish-events": "os",
+    # llm — LLM provider clients
+    "golish-llm-providers": "llm",
+    "rig-openai-responses": "llm",
+    "rig-zai-sdk": "llm",
+    # pentest — penetration testing domain
+    "golish-pentest": "pentest",
+    "golish-vuln-intel": "pentest",
+    "golish-scan-runner": "pentest",
+    "golish-pentest-mcp": "pentest",
+    # assets — skills / synthesis / output / tools
+    "golish-skills": "assets",
+    "golish-synthesis": "assets",
+    "golish-artifacts": "assets",
+    "golish-cli-output": "assets",
+    "golish-web": "assets",
+    "golish-tools": "assets",
+}
+
+ALLOWED_L2_CLUSTERS: frozenset[str] = frozenset(
+    {"persistence", "os", "llm", "pentest", "assets"}
+)
 
 # Regex matches e.g. `golish-foo = { workspace = true }` or `rig-openai-responses = { path = "..." }`
 # at the start of a line. We filter to in-workspace crates after parsing.
@@ -181,6 +226,35 @@ def check(graph: dict[str, set[str]]) -> list[Violation]:
     for cycle in detect_cycles(graph):
         pretty = " → ".join(cycle)
         violations.append(Violation(f"dependency cycle detected: {pretty}"))
+
+    # 4. L2 sub-cluster coverage (documentary; mirrors docs/architecture.md)
+    l2_crates = {c for c, layer in LAYER_TABLE.items() if layer == 2.0}
+    clustered = set(L2_CLUSTER.keys())
+    for crate in sorted(l2_crates - clustered):
+        violations.append(
+            Violation(
+                f"L2 crate `{crate}` is missing from L2_CLUSTER — assign it "
+                f"to one of {sorted(ALLOWED_L2_CLUSTERS)} (see "
+                f"docs/architecture.md `### Crate catalog · L2`)"
+            )
+        )
+    for crate in sorted(clustered - l2_crates):
+        violations.append(
+            Violation(
+                f"`{crate}` is in L2_CLUSTER but its LAYER_TABLE entry is "
+                f"not L2.0 — remove it from L2_CLUSTER or fix its layer"
+            )
+        )
+
+    # 5. L2 cluster name validity
+    for crate, cluster in sorted(L2_CLUSTER.items()):
+        if cluster not in ALLOWED_L2_CLUSTERS:
+            violations.append(
+                Violation(
+                    f"`{crate}` has unknown cluster `{cluster}` — must be "
+                    f"one of {sorted(ALLOWED_L2_CLUSTERS)}"
+                )
+            )
 
     return violations
 

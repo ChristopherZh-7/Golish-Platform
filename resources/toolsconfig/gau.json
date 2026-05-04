@@ -1,0 +1,175 @@
+{
+  "tool": {
+    "id": "gau",
+    "name": "gau",
+    "description": "Get All URLs - fetch known URLs from Wayback / OTX / Common Crawl / URLScan for a domain (passive, no requests to target)",
+    "executable": "gau",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "url-history",
+    "tier": "recommended",
+    "tags": ["recon", "wayback", "url", "passive"],
+    "install": {
+      "method": "homebrew",
+      "source": "gau"
+    },
+    "params": [
+      {
+        "label": "Domains",
+        "flag": "",
+        "type": "string",
+        "description": "Domain(s) - one per line via stdin or arg",
+        "placeholder": "target.com"
+      },
+      {
+        "label": "Providers",
+        "flag": "--providers",
+        "type": "string",
+        "description": "Comma list of providers",
+        "default": "wayback,otx,commoncrawl,urlscan",
+        "placeholder": "wayback,otx"
+      },
+      {
+        "label": "Threads",
+        "flag": "--threads",
+        "type": "string",
+        "description": "Concurrent provider fetches",
+        "default": "5"
+      },
+      {
+        "label": "Subdomains",
+        "flag": "--subs",
+        "type": "boolean",
+        "description": "Include subdomain URLs"
+      },
+      {
+        "label": "From Date",
+        "flag": "--from",
+        "type": "string",
+        "description": "Start date (YYYYMM)",
+        "placeholder": "202301"
+      },
+      {
+        "label": "To Date",
+        "flag": "--to",
+        "type": "string",
+        "description": "End date (YYYYMM)",
+        "placeholder": "202412"
+      },
+      {
+        "label": "Match Pattern",
+        "flag": "--mc",
+        "type": "string",
+        "description": "Match status code (comma list)",
+        "placeholder": "200,301"
+      },
+      {
+        "label": "Filter Pattern",
+        "flag": "--fc",
+        "type": "string",
+        "description": "Filter out status (comma list)",
+        "placeholder": "404,500"
+      },
+      {
+        "label": "Match Extension",
+        "flag": "--me",
+        "type": "string",
+        "description": "Match file extensions (comma list)",
+        "placeholder": "php,asp,aspx,jsp"
+      },
+      {
+        "label": "Filter Extension",
+        "flag": "--fe",
+        "type": "string",
+        "description": "Filter out extensions",
+        "placeholder": "css,js,jpg,png,svg"
+      },
+      {
+        "label": "Output File",
+        "flag": "-o",
+        "type": "string",
+        "description": "Save URLs to file",
+        "placeholder": "urls.txt"
+      },
+      {
+        "label": "JSON",
+        "flag": "--json",
+        "type": "boolean",
+        "description": "Output JSON"
+      },
+      {
+        "label": "Verbose",
+        "flag": "--verbose",
+        "type": "boolean",
+        "description": "Verbose"
+      }
+    ],
+    "skills": [
+      {
+        "id": "default",
+        "name": "Default URL fetch",
+        "description": "All providers, root domain only",
+        "args": "{{domain}}",
+        "tags": ["passive"]
+      },
+      {
+        "id": "with-subs",
+        "name": "Include subdomains",
+        "description": "Wayback URLs across all subdomains",
+        "args": "{{domain}} --subs -o urls.txt",
+        "tags": ["thorough"]
+      },
+      {
+        "id": "skip-static",
+        "name": "Skip static assets",
+        "description": "Filter out CSS/JS/images for cleaner endpoint list",
+        "args": "{{domain}} --subs --fe \"css,js,jpg,png,svg,gif,woff,woff2,ttf,ico\" -o urls.txt",
+        "tags": ["clean"]
+      },
+      {
+        "id": "match-php",
+        "name": "Only PHP / dynamic",
+        "description": "Match common dynamic extensions",
+        "args": "{{domain}} --me \"php,asp,aspx,jsp,do,action\" -o dyn.txt",
+        "tags": ["dynamic"]
+      },
+      {
+        "id": "to-dalfox",
+        "name": "Pipe to dalfox",
+        "description": "Pull historic URLs and XSS-scan them",
+        "args": "{{domain}} --subs | dalfox pipe --silence",
+        "tags": ["pipeline", "xss"]
+      },
+      {
+        "id": "to-nuclei",
+        "name": "Pipe to nuclei",
+        "description": "Wayback URLs straight into nuclei",
+        "args": "{{domain}} --subs | nuclei -tags exposure,config",
+        "tags": ["pipeline", "vuln"]
+      },
+      {
+        "id": "recent-only",
+        "name": "Recent URLs only (last year)",
+        "description": "Fetch only from given date range",
+        "args": "{{domain}} --from 202401 --subs -o recent.txt",
+        "tags": ["filter"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["url"],
+      "detect": "gau|^https?://",
+      "db_action": "endpoint_add",
+      "patterns": [
+        {
+          "type": "url",
+          "regex": "^(https?://\\S+)$",
+          "fields": {
+            "1": "url"
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,144 @@
+{
+  "tool": {
+    "id": "wireshark",
+    "name": "wireshark",
+    "description": "Industry-standard graphical network protocol analyzer for capture and dissection",
+    "executable": "wireshark",
+    "runtime": "native",
+    "launchMode": "gui",
+    "category": "network",
+    "subcategory": "sniffer",
+    "tier": "optional",
+    "tags": ["network", "sniffer", "analyzer", "gui"],
+    "install": {
+      "method": "homebrew-cask",
+      "source": "wireshark"
+    },
+    "params": [
+      {
+        "label": "Interface",
+        "flag": "-i",
+        "type": "string",
+        "description": "Capture interface name (run -D to list)",
+        "placeholder": "en0"
+      },
+      {
+        "label": "Capture Filter",
+        "flag": "-f",
+        "type": "string",
+        "description": "BPF capture filter expression",
+        "placeholder": "tcp port 80"
+      },
+      {
+        "label": "Display Filter",
+        "flag": "-Y",
+        "type": "string",
+        "description": "Wireshark display filter expression",
+        "placeholder": "http.request.method == \"POST\""
+      },
+      {
+        "label": "Read File",
+        "flag": "-r",
+        "type": "string",
+        "description": "Open existing pcap/pcapng file",
+        "placeholder": "capture.pcapng"
+      },
+      {
+        "label": "Write File",
+        "flag": "-w",
+        "type": "string",
+        "description": "Write captured packets to file",
+        "placeholder": "out.pcapng"
+      },
+      {
+        "label": "Packet Count",
+        "flag": "-c",
+        "type": "string",
+        "description": "Stop after capturing N packets",
+        "placeholder": "1000"
+      },
+      {
+        "label": "Capture Duration",
+        "flag": "-a",
+        "type": "string",
+        "description": "Auto-stop condition (e.g. duration:60)",
+        "placeholder": "duration:60"
+      },
+      {
+        "label": "Promiscuous Mode",
+        "flag": "-p",
+        "type": "boolean",
+        "description": "Disable promiscuous mode"
+      },
+      {
+        "label": "Snap Length",
+        "flag": "-s",
+        "type": "string",
+        "description": "Bytes per packet to capture (0 = full)",
+        "placeholder": "65535"
+      },
+      {
+        "label": "List Interfaces",
+        "flag": "-D",
+        "type": "boolean",
+        "description": "Print available interfaces & exit"
+      },
+      {
+        "label": "Update Interval",
+        "flag": "-u",
+        "type": "string",
+        "description": "Display update interval ms",
+        "placeholder": "200"
+      }
+    ],
+    "skills": [
+      {
+        "id": "open-pcap",
+        "name": "Open pcap file",
+        "description": "Just open a saved capture",
+        "args": "-r {{pcap_file}}",
+        "tags": ["analysis"]
+      },
+      {
+        "id": "live-http",
+        "name": "Live HTTP capture",
+        "description": "Capture HTTP traffic on default interface",
+        "args": "-i {{interface}} -f \"tcp port 80\"",
+        "tags": ["live", "web"]
+      },
+      {
+        "id": "live-dns",
+        "name": "Live DNS capture",
+        "description": "Capture DNS queries",
+        "args": "-i {{interface}} -f \"udp port 53\"",
+        "tags": ["live", "dns"]
+      },
+      {
+        "id": "host-traffic",
+        "name": "Filter by host",
+        "description": "Capture only traffic to/from specific IP",
+        "args": "-i {{interface}} -f \"host {{ip}}\"",
+        "tags": ["live"]
+      },
+      {
+        "id": "save-rotating",
+        "name": "Capture with limit + write",
+        "description": "Capture 5000 packets, save to file",
+        "args": "-i {{interface}} -c 5000 -w out.pcapng",
+        "tags": ["live", "save"]
+      },
+      {
+        "id": "list-ifaces",
+        "name": "List interfaces",
+        "description": "Show available interfaces and exit",
+        "args": "-D",
+        "tags": ["info"]
+      }
+    ],
+    "output": {
+      "format": "binary",
+      "produces": ["pcap"],
+      "detect": "Wireshark|tshark"
+    }
+  }
+}

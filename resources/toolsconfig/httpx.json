@@ -1,0 +1,197 @@
+{
+  "tool": {
+    "id": "httpx",
+    "name": "httpx",
+    "description": "Fast multi-purpose HTTP toolkit (probe, status, title, tech, screenshots)",
+    "executable": "httpx",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "http",
+    "tier": "recommended",
+    "tags": ["recon", "http", "probe", "fingerprint"],
+    "install": {
+      "method": "homebrew",
+      "source": "httpx"
+    },
+    "params": [
+      {
+        "label": "URL",
+        "flag": "-u",
+        "type": "string",
+        "description": "Single target URL or host",
+        "placeholder": "https://target.com"
+      },
+      {
+        "label": "Targets List",
+        "flag": "-l",
+        "type": "string",
+        "description": "File with hosts (one per line)",
+        "placeholder": "hosts.txt"
+      },
+      {
+        "label": "Ports",
+        "flag": "-ports",
+        "type": "string",
+        "description": "Ports to probe (comma list or range)",
+        "placeholder": "80,443,8080,8443"
+      },
+      {
+        "label": "Status Code",
+        "flag": "-sc",
+        "type": "boolean",
+        "description": "Show HTTP status code"
+      },
+      {
+        "label": "Title",
+        "flag": "-title",
+        "type": "boolean",
+        "description": "Show page title"
+      },
+      {
+        "label": "Tech Detect",
+        "flag": "-td",
+        "type": "boolean",
+        "description": "Detect technologies (Wappalyzer-like)"
+      },
+      {
+        "label": "Web Server",
+        "flag": "-server",
+        "type": "boolean",
+        "description": "Show Server header"
+      },
+      {
+        "label": "Content Length",
+        "flag": "-cl",
+        "type": "boolean",
+        "description": "Show response content length"
+      },
+      {
+        "label": "Match Status",
+        "flag": "-mc",
+        "type": "string",
+        "description": "Show only these status codes (e.g. 200,301)",
+        "placeholder": "200,301"
+      },
+      {
+        "label": "Filter Status",
+        "flag": "-fc",
+        "type": "string",
+        "description": "Hide these status codes",
+        "placeholder": "404,500"
+      },
+      {
+        "label": "Threads",
+        "flag": "-t",
+        "type": "string",
+        "description": "Concurrent threads",
+        "default": "50"
+      },
+      {
+        "label": "Rate Limit",
+        "flag": "-rl",
+        "type": "string",
+        "description": "Max requests per second",
+        "placeholder": "150"
+      },
+      {
+        "label": "Timeout",
+        "flag": "-timeout",
+        "type": "string",
+        "description": "Request timeout in seconds",
+        "default": "10"
+      },
+      {
+        "label": "Follow Redirects",
+        "flag": "-fr",
+        "type": "boolean",
+        "description": "Follow HTTP 3xx redirects"
+      },
+      {
+        "label": "Probe All IPs",
+        "flag": "-probe",
+        "type": "boolean",
+        "description": "Probe all returned IPs (resolve)"
+      },
+      {
+        "label": "Screenshot",
+        "flag": "-ss",
+        "type": "boolean",
+        "description": "Save screenshots (requires headless browser)"
+      },
+      {
+        "label": "Output File",
+        "flag": "-o",
+        "type": "string",
+        "description": "Save results to file",
+        "placeholder": "live.txt"
+      },
+      {
+        "label": "JSONL Output",
+        "flag": "-json",
+        "type": "boolean",
+        "description": "Output JSONL with rich metadata"
+      },
+      {
+        "label": "Silent",
+        "flag": "-silent",
+        "type": "boolean",
+        "description": "Show only URLs"
+      }
+    ],
+    "skills": [
+      {
+        "id": "alive-only",
+        "name": "Alive URLs only",
+        "description": "Probe and output only live URLs",
+        "args": "-l {{hosts}} -silent -o live.txt",
+        "tags": ["probe", "fast"]
+      },
+      {
+        "id": "rich-info",
+        "name": "Status + title + tech",
+        "description": "Live URL with status, title, tech, server",
+        "args": "-l {{hosts}} -sc -title -td -server",
+        "tags": ["recon"]
+      },
+      {
+        "id": "json-pipeline",
+        "name": "JSONL for pipeline",
+        "description": "Probe and output JSONL with full metadata",
+        "args": "-l {{hosts}} -json -o httpx.jsonl",
+        "tags": ["pipeline"]
+      },
+      {
+        "id": "screenshots",
+        "name": "Screenshots all live hosts",
+        "description": "Probe + take screenshots into output/ dir",
+        "args": "-l {{hosts}} -ss -silent",
+        "tags": ["recon", "visual"]
+      },
+      {
+        "id": "common-ports",
+        "name": "Common web ports probe",
+        "description": "Probe alternate web ports beyond 80/443",
+        "args": "-l {{hosts}} -ports 80,443,8080,8443,8000,8888,9000",
+        "tags": ["ports"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["url", "host"],
+      "detect": "httpx|^https?://",
+      "db_action": "host_add",
+      "patterns": [
+        {
+          "type": "url",
+          "regex": "^(https?://[^\\s]+)\\s+\\[(\\d+)\\](?:\\s+\\[([^\\]]*)\\])?",
+          "fields": {
+            "1": "url",
+            "2": "status",
+            "3": "title"
+          }
+        }
+      ]
+    }
+  }
+}

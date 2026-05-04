@@ -1,17 +1,16 @@
 // Configuration commands for AI agent setup and workspace management.
+//
+// Init commands moved to `core/lifecycle.rs` in QW2 (2026-05); this
+// module now hosts only API-key getters, project-settings commands,
+// the workspace updater, and Vertex AI env-config fetcher.
 
 use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::Arc;
 use tauri::State;
 
-use super::super::agent_bridge::AgentBridge;
-use super::configure_bridge;
-use crate::runtime::TauriRuntime;
 use crate::settings::get_with_env_fallback;
 use crate::state::AppState;
-use golish_core::runtime::GolishRuntime;
 use golish_settings::{schema::AiProvider, ProjectSettingsManager};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,155 +78,10 @@ pub async fn save_project_model(
     Ok(())
 }
 
-/// Initialize the AI agent with OpenAI.
-///
-/// If an existing AI agent is running, its session will be finalized and the
-/// sidecar session will be ended before the new agent is initialized.
-///
-/// # Arguments
-/// * `workspace` - Path to the workspace directory
-/// * `model` - Model identifier (e.g., "gpt-5.2")
-/// * `api_key` - OpenAI API key
-/// * `base_url` - Optional custom base URL for OpenAI-compatible APIs
-/// * `reasoning_effort` - Optional reasoning effort level ("low", "medium", "high")
-#[tauri::command]
-pub async fn init_ai_agent_openai(
-    state: State<'_, AppState>,
-    app: tauri::AppHandle,
-    workspace: String,
-    model: String,
-    api_key: String,
-    base_url: Option<String>,
-    reasoning_effort: Option<String>,
-) -> Result<(), GolishError> {
-    // Clean up existing session before replacing the bridge
-    {
-        let bridge_guard = state.ai_state.bridge.read().await;
-        if bridge_guard.is_some() {
-            if let Err(e) = state.sidecar_state.end_session() {
-                tracing::warn!("Failed to end sidecar session during agent reinit: {}", e);
-            } else {
-                tracing::debug!("Sidecar session ended during agent reinit");
-            }
-        }
-    }
-
-    // Create runtime for event emission
-    let app_for_tools = app.clone();
-    let runtime: Arc<dyn GolishRuntime> = Arc::new(TauriRuntime::new(app));
-    *state.ai_state.runtime.write().await = Some(runtime.clone());
-
-    let workspace_path: std::path::PathBuf = workspace.into();
-
-    // Create bridge with OpenAI
-    let mut bridge = AgentBridge::new_openai_with_runtime(
-        workspace_path.clone(),
-        &model,
-        &api_key,
-        base_url.as_deref(),
-        reasoning_effort.as_deref(),
-        runtime,
-    )
-    .await
-?;
-
-    configure_bridge(&mut bridge, &state, "legacy", Some(app_for_tools)).await;
-
-    // Replace the bridge
-    *state.ai_state.bridge.write().await = Some(bridge);
-
-    // Initialize sidecar with the workspace
-    if let Err(e) = state.sidecar_state.initialize(workspace_path).await {
-        tracing::warn!("Failed to initialize sidecar: {}", e);
-    } else {
-        tracing::info!("Sidecar initialized for workspace");
-    }
-
-    tracing::info!(
-        "AI agent initialized with OpenAI, model: {}, reasoning_effort: {:?}",
-        model,
-        reasoning_effort
-    );
-    Ok(())
-}
-
-/// Initialize the AI agent with Anthropic on Google Cloud Vertex AI.
-///
-/// If an existing AI agent is running, its session will be finalized and the
-/// sidecar session will be ended before the new agent is initialized.
-///
-/// # Arguments
-/// * `workspace` - Path to the workspace directory
-/// * `credentials_path` - Path to service account JSON file (None = use application default credentials)
-/// * `project_id` - Google Cloud project ID
-/// * `location` - Vertex AI location (e.g., "us-east5")
-/// * `model` - Model identifier (e.g., "claude-opus-4-5@20251101")
-#[tauri::command]
-pub async fn init_ai_agent_vertex(
-    state: State<'_, AppState>,
-    app: tauri::AppHandle,
-    workspace: String,
-    credentials_path: Option<String>,
-    project_id: String,
-    location: String,
-    model: String,
-) -> Result<(), GolishError> {
-    // Clean up existing session before replacing the bridge
-    // This ensures sessions are properly finalized when switching models
-    {
-        let bridge_guard = state.ai_state.bridge.read().await;
-        if bridge_guard.is_some() {
-            // End the sidecar session (the bridge's Drop impl will finalize its session)
-            if let Err(e) = state.sidecar_state.end_session() {
-                tracing::warn!("Failed to end sidecar session during agent reinit: {}", e);
-            } else {
-                tracing::debug!("Sidecar session ended during agent reinit");
-            }
-        }
-    }
-
-    // Phase 5: Use runtime-based constructor
-    // TauriRuntime handles event emission via Tauri's event system
-    let app_for_tools = app.clone();
-    let runtime: Arc<dyn GolishRuntime> = Arc::new(TauriRuntime::new(app));
-
-    // Store runtime in AiState (for potential future use by other components)
-    *state.ai_state.runtime.write().await = Some(runtime.clone());
-
-    let workspace_path: std::path::PathBuf = workspace.into();
-
-    // Create bridge with runtime (Phase 5 - new path)
-    let mut bridge = AgentBridge::new_vertex_anthropic_with_runtime(
-        workspace_path.clone(),
-        credentials_path.as_deref(),
-        &project_id,
-        &location,
-        &model,
-        runtime,
-    )
-    .await
-?;
-
-    configure_bridge(&mut bridge, &state, "legacy", Some(app_for_tools)).await;
-
-    // Replace the bridge (old bridge's Drop impl will finalize its session)
-    *state.ai_state.bridge.write().await = Some(bridge);
-
-    // Initialize sidecar with the workspace
-    if let Err(e) = state.sidecar_state.initialize(workspace_path).await {
-        tracing::warn!("Failed to initialize sidecar: {}", e);
-        // Don't fail the whole init - sidecar is optional
-    } else {
-        tracing::info!("Sidecar initialized for workspace");
-    }
-
-    tracing::info!(
-        "AI agent initialized with Vertex AI Anthropic, project: {}, model: {}",
-        project_id,
-        model
-    );
-    Ok(())
-}
+// `init_ai_agent_openai` / `init_ai_agent_vertex` removed in QW2 (2026-05).
+// Use the unified `init_ai_agent(config: ProviderConfig)` command in
+// `core/lifecycle.rs` instead — `ProviderConfig::Openai` /
+// `ProviderConfig::VertexAi` carry the same fields with serde tag dispatch.
 
 /// Update the AI agent's workspace/working directory.
 /// This allows the agent to stay in sync with the user's terminal directory.
@@ -262,7 +116,7 @@ pub async fn update_ai_workspace(
     }
 
     // Also update legacy bridge if initialized (for backwards compatibility)
-    if let Ok(bridge_guard) = state.ai_state.get_bridge().await {
+    if let Ok(bridge_guard) = state.ai_state.get_legacy_bridge().await {
         let bridge = bridge_guard.as_ref().unwrap();
         bridge.set_workspace(workspace_path.clone()).await;
     }

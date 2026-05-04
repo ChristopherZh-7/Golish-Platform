@@ -3,10 +3,8 @@ import {
   Crosshair,
   History,
   Loader2,
-  Plus,
   RefreshCw,
   Search,
-  Trash2,
   X,
 } from "lucide-react";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -22,7 +20,6 @@ import {
   type FilterMode,
   getOrCreateLink,
   SEV_COLORS,
-  SEV_DOT,
   type SeverityFilter,
   type SourceFilter,
   type TopTab,
@@ -33,6 +30,8 @@ import {
   WikiPanelEmbed,
 } from "./types";
 import { VulnDetailView } from "./VulnDetailView";
+import { VulnFeedsConfig } from "./VulnFeedsConfig";
+import { VulnIntelCveList } from "./VulnIntelCveList";
 import { VulnKbTopBar } from "./VulnKbTopBar";
 
 export function VulnIntelPanel() {
@@ -602,94 +601,16 @@ export function VulnIntelPanel() {
 
         {/* Feeds config view */}
         {viewMode === "feeds-config" ? (
-          <div className="flex-1 overflow-y-auto px-3 py-2 space-y-1">
-            {(feeds ?? []).map((feed) => (
-              <div
-                key={feed.id}
-                className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-muted/5 group"
-              >
-                <input
-                  type="checkbox"
-                  checked={feed.enabled}
-                  onChange={() => handleToggleFeed(feed.id, !feed.enabled)}
-                  className="w-3 h-3 accent-accent"
-                />
-                <div className="flex-1 min-w-0">
-                  <div className="text-[10px] font-medium truncate">{feed.name}</div>
-                  <div className="text-[9px] text-muted-foreground/30 truncate">{feed.url}</div>
-                  {feed.last_fetched && (
-                    <div className="text-[8px] text-muted-foreground/20">
-                      Last fetched: {new Date(feed.last_fetched * 1000).toLocaleString()}
-                    </div>
-                  )}
-                </div>
-                <span className="text-[8px] text-muted-foreground/25 px-1.5 py-0.5 bg-muted/10 rounded">
-                  {feed.feed_type}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => handleDeleteFeed(feed.id)}
-                  className="p-1 text-muted-foreground/20 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
-                >
-                  <Trash2 className="w-3 h-3" />
-                </button>
-              </div>
-            ))}
-
-            {showAddFeed ? (
-              <div className="space-y-1.5 p-2 border border-border/20 rounded">
-                <input
-                  value={newFeed.name}
-                  onChange={(e) => setNewFeed((f) => ({ ...f, name: e.target.value }))}
-                  placeholder="Feed name..."
-                  className="w-full text-[10px] px-2 py-1 bg-background border border-border/30 rounded outline-none"
-                />
-                <CustomSelect
-                  value={newFeed.feed_type}
-                  onChange={(v) => setNewFeed((f) => ({ ...f, feed_type: v }))}
-                  options={[
-                    { value: "rss", label: "RSS / Atom Feed" },
-                    { value: "nvd", label: "NVD API" },
-                    { value: "cisa_kev", label: "CISA KEV" },
-                    { value: "custom", label: "Custom JSON" },
-                  ]}
-                  size="sm"
-                />
-                <input
-                  value={newFeed.url}
-                  onChange={(e) => setNewFeed((f) => ({ ...f, url: e.target.value }))}
-                  placeholder="Feed URL..."
-                  className="w-full text-[10px] px-2 py-1 bg-background border border-border/30 rounded outline-none"
-                />
-                <div className="flex gap-1.5">
-                  <button
-                    type="button"
-                    onClick={handleAddFeed}
-                    disabled={!newFeed.name.trim() || !newFeed.url.trim()}
-                    className="text-[9px] text-accent hover:text-accent/80 font-medium disabled:opacity-30"
-                  >
-                    Add
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowAddFeed(false)}
-                    className="text-[9px] text-muted-foreground/30"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setShowAddFeed(true)}
-                className="flex items-center gap-1 text-[9px] text-muted-foreground/30 hover:text-accent transition-colors"
-              >
-                <Plus className="w-3 h-3" />
-                Add feed
-              </button>
-            )}
-          </div>
+          <VulnFeedsConfig
+            feeds={feeds}
+            showAddFeed={showAddFeed}
+            setShowAddFeed={setShowAddFeed}
+            newFeed={newFeed}
+            setNewFeed={setNewFeed}
+            handleToggleFeed={handleToggleFeed}
+            handleDeleteFeed={handleDeleteFeed}
+            handleAddFeed={handleAddFeed}
+          />
         ) : (
           /* Master-detail layout */
           <div className="flex-1 flex overflow-hidden min-h-0">
@@ -700,111 +621,22 @@ export function VulnIntelPanel() {
                 selectedEntry ? "w-[320px]" : "flex-1"
               )}
             >
-              <div className="flex-1 overflow-y-auto py-1 px-1.5">
-                {displayEntries.length === 0 ? (
-                  <div className="text-center text-[11px] text-muted-foreground/30 py-12">
-                    {loading
-                      ? t("vulnIntel.fetching", "Fetching vulnerability data...")
-                      : viewMode === "matched"
-                        ? t("vulnIntel.noMatched", "No matched vulnerabilities")
-                        : t("vulnIntel.clickRefresh", "Click refresh to fetch latest CVEs")}
-                  </div>
-                ) : (
-                  <>
-                    {displayedEntries.map((entry) => {
-                      const isSelected = expandedCve === entry.cve_id;
-                      const link = vulnLinks[entry.cve_id];
-                      const hasPoc = link && link.pocTemplates.length > 0;
-                      const hasWiki = link && link.wikiPaths.length > 0;
-
-                      return (
-                        <div
-                          key={entry.cve_id}
-                          className={cn(
-                            "flex items-start gap-2 py-1.5 px-2 rounded cursor-pointer transition-colors",
-                            isSelected
-                              ? "bg-accent/10 border border-accent/20"
-                              : "hover:bg-muted/5 border border-transparent"
-                          )}
-                          onClick={() => {
-                            setExpandedCve(isSelected ? null : entry.cve_id);
-                            setDetailTab("intel");
-                          }}
-                        >
-                          <span
-                            className={cn(
-                              "w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0",
-                              SEV_DOT[entry.severity] || "bg-slate-500"
-                            )}
-                          />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="text-[10px] font-mono font-medium text-accent/80">
-                                {entry.cve_id}
-                              </span>
-                              <span
-                                className={cn(
-                                  "text-[8px] px-1.5 py-0.5 rounded-full border capitalize",
-                                  SEV_COLORS[entry.severity] || SEV_COLORS.info
-                                )}
-                              >
-                                {entry.severity}
-                                {entry.cvss_score != null && ` ${entry.cvss_score}`}
-                              </span>
-                              {hasPoc && (
-                                <span className="text-[7px] px-1 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                                  PoC
-                                </span>
-                              )}
-                              {hasWiki && (
-                                <span className="text-[7px] px-1 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">
-                                  Wiki
-                                </span>
-                              )}
-                            </div>
-                            <div className="text-[10px] text-foreground/70 truncate mt-0.5">
-                              {entry.title}
-                            </div>
-                            <div className="flex items-center gap-2 mt-0.5">
-                              <span className="text-[8px] text-muted-foreground/20">
-                                {entry.source}
-                              </span>
-                              <span className="text-[8px] text-muted-foreground/20">
-                                {entry.published.slice(0, 10)}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {intelDisplayCount < displayEntries.length && (
-                      <button
-                        type="button"
-                        onClick={() => setIntelDisplayCount((c) => c + INTEL_PAGE)}
-                        className="w-full py-2 mt-1 text-[10px] text-accent/60 hover:text-accent hover:bg-accent/5 rounded transition-colors"
-                      >
-                        Show more ({displayEntries.length - intelDisplayCount} remaining)
-                      </button>
-                    )}
-                  </>
-                )}
-                {displayEntries.length >= 10 && !loading && (
-                  <button
-                    type="button"
-                    onClick={handleLoadMore}
-                    className="w-full py-2 mt-1 text-[10px] text-accent/60 hover:text-accent hover:bg-accent/5 rounded transition-colors"
-                  >
-                    {searchQuery.trim()
-                      ? `Load more results for "${searchQuery.trim()}"...`
-                      : `Load older CVEs (${loadMorePage * 120}-${(loadMorePage + 1) * 120} days ago)...`}
-                  </button>
-                )}
-                {loading && (
-                  <div className="flex items-center justify-center py-3">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground/30" />
-                  </div>
-                )}
-              </div>
+              <VulnIntelCveList
+                displayedEntries={displayedEntries}
+                displayEntries={displayEntries}
+                intelDisplayCount={intelDisplayCount}
+                loading={loading}
+                viewMode={viewMode}
+                searchQuery={searchQuery}
+                expandedCve={expandedCve}
+                vulnLinks={vulnLinks}
+                loadMorePage={loadMorePage}
+                setExpandedCve={setExpandedCve}
+                setDetailTab={setDetailTab}
+                setIntelDisplayCount={setIntelDisplayCount}
+                handleLoadMore={handleLoadMore}
+                t={t}
+              />
             </div>
 
             {/* Right: Detail panel */}

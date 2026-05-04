@@ -1,9 +1,10 @@
-import { emit, listen } from "@tauri-apps/api/event";
+import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { SecurityTab } from "@/components/SecurityView/SecurityView";
 import { Terminal } from "@/components/Terminal/Terminal";
 import { closeDetached } from "@/lib/api/window";
+import { onCustomEvent } from "@/lib/events";
 import { runTauriUnlistenFn, runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import { ThemeManager } from "@/lib/theme";
 import "@xterm/xterm/css/xterm.css";
@@ -55,11 +56,11 @@ export function DetachedView({ sessionId, tabType }: DetachedViewProps) {
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
-    listen<{ session_id: string; title: string }>("detached-title-update", (event) => {
-      if (event.payload.session_id === sessionId) {
-        setTitle(event.payload.title);
+    onCustomEvent<{ session_id: string; title: string }>("detached-title-update", (payload) => {
+      if (payload.session_id === sessionId) {
+        setTitle(payload.title);
         getCurrentWindow()
-          .setTitle(event.payload.title)
+          .setTitle(payload.title)
           .catch(() => {});
       }
     }).then((fn) => {

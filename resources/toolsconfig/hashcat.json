@@ -1,0 +1,229 @@
+{
+  "tool": {
+    "id": "hashcat",
+    "name": "hashcat",
+    "description": "World's fastest GPU-accelerated password recovery tool (200+ hash modes)",
+    "executable": "hashcat",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "brute",
+    "subcategory": "offline",
+    "tier": "optional",
+    "tags": ["brute", "password", "hash", "gpu", "offline"],
+    "install": {
+      "method": "homebrew",
+      "source": "hashcat"
+    },
+    "params": [
+      {
+        "label": "Hash File",
+        "flag": "",
+        "type": "string",
+        "required": true,
+        "description": "Path to hashes file or single hash string",
+        "placeholder": "hashes.txt"
+      },
+      {
+        "label": "Hash Mode",
+        "flag": "-m",
+        "type": "select",
+        "required": true,
+        "description": "Hash type number (run --help for full list)",
+        "options": [
+          { "value": "0", "label": "0 - MD5" },
+          { "value": "100", "label": "100 - SHA1" },
+          { "value": "1400", "label": "1400 - SHA256" },
+          { "value": "1700", "label": "1700 - SHA512" },
+          { "value": "1000", "label": "1000 - NTLM" },
+          { "value": "3000", "label": "3000 - LM" },
+          { "value": "5500", "label": "5500 - NetNTLMv1" },
+          { "value": "5600", "label": "5600 - NetNTLMv2" },
+          { "value": "13100", "label": "13100 - Kerberos 5 TGS-REP (Kerberoast)" },
+          { "value": "18200", "label": "18200 - Kerberos 5 AS-REP (AS-REP roast)" },
+          { "value": "500", "label": "500 - md5crypt" },
+          { "value": "1800", "label": "1800 - sha512crypt" },
+          { "value": "3200", "label": "3200 - bcrypt" },
+          { "value": "22000", "label": "22000 - WPA-PBKDF2-PMKID+EAPOL" },
+          { "value": "13400", "label": "13400 - KeePass 1/2" },
+          { "value": "9600", "label": "9600 - MS Office 2013" },
+          { "value": "17200", "label": "17200 - PKZIP" }
+        ]
+      },
+      {
+        "label": "Attack Mode",
+        "flag": "-a",
+        "type": "select",
+        "required": true,
+        "description": "Attack mode",
+        "default": "0",
+        "options": [
+          { "value": "0", "label": "0 - Straight (dict)" },
+          { "value": "1", "label": "1 - Combination (2 dicts)" },
+          { "value": "3", "label": "3 - Brute / Mask" },
+          { "value": "6", "label": "6 - Hybrid Wordlist + Mask" },
+          { "value": "7", "label": "7 - Hybrid Mask + Wordlist" },
+          { "value": "9", "label": "9 - Association" }
+        ]
+      },
+      {
+        "label": "Wordlist",
+        "flag": "",
+        "type": "string",
+        "description": "Wordlist file path (positional after hash file)",
+        "placeholder": "/usr/share/wordlists/rockyou.txt"
+      },
+      {
+        "label": "Rules",
+        "flag": "-r",
+        "type": "string",
+        "description": "Rules file (e.g. best64.rule, OneRuleToRuleThemAll.rule)",
+        "placeholder": "rules/best64.rule"
+      },
+      {
+        "label": "Mask",
+        "flag": "",
+        "type": "string",
+        "description": "Mask pattern for -a 3 (e.g. ?u?l?l?l?l?d?d)",
+        "placeholder": "?l?l?l?l?l?l?d?d"
+      },
+      {
+        "label": "Workload",
+        "flag": "-w",
+        "type": "select",
+        "description": "Workload profile (1=low, 4=insane)",
+        "default": "3",
+        "options": [
+          { "value": "1", "label": "1 - Low (idle)" },
+          { "value": "2", "label": "2 - Default" },
+          { "value": "3", "label": "3 - High" },
+          { "value": "4", "label": "4 - Insane (full GPU)" }
+        ]
+      },
+      {
+        "label": "Optimized Kernels",
+        "flag": "-O",
+        "type": "boolean",
+        "description": "Use optimized kernels (limit pwd len, much faster)"
+      },
+      {
+        "label": "Force",
+        "flag": "--force",
+        "type": "boolean",
+        "description": "Ignore warnings"
+      },
+      {
+        "label": "Show Cracked",
+        "flag": "--show",
+        "type": "boolean",
+        "description": "Show only already-cracked hashes"
+      },
+      {
+        "label": "Restore Session",
+        "flag": "--restore",
+        "type": "boolean",
+        "description": "Restore previous session"
+      },
+      {
+        "label": "Session Name",
+        "flag": "--session=",
+        "type": "string",
+        "description": "Save session with this name",
+        "placeholder": "myjob"
+      },
+      {
+        "label": "Output File",
+        "flag": "-o",
+        "type": "string",
+        "description": "Output cracked passwords file",
+        "placeholder": "cracked.txt"
+      },
+      {
+        "label": "Status Update",
+        "flag": "--status",
+        "type": "boolean",
+        "description": "Print live status updates"
+      },
+      {
+        "label": "Status Interval",
+        "flag": "--status-timer=",
+        "type": "string",
+        "description": "Update interval in seconds",
+        "default": "10"
+      },
+      {
+        "label": "Devices",
+        "flag": "-d",
+        "type": "string",
+        "description": "OpenCL devices to use (comma list, e.g. 1,2)",
+        "placeholder": "1"
+      }
+    ],
+    "skills": [
+      {
+        "id": "md5-rockyou",
+        "name": "MD5 + rockyou",
+        "description": "Straight dict attack on MD5 hashes",
+        "args": "-m 0 -a 0 {{hashes}} /usr/share/wordlists/rockyou.txt",
+        "tags": ["md5", "dict"]
+      },
+      {
+        "id": "ntlm-best64",
+        "name": "NTLM + best64 rules",
+        "description": "NTLM crack with mangling",
+        "args": "-m 1000 -a 0 {{hashes}} /usr/share/wordlists/rockyou.txt -r rules/best64.rule",
+        "tags": ["ntlm", "windows"]
+      },
+      {
+        "id": "wpa-pmkid",
+        "name": "WPA PMKID crack",
+        "description": "Crack WPA from PMKID file (hcxdumptool output)",
+        "args": "-m 22000 -a 0 {{hashes}} /usr/share/wordlists/rockyou.txt",
+        "tags": ["wpa", "wifi"]
+      },
+      {
+        "id": "kerberoast",
+        "name": "Kerberoast TGS",
+        "description": "Crack TGS-REP (Active Directory)",
+        "args": "-m 13100 -a 0 {{hashes}} /usr/share/wordlists/rockyou.txt",
+        "tags": ["ad", "kerberos"]
+      },
+      {
+        "id": "mask-bf",
+        "name": "8-char mask brute",
+        "description": "Pattern-based brute (lower + digits)",
+        "args": "-m 0 -a 3 {{hashes}} ?l?l?l?l?l?l?d?d",
+        "tags": ["mask"]
+      },
+      {
+        "id": "hybrid-mask-suffix",
+        "name": "Hybrid (dict + mask suffix)",
+        "description": "Dict word + 4 digits (common pattern)",
+        "args": "-m 0 -a 6 {{hashes}} /usr/share/wordlists/rockyou.txt ?d?d?d?d",
+        "tags": ["hybrid"]
+      },
+      {
+        "id": "show-cracked",
+        "name": "Show already cracked",
+        "description": "Display passwords from potfile",
+        "args": "-m {{mode}} --show {{hashes}}",
+        "tags": ["report"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["credential"],
+      "detect": "hashcat|Status\\.+:|Recovered\\.+:",
+      "db_action": "credential_add",
+      "patterns": [
+        {
+          "type": "credential",
+          "regex": "^([0-9a-fA-F:$\\.\\-/]+):(.+)$",
+          "fields": {
+            "1": "hash",
+            "2": "password"
+          }
+        }
+      ]
+    }
+  }
+}
