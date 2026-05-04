@@ -1,4 +1,4 @@
-export interface TruncationResult {
+interface TruncationResult {
   truncatedContent: string;
   isTruncated: boolean;
   totalLines: number;

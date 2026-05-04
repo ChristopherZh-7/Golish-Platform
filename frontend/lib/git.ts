@@ -1,6 +1,6 @@
 import type { GitStatusEntry } from "./api/git";
 
-export type GitChangeKind =
+type GitChangeKind =
   | "modified"
   | "added"
   | "deleted"
@@ -21,7 +21,7 @@ export interface GitChange {
 
 const CONFLICT_CODES = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"]);
 
-export function formatStatus(index: string | null, worktree: string | null): string {
+function formatStatus(index: string | null, worktree: string | null): string {
   return `${index ?? " "}${worktree ?? " "}`;
 }
 

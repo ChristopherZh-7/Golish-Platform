@@ -30,7 +30,7 @@ export function formatLogDate(ts: string | number): string {
   });
 }
 
-export type RelativeTimeFallback = "days" | "localeDate";
+type RelativeTimeFallback = "days" | "localeDate";
 
 export function formatRelativeTime(
   ts: string | number | undefined,
