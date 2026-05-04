@@ -36,7 +36,7 @@ const palette = {
 };
 
 // Editor theme (UI styling)
-export const golishEditorTheme = EditorView.theme(
+const golishEditorTheme = EditorView.theme(
   {
     "&": {
       backgroundColor: palette.bgPrimary,
@@ -135,7 +135,7 @@ export const golishEditorTheme = EditorView.theme(
 );
 
 // Syntax highlighting
-export const golishHighlightStyle = HighlightStyle.define([
+const golishHighlightStyle = HighlightStyle.define([
   { tag: t.comment, color: palette.textMuted, fontStyle: "italic" },
   { tag: t.lineComment, color: palette.textMuted, fontStyle: "italic" },
   { tag: t.blockComment, color: palette.textMuted, fontStyle: "italic" },
