@@ -1,8 +1,9 @@
-import { emit, listen } from "@tauri-apps/api/event";
+import { emit } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { targets } from "@/lib/api";
 import type { TargetStore } from "@/lib/api/targets";
 import { logAudit } from "@/lib/audit";
+import { onCustomEvent, onEvent } from "@/lib/events";
 import type { Target } from "@/lib/pentest/types";
 import { getProjectPath } from "@/lib/projects";
 import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
@@ -40,22 +41,19 @@ export function useTargetData() {
 
   useEffect(() => {
     const REFRESH_TOOLS = new Set(["manage_targets", "record_finding", "run_pipeline"]);
-    const unlistenAi = listen<{ type: string; tool_name?: string }>("ai-event", (event) => {
-      if (
-        event.payload.type === "tool_result" &&
-        event.payload.tool_name &&
-        REFRESH_TOOLS.has(event.payload.tool_name)
-      ) {
+    const unlistenAi = onEvent("ai-event", (payload) => {
+      const p = payload as { type: string; tool_name?: string };
+      if (p.type === "tool_result" && p.tool_name && REFRESH_TOOLS.has(p.tool_name)) {
         loadTargets();
       }
     });
-    const unlistenPipeline = listen<{ status: string }>("pipeline-event", (event) => {
-      if (event.payload.status === "completed" || event.payload.status === "error") {
+    const unlistenPipeline = onEvent("pipeline-event", (payload) => {
+      if (payload.status === "completed" || payload.status === "error") {
         loadTargets();
       }
     });
-    const unlistenDb = listen("db-ready", () => loadTargets());
-    const unlistenTargets = listen("targets-changed", () => loadTargets());
+    const unlistenDb = onCustomEvent("db-ready", () => loadTargets());
+    const unlistenTargets = onCustomEvent("targets-changed", () => loadTargets());
     const pollInterval = setInterval(loadTargets, 15000);
     return () => {
       runTauriUnlistenFromPromise(unlistenAi);

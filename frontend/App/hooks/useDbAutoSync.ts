@@ -1,6 +1,6 @@
-import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
 import { browserClose } from "@/lib/api/pentest-browser";
+import { onCustomEvent } from "@/lib/events";
 import { createDbAutoSaver } from "../../lib/conversation-db-sync";
 import { useStore } from "../../store";
 
@@ -44,7 +44,7 @@ export function useDbAutoSync(): void {
     };
 
     let unlistenFlushState: (() => void) | null = null;
-    listen("flush-state", closePentestBrowser)
+    onCustomEvent("flush-state", closePentestBrowser)
       .then((unlisten) => {
         unlistenFlushState = unlisten;
       })

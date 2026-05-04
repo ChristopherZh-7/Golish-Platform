@@ -7,33 +7,10 @@
  * - When all steps are done: mark the pipeline block as completed/failed.
  */
 
-import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
+import { onEvent } from "@/lib/events";
 import type { PipelineExecution, PipelineStepExecution } from "@/store";
 import { useStore } from "@/store";
-
-interface PipelineStepInfo {
-  id: string;
-  tool_name: string;
-  command_template: string;
-}
-
-interface PipelineEventPayload {
-  pipeline_id: string;
-  step_id: string;
-  step_index: number;
-  total_steps: number;
-  status: string;
-  tool_name: string;
-  message?: string;
-  store_stats?: { stored_count: number };
-  pipeline_name?: string;
-  target?: string;
-  all_steps?: PipelineStepInfo[];
-  output?: string;
-  duration_ms?: number;
-  exit_code?: number;
-}
 
 function humanizeId(id: string): string {
   return id.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -75,8 +52,7 @@ export function usePipelineEvents() {
 
     console.log("[usePipelineEvents] Hook initialized, setting up listener");
     const setup = async () => {
-      const unlisten = await listen<PipelineEventPayload>("pipeline-event", (event) => {
-        const p = event.payload;
+      const unlisten = await onEvent("pipeline-event", (p) => {
         const state = useStore.getState();
 
         console.log(

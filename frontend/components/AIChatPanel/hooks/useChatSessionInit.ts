@@ -8,6 +8,7 @@ import {
   setExecutionMode as setExecutionModeBackend,
   setUseAgents as setUseAgentsBackend,
   shutdownAiSession,
+  titleGenSessionId,
 } from "@/lib/ai";
 import { getSettings } from "@/lib/settings";
 import { useStore } from "@/store";
@@ -39,7 +40,7 @@ export function useChatSessionInit(opts: UseChatSessionInitOptions) {
   const generateTitle = useCallback(
     async (convId: string, firstMessage: string) => {
       if (!selectedModel?.model || !selectedModel?.provider) return;
-      const titleSessionId = `title-gen-${convId}`;
+      const titleSessionId = titleGenSessionId(convId);
       try {
         const settings = await getSettings();
         const titleWorkspace = useStore.getState().currentProjectPath || ".";

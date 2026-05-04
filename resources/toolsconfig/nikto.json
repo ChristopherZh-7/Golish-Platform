@@ -1,0 +1,187 @@
+{
+  "tool": {
+    "id": "nikto",
+    "name": "nikto",
+    "description": "Web server scanner that tests for dangerous files, outdated versions, and configuration issues",
+    "executable": "nikto",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "web",
+    "subcategory": "scanner",
+    "tier": "essential",
+    "tags": ["web", "scanner", "vulnerability", "fingerprint"],
+    "install": {
+      "method": "homebrew",
+      "source": "nikto"
+    },
+    "params": [
+      {
+        "label": "Target Host",
+        "flag": "-h",
+        "type": "string",
+        "required": true,
+        "description": "Target host (URL, IP, or hostname)",
+        "placeholder": "https://target.com"
+      },
+      {
+        "label": "Port",
+        "flag": "-p",
+        "type": "string",
+        "description": "Port (default 80, supports comma list e.g. 80,443,8080)",
+        "placeholder": "443"
+      },
+      {
+        "label": "SSL",
+        "flag": "-ssl",
+        "type": "boolean",
+        "description": "Force SSL/TLS"
+      },
+      {
+        "label": "Tuning",
+        "flag": "-Tuning",
+        "type": "select",
+        "description": "Restrict to a category of checks",
+        "options": [
+          { "value": "1", "label": "1 - Interesting File / Seen in logs" },
+          { "value": "2", "label": "2 - Misconfiguration / Default File" },
+          { "value": "3", "label": "3 - Information Disclosure" },
+          { "value": "4", "label": "4 - Injection (XSS/Script/HTML)" },
+          { "value": "5", "label": "5 - Remote File Retrieval" },
+          { "value": "6", "label": "6 - Denial of Service" },
+          { "value": "7", "label": "7 - Remote File Retrieval (server)" },
+          { "value": "8", "label": "8 - Command Execution / Shell" },
+          { "value": "9", "label": "9 - SQL Injection" },
+          { "value": "x", "label": "x - Reverse tuning (exclude)" }
+        ]
+      },
+      {
+        "label": "User-Agent",
+        "flag": "-useragent",
+        "type": "string",
+        "description": "Custom User-Agent header",
+        "placeholder": "Mozilla/5.0 ..."
+      },
+      {
+        "label": "Auth",
+        "flag": "-id",
+        "type": "string",
+        "description": "Basic auth as user:pass",
+        "placeholder": "admin:admin"
+      },
+      {
+        "label": "Cookies",
+        "flag": "-Cookies",
+        "type": "string",
+        "description": "Use these cookies",
+        "placeholder": "session=abcd"
+      },
+      {
+        "label": "Output File",
+        "flag": "-output",
+        "type": "string",
+        "description": "Save results (extension determines format)",
+        "placeholder": "nikto_report.html"
+      },
+      {
+        "label": "Format",
+        "flag": "-Format",
+        "type": "select",
+        "description": "Output format",
+        "options": [
+          { "value": "txt", "label": "Plain text" },
+          { "value": "csv", "label": "CSV" },
+          { "value": "htm", "label": "HTML" },
+          { "value": "json", "label": "JSON" },
+          { "value": "xml", "label": "XML" }
+        ]
+      },
+      {
+        "label": "Display Mode",
+        "flag": "-Display",
+        "type": "select",
+        "description": "Verbosity (V=verbose, P=progress, E=errors)",
+        "options": [
+          { "value": "V", "label": "V - Verbose" },
+          { "value": "P", "label": "P - Progress" },
+          { "value": "E", "label": "E - Errors" },
+          { "value": "1", "label": "1 - 1xx info" },
+          { "value": "2", "label": "2 - 2xx ok" },
+          { "value": "3", "label": "3 - 3xx redirect" },
+          { "value": "4", "label": "4 - 4xx error" }
+        ]
+      },
+      {
+        "label": "No Lookup",
+        "flag": "-nolookup",
+        "type": "boolean",
+        "description": "Disable DNS lookups"
+      },
+      {
+        "label": "Update DB",
+        "flag": "-update",
+        "type": "boolean",
+        "description": "Update Nikto plugin and database"
+      }
+    ],
+    "skills": [
+      {
+        "id": "quick-scan",
+        "name": "Quick HTTP Scan",
+        "description": "Default scan of HTTP target",
+        "args": "-h {{target}}",
+        "tags": ["recon", "fast"]
+      },
+      {
+        "id": "https-scan",
+        "name": "HTTPS Scan",
+        "description": "Full HTTPS scan with SSL",
+        "args": "-h {{target}} -p 443 -ssl",
+        "tags": ["https"]
+      },
+      {
+        "id": "json-report",
+        "name": "Save JSON Report",
+        "description": "Scan and save results as JSON",
+        "args": "-h {{target}} -Format json -output nikto.json",
+        "tags": ["report"]
+      },
+      {
+        "id": "injection-only",
+        "name": "Injection Checks Only",
+        "description": "Only run XSS / script / SQLi tuning categories",
+        "args": "-h {{target}} -Tuning 49",
+        "tags": ["injection"]
+      },
+      {
+        "id": "auth-scan",
+        "name": "Authenticated Scan",
+        "description": "Scan with basic auth credentials",
+        "args": "-h {{target}} -id {{user}}:{{pass}}",
+        "tags": ["auth"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["vulnerability", "info"],
+      "detect": "Nikto v|OSVDB-|\\+ \\d+",
+      "db_action": "finding_add",
+      "patterns": [
+        {
+          "type": "vulnerability",
+          "regex": "\\+\\s+(OSVDB-\\d+|CVE-\\d{4}-\\d+)\\s*:?\\s*(.+)",
+          "fields": {
+            "1": "id",
+            "2": "description"
+          }
+        },
+        {
+          "type": "info",
+          "regex": "\\+\\s+Server:\\s+(.+)",
+          "fields": {
+            "1": "server_banner"
+          }
+        }
+      ]
+    }
+  }
+}

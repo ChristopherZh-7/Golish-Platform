@@ -20,33 +20,22 @@ export function App() {
   const setRenderMode = useStore((state) => state.setRenderMode);
   const openSettingsTab = useStore((state) => state.openSettingsTab);
 
-  // Panel state from store (replaces local useState)
+  // Panel state from store — only the openers/closers App.tsx wires
+  // up; AppShell subscribes to the open booleans directly.
   const gitPanelOpen = useStore((state) => state.gitPanelOpen);
-  const sessionBrowserOpen = useStore((state) => state.sessionBrowserOpen);
   const openGitPanel = useStore((state) => state.openGitPanel);
   const openContextPanel = useStore((state) => state.openContextPanel);
   const toggleFileEditorPanel = useStore((state) => state.toggleFileEditorPanel);
   const closePanels = useStore((state) => state.closePanels);
-  const setSessionBrowserOpen = useStore((state) => state.setSessionBrowserOpen);
 
   const { createTerminalTab } = useCreateTerminalTab();
   const { handleSplitPane, handleClosePane, handleNavigatePane } = usePaneControls(activeSessionId);
 
-  // Dialog state from store (was local useState, now centralized)
-  const commandPaletteOpen = useStore((s) => s.commandPaletteOpen);
+  // Setters that `useGlobalShortcuts` needs for keyboard wiring; the
+  // matching boolean state lives inside `AppShell` now.
   const setCommandPaletteOpen = useStore((s) => s.setCommandPaletteOpen);
-  const quickOpenDialogOpen = useStore((s) => s.quickOpenDialogOpen);
   const setQuickOpenDialogOpen = useStore((s) => s.setQuickOpenDialogOpen);
-  const settingsOpen = useStore((s) => s.settingsDialogOpen);
-  const setSettingsOpen = useStore((s) => s.setSettingsDialogOpen);
-  const settingsSection = useStore((s) => s.settingsSection);
-  const setSettingsSection = useStore((s) => s.setSettingsSection);
-  const bottomTerminalOpen = useStore((s) => s.bottomTerminalOpen);
-  const setBottomTerminalOpen = useStore((s) => s.setBottomTerminalOpen);
-  const shortcutsHelpOpen = useStore((s) => s.shortcutsHelpOpen);
   const setShortcutsHelpOpen = useStore((s) => s.setShortcutsHelpOpen);
-  const recordingsPanelOpen = useStore((s) => s.recordingsPanelOpen);
-  const setRecordingsPanelOpen = useStore((s) => s.setRecordingsPanelOpen);
 
   // Right split column state + handlers
   const rightSplit = useLayoutManager();
@@ -131,7 +120,10 @@ export function App() {
     [activeSessionId]
   );
 
-  const handleOpenHistory = useCallback(() => setSessionBrowserOpen(true), [setSessionBrowserOpen]);
+  const handleOpenHistory = useCallback(
+    () => useStore.getState().setSessionBrowserOpen(true),
+    []
+  );
 
   // Panel onOpenChange callbacks (open via specific opener, close via shared closePanels)
   const handleGitPanelOpenChange = useCallback(
@@ -166,22 +158,6 @@ export function App() {
     setActivityView,
     activityControls,
     visitedViews,
-    commandPaletteOpen,
-    setCommandPaletteOpen,
-    quickOpenDialogOpen,
-    setQuickOpenDialogOpen,
-    settingsOpen,
-    setSettingsOpen,
-    settingsSection,
-    setSettingsSection,
-    shortcutsHelpOpen,
-    setShortcutsHelpOpen,
-    recordingsPanelOpen,
-    setRecordingsPanelOpen,
-    sessionBrowserOpen,
-    setSessionBrowserOpen,
-    bottomTerminalOpen,
-    setBottomTerminalOpen,
     rightPanelTabs: rightSplit.rightPanelTabs,
     rightActiveTab: rightSplit.rightActiveTab,
     setRightActiveTab: rightSplit.setRightActiveTab,

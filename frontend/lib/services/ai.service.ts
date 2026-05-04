@@ -8,22 +8,23 @@
  */
 
 import type {
-  AiConfig,
-  AiEvent,
+  ProviderConfig,
   SessionAiConfigInfo,
   SubAgentInfo,
   ToolDefinition,
   WorkflowInfo,
 } from "../ai/types";
-import { invoke, listen, type UnlistenFn } from "../transport";
+import { invoke } from "../transport";
 
-export async function initAgent(config: AiConfig): Promise<void> {
-  return invoke("init_ai_agent", {
-    workspace: config.workspace,
-    provider: config.provider,
-    model: config.model,
-    apiKey: config.apiKey,
-  });
+/**
+ * Initialise the legacy single AI agent through the unified
+ * `init_ai_agent` IPC.
+ *
+ * Prefer the per-session `initSession` flow below; this wrapper is kept
+ * for the headless / dev paths that still target the legacy bridge.
+ */
+export async function initAgent(config: ProviderConfig): Promise<void> {
+  return invoke("init_ai_agent", { config });
 }
 
 export async function shutdownAgent(): Promise<void> {
@@ -60,10 +61,6 @@ export async function getAvailableSubAgents(): Promise<SubAgentInfo[]> {
 
 export async function getSessionConfig(sessionId: string): Promise<SessionAiConfigInfo | null> {
   return invoke("get_session_ai_config", { sessionId });
-}
-
-export function onAiEvent(handler: (event: AiEvent) => void): Promise<UnlistenFn> {
-  return listen<AiEvent>("ai-event", handler);
 }
 
 export async function initSession(params: {

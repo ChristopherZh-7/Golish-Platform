@@ -1,7 +1,7 @@
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { invoke, listen } from "@/lib/api/client";
+import { invoke } from "@/lib/api/client";
+import { onEvent } from "@/lib/events";
 import type {
-  AiConfig,
   AiEvent,
   AiProvider,
   ProviderConfig,
@@ -12,14 +12,27 @@ import type {
   WorkflowInfo,
 } from "./types";
 
-export async function initAiAgent(config: AiConfig): Promise<void> {
-  return invoke("init_ai_agent", {
-    workspace: config.workspace,
-    provider: config.provider,
-    model: config.model,
-    apiKey: config.apiKey,
-  });
+/**
+ * Prefix used by silent title-generation sessions (no tools / sub-agents).
+ *
+ * Cross-process invariant: must stay in sync with
+ * `backend/crates/golish-core/src/session_kind.rs::TITLE_GEN_SESSION_PREFIX`.
+ */
+export const TITLE_GEN_SESSION_PREFIX = "title-gen-";
+
+/** Build a title-generation session id from a base id (e.g. conversation id). */
+export function titleGenSessionId(base: string): string {
+  return `${TITLE_GEN_SESSION_PREFIX}${base}`;
 }
+
+/** Returns `true` if the session id was minted for title generation. */
+export function isTitleGenSessionId(sessionId: string): boolean {
+  return sessionId.startsWith(TITLE_GEN_SESSION_PREFIX);
+}
+
+// `initAiAgent` moved to `./providers.ts` in QW2 (2026-05) — that
+// version takes a `ProviderConfig` (tagged enum covering every
+// provider) and is the single supported entry point.
 
 export async function retryCompaction(sessionId: string): Promise<void> {
   return invoke("retry_compaction", { sessionId });
@@ -70,7 +83,7 @@ export async function shutdownAiAgent(): Promise<void> {
 }
 
 export function onAiEvent(callback: (event: AiEvent) => void): Promise<UnlistenFn> {
-  return listen<AiEvent>("ai-event", callback);
+  return onEvent("ai-event", callback);
 }
 
 export async function signalFrontendReady(sessionId: string): Promise<void> {

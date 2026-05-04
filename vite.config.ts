@@ -96,6 +96,15 @@ export default defineConfig(async () => ({
             if (id.includes("@codemirror/")) {
               return "codemirror";
             }
+            if (id.includes("cytoscape")) {
+              return "cytoscape";
+            }
+            if (id.includes("@milkdown/")) {
+              return "milkdown";
+            }
+            if (id.includes("cmdk")) {
+              return "cmdk";
+            }
           }
         },
       },

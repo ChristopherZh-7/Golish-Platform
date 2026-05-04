@@ -18,7 +18,7 @@ export const EventChannels = {
   FILE_CHANGED: "file-changed",
   MCP_EVENT: "mcp-event",
   PIPELINE_EVENT: "pipeline-event",
-  TAB_SPLIT_EVENT: "tab-split-event",
+  DETACHED_WINDOW_CLOSED: "detached-window-closed",
 } as const;
 
 export type EventChannel = (typeof EventChannels)[keyof typeof EventChannels];

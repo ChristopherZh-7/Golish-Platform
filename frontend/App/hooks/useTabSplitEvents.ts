@@ -1,9 +1,9 @@
-import { listen } from "@tauri-apps/api/event";
 import type React from "react";
 import { useEffect } from "react";
 import { findingsApi } from "@/lib/api/findings";
 import { detectTool, parse as parseToolOutput } from "@/lib/api/output-parser";
 import { createDetached } from "@/lib/api/window";
+import { onEvent } from "@/lib/events";
 import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
 import { getProjectPath } from "@/lib/projects";
@@ -196,8 +196,7 @@ export function useTabSplitEvents({
     window.addEventListener("recording-saved", handleRecordingSaved);
 
     let unlistenDetachedClose: (() => void) | null = null;
-    listen<{ session_id: string }>("detached-window-closed", (event) => {
-      const { session_id } = event.payload;
+    onEvent("detached-window-closed", ({ session_id }) => {
       const detached = JSON.parse(localStorage.getItem("golish-detached-tabs") || "{}");
       delete detached[session_id];
       try {

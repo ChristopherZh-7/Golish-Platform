@@ -18,7 +18,7 @@ pub async fn get_tool_policy_config(
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_tool_policy_config().await);
     }
-    let guard = state.ai_state.get_bridge().await?;
+    let guard = state.ai_state.get_legacy_bridge().await?;
     Ok(guard.as_ref().unwrap().get_tool_policy_config().await)
 }
 
@@ -34,7 +34,7 @@ pub async fn set_tool_policy_config(
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return bridge.set_tool_policy_config(config).await.map_err(GolishError::from);
     }
-    let guard = state.ai_state.get_bridge().await?;
+    let guard = state.ai_state.get_legacy_bridge().await?;
     guard.as_ref().unwrap().set_tool_policy_config(config).await.map_err(GolishError::from)
 }
 
@@ -50,7 +50,7 @@ pub async fn get_tool_policy(
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_tool_policy(&tool_name).await);
     }
-    let guard = state.ai_state.get_bridge().await?;
+    let guard = state.ai_state.get_legacy_bridge().await?;
     Ok(guard.as_ref().unwrap().get_tool_policy(&tool_name).await)
 }
 
@@ -67,7 +67,7 @@ pub async fn set_tool_policy(
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return bridge.set_tool_policy(&tool_name, policy).await.map_err(GolishError::from);
     }
-    let guard = state.ai_state.get_bridge().await?;
+    let guard = state.ai_state.get_legacy_bridge().await?;
     guard.as_ref().unwrap().set_tool_policy(&tool_name, policy).await.map_err(GolishError::from)
 }
 
@@ -82,7 +82,7 @@ pub async fn reset_tool_policies(
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return bridge.reset_tool_policies().await.map_err(GolishError::from);
     }
-    let guard = state.ai_state.get_bridge().await?;
+    let guard = state.ai_state.get_legacy_bridge().await?;
     guard.as_ref().unwrap().reset_tool_policies().await.map_err(GolishError::from)
 }
 
@@ -99,7 +99,7 @@ pub async fn enable_full_auto_mode(
         bridge.enable_full_auto_mode(allowed_tools).await;
         return Ok(());
     }
-    let guard = state.ai_state.get_bridge().await?;
+    let guard = state.ai_state.get_legacy_bridge().await?;
     guard.as_ref().unwrap().enable_full_auto_mode(allowed_tools).await;
     Ok(())
 }
@@ -116,7 +116,7 @@ pub async fn disable_full_auto_mode(
         bridge.disable_full_auto_mode().await;
         return Ok(());
     }
-    let guard = state.ai_state.get_bridge().await?;
+    let guard = state.ai_state.get_legacy_bridge().await?;
     guard.as_ref().unwrap().disable_full_auto_mode().await;
     Ok(())
 }
@@ -132,6 +132,6 @@ pub async fn is_full_auto_mode_enabled(
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.is_full_auto_mode_enabled().await);
     }
-    let guard = state.ai_state.get_bridge().await?;
+    let guard = state.ai_state.get_legacy_bridge().await?;
     Ok(guard.as_ref().unwrap().is_full_auto_mode_enabled().await)
 }

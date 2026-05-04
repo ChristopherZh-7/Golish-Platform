@@ -24,7 +24,7 @@ pub async fn clear_ai_conversation(
         tracing::info!("AI conversation history cleared for session {}", sid);
         return Ok(());
     }
-    let bridge_guard = state.ai_state.get_bridge().await?;
+    let bridge_guard = state.ai_state.get_legacy_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
     bridge.clear_conversation_history().await;
 
@@ -88,7 +88,7 @@ pub async fn get_ai_conversation_length(
             .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
         return Ok(bridge.conversation_history_len().await);
     }
-    let guard = state.ai_state.get_bridge().await?;
+    let guard = state.ai_state.get_legacy_bridge().await?;
     Ok(guard.as_ref().unwrap().conversation_history_len().await)
 }
 
@@ -165,7 +165,7 @@ pub async fn set_ai_session_persistence(
         bridge.set_session_persistence_enabled(enabled).await;
         return Ok(());
     }
-    let guard = state.ai_state.get_bridge().await?;
+    let guard = state.ai_state.get_legacy_bridge().await?;
     guard.as_ref().unwrap().set_session_persistence_enabled(enabled).await;
     Ok(())
 }
@@ -181,7 +181,7 @@ pub async fn is_ai_session_persistence_enabled(
             .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
         return Ok(bridge.is_session_persistence_enabled().await);
     }
-    let guard = state.ai_state.get_bridge().await?;
+    let guard = state.ai_state.get_legacy_bridge().await?;
     Ok(guard.as_ref().unwrap().is_session_persistence_enabled().await)
 }
 
@@ -197,7 +197,7 @@ pub async fn finalize_ai_session(
         let path = bridge.finalize_session().await;
         return Ok(path.map(|p| p.display().to_string()));
     }
-    let guard = state.ai_state.get_bridge().await?;
+    let guard = state.ai_state.get_legacy_bridge().await?;
     let path = guard.as_ref().unwrap().finalize_session().await;
     Ok(path.map(|p| p.display().to_string()))
 }

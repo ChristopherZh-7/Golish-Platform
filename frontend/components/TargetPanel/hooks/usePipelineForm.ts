@@ -1,6 +1,6 @@
-import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { pipeline, targets } from "@/lib/api";
+import { onEvent } from "@/lib/events";
 import type { PipelineSummary } from "@/lib/pentest/pipeline-types";
 import { getProjectPath } from "@/lib/projects";
 import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
@@ -44,28 +44,7 @@ export function usePipelineForm(targetValue: string) {
   }, [expanded, selected]);
 
   useEffect(() => {
-    const unlistenPromise = listen<{
-      run_id: string;
-      step_index: number;
-      total_steps: number;
-      tool_name: string;
-      status: string;
-      store_stats?: {
-        stored_count: number;
-        parsed_count: number;
-        skipped_count: number;
-        errors: string[];
-      };
-      message?: string;
-      output?: string;
-      duration_ms?: number;
-      exit_code?: number | null;
-      pipeline_name?: string;
-      target?: string;
-      all_steps?: { id: string; tool_name: string; command_template: string }[];
-    }>("pipeline-event", (event) => {
-      const p = event.payload;
-
+    const unlistenPromise = onEvent("pipeline-event", (p) => {
       if (p.status === "started" && p.all_steps) {
         if (p.target !== targetValue) return;
         activeRunId.current = p.run_id;

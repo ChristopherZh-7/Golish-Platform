@@ -1,0 +1,188 @@
+{
+  "tool": {
+    "id": "masscan",
+    "name": "masscan",
+    "description": "Mass IP port scanner - capable of scanning the entire Internet in under 6 minutes",
+    "executable": "masscan",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "recon",
+    "subcategory": "port-scan",
+    "tier": "optional",
+    "tags": ["recon", "port-scan", "network", "speed"],
+    "install": {
+      "method": "homebrew",
+      "source": "masscan"
+    },
+    "params": [
+      {
+        "label": "Targets",
+        "flag": "",
+        "type": "string",
+        "required": true,
+        "description": "IPs, CIDR, or ranges (comma-separated)",
+        "placeholder": "10.0.0.0/8,192.168.0.0/16"
+      },
+      {
+        "label": "Ports",
+        "flag": "-p",
+        "type": "string",
+        "required": true,
+        "description": "Port spec (single, list, range, or - for all)",
+        "placeholder": "80,443,8080-8090"
+      },
+      {
+        "label": "Rate",
+        "flag": "--rate",
+        "type": "string",
+        "description": "Packets per second (default 100, can go to millions)",
+        "default": "1000",
+        "placeholder": "10000"
+      },
+      {
+        "label": "Source IP",
+        "flag": "--source-ip",
+        "type": "string",
+        "description": "Spoof source IP",
+        "placeholder": "192.168.1.100"
+      },
+      {
+        "label": "Source Port",
+        "flag": "--source-port",
+        "type": "string",
+        "description": "Spoof source port",
+        "placeholder": "53"
+      },
+      {
+        "label": "Banners",
+        "flag": "--banners",
+        "type": "boolean",
+        "description": "Grab service banners (slower, requires sudo)"
+      },
+      {
+        "label": "UDP Scan",
+        "flag": "-pU:",
+        "type": "string",
+        "description": "UDP ports (write as -pU:53,123)",
+        "placeholder": "53,123,161"
+      },
+      {
+        "label": "Excludes",
+        "flag": "--excludefile",
+        "type": "string",
+        "description": "File with IPs/CIDRs to skip (RFC1918, etc.)",
+        "placeholder": "exclude.conf"
+      },
+      {
+        "label": "Output File",
+        "flag": "-oL",
+        "type": "string",
+        "description": "Output to list file (machine-readable)",
+        "placeholder": "scan.list"
+      },
+      {
+        "label": "Output Format",
+        "flag": "-oG",
+        "type": "string",
+        "description": "Output to grepable file (alternative)",
+        "placeholder": "scan.gnmap"
+      },
+      {
+        "label": "JSON Output",
+        "flag": "-oJ",
+        "type": "string",
+        "description": "Output as JSON",
+        "placeholder": "scan.json"
+      },
+      {
+        "label": "XML Output",
+        "flag": "-oX",
+        "type": "string",
+        "description": "Output as XML",
+        "placeholder": "scan.xml"
+      },
+      {
+        "label": "Wait",
+        "flag": "--wait",
+        "type": "string",
+        "description": "Seconds to wait for last responses (default 10)",
+        "default": "10"
+      },
+      {
+        "label": "Interface",
+        "flag": "-e",
+        "type": "string",
+        "description": "Network interface to use",
+        "placeholder": "eth0"
+      },
+      {
+        "label": "Resume File",
+        "flag": "--resume",
+        "type": "string",
+        "description": "Resume from saved paused.conf",
+        "placeholder": "paused.conf"
+      }
+    ],
+    "skills": [
+      {
+        "id": "common-ports",
+        "name": "Common ports sweep",
+        "description": "Top web ports across CIDR at safe rate",
+        "args": "{{cidr}} -p 80,443,8080,8443,22,3389 --rate 1000 -oL masscan.list",
+        "tags": ["recon"]
+      },
+      {
+        "id": "all-tcp",
+        "name": "All TCP ports (single host)",
+        "description": "Full 65535 TCP scan for one host",
+        "args": "{{target}} -p1-65535 --rate 5000",
+        "tags": ["thorough"]
+      },
+      {
+        "id": "internet-web",
+        "name": "Internet-scale web sweep",
+        "description": "Web ports at high rate, exclude reserved",
+        "args": "0.0.0.0/0 -p 80,443 --rate 100000 --excludefile exclude.conf -oL web.list",
+        "tags": ["internet"]
+      },
+      {
+        "id": "with-banners",
+        "name": "Scan + banner grab",
+        "description": "Slower but pulls service banners",
+        "args": "{{cidr}} -p 80,443,21,22,25 --banners --rate 500 -oL banners.list",
+        "tags": ["fingerprint"]
+      },
+      {
+        "id": "json-pipeline",
+        "name": "JSON output for pipeline",
+        "description": "JSON output for ingestion",
+        "args": "{{cidr}} -p 80,443 --rate 5000 -oJ masscan.json",
+        "tags": ["pipeline"]
+      },
+      {
+        "id": "feed-nmap",
+        "name": "Discover then nmap deep",
+        "description": "Two-stage: masscan discovery → nmap version detect",
+        "args": "{{cidr}} -p 1-65535 --rate 10000 -oG masscan.gnmap",
+        "tags": ["pipeline"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["host", "port"],
+      "detect": "Discovered open port|masscan",
+      "db_action": "host_add",
+      "patterns": [
+        {
+          "type": "open_port",
+          "regex": "Discovered open port (\\d+)/(tcp|udp) on ([\\d\\.]+)",
+          "fields": {
+            "1": "port",
+            "2": "protocol",
+            "3": "ip"
+          }
+        }
+      ]
+    }
+  }
+}

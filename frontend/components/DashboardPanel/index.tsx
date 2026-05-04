@@ -1,4 +1,3 @@
-import { listen } from "@tauri-apps/api/event";
 import {
   Activity,
   AlertTriangle,
@@ -34,6 +33,7 @@ import {
   type TokenUsageStats,
   type ToolCallStat,
 } from "@/lib/dashboard";
+import { onEvent } from "@/lib/events";
 import { type Finding, findingsApi } from "@/lib/findings";
 import type { Target as PentestTarget } from "@/lib/pentest/types";
 import { getProjectPath } from "@/lib/projects";
@@ -148,9 +148,10 @@ export function DashboardPanel() {
 
   useEffect(() => {
     const REFRESH = new Set(["manage_targets", "record_finding", "credential_vault"]);
-    const unlisten = listen<{ type: string; tool_name?: string }>("ai-event", (event) => {
-      if (event.payload.type === "tool_result") {
-        if (event.payload.tool_name && REFRESH.has(event.payload.tool_name)) {
+    const unlisten = onEvent("ai-event", (payload) => {
+      const p = payload as { type: string; tool_name?: string };
+      if (p.type === "tool_result") {
+        if (p.tool_name && REFRESH.has(p.tool_name)) {
           loadStats();
         }
         loadAiStats();

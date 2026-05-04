@@ -5,7 +5,6 @@
  * via Tauri commands, replacing the file-based workspace-storage.ts.
  */
 
-import { listen } from "@tauri-apps/api/event";
 import {
   type ChatMessageRow,
   type ConvBatchItem,
@@ -17,6 +16,7 @@ import {
   convSaveBatch,
   type TimelineBlockRow,
 } from "@/lib/conversation-db";
+import { onCustomEvent } from "@/lib/events";
 import { logger } from "@/lib/logger";
 import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import type { Session, UnifiedBlock } from "@/store";
@@ -694,7 +694,7 @@ export function createDbAutoSaver(
 
   // Rust-side emits "flush-state" before the window is destroyed (300ms grace period).
   let unlistenFlush: (() => void) | null = null;
-  listen("flush-state", () => flushNow())
+  onCustomEvent("flush-state", () => flushNow())
     .then((fn) => {
       unlistenFlush = fn;
     })

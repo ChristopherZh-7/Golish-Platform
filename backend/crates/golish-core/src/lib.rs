@@ -18,6 +18,7 @@ pub mod events;
 pub mod message;
 pub mod runtime;
 pub mod session;
+pub mod session_kind;
 pub mod tool;
 pub mod tool_name;
 
@@ -58,6 +59,9 @@ pub use runtime::{ApprovalResult, GolishRuntime, RuntimeError, RuntimeEvent};
 pub use session::{
     find_session_by_identifier, list_recent_sessions, MessageContent, MessageRole, SessionArchive,
     SessionArchiveMetadata, SessionListing, SessionMessage, SessionSnapshot,
+};
+pub use session_kind::{
+    is_title_gen_session_id, title_gen_session_id, TITLE_GEN_SESSION_PREFIX,
 };
 pub use ready_gate::DbReadyGate;
 pub use tool::Tool;

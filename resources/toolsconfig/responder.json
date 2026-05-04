@@ -1,0 +1,147 @@
+{
+  "tool": {
+    "id": "responder",
+    "name": "responder",
+    "description": "LLMNR / NBT-NS / mDNS poisoner with rogue authentication servers (capture NetNTLMv2 hashes)",
+    "executable": "responder",
+    "runtime": "python",
+    "runtimeVersion": "3.11",
+    "launchMode": "cli",
+    "category": "network",
+    "subcategory": "mitm",
+    "tier": "essential",
+    "tags": ["mitm", "ad", "credentials", "smb", "llmnr"],
+    "install": {
+      "method": "github",
+      "source": "lgandx/Responder"
+    },
+    "params": [
+      {
+        "label": "Interface",
+        "flag": "-I",
+        "type": "string",
+        "required": true,
+        "description": "Network interface to bind to",
+        "placeholder": "eth0"
+      },
+      {
+        "label": "Analyze Mode",
+        "flag": "-A",
+        "type": "boolean",
+        "description": "Passive analysis - only listen, never poison"
+      },
+      {
+        "label": "WPAD",
+        "flag": "-w",
+        "type": "boolean",
+        "description": "Start the WPAD rogue proxy server (high impact)"
+      },
+      {
+        "label": "Force WPAD Auth",
+        "flag": "-F",
+        "type": "boolean",
+        "description": "Force NTLM auth on WPAD"
+      },
+      {
+        "label": "Basic Auth",
+        "flag": "-b",
+        "type": "boolean",
+        "description": "Return basic auth instead of NTLM"
+      },
+      {
+        "label": "Force LM",
+        "flag": "--lm",
+        "type": "boolean",
+        "description": "Force LM hashing downgrade (legacy systems)"
+      },
+      {
+        "label": "Disable ESS",
+        "flag": "--disable-ess",
+        "type": "boolean",
+        "description": "Force NetNTLMv1 by disabling ESS"
+      },
+      {
+        "label": "External IP",
+        "flag": "-e",
+        "type": "string",
+        "description": "Spoof poisoning answer with this IP",
+        "placeholder": "10.0.0.5"
+      },
+      {
+        "label": "Verbose",
+        "flag": "-v",
+        "type": "boolean",
+        "description": "Verbose output"
+      },
+      {
+        "label": "Quiet",
+        "flag": "-q",
+        "type": "boolean",
+        "description": "Quiet mode (no banner)"
+      },
+      {
+        "label": "Domain",
+        "flag": "-d",
+        "type": "string",
+        "description": "Spoof DNS for this domain (full DNS poisoning)",
+        "placeholder": "lab.local"
+      }
+    ],
+    "skills": [
+      {
+        "id": "passive-analyze",
+        "name": "Passive analyze (no poison)",
+        "description": "Listen only - safe in most networks",
+        "args": "-I {{iface}} -A",
+        "tags": ["passive", "stealth"]
+      },
+      {
+        "id": "default-poison",
+        "name": "Default poisoning (LLMNR/NBT-NS)",
+        "description": "Standard responder run",
+        "args": "-I {{iface}} -wF",
+        "tags": ["mitm", "active"]
+      },
+      {
+        "id": "wpad-proxy",
+        "name": "WPAD rogue proxy",
+        "description": "Captures HTTP auth via WPAD",
+        "args": "-I {{iface}} -wF -v",
+        "tags": ["wpad"]
+      },
+      {
+        "id": "ntlmv1-downgrade",
+        "name": "Force NTLMv1 downgrade",
+        "description": "Capture NTLMv1 (faster to crack)",
+        "args": "-I {{iface}} -wF --disable-ess --lm",
+        "tags": ["downgrade"]
+      },
+      {
+        "id": "no-smb-relay",
+        "name": "Disable SMB/HTTP for ntlmrelayx",
+        "description": "Free up SMB/HTTP so ntlmrelayx can listen",
+        "args": "-I {{iface}} -wF",
+        "tags": ["relay"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["credential", "info"],
+      "detect": "Responder|NTLMv2-SSP|NTLMv1-SSP|NetNTLMv2",
+      "db_action": "credential_add",
+      "patterns": [
+        {
+          "type": "netntlmv2",
+          "regex": "^(\\S+)::(\\S+):([0-9a-fA-F]+):([0-9a-fA-F]+):([0-9a-fA-F]+)$",
+          "fields": {
+            "1": "username",
+            "2": "domain",
+            "3": "challenge",
+            "4": "ntlm_hash",
+            "5": "blob"
+          }
+        }
+      ]
+    }
+  }
+}

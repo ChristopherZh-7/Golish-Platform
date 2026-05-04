@@ -1,0 +1,3845 @@
+{
+  "version": "1.0",
+  "generator": "golish-codegen",
+  "command_count": 548,
+  "domain_count": 13,
+  "commands": [
+    {
+      "name": "add_command_history",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/history.rs",
+      "line": 9
+    },
+    {
+      "name": "add_indexed_codebase",
+      "domain": "indexer",
+      "is_async": true,
+      "file": "crates/golish/src/indexer/commands/codebases/crud.rs",
+      "line": 12
+    },
+    {
+      "name": "add_prompt_history",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/history.rs",
+      "line": 26
+    },
+    {
+      "name": "add_tool_always_allow",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/hitl.rs",
+      "line": 79
+    },
+    {
+      "name": "agent_logs_list",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/audit.rs",
+      "line": 173
+    },
+    {
+      "name": "api_endpoints_list",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/security_analysis.rs",
+      "line": 147
+    },
+    {
+      "name": "api_endpoints_untested",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/security_analysis.rs",
+      "line": 160
+    },
+    {
+      "name": "audit_clear",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/audit.rs",
+      "line": 104
+    },
+    {
+      "name": "audit_list",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/audit.rs",
+      "line": 78
+    },
+    {
+      "name": "audit_log",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/audit.rs",
+      "line": 47
+    },
+    {
+      "name": "cancel_ai_generation",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/core/session.rs",
+      "line": 186
+    },
+    {
+      "name": "check_recon_tools_cmd",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/workflow.rs",
+      "line": 30
+    },
+    {
+      "name": "classify_input",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/command_index/mod.rs",
+      "line": 182
+    },
+    {
+      "name": "clean_project_temp",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/projects/commands.rs",
+      "line": 314
+    },
+    {
+      "name": "clear_ai_conversation",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/session.rs",
+      "line": 16
+    },
+    {
+      "name": "clear_ai_conversation_session",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/core/chat.rs",
+      "line": 301
+    },
+    {
+      "name": "clear_history",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/history.rs",
+      "line": 80
+    },
+    {
+      "name": "close_detached_window",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/misc.rs",
+      "line": 43
+    },
+    {
+      "name": "conv_delete",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/conversation_store/mod.rs",
+      "line": 106
+    },
+    {
+      "name": "conv_list",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/conversation_store/mod.rs",
+      "line": 120
+    },
+    {
+      "name": "conv_load_messages",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/conversation_store/mod.rs",
+      "line": 197
+    },
+    {
+      "name": "conv_load_preferences",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/conversation_store/mod.rs",
+      "line": 431
+    },
+    {
+      "name": "conv_load_terminal_states",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/conversation_store/mod.rs",
+      "line": 364
+    },
+    {
+      "name": "conv_load_timeline",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/conversation_store/mod.rs",
+      "line": 275
+    },
+    {
+      "name": "conv_save",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/conversation_store/mod.rs",
+      "line": 79
+    },
+    {
+      "name": "conv_save_batch",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/conversation_store/batch.rs",
+      "line": 51
+    },
+    {
+      "name": "conv_save_messages",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/conversation_store/mod.rs",
+      "line": 154
+    },
+    {
+      "name": "conv_save_preferences",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/conversation_store/mod.rs",
+      "line": 402
+    },
+    {
+      "name": "conv_save_terminal_state",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/conversation_store/mod.rs",
+      "line": 311
+    },
+    {
+      "name": "conv_save_timeline",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/conversation_store/mod.rs",
+      "line": 236
+    },
+    {
+      "name": "create_detached_window",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/misc.rs",
+      "line": 4
+    },
+    {
+      "name": "create_git_worktree",
+      "domain": "indexer",
+      "is_async": true,
+      "file": "crates/golish/src/indexer/commands/worktrees.rs",
+      "line": 73
+    },
+    {
+      "name": "custom_rules_delete",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/custom_rules.rs",
+      "line": 124
+    },
+    {
+      "name": "custom_rules_list",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/custom_rules.rs",
+      "line": 30
+    },
+    {
+      "name": "custom_rules_save_all",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/custom_rules.rs",
+      "line": 90
+    },
+    {
+      "name": "custom_rules_upsert",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/custom_rules.rs",
+      "line": 59
+    },
+    {
+      "name": "delete_agent_definition",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/agents.rs",
+      "line": 140
+    },
+    {
+      "name": "delete_project_config",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/projects/commands.rs",
+      "line": 61
+    },
+    {
+      "name": "delete_rule",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/project/rules.rs",
+      "line": 178
+    },
+    {
+      "name": "delete_skill",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/project/skills.rs",
+      "line": 93
+    },
+    {
+      "name": "delete_theme",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/ui/themes.rs",
+      "line": 96
+    },
+    {
+      "name": "detect_memory_files",
+      "domain": "indexer",
+      "is_async": true,
+      "file": "crates/golish/src/indexer/commands/codebases/memory.rs",
+      "line": 86
+    },
+    {
+      "name": "directory_entry_list",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/targets/directory.rs",
+      "line": 81
+    },
+    {
+      "name": "disable_full_auto_mode",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/policy.rs",
+      "line": 109
+    },
+    {
+      "name": "disable_loop_detection",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/loop_detection.rs",
+      "line": 75
+    },
+    {
+      "name": "enable_full_auto_mode",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/policy.rs",
+      "line": 91
+    },
+    {
+      "name": "enable_loop_detection",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/loop_detection.rs",
+      "line": 92
+    },
+    {
+      "name": "execute_ai_tool",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/core/tools.rs",
+      "line": 25
+    },
+    {
+      "name": "export_ai_session_transcript",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/session.rs",
+      "line": 211
+    },
+    {
+      "name": "finalize_ai_session",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/session.rs",
+      "line": 190
+    },
+    {
+      "name": "find_ai_session",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/session.rs",
+      "line": 121
+    },
+    {
+      "name": "findings_add",
+      "domain": "findings",
+      "is_async": true,
+      "file": "crates/golish/src/tools/findings/crud.rs",
+      "line": 74
+    },
+    {
+      "name": "findings_add_evidence",
+      "domain": "findings",
+      "is_async": true,
+      "file": "crates/golish/src/tools/findings/crud.rs",
+      "line": 190
+    },
+    {
+      "name": "findings_deduplicate",
+      "domain": "findings",
+      "is_async": true,
+      "file": "crates/golish/src/tools/findings/crud.rs",
+      "line": 326
+    },
+    {
+      "name": "findings_delete",
+      "domain": "findings",
+      "is_async": true,
+      "file": "crates/golish/src/tools/findings/crud.rs",
+      "line": 111
+    },
+    {
+      "name": "findings_evidence_path",
+      "domain": "findings",
+      "is_async": true,
+      "file": "crates/golish/src/tools/findings/crud.rs",
+      "line": 280
+    },
+    {
+      "name": "findings_for_host",
+      "domain": "findings",
+      "is_async": true,
+      "file": "crates/golish/src/tools/findings/crud.rs",
+      "line": 304
+    },
+    {
+      "name": "findings_import_parsed",
+      "domain": "findings",
+      "is_async": true,
+      "file": "crates/golish/src/tools/findings/crud.rs",
+      "line": 128
+    },
+    {
+      "name": "findings_list",
+      "domain": "findings",
+      "is_async": true,
+      "file": "crates/golish/src/tools/findings/crud.rs",
+      "line": 12
+    },
+    {
+      "name": "findings_remove_evidence",
+      "domain": "findings",
+      "is_async": true,
+      "file": "crates/golish/src/tools/findings/crud.rs",
+      "line": 243
+    },
+    {
+      "name": "findings_update",
+      "domain": "findings",
+      "is_async": true,
+      "file": "crates/golish/src/tools/findings/crud.rs",
+      "line": 88
+    },
+    {
+      "name": "fingerprints_list",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/security_analysis.rs",
+      "line": 175
+    },
+    {
+      "name": "generate_commit_message",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/commit_writer.rs",
+      "line": 81
+    },
+    {
+      "name": "generate_conversation_summary",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/summarizer.rs",
+      "line": 28
+    },
+    {
+      "name": "get_agent_mode",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/mode.rs",
+      "line": 70
+    },
+    {
+      "name": "get_ai_conversation_length",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/session.rs",
+      "line": 82
+    },
+    {
+      "name": "get_ai_conversation_length_session",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/core/chat.rs",
+      "line": 320
+    },
+    {
+      "name": "get_all_indexed_files",
+      "domain": "indexer",
+      "is_async": false,
+      "file": "crates/golish/src/indexer/commands/core.rs",
+      "line": 110
+    },
+    {
+      "name": "get_api_request_stats",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/debug.rs",
+      "line": 12
+    },
+    {
+      "name": "get_approval_patterns",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/hitl.rs",
+      "line": 13
+    },
+    {
+      "name": "get_audit_log",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/analytics.rs",
+      "line": 113
+    },
+    {
+      "name": "get_available_models",
+      "domain": "settings",
+      "is_async": true,
+      "file": "crates/golish/src/models/commands.rs",
+      "line": 15
+    },
+    {
+      "name": "get_available_tools",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/core/tools.rs",
+      "line": 41
+    },
+    {
+      "name": "get_context_summary",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/context.rs",
+      "line": 13
+    },
+    {
+      "name": "get_context_trim_config",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/context.rs",
+      "line": 105
+    },
+    {
+      "name": "get_context_utilization",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/context.rs",
+      "line": 58
+    },
+    {
+      "name": "get_db_token_usage_stats",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/analytics.rs",
+      "line": 56
+    },
+    {
+      "name": "get_execution_mode",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/mode.rs",
+      "line": 140
+    },
+    {
+      "name": "get_git_branch",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/shell/mod.rs",
+      "line": 292
+    },
+    {
+      "name": "get_hitl_config",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/hitl.rs",
+      "line": 46
+    },
+    {
+      "name": "get_indexed_file_count",
+      "domain": "indexer",
+      "is_async": false,
+      "file": "crates/golish/src/indexer/commands/core.rs",
+      "line": 97
+    },
+    {
+      "name": "get_indexer_workspace",
+      "domain": "indexer",
+      "is_async": false,
+      "file": "crates/golish/src/indexer/commands/core.rs",
+      "line": 88
+    },
+    {
+      "name": "get_loop_detector_stats",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/loop_detection.rs",
+      "line": 45
+    },
+    {
+      "name": "get_loop_protection_config",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/loop_detection.rs",
+      "line": 12
+    },
+    {
+      "name": "get_memory_count",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/analytics.rs",
+      "line": 208
+    },
+    {
+      "name": "get_model_by_id",
+      "domain": "settings",
+      "is_async": true,
+      "file": "crates/golish/src/models/commands.rs",
+      "line": 26
+    },
+    {
+      "name": "get_model_capabilities_command",
+      "domain": "settings",
+      "is_async": true,
+      "file": "crates/golish/src/models/commands.rs",
+      "line": 35
+    },
+    {
+      "name": "get_openai_api_key",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/config.rs",
+      "line": 39
+    },
+    {
+      "name": "get_openrouter_api_key",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/config.rs",
+      "line": 27
+    },
+    {
+      "name": "get_pentest_config",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/projects/commands.rs",
+      "line": 196
+    },
+    {
+      "name": "get_plan",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/plan.rs",
+      "line": 21
+    },
+    {
+      "name": "get_project_config",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/projects/commands.rs",
+      "line": 146
+    },
+    {
+      "name": "get_project_settings",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/config.rs",
+      "line": 50
+    },
+    {
+      "name": "get_providers",
+      "domain": "settings",
+      "is_async": true,
+      "file": "crates/golish/src/models/commands.rs",
+      "line": 44
+    },
+    {
+      "name": "get_remaining_tokens",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/context.rs",
+      "line": 73
+    },
+    {
+      "name": "get_session_ai_config",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/core/session.rs",
+      "line": 218
+    },
+    {
+      "name": "get_setting",
+      "domain": "settings",
+      "is_async": true,
+      "file": "crates/golish/src/settings/commands.rs",
+      "line": 15
+    },
+    {
+      "name": "get_settings",
+      "domain": "settings",
+      "is_async": true,
+      "file": "crates/golish/src/settings/commands.rs",
+      "line": 15
+    },
+    {
+      "name": "get_settings_path",
+      "domain": "settings",
+      "is_async": false,
+      "file": "crates/golish/src/settings/commands.rs",
+      "line": 77
+    },
+    {
+      "name": "get_sub_agent_model",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/config.rs",
+      "line": 411
+    },
+    {
+      "name": "get_telemetry_stats",
+      "domain": "settings",
+      "is_async": false,
+      "file": "crates/golish/src/settings/commands.rs",
+      "line": 142
+    },
+    {
+      "name": "get_theme_asset_path",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/ui/themes.rs",
+      "line": 134
+    },
+    {
+      "name": "get_token_alert_level",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/context.rs",
+      "line": 43
+    },
+    {
+      "name": "get_token_usage_stats",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/context.rs",
+      "line": 28
+    },
+    {
+      "name": "get_tool_approval_pattern",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/hitl.rs",
+      "line": 29
+    },
+    {
+      "name": "get_tool_call_stats",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/analytics.rs",
+      "line": 22
+    },
+    {
+      "name": "get_tool_policy",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/policy.rs",
+      "line": 12
+    },
+    {
+      "name": "get_tool_policy_config",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/policy.rs",
+      "line": 12
+    },
+    {
+      "name": "get_usage_by_agent",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/analytics.rs",
+      "line": 80
+    },
+    {
+      "name": "get_use_agents",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/mode.rs",
+      "line": 103
+    },
+    {
+      "name": "get_vertex_ai_config",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/config.rs",
+      "line": 318
+    },
+    {
+      "name": "get_vision_capabilities",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/core/chat.rs",
+      "line": 193
+    },
+    {
+      "name": "get_window_state",
+      "domain": "settings",
+      "is_async": true,
+      "file": "crates/golish/src/settings/commands.rs",
+      "line": 121
+    },
+    {
+      "name": "get_zap_discovered_paths",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/scan_runner/mod.rs",
+      "line": 119
+    },
+    {
+      "name": "git_commit",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/git.rs",
+      "line": 261
+    },
+    {
+      "name": "git_delete_worktree",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/git.rs",
+      "line": 298
+    },
+    {
+      "name": "git_diff",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/git.rs",
+      "line": 202
+    },
+    {
+      "name": "git_diff_staged",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/git.rs",
+      "line": 231
+    },
+    {
+      "name": "git_push",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/git.rs",
+      "line": 280
+    },
+    {
+      "name": "git_stage",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/git.rs",
+      "line": 238
+    },
+    {
+      "name": "git_status",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/git.rs",
+      "line": 145
+    },
+    {
+      "name": "git_unstage",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/git.rs",
+      "line": 250
+    },
+    {
+      "name": "ime_get_source",
+      "domain": "git_pty",
+      "is_async": false,
+      "file": "crates/golish/src/commands/ui/ime.rs",
+      "line": 117
+    },
+    {
+      "name": "ime_set_source",
+      "domain": "git_pty",
+      "is_async": false,
+      "file": "crates/golish/src/commands/ui/ime.rs",
+      "line": 129
+    },
+    {
+      "name": "index_directory",
+      "domain": "indexer",
+      "is_async": true,
+      "file": "crates/golish/src/indexer/commands/core.rs",
+      "line": 157
+    },
+    {
+      "name": "index_file",
+      "domain": "indexer",
+      "is_async": true,
+      "file": "crates/golish/src/indexer/commands/core.rs",
+      "line": 127
+    },
+    {
+      "name": "init_ai_agent",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/core/lifecycle.rs",
+      "line": 27
+    },
+    {
+      "name": "init_ai_agent_openai",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/config.rs",
+      "line": 94
+    },
+    {
+      "name": "init_ai_agent_unified",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/core/lifecycle.rs",
+      "line": 88
+    },
+    {
+      "name": "init_ai_agent_vertex",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/config.rs",
+      "line": 166
+    },
+    {
+      "name": "init_ai_session",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/core/session.rs",
+      "line": 30
+    },
+    {
+      "name": "init_indexer",
+      "domain": "indexer",
+      "is_async": true,
+      "file": "crates/golish/src/indexer/commands/core.rs",
+      "line": 36
+    },
+    {
+      "name": "init_project_structure",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/projects/commands.rs",
+      "line": 295
+    },
+    {
+      "name": "intel_add_feed",
+      "domain": "vuln_intel",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vuln_intel/commands/feeds.rs",
+      "line": 23
+    },
+    {
+      "name": "intel_batch_search_nuclei_templates",
+      "domain": "vuln_intel",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vuln_intel/commands/enrichment.rs",
+      "line": 37
+    },
+    {
+      "name": "intel_delete_feed",
+      "domain": "vuln_intel",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vuln_intel/commands/feeds.rs",
+      "line": 59
+    },
+    {
+      "name": "intel_discover_all_nuclei",
+      "domain": "vuln_intel",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vuln_intel/commands/enrichment.rs",
+      "line": 48
+    },
+    {
+      "name": "intel_fetch",
+      "domain": "vuln_intel",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vuln_intel/commands/fetching.rs",
+      "line": 14
+    },
+    {
+      "name": "intel_fetch_page",
+      "domain": "vuln_intel",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vuln_intel/commands/fetching.rs",
+      "line": 99
+    },
+    {
+      "name": "intel_get_cached",
+      "domain": "vuln_intel",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vuln_intel/commands/fetching.rs",
+      "line": 85
+    },
+    {
+      "name": "intel_list_feeds",
+      "domain": "vuln_intel",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vuln_intel/commands/feeds.rs",
+      "line": 9
+    },
+    {
+      "name": "intel_match_targets",
+      "domain": "vuln_intel",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vuln_intel/commands/matching.rs",
+      "line": 9
+    },
+    {
+      "name": "intel_search",
+      "domain": "vuln_intel",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vuln_intel/commands/search.rs",
+      "line": 11
+    },
+    {
+      "name": "intel_search_github_poc",
+      "domain": "vuln_intel",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vuln_intel/commands/enrichment.rs",
+      "line": 15
+    },
+    {
+      "name": "intel_search_nuclei_templates",
+      "domain": "vuln_intel",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vuln_intel/commands/enrichment.rs",
+      "line": 26
+    },
+    {
+      "name": "intel_search_remote",
+      "domain": "vuln_intel",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vuln_intel/commands/search.rs",
+      "line": 30
+    },
+    {
+      "name": "intel_search_remote_page",
+      "domain": "vuln_intel",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vuln_intel/commands/search.rs",
+      "line": 61
+    },
+    {
+      "name": "intel_toggle_feed",
+      "domain": "vuln_intel",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vuln_intel/commands/feeds.rs",
+      "line": 44
+    },
+    {
+      "name": "is_ai_initialized",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/core/tools.rs",
+      "line": 88
+    },
+    {
+      "name": "is_ai_session_initialized",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/core/session.rs",
+      "line": 202
+    },
+    {
+      "name": "is_ai_session_persistence_enabled",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/session.rs",
+      "line": 175
+    },
+    {
+      "name": "is_context_management_enabled",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/context.rs",
+      "line": 119
+    },
+    {
+      "name": "is_full_auto_mode_enabled",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/policy.rs",
+      "line": 126
+    },
+    {
+      "name": "is_indexer_initialized",
+      "domain": "indexer",
+      "is_async": false,
+      "file": "crates/golish/src/indexer/commands/core.rs",
+      "line": 82
+    },
+    {
+      "name": "is_langfuse_active",
+      "domain": "settings",
+      "is_async": false,
+      "file": "crates/golish/src/settings/commands.rs",
+      "line": 133
+    },
+    {
+      "name": "is_loop_detection_enabled",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/loop_detection.rs",
+      "line": 60
+    },
+    {
+      "name": "js_analysis_list",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/security_analysis.rs",
+      "line": 190
+    },
+    {
+      "name": "kb_research_clear",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/kb_research.rs",
+      "line": 72
+    },
+    {
+      "name": "kb_research_load",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/kb_research.rs",
+      "line": 13
+    },
+    {
+      "name": "kb_research_save_turn",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/kb_research.rs",
+      "line": 33
+    },
+    {
+      "name": "kb_research_set_status",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/kb_research.rs",
+      "line": 59
+    },
+    {
+      "name": "list_agent_definitions",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/agents.rs",
+      "line": 14
+    },
+    {
+      "name": "list_ai_sessions",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/session.rs",
+      "line": 101
+    },
+    {
+      "name": "list_capture_files",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/projects/commands.rs",
+      "line": 258
+    },
+    {
+      "name": "list_captures",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/projects/commands.rs",
+      "line": 225
+    },
+    {
+      "name": "list_directory",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/fs/files.rs",
+      "line": 272
+    },
+    {
+      "name": "list_git_branches",
+      "domain": "indexer",
+      "is_async": true,
+      "file": "crates/golish/src/indexer/commands/worktrees.rs",
+      "line": 30
+    },
+    {
+      "name": "list_indexed_codebases",
+      "domain": "indexer",
+      "is_async": true,
+      "file": "crates/golish/src/indexer/commands/codebases/list.rs",
+      "line": 14
+    },
+    {
+      "name": "list_path_completions",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/fs/completions/mod.rs",
+      "line": 67
+    },
+    {
+      "name": "list_project_configs",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/projects/commands.rs",
+      "line": 136
+    },
+    {
+      "name": "list_projects_for_home",
+      "domain": "indexer",
+      "is_async": true,
+      "file": "crates/golish/src/indexer/commands/home_view.rs",
+      "line": 277
+    },
+    {
+      "name": "list_prompts",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/project/prompts.rs",
+      "line": 20
+    },
+    {
+      "name": "list_recent_directories",
+      "domain": "indexer",
+      "is_async": true,
+      "file": "crates/golish/src/indexer/commands/hidden_dirs.rs",
+      "line": 76
+    },
+    {
+      "name": "list_recent_memories",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/analytics.rs",
+      "line": 186
+    },
+    {
+      "name": "list_rules",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/project/rules.rs",
+      "line": 106
+    },
+    {
+      "name": "list_skill_files",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/project/skills.rs",
+      "line": 39
+    },
+    {
+      "name": "list_skills",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/project/skills.rs",
+      "line": 20
+    },
+    {
+      "name": "list_sub_agents",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/core/tools.rs",
+      "line": 61
+    },
+    {
+      "name": "list_themes",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/ui/themes.rs",
+      "line": 30
+    },
+    {
+      "name": "list_workspace_files",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/fs/files.rs",
+      "line": 61
+    },
+    {
+      "name": "load_ai_session",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/session.rs",
+      "line": 140
+    },
+    {
+      "name": "load_env_file",
+      "domain": "ai",
+      "is_async": false,
+      "file": "crates/golish/src/ai/commands/config.rs",
+      "line": 286
+    },
+    {
+      "name": "load_history",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/history.rs",
+      "line": 48
+    },
+    {
+      "name": "load_project_workspace",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/projects/commands.rs",
+      "line": 167
+    },
+    {
+      "name": "match_pocs_for_target",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/scan_runner/mod.rs",
+      "line": 76
+    },
+    {
+      "name": "mcp_connect",
+      "domain": "mcp",
+      "is_async": true,
+      "file": "crates/golish/src/mcp/commands.rs",
+      "line": 246
+    },
+    {
+      "name": "mcp_disconnect",
+      "domain": "mcp",
+      "is_async": true,
+      "file": "crates/golish/src/mcp/commands.rs",
+      "line": 272
+    },
+    {
+      "name": "mcp_get_config",
+      "domain": "mcp",
+      "is_async": true,
+      "file": "crates/golish/src/mcp/commands.rs",
+      "line": 211
+    },
+    {
+      "name": "mcp_has_project_config",
+      "domain": "mcp",
+      "is_async": true,
+      "file": "crates/golish/src/mcp/commands.rs",
+      "line": 236
+    },
+    {
+      "name": "mcp_is_project_trusted",
+      "domain": "mcp",
+      "is_async": true,
+      "file": "crates/golish/src/mcp/commands.rs",
+      "line": 192
+    },
+    {
+      "name": "mcp_list_servers",
+      "domain": "mcp",
+      "is_async": true,
+      "file": "crates/golish/src/mcp/commands.rs",
+      "line": 71
+    },
+    {
+      "name": "mcp_list_tools",
+      "domain": "mcp",
+      "is_async": true,
+      "file": "crates/golish/src/mcp/commands.rs",
+      "line": 161
+    },
+    {
+      "name": "mcp_trust_project_config",
+      "domain": "mcp",
+      "is_async": true,
+      "file": "crates/golish/src/mcp/commands.rs",
+      "line": 202
+    },
+    {
+      "name": "method_delete_project",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/methodology.rs",
+      "line": 308
+    },
+    {
+      "name": "method_list_projects",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/methodology.rs",
+      "line": 222
+    },
+    {
+      "name": "method_list_templates",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/methodology.rs",
+      "line": 169
+    },
+    {
+      "name": "method_load_project",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/methodology.rs",
+      "line": 243
+    },
+    {
+      "name": "method_start_project",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/methodology.rs",
+      "line": 188
+    },
+    {
+      "name": "method_update_item",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/methodology.rs",
+      "line": 262
+    },
+    {
+      "name": "migrate_codebase_index",
+      "domain": "indexer",
+      "is_async": true,
+      "file": "crates/golish/src/indexer/commands/codebases/lifecycle.rs",
+      "line": 97
+    },
+    {
+      "name": "notes_add",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/notes.rs",
+      "line": 49
+    },
+    {
+      "name": "notes_delete",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/notes.rs",
+      "line": 90
+    },
+    {
+      "name": "notes_list",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/notes.rs",
+      "line": 30
+    },
+    {
+      "name": "notes_update",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/notes.rs",
+      "line": 73
+    },
+    {
+      "name": "nuclei_cancel",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/scan_runner/mod.rs",
+      "line": 55
+    },
+    {
+      "name": "oplog_count",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/security_analysis.rs",
+      "line": 119
+    },
+    {
+      "name": "oplog_list",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/security_analysis.rs",
+      "line": 54
+    },
+    {
+      "name": "oplog_list_by_target",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/security_analysis.rs",
+      "line": 67
+    },
+    {
+      "name": "oplog_list_by_type",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/security_analysis.rs",
+      "line": 81
+    },
+    {
+      "name": "oplog_search",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/security_analysis.rs",
+      "line": 100
+    },
+    {
+      "name": "output_detect_tool",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/output_parser.rs",
+      "line": 229
+    },
+    {
+      "name": "output_parse",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/output_parser.rs",
+      "line": 192
+    },
+    {
+      "name": "output_parse_and_store",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/output_parser.rs",
+      "line": 304
+    },
+    {
+      "name": "passive_scans_by_url",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/security_analysis.rs",
+      "line": 219
+    },
+    {
+      "name": "passive_scans_global",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/audit.rs",
+      "line": 135
+    },
+    {
+      "name": "passive_scans_list",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/security_analysis.rs",
+      "line": 205
+    },
+    {
+      "name": "passive_scans_stats",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/security_analysis.rs",
+      "line": 245
+    },
+    {
+      "name": "passive_scans_vulnerable",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/security_analysis.rs",
+      "line": 232
+    },
+    {
+      "name": "pentest_analyze_github_tool",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/github.rs",
+      "line": 110
+    },
+    {
+      "name": "pentest_browser_close",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/browser.rs",
+      "line": 79
+    },
+    {
+      "name": "pentest_browser_go_back",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/browser.rs",
+      "line": 88
+    },
+    {
+      "name": "pentest_browser_go_forward",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/browser.rs",
+      "line": 97
+    },
+    {
+      "name": "pentest_browser_hide",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/browser.rs",
+      "line": 61
+    },
+    {
+      "name": "pentest_browser_navigate",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/browser.rs",
+      "line": 4
+    },
+    {
+      "name": "pentest_browser_resize",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/browser.rs",
+      "line": 47
+    },
+    {
+      "name": "pentest_browser_show",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/browser.rs",
+      "line": 70
+    },
+    {
+      "name": "pentest_build_command",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/tool_mgmt.rs",
+      "line": 71
+    },
+    {
+      "name": "pentest_cancel_download",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/install/mod.rs",
+      "line": 64
+    },
+    {
+      "name": "pentest_cancel_runtime_install",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 29
+    },
+    {
+      "name": "pentest_check_brew_outdated",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 53
+    },
+    {
+      "name": "pentest_check_env_setup",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 8
+    },
+    {
+      "name": "pentest_check_requirements",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/install/runtime.rs",
+      "line": 341
+    },
+    {
+      "name": "pentest_check_runtime",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/tool_mgmt.rs",
+      "line": 88
+    },
+    {
+      "name": "pentest_check_tool_executable_permission",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/tool_mgmt.rs",
+      "line": 233
+    },
+    {
+      "name": "pentest_check_tool_updates",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/admin.rs",
+      "line": 121
+    },
+    {
+      "name": "pentest_check_tools_executable_permissions",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/tool_mgmt.rs",
+      "line": 266
+    },
+    {
+      "name": "pentest_clear_system_proxy",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/proxy.rs",
+      "line": 29
+    },
+    {
+      "name": "pentest_conda_install_tool",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/install/runtime.rs",
+      "line": 35
+    },
+    {
+      "name": "pentest_copy_to_toolpack",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/tool_pkg.rs",
+      "line": 156
+    },
+    {
+      "name": "pentest_create_file",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/file_url.rs",
+      "line": 8
+    },
+    {
+      "name": "pentest_create_python_env",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 200
+    },
+    {
+      "name": "pentest_create_tool_package",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/tool_pkg.rs",
+      "line": 11
+    },
+    {
+      "name": "pentest_delete_backup",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/tool_pkg.rs",
+      "line": 136
+    },
+    {
+      "name": "pentest_delete_python_env",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 212
+    },
+    {
+      "name": "pentest_delete_skill",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/skills.rs",
+      "line": 74
+    },
+    {
+      "name": "pentest_delete_tool",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/tool_pkg.rs",
+      "line": 141
+    },
+    {
+      "name": "pentest_download_and_extract",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/install/mod.rs",
+      "line": 18
+    },
+    {
+      "name": "pentest_fetch_github_readme",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/github.rs",
+      "line": 77
+    },
+    {
+      "name": "pentest_fetch_github_release",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/github.rs",
+      "line": 13
+    },
+    {
+      "name": "pentest_fetch_github_release_by_tag",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/github.rs",
+      "line": 48
+    },
+    {
+      "name": "pentest_fetch_github_releases",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/github.rs",
+      "line": 13
+    },
+    {
+      "name": "pentest_fetch_github_repo_info",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/github.rs",
+      "line": 63
+    },
+    {
+      "name": "pentest_find_tool_executables",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/tool_pkg.rs",
+      "line": 82
+    },
+    {
+      "name": "pentest_fix_tool_executable_permission",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/tool_mgmt.rs",
+      "line": 299
+    },
+    {
+      "name": "pentest_get_categories",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/config.rs",
+      "line": 56
+    },
+    {
+      "name": "pentest_get_command",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/tool_mgmt.rs",
+      "line": 55
+    },
+    {
+      "name": "pentest_get_config",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/config.rs",
+      "line": 48
+    },
+    {
+      "name": "pentest_get_system_proxy",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/proxy.rs",
+      "line": 48
+    },
+    {
+      "name": "pentest_git_clone_tool",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/install/mod.rs",
+      "line": 72
+    },
+    {
+      "name": "pentest_install_dep_file",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/install/runtime.rs",
+      "line": 377
+    },
+    {
+      "name": "pentest_install_java_version",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 124
+    },
+    {
+      "name": "pentest_install_node_version",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 162
+    },
+    {
+      "name": "pentest_install_requirements",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/install/runtime.rs",
+      "line": 288
+    },
+    {
+      "name": "pentest_install_ruby_version",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 86
+    },
+    {
+      "name": "pentest_install_runtime",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 13
+    },
+    {
+      "name": "pentest_kill_all_tools",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/tool_mgmt.rs",
+      "line": 39
+    },
+    {
+      "name": "pentest_kill_tool",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/tool_mgmt.rs",
+      "line": 31
+    },
+    {
+      "name": "pentest_launch_tool",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/tool_mgmt.rs",
+      "line": 23
+    },
+    {
+      "name": "pentest_list_available_java",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 119
+    },
+    {
+      "name": "pentest_list_available_node",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 157
+    },
+    {
+      "name": "pentest_list_available_python",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 195
+    },
+    {
+      "name": "pentest_list_available_ruby",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 81
+    },
+    {
+      "name": "pentest_list_dep_files",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/install/runtime.rs",
+      "line": 352
+    },
+    {
+      "name": "pentest_list_installed_java",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 114
+    },
+    {
+      "name": "pentest_list_installed_node",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 152
+    },
+    {
+      "name": "pentest_list_installed_ruby",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 76
+    },
+    {
+      "name": "pentest_list_python_envs",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 190
+    },
+    {
+      "name": "pentest_list_skills",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/skills.rs",
+      "line": 23
+    },
+    {
+      "name": "pentest_list_tool_dir_files",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/tool_pkg.rs",
+      "line": 101
+    },
+    {
+      "name": "pentest_open_directory",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/tool_mgmt.rs",
+      "line": 109
+    },
+    {
+      "name": "pentest_open_url",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/file_url.rs",
+      "line": 20
+    },
+    {
+      "name": "pentest_pip_install",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/install/runtime.rs",
+      "line": 8
+    },
+    {
+      "name": "pentest_pip_install_tool",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/install/runtime.rs",
+      "line": 8
+    },
+    {
+      "name": "pentest_pip_uninstall",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/install/runtime.rs",
+      "line": 122
+    },
+    {
+      "name": "pentest_read_skill",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/skills.rs",
+      "line": 49
+    },
+    {
+      "name": "pentest_read_tool_config",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/tool_pkg.rs",
+      "line": 334
+    },
+    {
+      "name": "pentest_rename_tool_dir",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/tool_pkg.rs",
+      "line": 178
+    },
+    {
+      "name": "pentest_resolve_java_path",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/install/runtime.rs",
+      "line": 200
+    },
+    {
+      "name": "pentest_resolve_python_path",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/install/runtime.rs",
+      "line": 170
+    },
+    {
+      "name": "pentest_save_tool_config",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/tool_pkg.rs",
+      "line": 355
+    },
+    {
+      "name": "pentest_scan_tools",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/tool_mgmt.rs",
+      "line": 14
+    },
+    {
+      "name": "pentest_search_tools",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/tool_mgmt.rs",
+      "line": 47
+    },
+    {
+      "name": "pentest_set_default_java",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 145
+    },
+    {
+      "name": "pentest_set_default_ruby",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 107
+    },
+    {
+      "name": "pentest_set_system_proxy",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/proxy.rs",
+      "line": 4
+    },
+    {
+      "name": "pentest_uninstall_brew_pkg",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/tool_pkg.rs",
+      "line": 278
+    },
+    {
+      "name": "pentest_uninstall_gem_pkg",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/tool_pkg.rs",
+      "line": 306
+    },
+    {
+      "name": "pentest_uninstall_java_version",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 135
+    },
+    {
+      "name": "pentest_uninstall_node_version",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 173
+    },
+    {
+      "name": "pentest_uninstall_ruby_version",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 97
+    },
+    {
+      "name": "pentest_uninstall_runtime",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 37
+    },
+    {
+      "name": "pentest_uninstall_tool_files",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/tool_pkg.rs",
+      "line": 239
+    },
+    {
+      "name": "pentest_update_config",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/config.rs",
+      "line": 9
+    },
+    {
+      "name": "pentest_update_tool",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/tool_pkg.rs",
+      "line": 33
+    },
+    {
+      "name": "pentest_update_tool_executable",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/packages/tool_pkg.rs",
+      "line": 61
+    },
+    {
+      "name": "pentest_use_node_version",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/runtime.rs",
+      "line": 183
+    },
+    {
+      "name": "pentest_write_skill",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/skills.rs",
+      "line": 60
+    },
+    {
+      "name": "pipeline_cancel",
+      "domain": "pipeline",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pipeline/commands.rs",
+      "line": 24
+    },
+    {
+      "name": "pipeline_delete",
+      "domain": "pipeline",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pipeline/commands.rs",
+      "line": 135
+    },
+    {
+      "name": "pipeline_delete_template",
+      "domain": "pipeline",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pipeline/commands.rs",
+      "line": 217
+    },
+    {
+      "name": "pipeline_execute",
+      "domain": "pipeline",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pipeline/commands.rs",
+      "line": 30
+    },
+    {
+      "name": "pipeline_list",
+      "domain": "pipeline",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pipeline/commands.rs",
+      "line": 60
+    },
+    {
+      "name": "pipeline_list_templates",
+      "domain": "pipeline",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pipeline/commands.rs",
+      "line": 170
+    },
+    {
+      "name": "pipeline_load",
+      "domain": "pipeline",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pipeline/commands.rs",
+      "line": 154
+    },
+    {
+      "name": "pipeline_save",
+      "domain": "pipeline",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pipeline/commands.rs",
+      "line": 96
+    },
+    {
+      "name": "pipeline_save_template",
+      "domain": "pipeline",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pipeline/commands.rs",
+      "line": 179
+    },
+    {
+      "name": "plan_create",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/execution_plans.rs",
+      "line": 58
+    },
+    {
+      "name": "plan_delete",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/execution_plans.rs",
+      "line": 177
+    },
+    {
+      "name": "plan_get",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/execution_plans.rs",
+      "line": 88
+    },
+    {
+      "name": "plan_list",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/execution_plans.rs",
+      "line": 101
+    },
+    {
+      "name": "plan_list_active",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/execution_plans.rs",
+      "line": 118
+    },
+    {
+      "name": "plan_update_context",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/execution_plans.rs",
+      "line": 163
+    },
+    {
+      "name": "plan_update_status",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/execution_plans.rs",
+      "line": 148
+    },
+    {
+      "name": "plan_update_steps",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/execution_plans.rs",
+      "line": 130
+    },
+    {
+      "name": "project_export",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/project_io.rs",
+      "line": 98
+    },
+    {
+      "name": "project_import",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/project_io.rs",
+      "line": 219
+    },
+    {
+      "name": "pty_create",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/pty.rs",
+      "line": 10
+    },
+    {
+      "name": "pty_destroy",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/pty.rs",
+      "line": 44
+    },
+    {
+      "name": "pty_get_foreground_process",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/pty.rs",
+      "line": 54
+    },
+    {
+      "name": "pty_get_session",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/pty.rs",
+      "line": 49
+    },
+    {
+      "name": "pty_resize",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/pty.rs",
+      "line": 34
+    },
+    {
+      "name": "pty_write",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/pty.rs",
+      "line": 29
+    },
+    {
+      "name": "read_agent_prompt",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/agents.rs",
+      "line": 24
+    },
+    {
+      "name": "read_file_as_base64",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/fs/files.rs",
+      "line": 203
+    },
+    {
+      "name": "read_project_file",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/projects/commands.rs",
+      "line": 276
+    },
+    {
+      "name": "read_prompt",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/project/prompts.rs",
+      "line": 81
+    },
+    {
+      "name": "read_rule_body",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/project/rules.rs",
+      "line": 111
+    },
+    {
+      "name": "read_skill",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/project/skills.rs",
+      "line": 26
+    },
+    {
+      "name": "read_skill_body",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/project/skills.rs",
+      "line": 33
+    },
+    {
+      "name": "read_skill_file",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/project/skills.rs",
+      "line": 45
+    },
+    {
+      "name": "read_theme",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/ui/themes.rs",
+      "line": 62
+    },
+    {
+      "name": "read_workspace_file",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/fs/files.rs",
+      "line": 116
+    },
+    {
+      "name": "recording_delete",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/recordings.rs",
+      "line": 159
+    },
+    {
+      "name": "recording_list",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/recordings.rs",
+      "line": 142
+    },
+    {
+      "name": "recording_load",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/recordings.rs",
+      "line": 122
+    },
+    {
+      "name": "recording_save",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/recordings.rs",
+      "line": 85
+    },
+    {
+      "name": "reindex_codebase",
+      "domain": "indexer",
+      "is_async": true,
+      "file": "crates/golish/src/indexer/commands/codebases/lifecycle.rs",
+      "line": 13
+    },
+    {
+      "name": "reload_settings",
+      "domain": "settings",
+      "is_async": true,
+      "file": "crates/golish/src/settings/commands.rs",
+      "line": 83
+    },
+    {
+      "name": "remove_indexed_codebase",
+      "domain": "indexer",
+      "is_async": true,
+      "file": "crates/golish/src/indexer/commands/codebases/crud.rs",
+      "line": 105
+    },
+    {
+      "name": "remove_recent_directory",
+      "domain": "indexer",
+      "is_async": true,
+      "file": "crates/golish/src/indexer/commands/hidden_dirs.rs",
+      "line": 65
+    },
+    {
+      "name": "remove_tool_always_allow",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/hitl.rs",
+      "line": 96
+    },
+    {
+      "name": "reset_approval_patterns",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/hitl.rs",
+      "line": 113
+    },
+    {
+      "name": "reset_context_manager",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/context.rs",
+      "line": 88
+    },
+    {
+      "name": "reset_loop_detector",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/loop_detection.rs",
+      "line": 109
+    },
+    {
+      "name": "reset_settings",
+      "domain": "settings",
+      "is_async": true,
+      "file": "crates/golish/src/settings/commands.rs",
+      "line": 61
+    },
+    {
+      "name": "reset_tool_policies",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/policy.rs",
+      "line": 76
+    },
+    {
+      "name": "respond_to_tool_approval",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/hitl.rs",
+      "line": 129
+    },
+    {
+      "name": "restore_ai_conversation",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/session.rs",
+      "line": 53
+    },
+    {
+      "name": "restore_ai_session",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/session.rs",
+      "line": 271
+    },
+    {
+      "name": "retry_compaction",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/context.rs",
+      "line": 133
+    },
+    {
+      "name": "run_recon_pipeline",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/workflow.rs",
+      "line": 16
+    },
+    {
+      "name": "save_agent_definition",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/agents.rs",
+      "line": 40
+    },
+    {
+      "name": "save_pentest_config",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/projects/commands.rs",
+      "line": 209
+    },
+    {
+      "name": "save_project",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/projects/commands.rs",
+      "line": 51
+    },
+    {
+      "name": "save_project_agent_mode",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/mode.rs",
+      "line": 54
+    },
+    {
+      "name": "save_project_model",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/config.rs",
+      "line": 65
+    },
+    {
+      "name": "save_project_workspace",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/projects/commands.rs",
+      "line": 156
+    },
+    {
+      "name": "save_rule",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/project/rules.rs",
+      "line": 126
+    },
+    {
+      "name": "save_skill",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/project/skills.rs",
+      "line": 51
+    },
+    {
+      "name": "save_theme",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/ui/themes.rs",
+      "line": 79
+    },
+    {
+      "name": "save_theme_asset",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/ui/themes.rs",
+      "line": 113
+    },
+    {
+      "name": "save_window_state",
+      "domain": "settings",
+      "is_async": true,
+      "file": "crates/golish/src/settings/commands.rs",
+      "line": 95
+    },
+    {
+      "name": "scan_feroxbuster",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/scan_runner/mod.rs",
+      "line": 103
+    },
+    {
+      "name": "scan_nuclei_targeted",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/scan_runner/mod.rs",
+      "line": 86
+    },
+    {
+      "name": "scan_queue_clear_completed",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/scan_queue.rs",
+      "line": 158
+    },
+    {
+      "name": "scan_queue_list",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/scan_queue.rs",
+      "line": 29
+    },
+    {
+      "name": "scan_queue_remove",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/scan_queue.rs",
+      "line": 140
+    },
+    {
+      "name": "scan_queue_save_all",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/scan_queue.rs",
+      "line": 98
+    },
+    {
+      "name": "scan_queue_upsert",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/scan_queue.rs",
+      "line": 60
+    },
+    {
+      "name": "scan_whatweb",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/scan_runner/mod.rs",
+      "line": 61
+    },
+    {
+      "name": "search_code",
+      "domain": "indexer",
+      "is_async": true,
+      "file": "crates/golish/src/indexer/commands/core.rs",
+      "line": 222
+    },
+    {
+      "name": "search_files",
+      "domain": "indexer",
+      "is_async": true,
+      "file": "crates/golish/src/indexer/commands/core.rs",
+      "line": 246
+    },
+    {
+      "name": "search_history",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/history.rs",
+      "line": 62
+    },
+    {
+      "name": "search_logs_list",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/audit.rs",
+      "line": 245
+    },
+    {
+      "name": "search_memories",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/analytics.rs",
+      "line": 163
+    },
+    {
+      "name": "seed_agents",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/agents.rs",
+      "line": 173
+    },
+    {
+      "name": "send_ai_prompt",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/core/tools.rs",
+      "line": 16
+    },
+    {
+      "name": "send_ai_prompt_session",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/core/chat.rs",
+      "line": 26
+    },
+    {
+      "name": "send_ai_prompt_with_attachments",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/core/chat.rs",
+      "line": 218
+    },
+    {
+      "name": "sensitive_scan_apply_verdicts",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/sensitive_scan.rs",
+      "line": 211
+    },
+    {
+      "name": "sensitive_scan_clear",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/sensitive_scan.rs",
+      "line": 175
+    },
+    {
+      "name": "sensitive_scan_confirm",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/sensitive_scan.rs",
+      "line": 190
+    },
+    {
+      "name": "sensitive_scan_default_paths",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/sensitive_scan.rs",
+      "line": 206
+    },
+    {
+      "name": "sensitive_scan_results",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/sensitive_scan.rs",
+      "line": 145
+    },
+    {
+      "name": "sensitive_scan_start",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/sensitive_scan.rs",
+      "line": 82
+    },
+    {
+      "name": "sensitive_scan_status",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/sensitive_scan.rs",
+      "line": 140
+    },
+    {
+      "name": "sensitive_scan_stop",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/sensitive_scan.rs",
+      "line": 134
+    },
+    {
+      "name": "set_active_terminal_session",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/pty.rs",
+      "line": 62
+    },
+    {
+      "name": "set_agent_mode",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/mode.rs",
+      "line": 23
+    },
+    {
+      "name": "set_ai_session_persistence",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/session.rs",
+      "line": 157
+    },
+    {
+      "name": "set_execution_mode",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/mode.rs",
+      "line": 120
+    },
+    {
+      "name": "set_hitl_config",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/hitl.rs",
+      "line": 62
+    },
+    {
+      "name": "set_loop_protection_config",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/loop_detection.rs",
+      "line": 27
+    },
+    {
+      "name": "set_setting",
+      "domain": "settings",
+      "is_async": true,
+      "file": "crates/golish/src/settings/commands.rs",
+      "line": 47
+    },
+    {
+      "name": "set_sub_agent_model",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/config.rs",
+      "line": 364
+    },
+    {
+      "name": "set_tool_policy",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/policy.rs",
+      "line": 27
+    },
+    {
+      "name": "set_tool_policy_config",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/policy.rs",
+      "line": 27
+    },
+    {
+      "name": "set_use_agents",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/mode.rs",
+      "line": 87
+    },
+    {
+      "name": "settings_file_exists",
+      "domain": "settings",
+      "is_async": false,
+      "file": "crates/golish/src/settings/commands.rs",
+      "line": 71
+    },
+    {
+      "name": "shell_integration_install",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/shell/mod.rs",
+      "line": 356
+    },
+    {
+      "name": "shell_integration_status",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/shell/mod.rs",
+      "line": 314
+    },
+    {
+      "name": "shell_integration_uninstall",
+      "domain": "git_pty",
+      "is_async": true,
+      "file": "crates/golish/src/commands/proc/shell/mod.rs",
+      "line": 378
+    },
+    {
+      "name": "shutdown_ai_agent",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/core/tools.rs",
+      "line": 79
+    },
+    {
+      "name": "shutdown_ai_session",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/core/session.rs",
+      "line": 152
+    },
+    {
+      "name": "shutdown_indexer",
+      "domain": "indexer",
+      "is_async": false,
+      "file": "crates/golish/src/indexer/commands/core.rs",
+      "line": 261
+    },
+    {
+      "name": "sidecar_apply_all_artifacts",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/artifacts.rs",
+      "line": 182
+    },
+    {
+      "name": "sidecar_apply_all_patches",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/patches.rs",
+      "line": 179
+    },
+    {
+      "name": "sidecar_apply_artifact",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/artifacts.rs",
+      "line": 151
+    },
+    {
+      "name": "sidecar_apply_patch",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/patches.rs",
+      "line": 116
+    },
+    {
+      "name": "sidecar_current_session",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/lifecycle.rs",
+      "line": 31
+    },
+    {
+      "name": "sidecar_discard_artifact",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/artifacts.rs",
+      "line": 83
+    },
+    {
+      "name": "sidecar_discard_patch",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/patches.rs",
+      "line": 83
+    },
+    {
+      "name": "sidecar_end_session",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/lifecycle.rs",
+      "line": 23
+    },
+    {
+      "name": "sidecar_get_applied_artifacts",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/artifacts.rs",
+      "line": 49
+    },
+    {
+      "name": "sidecar_get_applied_patches",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/patches.rs",
+      "line": 49
+    },
+    {
+      "name": "sidecar_get_artifact",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/artifacts.rs",
+      "line": 64
+    },
+    {
+      "name": "sidecar_get_config",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/config.rs",
+      "line": 11
+    },
+    {
+      "name": "sidecar_get_current_pending_artifacts",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/artifacts.rs",
+      "line": 132
+    },
+    {
+      "name": "sidecar_get_current_staged_patches",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/patches.rs",
+      "line": 243
+    },
+    {
+      "name": "sidecar_get_injectable_context",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/content.rs",
+      "line": 24
+    },
+    {
+      "name": "sidecar_get_patch",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/patches.rs",
+      "line": 64
+    },
+    {
+      "name": "sidecar_get_pending_artifacts",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/artifacts.rs",
+      "line": 34
+    },
+    {
+      "name": "sidecar_get_session_log",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/content.rs",
+      "line": 59
+    },
+    {
+      "name": "sidecar_get_session_meta",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/content.rs",
+      "line": 36
+    },
+    {
+      "name": "sidecar_get_session_state",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/content.rs",
+      "line": 11
+    },
+    {
+      "name": "sidecar_get_staged_patches",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/patches.rs",
+      "line": 34
+    },
+    {
+      "name": "sidecar_initialize",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/status.rs",
+      "line": 17
+    },
+    {
+      "name": "sidecar_list_sessions",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/content.rs",
+      "line": 49
+    },
+    {
+      "name": "sidecar_preview_artifact",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/artifacts.rs",
+      "line": 113
+    },
+    {
+      "name": "sidecar_regenerate_artifacts",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/artifacts.rs",
+      "line": 224
+    },
+    {
+      "name": "sidecar_regenerate_patch",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/patches.rs",
+      "line": 265
+    },
+    {
+      "name": "sidecar_resume_session",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/lifecycle.rs",
+      "line": 40
+    },
+    {
+      "name": "sidecar_set_config",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/config.rs",
+      "line": 17
+    },
+    {
+      "name": "sidecar_shutdown",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/status.rs",
+      "line": 30
+    },
+    {
+      "name": "sidecar_start_session",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/lifecycle.rs",
+      "line": 11
+    },
+    {
+      "name": "sidecar_status",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/status.rs",
+      "line": 11
+    },
+    {
+      "name": "sidecar_update_patch_message",
+      "domain": "sidecar",
+      "is_async": true,
+      "file": "crates/golish/src/sidecar/commands/patches.rs",
+      "line": 325
+    },
+    {
+      "name": "signal_frontend_ready",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/core/chat.rs",
+      "line": 344
+    },
+    {
+      "name": "stat_workspace_file",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/fs/files.rs",
+      "line": 183
+    },
+    {
+      "name": "target_add",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/targets/cmds.rs",
+      "line": 37
+    },
+    {
+      "name": "target_assets_list",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/security_analysis.rs",
+      "line": 132
+    },
+    {
+      "name": "target_batch_add",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/targets/cmds.rs",
+      "line": 83
+    },
+    {
+      "name": "target_clear_all",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/targets/cmds.rs",
+      "line": 228
+    },
+    {
+      "name": "target_delete",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/targets/cmds.rs",
+      "line": 211
+    },
+    {
+      "name": "target_list",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/targets/cmds.rs",
+      "line": 11
+    },
+    {
+      "name": "target_security_overview",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/security_analysis.rs",
+      "line": 259
+    },
+    {
+      "name": "target_update",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/targets/cmds.rs",
+      "line": 129
+    },
+    {
+      "name": "target_update_status",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/targets/cmds.rs",
+      "line": 242
+    },
+    {
+      "name": "terminal_logs_list",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/audit.rs",
+      "line": 208
+    },
+    {
+      "name": "unwatch_all_files",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/fs/file_watcher.rs",
+      "line": 197
+    },
+    {
+      "name": "unwatch_file",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/fs/file_watcher.rs",
+      "line": 166
+    },
+    {
+      "name": "update_ai_workspace",
+      "domain": "ai",
+      "is_async": true,
+      "file": "crates/golish/src/ai/commands/config.rs",
+      "line": 239
+    },
+    {
+      "name": "update_codebase_memory_file",
+      "domain": "indexer",
+      "is_async": true,
+      "file": "crates/golish/src/indexer/commands/codebases/memory.rs",
+      "line": 10
+    },
+    {
+      "name": "update_settings",
+      "domain": "settings",
+      "is_async": true,
+      "file": "crates/golish/src/settings/commands.rs",
+      "line": 21
+    },
+    {
+      "name": "vault_add",
+      "domain": "vault",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vault.rs",
+      "line": 76
+    },
+    {
+      "name": "vault_delete",
+      "domain": "vault",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vault.rs",
+      "line": 300
+    },
+    {
+      "name": "vault_get_value",
+      "domain": "vault",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vault.rs",
+      "line": 135
+    },
+    {
+      "name": "vault_list",
+      "domain": "vault",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vault.rs",
+      "line": 58
+    },
+    {
+      "name": "vault_resolve",
+      "domain": "vault",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vault.rs",
+      "line": 317
+    },
+    {
+      "name": "vault_update",
+      "domain": "vault",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vault.rs",
+      "line": 152
+    },
+    {
+      "name": "vault_update_status",
+      "domain": "vault",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vault.rs",
+      "line": 206
+    },
+    {
+      "name": "vault_validate",
+      "domain": "vault",
+      "is_async": true,
+      "file": "crates/golish/src/tools/vault.rs",
+      "line": 225
+    },
+    {
+      "name": "vuln_link_add_poc",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/vuln_links.rs",
+      "line": 218
+    },
+    {
+      "name": "vuln_link_add_poc_full",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/vuln_links.rs",
+      "line": 306
+    },
+    {
+      "name": "vuln_link_add_scan",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/vuln_links.rs",
+      "line": 266
+    },
+    {
+      "name": "vuln_link_add_wiki",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/vuln_links.rs",
+      "line": 189
+    },
+    {
+      "name": "vuln_link_get",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/vuln_links.rs",
+      "line": 81
+    },
+    {
+      "name": "vuln_link_get_all",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/vuln_links.rs",
+      "line": 81
+    },
+    {
+      "name": "vuln_link_remove_poc",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/vuln_links.rs",
+      "line": 253
+    },
+    {
+      "name": "vuln_link_remove_scan",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/vuln_links.rs",
+      "line": 289
+    },
+    {
+      "name": "vuln_link_remove_wiki",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/vuln_links.rs",
+      "line": 202
+    },
+    {
+      "name": "vuln_link_update_poc",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/vuln_links.rs",
+      "line": 234
+    },
+    {
+      "name": "vuln_poc_list_cves",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/vuln_links.rs",
+      "line": 340
+    },
+    {
+      "name": "vuln_poc_list_unresearched",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/vuln_links.rs",
+      "line": 361
+    },
+    {
+      "name": "vuln_poc_set_verified",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/vuln_links.rs",
+      "line": 393
+    },
+    {
+      "name": "vuln_poc_stats",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/vuln_links.rs",
+      "line": 383
+    },
+    {
+      "name": "watch_file",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/fs/file_watcher.rs",
+      "line": 115
+    },
+    {
+      "name": "wiki_backlinks",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/dashboard.rs",
+      "line": 122
+    },
+    {
+      "name": "wiki_changelog_list",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/dashboard.rs",
+      "line": 92
+    },
+    {
+      "name": "wiki_create_cve",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/pages/cve.rs",
+      "line": 10
+    },
+    {
+      "name": "wiki_create_dir",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/pages/crud.rs",
+      "line": 140
+    },
+    {
+      "name": "wiki_delete",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/pages/crud.rs",
+      "line": 81
+    },
+    {
+      "name": "wiki_init",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/pages/lifecycle.rs",
+      "line": 15
+    },
+    {
+      "name": "wiki_list",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/pages/crud.rs",
+      "line": 17
+    },
+    {
+      "name": "wiki_orphan_pages",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/dashboard.rs",
+      "line": 150
+    },
+    {
+      "name": "wiki_pages_for_paths",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/dashboard.rs",
+      "line": 55
+    },
+    {
+      "name": "wiki_pages_grouped",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/dashboard.rs",
+      "line": 44
+    },
+    {
+      "name": "wiki_read",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/pages/crud.rs",
+      "line": 29
+    },
+    {
+      "name": "wiki_reindex",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/pages/lifecycle.rs",
+      "line": 56
+    },
+    {
+      "name": "wiki_rename",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/pages/crud.rs",
+      "line": 120
+    },
+    {
+      "name": "wiki_search",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/search.rs",
+      "line": 30
+    },
+    {
+      "name": "wiki_search_db",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/search.rs",
+      "line": 103
+    },
+    {
+      "name": "wiki_stats",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/search.rs",
+      "line": 144
+    },
+    {
+      "name": "wiki_stats_full",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/dashboard.rs",
+      "line": 140
+    },
+    {
+      "name": "wiki_suggest_for_cve",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/dashboard.rs",
+      "line": 67
+    },
+    {
+      "name": "wiki_write",
+      "domain": "wiki",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wiki/pages/crud.rs",
+      "line": 40
+    },
+    {
+      "name": "wordlist_deduplicate",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wordlists.rs",
+      "line": 124
+    },
+    {
+      "name": "wordlist_delete",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wordlists.rs",
+      "line": 112
+    },
+    {
+      "name": "wordlist_import",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wordlists.rs",
+      "line": 62
+    },
+    {
+      "name": "wordlist_list",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wordlists.rs",
+      "line": 57
+    },
+    {
+      "name": "wordlist_merge",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wordlists.rs",
+      "line": 161
+    },
+    {
+      "name": "wordlist_path",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wordlists.rs",
+      "line": 236
+    },
+    {
+      "name": "wordlist_preview",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/tools/wordlists.rs",
+      "line": 217
+    },
+    {
+      "name": "write_frontend_log",
+      "domain": "git_pty",
+      "is_async": false,
+      "file": "crates/golish/src/commands/ui/logging.rs",
+      "line": 39
+    },
+    {
+      "name": "write_workspace_file",
+      "domain": "workspace",
+      "is_async": true,
+      "file": "crates/golish/src/commands/fs/files.rs",
+      "line": 140
+    },
+    {
+      "name": "zap_api_call",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/admin.rs",
+      "line": 93
+    },
+    {
+      "name": "zap_batch_scan",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/scan.rs",
+      "line": 175
+    },
+    {
+      "name": "zap_detect_path",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/lifecycle.rs",
+      "line": 94
+    },
+    {
+      "name": "zap_download_root_cert",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/admin.rs",
+      "line": 10
+    },
+    {
+      "name": "zap_get_alert_count",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/scan.rs",
+      "line": 290
+    },
+    {
+      "name": "zap_get_alerts",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/scan.rs",
+      "line": 273
+    },
+    {
+      "name": "zap_get_history",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/history.rs",
+      "line": 16
+    },
+    {
+      "name": "zap_get_history_count",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/history.rs",
+      "line": 83
+    },
+    {
+      "name": "zap_get_hosts",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/session.rs",
+      "line": 27
+    },
+    {
+      "name": "zap_get_message",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/history.rs",
+      "line": 101
+    },
+    {
+      "name": "zap_get_scanners",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/scan.rs",
+      "line": 69
+    },
+    {
+      "name": "zap_get_sitemap_data",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/session.rs",
+      "line": 76
+    },
+    {
+      "name": "zap_install_root_cert",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/admin.rs",
+      "line": 37
+    },
+    {
+      "name": "zap_list_scan_policies",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/scan.rs",
+      "line": 127
+    },
+    {
+      "name": "zap_new_session",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/session.rs",
+      "line": 37
+    },
+    {
+      "name": "zap_pause_scan",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/scan.rs",
+      "line": 247
+    },
+    {
+      "name": "zap_resume_scan",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/scan.rs",
+      "line": 260
+    },
+    {
+      "name": "zap_save_session",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/session.rs",
+      "line": 50
+    },
+    {
+      "name": "zap_scan_message_count",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/scan.rs",
+      "line": 110
+    },
+    {
+      "name": "zap_scan_progress",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/scan.rs",
+      "line": 97
+    },
+    {
+      "name": "zap_send_request",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/session.rs",
+      "line": 14
+    },
+    {
+      "name": "zap_set_path",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/lifecycle.rs",
+      "line": 100
+    },
+    {
+      "name": "zap_set_scanners_enabled",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/scan.rs",
+      "line": 81
+    },
+    {
+      "name": "zap_spider_progress",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/scan.rs",
+      "line": 396
+    },
+    {
+      "name": "zap_start",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/lifecycle.rs",
+      "line": 15
+    },
+    {
+      "name": "zap_start_scan",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/scan.rs",
+      "line": 14
+    },
+    {
+      "name": "zap_start_spider",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/scan.rs",
+      "line": 305
+    },
+    {
+      "name": "zap_status",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/lifecycle.rs",
+      "line": 79
+    },
+    {
+      "name": "zap_stop",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/lifecycle.rs",
+      "line": 63
+    },
+    {
+      "name": "zap_stop_scan",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/scan.rs",
+      "line": 234
+    },
+    {
+      "name": "zap_stop_spider",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/scan.rs",
+      "line": 411
+    },
+    {
+      "name": "zap_sync_to_db",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/session.rs",
+      "line": 55
+    },
+    {
+      "name": "zap_update_project",
+      "domain": "pentest",
+      "is_async": true,
+      "file": "crates/golish/src/tools/pentest/zap/lifecycle.rs",
+      "line": 85
+    }
+  ],
+  "errors": []
+}

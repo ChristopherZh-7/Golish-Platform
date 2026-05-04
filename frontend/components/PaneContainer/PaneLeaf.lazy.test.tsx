@@ -11,6 +11,7 @@ vi.mock("@/lib/api/files", () => ({
   readPromptBody: vi.fn().mockResolvedValue(""),
   listSkills: vi.fn().mockResolvedValue([]),
   readSkillBody: vi.fn().mockResolvedValue(""),
+  listWorkspaceFiles: vi.fn().mockResolvedValue([]),
 }));
 vi.mock("@/lib/api/pty", () => ({
   ptyWrite: vi.fn().mockResolvedValue(undefined),

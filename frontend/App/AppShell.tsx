@@ -73,25 +73,9 @@ export interface AppShellProps {
   activityControls: ActivityViewControls;
   visitedViews: Set<string>;
 
-  // Dialog state
-  commandPaletteOpen: boolean;
-  setCommandPaletteOpen: (open: boolean) => void;
-  quickOpenDialogOpen: boolean;
-  setQuickOpenDialogOpen: (open: boolean) => void;
-  settingsOpen: boolean;
-  setSettingsOpen: (open: boolean) => void;
-  settingsSection: string;
-  setSettingsSection: (section: string) => void;
-  shortcutsHelpOpen: boolean;
-  setShortcutsHelpOpen: (open: boolean) => void;
-  recordingsPanelOpen: boolean;
-  setRecordingsPanelOpen: (open: boolean) => void;
-  sessionBrowserOpen: boolean;
-  setSessionBrowserOpen: (open: boolean) => void;
-
-  // Bottom terminal
-  bottomTerminalOpen: boolean;
-  setBottomTerminalOpen: (open: boolean) => void;
+  // Dialog / panel / bottom-terminal state subscribed directly inside
+  // AppShell via `useStore` (dropped from props in 2026-05 prop-drilling
+  // reform — reduces shellProps fan-out by 16 fields).
 
   // Right split column
   rightPanelTabs: string[];
@@ -167,22 +151,6 @@ export function AppShell(props: AppShellProps) {
     setActivityView,
     activityControls,
     visitedViews,
-    commandPaletteOpen,
-    setCommandPaletteOpen,
-    quickOpenDialogOpen,
-    setQuickOpenDialogOpen,
-    settingsOpen,
-    setSettingsOpen,
-    settingsSection,
-    setSettingsSection,
-    shortcutsHelpOpen,
-    setShortcutsHelpOpen,
-    recordingsPanelOpen,
-    setRecordingsPanelOpen,
-    sessionBrowserOpen,
-    setSessionBrowserOpen,
-    bottomTerminalOpen,
-    setBottomTerminalOpen: _setBottomTerminalOpen,
     rightPanelTabs,
     rightActiveTab,
     setRightActiveTab,
@@ -219,6 +187,23 @@ export function AppShell(props: AppShellProps) {
   const isOnHomeTab = useStore((s) => s.homeTabId !== null && s.activeSessionId === s.homeTabId);
   const chatPanelVisible = useStore((s) => s.chatPanelVisible);
   const uiScale = useStore((s) => s.displaySettings.uiScale);
+  // Dialog / panel / bottom-terminal state — moved here from props in
+  // the 2026-05 prop-drilling reform.
+  const commandPaletteOpen = useStore((s) => s.commandPaletteOpen);
+  const setCommandPaletteOpen = useStore((s) => s.setCommandPaletteOpen);
+  const quickOpenDialogOpen = useStore((s) => s.quickOpenDialogOpen);
+  const setQuickOpenDialogOpen = useStore((s) => s.setQuickOpenDialogOpen);
+  const settingsOpen = useStore((s) => s.settingsDialogOpen);
+  const setSettingsOpen = useStore((s) => s.setSettingsDialogOpen);
+  const settingsSection = useStore((s) => s.settingsSection);
+  const setSettingsSection = useStore((s) => s.setSettingsSection);
+  const shortcutsHelpOpen = useStore((s) => s.shortcutsHelpOpen);
+  const setShortcutsHelpOpen = useStore((s) => s.setShortcutsHelpOpen);
+  const recordingsPanelOpen = useStore((s) => s.recordingsPanelOpen);
+  const setRecordingsPanelOpen = useStore((s) => s.setRecordingsPanelOpen);
+  const sessionBrowserOpen = useStore((s) => s.sessionBrowserOpen);
+  const setSessionBrowserOpen = useStore((s) => s.setSessionBrowserOpen);
+  const bottomTerminalOpen = useStore((s) => s.bottomTerminalOpen);
 
   const { createTerminalTab } = useCreateTerminalTab();
   const splitDrag = useSplitTabDrag({ setShowMergeDropZone, setSplitDragGhost, closeRightTab });

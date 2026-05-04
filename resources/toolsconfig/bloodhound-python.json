@@ -1,0 +1,146 @@
+{
+  "tool": {
+    "id": "bloodhound-python",
+    "name": "bloodhound-python",
+    "description": "Python-based AD ingestor for BloodHound (CE) - collects users/groups/computers/sessions/ACLs from Linux",
+    "executable": "bloodhound-python",
+    "runtime": "python",
+    "runtimeVersion": "3.11",
+    "launchMode": "cli",
+    "category": "post-exploit",
+    "subcategory": "ad-tools",
+    "tier": "recommended",
+    "tags": ["ad", "bloodhound", "graph", "enumeration"],
+    "install": {
+      "method": "pip",
+      "source": "bloodhound"
+    },
+    "params": [
+      {
+        "label": "Username",
+        "flag": "-u",
+        "type": "string",
+        "required": true,
+        "description": "Domain user",
+        "placeholder": "lowpriv"
+      },
+      {
+        "label": "Password",
+        "flag": "-p",
+        "type": "string",
+        "description": "User password (omit for hash auth)",
+        "placeholder": "Pass123"
+      },
+      {
+        "label": "NTLM Hash",
+        "flag": "--hashes",
+        "type": "string",
+        "description": "Pass-the-Hash LM:NT format",
+        "placeholder": "aad3...:8846..."
+      },
+      {
+        "label": "Domain",
+        "flag": "-d",
+        "type": "string",
+        "required": true,
+        "description": "Active Directory domain",
+        "placeholder": "lab.local"
+      },
+      {
+        "label": "Domain Controller",
+        "flag": "-dc",
+        "type": "string",
+        "description": "DC FQDN",
+        "placeholder": "dc01.lab.local"
+      },
+      {
+        "label": "Name Server",
+        "flag": "-ns",
+        "type": "string",
+        "description": "Custom DNS resolver IP",
+        "placeholder": "10.0.0.10"
+      },
+      {
+        "label": "Collection Methods",
+        "flag": "-c",
+        "type": "select",
+        "description": "What to collect (comma list possible)",
+        "options": [
+          { "value": "Default", "label": "Default - Group, LocalAdmin, Session, Trusts" },
+          { "value": "All", "label": "All - everything (slow)" },
+          { "value": "DCOnly", "label": "DCOnly - just DC info" },
+          { "value": "Group", "label": "Group" },
+          { "value": "LocalAdmin", "label": "LocalAdmin" },
+          { "value": "RDP", "label": "RDP" },
+          { "value": "DCOM", "label": "DCOM" },
+          { "value": "PSRemote", "label": "PSRemote" },
+          { "value": "Session", "label": "Session" },
+          { "value": "Trusts", "label": "Trusts" },
+          { "value": "ACL", "label": "ACL" },
+          { "value": "Container", "label": "Container" },
+          { "value": "ObjectProps", "label": "ObjectProps" },
+          { "value": "LoggedOn", "label": "LoggedOn" }
+        ]
+      },
+      {
+        "label": "Output Prefix",
+        "flag": "--zip",
+        "type": "boolean",
+        "description": "Zip output JSONs (drop into BloodHound GUI directly)"
+      },
+      {
+        "label": "Auth Method",
+        "flag": "--auth-method",
+        "type": "select",
+        "description": "Auth method",
+        "options": [
+          { "value": "auto", "label": "auto" },
+          { "value": "ntlm", "label": "ntlm" },
+          { "value": "kerberos", "label": "kerberos" }
+        ]
+      },
+      {
+        "label": "Use SSL",
+        "flag": "--ldap-channel-binding",
+        "type": "boolean",
+        "description": "LDAP channel binding (required if LDAP signing on)"
+      }
+    ],
+    "skills": [
+      {
+        "id": "default-collect",
+        "name": "Default collection",
+        "description": "Standard BloodHound ingest",
+        "args": "-u {{user}} -p {{pass}} -d {{domain}} -c Default --zip",
+        "tags": ["ad", "default"]
+      },
+      {
+        "id": "all-collect",
+        "name": "Full collection (slow)",
+        "description": "Collect everything (ACL/Container/etc.)",
+        "args": "-u {{user}} -p {{pass}} -d {{domain}} -dc {{dc}} -ns {{ns}} -c All --zip",
+        "tags": ["thorough"]
+      },
+      {
+        "id": "dc-only",
+        "name": "DC-only (fast preview)",
+        "description": "Quick DC enumeration",
+        "args": "-u {{user}} -p {{pass}} -d {{domain}} -c DCOnly --zip",
+        "tags": ["fast"]
+      },
+      {
+        "id": "pth-collect",
+        "name": "Pass-the-Hash collection",
+        "description": "Collect using NTLM hash",
+        "args": "-u {{user}} --hashes {{hash}} -d {{domain}} -c Default --zip",
+        "tags": ["pth"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["info"],
+      "detect": "BloodHound|bloodhound-python",
+      "patterns": []
+    }
+  }
+}

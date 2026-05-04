@@ -1,0 +1,226 @@
+{
+  "tool": {
+    "id": "ffuf",
+    "name": "ffuf",
+    "description": "Fast web fuzzer written in Go - directories, parameters, vhosts, and more",
+    "executable": "ffuf",
+    "runtime": "native",
+    "launchMode": "cli",
+    "category": "web",
+    "subcategory": "fuzzer",
+    "tier": "essential",
+    "tags": ["web", "fuzzer", "directory-brute", "parameter-discovery"],
+    "install": {
+      "method": "homebrew",
+      "source": "ffuf"
+    },
+    "params": [
+      {
+        "label": "URL",
+        "flag": "-u",
+        "type": "string",
+        "required": true,
+        "description": "Target URL with FUZZ keyword (e.g. https://target.com/FUZZ)",
+        "placeholder": "https://target.com/FUZZ"
+      },
+      {
+        "label": "Wordlist",
+        "flag": "-w",
+        "type": "string",
+        "required": true,
+        "description": "Wordlist path (use :KEYWORD for multiple)",
+        "placeholder": "/usr/share/wordlists/dirb/common.txt"
+      },
+      {
+        "label": "Method",
+        "flag": "-X",
+        "type": "select",
+        "description": "HTTP method",
+        "default": "GET",
+        "options": [
+          { "value": "GET", "label": "GET" },
+          { "value": "POST", "label": "POST" },
+          { "value": "PUT", "label": "PUT" },
+          { "value": "DELETE", "label": "DELETE" },
+          { "value": "HEAD", "label": "HEAD" }
+        ]
+      },
+      {
+        "label": "POST Data",
+        "flag": "-d",
+        "type": "string",
+        "description": "POST request body (use FUZZ keyword)",
+        "placeholder": "username=FUZZ&password=test"
+      },
+      {
+        "label": "Headers",
+        "flag": "-H",
+        "type": "string",
+        "description": "Custom header (repeat for multiple, e.g. -H 'Cookie: x=1')",
+        "placeholder": "Cookie: session=abcd"
+      },
+      {
+        "label": "Match HTTP Codes",
+        "flag": "-mc",
+        "type": "string",
+        "description": "Comma-separated status codes to match",
+        "default": "200,204,301,302,307,401,403,405,500",
+        "placeholder": "200,301"
+      },
+      {
+        "label": "Filter HTTP Codes",
+        "flag": "-fc",
+        "type": "string",
+        "description": "Status codes to filter out",
+        "placeholder": "404"
+      },
+      {
+        "label": "Filter Size",
+        "flag": "-fs",
+        "type": "string",
+        "description": "Filter responses by size (e.g. 0 to skip empty)",
+        "placeholder": "0"
+      },
+      {
+        "label": "Filter Words",
+        "flag": "-fw",
+        "type": "string",
+        "description": "Filter responses by word count",
+        "placeholder": "0"
+      },
+      {
+        "label": "Filter Lines",
+        "flag": "-fl",
+        "type": "string",
+        "description": "Filter responses by line count",
+        "placeholder": "0"
+      },
+      {
+        "label": "Threads",
+        "flag": "-t",
+        "type": "string",
+        "description": "Number of concurrent threads (default 40)",
+        "default": "40",
+        "placeholder": "40"
+      },
+      {
+        "label": "Rate Limit",
+        "flag": "-rate",
+        "type": "string",
+        "description": "Requests per second (0 = unlimited)",
+        "placeholder": "100"
+      },
+      {
+        "label": "Timeout",
+        "flag": "-timeout",
+        "type": "string",
+        "description": "HTTP request timeout in seconds",
+        "default": "10",
+        "placeholder": "10"
+      },
+      {
+        "label": "Recursion",
+        "flag": "-recursion",
+        "type": "boolean",
+        "description": "Recursively scan discovered directories"
+      },
+      {
+        "label": "Recursion Depth",
+        "flag": "-recursion-depth",
+        "type": "string",
+        "description": "Max recursion depth",
+        "placeholder": "2"
+      },
+      {
+        "label": "Extensions",
+        "flag": "-e",
+        "type": "string",
+        "description": "Comma-separated extensions to append (e.g. .php,.bak,.txt)",
+        "placeholder": ".php,.bak,.txt"
+      },
+      {
+        "label": "Output File",
+        "flag": "-o",
+        "type": "string",
+        "description": "Save results to file",
+        "placeholder": "ffuf_result.json"
+      },
+      {
+        "label": "Output Format",
+        "flag": "-of",
+        "type": "select",
+        "description": "Output format",
+        "options": [
+          { "value": "json", "label": "JSON" },
+          { "value": "csv", "label": "CSV" },
+          { "value": "ejson", "label": "Extended JSON" },
+          { "value": "html", "label": "HTML" },
+          { "value": "md", "label": "Markdown" },
+          { "value": "all", "label": "All formats" }
+        ]
+      },
+      {
+        "label": "Silent",
+        "flag": "-s",
+        "type": "boolean",
+        "description": "Silent mode (no banner / progress, only results)"
+      }
+    ],
+    "skills": [
+      {
+        "id": "dir-brute",
+        "name": "Directory Brute Force",
+        "description": "Common directory enumeration",
+        "args": "-u {{target}}/FUZZ -w /usr/share/wordlists/dirb/common.txt -mc 200,301,302,403",
+        "tags": ["dir-brute"]
+      },
+      {
+        "id": "ext-fuzz",
+        "name": "File Extension Fuzzing",
+        "description": "Brute paths with multiple extensions",
+        "args": "-u {{target}}/FUZZ -w /usr/share/wordlists/dirb/common.txt -e .php,.bak,.txt,.html",
+        "tags": ["files"]
+      },
+      {
+        "id": "vhost",
+        "name": "Virtual Host Discovery",
+        "description": "Discover vhosts via Host header fuzzing",
+        "args": "-u https://{{target}} -H 'Host: FUZZ.{{target}}' -w /usr/share/wordlists/dns/subdomains.txt -fs 0",
+        "tags": ["vhost"]
+      },
+      {
+        "id": "param-discover",
+        "name": "GET Parameter Discovery",
+        "description": "Discover hidden GET parameters",
+        "args": "-u {{target}}?FUZZ=test -w /usr/share/wordlists/params.txt -fs 0",
+        "tags": ["params"]
+      },
+      {
+        "id": "post-login",
+        "name": "POST Login Brute",
+        "description": "Brute force username on POST login form",
+        "args": "-u {{target}}/login -X POST -d 'username=FUZZ&password=test' -w /usr/share/wordlists/users.txt -fc 401",
+        "tags": ["login"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["url", "endpoint"],
+      "detect": "ffuf v|\\[Status:",
+      "db_action": "endpoint_add",
+      "patterns": [
+        {
+          "type": "endpoint",
+          "regex": "(\\S+)\\s+\\[Status:\\s+(\\d+),\\s+Size:\\s+(\\d+),\\s+Words:\\s+(\\d+),\\s+Lines:\\s+(\\d+)",
+          "fields": {
+            "1": "path",
+            "2": "status",
+            "3": "size",
+            "4": "words",
+            "5": "lines"
+          }
+        }
+      ]
+    }
+  }
+}
