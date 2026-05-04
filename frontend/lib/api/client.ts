@@ -1,6 +1,4 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
-import type { UnlistenFn } from "@tauri-apps/api/event";
-import { listen as tauriListen } from "../tauri-listen";
 
 /**
  * `ApiError` carries the typed Tauri command name AND the auto-
@@ -71,6 +69,7 @@ export async function invoke<T = void>(
   }
 }
 
-export function listen<T>(channel: string, handler: (payload: T) => void): Promise<UnlistenFn> {
-  return tauriListen<T>(channel, (event) => handler(event.payload));
-}
+// `listen` was removed in QW6 (2026-05) — it had zero call sites after
+// `lib/ai/session.ts::onAiEvent` migrated to the typed `onEvent` from
+// `@/lib/events`. New event subscriptions should use `onEvent` for
+// compile-time channel typing + structured subscription logs.

@@ -11,7 +11,7 @@
  *   import { getGitBranch } from "@/lib/api/git";
  */
 
-export { ApiError, getInflightCommands, invoke, listen } from "./client";
+export { ApiError, getInflightCommands, invoke } from "./client";
 
 import * as ai from "./ai";
 import * as auditLog from "./audit-log";
