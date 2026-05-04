@@ -13,9 +13,7 @@
       "**/*.tsx",
       "**/*.js",
       "**/*.jsx",
-      "**/*.json",
-      "!frontend/lib/generated/**",
-      "!backend/crates/*/bindings/generated/**"
+      "**/*.json"
     ]
   },
   "formatter": {
