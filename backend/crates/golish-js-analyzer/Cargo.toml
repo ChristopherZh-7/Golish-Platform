@@ -13,6 +13,8 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 regex = { workspace = true }
+ast-grep-core = "0.40"
+ast-grep-language = "0.40"
 
 [dev-dependencies]
 pretty_assertions = "1"
