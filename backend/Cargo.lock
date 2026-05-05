@@ -2491,6 +2491,7 @@ dependencies = [
  "golish-events",
  "golish-graphiti",
  "golish-indexer",
+ "golish-js-analyzer",
  "golish-llm-providers",
  "golish-mcp",
  "golish-models",
