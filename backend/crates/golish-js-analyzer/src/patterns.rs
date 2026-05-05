@@ -10,10 +10,10 @@
 use regex::Captures;
 use serde::{Deserialize, Serialize};
 
-use crate::{AuthHint, Endpoint};
+use crate::{AuthHint, Endpoint, UrlKind};
 
 /// Family of HTTP-call call-site this endpoint was extracted from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CallSiteKind {
     Fetch,
@@ -51,6 +51,20 @@ pub(crate) const JQUERY_AJAX: &str =
 pub(crate) const NEW_REQUEST: &str =
     r#"(?m)\bnew\s+Request\s*\(\s*[`'"]([^`'"]+)[`'"]"#;
 
+/// `fetch('/api/users/' + id, ...)` — captures the literal prefix when
+/// the URL is built by string concatenation. The `+` after the closing
+/// quote is the disambiguator that prevents this from re-matching plain
+/// `FETCH` literal call sites.
+pub(crate) const FETCH_CONCAT: &str =
+    r#"(?m)\bfetch\s*\(\s*[`'"]([^`'"]+)[`'"]\s*\+"#;
+
+/// `` fetch(`/api/users/${id}`, ...) `` — backtick-quoted template literal
+/// with at least one `${...}` placeholder. We capture the raw template
+/// body (placeholders preserved) so callers see the same text the model
+/// would.
+pub(crate) const FETCH_TEMPLATE: &str =
+    r#"(?m)\bfetch\s*\(\s*`([^`]*\$\{[^`]*)`"#;
+
 // ─────────────────────────────────────────────────────────────────────────
 // Per-pattern helpers
 // ─────────────────────────────────────────────────────────────────────────
@@ -65,6 +79,7 @@ pub(crate) fn endpoint_from_fetch(
     let init_window = window_after(source, match_start, 400);
     let method = method_from_init(init_window).unwrap_or_else(|| "GET".to_string());
     let auth = auth_from_window(init_window);
+    let (has_path_params, id_param_position) = analyze_path(&path);
     Some(Endpoint {
         method,
         path,
@@ -73,6 +88,9 @@ pub(crate) fn endpoint_from_fetch(
         line: line_of(source, match_start),
         confidence: 0.9,
         kind: CallSiteKind::Fetch,
+        url_kind: UrlKind::Literal,
+        has_path_params,
+        id_param_position,
     })
 }
 
@@ -84,6 +102,7 @@ pub(crate) fn endpoint_from_axios_verb(
     let verb = cap.get(1)?.as_str().to_uppercase();
     let path = cap.get(2)?.as_str().to_string();
     let match_start = cap.get(0)?.start();
+    let (has_path_params, id_param_position) = analyze_path(&path);
     Some(Endpoint {
         method: verb,
         path,
@@ -92,6 +111,9 @@ pub(crate) fn endpoint_from_axios_verb(
         line: line_of(source, match_start),
         confidence: 0.95, // verb is explicit, very high signal
         kind: CallSiteKind::AxiosVerb,
+        url_kind: UrlKind::Literal,
+        has_path_params,
+        id_param_position,
     })
 }
 
@@ -105,6 +127,7 @@ pub(crate) fn endpoint_from_axios_config(
     let window = window_after(source, match_start, 400);
     // axios config uses "method" key, not "type"
     let method = method_from_init(window).unwrap_or_else(|| "GET".to_string());
+    let (has_path_params, id_param_position) = analyze_path(&path);
     Some(Endpoint {
         method,
         path,
@@ -113,6 +136,9 @@ pub(crate) fn endpoint_from_axios_config(
         line: line_of(source, match_start),
         confidence: 0.85,
         kind: CallSiteKind::AxiosConfig,
+        url_kind: UrlKind::Literal,
+        has_path_params,
+        id_param_position,
     })
 }
 
@@ -126,6 +152,7 @@ pub(crate) fn endpoint_from_jquery(
     let window = window_after(source, match_start, 400);
     // jQuery uses both `type` (legacy) and `method` (>= 1.9.0)
     let method = method_from_jquery(window).unwrap_or_else(|| "GET".to_string());
+    let (has_path_params, id_param_position) = analyze_path(&path);
     Some(Endpoint {
         method,
         path,
@@ -134,6 +161,9 @@ pub(crate) fn endpoint_from_jquery(
         line: line_of(source, match_start),
         confidence: 0.85,
         kind: CallSiteKind::JqueryAjax,
+        url_kind: UrlKind::Literal,
+        has_path_params,
+        id_param_position,
     })
 }
 
@@ -146,6 +176,7 @@ pub(crate) fn endpoint_from_new_request(
     let match_start = cap.get(0)?.start();
     let window = window_after(source, match_start, 400);
     let method = method_from_init(window).unwrap_or_else(|| "GET".to_string());
+    let (has_path_params, id_param_position) = analyze_path(&path);
     Some(Endpoint {
         method,
         path,
@@ -154,6 +185,78 @@ pub(crate) fn endpoint_from_new_request(
         line: line_of(source, match_start),
         confidence: 0.85,
         kind: CallSiteKind::NewRequest,
+        url_kind: UrlKind::Literal,
+        has_path_params,
+        id_param_position,
+    })
+}
+
+/// `fetch('/prefix/' + id)` — concatenation. Path is the literal prefix;
+/// id position is the trailing slot (one past the prefix's last segment).
+///
+/// Position counting is consistent with [`analyze_path`]: leading and
+/// trailing `/` are stripped before splitting, then segments are 0-based.
+pub(crate) fn endpoint_from_fetch_concat(
+    cap: &Captures,
+    source: &str,
+    source_file: &str,
+) -> Option<Endpoint> {
+    let prefix = cap.get(1)?.as_str().to_string();
+    let match_start = cap.get(0)?.start();
+    let window = window_after(source, match_start, 400);
+    let method = method_from_init(window).unwrap_or_else(|| "GET".to_string());
+    // After trimming, count existing segments — the runtime variable
+    // becomes segment `seg_count` (0-based), which is the slot right
+    // after the last existing one.
+    //   "/api/users/" -> trim -> "api/users" -> 2 segments -> id slot = 2
+    //   "/api/users"  -> trim -> "api/users" -> 2 segments -> id slot = 2
+    let trimmed = prefix.trim_start_matches('/').trim_end_matches('/');
+    let seg_count = if trimmed.is_empty() {
+        0
+    } else {
+        trimmed.split('/').count()
+    };
+    Some(Endpoint {
+        method,
+        path: prefix,
+        auth: auth_from_window(window),
+        source_file: source_file.to_string(),
+        line: line_of(source, match_start),
+        confidence: 0.7, // concat URLs are inherently less certain
+        kind: CallSiteKind::Fetch,
+        url_kind: UrlKind::Concatenated,
+        has_path_params: true, // concat necessarily has a runtime variable
+        id_param_position: Some(seg_count),
+    })
+}
+
+/// `` fetch(`/path/${id}`) `` — template literal. Path keeps `${...}`
+/// markers. id position is the 0-based index (after trimming surrounding
+/// `/`) of the first segment containing `${`.
+pub(crate) fn endpoint_from_fetch_template(
+    cap: &Captures,
+    source: &str,
+    source_file: &str,
+) -> Option<Endpoint> {
+    let template_body = cap.get(1)?.as_str().to_string();
+    let match_start = cap.get(0)?.start();
+    let window = window_after(source, match_start, 400);
+    let method = method_from_init(window).unwrap_or_else(|| "GET".to_string());
+    let trimmed = template_body
+        .trim_start_matches('/')
+        .trim_end_matches('/');
+    let id_pos = trimmed.split('/').position(|seg| seg.contains("${"));
+    Some(Endpoint {
+        method,
+        path: template_body,
+        auth: auth_from_window(window),
+        source_file: source_file.to_string(),
+        line: line_of(source, match_start),
+        confidence: 0.75, // template literal is more structured than concat
+        kind: CallSiteKind::Fetch,
+        url_kind: UrlKind::TemplateLiteral,
+        has_path_params: true,
+        id_param_position: id_pos,
     })
 }
 
@@ -199,12 +302,16 @@ fn static_search_method_key(window: &str, key: &str) -> Option<String> {
 }
 
 /// Heuristic auth detection inside the post-call-site window.
+///
+/// Recognizes both pretty-printed and minified forms (e.g. `true` → `!0`,
+/// `false` → `!1` from terser/uglify output).
 fn auth_from_window(window: &str) -> AuthHint {
     let lower = window.to_lowercase();
     if lower.contains("authorization") && lower.contains("bearer") {
         AuthHint::Bearer
-    } else if lower.contains("credentials") && lower.contains("include")
-        || lower.contains("withcredentials") && lower.contains("true")
+    } else if (lower.contains("credentials") && lower.contains("include"))
+        || (lower.contains("withcredentials")
+            && (lower.contains("true") || lower.contains("!0")))
     {
         AuthHint::Cookie
     } else if lower.contains("x-token")
@@ -225,4 +332,55 @@ fn line_of(source: &str, byte_offset: usize) -> usize {
         .bytes()
         .filter(|&b| b == b'\n')
         .count()
+}
+
+/// Heuristic: detect path segments that look like an ID and return the
+/// 0-based position of the first such segment.
+///
+/// Recognized ID shapes:
+/// - Pure digits (`\d+`) — e.g. `/api/users/123`
+/// - UUID v4-ish (`8-4-4-4-12` hex with dashes)
+/// - 24+-byte hex string — common for Mongo ObjectIds and similar
+///
+/// Strips leading/trailing slashes before splitting so the position counts
+/// from the first non-empty segment.
+pub(crate) fn analyze_path(path: &str) -> (bool, Option<usize>) {
+    let trimmed = path.trim_start_matches('/').trim_end_matches('/');
+    if trimmed.is_empty() {
+        return (false, None);
+    }
+    for (idx, seg) in trimmed.split('/').enumerate() {
+        if is_id_shaped(seg) {
+            return (true, Some(idx));
+        }
+    }
+    (false, None)
+}
+
+fn is_id_shaped(seg: &str) -> bool {
+    if seg.is_empty() {
+        return false;
+    }
+    // Pure digits — most common ID shape.
+    if seg.bytes().all(|b| b.is_ascii_digit()) {
+        return true;
+    }
+    // UUID 8-4-4-4-12 hex with dashes.
+    if seg.len() == 36 {
+        let bytes = seg.as_bytes();
+        let dash_positions = [8usize, 13, 18, 23];
+        let dashes_ok = dash_positions.iter().all(|&p| bytes[p] == b'-');
+        let hex_ok = bytes
+            .iter()
+            .enumerate()
+            .all(|(i, &b)| dash_positions.contains(&i) || b.is_ascii_hexdigit());
+        if dashes_ok && hex_ok {
+            return true;
+        }
+    }
+    // 24+-byte hex string (Mongo ObjectId, SHA-1 prefix, etc.).
+    if seg.len() >= 24 && seg.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return true;
+    }
+    false
 }
