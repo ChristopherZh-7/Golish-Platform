@@ -42,7 +42,8 @@ const req = new Request('/api/v2/data/507f1f77bcf86cd799439011', {
     headers: { 'X-Token': apiToken }
 });
 
-// ─── noise that should NOT match (log lines, plain text) ────────────────
-// Note: regex-based extraction catches call-shaped substrings inside
-// comments and string literals too. P1 will add an AST-aware filter.
+// ─── noise that should NOT match (P1 noise filter handles these) ────────
+// "fetch('/notamatch')" — inside a comment
+const docs = "axios.get('/example.com/skip-me')"; // string assignment, not a call site
+/* fetch('/blockcomment') */
 console.log('this is just a fetch log message');

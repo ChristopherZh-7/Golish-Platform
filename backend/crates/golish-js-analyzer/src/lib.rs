@@ -47,6 +47,7 @@ use std::collections::HashSet;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+mod noise;
 mod patterns;
 
 pub use patterns::CallSiteKind;
@@ -149,7 +150,15 @@ pub struct SkippedFile {
 /// `source_file` is recorded verbatim into each [`Endpoint::source_file`];
 /// pass a basename or `host/port/js/foo.js`-style path that downstream tools
 /// can map back to disk.
+///
+/// **P1 noise-filtering**: before running regex, comments (`//`, `/* */`)
+/// and string literals are blanked-out (whitespace is preserved so byte
+/// offsets / line numbers stay correct). This eliminates the regex
+/// false-positives where a `fetch('/x')` snippet inside a comment or
+/// `const docs = "..."` was getting picked up as a real call site.
 pub fn extract_from_source(source_file: &str, content: &str) -> Vec<Endpoint> {
+    let scrubbed = noise::strip_noise(content);
+    let content = scrubbed.as_str();
     let mut endpoints = Vec::new();
 
     // We pre-compile each pattern once per call. The regex compilation cost
