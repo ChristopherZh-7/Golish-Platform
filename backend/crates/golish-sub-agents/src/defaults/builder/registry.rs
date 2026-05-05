@@ -184,7 +184,8 @@ pub async fn create_default_sub_agents_from_registry(
             tmpl_or_fallback!("browser", build_browser_prompt()),
         )
         .with_tools(vec![
-            "js_collect".into(), "web_fetch".into(), "web_search".into(),
+            "js_collect".into(), "js_extract_apis".into(),
+            "web_fetch".into(), "web_search".into(),
             "read_file".into(), "write_file".into(), "grep_file".into(), "record_finding".into(),
         ])
         .with_max_iterations(20).with_timeout(300).with_idle_timeout(120),
