@@ -44,6 +44,7 @@ golish-indexer = { path = "../golish-indexer" }
 golish-db = { path = "../golish-db" }
 golish-graphiti = { path = "../golish-graphiti" }
 golish-js-analyzer = { workspace = true }
+golish-auth-probe = { workspace = true }
 vtcode-indexer = { workspace = true }
 
 # Agent runtime stack (A3: replaced the `golish-ai` umbrella with direct deps)
