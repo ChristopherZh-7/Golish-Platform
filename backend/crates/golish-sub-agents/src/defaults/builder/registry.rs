@@ -88,6 +88,7 @@ pub async fn create_default_sub_agents_from_registry(
             "list_directory".into(), "list_files".into(), "grep_file".into(),
             "search_memories".into(), "run_pipeline".into(), "flow_compose".into(),
             "manage_targets".into(), "record_finding".into(), "vault".into(),
+            "js_extract_apis".into(), "auth_probe".into(),
             "pentest_list_tools".into(), "pentest_run".into(), "graph_search".into(),
             "graph_add_entity".into(), "graph_add_relation".into(), "graph_attack_paths".into(),
             "search_exploits".into(), "search_knowledge_base".into(), "read_knowledge".into(),
