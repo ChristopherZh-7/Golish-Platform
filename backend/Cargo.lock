@@ -2676,6 +2676,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "golish-auth-probe"
+version = "0.2.43"
+dependencies = [
+ "anyhow",
+ "golish-js-analyzer",
+ "reqwest 0.13.3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "golish-benchmarks"
 version = "0.2.43"
 dependencies = [

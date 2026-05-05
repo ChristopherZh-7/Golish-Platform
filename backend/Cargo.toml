@@ -44,6 +44,7 @@ members = [
     "crates/golish-graphiti",
     "crates/golish-prompts",
     "crates/golish-js-analyzer",
+    "crates/golish-auth-probe",
 ]
 # Default members for fast inner-loop development (excludes Tauri app, evals, benchmarks)
 default-members = [
@@ -86,6 +87,7 @@ default-members = [
     "crates/golish-graphiti",
     "crates/golish-prompts",
     "crates/golish-js-analyzer",
+    "crates/golish-auth-probe",
 ]
 resolver = "2"
 
@@ -137,6 +139,7 @@ golish-db = { path = "crates/golish-db" }
 golish-graphiti = { path = "crates/golish-graphiti" }
 golish-prompts = { path = "crates/golish-prompts" }
 golish-js-analyzer = { path = "crates/golish-js-analyzer" }
+golish-auth-probe = { path = "crates/golish-auth-probe" }
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate"] }
@@ -210,7 +213,7 @@ dotenvy = "0.15"
 tavily = "0.2"
 
 # Web fetching and content extraction
-reqwest = { version = "0.13", features = ["json"] }
+reqwest = { version = "0.13", features = ["json", "socks"] }
 readability = { version = "0.3", default-features = false }
 url = "2.5"
 
