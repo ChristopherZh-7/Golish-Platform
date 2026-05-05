@@ -47,6 +47,7 @@ use std::collections::HashSet;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+mod ast_filter;
 mod noise;
 mod patterns;
 
@@ -157,6 +158,19 @@ pub struct SkippedFile {
 /// false-positives where a `fetch('/x')` snippet inside a comment or
 /// `const docs = "..."` was getting picked up as a real call site.
 pub fn extract_from_source(source_file: &str, content: &str) -> Vec<Endpoint> {
+    // P2: probe whether the source contains tree-sitter-confirmed call
+    // sites. This currently only emits a debug log — switching it to a
+    // byte-range filter is the natural next step once the Doc range API
+    // is plumbed through; for now the noise filter handles the bulk of
+    // false-positives on its own.
+    if let Some(false) = ast_filter::source_has_real_calls(content) {
+        tracing::debug!(
+            "[js-analyzer] {} parsed cleanly but contains no JS call expressions; \
+             regex matches (if any) are highly suspect",
+            source_file
+        );
+    }
+
     let scrubbed = noise::strip_noise(content);
     let content = scrubbed.as_str();
     let mut endpoints = Vec::new();

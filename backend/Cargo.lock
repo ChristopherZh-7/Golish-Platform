@@ -2844,6 +2844,8 @@ name = "golish-js-analyzer"
 version = "0.2.43"
 dependencies = [
  "anyhow",
+ "ast-grep-core",
+ "ast-grep-language",
  "pretty_assertions",
  "regex",
  "serde",
