@@ -67,6 +67,27 @@ pub enum AuthHint {
     Unknown,
 }
 
+/// Shape of the URL captured from source.
+///
+/// `auth_probe` (Stage 2) reads this to decide whether it can safely
+/// substitute a path ID for cross-user IDOR testing:
+/// - `Literal`: full path is a string constant — safe to test as-is.
+/// - `Concatenated`: path is a prefix followed by `+ var` — the variable is
+///   conventionally an ID; substitute by appending a different user's ID.
+/// - `TemplateLiteral`: path contains `${...}` interpolation — substitute
+///   by replacing inside the placeholder when its position is known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UrlKind {
+    /// `'/api/users'` — whole path is a string literal.
+    #[default]
+    Literal,
+    /// `'/api/users/' + userId` — path prefix concatenated with a variable.
+    Concatenated,
+    /// `` `/api/users/${id}` `` — template literal with `${...}` placeholder.
+    TemplateLiteral,
+}
+
 /// One extracted API call-site.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Endpoint {
@@ -87,6 +108,20 @@ pub struct Endpoint {
     pub confidence: f32,
     /// Which family this endpoint was caught by.
     pub kind: CallSiteKind,
+    /// Shape of the URL — see [`UrlKind`].
+    #[serde(default)]
+    pub url_kind: UrlKind,
+    /// `true` when the path contains an ID-shaped segment (numeric, UUID,
+    /// or 24+-byte hex) — strong signal that `auth_probe` cross-user
+    /// scenario is applicable.
+    #[serde(default)]
+    pub has_path_params: bool,
+    /// 0-based index (within `/`-split segments) of the first ID-shaped
+    /// segment, when `has_path_params` is true. `None` for `Concatenated`
+    /// or `TemplateLiteral` URLs whose ID position depends on runtime
+    /// values not visible to the static analyzer.
+    #[serde(default)]
+    pub id_param_position: Option<usize>,
 }
 
 /// Aggregated extraction result for one or more JS files.
@@ -126,8 +161,43 @@ pub fn extract_from_source(source_file: &str, content: &str) -> Vec<Endpoint> {
     let axios_config_re = Regex::new(patterns::AXIOS_CONFIG).expect("AXIOS_CONFIG regex valid");
     let jquery_re = Regex::new(patterns::JQUERY_AJAX).expect("JQUERY_AJAX regex valid");
     let new_request_re = Regex::new(patterns::NEW_REQUEST).expect("NEW_REQUEST regex valid");
+    let fetch_concat_re =
+        Regex::new(patterns::FETCH_CONCAT).expect("FETCH_CONCAT regex valid");
+    let fetch_template_re =
+        Regex::new(patterns::FETCH_TEMPLATE).expect("FETCH_TEMPLATE regex valid");
 
+    // Order matters: run the concat / template patterns first and remember
+    // their match offsets so the plain-`fetch` pattern doesn't re-emit the
+    // same call site as a Literal. Otherwise `fetch('/api/' + id)` would
+    // produce two endpoints — one Concatenated, one Literal with truncated
+    // path.
+    let mut shadowed_offsets: std::collections::HashSet<usize> =
+        std::collections::HashSet::new();
+
+    for cap in fetch_concat_re.captures_iter(content) {
+        if let Some(m) = cap.get(0) {
+            shadowed_offsets.insert(m.start());
+        }
+        if let Some(ep) = patterns::endpoint_from_fetch_concat(&cap, content, source_file) {
+            endpoints.push(ep);
+        }
+    }
+    for cap in fetch_template_re.captures_iter(content) {
+        if let Some(m) = cap.get(0) {
+            shadowed_offsets.insert(m.start());
+        }
+        if let Some(ep) = patterns::endpoint_from_fetch_template(&cap, content, source_file) {
+            endpoints.push(ep);
+        }
+    }
     for cap in fetch_re.captures_iter(content) {
+        // Skip plain-fetch matches whose start collides with a concat /
+        // template match we've already recorded.
+        if let Some(m) = cap.get(0) {
+            if shadowed_offsets.contains(&m.start()) {
+                continue;
+            }
+        }
         if let Some(ep) = patterns::endpoint_from_fetch(&cap, content, source_file) {
             endpoints.push(ep);
         }
@@ -305,5 +375,105 @@ mod tests {
         assert!(report.endpoints.is_empty());
         assert_eq!(report.skipped.len(), 1);
         assert!(report.skipped[0].reason.contains("no recognized"));
+    }
+
+    // ─── path-shape inference ───────────────────────────────────────────
+
+    #[test]
+    fn path_with_numeric_id_marks_path_params() {
+        let src = r#"axios.get('/api/users/123')"#;
+        let eps = extract_from_source("a.js", src);
+        assert_eq!(eps.len(), 1);
+        assert!(eps[0].has_path_params);
+        // segments: ["api", "users", "123"] — 0-based, "123" is at idx 2
+        assert_eq!(eps[0].id_param_position, Some(2));
+        assert_eq!(eps[0].url_kind, UrlKind::Literal);
+    }
+
+    #[test]
+    fn path_with_uuid_marks_path_params() {
+        let src = r#"fetch('/items/550e8400-e29b-41d4-a716-446655440000')"#;
+        let eps = extract_from_source("a.js", src);
+        assert_eq!(eps.len(), 1);
+        assert!(eps[0].has_path_params);
+        assert_eq!(eps[0].id_param_position, Some(1));
+    }
+
+    #[test]
+    fn path_with_mongo_objectid_marks_path_params() {
+        let src = r#"fetch('/orders/507f1f77bcf86cd799439011')"#;
+        let eps = extract_from_source("a.js", src);
+        assert_eq!(eps.len(), 1);
+        assert!(eps[0].has_path_params);
+        assert_eq!(eps[0].id_param_position, Some(1));
+    }
+
+    #[test]
+    fn path_without_id_segments_clears_flag() {
+        let src = r#"fetch('/api/health')"#;
+        let eps = extract_from_source("a.js", src);
+        assert_eq!(eps.len(), 1);
+        assert!(!eps[0].has_path_params);
+        assert_eq!(eps[0].id_param_position, None);
+    }
+
+    // ─── concatenated URLs ──────────────────────────────────────────────
+
+    #[test]
+    fn fetch_concat_recognized_as_concatenated() {
+        let src = r#"fetch('/api/users/' + userId)"#;
+        let eps = extract_from_source("a.js", src);
+        assert_eq!(eps.len(), 1, "concat should not double-emit a literal too");
+        assert_eq!(eps[0].url_kind, UrlKind::Concatenated);
+        assert_eq!(eps[0].path, "/api/users/");
+        assert!(eps[0].has_path_params);
+        assert_eq!(eps[0].id_param_position, Some(2));
+    }
+
+    #[test]
+    fn fetch_concat_with_method() {
+        let src = r#"
+            fetch('/api/orders/' + orderId, { method: 'DELETE' });
+        "#;
+        let eps = extract_from_source("a.js", src);
+        assert_eq!(eps.len(), 1);
+        assert_eq!(eps[0].method, "DELETE");
+        assert_eq!(eps[0].url_kind, UrlKind::Concatenated);
+    }
+
+    // ─── template literal URLs ──────────────────────────────────────────
+
+    #[test]
+    fn fetch_template_recognized_as_template_literal() {
+        let src = r#"fetch(`/api/users/${id}/posts`)"#;
+        let eps = extract_from_source("a.js", src);
+        assert_eq!(eps.len(), 1, "template should not double-emit");
+        assert_eq!(eps[0].url_kind, UrlKind::TemplateLiteral);
+        assert!(eps[0].path.contains("${id}"));
+        assert!(eps[0].has_path_params);
+        // segments: ["api", "users", "${id}", "posts"] — `${` is at idx 2
+        assert_eq!(eps[0].id_param_position, Some(2));
+    }
+
+    #[test]
+    fn fetch_template_with_method_in_init() {
+        let src = r#"
+            fetch(`/api/items/${itemId}`, { method: 'PUT' })
+        "#;
+        let eps = extract_from_source("a.js", src);
+        assert_eq!(eps.len(), 1);
+        assert_eq!(eps[0].method, "PUT");
+        assert_eq!(eps[0].url_kind, UrlKind::TemplateLiteral);
+    }
+
+    #[test]
+    fn plain_fetch_still_marked_literal() {
+        // Sanity: existing literal call sites must keep UrlKind::Literal
+        // even after the concat/template patterns are introduced.
+        let src = r#"fetch('/api/me')"#;
+        let eps = extract_from_source("a.js", src);
+        assert_eq!(eps.len(), 1);
+        assert_eq!(eps[0].url_kind, UrlKind::Literal);
+        assert!(!eps[0].has_path_params);
     }
 }
