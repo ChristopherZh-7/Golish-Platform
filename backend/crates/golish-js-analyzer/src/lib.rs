@@ -158,11 +158,13 @@ pub struct SkippedFile {
 /// false-positives where a `fetch('/x')` snippet inside a comment or
 /// `const docs = "..."` was getting picked up as a real call site.
 pub fn extract_from_source(source_file: &str, content: &str) -> Vec<Endpoint> {
-    // P2: probe whether the source contains tree-sitter-confirmed call
-    // sites. This currently only emits a debug log — switching it to a
-    // byte-range filter is the natural next step once the Doc range API
-    // is plumbed through; for now the noise filter handles the bulk of
-    // false-positives on its own.
+    // P2: pre-compute byte ranges of every tree-sitter-confirmed
+    // call_expression / new_expression. Endpoints whose match offset
+    // falls outside ALL of these ranges are filtered out as
+    // false-positives at the very end. `None` here means tree-sitter
+    // bailed (heavily-minified or corrupted source) — we degrade
+    // gracefully and accept all regex matches.
+    let ast_ranges = ast_filter::call_site_ranges(content);
     if let Some(false) = ast_filter::source_has_real_calls(content) {
         tracing::debug!(
             "[js-analyzer] {} parsed cleanly but contains no JS call expressions; \
@@ -172,8 +174,8 @@ pub fn extract_from_source(source_file: &str, content: &str) -> Vec<Endpoint> {
     }
 
     let scrubbed = noise::strip_noise(content);
-    let content = scrubbed.as_str();
-    let mut endpoints = Vec::new();
+    let scrubbed_str = scrubbed.as_str();
+    let mut hits: Vec<(usize, Endpoint)> = Vec::new();
 
     // We pre-compile each pattern once per call. The regex compilation cost
     // is small (~1 ms total), so caching across calls is not worth the
@@ -197,54 +199,81 @@ pub fn extract_from_source(source_file: &str, content: &str) -> Vec<Endpoint> {
     let mut shadowed_offsets: std::collections::HashSet<usize> =
         std::collections::HashSet::new();
 
-    for cap in fetch_concat_re.captures_iter(content) {
-        if let Some(m) = cap.get(0) {
-            shadowed_offsets.insert(m.start());
-        }
-        if let Some(ep) = patterns::endpoint_from_fetch_concat(&cap, content, source_file) {
-            endpoints.push(ep);
-        }
-    }
-    for cap in fetch_template_re.captures_iter(content) {
-        if let Some(m) = cap.get(0) {
-            shadowed_offsets.insert(m.start());
-        }
-        if let Some(ep) = patterns::endpoint_from_fetch_template(&cap, content, source_file) {
-            endpoints.push(ep);
-        }
-    }
-    for cap in fetch_re.captures_iter(content) {
-        // Skip plain-fetch matches whose start collides with a concat /
-        // template match we've already recorded.
-        if let Some(m) = cap.get(0) {
-            if shadowed_offsets.contains(&m.start()) {
-                continue;
+    for cap in fetch_concat_re.captures_iter(scrubbed_str) {
+        let off = match cap.get(0) {
+            Some(m) => {
+                shadowed_offsets.insert(m.start());
+                m.start()
             }
-        }
-        if let Some(ep) = patterns::endpoint_from_fetch(&cap, content, source_file) {
-            endpoints.push(ep);
-        }
-    }
-    for cap in axios_verb_re.captures_iter(content) {
-        if let Some(ep) = patterns::endpoint_from_axios_verb(&cap, content, source_file) {
-            endpoints.push(ep);
+            None => continue,
+        };
+        if let Some(ep) = patterns::endpoint_from_fetch_concat(&cap, scrubbed_str, source_file) {
+            hits.push((off, ep));
         }
     }
-    for cap in axios_config_re.captures_iter(content) {
-        if let Some(ep) = patterns::endpoint_from_axios_config(&cap, content, source_file) {
-            endpoints.push(ep);
+    for cap in fetch_template_re.captures_iter(scrubbed_str) {
+        let off = match cap.get(0) {
+            Some(m) => {
+                shadowed_offsets.insert(m.start());
+                m.start()
+            }
+            None => continue,
+        };
+        if let Some(ep) = patterns::endpoint_from_fetch_template(&cap, scrubbed_str, source_file) {
+            hits.push((off, ep));
         }
     }
-    for cap in jquery_re.captures_iter(content) {
-        if let Some(ep) = patterns::endpoint_from_jquery(&cap, content, source_file) {
-            endpoints.push(ep);
+    for cap in fetch_re.captures_iter(scrubbed_str) {
+        let off = match cap.get(0) {
+            Some(m) => {
+                if shadowed_offsets.contains(&m.start()) {
+                    continue;
+                }
+                m.start()
+            }
+            None => continue,
+        };
+        if let Some(ep) = patterns::endpoint_from_fetch(&cap, scrubbed_str, source_file) {
+            hits.push((off, ep));
         }
     }
-    for cap in new_request_re.captures_iter(content) {
-        if let Some(ep) = patterns::endpoint_from_new_request(&cap, content, source_file) {
-            endpoints.push(ep);
+    for cap in axios_verb_re.captures_iter(scrubbed_str) {
+        let off = cap.get(0).map(|m| m.start()).unwrap_or(0);
+        if let Some(ep) = patterns::endpoint_from_axios_verb(&cap, scrubbed_str, source_file) {
+            hits.push((off, ep));
         }
     }
+    for cap in axios_config_re.captures_iter(scrubbed_str) {
+        let off = cap.get(0).map(|m| m.start()).unwrap_or(0);
+        if let Some(ep) = patterns::endpoint_from_axios_config(&cap, scrubbed_str, source_file) {
+            hits.push((off, ep));
+        }
+    }
+    for cap in jquery_re.captures_iter(scrubbed_str) {
+        let off = cap.get(0).map(|m| m.start()).unwrap_or(0);
+        if let Some(ep) = patterns::endpoint_from_jquery(&cap, scrubbed_str, source_file) {
+            hits.push((off, ep));
+        }
+    }
+    for cap in new_request_re.captures_iter(scrubbed_str) {
+        let off = cap.get(0).map(|m| m.start()).unwrap_or(0);
+        if let Some(ep) = patterns::endpoint_from_new_request(&cap, scrubbed_str, source_file) {
+            hits.push((off, ep));
+        }
+    }
+
+    // P2 final filter: drop any hit whose byte offset is NOT inside a
+    // tree-sitter-confirmed call_expression / new_expression node.
+    // When `ast_ranges == None` (parser bailed) we keep everything —
+    // graceful degradation.
+    let endpoints: Vec<Endpoint> = if let Some(ref ranges) = ast_ranges {
+        hits.into_iter()
+            .filter(|(off, _)| ranges.contains_offset(*off))
+            .map(|(_, ep)| ep)
+            .collect()
+    } else {
+        hits.into_iter().map(|(_, ep)| ep).collect()
+    };
 
     endpoints
 }
