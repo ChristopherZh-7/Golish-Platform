@@ -2482,6 +2482,7 @@ dependencies = [
  "golish-agent-kit",
  "golish-agent-runtime",
  "golish-artifacts",
+ "golish-auth-probe",
  "golish-benchmarks",
  "golish-cli-output",
  "golish-context",
