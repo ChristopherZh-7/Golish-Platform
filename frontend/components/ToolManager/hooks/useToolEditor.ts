@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { listSkills, readToolConfig, type SkillFileInfo, saveToolConfig } from "@/lib/pentest/api";
 import {
@@ -33,6 +33,11 @@ export function useToolEditor(
   const [editorVisible, setEditorVisible] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const originalJsonRef = useRef("");
+  // Pending close-animation timer. Stored in a ref so a follow-up `openEditor`
+  // call (e.g. user clicks edit on tool B before A's close animation finishes)
+  // can cancel the queued cleanup that would otherwise reset `editingTool` to
+  // null and wipe `skillsList` for the freshly-opened tool.
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Skills state (co-located since it's tied to the editor lifecycle)
   const [skillsList, setSkillsList] = useState<SkillFileInfo[]>([]);
@@ -88,9 +93,15 @@ export function useToolEditor(
   );
 
   const openEditor = useCallback(async (tool: ToolWithMeta) => {
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
     setEditingTool(tool);
     setEditorMode("form");
     setEditorDirty(false);
+    setSkillDirty(false);
+    setSkillsList([]);
     setEditorLoading(true);
     requestAnimationFrame(() => setEditorVisible(true));
     try {
@@ -125,10 +136,23 @@ export function useToolEditor(
 
   const animateClose = useCallback(() => {
     setEditorVisible(false);
-    setTimeout(() => {
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = setTimeout(() => {
+      closeTimerRef.current = null;
       setEditingTool(null);
       setEditorDirty(false);
+      setSkillDirty(false);
+      setSkillsList([]);
     }, 180);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (closeTimerRef.current) {
+        clearTimeout(closeTimerRef.current);
+        closeTimerRef.current = null;
+      }
+    };
   }, []);
 
   const closeEditor = useCallback(() => {

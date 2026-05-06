@@ -19,10 +19,8 @@ export function ContextBar({ sessionId }: ContextBarProps) {
 
   const parentOn = display.showTerminalContext;
   const pathVisible = parentOn && display.showWorkingDirectory;
-  const gitVisible = parentOn && display.showGitBranch;
-  const rowVisible = pathVisible || gitVisible;
 
-  if (!rowVisible) return null;
+  if (!pathVisible && !virtualEnv) return null;
 
   return (
     <div>
@@ -37,8 +35,6 @@ export function ContextBar({ sessionId }: ContextBarProps) {
             <span className="text-muted-foreground">{displayPath}</span>
           </div>
         )}
-
-        {/* Git badge hidden - functionality available via Git panel */}
 
         {/* Virtual env badge — always visible, not gated by display settings */}
         {virtualEnv && (

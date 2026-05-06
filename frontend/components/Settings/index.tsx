@@ -145,9 +145,13 @@ const NAV_ITEM_DEFS: NavItemDef[] = [
 export function SettingsNav({
   activeSection,
   onSectionChange,
+  envIssueCount,
+  mcpIssueCount,
 }: {
   activeSection: string;
   onSectionChange: (section: SettingsSection) => void;
+  envIssueCount?: number;
+  mcpIssueCount?: number;
 }) {
   const { t } = useTranslation();
   return (
@@ -172,6 +176,12 @@ export function SettingsNav({
           >
             <span className={cn(activeSection === item.id ? "text-accent" : "")}>{item.icon}</span>
             <span className="text-[12px] font-medium">{t(item.labelKey)}</span>
+            {item.id === "pentest" && envIssueCount != null && envIssueCount > 0 && (
+              <span className="w-2 h-2 rounded-full bg-amber-500 ml-auto flex-shrink-0" />
+            )}
+            {item.id === "mcp" && mcpIssueCount != null && mcpIssueCount > 0 && (
+              <span className="w-2 h-2 rounded-full bg-amber-500 ml-auto flex-shrink-0" />
+            )}
           </button>
         ))}
       </div>

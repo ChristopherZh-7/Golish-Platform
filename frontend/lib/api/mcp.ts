@@ -49,6 +49,8 @@ export interface McpServerInfo {
   error: string | null;
   /** Source: "builtin" for built-in servers, "user" for ~/.golish/mcp.json, "project" for <project>/.golish/mcp.json */
   source: "builtin" | "user" | "project";
+  /** Setup status for built-in servers */
+  setupStatus: "needs_node" | "needs_build" | "ready" | null;
 }
 
 /**
@@ -200,4 +202,26 @@ export async function isProjectTrusted(projectPath: string): Promise<boolean> {
  */
 export async function trustProjectConfig(projectPath: string): Promise<void> {
   return invoke("mcp_trust_project_config", { projectPath });
+}
+
+// =============================================================================
+// Built-in Server Setup
+// =============================================================================
+
+export interface McpSetupResult {
+  success: boolean;
+  message: string;
+}
+
+/**
+ * Set up a built-in MCP server by installing dependencies and building.
+ *
+ * @param serverName - Name of the built-in server (e.g. "js-reverse")
+ * @param workspacePath - Optional workspace path for config resolution
+ */
+export async function setupBuiltinMcp(
+  serverName: string,
+  workspacePath?: string
+): Promise<McpSetupResult> {
+  return invoke<McpSetupResult>("mcp_setup_builtin", { serverName, workspacePath });
 }

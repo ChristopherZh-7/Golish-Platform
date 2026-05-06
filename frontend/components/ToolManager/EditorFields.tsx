@@ -127,8 +127,13 @@ export function FieldRow({
   const hint = field === "runtimeVersion" ? versionHint(val) : null;
   return (
     <div className="flex flex-col gap-0.5 py-2 px-3 rounded-lg hover:bg-[var(--bg-hover)]/30 transition-colors">
-      <div className="flex items-center gap-3">
-        <span className="text-[12px] text-muted-foreground/60 w-24 flex-shrink-0">{label}</span>
+      <div className="flex items-center gap-3 min-w-0">
+        <span
+          className="text-[12px] text-muted-foreground/60 w-28 flex-shrink-0 truncate"
+          title={label}
+        >
+          {label}
+        </span>
         {type === "select" && options ? (
           <InlineSelect
             value={val}
@@ -142,13 +147,13 @@ export function FieldRow({
             onChange={(e) => ctx.handleFormChange(field, e.target.value)}
             placeholder={placeholder}
             className={cn(
-              "flex-1 h-7 px-2 text-[12px] rounded-md bg-transparent border border-transparent hover:border-border/20 focus:border-accent/40 text-foreground placeholder:text-muted-foreground/20 outline-none transition-colors",
+              "flex-1 min-w-0 h-7 px-2 text-[12px] rounded-md bg-transparent border border-transparent hover:border-border/20 focus:border-accent/40 text-foreground placeholder:text-muted-foreground/20 outline-none transition-colors",
               mono && "font-mono text-[11px]"
             )}
           />
         )}
       </div>
-      {hint && <span className="text-[10px] text-amber-400/70 ml-[calc(6rem+12px)]">{hint}</span>}
+      {hint && <span className="text-[10px] text-amber-400/70 ml-[calc(7rem+12px)]">{hint}</span>}
     </div>
   );
 }
@@ -175,8 +180,13 @@ export function InstallFieldRow({
   const onChange = (v: string) =>
     ctx.handleFormChange("install", { ...install, [subField]: v === "_none" ? "" : v });
   return (
-    <div className="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-[var(--bg-hover)]/30 transition-colors">
-      <span className="text-[12px] text-muted-foreground/60 w-24 flex-shrink-0">{label}</span>
+    <div className="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-[var(--bg-hover)]/30 transition-colors min-w-0">
+      <span
+        className="text-[12px] text-muted-foreground/60 w-28 flex-shrink-0 truncate"
+        title={label}
+      >
+        {label}
+      </span>
       {type === "select" && options ? (
         <InlineSelect value={val} onChange={onChange} options={options} />
       ) : (
@@ -186,7 +196,7 @@ export function InstallFieldRow({
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
           className={cn(
-            "flex-1 h-7 px-2 text-[12px] rounded-md bg-transparent border border-transparent hover:border-border/20 focus:border-accent/40 text-foreground placeholder:text-muted-foreground/20 outline-none transition-colors",
+            "flex-1 min-w-0 h-7 px-2 text-[12px] rounded-md bg-transparent border border-transparent hover:border-border/20 focus:border-accent/40 text-foreground placeholder:text-muted-foreground/20 outline-none transition-colors",
             mono && "font-mono text-[11px]"
           )}
         />

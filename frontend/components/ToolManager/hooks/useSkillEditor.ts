@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   deleteSkill,
   listSkills,
@@ -23,16 +23,33 @@ export function useSkillEditor(opts: UseSkillEditorOptions) {
   const [skillSaving, setSkillSaving] = useState(false);
   const [newSkillName, setNewSkillName] = useState("");
   const [showNewSkill, setShowNewSkill] = useState(false);
+  // Tracks the last known on-disk content so the dirty flag is only set when
+  // the user actually changes something. Milkdown's `markdownUpdated` listener
+  // fires once on mount with a normalized version of the input markdown
+  // (whitespace / trailing newlines may differ); without this baseline we
+  // would falsely report "unsaved changes" the moment the editor mounts.
+  const baselineContentRef = useRef<string>("");
+
+  useEffect(() => {
+    setActiveSkillId(null);
+    setSkillContent("");
+    setShowNewSkill(false);
+    setNewSkillName("");
+    setSkillDirty(false);
+    baselineContentRef.current = "";
+  }, [toolName, setSkillDirty]);
 
   const loadSkillContent = useCallback(
     async (skillId: string) => {
       if (!toolName) return;
       try {
         const content = await readSkill(toolName, skillId);
+        baselineContentRef.current = content;
         setActiveSkillId(skillId);
         setSkillContent(content);
         setSkillDirty(false);
       } catch {
+        baselineContentRef.current = "";
         setActiveSkillId(skillId);
         setSkillContent("");
         setSkillDirty(false);
@@ -46,6 +63,7 @@ export function useSkillEditor(opts: UseSkillEditorOptions) {
     setSkillSaving(true);
     try {
       await writeSkill(toolName, activeSkillId, skillContent);
+      baselineContentRef.current = skillContent;
       setSkillDirty(false);
     } catch (e) {
       console.error("[Skills] Save failed:", e);
@@ -67,6 +85,7 @@ export function useSkillEditor(opts: UseSkillEditorOptions) {
       await writeSkill(toolName, id, template);
       const updated = await listSkills(toolName);
       setSkillsList(updated);
+      baselineContentRef.current = template;
       setActiveSkillId(id);
       setSkillContent(template);
       setSkillDirty(false);
@@ -85,6 +104,7 @@ export function useSkillEditor(opts: UseSkillEditorOptions) {
         const updated = await listSkills(toolName);
         setSkillsList(updated);
         if (activeSkillId === skillId) {
+          baselineContentRef.current = "";
           setActiveSkillId(null);
           setSkillContent("");
           setSkillDirty(false);
@@ -99,7 +119,7 @@ export function useSkillEditor(opts: UseSkillEditorOptions) {
   const updateContent = useCallback(
     (content: string) => {
       setSkillContent(content);
-      setSkillDirty(true);
+      setSkillDirty(content !== baselineContentRef.current);
     },
     [setSkillDirty]
   );

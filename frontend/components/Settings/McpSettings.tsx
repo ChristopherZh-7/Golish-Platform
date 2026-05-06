@@ -1,9 +1,11 @@
 import { open } from "@tauri-apps/plugin-shell";
 import {
   AlertCircle,
+  AlertTriangle,
   Check,
   ChevronDown,
   ChevronRight,
+  Download,
   ExternalLink,
   Loader2,
   Plug,
@@ -13,9 +15,11 @@ import {
   Wrench,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
+import { setupBuiltinMcp } from "@/lib/api/mcp";
 import { onEvent } from "@/lib/events";
 import { logger } from "@/lib/logger";
 import * as mcp from "@/lib/mcp";
@@ -27,12 +31,14 @@ interface McpSettingsProps {
 }
 
 export function McpSettings({ workspacePath }: McpSettingsProps) {
+  const { t } = useTranslation();
   const [servers, setServers] = useState<mcp.McpServerInfo[]>([]);
   const [tools, setTools] = useState<mcp.McpToolInfo[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [expandedServers, setExpandedServers] = useState<Set<string>>(new Set());
   const [connectingServers, setConnectingServers] = useState<Set<string>>(new Set());
   const [disconnectingServers, setDisconnectingServers] = useState<Set<string>>(new Set());
+  const [settingUpServers, setSettingUpServers] = useState<Set<string>>(new Set());
 
   // Load servers and tools
   const loadData = useCallback(async () => {
@@ -119,6 +125,31 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
       }
     },
     [loadData]
+  );
+
+  const handleSetup = useCallback(
+    async (serverName: string) => {
+      setSettingUpServers((prev) => new Set(prev).add(serverName));
+      try {
+        const result = await setupBuiltinMcp(serverName, workspacePath);
+        if (result.success) {
+          notify.success(t("mcp.setupComplete", { name: serverName }));
+          await loadData();
+        } else {
+          notify.error(result.message);
+        }
+      } catch (err) {
+        logger.error(`Failed to setup ${serverName}:`, err);
+        notify.error(err instanceof Error ? err.message : `Setup failed for ${serverName}`);
+      } finally {
+        setSettingUpServers((prev) => {
+          const next = new Set(prev);
+          next.delete(serverName);
+          return next;
+        });
+      }
+    },
+    [loadData, workspacePath, t]
   );
 
   // Toggle server expansion
@@ -216,6 +247,16 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
           <code className="text-accent">&lt;project&gt;/.golish/mcp.json</code> (project-specific).
         </p>
       </div>
+
+      {/* Node.js warning for built-in servers */}
+      {servers.some((s) => (s as mcp.McpServerInfo & { setupStatus?: string }).setupStatus === "needs_node") && (
+        <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg border border-amber-500/20 bg-amber-500/5">
+          <AlertTriangle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+          <span className="text-[11px] text-amber-300/90">
+            {t("mcp.nodeRequired")}
+          </span>
+        </div>
+      )}
 
       {/* Server list */}
       {servers.length === 0 ? (
@@ -321,6 +362,23 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
                         )}
                         <span className="ml-2">Disconnect</span>
                       </Button>
+                    ) : (server as mcp.McpServerInfo & { setupStatus?: string }).setupStatus === "needs_build" ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleSetup(server.name)}
+                        disabled={settingUpServers.has(server.name)}
+                        className="text-accent border-accent/30"
+                      >
+                        {settingUpServers.has(server.name) ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Download className="w-4 h-4" />
+                        )}
+                        <span className="ml-2">{settingUpServers.has(server.name) ? t("common.loading") : t("common.install")}</span>
+                      </Button>
+                    ) : (server as mcp.McpServerInfo & { setupStatus?: string }).setupStatus === "needs_node" ? (
+                      <span className="text-[10px] text-amber-400">{t("mcp.needsNode")}</span>
                     ) : (
                       <Button
                         variant="outline"

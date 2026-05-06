@@ -240,32 +240,22 @@ describe("AppearanceSettings", () => {
       expect(screen.getByText("Hide AI Settings in Shell Mode")).toBeInTheDocument();
     });
 
-    it("should render Tab Bar parent toggle", () => {
+    it("should render the simplified Tab Bar group", () => {
       render(<AppearanceSettings />);
       expect(screen.getByText("Tab Bar")).toBeInTheDocument();
-    });
-
-    it("should render Tab Bar child toggles", () => {
-      render(<AppearanceSettings />);
       expect(screen.getByText("Home Tab")).toBeInTheDocument();
-      expect(screen.getByText("File Editor")).toBeInTheDocument();
-      expect(screen.getByText("Session History")).toBeInTheDocument();
-      expect(screen.getByRole("switch", { name: "Settings" })).toBeInTheDocument();
-      expect(screen.getByText("Notification Bell")).toBeInTheDocument();
     });
 
-    it("should render Context Bar parent toggle and children", () => {
+    it("should render Context Bar parent toggle and child", () => {
       render(<AppearanceSettings />);
       expect(screen.getByText("Context Bar")).toBeInTheDocument();
       expect(screen.getByText("Working Directory")).toBeInTheDocument();
-      expect(screen.getByText("Git Branch")).toBeInTheDocument();
     });
 
-    it("should render Status Bar parent toggle and children", () => {
+    it("should render Status Indicators group", () => {
       render(<AppearanceSettings />);
-      expect(screen.getByText("Status Bar")).toBeInTheDocument();
+      expect(screen.getByText("Status Indicators")).toBeInTheDocument();
       expect(screen.getByText("Input Mode Toggle")).toBeInTheDocument();
-      expect(screen.getByText("Status & Model Badge")).toBeInTheDocument();
       expect(screen.getByText("Token Usage")).toBeInTheDocument();
       expect(screen.getByText("MCP Servers Badge")).toBeInTheDocument();
     });
@@ -281,27 +271,7 @@ describe("AppearanceSettings", () => {
       expect(useStore.getState().displaySettings.hideAiSettingsInShellMode).toBe(true);
     });
 
-    it("should turn off Tab Bar and all children when parent is toggled off", async () => {
-      const user = userEvent.setup();
-      render(<AppearanceSettings />);
-
-      // Tab Bar should be on by default
-      const tabBarToggle = screen.getByRole("switch", { name: "Tab Bar" });
-      expect(tabBarToggle).toHaveAttribute("aria-checked", "true");
-
-      // Toggle it off
-      await user.click(tabBarToggle);
-
-      const state = useStore.getState().displaySettings;
-      expect(state.showTabBar).toBe(false);
-      expect(state.showHomeTab).toBe(false);
-      expect(state.showFileEditorButton).toBe(false);
-      expect(state.showHistoryButton).toBe(false);
-      expect(state.showSettingsButton).toBe(false);
-      expect(state.showNotificationBell).toBe(false);
-    });
-
-    it("should turn off Context Bar and all children when parent is toggled off", async () => {
+    it("should turn off Context Bar and its child when parent is toggled off", async () => {
       const user = userEvent.setup();
       render(<AppearanceSettings />);
 
@@ -313,27 +283,9 @@ describe("AppearanceSettings", () => {
       const state = useStore.getState().displaySettings;
       expect(state.showTerminalContext).toBe(false);
       expect(state.showWorkingDirectory).toBe(false);
-      expect(state.showGitBranch).toBe(false);
     });
 
-    it("should turn off Status Bar and all children when parent is toggled off", async () => {
-      const user = userEvent.setup();
-      render(<AppearanceSettings />);
-
-      const statusBarToggle = screen.getByRole("switch", { name: "Status Bar" });
-      expect(statusBarToggle).toHaveAttribute("aria-checked", "true");
-
-      await user.click(statusBarToggle);
-
-      const state = useStore.getState().displaySettings;
-      expect(state.showStatusBar).toBe(false);
-      expect(state.showInputModeToggle).toBe(false);
-      expect(state.showStatusBadge).toBe(false);
-      expect(state.showContextUsage).toBe(false);
-      expect(state.showMcpBadge).toBe(false);
-    });
-
-    it("should toggle individual child settings independently", async () => {
+    it("should toggle individual settings independently", async () => {
       const user = userEvent.setup();
       render(<AppearanceSettings />);
 
@@ -343,7 +295,7 @@ describe("AppearanceSettings", () => {
       await user.click(homeTabToggle);
       expect(useStore.getState().displaySettings.showHomeTab).toBe(false);
       // Other settings remain true
-      expect(useStore.getState().displaySettings.showFileEditorButton).toBe(true);
+      expect(useStore.getState().displaySettings.showInputModeToggle).toBe(true);
     });
 
     it("should show 'Show all' button that enables all visibility settings", async () => {
@@ -352,9 +304,9 @@ describe("AppearanceSettings", () => {
       // First hide everything
       useStore.getState().setDisplaySettings({
         ...defaultDisplaySettings,
-        showTabBar: false,
         showHomeTab: false,
-        showStatusBar: false,
+        showTerminalContext: false,
+        showInputModeToggle: false,
       });
 
       render(<AppearanceSettings />);
@@ -363,10 +315,9 @@ describe("AppearanceSettings", () => {
       await user.click(showAllBtn);
 
       const state = useStore.getState().displaySettings;
-      expect(state.showTabBar).toBe(true);
       expect(state.showHomeTab).toBe(true);
-      expect(state.showStatusBar).toBe(true);
       expect(state.showTerminalContext).toBe(true);
+      expect(state.showInputModeToggle).toBe(true);
     });
 
     it("should show 'Hide all' button that disables all visibility settings", async () => {
@@ -377,11 +328,11 @@ describe("AppearanceSettings", () => {
       await user.click(hideAllBtn);
 
       const state = useStore.getState().displaySettings;
-      expect(state.showTabBar).toBe(false);
       expect(state.showHomeTab).toBe(false);
-      expect(state.showFileEditorButton).toBe(false);
       expect(state.showTerminalContext).toBe(false);
-      expect(state.showStatusBar).toBe(false);
+      expect(state.showWorkingDirectory).toBe(false);
+      expect(state.showInputModeToggle).toBe(false);
+      expect(state.showContextUsage).toBe(false);
       expect(state.showMcpBadge).toBe(false);
     });
 
@@ -391,8 +342,8 @@ describe("AppearanceSettings", () => {
       // Change some settings
       useStore.getState().setDisplaySettings({
         ...defaultDisplaySettings,
-        showTabBar: false,
-        showStatusBar: false,
+        showHomeTab: false,
+        showInputModeToggle: false,
         hideAiSettingsInShellMode: true,
       });
 
@@ -415,18 +366,10 @@ describe("AppearanceSettings", () => {
     it("should disable 'Hide all' when all visibility settings are already hidden", () => {
       useStore.getState().setDisplaySettings({
         ...defaultDisplaySettings,
-        showTabBar: false,
         showHomeTab: false,
-        showFileEditorButton: false,
-        showHistoryButton: false,
-        showSettingsButton: false,
-        showNotificationBell: false,
         showTerminalContext: false,
         showWorkingDirectory: false,
-        showGitBranch: false,
-        showStatusBar: false,
         showInputModeToggle: false,
-        showStatusBadge: false,
         showContextUsage: false,
         showMcpBadge: false,
       });
@@ -441,7 +384,7 @@ describe("AppearanceSettings", () => {
 
       useStore.getState().setDisplaySettings({
         ...defaultDisplaySettings,
-        showTabBar: false,
+        showHomeTab: false,
         hideAiSettingsInShellMode: true,
       });
 

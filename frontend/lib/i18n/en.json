@@ -144,6 +144,7 @@
     "executable": "Executable",
     "runtimeLabel": "Runtime",
     "runtimeVersion": "Version",
+    "launchModeLabel": "Launch Mode",
     "uiLabel": "UI",
     "installMethodLabel": "Install Method",
     "source": "Source",
@@ -670,5 +671,23 @@
     "phishing": "Phishing",
     "payload": "Payload Generation",
     "report": "Report Generation"
+  },
+  "setupHealth": {
+    "title": "Environment Check",
+    "dismiss": "Dismiss",
+    "toolsMissing": "{{count}} essential tools not installed",
+    "toolsMissingDetail": "Essential / Recommended tier",
+    "goToolManager": "Tool Manager",
+    "runtimesMissing": "{{count}} runtimes not installed",
+    "goSettings": "Settings",
+    "mcpFailing": "{{count}} MCP servers disconnected",
+    "mcpFailingDetail": "{{total}} configured",
+    "recheck": "Recheck"
+  },
+  "mcp": {
+    "nodeRequired": "Some built-in servers require Node.js. Install it in Settings > Environment first.",
+    "needsNode": "Needs Node.js",
+    "setupComplete": "{{name}} setup complete",
+    "setupInProgress": "Setting up..."
   }
 }
