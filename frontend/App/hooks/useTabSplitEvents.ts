@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { findingsApi } from "@/lib/api/findings";
 import { detectTool, parse as parseToolOutput } from "@/lib/api/output-parser";
 import { createDetached } from "@/lib/api/window";
+import { logAudit } from "@/lib/audit";
 import { onEvent } from "@/lib/events";
 import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
@@ -79,6 +80,11 @@ export function useTabSplitEvents({
             if (added > 0) {
               notify.success(`${detected.tool_name}: ${added} findings imported`);
             }
+            logAudit({
+              action: "findings_imported",
+              category: "findings",
+              details: `${detected.tool_name} 自动导入 ${added}/${vulnItems.length} 条 finding`,
+            });
           }
         }
       } catch {

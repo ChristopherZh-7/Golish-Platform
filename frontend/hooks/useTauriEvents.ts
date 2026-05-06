@@ -3,28 +3,22 @@ import { useEffect } from "react";
 import { isAiSessionInitialized, updateAiWorkspace } from "@/lib/ai";
 import { getGitBranch, gitStatus } from "@/lib/api/git";
 import { ptyGetForegroundProcess } from "@/lib/api/pty";
+import { onEvent } from "@/lib/events";
 import { addCommandHistory } from "@/lib/history";
 import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
 import { runTauriUnlistenFn } from "@/lib/run-tauri-unlisten";
 import { getSettings } from "@/lib/settings";
-import { listen } from "@/lib/tauri-listen";
 import { liveTerminalManager, virtualTerminalManager } from "@/lib/terminal";
 import { _drainOutputBufferSize, useStore } from "@/store";
 import {
-  type AlternateScreenEvent,
   BUILTIN_FULLTERM_COMMANDS,
-  type CommandBlockEvent,
-  type DirectoryChangedEvent,
   extractProcessName,
   GIT_STATUS_POLL_INTERVAL_MS,
   isFastCommand,
   PROCESS_DETECTION_DELAY_MS,
-  type SessionEndedEvent,
   SHELL_PROCESSES,
   shouldRefreshGitInfo,
-  type TerminalOutputEvent,
-  type VirtualEnvChangedEvent,
 } from "./tauri-event-types";
 
 let activeGeneration = 0;
@@ -96,9 +90,9 @@ export function useTauriEvents() {
 
     // Command block events
     unlisteners.push(
-      listen<CommandBlockEvent>("command_block", (event) => {
+      onEvent("command_block", (payload) => {
         if (isStale()) return;
-        const { session_id, command, exit_code, event_type } = event.payload;
+        const { session_id, command, exit_code, event_type } = payload;
         const state = store.getState();
 
         switch (event_type) {
@@ -231,11 +225,10 @@ export function useTauriEvents() {
       })
     );
 
-    // Terminal output
     unlisteners.push(
-      listen<TerminalOutputEvent>("terminal_output", (event) => {
+      onEvent("terminal_output", (payload) => {
         if (isStale()) return;
-        const { session_id, data } = event.payload;
+        const { session_id, data } = payload;
         logger.debug("[output-trace] terminal_output received", {
           session_id: session_id.slice(0, 8),
           bytes: data.length,
@@ -247,11 +240,10 @@ export function useTauriEvents() {
       })
     );
 
-    // Directory changed
     unlisteners.push(
-      listen<DirectoryChangedEvent>("directory_changed", async (event) => {
+      onEvent("directory_changed", async (payload) => {
         if (isStale()) return;
-        const { session_id, path } = event.payload;
+        const { session_id, path } = payload;
         const state = store.getState();
 
         state.updateWorkingDirectory(session_id, path);
@@ -275,27 +267,24 @@ export function useTauriEvents() {
       })
     );
 
-    // Virtual environment changed
     unlisteners.push(
-      listen<VirtualEnvChangedEvent>("virtual_env_changed", (event) => {
+      onEvent("virtual_env_changed", (payload) => {
         if (isStale()) return;
-        store.getState().updateVirtualEnv(event.payload.session_id, event.payload.name);
+        store.getState().updateVirtualEnv(payload.session_id, payload.name);
       })
     );
 
-    // Session ended
     unlisteners.push(
-      listen<SessionEndedEvent>("session_ended", (event) => {
+      onEvent("session_ended", (payload) => {
         if (isStale()) return;
-        store.getState().removeSession(event.payload.sessionId);
+        store.getState().removeSession(payload.sessionId);
       })
     );
 
-    // Alternate screen buffer state changes
     unlisteners.push(
-      listen<AlternateScreenEvent>("alternate_screen", (event) => {
+      onEvent("alternate_screen", (payload) => {
         if (isStale()) return;
-        const { session_id, enabled } = event.payload;
+        const { session_id, enabled } = payload;
         store.getState().setRenderMode(session_id, enabled ? "fullterm" : "timeline");
         if (enabled) usedAlternateScreen.set(session_id, true);
       })

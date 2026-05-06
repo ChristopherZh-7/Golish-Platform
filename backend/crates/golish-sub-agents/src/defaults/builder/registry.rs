@@ -165,11 +165,21 @@ pub async fn create_default_sub_agents_from_registry(
         .with_delegatable_agents(vec!["memorist".into()]),
     );
 
+    // `refiner.tera` exists in `prompts/` and is registered with the
+    // registry, but it uses Tera variables `{{ execution_context }}` and
+    // `{{ remaining_subtasks }}` that only have values at runtime when
+    // the refiner is invoked with a specific subtask result. The static
+    // `SubAgentDefinition::system_prompt` we're building here is the
+    // base-line prompt — there's no plan or context yet. The actual
+    // runtime path (`bridge_executor::trait_impl::*` →
+    // `task_orchestrator::prompts::refiner_prompt`) builds the full
+    // templated prompt independently per call, so this base prompt only
+    // needs the static portion.
     agents.push(
         SubAgentDefinition::new(
             "refiner", "Refiner",
             "Task plan refinement agent. Called after each subtask completes to evaluate progress and adjust the remaining plan.",
-            tmpl_or_fallback!("refiner", build_refiner_prompt()),
+            build_refiner_prompt(),
         )
         .with_tools(vec![
             "search_memories".into(), "search_knowledge_base".into(), "read_knowledge".into(),
@@ -206,6 +216,10 @@ pub async fn create_default_sub_agents_from_registry(
         .with_max_iterations(10).with_timeout(120).with_idle_timeout(60),
     );
 
+    // `orchestrator.tera` wraps `{{execution_context}}` in `{% raw %}` so
+    // Tera renders it back as a literal placeholder; the agent runtime
+    // (`bridge_executor::trait_impl::*`) then substitutes the real
+    // execution-context XML via `String::replace`.
     agents.push(
         SubAgentDefinition::new(
             "orchestrator", "Orchestrator",

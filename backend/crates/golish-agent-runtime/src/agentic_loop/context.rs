@@ -148,6 +148,12 @@ pub struct AgenticLoopContext<'a> {
     pub cancelled: Option<&'a Arc<std::sync::atomic::AtomicBool>>,
     pub execution_monitor: Option<Arc<RwLock<golish_agent_kit::loop_detection::ExecutionMonitor>>>,
     pub execution_mode: golish_agent_kit::execution_mode::ExecutionMode,
+    /// Whether the user has enabled sub-agent dispatch for this turn.
+    ///
+    /// When `false`, [`crate::agentic_loop::tool_list::build_tool_list`] omits
+    /// every `sub_agent_*` tool from the model's tool catalog so the LLM
+    /// cannot delegate. Mirrors the chat-panel "Use sub-agents" toggle.
+    pub use_agents: bool,
 
     // -- Domain hooks (injected by the host crate) ----------------------------
     /// Called after a successful `run_pty_cmd` execution to detect and store

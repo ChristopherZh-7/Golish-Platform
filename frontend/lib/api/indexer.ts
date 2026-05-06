@@ -1,5 +1,5 @@
 /**
- * Indexer & codebase IPC wrappers (ADR-0009 Phase 2 canonical location).
+ * Indexer & codebase IPC wrappers (canonical location).
  *
  * Use via:
  *   import { api } from "@/lib/api";

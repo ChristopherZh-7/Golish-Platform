@@ -57,7 +57,7 @@ echo "Limit:   $LIMIT"
 if [[ "$count" -gt "$LIMIT" ]]; then
     echo
     echo "ERROR: store has $count slices, exceeding the $LIMIT-slice budget." >&2
-    echo "       See docs/architecture.md and ADR-0006." >&2
+    echo "       See docs/architecture.md." >&2
     echo "       Either fold the new slice into an existing one, or" >&2
     echo "       raise the limit here in $0 with a justifying comment." >&2
     exit 1

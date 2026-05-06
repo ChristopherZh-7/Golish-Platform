@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::helpers::{emit_progress, log_scan_op, which_tool};
+use crate::helpers::{
+    audit_scan_completed, audit_scan_failed, audit_scan_started, emit_progress, which_tool,
+};
 use crate::types::ScanResult;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,9 +193,39 @@ pub async fn run_whatweb(
 ) -> crate::ScanRunnerResult<ScanResult> {
     let start = std::time::Instant::now();
 
-    let whatweb_path = which_tool("whatweb").await.ok_or_else(|| {
-        crate::ScanRunnerError::WhatWeb("WhatWeb not found. Install via: brew install whatweb or gem install whatweb".into())
-    })?;
+    let parent_audit_id = audit_scan_started(
+        pool,
+        "whatweb_scan_started",
+        target_id,
+        "whatweb",
+        target_url,
+        serde_json::json!({
+            "project_path": project_path,
+        }),
+    )
+    .await;
+
+    let whatweb_path = match which_tool("whatweb").await {
+        Some(p) => p,
+        None => {
+            audit_scan_failed(
+                pool,
+                parent_audit_id,
+                "whatweb_scan_failed",
+                target_id,
+                "whatweb",
+                "WhatWeb not installed",
+                serde_json::json!({
+                    "target_url": target_url,
+                    "duration_ms": start.elapsed().as_millis() as u64,
+                }),
+            )
+            .await;
+            return Err(crate::ScanRunnerError::WhatWeb(
+                "WhatWeb not found. Install via: brew install whatweb or gem install whatweb".into(),
+            ));
+        }
+    };
 
     emit_progress(
         emitter,
@@ -237,20 +269,53 @@ pub async fn run_whatweb(
     }
     args.push(target_url.to_string());
 
-    let output = tokio::process::Command::new(&whatweb_path)
+    let output = match tokio::process::Command::new(&whatweb_path)
         .args(&args)
         .output()
         .await
-        .map_err(|e| crate::ScanRunnerError::WhatWeb(format!("WhatWeb execution failed: {}", e)))?;
+    {
+        Ok(o) => o,
+        Err(e) => {
+            let msg = format!("WhatWeb execution failed: {}", e);
+            audit_scan_failed(
+                pool,
+                parent_audit_id,
+                "whatweb_scan_failed",
+                target_id,
+                "whatweb",
+                &msg,
+                serde_json::json!({
+                    "target_url": target_url,
+                    "duration_ms": start.elapsed().as_millis() as u64,
+                }),
+            )
+            .await;
+            return Err(crate::ScanRunnerError::WhatWeb(msg));
+        }
+    };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     if stdout.trim().is_empty() {
-        return Err(crate::ScanRunnerError::WhatWeb(format!(
+        let msg = format!(
             "WhatWeb returned no output. stderr: {}",
             stderr.trim()
-        )));
+        );
+        audit_scan_failed(
+            pool,
+            parent_audit_id,
+            "whatweb_scan_failed",
+            target_id,
+            "whatweb",
+            &msg,
+            serde_json::json!({
+                "target_url": target_url,
+                "duration_ms": start.elapsed().as_millis() as u64,
+            }),
+        )
+        .await;
+        return Err(crate::ScanRunnerError::WhatWeb(msg));
     }
 
     emit_progress(emitter, "whatweb", "parsing", 1, 2, "Parsing results...");
@@ -277,19 +342,21 @@ pub async fn run_whatweb(
         duration_ms,
     };
 
-    log_scan_op(
+    audit_scan_completed(
         pool,
-        "whatweb_scan",
-        &format!("WhatWeb scan on {}: {} techs found", target_url, stored),
-        project_path,
-        Some(target_id),
+        parent_audit_id,
+        "whatweb_scan_completed",
+        target_id,
         "whatweb",
-        if result.success {
-            "completed"
-        } else {
-            "partial"
-        },
-        &serde_json::json!({ "items_found": result.items_found, "items_stored": result.items_stored, "duration_ms": duration_ms }),
+        &format!("WhatWeb scan on {}: {} techs found", target_url, stored),
+        serde_json::json!({
+            "target_url": target_url,
+            "template_count": 0,
+            "items_found": result.items_found,
+            "items_stored": result.items_stored,
+            "errors": result.errors.len(),
+            "duration_ms": duration_ms,
+        }),
     )
     .await;
 

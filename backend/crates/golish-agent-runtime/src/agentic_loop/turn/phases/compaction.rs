@@ -3,7 +3,7 @@
 //!
 //! Delegates to the existing `compaction_loop::{pre,inter}_turn_compaction`
 //! helpers; the phase wrapper exists to keep the main loop body free
-//! of conditional compaction logic (see ADR-0010).
+//! of conditional compaction logic.
 //!
 //! Behavior mapping:
 //! - iteration == 1  → `pre_turn_compaction` (errors are swallowed,

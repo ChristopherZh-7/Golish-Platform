@@ -1,4 +1,5 @@
 import {
+  Bot,
   Code2,
   Cpu,
   Database,
@@ -9,11 +10,12 @@ import {
   Repeat,
   Server,
   type Shield,
+  Terminal,
   Trash2,
   Wrench,
   X,
 } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { MiniDropdown } from "@/components/ui/MiniDropdown";
 import type { Pipeline, PipelineConnection, PipelineStep } from "@/lib/pentest/pipeline-types";
 import { cn } from "@/lib/utils";
@@ -29,6 +31,7 @@ export const STEP_ICONS: Record<string, { icon: typeof Shield; color: string }> 
   shell_command: { icon: Wrench, color: "text-muted-foreground/60" },
   sub_pipeline: { icon: Layers, color: "text-indigo-400" },
   foreach: { icon: Repeat, color: "text-orange-400" },
+  ai_tool: { icon: Bot, color: "text-violet-400" },
 };
 
 const DB_ACTIONS = [
@@ -282,6 +285,7 @@ function StepNode({
   const StepIcon = meta.icon;
   const ts = step.requires ? typeStyle(step.requires) : null;
   const isSpecial = step.step_type === "sub_pipeline" || step.step_type === "foreach";
+  const isAi = step.step_type === "ai_tool";
 
   return (
     <div
@@ -290,11 +294,27 @@ function StepNode({
         isSkipped && "opacity-30",
         isSelected
           ? "border-accent/40 shadow-[0_0_12px_rgba(var(--accent-rgb,99,102,241),0.15)] ring-1 ring-accent/20"
-          : "border-white/[0.08] hover:border-white/[0.15] shadow-[0_1px_6px_rgba(0,0,0,0.12)]"
+          : isAi
+            ? "border-violet-500/20 hover:border-violet-500/40 shadow-[0_1px_6px_rgba(139,92,246,0.08)]"
+            : "border-white/[0.08] hover:border-white/[0.15] shadow-[0_1px_6px_rgba(0,0,0,0.12)]"
       )}
       style={{ left: layout.x, top: layout.y, width: NODE_W, height: NODE_H }}
       onClick={onClick}
     >
+      {/* Top-right kind badge — AI vs CLI — visible at a glance on the
+          DAG so the user knows whether a step shells out or runs in-process. */}
+      <span
+        className={cn(
+          "absolute top-1 right-1 inline-flex items-center gap-0.5 px-1 py-[1px] text-[7px] font-bold uppercase rounded border",
+          isAi
+            ? "bg-violet-500/15 text-violet-300 border-violet-500/25"
+            : "bg-emerald-500/10 text-emerald-300/80 border-emerald-500/20"
+        )}
+        title={isAi ? "In-process AI tool (Tool::execute)" : "External CLI tool (sh -c)"}
+      >
+        {isAi ? <Bot className="w-2 h-2" /> : <Terminal className="w-2 h-2" />}
+        {isAi ? "AI" : "CLI"}
+      </span>
       <div className="flex items-center gap-2 px-3 py-2 h-full">
         <div
           className={cn(
@@ -382,6 +402,17 @@ function StepDetailPanel({
 }) {
   const meta = STEP_ICONS[step.step_type] || STEP_ICONS.shell_command;
   const StepIcon = meta.icon;
+  const isAiTool = step.step_type === "ai_tool";
+
+  // Edit AI-tool args as raw JSON. We keep a local string state so that
+  // mid-edit invalid JSON ("typing a comma") doesn't blow away the user's
+  // input by reverting to the parsed value on every keystroke.
+  const [paramsText, setParamsText] = useState(() => JSON.stringify(step.params ?? {}, null, 2));
+  const [paramsError, setParamsError] = useState<string | null>(null);
+  useEffect(() => {
+    setParamsText(JSON.stringify(step.params ?? {}, null, 2));
+    setParamsError(null);
+  }, [step.id]);
 
   return (
     <div className="w-[280px] flex-shrink-0 border-l border-white/[0.06] bg-white/[0.02] overflow-y-auto">
@@ -406,29 +437,74 @@ function StepDetailPanel({
         </button>
       </div>
       <div className="px-3 py-3 space-y-3">
-        <div>
-          <label className="text-[9px] text-muted-foreground/30 font-medium uppercase tracking-wider">
-            Command
-          </label>
-          <input
-            value={step.command_template}
-            onChange={(e) => onUpdate(step.id, { command_template: e.target.value })}
-            className="w-full mt-0.5 px-2 py-1.5 text-[10px] font-mono rounded-md bg-white/[0.03] border border-white/[0.06] text-foreground/80 outline-none focus:border-accent/30 transition-colors"
-          />
-        </div>
-        <div>
-          <label className="text-[9px] text-muted-foreground/30 font-medium uppercase tracking-wider">
-            Arguments
-          </label>
-          <input
-            value={step.args.join(" ")}
-            onChange={(e) =>
-              onUpdate(step.id, { args: e.target.value.split(/\s+/).filter(Boolean) })
-            }
-            placeholder="-d {target} -silent"
-            className="w-full mt-0.5 px-2 py-1.5 text-[10px] font-mono rounded-md bg-white/[0.03] border border-white/[0.06] text-foreground/80 placeholder:text-muted-foreground/15 outline-none focus:border-accent/30 transition-colors"
-          />
-        </div>
+        {isAiTool ? (
+          <div>
+            <div className="flex items-center justify-between mb-0.5">
+              <label className="text-[9px] text-muted-foreground/30 font-medium uppercase tracking-wider">
+                Tool Args (JSON)
+              </label>
+              {paramsError ? (
+                <span className="text-[9px] text-red-400/70" title={paramsError}>
+                  invalid JSON
+                </span>
+              ) : (
+                <span className="text-[9px] text-emerald-400/60">parsed ✓</span>
+              )}
+            </div>
+            <textarea
+              value={paramsText}
+              onChange={(e) => {
+                const txt = e.target.value;
+                setParamsText(txt);
+                try {
+                  const v = JSON.parse(txt || "{}");
+                  if (typeof v !== "object" || Array.isArray(v) || v === null) {
+                    setParamsError("Args must be a JSON object");
+                    return;
+                  }
+                  setParamsError(null);
+                  onUpdate(step.id, { params: v });
+                } catch (err) {
+                  setParamsError(err instanceof Error ? err.message : "parse error");
+                }
+              }}
+              placeholder='{"target_url": "https://example.com", "min_confidence": 0.5}'
+              spellCheck={false}
+              className="w-full mt-0.5 px-2 py-1.5 text-[10px] font-mono rounded-md bg-white/[0.03] border border-white/[0.06] text-foreground/80 placeholder:text-muted-foreground/15 outline-none focus:border-accent/30 transition-colors min-h-[100px] resize-y"
+            />
+            <p className="text-[8px] text-muted-foreground/35 mt-1 leading-relaxed">
+              In-process tool — runs via <code>Tool::execute</code>, not a shell. Pipeline
+              auto-injects <code>target</code>/<code>target_url</code>/<code>project_path</code>{" "}
+              when omitted.
+            </p>
+          </div>
+        ) : (
+          <>
+            <div>
+              <label className="text-[9px] text-muted-foreground/30 font-medium uppercase tracking-wider">
+                Command
+              </label>
+              <input
+                value={step.command_template}
+                onChange={(e) => onUpdate(step.id, { command_template: e.target.value })}
+                className="w-full mt-0.5 px-2 py-1.5 text-[10px] font-mono rounded-md bg-white/[0.03] border border-white/[0.06] text-foreground/80 outline-none focus:border-accent/30 transition-colors"
+              />
+            </div>
+            <div>
+              <label className="text-[9px] text-muted-foreground/30 font-medium uppercase tracking-wider">
+                Arguments
+              </label>
+              <input
+                value={step.args.join(" ")}
+                onChange={(e) =>
+                  onUpdate(step.id, { args: e.target.value.split(/\s+/).filter(Boolean) })
+                }
+                placeholder="-d {target} -silent"
+                className="w-full mt-0.5 px-2 py-1.5 text-[10px] font-mono rounded-md bg-white/[0.03] border border-white/[0.06] text-foreground/80 placeholder:text-muted-foreground/15 outline-none focus:border-accent/30 transition-colors"
+              />
+            </div>
+          </>
+        )}
         <div className="grid grid-cols-2 gap-2">
           <div>
             <label className="text-[8px] text-muted-foreground/25 uppercase tracking-wider">
@@ -486,7 +562,8 @@ function StepDetailPanel({
             value={step.step_type}
             onChange={(v) => onUpdate(step.id, { step_type: v })}
             options={[
-              { value: "shell_command", label: "Shell Command" },
+              { value: "shell_command", label: "Shell Command (CLI)" },
+              { value: "ai_tool", label: "AI Tool (in-process)" },
               { value: "sub_pipeline", label: "Sub-Pipeline" },
               { value: "foreach", label: "For-Each Loop" },
             ]}

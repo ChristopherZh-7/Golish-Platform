@@ -1,6 +1,7 @@
 import { Eye, Loader2, Play, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { logAudit } from "@/lib/audit";
 import { zapGetHistory, zapGetHistoryCount, zapGetMessage } from "@/lib/pentest/zap-api";
 import { getProjectPath } from "@/lib/projects";
 import { type CustomPassiveRule, securityApi } from "@/lib/security";
@@ -131,6 +132,13 @@ export function PassiveScanPanel() {
       });
       securityApi.customRulesUpsert(rule, projectPath).catch(() => {});
       setEditing(null);
+      logAudit({
+        action: "custom_rule_saved",
+        category: "passive_scan",
+        details: `${rule.name} (${rule.scope})`,
+        entityType: "custom_rule",
+        entityId: rule.id,
+      });
     },
     [projectPath]
   );
@@ -144,6 +152,13 @@ export function PassiveScanPanel() {
       });
       securityApi.customRulesDelete(id).catch(() => {});
       setMatches((prev) => prev.filter((m) => m.ruleId !== id));
+      logAudit({
+        action: "custom_rule_deleted",
+        category: "passive_scan",
+        details: id,
+        entityType: "custom_rule",
+        entityId: id,
+      });
     },
     [projectPath]
   );
@@ -213,6 +228,11 @@ export function PassiveScanPanel() {
       securityApi
         .findingsImportParsed(items, "Custom Passive Scan", getProjectPath())
         .catch(() => {});
+      logAudit({
+        action: "findings_imported",
+        category: "findings",
+        details: `Custom Passive Scan 导入 ${items.length} 条 finding`,
+      });
     }
   }, [customRules]);
 

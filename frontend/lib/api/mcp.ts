@@ -2,8 +2,8 @@
  * MCP (Model Context Protocol) API for Golish.
  *
  * This is the **canonical** location for MCP IPC wrappers under the
- * `frontend/lib/api/` facade (ADR-0009 Phase 2). Components and other
- * call sites should reach these functions via either:
+ * `frontend/lib/api/` facade. Components and other call sites should
+ * reach these functions via either:
  *
  *   import { api } from "@/lib/api";
  *   await api.mcp.listServers();

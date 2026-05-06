@@ -6,8 +6,6 @@
  * **store-independent** IPC layer; the store-aware helpers
  * (`getProjectPath`, `ppParam`) live in `frontend/lib/projects.ts`
  * which re-exports everything from here for compatibility.
- *
- * See ADR-0009 Phase 2 / 2D-2.
  */
 
 import { invoke } from "./client";

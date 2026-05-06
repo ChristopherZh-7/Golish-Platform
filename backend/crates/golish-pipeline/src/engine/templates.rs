@@ -26,7 +26,8 @@ pub fn pipeline_from_json(json: &str) -> Option<Pipeline> {
 /// Embedded built-in templates (compiled into the binary).
 fn embedded_templates() -> Vec<Pipeline> {
     const RECON_BASIC: &str = include_str!("../../templates/recon_basic.json");
-    [RECON_BASIC]
+    const JS_RECON: &str = include_str!("../../templates/js_recon.json");
+    [RECON_BASIC, JS_RECON]
         .iter()
         .filter_map(|json| pipeline_from_json(json))
         .collect()

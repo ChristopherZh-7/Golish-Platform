@@ -1,4 +1,5 @@
 import {
+  Activity,
   Crosshair,
   Eye,
   FileSearch,
@@ -53,7 +54,11 @@ const SensitiveScanPanel = lazy(() =>
 const SiteMapPanel = lazy(() =>
   import("./SiteMapPanel").then((m) => ({ default: m.SiteMapPanel }))
 );
+const TargetTimeline = lazy(() =>
+  import("@/components/TargetPanel/TargetTimeline").then((m) => ({ default: m.TargetTimeline }))
+);
 
+import { SetupPopover } from "./SetupPopover";
 import { StatusBadge, ZapNotInstalled, ZapNotRunning } from "./shared";
 
 export type SecurityTab =
@@ -65,7 +70,11 @@ export type SecurityTab =
   | "passive"
   | "vault"
   | "scantools"
-  | "sensitive";
+  | "sensitive"
+  | "timeline";
+
+/** Tabs that don't depend on ZAP being running — always visible. */
+const ZAP_INDEPENDENT_TABS: SecurityTab[] = ["scantools", "sensitive", "timeline", "vault"];
 
 export function SecurityView({
   standaloneTab,
@@ -79,7 +88,7 @@ export function SecurityView({
   const globalZapRunning = useStore((s) => s.zapRunning);
   const setGlobalZapRunning = useStore((s) => s.setZapRunning);
   const [activeTab, setActiveTab] = useState<SecurityTab>(
-    standaloneTab || (initialScanTarget ? "scantools" : "history")
+    standaloneTab || (initialScanTarget ? "scantools" : globalZapRunning ? "history" : "scantools")
   );
   const effectiveTab = standaloneTab || activeTab;
 
@@ -202,8 +211,21 @@ export function SecurityView({
     { id: "passive", label: t("security.passiveScan", "Passive Scan"), icon: Eye },
     { id: "scantools", label: t("security.scanTools", "Scan Tools"), icon: Crosshair },
     { id: "sensitive", label: "Sensitive Scan", icon: FileSearch },
+    { id: "timeline", label: t("security.timeline", "Timeline"), icon: Activity },
     { id: "vault", label: t("vault.title", "Credential Vault"), icon: KeyRound },
   ];
+
+  const visibleTabs = isRunning
+    ? tabs
+    : tabs.filter((tab) => ZAP_INDEPENDENT_TABS.includes(tab.id));
+
+  // If ZAP transitions stopped while user sits on a ZAP-only tab, drop them
+  // to Scan Tools so they don't see a broken page.
+  useEffect(() => {
+    if (!isRunning && !ZAP_INDEPENDENT_TABS.includes(activeTab)) {
+      setActiveTab("scantools");
+    }
+  }, [isRunning, activeTab]);
 
   const tabDragRef = useRef<{
     tabId: SecurityTab | null;
@@ -277,6 +299,19 @@ export function SecurityView({
       return (
         <Suspense fallback={null}>
           <SensitiveScanPanel />
+        </Suspense>
+      );
+    }
+    if (tab === "timeline") {
+      return (
+        <Suspense
+          fallback={
+            <div className="h-full flex items-center justify-center">
+              <Loader2 className="w-5 h-5 animate-spin text-muted-foreground/40" />
+            </div>
+          }
+        >
+          <TargetTimeline initialTargetId={initialScanTarget?.id} />
         </Suspense>
       );
     }
@@ -363,6 +398,12 @@ export function SecurityView({
                 {error}
               </span>
             )}
+            <SetupPopover
+              isRunning={isRunning}
+              onStart={handleStart}
+              loading={loading}
+              error={error}
+            />
             {isRunning ? (
               <button
                 type="button"
@@ -398,30 +439,23 @@ export function SecurityView({
 
       {!standaloneTab && (
         <div className="flex items-center gap-1 px-4 py-2 border-b border-border/10 flex-shrink-0">
-          {tabs.map((tabItem) => {
-            const zapRequired = !["vault", "scantools", "sensitive"].includes(tabItem.id);
-            const disabled = zapRequired && !isRunning;
-            return (
-              <button
-                key={tabItem.id}
-                type="button"
-                onClick={() => !disabled && setActiveTab(tabItem.id)}
-                onPointerDown={(e) => !disabled && handleTabPointerDown(tabItem.id, e)}
-                disabled={disabled}
-                className={cn(
-                  "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] transition-colors select-none",
-                  activeTab === tabItem.id
-                    ? "bg-accent/15 text-accent font-medium"
-                    : disabled
-                      ? "text-muted-foreground/25 cursor-not-allowed"
-                      : "text-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)]"
-                )}
-              >
-                <tabItem.icon className="w-3 h-3" />
-                {tabItem.label}
-              </button>
-            );
-          })}
+          {visibleTabs.map((tabItem) => (
+            <button
+              key={tabItem.id}
+              type="button"
+              onClick={() => setActiveTab(tabItem.id)}
+              onPointerDown={(e) => handleTabPointerDown(tabItem.id, e)}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] transition-colors select-none",
+                activeTab === tabItem.id
+                  ? "bg-accent/15 text-accent font-medium"
+                  : "text-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)]"
+              )}
+            >
+              <tabItem.icon className="w-3 h-3" />
+              {tabItem.label}
+            </button>
+          ))}
         </div>
       )}
 

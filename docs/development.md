@@ -67,9 +67,9 @@ Typical local incremental check after warm-up: 5–15s instead of
 
 ## Adding a new Tauri command (IPC)
 
-Golish now follows the Phase 1 shape from
-[ADR-0009](adr/0009-tauri-command-namespace.md). **Never add a command
-directly to `commands_registry.rs` without touching the facade.**
+Golish groups Tauri commands per domain via `commands_facade/<domain>.rs`
+files. **Never add a command directly to `commands_registry.rs` without
+touching the facade.**
 
 ### Naming convention
 
@@ -128,11 +128,10 @@ Rules:
   Will be caught in code review; facades are the canonical domain
   surface.
 - **Naming without a domain prefix** — `list_tools` collided with MCP
-  `mcp_list_tools` in the past (see ADR-0009). Always prefix.
+  `mcp_list_tools` in the past. Always prefix.
 - **Bare `invoke("some_cmd")` in components** — use
   `api.<domain>.<verb>` so rename-safety and IDE autocomplete work.
 
 See also:
 - [Browser-only frontend development](browser-dev.md)
 - [Architecture](architecture.md)
-- [ADR-0009: Tauri Command Namespace Strategy](adr/0009-tauri-command-namespace.md)

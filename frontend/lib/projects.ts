@@ -4,8 +4,6 @@
  * The IPC layer lives at `@/lib/api/projects`. New callers should
  * import directly from there for the IPC functions; this file's only
  * unique responsibility is the two store-coupled helpers below.
- *
- * See ADR-0009 Phase 2D-2.
  */
 
 import { useStore } from "@/store";

@@ -1,33 +1,10 @@
-export interface TerminalOutputEvent {
-  session_id: string;
-  data: string;
-}
-
-export interface CommandBlockEvent {
-  session_id: string;
-  command: string | null;
-  exit_code: number | null;
-  event_type: "prompt_start" | "prompt_end" | "command_start" | "command_end";
-}
-
-export interface DirectoryChangedEvent {
-  session_id: string;
-  path: string;
-}
-
-export interface VirtualEnvChangedEvent {
-  session_id: string;
-  name: string | null;
-}
-
-export interface SessionEndedEvent {
-  sessionId: string;
-}
-
-export interface AlternateScreenEvent {
-  session_id: string;
-  enabled: boolean;
-}
+// NOTE: The event payload types that were previously defined here
+// (TerminalOutputEvent, CommandBlockEvent, DirectoryChangedEvent,
+// VirtualEnvChangedEvent, SessionEndedEvent, AlternateScreenEvent) now
+// live in `@/lib/events/payloads` as the single source of truth
+// (EventPayloadMap). Consumers should use `onEvent("<channel>", ...)`
+// which infers the payload type automatically — see
+// `useTauriEvents.ts` / `services/terminal-events.ts`.
 
 export const PROCESS_DETECTION_DELAY_MS = 300;
 export const SHELL_PROCESSES = new Set(["zsh", "bash", "sh", "fish"]);

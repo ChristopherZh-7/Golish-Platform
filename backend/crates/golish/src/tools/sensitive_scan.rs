@@ -6,12 +6,14 @@
 
 use crate::error::GolishError;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use sqlx::PgPool;
 use tauri::{Emitter, State};
 use uuid::Uuid;
 
 use crate::state::DbState;
+use golish_db::repo::audit::PentestAudit;
 pub use golish_pentest::sensitive_scan::{
     ScanProgress, SensitiveScanConfig, SensitiveScanResult, DEFAULT_SENSITIVE_PATHS,
 };
@@ -96,13 +98,45 @@ pub async fn sensitive_scan_start(
     let pp = project_path.clone();
     let sid = scan_id.clone();
 
+    // Synchronously write the *_started audit row before spawning the
+    // worker so the resulting `parent_id` is guaranteed to exist by the
+    // time the worker writes its `*_completed` row.
+    let parent_audit_id = PentestAudit::started(
+        &pool,
+        "sensitive_scan_started",
+        "pentest_scan",
+        &format!(
+            "Sensitive scan started on {} (rate={}/s, wordlist={})",
+            config.target_url,
+            config.rate_per_second,
+            config.wordlist_id.as_deref().unwrap_or("default"),
+        ),
+        None,
+        Some("sensitive_scan"),
+        serde_json::json!({
+            "scan_id": &sid,
+            "base_url": config.target_url,
+            "wordlist_id": config.wordlist_id,
+            "rate": config.rate_per_second,
+            "use_sitemap_dirs": config.use_sitemap_dirs,
+            "project_path": pp,
+        }),
+    )
+    .await
+    .ok();
+
+    let started_at = Instant::now();
+    let target_url_for_audit = config.target_url.clone();
+    let pool_for_audit = pool.clone();
+    let pp_for_audit = pp.clone();
+
     tokio::spawn(async move {
         let store = PgScanStore { pool };
         let app_ref = &app;
         let sid_ref = &sid;
         let pp_ref = pp.as_deref();
 
-        let _hits = scan::execute_scan(
+        let hits = scan::execute_scan(
             &config,
             &store,
             pp_ref,
@@ -125,6 +159,39 @@ pub async fn sensitive_scan_start(
             "sensitive-scan-progress",
             serde_json::json!({ "scanId": &sid, "running": false }),
         );
+
+        // Pair the *_started row with a *_completed row so the timeline
+        // reflects the full lifecycle. `cancelled` is treated as a
+        // soft-completion (status flipped via the message + detail flag)
+        // rather than a hard failure.
+        if let Some(pid) = parent_audit_id {
+            let duration_ms = started_at.elapsed().as_millis() as u64;
+            let items_found = hits.len();
+            let cancelled = SCAN_CANCELLED.load(Ordering::SeqCst);
+            let _ = PentestAudit::completed(
+                &pool_for_audit,
+                pid,
+                "sensitive_scan_completed",
+                "pentest_scan",
+                &format!(
+                    "Sensitive scan {} on {}: {} hits in {}ms",
+                    if cancelled { "cancelled" } else { "completed" },
+                    target_url_for_audit,
+                    items_found,
+                    duration_ms,
+                ),
+                None,
+                Some("sensitive_scan"),
+                serde_json::json!({
+                    "scan_id": &sid,
+                    "items_found": items_found,
+                    "duration_ms": duration_ms,
+                    "cancelled": cancelled,
+                    "project_path": pp_for_audit,
+                }),
+            )
+            .await;
+        }
     });
 
     Ok(scan_id)
