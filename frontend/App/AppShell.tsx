@@ -1,11 +1,16 @@
 import type React from "react";
-import { Suspense } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { listServers } from "@/lib/api/mcp";
 import { isWindows } from "@/lib/env";
+import { checkEnvSetup, scanTools } from "@/lib/pentest/api";
+import type { ToolConfig } from "@/lib/pentest/types";
 import { cn } from "@/lib/utils";
+import { isMockBrowserMode } from "@/mocks";
 import { ActivityBar, type ActivityView } from "../components/ActivityBar/ActivityBar";
 import { AIChatPanel } from "../components/AIChatPanel/AIChatPanel";
 import { CommandPalette, type PageRoute } from "../components/CommandPalette";
+import { SETUP_BANNER_NAVIGATE_EVENT } from "../components/HomeView/SetupHealthBanner";
 import { PaneContainer } from "../components/PaneContainer";
 import { SidecarNotifications } from "../components/Sidecar";
 import { TerminalLayer } from "../components/Terminal";
@@ -208,6 +213,63 @@ export function AppShell(props: AppShellProps) {
   const { createTerminalTab } = useCreateTerminalTab();
   const splitDrag = useSplitTabDrag({ setShowMergeDropZone, setSplitDragGhost, closeRightTab });
 
+  const [toolIssueCount, setToolIssueCount] = useState(0);
+  const [runtimeIssueCount, setRuntimeIssueCount] = useState(0);
+  const [mcpIssueCount, setMcpIssueCount] = useState(0);
+  const refreshEnvHealth = useCallback(async () => {
+    if (isMockBrowserMode() || isOnHomeTab) return;
+    try {
+      const [toolsResult, envResult, mcpResult] = await Promise.allSettled([
+        scanTools(), checkEnvSetup(), listServers(),
+      ]);
+      let toolCount = 0;
+      let rtCount = 0;
+      let mcpCount = 0;
+      if (toolsResult.status === "fulfilled" && toolsResult.value.success) {
+        toolCount = toolsResult.value.tools.filter(
+          (t: ToolConfig) => (t.tier === "essential" || t.tier === "recommended") && (t as ToolConfig & { installed?: boolean }).installed === false
+        ).length;
+      }
+      if (envResult.status === "fulfilled") {
+        const env = envResult.value;
+        if (!env.homebrew_installed) rtCount++;
+        if (!env.conda_installed) rtCount++;
+        if (!env.nvm_installed) rtCount++;
+        if (!env.java_installed) rtCount++;
+        if (!env.ruby_installed) rtCount++;
+        if (!env.pgvector_installed) rtCount++;
+      }
+      if (mcpResult.status === "fulfilled") {
+        mcpCount = mcpResult.value.filter((s) => s.enabled && (s.status === "disconnected" || s.status === "error")).length;
+      }
+      setToolIssueCount(toolCount);
+      setRuntimeIssueCount(rtCount);
+      setMcpIssueCount(mcpCount);
+    } catch { /* ignore */ }
+  }, [isOnHomeTab]);
+  useEffect(() => {
+    refreshEnvHealth();
+    const id = setInterval(refreshEnvHealth, 60_000);
+    return () => clearInterval(id);
+  }, [refreshEnvHealth]);
+
+  // Forward Home Tab's `<SetupHealthBanner />` "Go to Tool Manager" / "Go to
+  // Settings" clicks into the activity-view machinery owned by `useAppRouting`.
+  // The banner cannot reach `activityControls` directly because the activity
+  // view is local React state in `App.tsx`, so we bridge via window events.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const target = (e as CustomEvent<string>).detail;
+      if (target === "tool-manager") {
+        activityControls.toggleView("toolManage");
+      } else if (target === "settings") {
+        setSettingsOpen(true);
+      }
+    };
+    window.addEventListener(SETUP_BANNER_NAVIGATE_EVENT, handler);
+    return () => window.removeEventListener(SETUP_BANNER_NAVIGATE_EVENT, handler);
+  }, [activityControls, setSettingsOpen]);
+
   const hasSplit = rightPanelTabs.length > 0;
 
   if (isLoading) return <AppLoadingSkeleton />;
@@ -252,7 +314,7 @@ export function AppShell(props: AppShellProps) {
       case "settings":
         return (
           <Suspense fallback={null}>
-            <SettingsNav activeSection={settingsSection} onSectionChange={setSettingsSection} />
+            <SettingsNav activeSection={settingsSection} onSectionChange={setSettingsSection} envIssueCount={runtimeIssueCount} mcpIssueCount={mcpIssueCount} />
           </Suspense>
         );
       default:
@@ -290,6 +352,8 @@ export function AppShell(props: AppShellProps) {
               terminalOpen={bottomTerminalOpen}
               onToggleTerminal={activityControls.toggleBottomTerminal}
               onOpenSettings={() => setSettingsOpen(true)}
+              toolIssueCount={toolIssueCount}
+              settingsIssueCount={runtimeIssueCount + mcpIssueCount}
             />
           </div>
 

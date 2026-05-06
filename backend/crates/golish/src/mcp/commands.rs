@@ -18,6 +18,11 @@ use tauri::State;
 
 use crate::state::{AppState, McpManaged};
 
+fn is_platform_node_available() -> bool {
+    let env_status = golish_pentest::handlers::check_env_setup();
+    env_status.nvm_installed
+}
+
 /// Information about a configured MCP server for the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +41,8 @@ pub struct McpServerInfo {
     pub error: Option<String>,
     /// Source: "user" for ~/.golish/mcp.json, "project" for <project>/.golish/mcp.json
     pub source: String,
+    /// Setup status for built-in servers: "ready", "needs_build", "needs_node", or null
+    pub setup_status: Option<String>,
 }
 
 /// Server connection status.
@@ -140,6 +147,24 @@ pub async fn mcp_list_servers(
             (McpServerStatus::Disconnected, None, None)
         };
 
+        let setup_status = if source == "builtin" && matches!(status, McpServerStatus::Disconnected | McpServerStatus::Error) {
+            if let Some(ref cmd) = server_config.command {
+                if cmd == "node" {
+                    if !is_platform_node_available() {
+                        Some("needs_node".to_string())
+                    } else if !server_config.args.is_empty() {
+                        let entry = &server_config.args[0];
+                        let entry_path = std::path::Path::new(entry);
+                        let tool_dir = entry_path.parent().and_then(|p| p.parent());
+                        let needs_build = tool_dir.map_or(true, |d| {
+                            !d.join("node_modules").exists() || !entry_path.exists()
+                        });
+                        if needs_build { Some("needs_build".to_string()) } else { None }
+                    } else { None }
+                } else { None }
+            } else { None }
+        } else { None };
+
         servers.push(McpServerInfo {
             name,
             transport: transport.to_string(),
@@ -148,6 +173,7 @@ pub async fn mcp_list_servers(
             tool_count,
             error,
             source: source.to_string(),
+            setup_status,
         });
     }
 
@@ -291,6 +317,104 @@ pub async fn mcp_disconnect(server_name: String, state: State<'_, AppState>) -> 
     refresh_all_bridge_mcp_tools(&state).await;
 
     Ok(())
+}
+
+/// Set up a built-in MCP server by running npm install + build in its tool directory.
+#[tauri::command]
+pub async fn mcp_setup_builtin(
+    server_name: String,
+    workspace_path: Option<String>,
+    state: State<'_, McpManaged>,
+    app_state: State<'_, AppState>,
+) -> Result<McpSetupResult, GolishError> {
+    use golish_mcp::load_mcp_config;
+
+    let workspace = match workspace_path {
+        Some(p) => PathBuf::from(p),
+        None => std::env::current_dir()
+            .map_err(|e| format!("Failed to get current directory: {}", e))?,
+    };
+
+    let config = load_mcp_config(&workspace)?;
+    let server_config = config
+        .mcp_servers
+        .get(&server_name)
+        .ok_or_else(|| format!("Server '{}' not found", server_name))?;
+
+    if !is_platform_node_available() {
+        return Ok(McpSetupResult {
+            success: false,
+            message: "Node.js is not installed. Please install it first in Settings > Environment.".to_string(),
+        });
+    }
+
+    let entry_point = server_config
+        .args
+        .first()
+        .ok_or_else(|| format!("Server '{}' has no entry point configured", server_name))?;
+
+    let entry_path = std::path::Path::new(entry_point);
+    let tool_dir = entry_path
+        .parent()
+        .and_then(|p| p.parent())
+        .ok_or_else(|| format!("Cannot determine tool directory from '{}'", entry_point))?;
+
+    if !tool_dir.exists() {
+        return Ok(McpSetupResult {
+            success: false,
+            message: format!("Tool directory not found: {}", tool_dir.display()),
+        });
+    }
+
+    tracing::info!("[mcp] Setting up built-in server '{}' in {}", server_name, tool_dir.display());
+
+    let npm_install = std::process::Command::new("npm")
+        .arg("install")
+        .current_dir(tool_dir)
+        .output()
+        .map_err(|e| format!("Failed to run npm install: {}", e))?;
+
+    if !npm_install.status.success() {
+        let stderr = String::from_utf8_lossy(&npm_install.stderr);
+        return Ok(McpSetupResult {
+            success: false,
+            message: format!("npm install failed: {}", stderr),
+        });
+    }
+
+    let npm_build = std::process::Command::new("npm")
+        .args(["run", "build"])
+        .current_dir(tool_dir)
+        .output()
+        .map_err(|e| format!("Failed to run npm run build: {}", e))?;
+
+    if !npm_build.status.success() {
+        let stderr = String::from_utf8_lossy(&npm_build.stderr);
+        return Ok(McpSetupResult {
+            success: false,
+            message: format!("npm run build failed: {}", stderr),
+        });
+    }
+
+    tracing::info!("[mcp] Built-in server '{}' setup complete, attempting connect", server_name);
+
+    let manager_guard = state.manager.read().await;
+    if let Some(manager) = manager_guard.as_ref() {
+        let _ = manager.connect(&server_name).await;
+        drop(manager_guard);
+        refresh_all_bridge_mcp_tools(&app_state).await;
+    }
+
+    Ok(McpSetupResult {
+        success: true,
+        message: "Setup complete. Server is now connecting.".to_string(),
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpSetupResult {
+    pub success: bool,
+    pub message: String,
 }
 
 /// Refresh MCP tool definitions on all active agent bridges.

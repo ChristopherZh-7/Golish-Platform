@@ -124,6 +124,8 @@ interface ActivityBarProps {
   terminalOpen?: boolean;
   onToggleTerminal?: () => void;
   onOpenSettings?: () => void;
+  toolIssueCount?: number;
+  settingsIssueCount?: number;
 }
 
 const VIEW_ITEMS: BarItemId[] = [
@@ -139,12 +141,8 @@ const VIEW_ITEMS: BarItemId[] = [
   "toolManage",
 ];
 
-export const ActivityBar = memo(function ActivityBar({
-  activeView,
-  onViewChange,
-  terminalOpen,
-  onToggleTerminal,
-}: ActivityBarProps) {
+export const ActivityBar = memo(function ActivityBar(props: ActivityBarProps) {
+  const { activeView, onViewChange, terminalOpen, onToggleTerminal } = props;
   const { t } = useTranslation();
   const [upperItems, setUpperItems] = useState(() => loadSavedOrder() ?? UPPER_DEFAULTS);
   const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
@@ -409,6 +407,9 @@ export const ActivityBar = memo(function ActivityBar({
                     onClick={() => toggleGroup(group.id)}
                   >
                     <group.icon className="w-[18px] h-[18px]" />
+                    {group.id === "tools" && props.toolIssueCount != null && props.toolIssueCount > 0 && !active && !expanded && (
+                      <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-amber-500" />
+                    )}
                     {active && !expanded && (
                       <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[2px] h-5 bg-accent rounded-r" />
                     )}
@@ -442,6 +443,9 @@ export const ActivityBar = memo(function ActivityBar({
                 onClick={() => onViewChange(activeView === "settings" ? null : "settings")}
               >
                 <Settings className="w-[18px] h-[18px]" />
+                {props.settingsIssueCount != null && props.settingsIssueCount > 0 && activeView !== "settings" && (
+                  <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-amber-500" />
+                )}
                 {activeView === "settings" && (
                   <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[2px] h-5 bg-accent rounded-r" />
                 )}
@@ -487,6 +491,9 @@ export const ActivityBar = memo(function ActivityBar({
                       >
                         <item.icon className="w-4 h-4 flex-shrink-0" />
                         <span className="text-[11px] font-medium">{t(item.label)}</span>
+                        {item.id === "toolManage" && props.toolIssueCount != null && props.toolIssueCount > 0 && !active && (
+                          <span className="w-2 h-2 rounded-full bg-amber-500 ml-auto flex-shrink-0" />
+                        )}
                         {active && <ChevronRight className="w-3 h-3 ml-auto text-accent/50" />}
                       </button>
                     );
