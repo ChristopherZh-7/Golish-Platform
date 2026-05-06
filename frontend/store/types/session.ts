@@ -47,7 +47,6 @@ export interface Session {
   mode: SessionMode;
   inputMode?: InputMode;
   agentMode?: AgentMode;
-  useAgents?: boolean;
   executionMode?: ExecutionMode;
   renderMode?: RenderMode;
   customName?: string;

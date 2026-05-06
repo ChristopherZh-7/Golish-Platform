@@ -174,7 +174,6 @@ export async function openProject(
             customName: t.customName ?? undefined,
             planJson: t.planJson ?? undefined,
             executionMode: t.executionMode ?? undefined,
-            useAgents: t.useAgents ?? undefined,
             retiredPlansJson: t.retiredPlansJson ?? undefined,
             timelineBlocks: t.timelineBlocks.map(
               (b) =>

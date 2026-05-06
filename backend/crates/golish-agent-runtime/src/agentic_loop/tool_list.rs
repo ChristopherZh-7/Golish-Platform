@@ -36,7 +36,6 @@ pub(crate) async fn build_tool_list(
     let workspace_guard = ctx.workspace.read().await;
     let policy_ctx = PolicyContext::new(&workspace_guard, golish_core::AgentMode::default())
         .with_depth(sub_agent_context.depth)
-        .with_use_agents(ctx.use_agents)
         .with_mcp_tool_count(ctx.additional_tool_definitions.len());
     let selection = if sub_agent_context.depth == 0 {
         policy.primary_tools(&policy_ctx).await

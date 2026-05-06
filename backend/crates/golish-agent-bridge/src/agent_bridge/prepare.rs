@@ -58,12 +58,11 @@ impl AgentBridge {
             .available_tools()
             .iter()
             .any(|t| t.starts_with("web_"));
-        // Chat mode is a single-agent path; suppress sub-agent description in
-        // the system prompt even if `use_agents` is left over from a previous
-        // session — otherwise the LLM sees instructions to delegate via
-        // `sub_agent_planner` for trivial inputs.
+        // Sub-agent dispatch is now strictly bound to execution mode:
+        // chat mode is single-agent, task mode is multi-agent. The
+        // legacy `use_agents` per-conversation toggle has been retired.
         let execution_mode = *self.execution_mode.read().await;
-        let has_sub_agents = execution_mode.is_task() && *self.use_agents.read().await;
+        let has_sub_agents = execution_mode.is_task();
 
         let (available_skills, matched_skills) = self.match_and_load_skills(initial_prompt).await;
 
@@ -153,10 +152,11 @@ impl AgentBridge {
             .available_tools()
             .iter()
             .any(|t| t.starts_with("web_"));
-        // Chat mode: same isolation as `prepare_execution_context` —
-        // never advertise sub-agents in the system prompt for chat mode.
+        // Same parity as `prepare_execution_context` — sub-agent
+        // visibility in the system prompt now follows execution mode
+        // alone (the per-conversation `use_agents` toggle is retired).
         let execution_mode = *self.execution_mode.read().await;
-        let has_sub_agents = execution_mode.is_task() && *self.use_agents.read().await;
+        let has_sub_agents = execution_mode.is_task();
 
         let (available_skills, matched_skills) = self.match_and_load_skills(text_for_logging).await;
 
@@ -302,7 +302,6 @@ impl AgentBridge {
             execution_monitor: None,
             execution_mode: *self.execution_mode.read().await,
             execution_mode_registry: self.execution_mode_registry.clone(),
-            use_agents: *self.use_agents.read().await,
             post_shell_hook: self.post_shell_hook.clone(),
             output_classifier: self.output_classifier.clone(),
             web_fetcher: self.web_fetcher.clone(),

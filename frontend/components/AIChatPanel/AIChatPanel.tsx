@@ -80,9 +80,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const sessionInit = useChatSessionInit({
     selectedModel,
     chatExecutionModeRef: modes.chatExecutionModeRef,
-    chatUseSubAgentsRef: modes.chatUseSubAgentsRef,
     setChatExecutionMode: modes.setChatExecutionMode,
-    setChatUseSubAgents: modes.setChatUseSubAgents,
     updateConv,
   });
 
@@ -162,18 +160,10 @@ export const AIChatPanel = memo(function AIChatPanel() {
           break;
         }
       }
-      const hasAgents = terminals.some((tid) => store.sessions[tid]?.useAgents);
-      if (hasAgents !== modes.chatUseSubAgents) modes.setChatUseSubAgents(hasAgents);
     } else {
       modes.setChatExecutionMode("chat");
     }
-  }, [
-    activeConvId,
-    terminalRestoreInProgress,
-    modes.chatUseSubAgents,
-    modes.setChatExecutionMode,
-    modes.setChatUseSubAgents,
-  ]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeConvId, terminalRestoreInProgress, modes.setChatExecutionMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Handlers ─────────────────────────────────────────────────────────
   const handleModelSelect = useCallback((modelId: string, provider: string) => {

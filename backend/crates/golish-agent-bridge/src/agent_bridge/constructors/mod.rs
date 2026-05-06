@@ -331,7 +331,6 @@ impl AgentBridge {
             api_request_stats: Arc::new(ApiRequestStats::new()),
             sub_agent_registry,
             prompt_registry: golish_sub_agents::PromptRegistry::new(),
-            use_agents: Arc::new(RwLock::new(true)),
             execution_mode: Arc::new(RwLock::new(crate::execution_mode::ExecutionMode::default())),
             execution_mode_registry: Arc::new(
                 golish_agent_runtime::execution_mode::ExecutionModeRegistry::default(),

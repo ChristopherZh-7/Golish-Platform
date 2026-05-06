@@ -321,7 +321,6 @@ impl TestContext {
             execution_monitor: None,
             execution_mode: self.execution_mode,
             execution_mode_registry: self.execution_mode_registry.clone(),
-            use_agents: true,
             post_shell_hook: None,
             output_classifier: None,
             web_fetcher: None,

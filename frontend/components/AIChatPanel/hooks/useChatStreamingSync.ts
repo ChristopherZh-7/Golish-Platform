@@ -19,8 +19,6 @@ interface UseChatStreamingSyncOptions {
   setPentestTools: Dispatch<SetStateAction<ToolConfig[]>>;
   setConfiguredProviders: Dispatch<SetStateAction<Set<string>>>;
   setChatExecutionMode: Dispatch<SetStateAction<string>>;
-  setChatUseSubAgents: Dispatch<SetStateAction<boolean>>;
-  chatUseSubAgents: boolean;
   planTextOffsetRef: MutableRefObject<number | null>;
   planMessageIdRef: MutableRefObject<string | null>;
   workspaceDataReady: boolean;
@@ -55,8 +53,6 @@ export function useChatStreamingSync(opts: UseChatStreamingSyncOptions): void {
     setPentestTools,
     setConfiguredProviders,
     setChatExecutionMode,
-    setChatUseSubAgents,
-    chatUseSubAgents,
     planTextOffsetRef,
     planMessageIdRef,
     workspaceDataReady,
@@ -143,17 +139,9 @@ export function useChatStreamingSync(opts: UseChatStreamingSyncOptions): void {
           break;
         }
       }
-      const hasAgents = terminals.some((tid) => store.sessions[tid]?.useAgents);
-      if (hasAgents !== chatUseSubAgents) setChatUseSubAgents(hasAgents);
     } else {
       setChatExecutionMode("chat");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    activeConvId,
-    terminalRestoreInProgress,
-    chatUseSubAgents,
-    setChatExecutionMode,
-    setChatUseSubAgents,
-  ]);
+  }, [activeConvId, terminalRestoreInProgress, setChatExecutionMode]);
 }
