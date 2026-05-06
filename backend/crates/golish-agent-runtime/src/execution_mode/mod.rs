@@ -19,6 +19,7 @@
 pub mod context;
 pub mod modes;
 pub mod policy;
+pub mod prompt_render;
 pub mod registry;
 pub mod selection_apply;
 
