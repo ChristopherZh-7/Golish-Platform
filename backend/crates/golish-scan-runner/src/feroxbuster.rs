@@ -4,7 +4,9 @@ use golish_core::EventEmitterHandle;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::helpers::{emit_progress, log_scan_op, which_tool};
+use crate::helpers::{
+    audit_scan_completed, audit_scan_failed, audit_scan_started, emit_progress, which_tool,
+};
 use crate::storage::ScanStorage;
 use crate::types::ScanResult;
 
@@ -42,11 +44,40 @@ pub async fn run_feroxbuster(
 ) -> crate::ScanRunnerResult<ScanResult> {
     let start = std::time::Instant::now();
 
-    let ferox_path = which_tool("feroxbuster").await.ok_or_else(|| {
-        crate::ScanRunnerError::Feroxbuster(
-            "feroxbuster not found. Install via: brew install feroxbuster or cargo install feroxbuster".into(),
-        )
-    })?;
+    let parent_audit_id = audit_scan_started(
+        pool,
+        "feroxbuster_scan_started",
+        target_id,
+        "feroxbuster",
+        target_url,
+        serde_json::json!({
+            "base_paths_count": base_paths.len(),
+            "base_paths_sample": base_paths.iter().take(20).cloned().collect::<Vec<_>>(),
+            "project_path": project_path,
+        }),
+    )
+    .await;
+
+    let ferox_path = match which_tool("feroxbuster").await {
+        Some(p) => p,
+        None => {
+            let msg = "feroxbuster not found. Install via: brew install feroxbuster or cargo install feroxbuster";
+            audit_scan_failed(
+                pool,
+                parent_audit_id,
+                "feroxbuster_scan_failed",
+                target_id,
+                "feroxbuster",
+                msg,
+                serde_json::json!({
+                    "target_url": target_url,
+                    "duration_ms": start.elapsed().as_millis() as u64,
+                }),
+            )
+            .await;
+            return Err(crate::ScanRunnerError::Feroxbuster(msg.into()));
+        }
+    };
 
     let opts = options.unwrap_or(FeroxScanOptions {
         depth: Some(3),
@@ -244,22 +275,25 @@ pub async fn run_feroxbuster(
         duration_ms,
     };
 
-    log_scan_op(
+    audit_scan_completed(
         pool,
-        "feroxbuster_scan",
+        parent_audit_id,
+        "feroxbuster_scan_completed",
+        target_id,
+        "feroxbuster",
         &format!(
             "feroxbuster on {}: {} paths found, {} URLs scanned",
             target_url, all_items_found, total_urls
         ),
-        project_path,
-        Some(target_id),
-        "feroxbuster",
-        if result.success {
-            "completed"
-        } else {
-            "partial"
-        },
-        &serde_json::json!({ "urls_scanned": total_urls, "items_found": all_items_found, "items_stored": all_items_stored, "duration_ms": duration_ms }),
+        serde_json::json!({
+            "target_url": target_url,
+            "template_count": total_urls,
+            "items_found": all_items_found,
+            "items_stored": all_items_stored,
+            "errors": result.errors.len(),
+            "duration_ms": duration_ms,
+            "outcome": if result.success { "completed" } else { "partial" },
+        }),
     )
     .await;
 

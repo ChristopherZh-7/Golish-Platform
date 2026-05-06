@@ -9,8 +9,7 @@
 - `golish-db` crate (in workspace, see `architecture.md`) wraps `sqlx`
   + `pg-embed` for all persistent state.
 - Embedded Postgres binary ships inside the Tauri app bundle.
-- ADR-0004 (`docs/adr/0004-embedded-postgres-vs-sqlite.md`) records the
-  choice: rich SQL + JSON + future pgvector support.
+- Original choice rationale: rich SQL + JSON + future pgvector support.
 
 ## Observed cost
 
@@ -67,7 +66,6 @@ publicly so users know what they're getting.
 
 ## References
 
-- `docs/adr/0004-embedded-postgres-vs-sqlite.md` — original decision
 - `backend/crates/golish-db/` — schema + repo layer
 - `pg-embed` crate: <https://crates.io/crates/pg-embed>
 - `sqlite-vec`: <https://github.com/asg017/sqlite-vec>

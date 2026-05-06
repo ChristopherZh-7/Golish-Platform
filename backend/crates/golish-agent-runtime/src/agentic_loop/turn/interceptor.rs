@@ -1,9 +1,9 @@
 //! Turn interceptors — cross-cutting concerns around phase scheduling.
 //!
-//! ADR-0010 (C1-7) introduces the `TurnInterceptor` trait so that
-//! observability, HITL recording, eval logging, and other concerns
-//! that span *all* phases live in one named place rather than being
-//! re-implemented inline in `turn::executor` and the phase modules.
+//! The `TurnInterceptor` trait lets observability, HITL recording,
+//! eval logging, and other concerns that span *all* phases live in
+//! one named place rather than being re-implemented inline in
+//! `turn::executor` and the phase modules.
 //!
 //! Today only one interceptor exists, [`LangfuseInterceptor`], which
 //! finalises Langfuse trace fields once the loop terminates. The

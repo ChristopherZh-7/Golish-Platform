@@ -98,9 +98,15 @@ export function useTargetData() {
           projectPath: getProjectPath(),
         });
         loadTargets();
-        if (added.length > 0) {
-          console.info(`Imported ${added.length} targets`);
+        const count = added.length;
+        if (count > 0) {
+          console.info(`Imported ${count} targets`);
         }
+        logAudit({
+          action: "targets_batch_added",
+          category: "targets",
+          details: `已添加 ${count} 个目标`,
+        });
       } catch (e) {
         console.error("Failed to batch add:", e);
       }
@@ -130,12 +136,20 @@ export function useTargetData() {
   const handleToggleScope = useCallback(
     async (target: Target) => {
       try {
+        const newScope = target.scope === "in" ? "out" : "in";
         await targets.updateTarget({
           id: target.id,
-          scope: target.scope === "in" ? "out" : "in",
+          scope: newScope,
           projectPath: getProjectPath(),
         });
         loadTargets();
+        logAudit({
+          action: "target_scope_changed",
+          category: "targets",
+          details: `${target.id} scope → ${newScope}`,
+          entityType: "target",
+          entityId: target.id,
+        });
       } catch (e) {
         console.error("Failed to update scope:", e);
       }

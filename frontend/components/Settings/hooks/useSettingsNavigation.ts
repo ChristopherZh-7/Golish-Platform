@@ -1,14 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
-import { listIndexedCodebases } from "@/lib/indexer";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
 import { updateConfig as updatePentestConfig } from "@/lib/pentest/api";
-import {
-  type CodebaseConfig,
-  type GolishSettings,
-  getSettings,
-  updateSettings,
-} from "@/lib/settings";
+import { type GolishSettings, getSettings, updateSettings } from "@/lib/settings";
 
 export type SettingsSection =
   | "providers"
@@ -25,12 +19,25 @@ export type SettingsSection =
   | "pentest"
   | "vault";
 
+/**
+ * Debounce window between user-driven setting tweaks and the actual
+ * `updateSettings` IPC. Coalescing rapid edits (e.g. dragging a slider,
+ * toggling several checkboxes in succession) keeps the Settings UI
+ * responsive and avoids stacking dozens of redundant Tauri command calls.
+ */
+const SAVE_DEBOUNCE_MS = 300;
+
 export function useSettingsNavigation(initialSection?: string) {
   const [settings, setSettings] = useState<GolishSettings | null>(null);
   const [activeSection, setActiveSection] = useState<SettingsSection>(
     (initialSection as SettingsSection) || "pentest"
   );
   const [isLoading, setIsLoading] = useState(false);
+
+  // Hold the latest pending settings so the debounced flush always writes
+  // the most recent value, regardless of how many rapid edits happened.
+  const pendingRef = useRef<GolishSettings | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (initialSection) {
@@ -49,32 +56,53 @@ export function useSettingsNavigation(initialSection?: string) {
       .finally(() => setIsLoading(false));
   }, []);
 
-  const saveSettings = useCallback(async (settingsToSave: GolishSettings) => {
+  const flushSave = useCallback(async () => {
+    const snapshot = pendingRef.current;
+    if (!snapshot) return;
+    pendingRef.current = null;
     try {
-      const currentCodebases = await listIndexedCodebases();
-      const updatedCodebases: CodebaseConfig[] = currentCodebases.map((cb) => ({
-        path: cb.path,
-        memory_file: cb.memory_file,
-      }));
-      const finalSettings = { ...settingsToSave, codebases: updatedCodebases };
-      await updateSettings(finalSettings);
-      window.dispatchEvent(new CustomEvent("settings-updated", { detail: finalSettings }));
+      await updateSettings(snapshot);
+      window.dispatchEvent(new CustomEvent("settings-updated", { detail: snapshot }));
     } catch (err) {
       logger.error("Failed to save settings:", err);
       notify.error("Failed to save settings");
     }
   }, []);
 
+  const scheduleSave = useCallback(
+    (next: GolishSettings) => {
+      pendingRef.current = next;
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        void flushSave();
+      }, SAVE_DEBOUNCE_MS);
+    },
+    [flushSave]
+  );
+
+  // On unmount, flush any pending change synchronously so we don't lose the
+  // user's last edit when they close the dialog quickly.
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+        void flushSave();
+      }
+    };
+  }, [flushSave]);
+
   const updateSection = useCallback(
     <K extends keyof GolishSettings>(section: K, value: GolishSettings[K]) => {
       setSettings((prev) => {
         if (!prev) return null;
         const updated = { ...prev, [section]: value };
-        saveSettings(updated);
+        scheduleSave(updated);
         return updated;
       });
     },
-    [saveSettings]
+    [scheduleSave]
   );
 
   const handleNetworkChange = useCallback(

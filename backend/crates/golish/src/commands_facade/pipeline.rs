@@ -5,5 +5,6 @@
 //!   `pipeline_delete`, `pipeline_load`, `pipeline_execute`
 //! - `pipeline_list_templates`, `pipeline_save_template`,
 //!   `pipeline_delete_template`
+//! - `pipeline_list_ai_tools` (in-process AI tool catalog for the editor)
 
 pub use crate::tools::pipeline::*;

@@ -12,6 +12,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { logAudit } from "@/lib/audit";
 import {
   matchPocsForTarget,
   type NucleiScanOptions,
@@ -21,8 +22,7 @@ import {
 } from "@/lib/pentest/scan-runner";
 import { getProjectPath } from "@/lib/projects";
 import { securityApi } from "@/lib/security";
-import { SEV_BADGE } from "@/lib/severity";
-import { SEV_DOT as _SEV_DOT } from "@/lib/severity";
+import { SEV_DOT as _SEV_DOT, SEV_BADGE } from "@/lib/severity";
 import { cn } from "@/lib/utils";
 
 const SEV_COLORS: Record<string, string> = {
@@ -93,6 +93,13 @@ export function NucleiSection({ targetId, targetUrl }: { targetId: string; targe
         Object.keys(opts).length > 0 ? opts : undefined
       );
       setScanResult(result);
+      logAudit({
+        action: "tool_executed",
+        category: "scan",
+        details: `nuclei on ${targetUrl}`,
+        entityType: "target",
+        entityId: targetId,
+      });
     } catch (e) {
       setScanError(String(e));
     } finally {
@@ -133,6 +140,13 @@ export function NucleiSection({ targetId, targetUrl }: { targetId: string; targe
         Object.keys(opts).length > 0 ? opts : undefined
       );
       setScanResult(result);
+      logAudit({
+        action: "tool_executed",
+        category: "scan",
+        details: `nuclei on ${targetUrl}`,
+        entityType: "target",
+        entityId: targetId,
+      });
     } catch (e) {
       setScanError(String(e));
     } finally {

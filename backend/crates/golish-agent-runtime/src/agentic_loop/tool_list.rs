@@ -86,9 +86,30 @@ pub(crate) async fn build_tool_list(
         }
     }
 
-    // Add sub-agent dispatch tools when depth budget remains.
-    // Sub-agents are controlled by the registry, not the tool config.
-    if sub_agent_context.depth < MAX_AGENT_DEPTH - 1 {
+    // Add sub-agent dispatch tools when:
+    //   - the user has enabled sub-agents for this turn, AND
+    //   - we still have agent-depth budget left.
+    //
+    // Task mode is an exception: it requires sub-agents to function (the
+    // primary agent is orchestration-only) so we always expose them when
+    // depth permits, regardless of `use_agents`.
+    //
+    // **Chat mode is architecturally a single-agent path**: multi-agent
+    // orchestration belongs to task mode only. Even if `use_agents=true`
+    // is left over from a previous turn or a stale persisted setting,
+    // chat mode must NOT expose `sub_agent_*` tools — otherwise the LLM
+    // sees `sub_agent_planner` and dutifully decomposes trivial inputs
+    // like "123" into 3-7 subtasks dispatched to adviser/worker.
+    // See dispatcher bug analysis (full-stack 2026-05-05).
+    let is_chat_mode = !ctx.execution_mode.is_task();
+    let sub_agents_required_by_mode = is_task_primary || is_task_subtask;
+    let sub_agents_allowed = if is_chat_mode {
+        false
+    } else {
+        sub_agent_context.depth < MAX_AGENT_DEPTH - 1
+            && (ctx.use_agents || sub_agents_required_by_mode)
+    };
+    if sub_agents_allowed {
         let registry = ctx.sub_agent_registry.read().await;
         let mut sub_agent_tools = get_sub_agent_tool_definitions(&registry).await;
         if is_task_primary {
@@ -103,6 +124,14 @@ pub(crate) async fn build_tool_list(
             });
         }
         tools.extend(sub_agent_tools);
+    } else if is_chat_mode {
+        tracing::debug!(
+            "[tool_list] Sub-agent dispatch tools omitted (chat mode is single-agent only)"
+        );
+    } else if !ctx.use_agents && !sub_agents_required_by_mode {
+        tracing::debug!(
+            "[tool_list] Sub-agent dispatch tools omitted (user disabled sub-agents)"
+        );
     }
 
     tracing::debug!(

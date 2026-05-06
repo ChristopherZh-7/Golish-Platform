@@ -328,6 +328,7 @@ async fn register_pentest_tools(
             state.active_terminal_session.clone(),
             state.pentest_busy_sessions.clone(),
             state.ai_state.runtime.clone(),
+            state.db_pool.clone(),
         );
         let mut registry = bridge.tool_registry().write().await;
         for tool in pentest_tools {

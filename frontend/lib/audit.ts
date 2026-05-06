@@ -3,7 +3,7 @@
  * the global store, then fire-and-forget delegates to the typed
  * facade in `@/lib/api/audit-log`.
  *
- * IPC layer lives at `@/lib/api/audit-log`. See ADR-0009 Phase 2D-2.
+ * IPC layer lives at `@/lib/api/audit-log`.
  */
 
 import { logAuditEntry } from "@/lib/api/audit-log";

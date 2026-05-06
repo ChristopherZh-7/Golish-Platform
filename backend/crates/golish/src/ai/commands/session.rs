@@ -379,14 +379,17 @@ pub async fn restore_ai_session(
                     sidecar_session_id,
                     e
                 );
-                // Fall back to starting a new sidecar session
+                // Fall back to starting a new sidecar session. The sidecar
+                // can be intentionally disabled — degrade gracefully and
+                // log at info level so it doesn't pollute startup with
+                // WARNs that look like real failures.
                 match state.sidecar_state.start_session(&initial_request) {
                     Ok(sid) => {
                         tracing::info!("Started new sidecar session {} for restored session", sid);
                     }
                     Err(e) => {
-                        tracing::warn!(
-                            "Failed to start sidecar session for restored session: {}",
+                        tracing::info!(
+                            "Sidecar session not started for restored session: {}",
                             e
                         );
                     }
@@ -401,8 +404,8 @@ pub async fn restore_ai_session(
                 tracing::info!("Started new sidecar session {} for restored session", sid);
             }
             Err(e) => {
-                tracing::warn!(
-                    "Failed to start sidecar session for restored session: {}",
+                tracing::info!(
+                    "Sidecar session not started for restored session: {}",
                     e
                 );
             }

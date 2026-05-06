@@ -9,9 +9,8 @@
 //! 3. Emit an error + break if the cancellation flag is set.
 //! 4. Emit an error + break if `iteration > MAX_TOOL_ITERATIONS`.
 //!
-//! This is the first phase extracted under ADR-0010. The old inline
-//! equivalent lived in the middle of `run_agentic_loop_unified`; see
-//! the ADR's "Phase inventory" table for the full migration plan.
+//! This is the first phase extracted from the agentic loop. The old
+//! inline equivalent lived in the middle of `run_agentic_loop_unified`.
 
 use tracing::Span;
 

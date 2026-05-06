@@ -4,8 +4,7 @@
 //! returns a `PhaseOutcome` telling the scheduler whether to continue,
 //! skip to the next iteration, or break the loop.
 //!
-//! Extracted phases are added one PR at a time — see the migration
-//! plan in `docs/adr/0010-turn-executor-state-machine.md`.
+//! Extracted phases are added one PR at a time.
 
 pub mod assistant_push;
 pub mod compaction;

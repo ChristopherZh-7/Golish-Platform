@@ -68,5 +68,4 @@ itself; would benefit the whole rig ecosystem.
 - `backend/crates/rig-anthropic-vertex/`, `rig-openai-responses/`,
   `rig-gemini-vertex/`, `rig-zai-sdk/`
 - `backend/Cargo.toml:218` — `rig-core = "^0.36.0"`
-- ADR-0002 (rig-core vs LangChain-rs) — `docs/adr/0002-rig-core-vs-langchain-rs.md`
 - Upstream rig: <https://github.com/0xPlaygrounds/rig>

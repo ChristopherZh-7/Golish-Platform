@@ -12,8 +12,8 @@
 //! - Message-history management
 //! - Extended thinking (streaming reasoning content)
 //!
-//! ADR-0010 documents the phase-by-phase migration; this file is now
-//! the thin public surface (≤ 150 LOC) that ADR-0010 C1-6 targeted.
+//! This file is the thin public surface (≤ 150 LOC) of the agentic loop;
+//! the phase-by-phase implementation lives in `turn::*`.
 
 use anyhow::Result;
 use rig::completion::Message;

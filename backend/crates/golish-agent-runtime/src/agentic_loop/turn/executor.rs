@@ -7,11 +7,11 @@
 //!
 //! ## Why a single function (not yet a `TurnExecutor` struct)?
 //!
-//! ADR-0010 sketches a future `TurnExecutor` struct with `phase_order`
-//! and `Vec<Box<dyn TurnInterceptor>>`. We deliberately keep the
-//! milestone scope minimal: the phases all have heterogeneous
-//! signatures, so unifying them behind a single trait would be a large
-//! follow-on effort. The C1-6 contract is just:
+//! A future `TurnExecutor` struct with `phase_order` and
+//! `Vec<Box<dyn TurnInterceptor>>` is sketched but not implemented.
+//! We deliberately keep the milestone scope minimal: the phases all
+//! have heterogeneous signatures, so unifying them behind a single
+//! trait would be a large follow-on effort. The current contract is just:
 //!
 //! - move the body out of `mod.rs` so it shrinks to ≤150 LOC, and
 //! - make the phase order *visibly* the body of one function so the
@@ -138,7 +138,7 @@ where
         let mut accumulated_response = String::new();
         let mut accumulated_thinking = String::new();
         let mut total_usage = TokenUsage::default();
-        // Loop-wide state lives in `TurnState` (see ADR-0010):
+        // Loop-wide state lives in `TurnState`:
         //   - `iteration` (set by `pre_flight`)
         //   - `reflector_active` (set by `first_iter_hooks`)
         //   - `consecutive_no_tool_turns`, `total_reflector_nudges`
