@@ -386,10 +386,8 @@ export const AIChatPanel = memo(function AIChatPanel() {
             <div className="flex items-center gap-1.5">
               <ExecutionModePicker
                 chatExecutionMode={modes.chatExecutionMode}
-                chatUseSubAgents={modes.chatUseSubAgents}
                 onExecutionModeChange={modes.handleExecutionModeChange}
                 onAgentModeChange={modes.handleAgentModeChange}
-                onToggleSubAgents={modes.handleToggleSubAgents}
               />
               <ChatModelSelector
                 modelDisplay={modelDisplay}
