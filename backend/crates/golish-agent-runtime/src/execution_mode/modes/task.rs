@@ -39,15 +39,22 @@ impl ExecutionModePolicy for TaskModePolicy {
     }
 
     async fn primary_tools(&self, _ctx: &PolicyContext<'_>) -> ToolSelection {
+        // Task primary (depth==0) is orchestration-only. The legacy
+        // `tool_list.rs` explicitly filtered out four "internal"
+        // sub-agents from the dispatch list: orchestrator (always
+        // pipeline-only), planner, refiner, reflector. We keep the
+        // same shape — only the worker specialists (pentester / browser
+        // / coder / researcher / memorist / installer / adviser /
+        // reporter / enricher) are exposed to the primary LLM.
         ToolSelection {
             static_groups: StaticGroupSelection::none(),
             bridge_tools: BridgeToolSelection::none(),
             runtime_tools: RuntimeToolSelection::none(),
             agent_tools: AgentToolSelection {
                 include_dispatch_tools: true,
-                allow_planner: true,
-                allow_refiner: false,   // pipeline-only, never exposed
-                allow_reflector: false, // pipeline-only, never exposed
+                allow_planner: false,
+                allow_refiner: false,
+                allow_reflector: false,
             },
             include_run_command: false,
             include_ask_human: true,
@@ -56,6 +63,13 @@ impl ExecutionModePolicy for TaskModePolicy {
     }
 
     async fn subtask_tools(&self, _ctx: &PolicyContext<'_>) -> ToolSelection {
+        // Task subtask (depth>0) gets the full toolbox so a specialist
+        // can do real work, *and* keeps the sub-agent dispatch tools
+        // so it can delegate further (e.g. `pentester` may need to
+        // call `coder` / `researcher` / `memorist` / `installer` /
+        // `enricher` / `browser`). Planner / refiner / reflector are
+        // intentionally still allowed at this depth — the legacy
+        // tool_list only ring-fenced them at the primary layer.
         ToolSelection {
             static_groups: StaticGroupSelection::all_enabled(),
             bridge_tools: BridgeToolSelection::all_enabled(),
@@ -63,7 +77,12 @@ impl ExecutionModePolicy for TaskModePolicy {
                 pentest_runtime: true,
                 tavily: true,
             },
-            agent_tools: AgentToolSelection::none(),
+            agent_tools: AgentToolSelection {
+                include_dispatch_tools: true,
+                allow_planner: true,
+                allow_refiner: true,
+                allow_reflector: true,
+            },
             include_run_command: true,
             include_ask_human: false,
             deny_overrides: vec!["update_plan".into()],
@@ -81,12 +100,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn task_primary_only_dispatches() {
+    async fn task_primary_only_dispatches_workers() {
         let s = TaskModePolicy.primary_tools(&mock_ctx()).await;
         assert!(!s.bridge_tools.js_collect);
         assert!(!s.static_groups.file_ops);
         assert!(s.agent_tools.include_dispatch_tools);
-        assert!(s.agent_tools.allow_planner);
+        // Legacy parity: the four "internal" sub-agents are filtered
+        // out at the primary layer.
+        assert!(!s.agent_tools.allow_planner);
         assert!(!s.agent_tools.allow_refiner);
         assert!(!s.agent_tools.allow_reflector);
         assert!(s.include_ask_human);
@@ -94,14 +115,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn task_subtask_full_minus_update_plan() {
+    async fn task_subtask_full_with_dispatch() {
         let s = TaskModePolicy.subtask_tools(&mock_ctx()).await;
         assert!(s.bridge_tools.js_collect);
         assert!(s.static_groups.file_ops);
         assert!(s.deny_overrides.iter().any(|n| n == "update_plan"));
         assert!(!s.include_ask_human);
         assert!(s.include_run_command);
-        assert!(!s.agent_tools.include_dispatch_tools);
+        // Subtask agents must be able to delegate further so the
+        // legacy chain pentester -> coder / researcher / browser
+        // continues to work.
+        assert!(s.agent_tools.include_dispatch_tools);
+        assert!(s.agent_tools.allow_planner);
+        assert!(s.agent_tools.allow_refiner);
+        assert!(s.agent_tools.allow_reflector);
     }
 
     #[tokio::test]
