@@ -268,6 +268,11 @@ export function FindingsPanel() {
       if (removed > 0) {
         load();
       }
+      logAudit({
+        action: "findings_deduplicated",
+        category: "findings",
+        details: `合并去重 ${removed} 条 finding`,
+      });
     } catch {
       /* ignore */
     }

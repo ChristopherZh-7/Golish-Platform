@@ -2,10 +2,9 @@
 //!
 //! Each subdomain owns a small, cohesive subset of `#[tauri::command]`
 //! functions plus their helper types. Consumers should reach into
-//! these submodules via `crate::commands_facade::<domain>` (see
-//! ADR-0009 Phase 1); the parent-level `pub use *` bridges that used
-//! to live here were removed once the facade became the single
-//! source of truth.
+//! these submodules via `crate::commands_facade::<domain>`; the
+//! parent-level `pub use *` bridges that used to live here were
+//! removed once the facade became the single source of truth.
 //!
 //! Domains:
 //! - [`fs`] — filesystem (file CRUD, watcher, path completion)

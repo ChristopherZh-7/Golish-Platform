@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  Bot,
   CheckCircle2,
   Database,
   Download,
@@ -8,6 +9,7 @@ import {
   Plus,
   Save,
   Shield,
+  Terminal,
   Trash2,
   X,
 } from "lucide-react";
@@ -15,9 +17,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { checkReconTools, type ReconToolCheck } from "@/lib/ai";
 import { invoke, targets } from "@/lib/api";
 import { onEvent } from "@/lib/events";
-import { scanTools } from "@/lib/pentest/api";
+import { listAiTools, scanTools } from "@/lib/pentest/api";
 import type { Pipeline, PipelineStep } from "@/lib/pentest/pipeline-types";
-import type { ToolConfig } from "@/lib/pentest/types";
+import type { AiToolMeta, ToolConfig } from "@/lib/pentest/types";
 import { getProjectPath } from "@/lib/projects";
 import { runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import { cn } from "@/lib/utils";
@@ -25,17 +27,56 @@ import { DagCanvas } from "./DagComponents";
 
 type ToolWithMeta = ToolConfig & { categoryName?: string; subcategoryName?: string };
 
+type PickerTab = "cli" | "ai";
+
 function uuid() {
   return Math.random().toString(36).slice(2, 10);
+}
+
+/** AI-tool category → tailwind colour token used in the picker chips and
+ *  DAG node headers. Keeps the visual language consistent with the existing
+ *  STEP_ICONS palette in DagComponents.tsx. */
+const AI_CATEGORY_STYLES: Record<string, { text: string; bg: string; border: string }> = {
+  recon: {
+    text: "text-amber-400",
+    bg: "bg-amber-500/10",
+    border: "border-amber-500/15",
+  },
+  scan: {
+    text: "text-violet-400",
+    bg: "bg-violet-500/10",
+    border: "border-violet-500/15",
+  },
+  data: {
+    text: "text-cyan-400",
+    bg: "bg-cyan-500/10",
+    border: "border-cyan-500/15",
+  },
+  control: {
+    text: "text-indigo-400",
+    bg: "bg-indigo-500/10",
+    border: "border-indigo-500/15",
+  },
+  other: {
+    text: "text-muted-foreground/60",
+    bg: "bg-white/[0.04]",
+    border: "border-white/[0.08]",
+  },
+};
+
+function aiCategoryStyle(cat: string) {
+  return AI_CATEGORY_STYLES[cat] ?? AI_CATEGORY_STYLES.other;
 }
 
 export function PipelinePanel() {
   const [pipelines, setPipelines] = useState<Pipeline[]>([]);
   const [active, setActive] = useState<Pipeline | null>(null);
   const [tools, setTools] = useState<ToolWithMeta[]>([]);
+  const [aiTools, setAiTools] = useState<AiToolMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [dirty, setDirty] = useState(false);
   const [showToolPicker, setShowToolPicker] = useState(false);
+  const [pickerTab, setPickerTab] = useState<PickerTab>("cli");
   const [toolCheck, setToolCheck] = useState<ReconToolCheck | null>(null);
   const [aiRunning, setAiRunning] = useState(false);
   const [aiProgress, setAiProgress] = useState<{
@@ -62,12 +103,14 @@ export function PipelinePanel() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [pl, tl] = await Promise.all([
+      const [pl, tl, ai] = await Promise.all([
         invoke<Pipeline[]>("pipeline_list", { projectPath: getProjectPath() }),
         scanTools(),
+        listAiTools().catch(() => [] as AiToolMeta[]),
       ]);
       setPipelines(Array.isArray(pl) ? pl : []);
       setTools((tl?.tools || []).filter((t) => t.launchMode === "cli" && t.installed));
+      setAiTools(Array.isArray(ai) ? ai : []);
     } catch {
       /* */
     }
@@ -137,7 +180,7 @@ export function PipelinePanel() {
     [active, load]
   );
 
-  const addStep = useCallback(
+  const addCliStep = useCallback(
     (tool: ToolWithMeta) => {
       if (!active) return;
       const s: PipelineStep = {
@@ -165,6 +208,48 @@ export function PipelinePanel() {
     },
     [active]
   );
+
+  const addAiStep = useCallback(
+    (tool: AiToolMeta) => {
+      if (!active) return;
+      const s: PipelineStep = {
+        id: uuid(),
+        step_type: "ai_tool",
+        tool_name: tool.name,
+        tool_id: `ai:${tool.name}`,
+        command_template: `ai_tool:${tool.name}`,
+        args: [],
+        params: {},
+        input_from: null,
+        exec_mode: "pipe",
+        requires: null,
+        db_action: null,
+        x: 0,
+        y: 0,
+      };
+      const conns = [...active.connections];
+      if (active.steps.length > 0)
+        conns.push({ from_step: active.steps[active.steps.length - 1].id, to_step: s.id });
+      setActive({ ...active, steps: [...active.steps, s], connections: conns });
+      setSelectedStepId(s.id);
+      setDirty(true);
+      setShowToolPicker(false);
+    },
+    [active]
+  );
+
+  const aiToolsByCategory = useMemo(() => {
+    const groups = new Map<string, AiToolMeta[]>();
+    for (const t of aiTools) {
+      const key = t.category || "other";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)?.push(t);
+    }
+    return Array.from(groups.entries()).sort((a, b) => {
+      const order = ["recon", "scan", "data", "control", "other"];
+      return order.indexOf(a[0]) - order.indexOf(b[0]);
+    });
+  }, [aiTools]);
 
   const updateStep = useCallback(
     (id: string, patch: Partial<PipelineStep>) => {
@@ -431,22 +516,108 @@ export function PipelinePanel() {
                 </div>
               )}
 
-              {/* Tool picker */}
+              {/* Tool picker — split between external CLI tools and
+                  in-process AI tools so users can compose mixed pipelines. */}
               {showToolPicker && (
                 <div className="flex-shrink-0 px-4 py-2.5 border-b border-white/[0.04] bg-white/[0.02]">
-                  <div className="flex flex-wrap gap-1.5 max-h-[100px] overflow-y-auto">
-                    {tools.map((tool) => (
-                      <button
-                        type="button"
-                        key={tool.id}
-                        onClick={() => addStep(tool)}
-                        className="flex items-center gap-1.5 px-2 py-1 text-[10px] rounded-md border border-white/[0.06] bg-white/[0.02] hover:bg-accent/10 hover:border-accent/20 hover:text-accent transition-all"
-                      >
-                        {tool.icon && <span className="text-[10px]">{tool.icon}</span>}{" "}
-                        <span>{tool.name}</span>
-                      </button>
-                    ))}
+                  <div className="flex items-center gap-1 mb-2">
+                    <button
+                      type="button"
+                      onClick={() => setPickerTab("cli")}
+                      className={cn(
+                        "flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-md border transition-all",
+                        pickerTab === "cli"
+                          ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/20"
+                          : "text-muted-foreground/40 border-transparent hover:text-foreground/60 hover:bg-white/[0.03]"
+                      )}
+                    >
+                      <Terminal className="w-2.5 h-2.5" /> CLI
+                      <span className="text-[9px] text-muted-foreground/30 ml-0.5">
+                        {tools.length}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPickerTab("ai")}
+                      className={cn(
+                        "flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-md border transition-all",
+                        pickerTab === "ai"
+                          ? "bg-violet-500/10 text-violet-300 border-violet-500/20"
+                          : "text-muted-foreground/40 border-transparent hover:text-foreground/60 hover:bg-white/[0.03]"
+                      )}
+                    >
+                      <Bot className="w-2.5 h-2.5" /> AI Built-in
+                      <span className="text-[9px] text-muted-foreground/30 ml-0.5">
+                        {aiTools.length}
+                      </span>
+                    </button>
+                    <span className="text-[9px] text-muted-foreground/25 ml-2 italic">
+                      {pickerTab === "cli"
+                        ? "External binaries (subfinder, httpx, …)"
+                        : "In-process tools (js_collect, auth_probe, …)"}
+                    </span>
                   </div>
+                  {pickerTab === "cli" ? (
+                    <div className="flex flex-wrap gap-1.5 max-h-[120px] overflow-y-auto">
+                      {tools.length === 0 ? (
+                        <span className="text-[10px] text-muted-foreground/30 italic">
+                          No installed CLI tools detected. Install via Tool Manager.
+                        </span>
+                      ) : (
+                        tools.map((tool) => (
+                          <button
+                            type="button"
+                            key={tool.id}
+                            onClick={() => addCliStep(tool)}
+                            className="flex items-center gap-1.5 px-2 py-1 text-[10px] rounded-md border border-white/[0.06] bg-white/[0.02] hover:bg-accent/10 hover:border-accent/20 hover:text-accent transition-all"
+                          >
+                            {tool.icon && <span className="text-[10px]">{tool.icon}</span>}{" "}
+                            <span>{tool.name}</span>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-2 max-h-[180px] overflow-y-auto">
+                      {aiTools.length === 0 ? (
+                        <span className="text-[10px] text-muted-foreground/30 italic">
+                          No AI tools registered. Restart the app to refresh the catalog.
+                        </span>
+                      ) : (
+                        aiToolsByCategory.map(([cat, list]) => {
+                          const style = aiCategoryStyle(cat);
+                          return (
+                            <div key={cat} className="flex flex-col gap-1">
+                              <span
+                                className={cn(
+                                  "self-start px-1.5 py-[1px] text-[9px] rounded uppercase tracking-wider border",
+                                  style.bg,
+                                  style.text,
+                                  style.border
+                                )}
+                              >
+                                {cat}
+                              </span>
+                              <div className="flex flex-wrap gap-1.5">
+                                {list.map((tool) => (
+                                  <button
+                                    type="button"
+                                    key={tool.name}
+                                    onClick={() => addAiStep(tool)}
+                                    title={tool.description}
+                                    className="flex items-center gap-1.5 px-2 py-1 text-[10px] rounded-md border border-violet-500/15 bg-violet-500/5 hover:bg-violet-500/15 hover:border-violet-500/30 hover:text-violet-200 transition-all"
+                                  >
+                                    {tool.icon && <span className="text-[10px]">{tool.icon}</span>}{" "}
+                                    <span className="font-mono">{tool.name}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 

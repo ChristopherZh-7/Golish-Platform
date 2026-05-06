@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { logAudit } from "@/lib/audit";
 import type { ScanEndpoint } from "@/lib/pentest/scan-queue";
 import { getProjectPath } from "@/lib/projects";
 import type { VaultEntrySafe } from "@/lib/security";
@@ -116,14 +117,34 @@ export function ScannerPanel({
     queuedCount,
     addEndpoint,
     removeEndpoint,
-    scanSelected: handleScanSelected,
-    scanAll: handleScanAll,
+    scanSelected,
+    scanAll,
     stopAll: handleStopAll,
     pauseAll: handlePauseAll,
     resumeAll: handleResumeAll,
     clearCompleted: handleClearCompleted,
     clearAll: handleClearAll,
   } = queue;
+
+  const handleScanSelected = useCallback(() => {
+    if (sel) {
+      logAudit({
+        action: "tool_executed",
+        category: "scan",
+        details: `zap_active_scan on ${sel.url}`,
+      });
+    }
+    scanSelected();
+  }, [scanSelected, sel]);
+
+  const handleScanAll = useCallback(() => {
+    logAudit({
+      action: "tool_executed",
+      category: "scan",
+      details: `zap_scan_all on ${queuedCount} endpoints`,
+    });
+    scanAll();
+  }, [scanAll, queuedCount]);
 
   const handleAddEndpoint = useCallback(() => {
     if (addEndpoint(targetUrl)) {

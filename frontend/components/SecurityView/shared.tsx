@@ -1,19 +1,15 @@
 import {
-  Check,
   ChevronDown,
   ChevronRight,
-  Copy,
   Download,
   Loader2,
   Play,
   RefreshCw,
   Shield,
-  ShieldCheck,
   ShieldX,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useZapProxyCert } from "@/hooks/useZapProxyCert";
 import type { ZapStatusInfo } from "@/lib/pentest/types";
 import { cn } from "@/lib/utils";
 
@@ -189,9 +185,6 @@ export function ZapNotRunning({
   error: string | null;
 }) {
   const { t } = useTranslation();
-  const proxyAddr = "127.0.0.1:8090";
-  const { copied, certLoading, certResult, copyProxy, handleDownloadCert, handleInstallCert } =
-    useZapProxyCert(proxyAddr);
 
   return (
     <div className="h-full overflow-y-auto">
@@ -215,88 +208,12 @@ export function ZapNotRunning({
           {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
           {t("security.startZap")}
         </button>
-
-        <div className="w-full border-t border-border/15 pt-5 mt-2 space-y-4">
-          <h3 className="text-[12px] font-semibold text-foreground/70 text-center">
-            {t("browser.proxyConfig", "Proxy & Certificate Setup")}
-          </h3>
-
-          <div className="rounded-lg border border-border/15 bg-[var(--bg-hover)]/15 p-3.5">
-            <span className="text-[10px] font-medium text-foreground/50 block mb-2">
-              {t("browser.proxyConfig", "HTTP Proxy")}
-            </span>
-            <div className="flex items-center gap-2 bg-background/50 rounded-md px-3 py-2 border border-border/10">
-              <code className="text-[12px] font-mono text-accent/80 flex-1">{proxyAddr}</code>
-              <button
-                type="button"
-                onClick={copyProxy}
-                className="p-1 rounded text-muted-foreground/40 hover:text-foreground transition-colors"
-              >
-                {copied ? (
-                  <Check className="w-3 h-3 text-green-400" />
-                ) : (
-                  <Copy className="w-3 h-3" />
-                )}
-              </button>
-            </div>
-            <p className="text-[10px] text-muted-foreground/40 mt-2 leading-relaxed">
-              {t(
-                "browser.proxyManualHint",
-                "Configure this proxy in your browser (e.g. FoxyProxy) to route traffic through ZAP."
-              )}
-            </p>
-          </div>
-
-          <div className="rounded-lg border border-border/15 bg-[var(--bg-hover)]/15 p-3.5">
-            <span className="text-[10px] font-medium text-foreground/50 block mb-2">
-              {t("browser.sslCert", "HTTPS Certificate")}
-            </span>
-            <p className="text-[10px] text-muted-foreground/40 mb-3 leading-relaxed">
-              {t(
-                "browser.sslCertHint",
-                "Install ZAP's root CA certificate to intercept HTTPS traffic without warnings."
-              )}
-            </p>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleDownloadCert}
-                disabled={certLoading}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-medium bg-[var(--bg-hover)]/50 text-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50"
-              >
-                {certLoading ? (
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                ) : (
-                  <Download className="w-3 h-3" />
-                )}
-                {t("browser.downloadCert", "Download")}
-              </button>
-              <button
-                type="button"
-                onClick={handleInstallCert}
-                disabled={certLoading}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors disabled:opacity-50"
-              >
-                {certLoading ? (
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                ) : (
-                  <ShieldCheck className="w-3 h-3" />
-                )}
-                {t("browser.installCert", "Install to Keychain")}
-              </button>
-            </div>
-            {certResult && (
-              <div
-                className={cn(
-                  "mt-2 px-3 py-1.5 rounded-md text-[10px] font-mono break-all",
-                  certResult.ok ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"
-                )}
-              >
-                {certResult.msg}
-              </div>
-            )}
-          </div>
-        </div>
+        <p className="text-[10px] text-muted-foreground/40 text-center">
+          {t(
+            "security.setupHintTopRight",
+            "Need to install the HTTPS root cert? Click the gear icon in the top-right after starting ZAP."
+          )}
+        </p>
       </div>
     </div>
   );

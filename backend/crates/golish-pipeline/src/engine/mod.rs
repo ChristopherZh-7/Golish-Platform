@@ -7,7 +7,10 @@ pub(crate) mod types;
 
 pub mod templates;
 
-pub use orchestrator::{execute_pipeline_headless, PipelineRunner};
+pub use orchestrator::{
+    execute_pipeline_headless, execute_pipeline_headless_with_ai_tools,
+    execute_pipeline_headless_with_parent, PipelineRunner,
+};
 pub use templates::PIPELINE_CANCELLED;
 pub use types::{PipelineRunResult, PipelineStepInfo, StepResult};
 

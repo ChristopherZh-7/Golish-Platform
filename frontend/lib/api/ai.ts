@@ -1,8 +1,7 @@
 /**
  * AI agent IPC wrappers — re-exports the entire `frontend/lib/ai/`
  * subdirectory so the facade stays in sync with upstream automatically
- * (mirrors the glob pattern used for `mcp`, `indexer`, etc. in
- * ADR-0009 Phase 2A).
+ * (mirrors the glob pattern used for `mcp`, `indexer`, etc).
  *
  * The implementation files still live under `frontend/lib/ai/`:
  * - `persistence.ts` — chat session save/load/agent definitions/HITL config

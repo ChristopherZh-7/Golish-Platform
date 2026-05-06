@@ -5,8 +5,7 @@
  * (e.g. `import { listServers } from "@/lib/mcp"`). New code should
  * import from `@/lib/api/mcp` or use `api.mcp.*` from `@/lib/api`.
  *
- * See `docs/development.md#adding-a-new-tauri-command-ipc` and
- * ADR-0009 Phase 2.
+ * See `docs/development.md#adding-a-new-tauri-command-ipc`.
  */
 
 export * from "@/lib/api/mcp";

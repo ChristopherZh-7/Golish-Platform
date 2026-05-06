@@ -44,26 +44,43 @@ export function useAiChatInit(createTerminalTab: CreateTerminalFn): UseAiChatIni
       .catch(() => {});
   }, []);
 
-  // Load configured providers from settings
+  // Load configured providers from settings.
+  //
+  // A provider only appears in the chat model picker when BOTH:
+  //   1. It has working credentials (api_key / vertex creds), AND
+  //   2. `show_in_selector` is not explicitly disabled.
+  //
+  // The second clause lets users keep the credentials in Settings (so
+  // sub-agents or scripted runs can still call the provider) while hiding
+  // the model from the casual chat picker — useful when you have many keys
+  // but only want to drive a small subset from chat.
   useEffect(() => {
     const loadProviders = () => {
       getSettings()
         .then((settings) => {
           const configured = new Set<string>();
           const ai = settings.ai;
-          if (ai.anthropic?.api_key) configured.add("anthropic");
-          if (ai.openai?.api_key) configured.add("openai");
-          if (ai.openrouter?.api_key) configured.add("openrouter");
-          if (ai.gemini?.api_key) configured.add("gemini");
-          if (ai.groq?.api_key) configured.add("groq");
-          if (ai.xai?.api_key) configured.add("xai");
-          if (ai.zai_sdk?.api_key) configured.add("zai_sdk");
-          if (ai.nvidia?.api_key) configured.add("nvidia");
-          if (ai.vertex_ai?.credentials_path || ai.vertex_ai?.project_id)
+          // `show_in_selector` is optional and defaults to `true`. Treat
+          // `undefined`/`null` as enabled; only `=== false` hides.
+          const visible = (v: { show_in_selector?: boolean } | null | undefined): boolean =>
+            v?.show_in_selector !== false;
+
+          if (ai.anthropic?.api_key && visible(ai.anthropic)) configured.add("anthropic");
+          if (ai.openai?.api_key && visible(ai.openai)) configured.add("openai");
+          if (ai.openrouter?.api_key && visible(ai.openrouter)) configured.add("openrouter");
+          if (ai.gemini?.api_key && visible(ai.gemini)) configured.add("gemini");
+          if (ai.groq?.api_key && visible(ai.groq)) configured.add("groq");
+          if (ai.xai?.api_key && visible(ai.xai)) configured.add("xai");
+          if (ai.zai_sdk?.api_key && visible(ai.zai_sdk)) configured.add("zai_sdk");
+          if (ai.nvidia?.api_key && visible(ai.nvidia)) configured.add("nvidia");
+          if ((ai.vertex_ai?.credentials_path || ai.vertex_ai?.project_id) && visible(ai.vertex_ai))
             configured.add("vertex_ai");
-          if (ai.vertex_gemini?.credentials_path || ai.vertex_gemini?.project_id)
+          if (
+            (ai.vertex_gemini?.credentials_path || ai.vertex_gemini?.project_id) &&
+            visible(ai.vertex_gemini)
+          )
             configured.add("vertex_gemini");
-          configured.add("ollama");
+          if (visible(ai.ollama)) configured.add("ollama");
           setConfiguredProviders(configured);
         })
         .catch(() => {});

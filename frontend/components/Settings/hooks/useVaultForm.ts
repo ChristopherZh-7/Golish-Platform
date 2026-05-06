@@ -162,7 +162,7 @@ export function useVaultForm() {
         });
         loadEntries();
         logAudit({
-          action: "vault_entry_deleted",
+          action: "credential_deleted",
           category: "vault",
           details: name,
           entityType: "vault",
@@ -189,6 +189,13 @@ export function useVaultForm() {
         const value = await vault.getVaultValue(id, getProjectPath());
         setRevealedValues((v) => ({ ...v, [id]: value }));
         setRevealedIds((s) => new Set(s).add(id));
+        logAudit({
+          action: "credential_accessed",
+          category: "vault",
+          details: `revealed ${id}`,
+          entityType: "vault",
+          entityId: id,
+        });
       } catch (e) {
         console.error("Failed to reveal:", e);
       }
@@ -206,6 +213,13 @@ export function useVaultForm() {
       if (entry.project) lines.push(`Project: ${entry.project}`);
       if (entry.tags.length > 0) lines.push(`Tags: ${entry.tags.join(", ")}`);
       await copyToClipboard(lines.join("\n"));
+      logAudit({
+        action: "credential_accessed",
+        category: "vault",
+        details: `copied ${entry.name}`,
+        entityType: "vault",
+        entityId: entry.id,
+      });
     } catch {
       /* ignore */
     }

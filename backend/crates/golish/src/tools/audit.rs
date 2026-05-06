@@ -261,3 +261,22 @@ pub async fn search_logs_list(
 ?;
     Ok(rows)
 }
+
+// ── Target activity timeline (cross-table aggregate) ───────────────────
+
+/// Return a per-target activity timeline aggregated from `audit_log`,
+/// `target_assets`, `api_endpoints`, `passive_scan_logs`, and `findings`,
+/// newest event first. The shape is `golish_db::repo::audit::TimelineEntry`
+/// (`source / event / category / details / toolName / status / detail /
+/// createdAt`); see the DAO docstring for the exact field semantics.
+#[tauri::command]
+pub async fn target_timeline(
+    state: tauri::State<'_, DbState>,
+    target_id: String,
+    limit: Option<i64>,
+) -> Result<Vec<golish_db::repo::audit::TimelineEntry>, GolishError> {
+    let pool = state.pool_ready().await?;
+    let tid = uuid::Uuid::parse_str(&target_id)?;
+    let rows = golish_db::repo::audit::target_timeline(pool, tid, limit.unwrap_or(200)).await?;
+    Ok(rows)
+}

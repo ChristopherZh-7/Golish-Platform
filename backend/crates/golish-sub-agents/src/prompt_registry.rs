@@ -38,6 +38,16 @@ static TEMPLATES: &[(&str, &str)] = &[
     ("mentor", include_str!("../prompts/mentor.tera")),
     ("summarizer", include_str!("../prompts/summarizer.tera")),
     ("toolcall_fixer", include_str!("../prompts/toolcall_fixer.tera")),
+    // Newly added — these mirror their hardcoded `build_*_prompt` fallbacks
+    // so the registry-driven `create_default_sub_agents_from_registry`
+    // path no longer logs `Template '...' not found` on startup.
+    ("installer", include_str!("../prompts/installer.tera")),
+    ("browser", include_str!("../prompts/browser.tera")),
+    ("enricher", include_str!("../prompts/enricher.tera")),
+    // `orchestrator.tera` embeds `{{execution_context}}` inside
+    // `{% raw %}` blocks so Tera passes it through verbatim — the
+    // agent runtime substitutes it via `String::replace` later.
+    ("orchestrator", include_str!("../prompts/orchestrator.tera")),
 ];
 
 /// Template-based prompt registry.
@@ -234,5 +244,62 @@ mod tests {
         let rendered = registry.render("pentester", &ctx).await.unwrap();
         assert!(rendered.contains("CUSTOM pentester"));
         assert!(rendered.contains("hello"));
+    }
+
+    /// Newly added templates (`installer`, `browser`, `enricher`,
+    /// `orchestrator`) must be loadable without a `Template not found`
+    /// error. This is what fixed the noisy startup WARN logs.
+    #[tokio::test]
+    async fn test_newly_added_templates_load_and_render() {
+        let registry = PromptRegistry::new();
+        let templates = registry.list_templates().await;
+        for name in ["installer", "browser", "enricher", "orchestrator"] {
+            assert!(
+                templates.contains(&name.to_string()),
+                "template '{name}' must be registered in TEMPLATES"
+            );
+        }
+
+        let ctx = PromptContext::new();
+        let installer = registry.render("installer", &ctx).await.unwrap();
+        assert!(
+            installer.contains("tool installation"),
+            "installer template body should mention tool installation"
+        );
+
+        let browser = registry.render("browser", &ctx).await.unwrap();
+        assert!(
+            browser.contains("WEB BROWSER & JS ANALYSIS SPECIALIST"),
+            "browser template should keep its title heading"
+        );
+
+        let enricher = registry.render("enricher", &ctx).await.unwrap();
+        assert!(
+            enricher.contains("CONTEXT ENRICHMENT SPECIALIST"),
+            "enricher template should keep its title heading"
+        );
+    }
+
+    /// `orchestrator.tera` wraps `{{execution_context}}` in `{% raw %}` so
+    /// Tera passes the placeholder through verbatim — the agent runtime
+    /// (`bridge_executor::trait_impl::*`) substitutes it via
+    /// `String::replace` with the per-task XML. Verify Tera does NOT
+    /// substitute it as an undefined variable (which would make the
+    /// runtime substitution silently no-op).
+    #[tokio::test]
+    async fn test_orchestrator_template_passes_through_runtime_placeholder() {
+        let registry = PromptRegistry::new();
+        let ctx = PromptContext::new();
+        let rendered = registry.render("orchestrator", &ctx).await.unwrap();
+        assert!(
+            rendered.contains("{{execution_context}}"),
+            "orchestrator template must keep `{{{{execution_context}}}}` \
+             literal so the runtime can replace it; rendered output: {}",
+            &rendered[rendered.len().saturating_sub(400)..]
+        );
+        assert!(
+            rendered.contains("TEAM ORCHESTRATION MANAGER"),
+            "orchestrator template should keep its title heading"
+        );
     }
 }

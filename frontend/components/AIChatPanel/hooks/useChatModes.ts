@@ -81,11 +81,33 @@ export function useChatModes() {
       if (conv.aiInitialized) {
         setExecutionModeBackend(conv.aiSessionId, mode).catch(console.error);
       }
+
+      // Switching to chat mode forcibly turns sub-agents off so frontend
+      // state mirrors the backend-side isolation done by Batch 1
+      // (`prepare.rs`: `has_sub_agents = execution_mode.is_task() && use_agents`).
+      // Without this auto-clear the picker would still show the green toggle
+      // even though the prompt template has been narrowed to single-agent —
+      // misleading the user into thinking specialists are reachable.
+      if (mode === "chat" && chatUseSubAgents) {
+        setChatUseSubAgents(false);
+        if (activeConvId) {
+          const termIds = storeState.conversationTerminals[activeConvId] ?? [];
+          for (const tid of termIds) storeState.setUseAgents(tid, false);
+        }
+        if (conv.aiInitialized) {
+          setUseAgentsBackend(conv.aiSessionId, false).catch(console.error);
+        }
+      }
     },
-    [chatExecutionMode]
+    [chatExecutionMode, chatUseSubAgents]
   );
 
   const handleToggleSubAgents = useCallback(() => {
+    // In chat mode the sub-agent toggle is read-only: user must switch to
+    // task mode first. Silently ignore the click (UI also paints the
+    // toggle as disabled — see ExecutionModePicker.tsx).
+    if (chatExecutionMode === "chat") return;
+
     const newValue = !chatUseSubAgents;
     setChatUseSubAgents(newValue);
     const storeState = useStore.getState();
@@ -100,7 +122,7 @@ export function useChatModes() {
     if (conv.aiInitialized) {
       setUseAgentsBackend(conv.aiSessionId, newValue).catch(console.error);
     }
-  }, [chatUseSubAgents]);
+  }, [chatUseSubAgents, chatExecutionMode]);
 
   const handleToolApprove = useCallback((requestId: string) => {
     const pa = pendingApprovalRef.current;

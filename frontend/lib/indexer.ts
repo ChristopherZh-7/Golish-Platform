@@ -6,8 +6,6 @@
  * including symbols that no consumer uses through `@/lib/indexer`). Consumers
  * that need newer surface should import from `@/lib/api/indexer` directly
  * (or use `api.indexer.*` from `@/lib/api`).
- *
- * See ADR-0009 Phase 2.
  */
 
 export {

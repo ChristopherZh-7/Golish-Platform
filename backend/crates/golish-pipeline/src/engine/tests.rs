@@ -3,6 +3,31 @@ use crate::types::{Pipeline, PipelineConnection, PipelineStep};
 
 use super::templates::{detect_target_type, evaluate_condition, recon_basic_template, topo_layers};
 use super::types::StepResult;
+use crate::engine::templates::builtin_templates;
+
+#[test]
+fn test_js_recon_template_loads_and_uses_ai_tools() {
+    let templates = builtin_templates();
+    let js_recon = templates
+        .iter()
+        .find(|p| p.id == "js_recon")
+        .expect("js_recon should be present in built-in templates");
+    assert!(
+        !js_recon.steps.is_empty(),
+        "js_recon must have at least one step"
+    );
+    // Every step in this template must use the new in-process executor.
+    for step in &js_recon.steps {
+        assert_eq!(
+            step.step_type, "ai_tool",
+            "js_recon step '{}' should be step_type='ai_tool'",
+            step.id
+        );
+    }
+    // Verify the canonical 3-step shape — js_collect → js_extract_apis → auth_probe.
+    let names: Vec<&str> = js_recon.steps.iter().map(|s| s.tool_name.as_str()).collect();
+    assert_eq!(names, &["js_collect", "js_extract_apis", "auth_probe"]);
+}
 
 #[test]
 fn test_detect_target_type() {

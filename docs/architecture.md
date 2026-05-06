@@ -239,8 +239,7 @@ Each slice ships with dedicated `selectors.ts` + `selectors.test.ts` +
 Frontend calls the 548 backend commands via typed wrappers in
 `frontend/lib/` (one file per domain, e.g. `ai.ts`, `git.ts`). There
 is no runtime "router" — each command is a flat namespace. A future
-namespace design is tracked in `docs/adr/` (see B4 in the refactor
-plan).
+namespace design is tracked in the refactor plan (see B4).
 
 ### Managed Tauri state (A4)
 

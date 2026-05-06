@@ -12,11 +12,15 @@ use std::sync::atomic::Ordering;
 use golish_pipeline::{
     builtin_templates, now_ts, templates_dir, Pipeline, PipelineRunResult, PIPELINE_CANCELLED,
 };
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::error::GolishError;
 use crate::event_emitter::TauriEventEmitter;
 use crate::state::DbState;
+use crate::tools::pentest_bridge::{
+    ai_tool_catalog_entry, create_pentest_bridge_tools,
+};
 
 use super::storage::MainStorage;
 
@@ -38,10 +42,22 @@ pub async fn pipeline_execute(
     PIPELINE_CANCELLED.store(false, Ordering::SeqCst);
 
     let pool = state.pool_ready().await?;
-    let emitter = TauriEventEmitter::handle(app);
+    let emitter = TauriEventEmitter::handle(app.clone());
     let storage = MainStorage;
 
-    let result = golish_pipeline::execute_pipeline_headless(
+    // Wire the in-process AI tool registry so steps with
+    // `step_type = "ai_tool"` can call `js_collect`, `js_extract_apis`,
+    // `auth_probe`, etc. inline. Built lazily here (per-execution) because
+    // each `Tool` impl borrows the pool / config, both of which already
+    // live in `AppState`.
+    let pool_arc = std::sync::Arc::new(pool.clone());
+    let ai_tools = create_pentest_bridge_tools(
+        pool_arc,
+        std::sync::Arc::clone(&pentest_cfg),
+        Some(app),
+    );
+
+    let result = golish_pipeline::execute_pipeline_headless_with_ai_tools(
         pool,
         &pipeline,
         &target,
@@ -49,11 +65,65 @@ pub async fn pipeline_execute(
         &pentest_cfg,
         &storage,
         Some(&emitter),
+        None,
+        Some(&ai_tools),
     )
     .await?;
 
     PIPELINE_CANCELLED.store(false, Ordering::SeqCst);
     Ok(result)
+}
+
+/// Public DTO for the `pentest_list_ai_tools` Tauri command. Mirrors the
+/// `Tool` trait's `name() / description() / parameters()` plus the static
+/// catalog metadata the UI needs to group and icon entries.
+#[derive(Debug, Clone, Serialize)]
+pub struct AiToolMeta {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+    /// `recon`, `scan`, `data`, `control`, or `other` (when the tool isn't
+    /// in `pentest_bridge::ai_tool_catalog`).
+    pub category: String,
+    pub icon: String,
+}
+
+/// List all AI tools available to the Pipeline editor. Driven by the same
+/// factory `pipeline_execute` uses so the picker and the runtime never
+/// drift out of sync.
+#[tauri::command]
+pub async fn pipeline_list_ai_tools(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DbState>,
+    pentest_cfg: tauri::State<'_, std::sync::Arc<golish_pentest::ConfigManager>>,
+) -> Result<Vec<AiToolMeta>, GolishError> {
+    let pool = state.pool_ready().await?;
+    let pool_arc = std::sync::Arc::new(pool.clone());
+    let tools = create_pentest_bridge_tools(
+        pool_arc,
+        std::sync::Arc::clone(&pentest_cfg),
+        Some(app),
+    );
+
+    let mut metas = Vec::with_capacity(tools.len());
+    for tool in &tools {
+        let name = tool.name();
+        let entry = ai_tool_catalog_entry(name);
+        metas.push(AiToolMeta {
+            name: name.to_string(),
+            description: tool.description().to_string(),
+            parameters: tool.parameters(),
+            category: entry
+                .as_ref()
+                .map(|e| e.category.to_string())
+                .unwrap_or_else(|| "other".to_string()),
+            icon: entry
+                .as_ref()
+                .map(|e| e.icon.to_string())
+                .unwrap_or_else(|| "🤖".to_string()),
+        });
+    }
+    Ok(metas)
 }
 
 #[tauri::command]

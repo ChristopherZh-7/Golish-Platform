@@ -9,7 +9,10 @@ use golish_core::EventEmitterHandle;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::helpers::{emit_progress, log_scan_op, which_tool, NUCLEI_CANCELLED};
+use crate::helpers::{
+    audit_scan_completed, audit_scan_failed, audit_scan_started, emit_progress, which_tool,
+    NUCLEI_CANCELLED,
+};
 use crate::types::ScanResult;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,9 +68,42 @@ pub async fn run_nuclei_targeted(
 ) -> crate::ScanRunnerResult<ScanResult> {
     let start = std::time::Instant::now();
 
-    let nuclei_path = which_tool("nuclei").await.ok_or_else(|| {
-        crate::ScanRunnerError::Nuclei("Nuclei not found. Install via: brew install nuclei or go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest".into())
-    })?;
+    let parent_audit_id = audit_scan_started(
+        pool,
+        "nuclei_scan_started",
+        target_id,
+        "nuclei",
+        target_url,
+        serde_json::json!({
+            "template_count": template_ids.len(),
+            "templates_sample": template_ids.iter().take(20).cloned().collect::<Vec<_>>(),
+            "severity_filter": severity_filter,
+            "project_path": project_path,
+        }),
+    )
+    .await;
+
+    let nuclei_path = match which_tool("nuclei").await {
+        Some(p) => p,
+        None => {
+            let msg = "Nuclei not found. Install via: brew install nuclei or go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest";
+            audit_scan_failed(
+                pool,
+                parent_audit_id,
+                "nuclei_scan_failed",
+                target_id,
+                "nuclei",
+                msg,
+                serde_json::json!({
+                    "target_url": target_url,
+                    "template_count": template_ids.len(),
+                    "duration_ms": start.elapsed().as_millis() as u64,
+                }),
+            )
+            .await;
+            return Err(crate::ScanRunnerError::Nuclei(msg.into()));
+        }
+    };
 
     let opts = options.unwrap_or(NucleiScanOptions {
         rate_limit: None,
@@ -154,12 +190,32 @@ pub async fn run_nuclei_targeted(
         &format!("Scanning {} with {} templates", target_url, total),
     );
 
-    let mut child = tokio::process::Command::new(&nuclei_path)
+    let mut child = match tokio::process::Command::new(&nuclei_path)
         .args(&args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| crate::ScanRunnerError::Nuclei(format!("Nuclei execution failed: {}", e)))?;
+    {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = format!("Nuclei execution failed: {}", e);
+            audit_scan_failed(
+                pool,
+                parent_audit_id,
+                "nuclei_scan_failed",
+                target_id,
+                "nuclei",
+                &msg,
+                serde_json::json!({
+                    "target_url": target_url,
+                    "template_count": template_ids.len(),
+                    "duration_ms": start.elapsed().as_millis() as u64,
+                }),
+            )
+            .await;
+            return Err(crate::ScanRunnerError::Nuclei(msg));
+        }
+    };
 
     let child_stdout = child.stdout.take();
     let child_stderr = child.stderr.take();
@@ -190,10 +246,44 @@ pub async fn run_nuclei_targeted(
             }
         } => {
             let _ = child.kill().await;
+            audit_scan_failed(
+                pool,
+                parent_audit_id,
+                "nuclei_scan_failed",
+                target_id,
+                "nuclei",
+                "Nuclei scan cancelled",
+                serde_json::json!({
+                    "target_url": target_url,
+                    "template_count": template_ids.len(),
+                    "duration_ms": start.elapsed().as_millis() as u64,
+                    "cancelled": true,
+                }),
+            )
+            .await;
             return Err(crate::ScanRunnerError::Nuclei("Nuclei scan cancelled".into()));
         }
     };
-    let _exit_status = wait_result?;
+    let _exit_status = match wait_result {
+        Ok(s) => s,
+        Err(e) => {
+            audit_scan_failed(
+                pool,
+                parent_audit_id,
+                "nuclei_scan_failed",
+                target_id,
+                "nuclei",
+                &e.to_string(),
+                serde_json::json!({
+                    "target_url": target_url,
+                    "template_count": template_ids.len(),
+                    "duration_ms": start.elapsed().as_millis() as u64,
+                }),
+            )
+            .await;
+            return Err(e);
+        }
+    };
     let stdout_bytes = stdout_handle.await.unwrap_or_default();
     let stdout = String::from_utf8_lossy(&stdout_bytes);
 
@@ -319,22 +409,25 @@ pub async fn run_nuclei_targeted(
         duration_ms,
     };
 
-    log_scan_op(
+    audit_scan_completed(
         pool,
-        "nuclei_targeted_scan",
+        parent_audit_id,
+        "nuclei_scan_completed",
+        target_id,
+        "nuclei",
         &format!(
             "Nuclei targeted scan on {}: {} templates, {} findings",
             target_url, total, items_found
         ),
-        project_path,
-        Some(target_id),
-        "nuclei",
-        if result.success {
-            "completed"
-        } else {
-            "partial"
-        },
-        &serde_json::json!({ "templates": total, "items_found": items_found, "items_stored": items_stored, "duration_ms": duration_ms }),
+        serde_json::json!({
+            "target_url": target_url,
+            "template_count": total,
+            "items_found": items_found,
+            "items_stored": items_stored,
+            "errors": result.errors.len(),
+            "duration_ms": duration_ms,
+            "outcome": if result.success { "completed" } else { "partial" },
+        }),
     )
     .await;
 

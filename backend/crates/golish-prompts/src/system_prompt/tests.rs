@@ -136,6 +136,84 @@ fn test_use_agents_false_excludes_delegation() {
 }
 
 #[test]
+fn test_use_agents_false_includes_single_agent_note() {
+    let workspace = PathBuf::from("/tmp/test-workspace");
+    let context = PromptContext::new("anthropic", "claude-sonnet-4").with_sub_agents(false);
+
+    let prompt = build_system_prompt_with_contributions(
+        &workspace,
+        AgentMode::Default,
+        None,
+        None,
+        Some(&context),
+    );
+
+    assert!(prompt.contains("## SINGLE-AGENT MODE"));
+    assert!(prompt.contains("<single_agent_mode>"));
+    assert!(prompt.contains("There are NO `sub_agent_*` tools"));
+}
+
+#[test]
+fn test_use_agents_false_strips_delegate_phrasing_from_workflow() {
+    let workspace = PathBuf::from("/tmp/test-workspace");
+    let context = PromptContext::new("anthropic", "claude-sonnet-4").with_sub_agents(false);
+
+    let prompt = build_system_prompt_with_contributions(
+        &workspace,
+        AgentMode::Default,
+        None,
+        None,
+        Some(&context),
+    );
+
+    // The Memory-Aware Workflow's step 3 must NOT advertise delegation when
+    // sub-agents are off — otherwise the LLM is told to "Delegate to specialists"
+    // while no `sub_agent_*` tool exists.
+    assert!(!prompt.contains("Delegate to appropriate specialist(s) or handle directly"));
+    assert!(prompt.contains("Handle the task yourself with the available file"));
+}
+
+#[test]
+fn test_use_agents_false_strips_adviser_request_line() {
+    let workspace = PathBuf::from("/tmp/test-workspace");
+    let context = PromptContext::new("anthropic", "claude-sonnet-4").with_sub_agents(false);
+
+    let prompt = build_system_prompt_with_contributions(
+        &workspace,
+        AgentMode::Default,
+        None,
+        None,
+        Some(&context),
+    );
+
+    // "request mentor advice using the `adviser` sub-agent" should disappear
+    // when sub-agents are off; otherwise the LLM tries to call a non-existent
+    // `sub_agent_adviser`.
+    assert!(!prompt.contains("request mentor advice using the `adviser` sub-agent"));
+    assert!(prompt.contains("cannot request it explicitly in single-agent mode"));
+}
+
+#[test]
+fn test_use_agents_true_keeps_delegate_phrasing() {
+    let workspace = PathBuf::from("/tmp/test-workspace");
+    let context = PromptContext::new("anthropic", "claude-sonnet-4").with_sub_agents(true);
+
+    let prompt = build_system_prompt_with_contributions(
+        &workspace,
+        AgentMode::Default,
+        None,
+        None,
+        Some(&context),
+    );
+
+    // Task-mode prompt keeps the delegation language and adviser sub-agent
+    // line — task mode is the multi-agent orchestration path.
+    assert!(prompt.contains("Delegate to appropriate specialist(s) or handle directly"));
+    assert!(prompt.contains("request mentor advice using the `adviser` sub-agent"));
+    assert!(!prompt.contains("## SINGLE-AGENT MODE"));
+}
+
+#[test]
 fn test_no_context_defaults_to_agents_enabled() {
     let workspace = PathBuf::from("/tmp/test-workspace");
 
@@ -259,4 +337,104 @@ fn test_no_context_uses_default_prompt() {
 
     // Default prompt uses "Tone and style"
     assert!(prompt.contains("# Tone and style"));
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Chat ↔ Task template ISOLATION tests
+//
+// After Batch 2 split, the chat prompt is built from `chat.rs` and the task
+// prompt from `task.rs`. These tests guard against leakage in both
+// directions:
+//   - chat template must contain ZERO `sub_agent_*` references
+//   - task template must contain the full `<team_specialists>` block
+// They are stricter than the older `use_agents_*_excludes/includes_delegation`
+// pair because they assert on raw substring presence regardless of section
+// title — protecting against future drifts where a `sub_agent_xxx` line
+// sneaks back into chat.rs (e.g. via copy-paste from task.rs).
+// ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_chat_template_contains_no_sub_agent_references() {
+    let workspace = PathBuf::from("/tmp/test-workspace");
+    let context = PromptContext::new("anthropic", "claude-sonnet-4").with_sub_agents(false);
+    let prompt = build_system_prompt_with_contributions(
+        &workspace,
+        AgentMode::Default,
+        None,
+        None,
+        Some(&context),
+    );
+
+    // No CONCRETE specialist tool name should appear anywhere in chat-mode
+    // prompt. We deliberately list each one (rather than match `sub_agent_`
+    // as a prefix) because the `<single_agent_mode>` block legitimately
+    // mentions the WILDCARD `sub_agent_*` to tell the model "these tools
+    // do not exist" — that reverse-declaration is intentional and must
+    // stay; it's only the specific names that would trick the model into
+    // hallucinating delegation calls.
+    for tool in [
+        "sub_agent_explorer",
+        "sub_agent_analyzer",
+        "sub_agent_researcher",
+        "sub_agent_pentester",
+        "sub_agent_memorist",
+        "sub_agent_adviser",
+        "sub_agent_planner",
+        "sub_agent_reflector",
+        "sub_agent_reporter",
+        "sub_agent_installer",
+        "sub_agent_worker",
+    ] {
+        assert!(
+            !prompt.contains(tool),
+            "chat-mode prompt must not reference {tool}, but it does"
+        );
+    }
+
+    // Specific specialist role names from team_delegation should also be gone.
+    assert!(!prompt.contains("<team_specialists>"));
+    assert!(!prompt.contains("<delegation_rules>"));
+    assert!(!prompt.contains("Concurrent Sub-Agents"));
+    assert!(!prompt.contains("Security-Specific Routing"));
+}
+
+#[test]
+fn test_task_template_contains_full_team_specialists_block() {
+    let workspace = PathBuf::from("/tmp/test-workspace");
+    let context = PromptContext::new("anthropic", "claude-sonnet-4").with_sub_agents(true);
+    let prompt = build_system_prompt_with_contributions(
+        &workspace,
+        AgentMode::Default,
+        None,
+        None,
+        Some(&context),
+    );
+
+    assert!(prompt.contains("<team_specialists>"));
+    assert!(prompt.contains("</team_specialists>"));
+    assert!(prompt.contains("<delegation_rules>"));
+
+    // Every specialist role declared in team_delegation.rs must be present.
+    for tool in [
+        "sub_agent_explorer",
+        "sub_agent_analyzer",
+        "sub_agent_researcher",
+        "sub_agent_pentester",
+        "sub_agent_memorist",
+        "sub_agent_adviser",
+        "sub_agent_planner",
+        "sub_agent_reflector",
+        "sub_agent_reporter",
+        "sub_agent_installer",
+        "sub_agent_worker",
+    ] {
+        assert!(
+            prompt.contains(tool),
+            "task-mode prompt should advertise {tool}"
+        );
+    }
+
+    // No SINGLE-AGENT MODE block in task mode.
+    assert!(!prompt.contains("## SINGLE-AGENT MODE"));
+    assert!(!prompt.contains("<single_agent_mode>"));
 }

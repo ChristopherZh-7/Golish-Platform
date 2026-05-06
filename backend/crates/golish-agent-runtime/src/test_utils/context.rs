@@ -305,6 +305,7 @@ impl TestContext {
             cancelled: None,
             execution_monitor: None,
             execution_mode: golish_agent_kit::execution_mode::ExecutionMode::Chat,
+            use_agents: true,
             post_shell_hook: None,
             output_classifier: None,
             web_fetcher: None,

@@ -111,6 +111,38 @@ export interface SecurityOverview {
   scanStats: Record<string, number>;
 }
 
+/**
+ * Cross-table activity entry returned by the `target_timeline` IPC command.
+ * Aggregates rows from `audit_log`, `target_assets`, `api_endpoints`,
+ * `passive_scan_logs`, and `findings` into a unified shape ordered by
+ * `createdAt` descending. `toolName` is `null` when the source row carried
+ * no tool attribution (e.g. asset discovery).
+ */
+export interface TimelineEntry {
+  /** Origin table label. */
+  source:
+    | "audit_log"
+    | "target_assets"
+    | "api_endpoints"
+    | "passive_scan_logs"
+    | "findings"
+    | string;
+  /** Event keyword (e.g. `target_added`, `endpoint_discovered`, `xss`). */
+  event: string;
+  /** Bucket category (`scan`, `targets`, `api`, severity, ...). */
+  category: string;
+  /** Human-readable summary line. */
+  details: string;
+  /** Tool that produced the event, when applicable. */
+  toolName: string | null;
+  /** Status / verdict (`completed`, `vulnerable`, `tested`, `open`, ...). */
+  status: string;
+  /** Source-specific JSON payload. */
+  detail: Record<string, unknown>;
+  /** ISO 8601 timestamp from PostgreSQL `TIMESTAMPTZ`. */
+  createdAt: string;
+}
+
 // ─── Operation / Audit Log ─────────────────────────────────────────────
 
 export async function oplogList(projectPath: string, limit?: number): Promise<AuditRow[]> {
@@ -180,4 +212,15 @@ export async function passiveScansStats(targetId: string): Promise<Record<string
 
 export async function targetSecurityOverview(targetId: string): Promise<SecurityOverview> {
   return invoke("target_security_overview", { targetId });
+}
+
+// ─── Target Activity Timeline ──────────────────────────────────────────
+
+/**
+ * Fetch a unified per-target activity timeline aggregated across
+ * `audit_log`, `target_assets`, `api_endpoints`, `passive_scan_logs`,
+ * and `findings`. Newest event first. `limit` defaults to 200 server-side.
+ */
+export async function targetTimeline(targetId: string, limit?: number): Promise<TimelineEntry[]> {
+  return invoke("target_timeline", { targetId, limit });
 }

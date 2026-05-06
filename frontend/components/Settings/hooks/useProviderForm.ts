@@ -189,6 +189,14 @@ export function useProviderForm(settings: AiSettings, onChange: (settings: AiSet
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [providers, setProviders] = useState<ProviderConfig[]>(FALLBACK_PROVIDERS);
 
+  // Keep the Active/Available split stable across every keystroke. We only
+  // recompute the partition when the provider catalog itself changes or the
+  // user switches which provider they're focused on — that way typing the
+  // first character of an API key doesn't yank the card from "Available" to
+  // "Active" mid-edit (and vice versa for backspace).
+  const [stableConfigured, setStableConfigured] = useState<ProviderConfig[]>([]);
+  const [stableUnconfigured, setStableUnconfigured] = useState<ProviderConfig[]>([]);
+
   useEffect(() => {
     getProviders()
       .then((backendProviders) => {
@@ -203,6 +211,14 @@ export function useProviderForm(settings: AiSettings, onChange: (settings: AiSet
         logger.warn("Failed to fetch providers from backend, using fallback:", err);
       });
   }, []);
+
+  // Re-partition deliberately only when `providers` or `selectedId` change.
+  // `settings` is intentionally NOT in the deps — that's the whole point.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: see comment above
+  useEffect(() => {
+    setStableConfigured(providers.filter((p) => p.getConfigured(settings)));
+    setStableUnconfigured(providers.filter((p) => !p.getConfigured(settings)));
+  }, [providers, selectedId]);
 
   const updateProvider = useCallback(
     <K extends keyof AiSettings>(provider: K, field: string, value: string | boolean | null) => {
@@ -252,15 +268,12 @@ export function useProviderForm(settings: AiSettings, onChange: (settings: AiSet
 
   const getColor = useCallback((id: string) => PROVIDER_COLORS[id] ?? DEFAULT_COLOR, []);
 
-  const configuredProviders = providers.filter((p) => p.getConfigured(settings));
-  const unconfiguredProviders = providers.filter((p) => !p.getConfigured(settings));
-
   return {
     selectedId,
     setSelectedId,
     providers,
-    configuredProviders,
-    unconfiguredProviders,
+    configuredProviders: stableConfigured,
+    unconfiguredProviders: stableUnconfigured,
     updateProvider,
     updateOpenRouterPref,
     getShowInSelector,

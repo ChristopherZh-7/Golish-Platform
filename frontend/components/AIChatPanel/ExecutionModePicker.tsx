@@ -93,34 +93,58 @@ export const ExecutionModePicker = memo(function ExecutionModePicker({
         </DropdownMenuItem>
         <DropdownMenuSeparator className="bg-[var(--border-medium)]" />
         <DropdownMenuItem
+          disabled={chatExecutionMode === "chat"}
           onSelect={(e) => {
             e.preventDefault();
+            if (chatExecutionMode === "chat") return;
             onToggleSubAgents();
           }}
-          className="text-xs cursor-pointer flex items-center gap-2 py-2"
+          className={cn(
+            "text-xs flex items-center gap-2 py-2",
+            chatExecutionMode === "chat" ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+          )}
+          title={
+            chatExecutionMode === "chat" ? "Sub-Agents are only available in Task mode" : undefined
+          }
         >
           <Users
             className={cn(
               "w-4 h-4 shrink-0",
-              chatUseSubAgents ? "text-[var(--ansi-green)]" : "text-muted-foreground"
+              chatExecutionMode === "chat"
+                ? "text-muted-foreground/50"
+                : chatUseSubAgents
+                  ? "text-[var(--ansi-green)]"
+                  : "text-muted-foreground"
             )}
           />
           <div className="flex flex-col flex-1">
             <span className="font-medium">Sub-Agents</span>
             <span className="text-[10px] text-muted-foreground">
-              {chatUseSubAgents ? "Enabled" : "Disabled"}
+              {chatExecutionMode === "chat"
+                ? "Switch to Task mode to enable"
+                : chatUseSubAgents
+                  ? "Enabled"
+                  : "Disabled"}
             </span>
           </div>
           <div
             className={cn(
               "w-7 h-4 rounded-full transition-colors duration-200 flex items-center shrink-0",
-              chatUseSubAgents ? "bg-[var(--ansi-green)]/30 justify-end" : "bg-muted justify-start"
+              chatExecutionMode === "chat"
+                ? "bg-muted/50 justify-start"
+                : chatUseSubAgents
+                  ? "bg-[var(--ansi-green)]/30 justify-end"
+                  : "bg-muted justify-start"
             )}
           >
             <div
               className={cn(
                 "w-3 h-3 rounded-full mx-0.5 transition-colors duration-200",
-                chatUseSubAgents ? "bg-[var(--ansi-green)]" : "bg-muted-foreground/50"
+                chatExecutionMode === "chat"
+                  ? "bg-muted-foreground/30"
+                  : chatUseSubAgents
+                    ? "bg-[var(--ansi-green)]"
+                    : "bg-muted-foreground/50"
               )}
             />
           </div>

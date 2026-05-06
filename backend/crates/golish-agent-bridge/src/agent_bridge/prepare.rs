@@ -58,7 +58,12 @@ impl AgentBridge {
             .available_tools()
             .iter()
             .any(|t| t.starts_with("web_"));
-        let has_sub_agents = *self.use_agents.read().await;
+        // Chat mode is a single-agent path; suppress sub-agent description in
+        // the system prompt even if `use_agents` is left over from a previous
+        // session — otherwise the LLM sees instructions to delegate via
+        // `sub_agent_planner` for trivial inputs.
+        let execution_mode = *self.execution_mode.read().await;
+        let has_sub_agents = execution_mode.is_task() && *self.use_agents.read().await;
 
         let (available_skills, matched_skills) = self.match_and_load_skills(initial_prompt).await;
 
@@ -148,7 +153,10 @@ impl AgentBridge {
             .available_tools()
             .iter()
             .any(|t| t.starts_with("web_"));
-        let has_sub_agents = *self.use_agents.read().await;
+        // Chat mode: same isolation as `prepare_execution_context` —
+        // never advertise sub-agents in the system prompt for chat mode.
+        let execution_mode = *self.execution_mode.read().await;
+        let has_sub_agents = execution_mode.is_task() && *self.use_agents.read().await;
 
         let (available_skills, matched_skills) = self.match_and_load_skills(text_for_logging).await;
 
@@ -293,6 +301,7 @@ impl AgentBridge {
             cancelled: Some(&self.cancelled),
             execution_monitor: None,
             execution_mode: *self.execution_mode.read().await,
+            use_agents: *self.use_agents.read().await,
             post_shell_hook: self.post_shell_hook.clone(),
             output_classifier: self.output_classifier.clone(),
             web_fetcher: self.web_fetcher.clone(),
@@ -422,7 +431,12 @@ impl AgentBridge {
                         Some(new_id)
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to start sidecar session: {}", e);
+                        // Sidecar can be intentionally disabled by the user
+                        // (or fail to start for transient reasons). Either way
+                        // we degrade gracefully to no-sidecar mode, so log at
+                        // info level — a WARN here causes confusing noise on
+                        // every prompt when the user turned sidecar off.
+                        tracing::info!("Sidecar session not started: {}", e);
                         None
                     }
                 }

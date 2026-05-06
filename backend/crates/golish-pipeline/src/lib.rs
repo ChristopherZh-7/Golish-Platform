@@ -27,7 +27,10 @@ pub mod storage;
 pub mod types;
 
 pub use error::{PipelineError, PipelineResult};
-pub use engine::{execute_pipeline_headless, PipelineRunner};
+pub use engine::{
+    execute_pipeline_headless, execute_pipeline_headless_with_ai_tools,
+    execute_pipeline_headless_with_parent, PipelineRunner,
+};
 pub use engine::templates::{
     builtin_templates, detect_target_type, get_builtin_recon_basic, pipeline_from_json,
     recon_basic_template, templates_dir, PIPELINE_CANCELLED,

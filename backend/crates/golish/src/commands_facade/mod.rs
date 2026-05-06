@@ -1,5 +1,4 @@
-//! Command facades — domain-grouped command organization (Phase 1 of
-//! ADR-0009).
+//! Command facades — domain-grouped command organization.
 //!
 //! Each `<domain>.rs` file re-exports every `#[tauri::command]`
 //! function that belongs to that domain via `pub use`. The
@@ -30,8 +29,7 @@
 //! 2. Add one `pub use` line in `commands_facade/<domain>.rs`.
 //! 3. Add the identifier to `commands_registry.rs`.
 //!
-//! See also: `docs/adr/0009-tauri-command-namespace.md` and
-//! `docs/development.md#adding-a-new-tauri-command-ipc`.
+//! See also: `docs/development.md#adding-a-new-tauri-command-ipc`.
 
 pub mod ai;
 pub mod findings;

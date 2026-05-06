@@ -3,12 +3,12 @@
 // to the crate root, not into sub-modules) are in scope at the call
 // site of `tauri::generate_handler!`.
 //
-// Per ADR-0009 Phase 1: a single facade import replaces the 12
-// scattered `use A::commands::*; use B::*;` globs. The facade files
-// under `commands_facade/<domain>.rs` are now the authoritative
-// per-domain command surface. Adding/renaming/removing a command
-// means touching exactly two files: the command's home module and
-// the matching facade file. Keep this block alphabetical.
+// A single facade import replaces the 12 scattered
+// `use A::commands::*; use B::*;` globs. The facade files under
+// `commands_facade/<domain>.rs` are now the authoritative per-domain
+// command surface. Adding/renaming/removing a command means touching
+// exactly two files: the command's home module and the matching
+// facade file. Keep this block alphabetical.
 
 use commands_facade::ai::*;
 use commands_facade::findings::*;
@@ -157,6 +157,7 @@ fn install_handlers(
         // ── pipeline ─────────────────────────────────────────────
         pipeline_list, pipeline_save, pipeline_cancel, pipeline_delete,
         pipeline_load, pipeline_execute, pipeline_list_templates, pipeline_save_template, pipeline_delete_template,
+        pipeline_list_ai_tools,
         // ── vuln-intel ───────────────────────────────────────────
         intel_list_feeds, intel_add_feed, intel_toggle_feed, intel_delete_feed,
         intel_fetch, intel_fetch_page, intel_get_cached,
@@ -168,6 +169,7 @@ fn install_handlers(
         custom_rules_list, custom_rules_upsert, custom_rules_save_all, custom_rules_delete,
         notes_list, notes_add, notes_update, notes_delete,
         audit_log, audit_list, audit_clear, agent_logs_list, terminal_logs_list, search_logs_list, passive_scans_global,
+        target_timeline,
         wordlist_list, wordlist_import, wordlist_delete, wordlist_deduplicate, wordlist_merge, wordlist_preview, wordlist_path,
         wiki_init, wiki_reindex, wiki_list, wiki_read, wiki_write, wiki_delete, wiki_rename, wiki_create_dir,
         wiki_search, wiki_search_db, wiki_stats, wiki_create_cve,
