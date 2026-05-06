@@ -27,6 +27,7 @@
 
 pub mod agentic_loop;
 pub mod eval_support;
+pub mod execution_mode;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
