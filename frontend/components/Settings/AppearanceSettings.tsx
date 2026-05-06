@@ -92,51 +92,24 @@ export function AppearanceSettings({
     setDisplaySettings({ ...displaySettings, ...patch });
   };
 
+  // Only flags that drive a real UI element are listed here. Defunct toggles
+  // (file editor / history / settings / notification-bell buttons, status bar
+  // row, model badge, git branch badge) were removed in 2026-05 — keeping
+  // them in the bulk Show/Hide actions would silently flip dead state.
   const visibilityKeys: Array<keyof DisplaySettings> = [
-    "showTabBar",
     "showHomeTab",
-    "showFileEditorButton",
-    "showHistoryButton",
-    "showSettingsButton",
-    "showNotificationBell",
     "showTerminalContext",
     "showWorkingDirectory",
-    "showGitBranch",
-    "showStatusBar",
     "showInputModeToggle",
-    "showStatusBadge",
     "showContextUsage",
     "showMcpBadge",
   ];
   const allShown = visibilityKeys.every((k) => displaySettings[k]);
   const allHidden = visibilityKeys.every((k) => !displaySettings[k]);
 
-  const tabBarSubOptions: Array<keyof DisplaySettings> = [
-    "showHomeTab",
-    "showFileEditorButton",
-    "showHistoryButton",
-    "showSettingsButton",
-    "showNotificationBell",
-  ];
-
-  const contextBarSubOptions: Array<keyof DisplaySettings> = [
-    "showWorkingDirectory",
-    "showGitBranch",
-  ];
-
-  const statusBarSubOptions: Array<keyof DisplaySettings> = [
-    "showInputModeToggle",
-    "showStatusBadge",
-    "showContextUsage",
-    "showMcpBadge",
-  ];
-
-  const tabBarParentOn =
-    displaySettings.showTabBar || tabBarSubOptions.some((k) => displaySettings[k]);
+  const contextBarSubOptions: Array<keyof DisplaySettings> = ["showWorkingDirectory"];
   const contextBarParentOn =
     displaySettings.showTerminalContext || contextBarSubOptions.some((k) => displaySettings[k]);
-  const statusBarParentOn =
-    displaySettings.showStatusBar || statusBarSubOptions.some((k) => displaySettings[k]);
 
   return (
     <div className="space-y-8">
@@ -350,7 +323,7 @@ export function AppearanceSettings({
         <ToggleRow
           id="hide-ai-settings-in-shell-mode"
           label="Hide AI Settings in Shell Mode"
-          description="Hide model badge, token usage, agent mode, and MCP badge when in shell mode"
+          description="Hide token usage and MCP badge when in shell mode"
           checked={displaySettings.hideAiSettingsInShellMode}
           onCheckedChange={(checked) => update({ hideAiSettingsInShellMode: checked })}
         />
@@ -361,64 +334,14 @@ export function AppearanceSettings({
 
       {/* Tab Bar */}
       <div className="space-y-4">
+        <h3 className="text-sm font-medium text-foreground">Tab Bar</h3>
         <ToggleRow
-          id="show-tab-bar-buttons"
-          label="Tab Bar"
-          description="Show application icons in the top tab bar"
-          checked={tabBarParentOn}
-          onCheckedChange={(checked) => {
-            if (checked) {
-              update({ showTabBar: true });
-            } else {
-              update({
-                showTabBar: false,
-                ...Object.fromEntries(tabBarSubOptions.map((k) => [k, false])),
-              });
-            }
-          }}
+          id="show-home-tab"
+          label="Home Tab"
+          description="Show the home tab in the tab bar"
+          checked={displaySettings.showHomeTab}
+          onCheckedChange={(checked) => update({ showHomeTab: checked })}
         />
-        <div
-          className={cn(
-            "space-y-4 pl-4 border-l-2 border-[var(--border-subtle)]",
-            !tabBarParentOn && "opacity-40 pointer-events-none"
-          )}
-        >
-          <ToggleRow
-            id="show-home-tab"
-            label="Home Tab"
-            description="Show the home tab in the tab bar"
-            checked={displaySettings.showHomeTab}
-            onCheckedChange={(checked) => update({ showHomeTab: checked })}
-          />
-          <ToggleRow
-            id="show-file-editor-button"
-            label="File Editor"
-            description="Show the file editor panel button"
-            checked={displaySettings.showFileEditorButton}
-            onCheckedChange={(checked) => update({ showFileEditorButton: checked })}
-          />
-          <ToggleRow
-            id="show-history-button"
-            label="Session History"
-            description="Show the session history button"
-            checked={displaySettings.showHistoryButton}
-            onCheckedChange={(checked) => update({ showHistoryButton: checked })}
-          />
-          <ToggleRow
-            id="show-settings-button"
-            label="Settings"
-            description="Show the settings button"
-            checked={displaySettings.showSettingsButton}
-            onCheckedChange={(checked) => update({ showSettingsButton: checked })}
-          />
-          <ToggleRow
-            id="show-notification-bell"
-            label="Notification Bell"
-            description="Show the notification bell"
-            checked={displaySettings.showNotificationBell}
-            onCheckedChange={(checked) => update({ showNotificationBell: checked })}
-          />
-        </div>
       </div>
 
       {/* Divider */}
@@ -455,73 +378,38 @@ export function AppearanceSettings({
             checked={displaySettings.showWorkingDirectory}
             onCheckedChange={(checked) => update({ showWorkingDirectory: checked })}
           />
-          <ToggleRow
-            id="show-git-branch"
-            label="Git Branch"
-            description="Show the git branch and diff stats badge"
-            checked={displaySettings.showGitBranch}
-            onCheckedChange={(checked) => update({ showGitBranch: checked })}
-          />
         </div>
       </div>
 
       {/* Divider */}
       <div className="border-t border-[var(--border-medium)]" />
 
-      {/* Status Bar */}
+      {/* Input Status Indicators */}
       <div className="space-y-4">
+        <h3 className="text-sm font-medium text-foreground">Status Indicators</h3>
         <ToggleRow
-          id="show-status-bar"
-          label="Status Bar"
-          description="Show the bottom status bar"
-          checked={statusBarParentOn}
-          onCheckedChange={(checked) => {
-            if (checked) {
-              update({ showStatusBar: true });
-            } else {
-              update({
-                showStatusBar: false,
-                ...Object.fromEntries(statusBarSubOptions.map((k) => [k, false])),
-              });
-            }
-          }}
+          id="show-input-mode-toggle"
+          label="Input Mode Toggle"
+          description="Show the full Terminal / AI segmented toggle instead of collapsing it"
+          checked={displaySettings.showInputModeToggle}
+          onCheckedChange={(checked) => update({ showInputModeToggle: checked })}
         />
-        <div
-          className={cn(
-            "space-y-4 pl-4 border-l-2 border-[var(--border-subtle)]",
-            !statusBarParentOn && "opacity-40 pointer-events-none"
-          )}
-        >
-          <ToggleRow
-            id="show-input-mode-toggle"
-            label="Input Mode Toggle"
-            description="Show the full Terminal / AI segmented toggle instead of collapsing it"
-            checked={displaySettings.showInputModeToggle}
-            onCheckedChange={(checked) => update({ showInputModeToggle: checked })}
-          />
-          <ToggleRow
-            id="show-status-badge"
-            label="Status & Model Badge"
-            description="Show the connection status and active model name badge"
-            checked={displaySettings.showStatusBadge}
-            onCheckedChange={(checked) => update({ showStatusBadge: checked })}
-          />
-          <ToggleRow
-            id="show-context-usage"
-            label="Token Usage"
-            description="Show the context window / token usage percentage badge"
-            checked={displaySettings.showContextUsage}
-            onCheckedChange={(checked) => update({ showContextUsage: checked })}
-          />
-          <ToggleRow
-            id="show-mcp-badge"
-            label="MCP Servers Badge"
-            description="Show the MCP servers connected indicator"
-            checked={displaySettings.showMcpBadge}
-            onCheckedChange={(checked) => update({ showMcpBadge: checked })}
-          />
-        </div>
+        <ToggleRow
+          id="show-context-usage"
+          label="Token Usage"
+          description="Show the context window / token usage percentage badge"
+          checked={displaySettings.showContextUsage}
+          onCheckedChange={(checked) => update({ showContextUsage: checked })}
+        />
+        <ToggleRow
+          id="show-mcp-badge"
+          label="MCP Servers Badge"
+          description="Show the MCP servers connected indicator"
+          checked={displaySettings.showMcpBadge}
+          onCheckedChange={(checked) => update({ showMcpBadge: checked })}
+        />
       </div>
+
       {/* Quick actions */}
       <div className="flex items-center gap-3">
         <p className="text-xs text-muted-foreground">Choose which UI elements are visible.</p>
@@ -531,18 +419,10 @@ export function AppearanceSettings({
           disabled={allShown}
           onClick={() =>
             setDisplaySettings({
-              showTabBar: true,
               showHomeTab: true,
-              showFileEditorButton: true,
-              showHistoryButton: true,
-              showSettingsButton: true,
-              showNotificationBell: true,
               showTerminalContext: true,
               showWorkingDirectory: true,
-              showGitBranch: true,
-              showStatusBar: true,
               showInputModeToggle: true,
-              showStatusBadge: true,
               showContextUsage: true,
               showMcpBadge: true,
               hideAiSettingsInShellMode: displaySettings.hideAiSettingsInShellMode,
@@ -559,18 +439,10 @@ export function AppearanceSettings({
           disabled={allHidden}
           onClick={() =>
             setDisplaySettings({
-              showTabBar: false,
               showHomeTab: false,
-              showFileEditorButton: false,
-              showHistoryButton: false,
-              showSettingsButton: false,
-              showNotificationBell: false,
               showTerminalContext: false,
               showWorkingDirectory: false,
-              showGitBranch: false,
-              showStatusBar: false,
               showInputModeToggle: false,
-              showStatusBadge: false,
               showContextUsage: false,
               showMcpBadge: false,
               hideAiSettingsInShellMode: displaySettings.hideAiSettingsInShellMode,

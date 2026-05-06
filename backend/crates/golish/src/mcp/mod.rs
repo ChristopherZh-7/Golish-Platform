@@ -11,5 +11,5 @@ mod commands;
 
 pub use commands::{
     mcp_connect, mcp_disconnect, mcp_get_config, mcp_has_project_config, mcp_is_project_trusted,
-    mcp_list_servers, mcp_list_tools, mcp_trust_project_config,
+    mcp_list_servers, mcp_list_tools, mcp_setup_builtin, mcp_trust_project_config,
 };

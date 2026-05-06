@@ -144,6 +144,7 @@
     "executable": "可执行文件",
     "runtimeLabel": "运行时",
     "runtimeVersion": "版本",
+    "launchModeLabel": "启动方式",
     "uiLabel": "界面",
     "installMethodLabel": "安装方法",
     "source": "来源",
@@ -670,5 +671,23 @@
     "phishing": "钓鱼平台",
     "payload": "Payload 生成",
     "report": "报告生成"
+  },
+  "setupHealth": {
+    "title": "环境检查",
+    "dismiss": "本次不提醒",
+    "toolsMissing": "{{count}} 个必备工具未安装",
+    "toolsMissingDetail": "essential / recommended 级别",
+    "goToolManager": "工具管理",
+    "runtimesMissing": "{{count}} 个运行时未安装",
+    "goSettings": "设置",
+    "mcpFailing": "{{count}} 个 MCP 服务未连接",
+    "mcpFailingDetail": "共 {{total}} 个配置中",
+    "recheck": "重新检测"
+  },
+  "mcp": {
+    "nodeRequired": "部分内置服务需要 Node.js，请先在设置 > 环境中安装。",
+    "needsNode": "需要 Node.js",
+    "setupComplete": "{{name}} 配置完成",
+    "setupInProgress": "正在配置..."
   }
 }

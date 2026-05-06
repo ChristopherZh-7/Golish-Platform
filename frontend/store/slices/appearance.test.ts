@@ -32,24 +32,16 @@ describe("Appearance Slice", () => {
 
   describe("setDisplaySettings", () => {
     it("should update display settings", () => {
-      store.getState().setDisplaySettings({ ...defaultDisplaySettings, showTabBar: false });
-      expect(store.getState().displaySettings.showTabBar).toBe(false);
+      store.getState().setDisplaySettings({ ...defaultDisplaySettings, showHomeTab: false });
+      expect(store.getState().displaySettings.showHomeTab).toBe(false);
     });
 
     it("should replace all settings", () => {
       const allHidden: typeof defaultDisplaySettings = {
-        showTabBar: false,
         showHomeTab: false,
-        showFileEditorButton: false,
-        showHistoryButton: false,
-        showSettingsButton: false,
-        showNotificationBell: false,
         showTerminalContext: false,
         showWorkingDirectory: false,
-        showGitBranch: false,
-        showStatusBar: false,
         showInputModeToggle: false,
-        showStatusBadge: false,
         showContextUsage: false,
         showMcpBadge: false,
         hideAiSettingsInShellMode: false,
