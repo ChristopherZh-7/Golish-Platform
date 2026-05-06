@@ -46,9 +46,6 @@ export const useInputMode = (sessionId: string) =>
 export const useAgentMode = (sessionId: string) =>
   useStore((state) => state.sessions[sessionId]?.agentMode ?? "default");
 
-export const useUseAgents = (sessionId: string) =>
-  useStore((state) => state.sessions[sessionId]?.useAgents ?? true);
-
 export const useExecutionMode = (sessionId: string) =>
   useStore((state) => state.sessions[sessionId]?.executionMode ?? "chat");
 

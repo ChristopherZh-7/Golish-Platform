@@ -24,23 +24,17 @@ type CreateTerminalFn = (
 ) => Promise<string | null>;
 
 /**
- * Restore executionMode and useAgents for a session.
- * Prefers the explicitly persisted fields; falls back to the legacy
- * planJson heuristic for databases that haven't been migrated yet.
+ * Restore executionMode for a session. The legacy `useAgents` field is
+ * intentionally ignored — sub-agent dispatch is now strictly bound to
+ * execution mode (chat = single-agent, task = multi-agent).
  */
 function restoreSessionMode(sessionId: string, termInfo: PersistedTerminalData) {
-  const hasExplicitMode = termInfo.executionMode != null || termInfo.useAgents != null;
-
-  if (hasExplicitMode) {
-    if (termInfo.executionMode === "task") {
-      useStore.getState().setExecutionMode(sessionId, "task");
-    }
-    if (termInfo.useAgents) {
-      useStore.getState().setUseAgents(sessionId, true);
-    }
-  } else if (termInfo.planJson) {
+  if (termInfo.executionMode === "task") {
     useStore.getState().setExecutionMode(sessionId, "task");
-    useStore.getState().setUseAgents(sessionId, true);
+  } else if (termInfo.executionMode == null && termInfo.planJson) {
+    // Older snapshots predate the explicit executionMode column; fall
+    // back to "had a plan -> was task mode".
+    useStore.getState().setExecutionMode(sessionId, "task");
   }
 }
 

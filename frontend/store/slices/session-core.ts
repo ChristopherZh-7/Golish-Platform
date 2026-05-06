@@ -224,13 +224,6 @@ export function createSessionCoreActions(
         }
       }),
 
-    setUseAgents: (sessionId: string, enabled: boolean) =>
-      set((state) => {
-        if (state.sessions[sessionId]) {
-          state.sessions[sessionId].useAgents = enabled;
-        }
-      }),
-
     setExecutionMode: (sessionId: string, mode: ExecutionMode) =>
       set((state) => {
         if (state.sessions[sessionId]) {

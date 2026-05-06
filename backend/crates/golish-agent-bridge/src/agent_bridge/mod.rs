@@ -176,7 +176,6 @@ pub struct AgentBridge {
     // -- Sub-agents -----------------------------------------------------------
     pub(crate) sub_agent_registry: Arc<RwLock<SubAgentRegistry>>,
     pub(crate) prompt_registry: golish_sub_agents::PromptRegistry,
-    pub(crate) use_agents: Arc<RwLock<bool>>,
     pub(crate) execution_mode: Arc<RwLock<super::execution_mode::ExecutionMode>>,
     /// Per-mode tool exposure registry shared across every loop turn.
     /// `Default` registers built-in `chat` + `task` policies; downstream

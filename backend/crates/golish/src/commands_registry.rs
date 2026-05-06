@@ -64,7 +64,7 @@ fn install_handlers(
         get_tool_policy_config, set_tool_policy_config, get_tool_policy, set_tool_policy,
         reset_tool_policies, enable_full_auto_mode, disable_full_auto_mode, is_full_auto_mode_enabled,
         get_agent_mode, set_agent_mode, save_project_agent_mode,
-        set_use_agents, get_use_agents, set_execution_mode, get_execution_mode,
+        set_execution_mode, get_execution_mode,
         list_execution_modes,
         get_api_request_stats, get_plan, get_context_summary,
         get_token_usage_stats, get_token_alert_level, get_context_utilization,
@@ -193,6 +193,6 @@ fn install_handlers(
         sensitive_scan_start, sensitive_scan_stop, sensitive_scan_status, sensitive_scan_results,
         sensitive_scan_clear, sensitive_scan_confirm, sensitive_scan_default_paths, sensitive_scan_apply_verdicts,
         mcp_list_servers, mcp_list_tools, mcp_get_config, mcp_is_project_trusted, mcp_trust_project_config,
-        mcp_has_project_config, mcp_connect, mcp_disconnect,
+        mcp_has_project_config, mcp_connect, mcp_disconnect, mcp_setup_builtin,
     ])
 }

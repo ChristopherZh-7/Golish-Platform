@@ -74,7 +74,6 @@ export {
   useStreamingTextLength,
   useTerminalClearRequest,
   useThinkingContent,
-  useUseAgents,
 } from "./store-hooks";
 export {
   clearTabBarCache,

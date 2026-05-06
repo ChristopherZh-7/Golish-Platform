@@ -6,7 +6,6 @@ import {
   sendPromptSession,
   setAgentMode,
   setExecutionMode as setExecutionModeBackend,
-  setUseAgents as setUseAgentsBackend,
   shutdownAiSession,
   titleGenSessionId,
 } from "@/lib/ai";
@@ -19,9 +18,7 @@ type SelectedModel = { model: string; provider: string } | null;
 interface UseChatSessionInitOptions {
   selectedModel: SelectedModel;
   chatExecutionModeRef: React.MutableRefObject<string>;
-  chatUseSubAgentsRef: React.MutableRefObject<boolean>;
   setChatExecutionMode: (mode: string) => void;
-  setChatUseSubAgents: (val: boolean) => void;
   updateConv: (convId: string, update: Record<string, unknown>) => void;
 }
 
@@ -29,9 +26,7 @@ export function useChatSessionInit(opts: UseChatSessionInitOptions) {
   const {
     selectedModel,
     chatExecutionModeRef,
-    chatUseSubAgentsRef,
     setChatExecutionMode,
-    setChatUseSubAgents,
     updateConv,
   } = opts;
 
@@ -112,22 +107,16 @@ export function useChatSessionInit(opts: UseChatSessionInitOptions) {
         const storeState = useStore.getState();
         const termIds = storeState.conversationTerminals[conv.id] ?? [];
         let restoredExecMode: string = chatExecutionModeRef.current;
-        let restoredUseAgents = chatUseSubAgentsRef.current;
         for (const tid of termIds) {
           const sess = storeState.sessions[tid];
           if (sess?.executionMode && sess.executionMode !== "chat") {
             restoredExecMode = sess.executionMode;
           }
-          if (sess?.useAgents) restoredUseAgents = true;
         }
 
         if (restoredExecMode !== "chat") {
           await setExecutionModeBackend(conv.aiSessionId, restoredExecMode).catch(() => {});
           setChatExecutionMode(restoredExecMode);
-        }
-        if (restoredUseAgents) {
-          await setUseAgentsBackend(conv.aiSessionId, true).catch(() => {});
-          setChatUseSubAgents(true);
         }
 
         updateConv(conv.id, { aiInitialized: true });
@@ -141,9 +130,7 @@ export function useChatSessionInit(opts: UseChatSessionInitOptions) {
       selectedModel,
       updateConv,
       chatExecutionModeRef,
-      chatUseSubAgentsRef,
       setChatExecutionMode,
-      setChatUseSubAgents,
     ]
   );
 

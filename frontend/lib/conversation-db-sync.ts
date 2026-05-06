@@ -133,7 +133,6 @@ function buildChangeFingerprint(state: {
         const sess = state.sessions[t];
         if (sess) {
           feed(sess.executionMode ?? "");
-          feed(sess.useAgents ? "a" : "");
           feed(String(sess.retiredPlans?.length ?? 0));
           feed(sess.planMessageId ?? "");
         }
@@ -173,7 +172,6 @@ export interface LoadedTerminalData {
   timelineBlocks: UnifiedBlock[];
   planJson: unknown | null;
   executionMode: string | null;
-  useAgents: boolean | null;
   retiredPlansJson: unknown | null;
   planMessageId: string | null;
 }
@@ -308,7 +306,6 @@ export async function loadFromDb(projectPath: string): Promise<LoadedWorkspaceSt
                 timelineBlocks: blocks,
                 planJson: ts.planJson ?? null,
                 executionMode: ts.executionMode ?? null,
-                useAgents: ts.useAgents ?? null,
                 retiredPlansJson: ts.retiredPlansJson ?? null,
                 planMessageId: ts.planMessageId ?? null,
               } satisfies LoadedTerminalData;
@@ -414,7 +411,6 @@ function convFingerprint(
     const sess = sessions[tid];
     if (sess) {
       feed(sess.executionMode ?? "");
-      feed(sess.useAgents ? "a" : "");
       feed(String(sess.retiredPlans?.length ?? 0));
       feed(sess.planMessageId ?? "");
     }
@@ -540,7 +536,6 @@ async function saveConversationsToDb(
         customName: sess.customName ?? null,
         planJson: sess.plan ?? null,
         executionMode: sess.executionMode ?? null,
-        useAgents: sess.useAgents ?? null,
         retiredPlansJson: sess.retiredPlans?.length ? sess.retiredPlans : null,
         planMessageId: sess.planMessageId ?? null,
       });
