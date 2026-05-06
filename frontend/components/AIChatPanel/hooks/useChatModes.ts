@@ -4,22 +4,32 @@ import {
   respondToToolApproval,
   setAgentMode,
   setExecutionMode as setExecutionModeBackend,
-  setUseAgents as setUseAgentsBackend,
 } from "@/lib/ai";
 import { flushDbSave } from "@/lib/conversation-db-sync";
 import { useStore } from "@/store";
 
 type ApprovalMode = "ask" | "allowlist" | "run-all";
 
+/**
+ * Sub-agent dispatch is now an unconditional capability of every
+ * execution mode (`ChatModePolicy` and `TaskModePolicy` both expose
+ * `sub_agent_*` dispatchers in their `ToolSelection`). The user no
+ * longer has a per-conversation toggle.
+ *
+ * The constant below is what hooks that still expose
+ * `chatUseSubAgents` for legacy reasons return — kept so we can
+ * delete the prop without touching every consumer in this single PR.
+ */
+const SUB_AGENTS_ALWAYS_ON = true;
+
 export function useChatModes() {
   const [chatAgentMode, setChatAgentMode] = useState<AgentMode>("default");
   const [chatExecutionMode, setChatExecutionMode] = useState<string>("chat");
-  const [chatUseSubAgents, setChatUseSubAgents] = useState(false);
 
   const chatExecutionModeRef = useRef<string>(chatExecutionMode);
   chatExecutionModeRef.current = chatExecutionMode;
-  const chatUseSubAgentsRef = useRef(chatUseSubAgents);
-  chatUseSubAgentsRef.current = chatUseSubAgents;
+  const chatUseSubAgentsRef = useRef<boolean>(SUB_AGENTS_ALWAYS_ON);
+  chatUseSubAgentsRef.current = SUB_AGENTS_ALWAYS_ON;
 
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("ask");
   const [pendingApproval, setPendingApproval] = useState<{
@@ -81,48 +91,18 @@ export function useChatModes() {
       if (conv.aiInitialized) {
         setExecutionModeBackend(conv.aiSessionId, mode).catch(console.error);
       }
-
-      // Switching to chat mode forcibly turns sub-agents off so frontend
-      // state mirrors the backend-side isolation done by Batch 1
-      // (`prepare.rs`: `has_sub_agents = execution_mode.is_task() && use_agents`).
-      // Without this auto-clear the picker would still show the green toggle
-      // even though the prompt template has been narrowed to single-agent —
-      // misleading the user into thinking specialists are reachable.
-      if (mode === "chat" && chatUseSubAgents) {
-        setChatUseSubAgents(false);
-        if (activeConvId) {
-          const termIds = storeState.conversationTerminals[activeConvId] ?? [];
-          for (const tid of termIds) storeState.setUseAgents(tid, false);
-        }
-        if (conv.aiInitialized) {
-          setUseAgentsBackend(conv.aiSessionId, false).catch(console.error);
-        }
-      }
+      // Sub-agent dispatch is now unconditional across modes — see the
+      // `SUB_AGENTS_ALWAYS_ON` note at the top of this hook. Switching
+      // execution mode no longer needs to flip a per-conversation flag.
     },
-    [chatExecutionMode, chatUseSubAgents]
+    [chatExecutionMode]
   );
 
   const handleToggleSubAgents = useCallback(() => {
-    // In chat mode the sub-agent toggle is read-only: user must switch to
-    // task mode first. Silently ignore the click (UI also paints the
-    // toggle as disabled — see ExecutionModePicker.tsx).
-    if (chatExecutionMode === "chat") return;
-
-    const newValue = !chatUseSubAgents;
-    setChatUseSubAgents(newValue);
-    const storeState = useStore.getState();
-    const activeConvId = storeState.activeConversationId;
-    if (activeConvId) {
-      const termIds = storeState.conversationTerminals[activeConvId] ?? [];
-      for (const tid of termIds) storeState.setUseAgents(tid, newValue);
-    }
-    flushDbSave().catch(console.warn);
-    const conv = activeConvId ? storeState.conversations[activeConvId] : null;
-    if (!conv) return;
-    if (conv.aiInitialized) {
-      setUseAgentsBackend(conv.aiSessionId, newValue).catch(console.error);
-    }
-  }, [chatUseSubAgents, chatExecutionMode]);
+    // No-op kept for backwards compatibility with callers that still
+    // pass an `onToggleSubAgents` handler. Sub-agent dispatch is now
+    // an unconditional capability of every execution mode.
+  }, []);
 
   const handleToolApprove = useCallback((requestId: string) => {
     const pa = pendingApprovalRef.current;
@@ -154,8 +134,10 @@ export function useChatModes() {
     chatAgentMode,
     chatExecutionMode,
     setChatExecutionMode,
-    chatUseSubAgents,
-    setChatUseSubAgents,
+    /** @deprecated Sub-agents are unconditionally on; field always returns true. */
+    chatUseSubAgents: SUB_AGENTS_ALWAYS_ON,
+    /** @deprecated No-op setter kept for backwards compatibility. */
+    setChatUseSubAgents: (_value: boolean) => {},
     chatExecutionModeRef,
     chatUseSubAgentsRef,
     approvalMode,
