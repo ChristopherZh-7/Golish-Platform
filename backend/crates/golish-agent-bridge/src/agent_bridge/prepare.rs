@@ -301,6 +301,7 @@ impl AgentBridge {
             cancelled: Some(&self.cancelled),
             execution_monitor: None,
             execution_mode: *self.execution_mode.read().await,
+            execution_mode_registry: self.execution_mode_registry.clone(),
             use_agents: *self.use_agents.read().await,
             post_shell_hook: self.post_shell_hook.clone(),
             output_classifier: self.output_classifier.clone(),

@@ -178,6 +178,12 @@ pub struct AgentBridge {
     pub(crate) prompt_registry: golish_sub_agents::PromptRegistry,
     pub(crate) use_agents: Arc<RwLock<bool>>,
     pub(crate) execution_mode: Arc<RwLock<super::execution_mode::ExecutionMode>>,
+    /// Per-mode tool exposure registry shared across every loop turn.
+    /// `Default` registers built-in `chat` + `task` policies; downstream
+    /// crates that want extra modes can replace this via the
+    /// `with_execution_mode_registry` builder.
+    pub(crate) execution_mode_registry:
+        Arc<golish_agent_runtime::execution_mode::ExecutionModeRegistry>,
 
     // -- Context / planning ---------------------------------------------------
     pub(crate) context_manager: Arc<ContextManager>,

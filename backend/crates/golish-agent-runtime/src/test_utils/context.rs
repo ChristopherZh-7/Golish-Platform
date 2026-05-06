@@ -22,7 +22,10 @@ use golish_agent_kit::agent_mode::AgentMode;
 use crate::agentic_loop::{
     AgenticLoopContext, LoopAccessControl, LoopCaptureContext, LoopEventRefs, LoopLlmRefs,
 };
+use golish_agent_kit::execution_mode::ExecutionMode;
 use golish_agent_kit::tool_definitions::ToolConfig;
+
+use crate::execution_mode::ExecutionModeRegistry;
 
 // ============================================================================
 // Mock Runtime for Testing
@@ -110,6 +113,7 @@ pub struct TestContextBuilder {
     runtime: Option<Arc<dyn GolishRuntime>>,
     denied_tools: Vec<String>,
     allowed_tools: Vec<String>,
+    execution_mode: ExecutionMode,
 }
 
 impl Default for TestContextBuilder {
@@ -127,7 +131,14 @@ impl TestContextBuilder {
             runtime: None,
             denied_tools: vec![],
             allowed_tools: vec![],
+            execution_mode: ExecutionMode::default(),
         }
+    }
+
+    /// Override the execution mode for this test (defaults to `Chat`).
+    pub fn execution_mode(mut self, mode: ExecutionMode) -> Self {
+        self.execution_mode = mode;
+        self
     }
 
     /// Set the workspace path.
@@ -225,6 +236,8 @@ impl TestContextBuilder {
             tool_config,
             api_request_stats: Arc::new(ApiRequestStats::new()),
             runtime: self.runtime,
+            execution_mode: self.execution_mode,
+            execution_mode_registry: Arc::new(ExecutionModeRegistry::default()),
             _temp_dir: temp_dir,
         }
     }
@@ -249,6 +262,8 @@ pub struct TestContext {
     pub api_request_stats: Arc<ApiRequestStats>,
     /// Optional runtime for testing auto-approve flag
     pub runtime: Option<Arc<dyn GolishRuntime>>,
+    pub execution_mode: ExecutionMode,
+    pub execution_mode_registry: Arc<ExecutionModeRegistry>,
     // Keep temp dir alive for the duration of the test
     _temp_dir: tempfile::TempDir,
 }
@@ -304,7 +319,8 @@ impl TestContext {
             custom_tool_executor: None,
             cancelled: None,
             execution_monitor: None,
-            execution_mode: golish_agent_kit::execution_mode::ExecutionMode::Chat,
+            execution_mode: self.execution_mode,
+            execution_mode_registry: self.execution_mode_registry.clone(),
             use_agents: true,
             post_shell_hook: None,
             output_classifier: None,
