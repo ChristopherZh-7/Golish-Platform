@@ -13,10 +13,10 @@ type ApprovalMode = "ask" | "allowlist" | "run-all";
 
 export function useChatModes() {
   const [chatAgentMode, setChatAgentMode] = useState<AgentMode>("default");
-  const [chatExecutionMode, setChatExecutionMode] = useState<"chat" | "task">("chat");
+  const [chatExecutionMode, setChatExecutionMode] = useState<string>("chat");
   const [chatUseSubAgents, setChatUseSubAgents] = useState(false);
 
-  const chatExecutionModeRef = useRef(chatExecutionMode);
+  const chatExecutionModeRef = useRef<string>(chatExecutionMode);
   chatExecutionModeRef.current = chatExecutionMode;
   const chatUseSubAgentsRef = useRef(chatUseSubAgents);
   chatUseSubAgentsRef.current = chatUseSubAgents;
@@ -66,7 +66,7 @@ export function useChatModes() {
   );
 
   const handleExecutionModeChange = useCallback(
-    (mode: "chat" | "task") => {
+    (mode: string) => {
       if (mode === chatExecutionMode) return;
       setChatExecutionMode(mode);
       const storeState = useStore.getState();

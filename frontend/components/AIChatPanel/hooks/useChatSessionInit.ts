@@ -18,9 +18,9 @@ type SelectedModel = { model: string; provider: string } | null;
 
 interface UseChatSessionInitOptions {
   selectedModel: SelectedModel;
-  chatExecutionModeRef: React.MutableRefObject<"chat" | "task">;
+  chatExecutionModeRef: React.MutableRefObject<string>;
   chatUseSubAgentsRef: React.MutableRefObject<boolean>;
-  setChatExecutionMode: (mode: "chat" | "task") => void;
+  setChatExecutionMode: (mode: string) => void;
   setChatUseSubAgents: (val: boolean) => void;
   updateConv: (convId: string, update: Record<string, unknown>) => void;
 }
@@ -111,11 +111,13 @@ export function useChatSessionInit(opts: UseChatSessionInitOptions) {
 
         const storeState = useStore.getState();
         const termIds = storeState.conversationTerminals[conv.id] ?? [];
-        let restoredExecMode: "chat" | "task" = chatExecutionModeRef.current;
+        let restoredExecMode: string = chatExecutionModeRef.current;
         let restoredUseAgents = chatUseSubAgentsRef.current;
         for (const tid of termIds) {
           const sess = storeState.sessions[tid];
-          if (sess?.executionMode === "task") restoredExecMode = "task";
+          if (sess?.executionMode && sess.executionMode !== "chat") {
+            restoredExecMode = sess.executionMode;
+          }
           if (sess?.useAgents) restoredUseAgents = true;
         }
 

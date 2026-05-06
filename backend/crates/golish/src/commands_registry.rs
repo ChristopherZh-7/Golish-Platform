@@ -65,6 +65,7 @@ fn install_handlers(
         reset_tool_policies, enable_full_auto_mode, disable_full_auto_mode, is_full_auto_mode_enabled,
         get_agent_mode, set_agent_mode, save_project_agent_mode,
         set_use_agents, get_use_agents, set_execution_mode, get_execution_mode,
+        list_execution_modes,
         get_api_request_stats, get_plan, get_context_summary,
         get_token_usage_stats, get_token_alert_level, get_context_utilization,
         get_remaining_tokens, reset_context_manager, get_context_trim_config, is_context_management_enabled, retry_compaction,
