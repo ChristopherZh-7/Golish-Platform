@@ -18,7 +18,7 @@ interface UseChatStreamingSyncOptions {
   setSelectedModel: Dispatch<SetStateAction<SelectedModel>>;
   setPentestTools: Dispatch<SetStateAction<ToolConfig[]>>;
   setConfiguredProviders: Dispatch<SetStateAction<Set<string>>>;
-  setChatExecutionMode: Dispatch<SetStateAction<"chat" | "task">>;
+  setChatExecutionMode: Dispatch<SetStateAction<string>>;
   setChatUseSubAgents: Dispatch<SetStateAction<boolean>>;
   chatUseSubAgents: boolean;
   planTextOffsetRef: MutableRefObject<number | null>;

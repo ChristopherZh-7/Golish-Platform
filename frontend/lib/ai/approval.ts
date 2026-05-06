@@ -70,7 +70,7 @@ export async function setUseAgents(sessionId: string, enabled: boolean): Promise
   return invoke("set_use_agents", { sessionId, enabled });
 }
 
-export async function setExecutionMode(sessionId: string, mode: "chat" | "task"): Promise<void> {
+export async function setExecutionMode(sessionId: string, mode: string): Promise<void> {
   return invoke("set_execution_mode", { sessionId, mode });
 }
 
