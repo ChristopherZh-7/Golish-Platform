@@ -154,6 +154,9 @@ where
             cancelled: None,
             execution_monitor: None,
             execution_mode: golish_agent_kit::execution_mode::ExecutionMode::Chat,
+            execution_mode_registry: std::sync::Arc::new(
+                crate::execution_mode::ExecutionModeRegistry::default(),
+            ),
             use_agents: true,
             post_shell_hook: None,
             output_classifier: None,

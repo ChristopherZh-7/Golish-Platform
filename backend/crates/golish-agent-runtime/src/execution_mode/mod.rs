@@ -20,6 +20,7 @@ pub mod context;
 pub mod modes;
 pub mod policy;
 pub mod registry;
+pub mod selection_apply;
 
 pub use context::PolicyContext;
 pub use policy::{
