@@ -148,6 +148,12 @@ pub struct AgenticLoopContext<'a> {
     pub cancelled: Option<&'a Arc<std::sync::atomic::AtomicBool>>,
     pub execution_monitor: Option<Arc<RwLock<golish_agent_kit::loop_detection::ExecutionMonitor>>>,
     pub execution_mode: golish_agent_kit::execution_mode::ExecutionMode,
+    /// Per-mode tool exposure strategy. The agentic loop's
+    /// `tool_list::build_tool_list` consults this registry to look up
+    /// the active [`crate::execution_mode::policy::ExecutionModePolicy`]
+    /// for `execution_mode`. Owned at the `AgentBridge` level and
+    /// cloned (cheap `Arc`) into each per-turn loop context.
+    pub execution_mode_registry: Arc<crate::execution_mode::ExecutionModeRegistry>,
     /// Whether the user has enabled sub-agent dispatch for this turn.
     ///
     /// When `false`, [`crate::agentic_loop::tool_list::build_tool_list`] omits

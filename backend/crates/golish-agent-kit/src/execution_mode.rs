@@ -39,6 +39,24 @@ impl std::fmt::Display for ExecutionMode {
     }
 }
 
+impl ExecutionMode {
+    /// Stable string id used as the lookup key in
+    /// `ExecutionModeRegistry`. Kept in lockstep with `Display` /
+    /// `from_str`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ExecutionMode::Chat => "chat",
+            ExecutionMode::Task => "task",
+        }
+    }
+}
+
+impl From<ExecutionMode> for &'static str {
+    fn from(mode: ExecutionMode) -> &'static str {
+        mode.as_str()
+    }
+}
+
 impl std::str::FromStr for ExecutionMode {
     type Err = String;
 
