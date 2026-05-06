@@ -74,7 +74,6 @@ pub use commands::{
     set_tool_policy, set_tool_policy_config, shutdown_ai_agent, shutdown_ai_session,
     cancel_ai_generation,
     check_recon_tools_cmd, run_recon_pipeline, signal_frontend_ready,
-    set_use_agents, get_use_agents,
     set_execution_mode, get_execution_mode,
     update_ai_workspace, AiState, CommitMessageResponse,
 };

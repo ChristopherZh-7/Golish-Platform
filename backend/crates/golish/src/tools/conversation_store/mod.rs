@@ -59,7 +59,6 @@ pub struct TerminalStateRow {
     pub custom_name: Option<String>,
     pub plan_json: Option<serde_json::Value>,
     pub execution_mode: Option<String>,
-    pub use_agents: Option<bool>,
     pub retired_plans_json: Option<serde_json::Value>,
     pub plan_message_id: Option<String>,
 }
@@ -329,15 +328,14 @@ pub async fn conv_save_terminal_state(
     }
 
     sqlx::query(
-        r#"INSERT INTO terminal_state (session_id, conversation_id, working_directory, scrollback, custom_name, plan_json, execution_mode, use_agents, retired_plans_json, plan_message_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        r#"INSERT INTO terminal_state (session_id, conversation_id, working_directory, scrollback, custom_name, plan_json, execution_mode, retired_plans_json, plan_message_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
            ON CONFLICT (session_id) DO UPDATE SET
              working_directory = EXCLUDED.working_directory,
              scrollback = EXCLUDED.scrollback,
              custom_name = EXCLUDED.custom_name,
              plan_json = EXCLUDED.plan_json,
              execution_mode = EXCLUDED.execution_mode,
-             use_agents = EXCLUDED.use_agents,
              retired_plans_json = EXCLUDED.retired_plans_json,
              plan_message_id = EXCLUDED.plan_message_id,
              updated_at = NOW()"#,
@@ -349,7 +347,6 @@ pub async fn conv_save_terminal_state(
     .bind(&terminal.custom_name)
     .bind(&terminal.plan_json)
     .bind(&terminal.execution_mode)
-    .bind(terminal.use_agents)
     .bind(&terminal.retired_plans_json)
     .bind(&terminal.plan_message_id)
     .execute(&mut *tx)
@@ -366,8 +363,8 @@ pub async fn conv_load_terminal_states(
     conversation_id: String,
 ) -> Result<Vec<TerminalStateRow>, GolishError> {
     let pool = state.pool_ready().await?;
-    let rows = sqlx::query_as::<_, (String, Option<String>, String, String, Option<String>, Option<serde_json::Value>, Option<String>, Option<bool>, Option<serde_json::Value>, Option<String>)>(
-        r#"SELECT session_id, conversation_id, working_directory, scrollback, custom_name, plan_json, execution_mode, use_agents, retired_plans_json, plan_message_id
+    let rows = sqlx::query_as::<_, (String, Option<String>, String, String, Option<String>, Option<serde_json::Value>, Option<String>, Option<serde_json::Value>, Option<String>)>(
+        r#"SELECT session_id, conversation_id, working_directory, scrollback, custom_name, plan_json, execution_mode, retired_plans_json, plan_message_id
            FROM terminal_state
            WHERE conversation_id = $1"#,
     )
@@ -378,7 +375,7 @@ pub async fn conv_load_terminal_states(
 
     Ok(rows
         .into_iter()
-        .map(|(session_id, conversation_id, working_directory, scrollback, custom_name, plan_json, execution_mode, use_agents, retired_plans_json, plan_message_id)| {
+        .map(|(session_id, conversation_id, working_directory, scrollback, custom_name, plan_json, execution_mode, retired_plans_json, plan_message_id)| {
             TerminalStateRow {
                 session_id,
                 conversation_id,
@@ -387,7 +384,6 @@ pub async fn conv_load_terminal_states(
                 custom_name,
                 plan_json,
                 execution_mode,
-                use_agents,
                 retired_plans_json,
                 plan_message_id,
             }

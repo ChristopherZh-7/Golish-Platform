@@ -334,18 +334,6 @@ impl AgentBridge {
         *self.access.agent_mode.read().await
     }
 
-    /// Set the useAgents flag (controls whether sub-agent delegation is available).
-    pub async fn set_use_agents(&self, enabled: bool) {
-        let mut current = self.use_agents.write().await;
-        tracing::debug!("useAgents changed: {} -> {}", *current, enabled);
-        *current = enabled;
-    }
-
-    /// Get the current useAgents setting.
-    pub async fn get_use_agents(&self) -> bool {
-        *self.use_agents.read().await
-    }
-
     /// Set the execution mode (Chat vs Task).
     pub async fn set_execution_mode(&self, mode: ExecutionMode) {
         let mut current = self.execution_mode.write().await;

@@ -58,7 +58,6 @@ export interface PersistedTerminalData {
   customName?: string;
   planJson?: unknown;
   executionMode?: string;
-  useAgents?: boolean;
   retiredPlansJson?: unknown;
   planMessageId?: string | null;
   timelineBlocks?: PersistedTimelineBlock[];

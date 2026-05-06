@@ -84,7 +84,6 @@ export interface SessionActions {
   setSessionMode: (sessionId: string, mode: SessionMode) => void;
   setInputMode: (sessionId: string, mode: InputMode) => void;
   setAgentMode: (sessionId: string, mode: AgentMode) => void;
-  setUseAgents: (sessionId: string, enabled: boolean) => void;
   setExecutionMode: (sessionId: string, mode: ExecutionMode) => void;
   setCustomTabName: (sessionId: string, customName: string | null) => void;
   setProcessName: (sessionId: string, processName: string | null) => void;
