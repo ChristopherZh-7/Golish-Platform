@@ -148,3 +148,42 @@ pub async fn get_execution_mode(
 
     Ok(bridge.get_execution_mode().await.to_string())
 }
+
+/// Descriptor for a registered execution mode policy. Returned by
+/// [`list_execution_modes`] so the frontend can render the mode
+/// picker without hard-coding `chat` / `task`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionModeDescriptor {
+    pub id: String,
+    pub display_name: String,
+    pub icon: String,
+    pub badge_color: String,
+    pub description: String,
+    pub allows_sub_agents: bool,
+}
+
+/// List every execution mode registered in the runtime's
+/// `ExecutionModeRegistry`. Today this is `chat` and `task`; future
+/// modes (`plan`, `debug`, …) automatically appear once their
+/// `ExecutionModePolicy` is added to `ExecutionModeRegistry::default`.
+#[tauri::command]
+pub async fn list_execution_modes() -> Result<Vec<ExecutionModeDescriptor>, GolishError> {
+    let registry = golish_agent_runtime::execution_mode::ExecutionModeRegistry::default();
+    let descriptors = registry
+        .list_all()
+        .into_iter()
+        .map(|policy| {
+            let label = policy.label();
+            ExecutionModeDescriptor {
+                id: policy.id().to_string(),
+                display_name: label.display_name.to_string(),
+                icon: label.icon.to_string(),
+                badge_color: label.badge_color.to_string(),
+                description: policy.description().to_string(),
+                allows_sub_agents: policy.allows_sub_agents(),
+            }
+        })
+        .collect();
+    Ok(descriptors)
+}

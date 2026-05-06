@@ -7,7 +7,19 @@ export type RenderMode = "timeline" | "fullterm";
 export type AiStatus = "disconnected" | "initializing" | "ready" | "error";
 export type TabType = "terminal" | "settings" | "home" | "browser" | "security";
 export type AgentMode = "default" | "auto-approve" | "planning";
-export type ExecutionMode = "chat" | "task";
+/**
+ * Execution mode id matching one of the policies registered in the
+ * backend's `ExecutionModeRegistry`. Today this is `"chat" | "task"`,
+ * but the type is `string` to forward-allow new modes (`plan`,
+ * `debug`, …) without churning every consumer.
+ *
+ * Use the discriminator constants `EXECUTION_MODE_CHAT` /
+ * `EXECUTION_MODE_TASK` for comparisons against the two modes that
+ * have hard-coded UI behaviour today.
+ */
+export type ExecutionMode = string;
+export const EXECUTION_MODE_CHAT = "chat";
+export const EXECUTION_MODE_TASK = "task";
 
 export interface AiConfig {
   provider: string;

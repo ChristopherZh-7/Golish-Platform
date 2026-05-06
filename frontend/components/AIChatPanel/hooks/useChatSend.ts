@@ -20,7 +20,7 @@ interface UseChatSendOptions {
   textareaRef: MutableRefObject<HTMLTextAreaElement | null>;
   userScrolledUpRef: MutableRefObject<boolean>;
   streamingMsgRef: MutableRefObject<string | null>;
-  chatExecutionModeRef: MutableRefObject<"chat" | "task">;
+  chatExecutionModeRef: MutableRefObject<string>;
   taskInProgressRef: MutableRefObject<boolean>;
   initializeSession: (conv: {
     id: string;
