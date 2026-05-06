@@ -35,6 +35,12 @@ impl ExecutionModePolicy for ChatModePolicy {
     }
 
     async fn primary_tools(&self, _ctx: &PolicyContext<'_>) -> ToolSelection {
+        // Chat mode is single-agent oriented but the user still wants
+        // the LLM to be able to "phone a friend": e.g. ask
+        // `sub_agent_browser` to do a JS bundle pull, or
+        // `sub_agent_pentester` to run an active scan, then come back
+        // with the result. Planner / refiner / reflector remain off —
+        // those are task-mode orchestration concerns, not chat.
         ToolSelection {
             static_groups: StaticGroupSelection::all_enabled(),
             bridge_tools: BridgeToolSelection::all_enabled(),
@@ -42,7 +48,12 @@ impl ExecutionModePolicy for ChatModePolicy {
                 pentest_runtime: true,
                 tavily: true,
             },
-            agent_tools: AgentToolSelection::none(),
+            agent_tools: AgentToolSelection {
+                include_dispatch_tools: true,
+                allow_planner: false,
+                allow_refiner: false,
+                allow_reflector: false,
+            },
             include_run_command: true,
             include_ask_human: true,
             deny_overrides: vec![],
@@ -85,10 +96,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_does_not_dispatch_sub_agents() {
+    async fn chat_dispatches_worker_sub_agents() {
+        // Chat mode keeps `allows_sub_agents()` false because that
+        // metadata is consumed by the picker UI (legacy contract:
+        // chat is "single-agent" from the user's perspective). The
+        // runtime still exposes worker-sub-agent dispatchers so the
+        // chat-mode LLM can phone a friend when needed.
         let s = ChatModePolicy.primary_tools(&mock_ctx()).await;
-        assert!(!s.agent_tools.include_dispatch_tools);
-        assert!(!ChatModePolicy.allows_sub_agents());
+        assert!(s.agent_tools.include_dispatch_tools);
+        assert!(!s.agent_tools.allow_planner);
+        assert!(!s.agent_tools.allow_refiner);
+        assert!(!s.agent_tools.allow_reflector);
     }
 
     #[tokio::test]
