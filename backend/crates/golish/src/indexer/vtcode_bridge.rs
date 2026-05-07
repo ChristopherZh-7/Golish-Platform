@@ -85,7 +85,10 @@ pub fn initialize_vtcode_indexer(
         tracing::info!("Loaded {} files from existing index", loaded);
     }
 
-    state.set_backend(Box::new(VtcodeIndexerBackend { indexer }), workspace_path.clone());
+    state.set_backend(
+        Box::new(VtcodeIndexerBackend { indexer }),
+        workspace_path.clone(),
+    );
 
     tracing::info!("Indexer initialized successfully for {:?}", workspace_path);
     tracing::info!("Index files will be stored in: {:?}", index_dir);

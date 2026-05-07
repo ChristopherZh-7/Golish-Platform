@@ -20,8 +20,7 @@ pub(super) const WIKI_CATEGORIES: &[&str] =
 /// Prefers `<project_root>/resources/wiki` when the directory exists;
 /// falls back to `<app-data>/wiki` otherwise.
 pub(super) fn wiki_base_dir() -> std::path::PathBuf {
-    golish_core::paths::wiki_dir()
-        .expect("cannot resolve home directory")
+    golish_core::paths::wiki_dir().expect("cannot resolve home directory")
 }
 
 /// Parse the `---` YAML-ish frontmatter block. Returns
@@ -34,13 +33,25 @@ pub(super) fn extract_wiki_frontmatter(content: &str) -> (String, String, Vec<St
             .find(|l| l.starts_with('#'))
             .map(|l| l.trim_start_matches('#').trim().to_string())
             .unwrap_or_default();
-        return (title, "uncategorized".to_string(), vec![], "draft".to_string());
+        return (
+            title,
+            "uncategorized".to_string(),
+            vec![],
+            "draft".to_string(),
+        );
     }
     let rest = &content[3..];
     let end = rest.find("\n---");
     let fm = match end {
         Some(i) => &rest[..i],
-        None => return (String::new(), "uncategorized".to_string(), vec![], "draft".to_string()),
+        None => {
+            return (
+                String::new(),
+                "uncategorized".to_string(),
+                vec![],
+                "draft".to_string(),
+            )
+        }
     };
 
     let mut title = String::new();
@@ -142,7 +153,9 @@ pub(super) async fn update_wiki_index(base: &std::path::Path) {
     let mut stack = vec![base.to_path_buf()];
 
     while let Some(dir) = stack.pop() {
-        let Ok(mut rd) = tokio::fs::read_dir(&dir).await else { continue };
+        let Ok(mut rd) = tokio::fs::read_dir(&dir).await else {
+            continue;
+        };
         while let Ok(Some(entry)) = rd.next_entry().await {
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with('.') {
@@ -156,7 +169,11 @@ pub(super) async fn update_wiki_index(base: &std::path::Path) {
             if !name.ends_with(".md") {
                 continue;
             }
-            let rel = p.strip_prefix(base).unwrap_or(&p).to_string_lossy().to_string();
+            let rel = p
+                .strip_prefix(base)
+                .unwrap_or(&p)
+                .to_string_lossy()
+                .to_string();
             if rel == "index.md" || rel == "log.md" || rel == "SCHEMA.md" {
                 continue;
             }

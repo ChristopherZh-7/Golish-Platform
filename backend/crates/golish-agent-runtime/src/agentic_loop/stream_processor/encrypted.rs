@@ -5,7 +5,6 @@
 //! reasoning models, but it isn't exposed on the typed response struct — we
 //! go through JSON serialization to read it.
 
-
 /// Extract `reasoning_encrypted_content` from the `Final` payload of OpenAI's
 /// Responses API. This field is required for stateless multi-turn conversations
 /// with reasoning models, but it isn't surfaced on the typed response struct —

@@ -86,7 +86,10 @@ impl ShellIntegration {
     /// Then we use `--rcfile wrapper.bash` when spawning bash.
     fn setup_bash() -> Option<Self> {
         // Use ~/.config/golish/shell/bash for bash integration.
-        let config_dir = dirs::config_dir()?.join("golish").join("shell").join("bash");
+        let config_dir = dirs::config_dir()?
+            .join("golish")
+            .join("shell")
+            .join("bash");
 
         if fs::create_dir_all(&config_dir).is_err() {
             tracing::warn!("Failed to create bash integration directory");

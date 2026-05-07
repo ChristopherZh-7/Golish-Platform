@@ -13,7 +13,6 @@ use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
 };
 use rmcp::ServiceExt;
-#[cfg(unix)]
 use std::sync::OnceLock;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -135,51 +134,11 @@ pub async fn connect_mcp_server(
 /// Resolves the user's shell PATH by spawning a login shell.
 /// Cached via OnceLock — only runs once per app lifetime.
 /// Returns None if resolution fails (the inherited PATH will be used).
-#[cfg(unix)]
 fn resolve_shell_path() -> Option<&'static str> {
     static SHELL_PATH: OnceLock<Option<String>> = OnceLock::new();
 
     SHELL_PATH
-        .get_or_init(|| {
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| {
-                if cfg!(target_os = "macos") {
-                    "/bin/zsh".to_string()
-                } else {
-                    "/bin/sh".to_string()
-                }
-            });
-
-            let output = match std::process::Command::new(&shell)
-                .args(["-lic", "echo __QBIT_PATH_MARKER__=$PATH"])
-                .output()
-            {
-                Ok(output) => output,
-                Err(e) => {
-                    tracing::warn!("Failed to spawn login shell to resolve PATH: {}", e);
-                    return None;
-                }
-            };
-
-            if !output.status.success() {
-                tracing::warn!(
-                    "Login shell exited with status {} while resolving PATH",
-                    output.status
-                );
-                return None;
-            }
-
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                if let Some(path) = line.strip_prefix("__QBIT_PATH_MARKER__=") {
-                    let path = path.trim().to_string();
-                    tracing::debug!("Resolved shell PATH: {}", path);
-                    return Some(path);
-                }
-            }
-
-            tracing::warn!("Failed to extract PATH from login shell output");
-            None
-        })
+        .get_or_init(golish_platform::shell::resolve_login_shell_path)
         .as_ref()
         .map(|s| s.as_str())
 }
@@ -252,7 +211,6 @@ async fn connect_stdio(
     // Resolve and inject shell PATH if not explicitly set in config.
     // On macOS/Linux, apps launched from Finder/dock don't inherit the user's
     // shell PATH, so commands like `npx` or `node` may not be found.
-    #[cfg(unix)]
     if !config.env.contains_key("PATH") {
         if let Some(path) = resolve_shell_path() {
             cmd.env("PATH", path);

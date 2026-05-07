@@ -95,6 +95,7 @@ proptest! {
             ShellType::Zsh => prop_assert_eq!(ext, "zsh"),
             ShellType::Bash => prop_assert_eq!(ext, "bash"),
             ShellType::Fish => prop_assert_eq!(ext, "fish"),
+            ShellType::Sh => prop_assert_eq!(ext, "sh"),
             ShellType::PowerShell | ShellType::Cmd | ShellType::Unknown => {
                 prop_assert_eq!(ext, "zsh")
             }

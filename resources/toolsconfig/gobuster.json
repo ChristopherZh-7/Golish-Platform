@@ -12,7 +12,9 @@
     "tags": ["web", "dir-brute", "dns", "vhost"],
     "install": {
       "method": "homebrew",
-      "source": "gobuster"
+      "source": "gobuster",
+      "windows": { "method": "github", "source": "OJ/gobuster" },
+      "linux": { "method": "github", "source": "OJ/gobuster" }
     },
     "params": [
       {

@@ -88,23 +88,25 @@ where
             &error_message[..{
                 let max = error_message.len().min(100);
                 let mut end = max;
-                while end > 0 && !error_message.is_char_boundary(end) { end -= 1; }
+                while end > 0 && !error_message.is_char_boundary(end) {
+                    end -= 1;
+                }
                 end
             }]
         );
         return None;
     }
 
-    let schema = tool_schema.cloned().unwrap_or_else(|| serde_json::json!({}));
+    let schema = tool_schema
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
     let user_message = build_fixer_prompt(tool_name, original_args, error_message, &schema);
 
     let request = CompletionRequest {
         model: None,
         preamble: Some(FIXER_SYSTEM_PROMPT.to_string()),
         chat_history: OneOrMany::one(rig::completion::Message::User {
-            content: OneOrMany::one(UserContent::Text(Text {
-                text: user_message,
-            })),
+            content: OneOrMany::one(UserContent::Text(Text { text: user_message })),
         }),
         documents: vec![],
         tools: vec![],
@@ -136,12 +138,8 @@ where
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "[toolcall-fixer] Fixer returned invalid JSON: {}",
-                        e
-                    );
-                    golish_json_repair::parse_tool_args_opt(trimmed)
-                        .filter(|v| v != original_args)
+                    tracing::warn!("[toolcall-fixer] Fixer returned invalid JSON: {}", e);
+                    golish_json_repair::parse_tool_args_opt(trimmed).filter(|v| v != original_args)
                 }
             }
         }
@@ -175,7 +173,9 @@ mod tests {
     #[test]
     fn test_is_fixable_error() {
         assert!(is_fixable_error("missing field `target`"));
-        assert!(is_fixable_error("invalid type: expected string, got integer"));
+        assert!(is_fixable_error(
+            "invalid type: expected string, got integer"
+        ));
         assert!(is_fixable_error("failed to deserialize arguments"));
         assert!(is_fixable_error("required property 'command' is missing"));
 
@@ -196,7 +196,12 @@ mod tests {
             "required": ["target"]
         });
 
-        let prompt = build_fixer_prompt("scan_target", &args, "invalid type: expected string", &schema);
+        let prompt = build_fixer_prompt(
+            "scan_target",
+            &args,
+            "invalid type: expected string",
+            &schema,
+        );
         assert!(prompt.contains("scan_target"));
         assert!(prompt.contains("invalid type"));
         assert!(prompt.contains("\"target\""));

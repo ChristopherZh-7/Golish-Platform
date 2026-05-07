@@ -147,7 +147,11 @@ pub async fn mcp_list_servers(
             (McpServerStatus::Disconnected, None, None)
         };
 
-        let setup_status = if source == "builtin" && matches!(status, McpServerStatus::Disconnected | McpServerStatus::Error) {
+        let setup_status = if source == "builtin"
+            && matches!(
+                status,
+                McpServerStatus::Disconnected | McpServerStatus::Error
+            ) {
             if let Some(ref cmd) = server_config.command {
                 if cmd == "node" {
                     if !is_platform_node_available() {
@@ -156,14 +160,26 @@ pub async fn mcp_list_servers(
                         let entry = &server_config.args[0];
                         let entry_path = std::path::Path::new(entry);
                         let tool_dir = entry_path.parent().and_then(|p| p.parent());
-                        let needs_build = tool_dir.map_or(true, |d| {
+                        let needs_build = tool_dir.is_none_or(|d| {
                             !d.join("node_modules").exists() || !entry_path.exists()
                         });
-                        if needs_build { Some("needs_build".to_string()) } else { None }
-                    } else { None }
-                } else { None }
-            } else { None }
-        } else { None };
+                        if needs_build {
+                            Some("needs_build".to_string())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         servers.push(McpServerInfo {
             name,
@@ -269,7 +285,10 @@ pub async fn mcp_has_project_config(workspace_path: String) -> Result<bool, Goli
 /// The server must be configured in the workspace config.
 /// After connecting, all active agent sessions have their MCP tools refreshed.
 #[tauri::command]
-pub async fn mcp_connect(server_name: String, state: State<'_, AppState>) -> Result<(), GolishError> {
+pub async fn mcp_connect(
+    server_name: String,
+    state: State<'_, AppState>,
+) -> Result<(), GolishError> {
     // Get the global MCP manager
     let manager_guard = state.mcp_manager.read().await;
     let manager = manager_guard.as_ref().ok_or_else(|| {
@@ -295,7 +314,10 @@ pub async fn mcp_connect(server_name: String, state: State<'_, AppState>) -> Res
 ///
 /// After disconnecting, all active agent sessions have their MCP tools refreshed.
 #[tauri::command]
-pub async fn mcp_disconnect(server_name: String, state: State<'_, AppState>) -> Result<(), GolishError> {
+pub async fn mcp_disconnect(
+    server_name: String,
+    state: State<'_, AppState>,
+) -> Result<(), GolishError> {
     // Get the global MCP manager
     let manager_guard = state.mcp_manager.read().await;
     let manager = manager_guard.as_ref().ok_or_else(|| {
@@ -344,7 +366,8 @@ pub async fn mcp_setup_builtin(
     if !is_platform_node_available() {
         return Ok(McpSetupResult {
             success: false,
-            message: "Node.js is not installed. Please install it first in Settings > Environment.".to_string(),
+            message: "Node.js is not installed. Please install it first in Settings > Environment."
+                .to_string(),
         });
     }
 
@@ -366,7 +389,11 @@ pub async fn mcp_setup_builtin(
         });
     }
 
-    tracing::info!("[mcp] Setting up built-in server '{}' in {}", server_name, tool_dir.display());
+    tracing::info!(
+        "[mcp] Setting up built-in server '{}' in {}",
+        server_name,
+        tool_dir.display()
+    );
 
     let npm_install = std::process::Command::new("npm")
         .arg("install")
@@ -396,7 +423,10 @@ pub async fn mcp_setup_builtin(
         });
     }
 
-    tracing::info!("[mcp] Built-in server '{}' setup complete, attempting connect", server_name);
+    tracing::info!(
+        "[mcp] Built-in server '{}' setup complete, attempting connect",
+        server_name
+    );
 
     let manager_guard = state.manager.read().await;
     if let Some(manager) = manager_guard.as_ref() {

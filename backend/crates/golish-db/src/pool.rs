@@ -125,9 +125,10 @@ async fn repair_migrations(
     }
 
     // Fix dirty migrations (success=false from interrupted runs)
-    let dirty_fixed = sqlx::query("UPDATE _sqlx_migrations SET success = true WHERE success = false")
-        .execute(&mut *conn)
-        .await?;
+    let dirty_fixed =
+        sqlx::query("UPDATE _sqlx_migrations SET success = true WHERE success = false")
+            .execute(&mut *conn)
+            .await?;
     if dirty_fixed.rows_affected() > 0 {
         warn!(
             count = dirty_fixed.rows_affected(),
@@ -159,14 +160,13 @@ async fn repair_migrations(
     // missing from the tracking table. This happens when a previous PG instance
     // ran the SQL but the _sqlx_migrations row was never committed (crash, port
     // reuse across dev restarts, etc.).
-    let recorded: std::collections::HashSet<i64> = sqlx::query_scalar::<_, i64>(
-        "SELECT version FROM _sqlx_migrations",
-    )
-    .fetch_all(&mut *conn)
-    .await
-    .unwrap_or_default()
-    .into_iter()
-    .collect();
+    let recorded: std::collections::HashSet<i64> =
+        sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations")
+            .fetch_all(&mut *conn)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
 
     for migration in migrator.iter() {
         if recorded.contains(&migration.version) {
@@ -199,15 +199,14 @@ async fn repair_migrations(
 /// the migration's `CREATE EXTENSION` failed on a previous run before the
 /// library was correctly placed).
 async fn detect_pgvector(pool: &PgPool) -> bool {
-    let row: Option<(bool,)> = sqlx::query_as(
-        "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'vector')",
-    )
-    .fetch_optional(pool)
-    .await
-    .ok()
-    .flatten();
+    let row: Option<(bool,)> =
+        sqlx::query_as("SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'vector')")
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
 
-    if row.map_or(false, |(exists,)| exists) {
+    if row.is_some_and(|(exists,)| exists) {
         return true;
     }
 

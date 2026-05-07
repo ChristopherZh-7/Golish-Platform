@@ -346,7 +346,7 @@ impl CacheStats {
         println!("Cached repositories:");
 
         let mut repos = self.repos.clone();
-        repos.sort_by(|a, b| b.1.cmp(&a.1));
+        repos.sort_by_key(|b| std::cmp::Reverse(b.1));
 
         for (repo, size) in repos {
             println!("  {}: {}", repo, format_size(size));

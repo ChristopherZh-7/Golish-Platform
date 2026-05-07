@@ -5,34 +5,47 @@
 
 use uuid::Uuid;
 
-use crate::types::PocMatch;
 use super::severity_rank;
+use crate::types::PocMatch;
 
 pub async fn match_pocs_for_target(
     pool: &sqlx::PgPool,
     target_id: Uuid,
 ) -> crate::ScanRunnerResult<Vec<PocMatch>> {
     let start = std::time::Instant::now();
-    let mut fingerprints = golish_db::repo::fingerprints::list_by_target(pool, target_id)
-        .await?;
+    let mut fingerprints = golish_db::repo::fingerprints::list_by_target(pool, target_id).await?;
 
     if fingerprints.is_empty() {
         let backfilled = backfill_fingerprints_from_target(pool, target_id).await;
         if backfilled > 0 {
-            tracing::info!("[PoC-Match] Backfilled {} fingerprints from targets table for {}", backfilled, target_id);
-            fingerprints = golish_db::repo::fingerprints::list_by_target(pool, target_id)
-                .await?;
+            tracing::info!(
+                "[PoC-Match] Backfilled {} fingerprints from targets table for {}",
+                backfilled,
+                target_id
+            );
+            fingerprints = golish_db::repo::fingerprints::list_by_target(pool, target_id).await?;
         }
     }
 
     if fingerprints.is_empty() {
-        tracing::info!("[PoC-Match] 0 fingerprints for target {} after backfill attempt ({}ms)", target_id, start.elapsed().as_millis());
+        tracing::info!(
+            "[PoC-Match] 0 fingerprints for target {} after backfill attempt ({}ms)",
+            target_id,
+            start.elapsed().as_millis()
+        );
         return Ok(vec![]);
     }
 
-    tracing::info!("[PoC-Match] {} fingerprints for target {} ({}ms): {:?}",
-        fingerprints.len(), target_id, start.elapsed().as_millis(),
-        fingerprints.iter().map(|f| format!("{}:{}", f.category, f.name)).collect::<Vec<_>>());
+    tracing::info!(
+        "[PoC-Match] {} fingerprints for target {} ({}ms): {:?}",
+        fingerprints.len(),
+        target_id,
+        start.elapsed().as_millis(),
+        fingerprints
+            .iter()
+            .map(|f| format!("{}:{}", f.category, f.name))
+            .collect::<Vec<_>>()
+    );
 
     let mut all_terms: Vec<(String, String, String)> = Vec::new();
     let mut tag_terms: Vec<String> = Vec::new();
@@ -77,8 +90,11 @@ pub async fn match_pocs_for_target(
 
     let mut rows = rows_text;
     rows.extend(rows_tags);
-    tracing::info!("[PoC-Match] Queries returned {} rows ({}ms)",
-        rows.len(), q_start.elapsed().as_millis());
+    tracing::info!(
+        "[PoC-Match] Queries returned {} rows ({}ms)",
+        rows.len(),
+        q_start.elapsed().as_millis()
+    );
 
     let mut seen_ids = std::collections::HashSet::new();
     let mut matches = Vec::new();
@@ -119,9 +135,13 @@ pub async fn match_pocs_for_target(
         });
     }
 
-    matches.sort_by(|a, b| severity_rank(&b.severity).cmp(&severity_rank(&a.severity)));
+    matches.sort_by_key(|m| std::cmp::Reverse(severity_rank(&m.severity)));
 
-    tracing::info!("[PoC-Match] Total {} matches in {}ms", matches.len(), start.elapsed().as_millis());
+    tracing::info!(
+        "[PoC-Match] Total {} matches in {}ms",
+        matches.len(),
+        start.elapsed().as_millis()
+    );
     Ok(matches)
 }
 
@@ -258,7 +278,8 @@ async fn backfill_fingerprints_from_target(pool: &sqlx::PgPool, target_id: Uuid)
             if let Some(ws_val) = port_entry.get("webserver").and_then(|w| w.as_str()) {
                 if !ws_val.is_empty() {
                     let (name, version) = parse_sv(ws_val);
-                    let ev = serde_json::json!({ "source": "backfill", "port": port_entry.get("port") });
+                    let ev =
+                        serde_json::json!({ "source": "backfill", "port": port_entry.get("port") });
                     if golish_db::repo::fingerprints::upsert(
                         pool,
                         target_id,

@@ -291,7 +291,16 @@
     "homebrewDesc": "Homebrew 是 macOS 的包管理器，用于安装其他运行环境。已就绪，无需额外版本管理。",
     "packageManager": "包管理器",
     "loadFailed": "无法加载渗透测试配置",
-    "switchDir": "切换目录"
+    "switchDir": "切换目录",
+    "databaseExtensions": "数据库扩展",
+    "pgvectorTitle": "PostgreSQL 向量扩展 (pgvector)",
+    "pgvectorDesc": "AI 记忆模块依赖此扩展进行嵌入向量的相似度搜索。安装到系统 PostgreSQL 后，AI 才能根据语义召回相关历史对话与笔记。",
+    "pgvectorInstalled": "已安装",
+    "pgvectorNotInstalled": "未安装",
+    "pgvectorWarning": "未安装时 AI 记忆的语义搜索功能将不可用",
+    "pgvectorReady": "pgvector 已就绪，AI 记忆向量搜索可用",
+    "pgvectorInstalling": "正在通过 Homebrew 安装 pgvector，请稍候…",
+    "installPgvector": "立即安装"
   },
   "provider": {
     "showInSelector": "在模型选择器中显示",

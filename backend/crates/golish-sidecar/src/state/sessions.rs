@@ -11,7 +11,6 @@ use super::super::session::{Session, SessionMeta};
 use super::SidecarState;
 
 impl SidecarState {
-
     /// Start a new session
     ///
     /// This method is thread-safe and atomic - if called concurrently, only one
@@ -214,7 +213,10 @@ impl SidecarState {
 
         // Filter based on config
         if !config.capture_tool_calls
-            && matches!(event.event_type, super::super::events::EventType::ToolCall { .. })
+            && matches!(
+                event.event_type,
+                super::super::events::EventType::ToolCall { .. }
+            )
         {
             tracing::trace!("[sidecar-state] Tool call capture disabled, skipping");
             return;

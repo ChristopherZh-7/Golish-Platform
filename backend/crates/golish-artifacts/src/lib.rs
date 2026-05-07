@@ -4,15 +4,15 @@
 //! Auto-maintained project documentation (README.md, CLAUDE.md) based on session activity.
 //! Proposes updates that users review and apply.
 
+pub mod generators;
+pub mod manager;
 pub mod prompts;
 pub mod synthesis;
-pub mod manager;
-pub mod generators;
 
+pub use generators::*;
+pub use manager::*;
 pub use prompts::*;
 pub use synthesis::*;
-pub use manager::*;
-pub use generators::*;
 
 #[cfg(test)]
 mod tests;

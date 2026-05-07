@@ -9,7 +9,6 @@ use tauri::State;
 use super::super::super::agent_bridge::AgentBridge;
 use crate::state::AppState;
 
-
 /// Send a prompt to the AI agent for a specific session.
 ///
 /// This is the session-specific version of send_ai_prompt that routes to
@@ -124,12 +123,13 @@ async fn execute_task_mode(
     // This cycle completes before the Generator call so it won't collide
     // with per-subtask Started/Completed events from execute_isolated.
     let init_turn = uuid::Uuid::new_v4().to_string();
-    let init_msg = format!(
-        "I'm analyzing your request and generating a task plan. \
+    let init_msg = "I'm analyzing your request and generating a task plan. \
          This may take a moment while I decompose the task into subtasks..."
-    );
+        .to_string();
     bridge.emit_event(AiEvent::Started { turn_id: init_turn });
-    bridge.emit_event(AiEvent::UserMessage { content: prompt.to_string() });
+    bridge.emit_event(AiEvent::UserMessage {
+        content: prompt.to_string(),
+    });
     bridge.emit_event(AiEvent::TextDelta {
         delta: init_msg.clone(),
         accumulated: init_msg.clone(),
@@ -144,7 +144,9 @@ async fn execute_task_mode(
 
     let start_time = std::time::Instant::now();
     let db_repo: std::sync::Arc<dyn golish_agent_kit::db_traits::DbRepoProvider> =
-        std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(state.db_pool.clone()));
+        std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(
+            state.db_pool.clone(),
+        ));
     let mut orchestrator = TaskOrchestrator::new(db_repo, uuid_session_id, event_tx);
     let executor = BridgeAgentExecutor::new(bridge.clone());
 
@@ -161,7 +163,9 @@ async fn execute_task_mode(
             );
             // Emit the final report as a separate completed message
             let report_turn = uuid::Uuid::new_v4().to_string();
-            bridge.emit_event(AiEvent::Started { turn_id: report_turn });
+            bridge.emit_event(AiEvent::Started {
+                turn_id: report_turn,
+            });
             bridge.emit_event(AiEvent::TextDelta {
                 delta: response.clone(),
                 accumulated: response.clone(),
@@ -231,8 +235,10 @@ pub async fn send_ai_prompt_with_attachments(
         .ok_or_else(|| super::super::ai_session_not_initialized_error(&session_id))?;
 
     // Check vision capabilities
-    let caps =
-        golish_llm_providers::VisionCapabilities::detect(bridge.provider_name(), bridge.model_name());
+    let caps = golish_llm_providers::VisionCapabilities::detect(
+        bridge.provider_name(),
+        bridge.model_name(),
+    );
 
     // If provider doesn't support vision, strip images and emit warning
     let effective_payload = if payload.has_images() && !caps.supports_vision {

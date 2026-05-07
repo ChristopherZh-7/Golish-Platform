@@ -244,10 +244,7 @@ Description: {description}
 }
 
 /// Reflector user prompt — wraps the agent's text response for the reflector.
-pub fn reflector_user_prompt(
-    subtask_title: &str,
-    agent_response: &str,
-) -> String {
+pub fn reflector_user_prompt(subtask_title: &str, agent_response: &str) -> String {
     format!(
         r#"The agent was working on subtask "{title}" but responded with text instead of using tools:
 

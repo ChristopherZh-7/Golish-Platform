@@ -1,5 +1,5 @@
-use serde_json::json;
 use super::FunctionDeclaration;
+use serde_json::json;
 
 pub fn knowledge_base_declarations() -> Vec<FunctionDeclaration> {
     vec![

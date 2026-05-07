@@ -224,9 +224,7 @@ pub(crate) fn spawn_ensure_settings_file(settings_manager: Arc<SettingsManager>)
 ///
 /// The signature matches `tauri::Builder::setup`'s expected closure, which
 /// boxes its error.
-pub(crate) fn setup_subsystems(
-    app: &mut tauri::App,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn setup_subsystems(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     crate::app::menu::install_app_menu(app)?;
 
     let state = app.state::<AppState>();

@@ -19,7 +19,13 @@ impl DbTracker {
         }
 
         self.backend
-            .search_memories_by_doc_type(query, doc_type, sub_filter, self.project_path.as_deref(), limit)
+            .search_memories_by_doc_type(
+                query,
+                doc_type,
+                sub_filter,
+                self.project_path.as_deref(),
+                limit,
+            )
             .await
     }
 
@@ -29,10 +35,8 @@ impl DbTracker {
         limit: usize,
         threshold: f32,
     ) -> Vec<ScoredMemoryHit> {
-        if !self.ready_gate.is_ready() {
-            if !self.ready_gate.wait().await {
-                return Vec::new();
-            }
+        if !self.ready_gate.is_ready() && !self.ready_gate.wait().await {
+            return Vec::new();
         }
 
         let emb_str = vec_to_pgvector(query_embedding);
@@ -48,10 +52,8 @@ impl DbTracker {
     }
 
     pub async fn search_memories_text(&mut self, query: &str, limit: i64) -> Vec<MemoryHit> {
-        if !self.ready_gate.is_ready() {
-            if !self.ready_gate.wait().await {
-                return Vec::new();
-            }
+        if !self.ready_gate.is_ready() && !self.ready_gate.wait().await {
+            return Vec::new();
         }
 
         self.backend
@@ -95,7 +97,12 @@ impl DbTracker {
         }
 
         self.backend
-            .search_memories_text_with_category(query, category, self.project_path.as_deref(), limit)
+            .search_memories_text_with_category(
+                query,
+                category,
+                self.project_path.as_deref(),
+                limit,
+            )
             .await
     }
 
@@ -126,7 +133,7 @@ impl DbTracker {
 
         let mut seen = std::collections::HashSet::new();
         let mut merged = Vec::with_capacity(limit as usize);
-        for hit in semantic_results.into_iter().chain(text_results.into_iter()) {
+        for hit in semantic_results.into_iter().chain(text_results) {
             if seen.insert(hit.id) && (merged.len() as i64) < limit {
                 merged.push(hit);
             }

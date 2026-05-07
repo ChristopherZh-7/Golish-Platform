@@ -213,8 +213,7 @@ mod list {
         std::env::set_var("VT_SESSION_DIR", temp.path());
 
         for i in 0..3 {
-            let snapshot =
-                create_test_snapshot(&format!("workspace-{}", i), &format!("id{}", i));
+            let snapshot = create_test_snapshot(&format!("workspace-{}", i), &format!("id{}", i));
             save_session(temp.path(), &snapshot).unwrap();
             thread::sleep(Duration::from_millis(10));
         }
@@ -249,8 +248,7 @@ mod list {
         std::env::set_var("VT_SESSION_DIR", temp.path());
 
         for i in 0..3 {
-            let mut snapshot =
-                create_test_snapshot(&format!("sort-{}", i), &format!("sid{}", i));
+            let mut snapshot = create_test_snapshot(&format!("sort-{}", i), &format!("sid{}", i));
             thread::sleep(Duration::from_millis(50));
             snapshot.started_at = Utc::now();
             save_session(temp.path(), &snapshot).unwrap();

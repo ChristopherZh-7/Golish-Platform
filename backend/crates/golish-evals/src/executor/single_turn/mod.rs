@@ -90,14 +90,28 @@ pub async fn execute_eval_prompt_with_model(
 
     match provider {
         EvalProvider::VertexClaude => {
-            providers::execute_with_vertex_claude(workspace, prompt, system_prompt, verbose_config, &config)
-                .await
+            providers::execute_with_vertex_claude(
+                workspace,
+                prompt,
+                system_prompt,
+                verbose_config,
+                &config,
+            )
+            .await
         }
         EvalProvider::Zai => {
-            providers::execute_with_zai(workspace, prompt, system_prompt, verbose_config, &config).await
+            providers::execute_with_zai(workspace, prompt, system_prompt, verbose_config, &config)
+                .await
         }
         EvalProvider::OpenAi => {
-            providers::execute_with_openai(workspace, prompt, system_prompt, verbose_config, &config).await
+            providers::execute_with_openai(
+                workspace,
+                prompt,
+                system_prompt,
+                verbose_config,
+                &config,
+            )
+            .await
         }
     }
 }

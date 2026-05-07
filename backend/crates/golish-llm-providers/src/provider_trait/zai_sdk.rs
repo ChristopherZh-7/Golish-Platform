@@ -8,7 +8,6 @@ use golish_models::AiProvider;
 use super::super::LlmClient;
 use super::LlmProvider;
 
-
 /// Z.AI SDK provider implementation.
 pub struct ZaiSdkProviderImpl {
     pub api_key: String,

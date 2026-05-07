@@ -48,8 +48,19 @@ pub async fn log_operation(
     detail: &serde_json::Value,
 ) -> Result<AuditEntry> {
     log_operation_with_lineage(
-        pool, action, category, details, project_path, source,
-        target_id, session_id, tool_name, status, detail, None, None,
+        pool,
+        action,
+        category,
+        details,
+        project_path,
+        source,
+        target_id,
+        session_id,
+        tool_name,
+        status,
+        detail,
+        None,
+        None,
     )
     .await
 }
@@ -273,7 +284,11 @@ impl PentestAudit {
     }
 }
 
-pub async fn list(pool: &PgPool, project_path: Option<&str>, limit: i64) -> Result<Vec<AuditEntry>> {
+pub async fn list(
+    pool: &PgPool,
+    project_path: Option<&str>,
+    limit: i64,
+) -> Result<Vec<AuditEntry>> {
     let rows = sqlx::query_as::<_, AuditEntry>(
         r#"SELECT * FROM audit_log
            WHERE ($1 IS NULL OR project_path = $1 OR project_path IS NULL)
@@ -319,7 +334,11 @@ pub async fn list_by_target(pool: &PgPool, target_id: Uuid, limit: i64) -> Resul
     Ok(rows)
 }
 
-pub async fn list_by_session(pool: &PgPool, session_id: &str, limit: i64) -> Result<Vec<AuditEntry>> {
+pub async fn list_by_session(
+    pool: &PgPool,
+    session_id: &str,
+    limit: i64,
+) -> Result<Vec<AuditEntry>> {
     let rows = sqlx::query_as::<_, AuditEntry>(
         r#"SELECT * FROM audit_log
            WHERE session_id = $1
@@ -364,10 +383,12 @@ pub async fn count(pool: &PgPool, project_path: Option<&str>) -> Result<i64> {
 }
 
 pub async fn clear(pool: &PgPool, project_path: Option<&str>) -> Result<u64> {
-    let result = sqlx::query("DELETE FROM audit_log WHERE ($1 IS NULL OR project_path = $1 OR project_path IS NULL)")
-        .bind(project_path)
-        .execute(pool)
-        .await?;
+    let result = sqlx::query(
+        "DELETE FROM audit_log WHERE ($1 IS NULL OR project_path = $1 OR project_path IS NULL)",
+    )
+    .bind(project_path)
+    .execute(pool)
+    .await?;
     Ok(result.rows_affected())
 }
 

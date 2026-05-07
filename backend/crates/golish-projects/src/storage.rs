@@ -116,7 +116,7 @@ pub async fn list_projects() -> Result<Vec<ProjectConfig>> {
         }
     }
 
-    projects.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    projects.sort_by_key(|p| p.name.to_lowercase());
 
     Ok(projects)
 }
@@ -195,7 +195,11 @@ pub async fn delete_project(name: &str) -> Result<bool> {
         let local_dir = config.root_path.join(".golish");
         if local_dir.exists() && config.root_path.exists() {
             if let Err(e) = tokio::fs::remove_dir_all(&config.root_path).await {
-                tracing::warn!("Failed to remove project root {:?}: {}", config.root_path, e);
+                tracing::warn!(
+                    "Failed to remove project root {:?}: {}",
+                    config.root_path,
+                    e
+                );
             } else {
                 tracing::info!("Removed project directory {:?}", config.root_path);
             }

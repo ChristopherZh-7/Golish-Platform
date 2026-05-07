@@ -52,9 +52,8 @@ fn load_hidden_dirs() -> Vec<String> {
 }
 
 fn save_hidden_dirs(dirs: &[String]) -> Result<(), GolishError> {
-    let path = hidden_dirs_path().ok_or_else(|| {
-        GolishError::Internal("Could not determine home directory".to_string())
-    })?;
+    let path = hidden_dirs_path()
+        .ok_or_else(|| GolishError::Internal("Could not determine home directory".to_string()))?;
     let contents = serde_json::to_string(dirs).map_err(GolishError::from)?;
     std::fs::write(&path, contents).map_err(GolishError::from)
 }

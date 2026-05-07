@@ -1,13 +1,13 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-use rig::completion::Message;
-use tokio::sync::{mpsc, oneshot, RwLock};
 use golish_core::events::AiEvent;
 use golish_core::hitl::ApprovalDecision;
 use golish_core::runtime::GolishRuntime;
 use golish_core::ApiRequestStats;
-use golish_tools::ToolRegistry;
 use golish_sub_agents::SubAgentRegistry;
+use golish_tools::ToolRegistry;
+use rig::completion::Message;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::{mpsc, oneshot, RwLock};
 
 /// Trait for custom/MCP tool executors.
 ///
@@ -21,14 +21,14 @@ pub trait McpToolExecutor: Send + Sync {
         args: &serde_json::Value,
     ) -> Option<(serde_json::Value, bool)>;
 }
-use golish_context::{CompactionState, ContextManager};
-use golish_events::event_coordinator::CoordinatorHandle;
-use golish_agent_kit::sidecar_trait::{SessionCaptureBackend, AiEventProcessor};
+use super::ToolConfig;
 use golish_agent_kit::hitl::ApprovalRecorder;
 use golish_agent_kit::loop_detection::LoopDetector;
-use golish_indexer::IndexerState;
+use golish_agent_kit::sidecar_trait::{AiEventProcessor, SessionCaptureBackend};
 use golish_agent_kit::tool_policy::ToolPolicyManager;
-use super::ToolConfig;
+use golish_context::{CompactionState, ContextManager};
+use golish_events::event_coordinator::CoordinatorHandle;
+use golish_indexer::IndexerState;
 
 /// Marker error indicating that a terminal `AiEvent::Error` has already been emitted.
 ///
@@ -138,7 +138,8 @@ pub struct AgenticLoopContext<'a> {
     pub context_manager: &'a Arc<ContextManager>,
     pub compaction_state: &'a Arc<RwLock<CompactionState>>,
     pub tool_config: &'a ToolConfig,
-    pub graph_backend: Option<Arc<dyn golish_agent_kit::tool_executors::graph_trait::GraphKnowledgeBase>>,
+    pub graph_backend:
+        Option<Arc<dyn golish_agent_kit::tool_executors::graph_trait::GraphKnowledgeBase>>,
     pub sidecar_state: Option<&'a Arc<dyn SessionCaptureBackend>>,
     pub chain_persistence: Option<Arc<dyn golish_sub_agents::SubAgentChainPersistence>>,
     pub plan_manager: &'a Arc<golish_agent_kit::planner::PlanManager>,

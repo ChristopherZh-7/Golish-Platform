@@ -271,10 +271,7 @@ impl ToolPolicyManager {
         // Mode
         if let Some(mode) = args.get("mode").and_then(|v| v.as_str()) {
             if !constraints.is_mode_allowed(mode) {
-                return PolicyConstraintResult::Violated(format!(
-                    "Mode '{}' is not allowed",
-                    mode
-                ));
+                return PolicyConstraintResult::Violated(format!("Mode '{}' is not allowed", mode));
             }
         }
 
@@ -429,5 +426,4 @@ impl ToolPolicyManager {
         *self.config.write().await = ToolPolicyConfig::default();
         self.save().await
     }
-
 }

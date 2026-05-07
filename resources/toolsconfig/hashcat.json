@@ -12,7 +12,9 @@
     "tags": ["brute", "password", "hash", "gpu", "offline"],
     "install": {
       "method": "homebrew",
-      "source": "hashcat"
+      "source": "hashcat",
+      "windows": { "method": "github", "source": "hashcat/hashcat" },
+      "linux": { "method": "github", "source": "hashcat/hashcat" }
     },
     "params": [
       {

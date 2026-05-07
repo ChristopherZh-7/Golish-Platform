@@ -1,3 +1,9 @@
+// `too_many_arguments` is intentionally allowed crate-wide: most `#[tauri::command]`
+// functions thread `tauri::AppHandle`, multiple `State<'_, ...>` handles and a
+// dozen of optional request fields straight from the frontend; refactoring each
+// into a dedicated DTO struct adds boilerplate without any safety win.
+#![allow(clippy::too_many_arguments)]
+
 //! Golish desktop application crate.
 //!
 //! Bootstraps the Tauri runtime, manages global state, and wires every

@@ -55,7 +55,10 @@ pub async fn classify_user_intent(bridge: &AgentBridge, prompt: &str) -> UserInt
         output_schema: None,
     };
 
-    let client = { let g = bridge.llm.client.read().await; (*g).clone() };
+    let client = {
+        let g = bridge.llm.client.read().await;
+        (*g).clone()
+    };
 
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(15),
@@ -85,9 +88,7 @@ pub async fn classify_user_intent(bridge: &AgentBridge, prompt: &str) -> UserInt
             UserIntent::Task
         }
         Err(_) => {
-            tracing::warn!(
-                "[IntentClassifier] Classification timed out (15s), defaulting to Task"
-            );
+            tracing::warn!("[IntentClassifier] Classification timed out (15s), defaulting to Task");
             UserIntent::Task
         }
     }

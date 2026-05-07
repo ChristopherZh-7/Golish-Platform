@@ -4,6 +4,7 @@
 //! - `new_*_with_runtime`: minimal config, defaults applied.
 //! - `new_*_with_context`: adds an optional `ContextManagerConfig`.
 //! - `new_*_with_shared_config`: full control via `SharedComponentsConfig`.
+//!
 //! All three funnel into [`AgentBridge::from_components_with_runtime`].
 
 use std::path::PathBuf;
@@ -23,7 +24,6 @@ use crate::llm_client::{
 use super::super::AgentBridge;
 
 impl AgentBridge {
-
     pub async fn new_ollama_with_runtime(
         workspace: PathBuf,
         model: &str,
@@ -32,7 +32,6 @@ impl AgentBridge {
     ) -> Result<Self> {
         Self::new_ollama_with_context(workspace, model, base_url, None, runtime).await
     }
-
 
     pub async fn new_ollama_with_context(
         workspace: PathBuf,
@@ -48,7 +47,6 @@ impl AgentBridge {
         Self::new_ollama_with_shared_config(workspace, model, base_url, shared_config, runtime, "")
             .await
     }
-
 
     pub async fn new_ollama_with_shared_config(
         workspace: PathBuf,
@@ -71,7 +69,6 @@ impl AgentBridge {
         ))
     }
 
-
     pub async fn new_groq_with_runtime(
         workspace: PathBuf,
         model: &str,
@@ -80,7 +77,6 @@ impl AgentBridge {
     ) -> Result<Self> {
         Self::new_groq_with_context(workspace, model, api_key, None, runtime).await
     }
-
 
     pub async fn new_groq_with_context(
         workspace: PathBuf,
@@ -96,7 +92,6 @@ impl AgentBridge {
         Self::new_groq_with_shared_config(workspace, model, api_key, shared_config, runtime, "")
             .await
     }
-
 
     pub async fn new_groq_with_shared_config(
         workspace: PathBuf,
@@ -119,7 +114,6 @@ impl AgentBridge {
         ))
     }
 
-
     pub async fn new_xai_with_runtime(
         workspace: PathBuf,
         model: &str,
@@ -128,7 +122,6 @@ impl AgentBridge {
     ) -> Result<Self> {
         Self::new_xai_with_context(workspace, model, api_key, None, runtime).await
     }
-
 
     pub async fn new_xai_with_context(
         workspace: PathBuf,
@@ -144,7 +137,6 @@ impl AgentBridge {
         Self::new_xai_with_shared_config(workspace, model, api_key, shared_config, runtime, "")
             .await
     }
-
 
     pub async fn new_xai_with_shared_config(
         workspace: PathBuf,
@@ -167,7 +159,6 @@ impl AgentBridge {
         ))
     }
 
-
     pub async fn new_zai_sdk_with_runtime(
         workspace: PathBuf,
         model: &str,
@@ -176,9 +167,17 @@ impl AgentBridge {
         source_channel: Option<&str>,
         runtime: Arc<dyn GolishRuntime>,
     ) -> Result<Self> {
-        Self::new_zai_sdk_with_context(workspace, model, api_key, base_url, source_channel, None, runtime).await
+        Self::new_zai_sdk_with_context(
+            workspace,
+            model,
+            api_key,
+            base_url,
+            source_channel,
+            None,
+            runtime,
+        )
+        .await
     }
-
 
     #[allow(clippy::too_many_arguments)]
     pub async fn new_zai_sdk_with_context(
@@ -207,7 +206,6 @@ impl AgentBridge {
         .await
     }
 
-
     #[allow(clippy::too_many_arguments)]
     pub async fn new_zai_sdk_with_shared_config(
         workspace: PathBuf,
@@ -233,5 +231,4 @@ impl AgentBridge {
             event_session_id.to_string(),
         ))
     }
-
 }

@@ -5,7 +5,6 @@ use golish_settings::schema::AiProvider;
 use crate::capabilities::ModelCapabilities;
 use crate::registry::ModelDefinition;
 
-
 /// Gemini model definitions.
 pub fn gemini_models() -> Vec<ModelDefinition> {
     vec![

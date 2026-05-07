@@ -8,7 +8,9 @@ use super::super::config::SidecarConfig;
 
 /// Get the sidecar configuration
 #[tauri::command]
-pub async fn sidecar_get_config(state: State<'_, SidecarManaged>) -> Result<SidecarConfig, GolishError> {
+pub async fn sidecar_get_config(
+    state: State<'_, SidecarManaged>,
+) -> Result<SidecarConfig, GolishError> {
     Ok(state.sidecar_state.config())
 }
 

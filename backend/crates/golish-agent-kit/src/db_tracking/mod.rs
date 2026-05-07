@@ -4,10 +4,10 @@
 //! entries to PostgreSQL without blocking the agent loop. All writes are spawned
 //! as background tasks that log warnings on failure but never panic.
 
-mod types;
 mod helpers;
-mod recording;
 mod memory;
+mod recording;
+mod types;
 
 pub use types::{BriefingPlan, MemoryHit, ScoredMemoryHit, ToolCallGuard};
 

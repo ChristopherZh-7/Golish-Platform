@@ -12,11 +12,13 @@ use rig::completion::CompletionModel as RigCompletionModel;
 use serde_json::json;
 
 use golish_core::utils::{is_tool_result_success, truncate_str};
-use golish_sub_agents::{SubAgentContext, SubAgentExecutorContext, execute_sub_agent};
+use golish_sub_agents::{execute_sub_agent, SubAgentContext, SubAgentExecutorContext};
 
 use super::super::sub_agent_dispatch::{build_sub_agent_briefing, execute_sub_agent_with_client};
 use super::super::{AgenticLoopContext, ToolExecutionResult};
-use golish_agent_kit::tool_executors::{execute_ask_human_tool, execute_plan_tool, execute_web_fetch_tool};
+use golish_agent_kit::tool_executors::{
+    execute_ask_human_tool, execute_plan_tool, execute_web_fetch_tool,
+};
 use golish_agent_kit::tool_provider_impl::DefaultToolProvider;
 
 /// Execute a tool directly for generic models (after approval or auto-approved).
@@ -40,7 +42,8 @@ where
 
     if tool_name == "web_fetch" {
         if let Some(ref fetcher) = ctx.web_fetcher {
-            let (value, success) = execute_web_fetch_tool(fetcher.as_ref(), tool_name, tool_args).await;
+            let (value, success) =
+                execute_web_fetch_tool(fetcher.as_ref(), tool_name, tool_args).await;
             return Ok(ToolExecutionResult { value, success });
         }
         return Ok(ToolExecutionResult {
@@ -65,9 +68,12 @@ where
             | "search_guide"
             | "save_guide"
     ) {
-        if let Some((value, success)) =
-            golish_agent_kit::tool_executors::execute_memory_tool(tool_name, tool_args, ctx.events.db_tracker)
-                .await
+        if let Some((value, success)) = golish_agent_kit::tool_executors::execute_memory_tool(
+            tool_name,
+            tool_args,
+            ctx.events.db_tracker,
+        )
+        .await
         {
             return Ok(ToolExecutionResult { value, success });
         }
@@ -84,12 +90,13 @@ where
             | "list_unresearched_cves"
             | "poc_stats"
     ) {
-        if let Some((value, success)) = golish_agent_kit::tool_executors::execute_knowledge_base_tool(
-            tool_name,
-            tool_args,
-            ctx.events.db_tracker,
-        )
-        .await
+        if let Some((value, success)) =
+            golish_agent_kit::tool_executors::execute_knowledge_base_tool(
+                tool_name,
+                tool_args,
+                ctx.events.db_tracker,
+            )
+            .await
         {
             return Ok(ToolExecutionResult { value, success });
         }
@@ -107,14 +114,15 @@ where
         let ws_path = ctx.workspace.read().await;
         let project_path_str = ws_path.to_string_lossy().to_string();
         drop(ws_path);
-        if let Some((value, success)) = golish_agent_kit::tool_executors::execute_security_analysis_tool(
-            tool_name,
-            tool_args,
-            ctx.events.db_tracker,
-            Some(project_path_str.as_str()),
-            ctx.events.session_id,
-        )
-        .await
+        if let Some((value, success)) =
+            golish_agent_kit::tool_executors::execute_security_analysis_tool(
+                tool_name,
+                tool_args,
+                ctx.events.db_tracker,
+                Some(project_path_str.as_str()),
+                ctx.events.session_id,
+            )
+            .await
         {
             return Ok(ToolExecutionResult { value, success });
         }
@@ -401,4 +409,3 @@ where
         }),
     }
 }
-

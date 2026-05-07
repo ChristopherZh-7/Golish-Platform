@@ -5,8 +5,8 @@
 //! window geometry, terminal font/scrollback/caret tweaks, and lightweight
 //! agent-runtime knobs (session retention, auto-approval thresholds).
 
-use serde::{Deserialize, Serialize};
 use super::enums::Theme;
+use serde::{Deserialize, Serialize};
 
 /// Tool enablement settings.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

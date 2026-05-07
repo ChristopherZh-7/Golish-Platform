@@ -289,7 +289,7 @@ pub fn get_integration_script(shell_type: ShellType) -> &'static str {
         ShellType::Zsh => INTEGRATION_SCRIPT_ZSH,
         ShellType::Bash => INTEGRATION_SCRIPT_BASH,
         ShellType::Fish => INTEGRATION_SCRIPT_FISH,
-        ShellType::PowerShell | ShellType::Cmd => "",
+        ShellType::Sh | ShellType::PowerShell | ShellType::Cmd => "",
         ShellType::Unknown => INTEGRATION_SCRIPT_ZSH,
     }
 }
@@ -303,6 +303,7 @@ pub(crate) fn get_integration_extension(shell_type: ShellType) -> &'static str {
         ShellType::Fish => "fish",
         // Windows shells share the zsh-style integration extension since Windows
         // PTY integration is not currently shipped.
+        ShellType::Sh => "sh",
         ShellType::PowerShell | ShellType::Cmd | ShellType::Unknown => "zsh",
     }
 }

@@ -14,8 +14,6 @@
 //! Detection types ([`ShellType`], [`ShellInfo`], [`detect_shell`]) live
 //! in this `mod.rs`.
 
-use std::path::{Path, PathBuf};
-
 use golish_settings::schema::TerminalSettings;
 
 mod integration;
@@ -24,74 +22,8 @@ mod scripts;
 #[cfg(test)]
 mod tests;
 
+pub use golish_platform::shell::{ShellInfo, ShellType};
 pub use integration::ShellIntegration;
-
-/// Supported shell types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShellType {
-    Zsh,
-    Bash,
-    Fish,
-    PowerShell,
-    Cmd,
-    Unknown,
-}
-
-impl ShellType {
-    /// Get login shell arguments for this shell type.
-    pub fn login_args(&self) -> Vec<&'static str> {
-        match self {
-            ShellType::Zsh | ShellType::Bash | ShellType::Fish => vec!["-l"],
-            ShellType::PowerShell => vec!["-NoLogo"],
-            ShellType::Cmd | ShellType::Unknown => vec![],
-        }
-    }
-}
-
-/// Shell detection and configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShellInfo {
-    /// Path to the shell executable.
-    pub path: PathBuf,
-    shell_type: ShellType,
-}
-
-impl ShellInfo {
-    /// Create a new [`ShellInfo`] from a shell path.
-    pub fn new(path: impl AsRef<Path>) -> Self {
-        let path = path.as_ref().to_path_buf();
-        let shell_type = Self::detect_type(&path);
-        Self { path, shell_type }
-    }
-
-    /// Get the detected shell type.
-    pub fn shell_type(&self) -> ShellType {
-        self.shell_type
-    }
-
-    /// Get login shell arguments.
-    pub fn login_args(&self) -> Vec<&'static str> {
-        self.shell_type.login_args()
-    }
-
-    /// Detect shell type from path.
-    fn detect_type(path: &Path) -> ShellType {
-        let file_name = path
-            .file_stem()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-
-        match file_name.as_str() {
-            "zsh" => ShellType::Zsh,
-            "bash" => ShellType::Bash,
-            "fish" => ShellType::Fish,
-            "pwsh" | "powershell" => ShellType::PowerShell,
-            "cmd" => ShellType::Cmd,
-            _ => ShellType::Unknown,
-        }
-    }
-}
 
 /// Detect shell from settings or environment.
 ///
@@ -100,19 +32,6 @@ impl ShellInfo {
 /// 2. `shell_env` (`$SHELL` environment variable, Unix only)
 /// 3. Fallback: `/bin/sh` (Unix) or `powershell.exe` (Windows)
 pub fn detect_shell(settings: Option<&TerminalSettings>, shell_env: Option<&str>) -> ShellInfo {
-    if let Some(settings) = settings {
-        if let Some(ref shell) = settings.shell {
-            return ShellInfo::new(shell);
-        }
-    }
-
-    if let Some(shell) = shell_env {
-        return ShellInfo::new(shell);
-    }
-
-    if cfg!(windows) {
-        ShellInfo::new("powershell.exe")
-    } else {
-        ShellInfo::new("/bin/sh")
-    }
+    let shell_override = settings.and_then(|settings| settings.shell.as_deref());
+    golish_platform::shell::detect_shell(shell_override, shell_env)
 }

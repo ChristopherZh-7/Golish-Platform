@@ -178,7 +178,10 @@ pub async fn discover_all_nuclei(
     };
 
     let total_files = yaml_paths.len();
-    tracing::info!(total = total_files, "[nuclei-discover] Total YAML files to import");
+    tracing::info!(
+        total = total_files,
+        "[nuclei-discover] Total YAML files to import"
+    );
 
     emit_progress(
         emitter,
@@ -194,7 +197,10 @@ pub async fn discover_all_nuclei(
         .fetch_existing_poc_identifiers()
         .await
         .unwrap_or_default();
-    tracing::info!(existing = existing_ids.len(), "[nuclei-discover] Existing Nuclei templates in DB");
+    tracing::info!(
+        existing = existing_ids.len(),
+        "[nuclei-discover] Existing Nuclei templates in DB"
+    );
 
     let new_paths: Vec<&String> = yaml_paths
         .iter()
@@ -205,7 +211,11 @@ pub async fn discover_all_nuclei(
         .collect();
 
     let total_new = new_paths.len();
-    tracing::info!(total_new = total_new, skipping = total_files - total_new, "[nuclei-discover] New templates to download");
+    tracing::info!(
+        total_new = total_new,
+        skipping = total_files - total_new,
+        "[nuclei-discover] New templates to download"
+    );
 
     emit_progress(
         emitter,
@@ -251,12 +261,7 @@ pub async fn discover_all_nuclei(
             path
         );
 
-        let content = match client
-            .get(&raw_url)
-            .headers(headers.clone())
-            .send()
-            .await
-        {
+        let content = match client.get(&raw_url).headers(headers.clone()).send().await {
             Ok(r) if r.status().is_success() => match r.text().await {
                 Ok(t) => t,
                 Err(_) => {
@@ -270,8 +275,7 @@ pub async fn discover_all_nuclei(
             }
         };
 
-        let severity =
-            extract_nuclei_severity(&content).unwrap_or_else(|| "unknown".to_string());
+        let severity = extract_nuclei_severity(&content).unwrap_or_else(|| "unknown".to_string());
         let tags = extract_nuclei_tags(&content);
         let description = extract_nuclei_description(&content);
         let file_name = path
@@ -303,8 +307,7 @@ pub async fn discover_all_nuclei(
             Ok(_) => imported += 1,
             Err(e) => {
                 let msg = e.to_string();
-                if msg.contains("duplicate") || msg.contains("unique") || msg.contains("no rows")
-                {
+                if msg.contains("duplicate") || msg.contains("unique") || msg.contains("no rows") {
                     skipped += 1;
                 } else {
                     tracing::warn!(id = %identifier, error = %msg, "[nuclei-discover] DB insert failed");
@@ -349,7 +352,8 @@ async fn fetch_tree_api(
 ) -> crate::VulnIntelResult<Vec<String>> {
     use crate::error::VulnIntelError;
 
-    let tree_url = "https://api.github.com/repos/projectdiscovery/nuclei-templates/git/trees/main?recursive=1";
+    let tree_url =
+        "https://api.github.com/repos/projectdiscovery/nuclei-templates/git/trees/main?recursive=1";
     let resp = client
         .get(tree_url)
         .headers(headers.clone())
@@ -368,7 +372,10 @@ async fn fetch_tree_api(
     }
 
     let body_bytes = resp.bytes().await?;
-    tracing::info!(size = body_bytes.len(), "[nuclei-discover] Tree response size");
+    tracing::info!(
+        size = body_bytes.len(),
+        "[nuclei-discover] Tree response size"
+    );
 
     let tree_data: GhTreeResponse = serde_json::from_slice(&body_bytes)
         .map_err(|e| VulnIntelError::Nuclei(format!("Parse tree: {}", e)))?;
@@ -445,6 +452,9 @@ async fn fetch_contents_api(
         }
     }
 
-    tracing::info!(count = all_paths.len(), "[nuclei-discover] Contents API collected files");
+    tracing::info!(
+        count = all_paths.len(),
+        "[nuclei-discover] Contents API collected files"
+    );
     Ok(all_paths)
 }

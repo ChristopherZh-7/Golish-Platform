@@ -144,9 +144,9 @@ mod tests {
         let has_text = content
             .iter()
             .any(|c| matches!(c, AssistantContent::Text(t) if t.text == "I'll read the file."));
-        let has_tool_call = content.iter().any(|c| {
-            matches!(c, AssistantContent::ToolCall(tc) if tc.function.name == "read_file")
-        });
+        let has_tool_call = content.iter().any(
+            |c| matches!(c, AssistantContent::ToolCall(tc) if tc.function.name == "read_file"),
+        );
         assert!(has_text, "text content must be present");
         assert!(has_tool_call, "tool call must be present");
     }

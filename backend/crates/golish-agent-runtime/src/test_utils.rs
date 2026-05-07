@@ -18,7 +18,7 @@ use rig::streaming::{RawStreamingChoice, RawStreamingToolCall, StreamingCompleti
 use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
-use tokio::sync::{mpsc, RwLock};
+use golish_agent_kit::agent_mode::AgentMode;
 #[cfg(test)]
 use golish_core::events::AiEvent;
 #[cfg(test)]
@@ -26,7 +26,7 @@ use golish_llm_providers::LlmClient;
 #[cfg(test)]
 use golish_tools::ToolRegistry;
 #[cfg(test)]
-use golish_agent_kit::agent_mode::AgentMode;
+use tokio::sync::{mpsc, RwLock};
 
 /// A mock response that the MockCompletionModel will return.
 #[derive(Debug, Clone)]

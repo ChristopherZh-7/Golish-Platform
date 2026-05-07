@@ -8,7 +8,9 @@ use super::super::state::SidecarStatus;
 
 /// Get the current sidecar status
 #[tauri::command]
-pub async fn sidecar_status(state: State<'_, SidecarManaged>) -> Result<SidecarStatus, GolishError> {
+pub async fn sidecar_status(
+    state: State<'_, SidecarManaged>,
+) -> Result<SidecarStatus, GolishError> {
     Ok(state.sidecar_state.status())
 }
 

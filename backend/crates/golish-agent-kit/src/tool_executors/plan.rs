@@ -1,7 +1,7 @@
-use std::sync::Arc;
-use serde_json::json;
-use golish_core::events::AiEvent;
 use super::common::{error_result, ToolResult};
+use golish_core::events::AiEvent;
+use serde_json::json;
+use std::sync::Arc;
 
 /// Execute the update_plan tool.
 ///

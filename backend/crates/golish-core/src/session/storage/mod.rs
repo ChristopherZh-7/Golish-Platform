@@ -147,7 +147,7 @@ pub fn list_sessions(limit: usize) -> Result<Vec<SessionListing>> {
         }
     }
 
-    sessions.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.started_at));
 
     if limit > 0 && sessions.len() > limit {
         sessions.truncate(limit);
@@ -161,6 +161,10 @@ pub fn list_sessions(limit: usize) -> Result<Vec<SessionListing>> {
 /// Returns `{workspace}/.golish/sessions/` when workspace is a real path,
 /// or falls back to the global `~/.golish/sessions/`.
 pub fn get_sessions_dir_for(workspace: &std::path::Path) -> Result<PathBuf> {
+    if std::env::var_os("VT_SESSION_DIR").is_some() {
+        return get_sessions_dir();
+    }
+
     let ws_str = workspace.to_string_lossy();
     let dir = if ws_str != "." && !ws_str.is_empty() {
         workspace.join(".golish").join("sessions")
@@ -202,7 +206,7 @@ pub fn list_sessions_for_workspace(
         sessions.extend(collect_sessions_from_dir(&global_dir)?);
     }
 
-    sessions.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.started_at));
 
     if limit > 0 && sessions.len() > limit {
         sessions.truncate(limit);
@@ -211,10 +215,7 @@ pub fn list_sessions_for_workspace(
     Ok(sessions)
 }
 
-fn find_session_in_dir(
-    identifier: &str,
-    dir: &std::path::Path,
-) -> Result<Option<SessionListing>> {
+fn find_session_in_dir(identifier: &str, dir: &std::path::Path) -> Result<Option<SessionListing>> {
     if !dir.exists() {
         return Ok(None);
     }

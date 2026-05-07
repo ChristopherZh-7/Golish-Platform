@@ -2,7 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-
 /// Token usage for a single completion request
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TokenUsage {

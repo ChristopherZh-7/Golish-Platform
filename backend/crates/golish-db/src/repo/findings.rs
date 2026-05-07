@@ -4,7 +4,13 @@ use uuid::Uuid;
 
 use crate::models::{Finding, FindingStatus, Severity};
 
-pub async fn create(pool: &PgPool, title: &str, sev: Severity, project_path: Option<&str>, source: &str) -> Result<Finding> {
+pub async fn create(
+    pool: &PgPool,
+    title: &str,
+    sev: Severity,
+    project_path: Option<&str>,
+    source: &str,
+) -> Result<Finding> {
     let row = sqlx::query_as::<_, Finding>(
         r#"INSERT INTO findings (title, sev, project_path, source)
            VALUES ($1, $2, $3, $4)
@@ -44,10 +50,21 @@ pub async fn update_full(pool: &PgPool, f: &Finding) -> Result<()> {
            template=$11, refs=$12, evidence=$13, status=$14, updated_at=NOW()
            WHERE id=$15"#,
     )
-    .bind(&f.title).bind(f.sev).bind(f.cvss).bind(&f.url).bind(&f.target)
-    .bind(&f.description).bind(&f.steps).bind(&f.remediation)
-    .bind(&f.tags).bind(&f.tool).bind(&f.template)
-    .bind(&f.refs).bind(&f.evidence).bind(f.status).bind(f.id)
+    .bind(&f.title)
+    .bind(f.sev)
+    .bind(f.cvss)
+    .bind(&f.url)
+    .bind(&f.target)
+    .bind(&f.description)
+    .bind(&f.steps)
+    .bind(&f.remediation)
+    .bind(&f.tags)
+    .bind(&f.tool)
+    .bind(&f.template)
+    .bind(&f.refs)
+    .bind(&f.evidence)
+    .bind(f.status)
+    .bind(f.id)
     .execute(pool)
     .await?;
     Ok(())

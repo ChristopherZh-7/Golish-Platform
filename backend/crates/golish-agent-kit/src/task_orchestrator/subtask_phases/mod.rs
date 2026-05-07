@@ -10,15 +10,15 @@ mod execute;
 use anyhow::Result;
 use uuid::Uuid;
 
+use crate::db_shim::{message_chains, subtasks, tasks};
+use crate::db_traits::{SubtaskStatus, TaskStatus};
 use golish_core::events::AiEvent;
 use golish_core::plan::{PlanStep, PlanSummary, StepStatus};
-use crate::db_shim::{tasks, subtasks, message_chains};
-use crate::db_traits::{SubtaskStatus, TaskStatus};
 
 use super::helpers::{parse_agent_type, truncate};
 use super::types::{
-    AgentExecutor, CurrentSubtask, ExecutionContext,
-    PlannedSubtask, PlannedSubtaskInfo, SubtaskResult, TaskCostTracker, MAX_SUBTASKS,
+    AgentExecutor, CurrentSubtask, ExecutionContext, PlannedSubtask, PlannedSubtaskInfo,
+    SubtaskResult, TaskCostTracker, MAX_SUBTASKS,
 };
 
 use super::TaskOrchestrator;
@@ -129,10 +129,7 @@ impl TaskOrchestrator {
 
             if let Some(cid) = chain_id {
                 if let Some(chain_json) = executor.current_message_chain() {
-                    let _ = message_chains::update_chain(
-                        &*self.repo, cid, &chain_json,
-                    )
-                    .await;
+                    let _ = message_chains::update_chain(&*self.repo, cid, &chain_json).await;
                 }
                 if let Some(ref usage) = subtask_usage {
                     let _ = message_chains::update_usage(
@@ -277,10 +274,7 @@ impl TaskOrchestrator {
                         for (dst, &src) in new_order.iter().enumerate() {
                             queue[subtask_index + dst] = remaining[src].clone();
                         }
-                        tracing::info!(
-                            "Refiner reordered {} remaining subtasks",
-                            remaining_len
-                        );
+                        tracing::info!("Refiner reordered {} remaining subtasks", remaining_len);
                     }
                 }
 

@@ -2498,6 +2498,7 @@ dependencies = [
  "golish-models",
  "golish-pentest",
  "golish-pipeline",
+ "golish-platform",
  "golish-projects",
  "golish-prompts",
  "golish-pty",
@@ -2736,6 +2737,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "dirs",
+ "golish-platform",
  "serde",
  "serde_json",
  "serial_test",
@@ -2755,6 +2757,7 @@ dependencies = [
  "chrono",
  "dirs",
  "golish-core",
+ "golish-platform",
  "pg-embed",
  "reqwest 0.12.28",
  "serde",
@@ -2891,6 +2894,7 @@ dependencies = [
  "chrono",
  "dirs",
  "futures",
+ "golish-platform",
  "open",
  "rand 0.8.6",
  "reqwest 0.12.28",
@@ -2933,6 +2937,8 @@ dependencies = [
  "golish-core",
  "golish-db",
  "golish-pentest-domain",
+ "golish-platform",
+ "golish-shell-exec",
  "libc",
  "pathdiff",
  "regex",
@@ -2968,6 +2974,7 @@ dependencies = [
  "anyhow",
  "dirs",
  "golish-core",
+ "golish-shell-exec",
  "rmcp",
  "serde",
  "serde_json",
@@ -2987,6 +2994,7 @@ dependencies = [
  "golish-core",
  "golish-db",
  "golish-pentest",
+ "golish-shell-exec",
  "regex",
  "serde",
  "serde_json",
@@ -2998,6 +3006,18 @@ dependencies = [
  "url",
  "uuid",
  "walkdir",
+]
+
+[[package]]
+name = "golish-platform"
+version = "0.2.43"
+dependencies = [
+ "dirs",
+ "libc",
+ "nix 0.31.2",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3041,6 +3061,7 @@ version = "0.2.43"
 dependencies = [
  "dirs",
  "golish-core",
+ "golish-platform",
  "golish-settings",
  "itoa",
  "parking_lot",
@@ -3062,6 +3083,7 @@ dependencies = [
  "async-trait",
  "golish-core",
  "golish-db",
+ "golish-shell-exec",
  "parking_lot",
  "regex",
  "serde",
@@ -3114,6 +3136,7 @@ dependencies = [
  "async-trait",
  "dirs",
  "golish-core",
+ "golish-platform",
  "libc",
  "nix 0.31.2",
  "serde_json",

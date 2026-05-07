@@ -7,13 +7,13 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
 use super::enums::{AiProvider, ReasoningEffort};
 use super::llm::{
     AnthropicSettings, GeminiSettings, GroqSettings, NvidiaSettings, OllamaSettings,
     OpenAiSettings, OpenRouterSettings, VertexAiSettings, VertexGeminiSettings, XaiSettings,
     ZaiSdkSettings,
 };
+use serde::{Deserialize, Serialize};
 
 /// Per-sub-agent model configuration.
 ///

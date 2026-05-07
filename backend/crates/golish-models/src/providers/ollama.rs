@@ -5,7 +5,6 @@ use golish_settings::schema::AiProvider;
 use crate::capabilities::ModelCapabilities;
 use crate::registry::ModelDefinition;
 
-
 /// Ollama default model definitions.
 ///
 /// Note: Ollama models vary by installation. These are common defaults.

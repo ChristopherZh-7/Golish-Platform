@@ -1,6 +1,6 @@
 use crate::error::GolishError;
-use serde::{Deserialize, Serialize};
 use crate::state::DbState;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
@@ -95,8 +95,7 @@ pub async fn audit_list(
     .bind(&pp)
     .bind(lim)
     .fetch_all(pool)
-    .await
-?;
+    .await?;
     Ok(rows.into_iter().map(AuditEntry::from).collect())
 }
 
@@ -110,8 +109,7 @@ pub async fn audit_clear(
     sqlx::query("DELETE FROM audit_log WHERE project_path = $1")
         .bind(&pp)
         .execute(pool)
-        .await
-?;
+        .await?;
     Ok(())
 }
 
@@ -147,8 +145,7 @@ pub async fn passive_scans_global(
     .bind(&pp)
     .bind(lim)
     .fetch_all(pool)
-    .await
-?;
+    .await?;
     Ok(rows)
 }
 
@@ -220,8 +217,7 @@ pub async fn terminal_logs_list(
     .bind(&pp)
     .bind(lim)
     .fetch_all(pool)
-    .await
-?;
+    .await?;
     Ok(rows)
 }
 

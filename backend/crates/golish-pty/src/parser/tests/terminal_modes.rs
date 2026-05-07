@@ -207,4 +207,3 @@ fn test_synchronized_output_mixed_with_content() {
 // ===========================================
 // OSC 1337 - Virtual Environment tests
 // ===========================================
-

@@ -201,7 +201,8 @@ pub struct AgentBridge {
     // -- Skills & MCP ---------------------------------------------------------
     pub(crate) skill_cache: Arc<RwLock<Vec<SkillMetadata>>>,
     pub(crate) mcp_tool_definitions: Arc<RwLock<Vec<rig::completion::ToolDefinition>>>,
-    pub(crate) mcp_tool_executor: Arc<RwLock<Option<Arc<dyn crate::agentic_loop::McpToolExecutor>>>>,
+    pub(crate) mcp_tool_executor:
+        Arc<RwLock<Option<Arc<dyn crate::agentic_loop::McpToolExecutor>>>>,
 }
 
 impl AgentBridge {

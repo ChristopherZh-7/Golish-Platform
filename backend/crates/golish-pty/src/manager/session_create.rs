@@ -387,13 +387,10 @@ impl PtyManager {
                                 Ok(OutputMessage::Eof) => {
                                     // Flush coalesced bytes, then emit
                                     // session_ended.
-                                    let output = process_utf8_with_buffer(
-                                        &mut utf8_buffer,
-                                        &coalesce_buf,
-                                    );
+                                    let output =
+                                        process_utf8_with_buffer(&mut utf8_buffer, &coalesce_buf);
                                     if !output.is_empty() {
-                                        emitter_for_output
-                                            .emit_output(&output_session_id, &output);
+                                        emitter_for_output.emit_output(&output_session_id, &output);
                                     }
                                     if utf8_buffer.has_pending() {
                                         let remaining =

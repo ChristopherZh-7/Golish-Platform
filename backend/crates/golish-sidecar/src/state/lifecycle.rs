@@ -12,9 +12,9 @@ use super::super::events::SidecarEvent;
 use super::super::processor::{Processor, ProcessorConfig};
 use super::super::session::ensure_sessions_dir;
 
+use super::InternalState;
 use super::SidecarState;
 use super::SidecarStatus;
-use super::InternalState;
 
 impl SidecarState {
     /// Create a new SidecarState with default configuration

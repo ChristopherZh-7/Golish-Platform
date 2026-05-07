@@ -6,6 +6,7 @@ edition.workspace = true
 description = "MCP (Model Context Protocol) client integration for Golish"
 
 [dependencies]
+golish-platform = { workspace = true }
 rmcp = { version = "0.14", features = [
     "client",
     "client-side-sse",

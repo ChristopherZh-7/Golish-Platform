@@ -23,7 +23,9 @@ impl DbTracker {
                 match emb.embed(&content).await {
                     Ok(v) => Some(vec_to_pgvector(&v)),
                     Err(e) => {
-                        tracing::warn!("[db-track] Embedding generation failed, storing text-only: {e}");
+                        tracing::warn!(
+                            "[db-track] Embedding generation failed, storing text-only: {e}"
+                        );
                         None
                     }
                 }

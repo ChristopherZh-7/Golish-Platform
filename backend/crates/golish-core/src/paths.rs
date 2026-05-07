@@ -7,20 +7,7 @@ use std::sync::OnceLock;
 /// - Windows: `~/AppData/Local/golish-platform`
 /// - Linux: `~/.golish-platform`
 pub fn app_data_base() -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    #[cfg(target_os = "macos")]
-    let base = home
-        .join("Library")
-        .join("Application Support")
-        .join("golish-platform");
-    #[cfg(target_os = "windows")]
-    let base = home
-        .join("AppData")
-        .join("Local")
-        .join("golish-platform");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let base = home.join(".golish-platform");
-    Some(base)
+    golish_platform::paths::app_data_base("golish-platform")
 }
 
 static PROJECT_ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
@@ -128,5 +115,16 @@ pub fn golish_dir_for_workspace(workspace: &std::path::Path) -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".golish")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn app_data_base_matches_platform_helper() {
+        assert_eq!(
+            super::app_data_base(),
+            golish_platform::paths::app_data_base("golish-platform")
+        );
     }
 }

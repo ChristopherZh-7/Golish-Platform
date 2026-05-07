@@ -4,9 +4,9 @@ use rig::completion::request::ToolDefinition;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 
-use golish_tools::ToolRegistry;
 use golish_core::events::AiEvent;
 use golish_core::ApiRequestStats;
+use golish_tools::ToolRegistry;
 
 /// Barrier tool name used by all sub-agents to submit structured results.
 /// When a sub-agent calls this tool, the executor terminates the loop and

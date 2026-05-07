@@ -18,7 +18,6 @@ use thiserror::Error;
 #[allow(dead_code)]
 pub enum GolishError {
     // -- Infrastructure -------------------------------------------------------
-
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -32,7 +31,6 @@ pub enum GolishError {
     Http(#[from] reqwest::Error),
 
     // -- Domain crate errors --------------------------------------------------
-
     #[error("{0}")]
     Pty(#[from] golish_pty::PtyError),
 
@@ -55,7 +53,6 @@ pub enum GolishError {
     ScanRunner(#[from] golish_scan_runner::ScanRunnerError),
 
     // -- Application-level errors ---------------------------------------------
-
     #[error("Session not found: {0}")]
     SessionNotFound(String),
 

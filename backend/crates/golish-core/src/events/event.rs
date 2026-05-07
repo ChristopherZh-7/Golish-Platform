@@ -6,9 +6,9 @@
 //! sections by comments (lifecycle, tool I/O, sub-agents, context, workflow,
 //! plan, server tools, prompt-gen, task-mode).
 
-use serde::{Deserialize, Serialize};
 use super::tool_source::ToolSource;
 use crate::hitl::{ApprovalPattern, RiskLevel};
+use serde::{Deserialize, Serialize};
 
 /// Simplified AI events for the frontend.
 /// We emit these directly from AgentBridge instead of converting from vtcode's ThreadEvent,

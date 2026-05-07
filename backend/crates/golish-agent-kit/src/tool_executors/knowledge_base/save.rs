@@ -75,8 +75,13 @@ pub(super) async fn handle_write(
         // Persist cross-references (replace all from this page).
         let _ = crate::db_shim::wiki_kb::delete_refs_from(tracker.repo().unwrap(), &path).await;
         for (target, ctx) in &cross_refs {
-            let _ = crate::db_shim::wiki_kb::upsert_page_ref(tracker.repo().unwrap(), &path, target, ctx)
-                .await;
+            let _ = crate::db_shim::wiki_kb::upsert_page_ref(
+                tracker.repo().unwrap(),
+                &path,
+                target,
+                ctx,
+            )
+            .await;
         }
 
         // Append changelog entry.
@@ -94,7 +99,9 @@ pub(super) async fn handle_write(
             actor: "agent".to_string(),
             summary,
         };
-        if let Err(e) = crate::db_shim::wiki_kb::add_changelog(tracker.repo().unwrap(), &log_entry).await {
+        if let Err(e) =
+            crate::db_shim::wiki_kb::add_changelog(tracker.repo().unwrap(), &log_entry).await
+        {
             tracing::warn!("[kb] changelog write failed: {}", e);
         }
     }
@@ -121,7 +128,11 @@ pub(super) async fn handle_write(
         tracing::warn!("[kb] Failed to open log.md for append: {}", e);
     } else {
         use tokio::io::AsyncWriteExt;
-        if let Ok(mut f) = tokio::fs::OpenOptions::new().append(true).open(&log_path).await {
+        if let Ok(mut f) = tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&log_path)
+            .await
+        {
             let _ = f.write_all(log_line.as_bytes()).await;
         }
     }
@@ -166,24 +177,29 @@ pub(super) async fn handle_ingest_cve(
     let mut cve_info = String::new();
     if let Some(tracker) = db_tracker {
         if let Some(repo) = tracker.repo() {
-            match crate::db_shim::vuln_intel::search_entries(repo, &cve_id, 1).await {
-                Ok(entries) => {
-                    if let Some(arr) = entries.as_array() {
-                        if let Some(e) = arr.first() {
-                            let title = e.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                            let sev = e.get("sev").and_then(|v| v.as_str()).unwrap_or("unknown");
-                            let cvss = e.get("cvss_score").and_then(|v| v.as_f64()).map(|s| s.to_string()).unwrap_or("N/A".into());
-                            let published = e.get("published").and_then(|v| v.as_str()).unwrap_or("");
-                            let desc = e.get("description").and_then(|v| v.as_str()).unwrap_or("");
-                            let affected = e.get("affected_products").and_then(|v| v.as_str()).unwrap_or("");
-                            let refs = e.get("refs").and_then(|v| v.as_str()).unwrap_or("");
-                            cve_info = format!(
-                                "Title: {title}\nSeverity: {sev}\nCVSS: {cvss}\nPublished: {published}\nDescription: {desc}\nAffected: {affected}\nReferences: {refs}",
-                            );
-                        }
+            if let Ok(entries) = crate::db_shim::vuln_intel::search_entries(repo, &cve_id, 1).await
+            {
+                if let Some(arr) = entries.as_array() {
+                    if let Some(e) = arr.first() {
+                        let title = e.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                        let sev = e.get("sev").and_then(|v| v.as_str()).unwrap_or("unknown");
+                        let cvss = e
+                            .get("cvss_score")
+                            .and_then(|v| v.as_f64())
+                            .map(|s| s.to_string())
+                            .unwrap_or("N/A".into());
+                        let published = e.get("published").and_then(|v| v.as_str()).unwrap_or("");
+                        let desc = e.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                        let affected = e
+                            .get("affected_products")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let refs = e.get("refs").and_then(|v| v.as_str()).unwrap_or("");
+                        cve_info = format!(
+                            "Title: {title}\nSeverity: {sev}\nCVSS: {cvss}\nPublished: {published}\nDescription: {desc}\nAffected: {affected}\nReferences: {refs}",
+                        );
                     }
                 }
-                _ => {}
             }
         }
     }
@@ -197,7 +213,8 @@ pub(super) async fn handle_ingest_cve(
         let existing = tokio::fs::read_to_string(&full).await.unwrap_or_default();
         if let Some(tracker) = db_tracker {
             let _ =
-                crate::db_shim::wiki_kb::link_cve_to_wiki(tracker.repo().unwrap(), &cve_id, &path).await;
+                crate::db_shim::wiki_kb::link_cve_to_wiki(tracker.repo().unwrap(), &cve_id, &path)
+                    .await;
         }
         return (
             json!({
@@ -255,7 +272,8 @@ pub(super) async fn handle_ingest_cve(
             content: page_content.clone(),
         };
         let _ = crate::db_shim::wiki_kb::upsert_page(tracker.repo().unwrap(), &page).await;
-        let _ = crate::db_shim::wiki_kb::link_cve_to_wiki(tracker.repo().unwrap(), &cve_id, &path).await;
+        let _ = crate::db_shim::wiki_kb::link_cve_to_wiki(tracker.repo().unwrap(), &cve_id, &path)
+            .await;
     }
 
     (
@@ -280,7 +298,8 @@ pub(super) async fn handle_save_poc(
         Some(n) if !n.is_empty() => n,
         _ => return error_result("save_poc requires a 'name' parameter"),
     };
-    let poc_type = extract_string_param(args, &["poc_type"]).unwrap_or_else(|| "script".to_string());
+    let poc_type =
+        extract_string_param(args, &["poc_type"]).unwrap_or_else(|| "script".to_string());
     let language =
         extract_string_param(args, &["language"]).unwrap_or_else(|| "python".to_string());
     let content = match args.get("content").and_then(|v| v.as_str()) {

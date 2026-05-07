@@ -22,7 +22,6 @@ use crate::runtime::TauriRuntime;
 use crate::state::AppState;
 use golish_core::runtime::GolishRuntime;
 
-
 /// Initialize the AI agent using unified provider configuration.
 ///
 /// `ProviderConfig` is a serde-tagged enum that carries provider-specific
@@ -65,14 +64,9 @@ pub async fn init_ai_agent(
     let provider_name = config.provider_name().to_string();
     let model_name = config.model().to_string();
 
-    let mut bridge = AgentBridge::from_provider_config(
-        config,
-        SharedComponentsConfig::default(),
-        runtime,
-        "",
-    )
-    .await
-?;
+    let mut bridge =
+        AgentBridge::from_provider_config(config, SharedComponentsConfig::default(), runtime, "")
+            .await?;
 
     configure_bridge(&mut bridge, &state, "legacy", Some(app_for_tools)).await;
 

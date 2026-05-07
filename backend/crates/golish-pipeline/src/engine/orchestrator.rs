@@ -8,8 +8,6 @@ use std::sync::Arc;
 use golish_core::{EventEmitterHandle, Tool};
 use uuid::Uuid;
 
-use crate::storage::PipelineStorage;
-use crate::types::Pipeline;
 use super::steps::run_single_step;
 use super::templates::{
     detect_target_type, evaluate_condition, resolve_step_input, topo_layers, PIPELINE_CANCELLED,
@@ -17,6 +15,8 @@ use super::templates::{
 use super::types::{
     emit_pipeline_event, PipelineEvent, PipelineRunResult, PipelineStepInfo, StepResult,
 };
+use crate::storage::PipelineStorage;
+use crate::types::Pipeline;
 
 /// Bundle of references shared by every step executor.
 ///
@@ -216,33 +216,36 @@ pub(super) async fn execute_pipeline_inner(
         pipeline.connections.len()
     );
 
-    emit_pipeline_event(runner.emitter, &PipelineEvent {
-        pipeline_id: pipeline_id.clone(),
-        run_id: run_id.clone(),
-        step_id: String::new(),
-        step_index: 0,
-        total_steps,
-        status: "started".to_string(),
-        tool_name: String::new(),
-        message: None,
-        store_stats: None,
-        pipeline_name: Some(pipeline.name.clone()),
-        target: Some(target.to_string()),
-        all_steps: Some(
-            pipeline
-                .steps
-                .iter()
-                .map(|s| PipelineStepInfo {
-                    id: s.id.clone(),
-                    tool_name: s.tool_name.clone(),
-                    command_template: s.command_template.clone(),
-                })
-                .collect(),
-        ),
-        output: None,
-        duration_ms: None,
-        exit_code: None,
-    });
+    emit_pipeline_event(
+        runner.emitter,
+        &PipelineEvent {
+            pipeline_id: pipeline_id.clone(),
+            run_id: run_id.clone(),
+            step_id: String::new(),
+            step_index: 0,
+            total_steps,
+            status: "started".to_string(),
+            tool_name: String::new(),
+            message: None,
+            store_stats: None,
+            pipeline_name: Some(pipeline.name.clone()),
+            target: Some(target.to_string()),
+            all_steps: Some(
+                pipeline
+                    .steps
+                    .iter()
+                    .map(|s| PipelineStepInfo {
+                        id: s.id.clone(),
+                        tool_name: s.tool_name.clone(),
+                        command_template: s.command_template.clone(),
+                    })
+                    .collect(),
+            ),
+            output: None,
+            duration_ms: None,
+            exit_code: None,
+        },
+    );
 
     let mut had_abort = false;
 
@@ -252,28 +255,38 @@ pub(super) async fn execute_pipeline_inner(
         }
 
         if PIPELINE_CANCELLED.load(Ordering::SeqCst) {
-            tracing::info!("[pipeline] Cancelled by user before layer {}", layer_idx + 1);
-            emit_pipeline_event(runner.emitter, &PipelineEvent {
-                pipeline_id: pipeline_id.clone(),
-                run_id: run_id.clone(),
-                step_id: String::new(),
-                step_index: 0,
-                total_steps,
-                status: "cancelled".to_string(),
-                tool_name: String::new(),
-                message: Some("Pipeline cancelled by user".to_string()),
-                store_stats: None,
-                pipeline_name: None,
-                target: Some(target.to_string()),
-                all_steps: None,
-                output: None,
-                duration_ms: None,
-                exit_code: None,
-            });
+            tracing::info!(
+                "[pipeline] Cancelled by user before layer {}",
+                layer_idx + 1
+            );
+            emit_pipeline_event(
+                runner.emitter,
+                &PipelineEvent {
+                    pipeline_id: pipeline_id.clone(),
+                    run_id: run_id.clone(),
+                    step_id: String::new(),
+                    step_index: 0,
+                    total_steps,
+                    status: "cancelled".to_string(),
+                    tool_name: String::new(),
+                    message: Some("Pipeline cancelled by user".to_string()),
+                    store_stats: None,
+                    pipeline_name: None,
+                    target: Some(target.to_string()),
+                    all_steps: None,
+                    output: None,
+                    duration_ms: None,
+                    exit_code: None,
+                },
+            );
             break;
         }
 
-        let mut runnable: Vec<(&crate::types::PipelineStep, usize, Option<std::path::PathBuf>)> = Vec::new();
+        let mut runnable: Vec<(
+            &crate::types::PipelineStep,
+            usize,
+            Option<std::path::PathBuf>,
+        )> = Vec::new();
 
         for &step in layer {
             let idx = step_index_map.get(step.id.as_str()).copied().unwrap_or(0);
@@ -282,25 +295,30 @@ pub(super) async fn execute_pipeline_inner(
                 if req != target_type {
                     tracing::info!(
                         "[pipeline] Skipping '{}': requires={}, target_type={}",
-                        step.tool_name, req, target_type
+                        step.tool_name,
+                        req,
+                        target_type
                     );
-                    emit_pipeline_event(runner.emitter, &PipelineEvent {
-                        pipeline_id: pipeline_id.clone(),
-                        run_id: run_id.clone(),
-                        step_id: step.id.clone(),
-                        step_index: idx,
-                        total_steps,
-                        status: "skipped".to_string(),
-                        tool_name: step.tool_name.clone(),
-                        message: Some(format!("Skipped: requires {} target", req)),
-                        store_stats: None,
-                        pipeline_name: None,
-                        target: None,
-                        all_steps: None,
-                        output: None,
-                        duration_ms: None,
-                        exit_code: None,
-                    });
+                    emit_pipeline_event(
+                        runner.emitter,
+                        &PipelineEvent {
+                            pipeline_id: pipeline_id.clone(),
+                            run_id: run_id.clone(),
+                            step_id: step.id.clone(),
+                            step_index: idx,
+                            total_steps,
+                            status: "skipped".to_string(),
+                            tool_name: step.tool_name.clone(),
+                            message: Some(format!("Skipped: requires {} target", req)),
+                            store_stats: None,
+                            pipeline_name: None,
+                            target: None,
+                            all_steps: None,
+                            output: None,
+                            duration_ms: None,
+                            exit_code: None,
+                        },
+                    );
                     step_results.push(StepResult {
                         step_id: step.id.clone(),
                         tool_name: step.tool_name.clone(),
@@ -315,7 +333,9 @@ pub(super) async fn execute_pipeline_inner(
                 }
             }
 
-            let incoming_conds: Vec<(&str, &str)> = pipeline.connections.iter()
+            let incoming_conds: Vec<(&str, &str)> = pipeline
+                .connections
+                .iter()
                 .filter(|c| c.to_step == step.id && c.condition.is_some())
                 .map(|c| (c.from_step.as_str(), c.condition.as_deref().unwrap()))
                 .collect();
@@ -328,7 +348,9 @@ pub(super) async fn execute_pipeline_inner(
                     if !evaluate_condition(cond_expr, res, out) {
                         tracing::info!(
                             "[pipeline] Skipping '{}': condition '{}' on edge from '{}' not met",
-                            step.tool_name, cond_expr, from_id
+                            step.tool_name,
+                            cond_expr,
+                            from_id
                         );
                         cond_failed = true;
                         break;
@@ -336,26 +358,34 @@ pub(super) async fn execute_pipeline_inner(
                 } else {
                     tracing::warn!(
                         "[pipeline] Skipping '{}': upstream '{}' has no result for condition eval",
-                        step.tool_name, from_id
+                        step.tool_name,
+                        from_id
                     );
                     cond_failed = true;
                     break;
                 }
             }
             if cond_failed {
-                emit_pipeline_event(runner.emitter, &PipelineEvent {
-                    pipeline_id: pipeline_id.clone(),
-                    run_id: run_id.clone(),
-                    step_id: step.id.clone(),
-                    step_index: idx,
-                    total_steps,
-                    status: "skipped".to_string(),
-                    tool_name: step.tool_name.clone(),
-                    message: Some("Skipped: condition not met".to_string()),
-                    store_stats: None,
-                    pipeline_name: None, target: None, all_steps: None,
-                    output: None, duration_ms: None, exit_code: None,
-                });
+                emit_pipeline_event(
+                    runner.emitter,
+                    &PipelineEvent {
+                        pipeline_id: pipeline_id.clone(),
+                        run_id: run_id.clone(),
+                        step_id: step.id.clone(),
+                        step_index: idx,
+                        total_steps,
+                        status: "skipped".to_string(),
+                        tool_name: step.tool_name.clone(),
+                        message: Some("Skipped: condition not met".to_string()),
+                        store_stats: None,
+                        pipeline_name: None,
+                        target: None,
+                        all_steps: None,
+                        output: None,
+                        duration_ms: None,
+                        exit_code: None,
+                    },
+                );
                 step_results.push(StepResult {
                     step_id: step.id.clone(),
                     tool_name: step.tool_name.clone(),
@@ -369,13 +399,8 @@ pub(super) async fn execute_pipeline_inner(
                 continue;
             }
 
-            let input_file = resolve_step_input(
-                step,
-                &step_outputs,
-                &pipeline.connections,
-                &tmp_dir,
-                target,
-            );
+            let input_file =
+                resolve_step_input(step, &step_outputs, &pipeline.connections, &tmp_dir, target);
             runnable.push((step, idx, input_file));
         }
 
@@ -388,7 +413,11 @@ pub(super) async fn execute_pipeline_inner(
             layer_idx + 1,
             layers.len(),
             runnable.len(),
-            runnable.iter().map(|(s, _, _)| s.tool_name.as_str()).collect::<Vec<_>>().join(", ")
+            runnable
+                .iter()
+                .map(|(s, _, _)| s.tool_name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         );
 
         let layer_futures = runnable.iter().map(|(step, idx, input_file)| {
@@ -412,14 +441,11 @@ pub(super) async fn execute_pipeline_inner(
         let layer_results = futures::future::join_all(layer_futures).await;
 
         for result in layer_results {
-            step_outputs.insert(
-                result.step_result.step_id.clone(),
-                result.output_path,
-            );
+            step_outputs.insert(result.step_result.step_id.clone(), result.output_path);
             total_stored += result.stored_count;
 
-            let failed = result.step_result.exit_code.is_some()
-                && result.step_result.exit_code != Some(0);
+            let failed =
+                result.step_result.exit_code.is_some() && result.step_result.exit_code != Some(0);
 
             let on_failure = pipeline
                 .steps

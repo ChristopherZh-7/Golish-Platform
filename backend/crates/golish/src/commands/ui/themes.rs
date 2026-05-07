@@ -11,16 +11,14 @@ pub struct ThemeInfo {
 
 /// Get the golish themes directory path (~/.golish/themes/)
 fn get_themes_dir() -> Result<PathBuf, GolishError> {
-    let home_dir = dirs::home_dir().ok_or_else(|| {
-        GolishError::Internal("Could not determine home directory".into())
-    })?;
+    let home_dir = dirs::home_dir()
+        .ok_or_else(|| GolishError::Internal("Could not determine home directory".into()))?;
 
     let golish_dir = home_dir.join(".golish");
     let themes_dir = golish_dir.join("themes");
 
-    fs::create_dir_all(&themes_dir).map_err(|e| {
-        GolishError::Internal(format!("Failed to create themes directory: {}", e))
-    })?;
+    fs::create_dir_all(&themes_dir)
+        .map_err(|e| GolishError::Internal(format!("Failed to create themes directory: {}", e)))?;
 
     Ok(themes_dir)
 }
@@ -31,14 +29,12 @@ pub async fn list_themes() -> Result<Vec<ThemeInfo>, GolishError> {
     let themes_dir = get_themes_dir()?;
     let mut themes = Vec::new();
 
-    let entries = fs::read_dir(&themes_dir).map_err(|e| {
-        GolishError::Internal(format!("Failed to read themes directory: {}", e))
-    })?;
+    let entries = fs::read_dir(&themes_dir)
+        .map_err(|e| GolishError::Internal(format!("Failed to read themes directory: {}", e)))?;
 
     for entry in entries {
-        let entry = entry.map_err(|e| {
-            GolishError::Internal(format!("Failed to read directory entry: {}", e))
-        })?;
+        let entry = entry
+            .map_err(|e| GolishError::Internal(format!("Failed to read directory entry: {}", e)))?;
         let path = entry.path();
 
         if path.is_dir() {
@@ -80,9 +76,8 @@ pub async fn save_theme(theme_name: String, theme_data: String) -> Result<String
     let themes_dir = get_themes_dir()?;
     let theme_dir = themes_dir.join(&theme_name);
 
-    fs::create_dir_all(&theme_dir).map_err(|e| {
-        GolishError::Internal(format!("Failed to create theme directory: {}", e))
-    })?;
+    fs::create_dir_all(&theme_dir)
+        .map_err(|e| GolishError::Internal(format!("Failed to create theme directory: {}", e)))?;
 
     let theme_file = theme_dir.join("theme.json");
     fs::write(&theme_file, theme_data)
@@ -118,9 +113,8 @@ pub async fn save_theme_asset(
     let themes_dir = get_themes_dir()?;
     let assets_dir = themes_dir.join(&theme_name).join("assets");
 
-    fs::create_dir_all(&assets_dir).map_err(|e| {
-        GolishError::Internal(format!("Failed to create assets directory: {}", e))
-    })?;
+    fs::create_dir_all(&assets_dir)
+        .map_err(|e| GolishError::Internal(format!("Failed to create assets directory: {}", e)))?;
 
     let asset_path = assets_dir.join(&filename);
     fs::write(&asset_path, data)

@@ -48,22 +48,19 @@ pub(crate) const JQUERY_AJAX: &str =
     r#"(?m)(?:\$|jQuery)\s*\.\s*ajax\s*\(\s*\{[^}]*?\burl\s*:\s*[`'"]([^`'"]+)[`'"]"#;
 
 /// `new Request('/path', { method: 'PUT' })`.
-pub(crate) const NEW_REQUEST: &str =
-    r#"(?m)\bnew\s+Request\s*\(\s*[`'"]([^`'"]+)[`'"]"#;
+pub(crate) const NEW_REQUEST: &str = r#"(?m)\bnew\s+Request\s*\(\s*[`'"]([^`'"]+)[`'"]"#;
 
 /// `fetch('/api/users/' + id, ...)` — captures the literal prefix when
 /// the URL is built by string concatenation. The `+` after the closing
 /// quote is the disambiguator that prevents this from re-matching plain
 /// `FETCH` literal call sites.
-pub(crate) const FETCH_CONCAT: &str =
-    r#"(?m)\bfetch\s*\(\s*[`'"]([^`'"]+)[`'"]\s*\+"#;
+pub(crate) const FETCH_CONCAT: &str = r#"(?m)\bfetch\s*\(\s*[`'"]([^`'"]+)[`'"]\s*\+"#;
 
 /// `` fetch(`/api/users/${id}`, ...) `` — backtick-quoted template literal
 /// with at least one `${...}` placeholder. We capture the raw template
 /// body (placeholders preserved) so callers see the same text the model
 /// would.
-pub(crate) const FETCH_TEMPLATE: &str =
-    r#"(?m)\bfetch\s*\(\s*`([^`]*\$\{[^`]*)`"#;
+pub(crate) const FETCH_TEMPLATE: &str = r#"(?m)\bfetch\s*\(\s*`([^`]*\$\{[^`]*)`"#;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Per-pattern helpers
@@ -242,9 +239,7 @@ pub(crate) fn endpoint_from_fetch_template(
     let match_start = cap.get(0)?.start();
     let window = window_after(source, match_start, 400);
     let method = method_from_init(window).unwrap_or_else(|| "GET".to_string());
-    let trimmed = template_body
-        .trim_start_matches('/')
-        .trim_end_matches('/');
+    let trimmed = template_body.trim_start_matches('/').trim_end_matches('/');
     let id_pos = trimmed.split('/').position(|seg| seg.contains("${"));
     Some(Endpoint {
         method,
@@ -310,8 +305,7 @@ fn auth_from_window(window: &str) -> AuthHint {
     if lower.contains("authorization") && lower.contains("bearer") {
         AuthHint::Bearer
     } else if (lower.contains("credentials") && lower.contains("include"))
-        || (lower.contains("withcredentials")
-            && (lower.contains("true") || lower.contains("!0")))
+        || (lower.contains("withcredentials") && (lower.contains("true") || lower.contains("!0")))
     {
         AuthHint::Cookie
     } else if lower.contains("x-token")

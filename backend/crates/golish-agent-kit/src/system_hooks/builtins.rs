@@ -84,10 +84,25 @@ fn security_tool_redirect_hook() -> ToolHook {
                 .unwrap_or("");
 
             let security_tools = [
-                "nmap", "masscan", "gobuster", "ffuf", "nikto", "sqlmap",
-                "hydra", "wfuzz", "dirb", "dirsearch", "nuclei",
-                "burpsuite", "zap", "metasploit", "msfconsole",
-                "hashcat", "john", "aircrack", "responder",
+                "nmap",
+                "masscan",
+                "gobuster",
+                "ffuf",
+                "nikto",
+                "sqlmap",
+                "hydra",
+                "wfuzz",
+                "dirb",
+                "dirsearch",
+                "nuclei",
+                "burpsuite",
+                "zap",
+                "metasploit",
+                "msfconsole",
+                "hashcat",
+                "john",
+                "aircrack",
+                "responder",
             ];
 
             let is_security_tool = security_tools
@@ -140,7 +155,9 @@ fn sub_agent_auto_store_hook() -> ToolHook {
                  You SHOULD now call `store_memory` to persist significant findings \
                  (discovered hosts, vulnerabilities, credentials, etc.) for future sessions. \
                  Use category tags: recon, vulnerability, credential, configuration, technique.",
-                ctx.tool_name_raw.strip_prefix("sub_agent_").unwrap_or(ctx.tool_name_raw)
+                ctx.tool_name_raw
+                    .strip_prefix("sub_agent_")
+                    .unwrap_or(ctx.tool_name_raw)
             ))
         },
     )

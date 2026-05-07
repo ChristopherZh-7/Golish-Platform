@@ -10,10 +10,10 @@ use anyhow::Result;
 use rig::completion::{CompletionModel as RigCompletionModel, Message};
 use tokio::sync::{mpsc, oneshot, RwLock};
 
-use golish_agent_kit::agent_mode::AgentMode;
 use crate::agentic_loop::{
     AgenticLoopConfig, AgenticLoopContext, LoopAccessControl, LoopEventRefs, LoopLlmRefs,
 };
+use golish_agent_kit::agent_mode::AgentMode;
 use golish_agent_kit::hitl::ApprovalRecorder;
 use golish_agent_kit::loop_detection::LoopDetector;
 use golish_agent_kit::planner::PlanManager;
@@ -238,4 +238,3 @@ where
         final_history: current_history,
     })
 }
-

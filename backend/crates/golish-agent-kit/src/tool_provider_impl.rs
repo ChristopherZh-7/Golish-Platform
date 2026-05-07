@@ -8,7 +8,9 @@ use rig::completion::request::ToolDefinition;
 
 use crate::db_tracking::DbTracker;
 use crate::tool_definitions::{filter_tools_by_allowed, get_all_tool_definitions};
-use crate::tool_executors::{execute_memory_tool, execute_web_fetch_tool, normalize_run_pty_cmd_args};
+use crate::tool_executors::{
+    execute_memory_tool, execute_web_fetch_tool, normalize_run_pty_cmd_args,
+};
 
 /// Default tool provider that uses golish-ai's tool definitions and executors.
 pub struct DefaultToolProvider<'a> {
@@ -18,11 +20,17 @@ pub struct DefaultToolProvider<'a> {
 
 impl<'a> DefaultToolProvider<'a> {
     pub fn new() -> Self {
-        Self { db_tracker: None, web_fetcher: None }
+        Self {
+            db_tracker: None,
+            web_fetcher: None,
+        }
     }
 
     pub fn with_db_tracker(db_tracker: Option<&'a DbTracker>) -> Self {
-        Self { db_tracker, web_fetcher: None }
+        Self {
+            db_tracker,
+            web_fetcher: None,
+        }
     }
 
     pub fn with_web_fetcher(mut self, fetcher: Option<Arc<dyn WebFetchProvider>>) -> Self {
@@ -59,7 +67,10 @@ impl ToolProvider for DefaultToolProvider<'_> {
         if let Some(ref fetcher) = self.web_fetcher {
             execute_web_fetch_tool(fetcher.as_ref(), tool_name, args).await
         } else {
-            (serde_json::json!({"error": "Web fetch provider not configured"}), false)
+            (
+                serde_json::json!({"error": "Web fetch provider not configured"}),
+                false,
+            )
         }
     }
 

@@ -23,7 +23,9 @@ pub struct ProjectSettingsResponse {
 /// Get the OpenRouter API key from settings with environment variable fallback.
 /// Priority: settings.ai.openrouter.api_key > $OPENROUTER_API_KEY
 #[tauri::command]
-pub async fn get_openrouter_api_key(state: State<'_, AppState>) -> Result<Option<String>, GolishError> {
+pub async fn get_openrouter_api_key(
+    state: State<'_, AppState>,
+) -> Result<Option<String>, GolishError> {
     let settings = state.settings_manager.get().await;
     Ok(get_with_env_fallback(
         &settings.ai.openrouter.api_key,
@@ -46,7 +48,9 @@ pub async fn get_openai_api_key(state: State<'_, AppState>) -> Result<Option<Str
 
 /// Get per-project AI settings from {workspace}/.golish/project.toml
 #[tauri::command]
-pub async fn get_project_settings(workspace: String) -> Result<ProjectSettingsResponse, GolishError> {
+pub async fn get_project_settings(
+    workspace: String,
+) -> Result<ProjectSettingsResponse, GolishError> {
     let workspace_path = PathBuf::from(workspace);
     let manager = ProjectSettingsManager::new(&workspace_path).await;
 
@@ -71,10 +75,7 @@ pub async fn save_project_model(
 
     let ai_provider: AiProvider = provider.parse().map_err(|e: String| e)?;
 
-    manager
-        .set_model(ai_provider, model)
-        .await
-?;
+    manager.set_model(ai_provider, model).await?;
     Ok(())
 }
 
@@ -169,7 +170,9 @@ pub struct VertexAiEnvConfig {
 /// - project_id: settings > $VERTEX_AI_PROJECT_ID > $GOOGLE_CLOUD_PROJECT
 /// - location: settings > $VERTEX_AI_LOCATION > "us-east5"
 #[tauri::command]
-pub async fn get_vertex_ai_config(state: State<'_, AppState>) -> Result<VertexAiEnvConfig, GolishError> {
+pub async fn get_vertex_ai_config(
+    state: State<'_, AppState>,
+) -> Result<VertexAiEnvConfig, GolishError> {
     let settings = state.settings_manager.get().await;
 
     let credentials_path = get_with_env_fallback(

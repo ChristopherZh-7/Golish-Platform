@@ -56,13 +56,11 @@ pub async fn list_active(pool: &PgPool, project_path: &str) -> Result<Vec<Execut
 }
 
 pub async fn update_status(pool: &PgPool, id: Uuid, status: PlanStatus) -> Result<()> {
-    sqlx::query(
-        "UPDATE execution_plans SET status = $1, updated_at = NOW() WHERE id = $2",
-    )
-    .bind(status)
-    .bind(id)
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE execution_plans SET status = $1, updated_at = NOW() WHERE id = $2")
+        .bind(status)
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -85,18 +83,12 @@ pub async fn update_steps(
     Ok(())
 }
 
-pub async fn update_context(
-    pool: &PgPool,
-    id: Uuid,
-    context: &serde_json::Value,
-) -> Result<()> {
-    sqlx::query(
-        "UPDATE execution_plans SET context = $1, updated_at = NOW() WHERE id = $2",
-    )
-    .bind(context)
-    .bind(id)
-    .execute(pool)
-    .await?;
+pub async fn update_context(pool: &PgPool, id: Uuid, context: &serde_json::Value) -> Result<()> {
+    sqlx::query("UPDATE execution_plans SET context = $1, updated_at = NOW() WHERE id = $2")
+        .bind(context)
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 

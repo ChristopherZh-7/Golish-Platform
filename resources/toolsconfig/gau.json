@@ -12,7 +12,9 @@
     "tags": ["recon", "wayback", "url", "passive"],
     "install": {
       "method": "homebrew",
-      "source": "gau"
+      "source": "gau",
+      "windows": { "method": "github", "source": "lc/gau" },
+      "linux": { "method": "github", "source": "lc/gau" }
     },
     "params": [
       {

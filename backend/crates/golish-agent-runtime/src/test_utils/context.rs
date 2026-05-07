@@ -18,10 +18,10 @@ use golish_llm_providers::LlmClient;
 use golish_sub_agents::SubAgentRegistry;
 use golish_tools::ToolRegistry;
 
-use golish_agent_kit::agent_mode::AgentMode;
 use crate::agentic_loop::{
     AgenticLoopContext, LoopAccessControl, LoopCaptureContext, LoopEventRefs, LoopLlmRefs,
 };
+use golish_agent_kit::agent_mode::AgentMode;
 use golish_agent_kit::execution_mode::ExecutionMode;
 use golish_agent_kit::tool_definitions::ToolConfig;
 
@@ -178,7 +178,8 @@ impl TestContextBuilder {
         let storage_dir = temp_dir.path().to_path_buf();
 
         // Use the temp dir as the workspace (unless explicitly set)
-        let workspace_path = if self.workspace.as_path() == std::path::Path::new("/tmp/golish-test") {
+        let workspace_path = if self.workspace.as_path() == std::path::Path::new("/tmp/golish-test")
+        {
             temp_dir.path().to_path_buf()
         } else {
             self.workspace.clone()

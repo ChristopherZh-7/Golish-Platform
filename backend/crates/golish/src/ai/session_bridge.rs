@@ -112,7 +112,8 @@ impl SessionPersistence for PgSessionPersistence {
                ORDER BY s.created_at DESC LIMIT $1"#,
         )
         .bind(limit_val)
-        .fetch_all(self.pool.as_ref()).await?;
+        .fetch_all(self.pool.as_ref())
+        .await?;
         Ok(rows.into_iter().map(row_to_listing).collect())
     }
 
@@ -126,7 +127,10 @@ impl SessionPersistence for PgSessionPersistence {
                           d.sidecar_session_id, d.agent_mode
                    FROM sessions s LEFT JOIN session_data d ON d.session_id = s.id
                    WHERE s.id = $1"#,
-            ).bind(uid).fetch_optional(self.pool.as_ref()).await?
+            )
+            .bind(uid)
+            .fetch_optional(self.pool.as_ref())
+            .await?
         } else {
             let pattern = format!("%{}%", identifier);
             sqlx::query_as(
@@ -137,12 +141,18 @@ impl SessionPersistence for PgSessionPersistence {
                    FROM sessions s LEFT JOIN session_data d ON d.session_id = s.id
                    WHERE s.id::TEXT LIKE $1 OR s.workspace_label LIKE $1 OR s.title LIKE $1
                    LIMIT 1"#,
-            ).bind(&pattern).fetch_optional(self.pool.as_ref()).await?
+            )
+            .bind(&pattern)
+            .fetch_optional(self.pool.as_ref())
+            .await?
         };
         Ok(row.map(row_to_listing))
     }
 
-    async fn load_session(&self, identifier: &str) -> anyhow::Result<Option<GolishSessionSnapshot>> {
+    async fn load_session(
+        &self,
+        identifier: &str,
+    ) -> anyhow::Result<Option<GolishSessionSnapshot>> {
         let uid = Uuid::parse_str(identifier).ok();
         let row: Option<SessionDataRow> = if let Some(uid) = uid {
             sqlx::query_as(
@@ -152,7 +162,10 @@ impl SessionPersistence for PgSessionPersistence {
                           d.sidecar_session_id, d.agent_mode
                    FROM sessions s LEFT JOIN session_data d ON d.session_id = s.id
                    WHERE s.id = $1"#,
-            ).bind(uid).fetch_optional(self.pool.as_ref()).await?
+            )
+            .bind(uid)
+            .fetch_optional(self.pool.as_ref())
+            .await?
         } else {
             let pattern = format!("%{}%", identifier);
             sqlx::query_as(
@@ -163,19 +176,27 @@ impl SessionPersistence for PgSessionPersistence {
                    FROM sessions s LEFT JOIN session_data d ON d.session_id = s.id
                    WHERE s.id::TEXT LIKE $1 OR s.workspace_label LIKE $1 OR s.title LIKE $1
                    LIMIT 1"#,
-            ).bind(&pattern).fetch_optional(self.pool.as_ref()).await?
+            )
+            .bind(&pattern)
+            .fetch_optional(self.pool.as_ref())
+            .await?
         };
         Ok(row.map(row_to_snapshot))
     }
 }
 
 fn row_to_listing(r: SessionDataRow) -> SessionListingInfo {
-    let messages: Vec<GolishSessionMessage> = r.messages
+    let messages: Vec<GolishSessionMessage> = r
+        .messages
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
-    let first_prompt = messages.iter().find(|m| m.role == GolishMessageRole::User)
+    let first_prompt = messages
+        .iter()
+        .find(|m| m.role == GolishMessageRole::User)
         .map(|m| m.content.chars().take(200).collect::<String>());
-    let first_reply = messages.iter().find(|m| m.role == GolishMessageRole::Assistant)
+    let first_reply = messages
+        .iter()
+        .find(|m| m.role == GolishMessageRole::Assistant)
         .map(|m| m.content.chars().take(200).collect::<String>());
 
     SessionListingInfo {
@@ -188,7 +209,10 @@ fn row_to_listing(r: SessionDataRow) -> SessionListingInfo {
         started_at: r.created_at,
         ended_at: r.updated_at,
         total_messages: r.total_messages.unwrap_or(0) as usize,
-        distinct_tools: r.distinct_tools.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
+        distinct_tools: r
+            .distinct_tools
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default(),
         first_prompt_preview: first_prompt,
         first_reply_preview: first_reply,
         status: Some(r.status),
@@ -205,9 +229,18 @@ fn row_to_snapshot(r: SessionDataRow) -> GolishSessionSnapshot {
         started_at: r.created_at,
         ended_at: r.updated_at,
         total_messages: r.total_messages.unwrap_or(0) as usize,
-        distinct_tools: r.distinct_tools.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
-        transcript: r.transcript.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
-        messages: r.messages.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
+        distinct_tools: r
+            .distinct_tools
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default(),
+        transcript: r
+            .transcript
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default(),
+        messages: r
+            .messages
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default(),
         sidecar_session_id: r.sidecar_session_id,
         total_tokens: None,
         agent_mode: r.agent_mode,

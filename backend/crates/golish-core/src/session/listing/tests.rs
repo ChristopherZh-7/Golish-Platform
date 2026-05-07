@@ -231,8 +231,7 @@ mod list_recent {
         std::env::set_var("VT_SESSION_DIR", temp.path());
 
         for i in 0..3 {
-            let mut snapshot =
-                create_test_snapshot(&format!("order-{}", i), &format!("ord{}", i));
+            let mut snapshot = create_test_snapshot(&format!("order-{}", i), &format!("ord{}", i));
             thread::sleep(Duration::from_millis(50));
             snapshot.started_at = Utc::now();
             storage::save_session(temp.path(), &snapshot).unwrap();

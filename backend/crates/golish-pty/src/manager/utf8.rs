@@ -94,10 +94,7 @@ fn is_incomplete_utf8_start(bytes: &[u8]) -> bool {
 }
 
 /// Process bytes into valid UTF-8, buffering incomplete sequences.
-pub(super) fn process_utf8_with_buffer(
-    buf: &mut Utf8IncompleteBuffer,
-    data: &[u8],
-) -> String {
+pub(super) fn process_utf8_with_buffer(buf: &mut Utf8IncompleteBuffer, data: &[u8]) -> String {
     if !buf.has_pending() {
         let valid_len = find_valid_utf8_boundary(data);
         if valid_len < data.len() {

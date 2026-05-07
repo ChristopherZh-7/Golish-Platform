@@ -92,7 +92,7 @@ pub fn build_system_prompt_with_contributions(
         }
     }
 
-    let use_agents = context.map_or(true, |ctx| ctx.has_sub_agents);
+    let use_agents = context.is_none_or(|ctx| ctx.has_sub_agents);
 
     if use_agents {
         task::build_task_prompt(workspace_path, agent_mode, memory_file_path)
@@ -115,7 +115,10 @@ pub(super) fn build_rules_section(workspace_path: &Path) -> String {
     let rules_dir_local = workspace_path.join(".golish").join("rules");
     let mut rules_text = String::new();
 
-    for dir in [rules_dir_global, Some(rules_dir_local)].into_iter().flatten() {
+    for dir in [rules_dir_global, Some(rules_dir_local)]
+        .into_iter()
+        .flatten()
+    {
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -133,10 +136,8 @@ pub(super) fn build_rules_section(workspace_path: &Path) -> String {
                         if yaml.contains("alwaysApply: true") {
                             let body = after[end + 4..].trim();
                             if !body.is_empty() {
-                                let name = path
-                                    .file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("rule");
+                                let name =
+                                    path.file_stem().and_then(|s| s.to_str()).unwrap_or("rule");
                                 rules_text.push_str(&format!(
                                     "\n<rule name=\"{name}\">\n{body}\n</rule>\n"
                                 ));

@@ -39,19 +39,20 @@ pub async fn custom_rules_list(
     )
     .bind(project_path.as_deref())
     .fetch_all(pool)
-    .await
-?;
+    .await?;
 
     Ok(rows
         .into_iter()
-        .map(|(id, name, pattern, scope, severity, enabled)| CustomPassiveRule {
-            id,
-            name,
-            pattern,
-            scope,
-            severity,
-            enabled,
-        })
+        .map(
+            |(id, name, pattern, scope, severity, enabled)| CustomPassiveRule {
+                id,
+                name,
+                pattern,
+                scope,
+                severity,
+                enabled,
+            },
+        )
         .collect())
 }
 
@@ -97,8 +98,7 @@ pub async fn custom_rules_save_all(
     sqlx::query("DELETE FROM custom_passive_rules WHERE project_path = $1")
         .bind(project_path.as_deref())
         .execute(pool)
-        .await
-?;
+        .await?;
 
     for rule in &rules {
         sqlx::query(
@@ -129,7 +129,6 @@ pub async fn custom_rules_delete(
     sqlx::query("DELETE FROM custom_passive_rules WHERE id = $1")
         .bind(&id)
         .execute(pool)
-        .await
-?;
+        .await?;
     Ok(())
 }

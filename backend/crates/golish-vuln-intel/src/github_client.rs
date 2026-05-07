@@ -7,11 +7,8 @@
 use reqwest::header::HeaderMap;
 
 /// Build a `reqwest::Client` with optional proxy support for GitHub API calls.
-pub fn build_github_client(
-    proxy_url: Option<&str>,
-) -> crate::VulnIntelResult<reqwest::Client> {
-    let mut builder = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(20));
+pub fn build_github_client(proxy_url: Option<&str>) -> crate::VulnIntelResult<reqwest::Client> {
+    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(20));
     if let Some(proxy_url) = proxy_url {
         if !proxy_url.is_empty() {
             tracing::info!(proxy = %proxy_url, "[github-client] Using proxy");

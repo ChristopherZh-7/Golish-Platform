@@ -77,7 +77,9 @@ pub(crate) fn emit_pipeline_event(emitter: Option<&EventEmitterHandle>, event: &
     if let Some(emitter) = emitter {
         tracing::info!(
             "[pipeline-event] Emitting: status={}, step={}, pipeline={}",
-            event.status, event.tool_name, event.pipeline_id
+            event.status,
+            event.tool_name,
+            event.pipeline_id
         );
         emitter.emit("pipeline-event", event);
     } else {

@@ -5,8 +5,8 @@ use golish_settings::schema::{
     SynthesisGrokSettings, SynthesisOpenAiSettings, SynthesisVertexSettings,
 };
 
+use crate::generators::{generate_claude_md_update, generate_readme_update};
 use crate::prompts::*;
-use crate::generators::{generate_readme_update, generate_claude_md_update};
 
 /// Backend for artifact synthesis (similar to commit message synthesis)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -469,4 +469,3 @@ async fn get_gcloud_access_token() -> Result<String> {
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
-

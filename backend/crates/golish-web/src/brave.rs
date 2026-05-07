@@ -23,9 +23,7 @@ impl BraveSearchState {
 
     fn get_api_key(&self) -> Result<&str> {
         self.api_key.as_deref().ok_or_else(|| {
-            anyhow::anyhow!(
-                "Brave Search API key not configured. Set api_keys.brave in settings."
-            )
+            anyhow::anyhow!("Brave Search API key not configured. Set api_keys.brave in settings.")
         })
     }
 
@@ -93,7 +91,11 @@ impl BraveSearchState {
             query: query.to_string(),
             results,
             infobox: body.infobox.map(|ib| BraveInfobox {
-                title: ib.results.first().map(|r| r.title.clone()).unwrap_or_default(),
+                title: ib
+                    .results
+                    .first()
+                    .map(|r| r.title.clone())
+                    .unwrap_or_default(),
                 description: ib
                     .results
                     .first()

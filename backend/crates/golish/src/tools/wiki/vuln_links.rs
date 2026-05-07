@@ -88,8 +88,7 @@ pub async fn vuln_link_get_all(
     let all_wiki: Vec<golish_db::models::VulnKbLink> =
         sqlx::query_as("SELECT * FROM vuln_kb_links ORDER BY created_at DESC")
             .fetch_all(pool)
-            .await
-?;
+            .await?;
     for l in all_wiki {
         result
             .entry(l.cve_id.clone())
@@ -106,8 +105,7 @@ pub async fn vuln_link_get_all(
     let all_pocs: Vec<golish_db::models::VulnKbPoc> =
         sqlx::query_as("SELECT * FROM vuln_kb_pocs ORDER BY created_at DESC")
             .fetch_all(pool)
-            .await
-?;
+            .await?;
     for p in all_pocs {
         result
             .entry(p.cve_id.clone())
@@ -124,8 +122,7 @@ pub async fn vuln_link_get_all(
     let all_scans: Vec<golish_db::models::VulnScanHistory> =
         sqlx::query_as("SELECT * FROM vuln_scan_history ORDER BY scanned_at DESC")
             .fetch_all(pool)
-            .await
-?;
+            .await?;
     for s in all_scans {
         result
             .entry(s.cve_id.clone())
@@ -154,19 +151,13 @@ pub async fn vuln_link_get(
 ) -> Result<VulnLinkFull, GolishError> {
     let pool = state.pool_ready().await?;
 
-    let links = golish_db::repo::wiki_kb::get_links_for_cve(pool, &cve_id)
-        .await
-?;
+    let links = golish_db::repo::wiki_kb::get_links_for_cve(pool, &cve_id).await?;
     let wiki_paths: Vec<String> = links.into_iter().map(|l| l.wiki_path).collect();
 
-    let pocs = golish_db::repo::wiki_kb::get_pocs_for_cve(pool, &cve_id)
-        .await
-?;
+    let pocs = golish_db::repo::wiki_kb::get_pocs_for_cve(pool, &cve_id).await?;
     let poc_templates: Vec<VulnPocEntry> = pocs.into_iter().map(poc_to_entry).collect();
 
-    let scans = golish_db::repo::vuln_scan::get_scans_for_cve(pool, &cve_id)
-        .await
-?;
+    let scans = golish_db::repo::vuln_scan::get_scans_for_cve(pool, &cve_id).await?;
     let scan_history: Vec<VulnScanEntry> = scans
         .into_iter()
         .map(|s| VulnScanEntry {
@@ -192,9 +183,7 @@ pub async fn vuln_link_add_wiki(
     wiki_path: String,
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
-    golish_db::repo::wiki_kb::link_cve_to_wiki(pool, &cve_id, &wiki_path)
-        .await
-?;
+    golish_db::repo::wiki_kb::link_cve_to_wiki(pool, &cve_id, &wiki_path).await?;
     Ok(())
 }
 
@@ -209,8 +198,7 @@ pub async fn vuln_link_remove_wiki(
         .bind(&cve_id)
         .bind(&wiki_path)
         .execute(pool)
-        .await
-?;
+        .await?;
     Ok(())
 }
 
@@ -224,9 +212,9 @@ pub async fn vuln_link_add_poc(
     content: String,
 ) -> Result<VulnPocEntry, GolishError> {
     let pool = state.pool_ready().await?;
-    let poc = golish_db::repo::wiki_kb::upsert_poc(pool, &cve_id, &name, &poc_type, &language, &content)
-        .await
-?;
+    let poc =
+        golish_db::repo::wiki_kb::upsert_poc(pool, &cve_id, &name, &poc_type, &language, &content)
+            .await?;
     Ok(poc_to_entry(poc))
 }
 
@@ -239,13 +227,14 @@ pub async fn vuln_link_update_poc(
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     let id: uuid::Uuid = poc_id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    sqlx::query("UPDATE vuln_kb_pocs SET name = $2, content = $3, updated_at = NOW() WHERE id = $1")
-        .bind(id)
-        .bind(&name)
-        .bind(&content)
-        .execute(pool)
-        .await
-?;
+    sqlx::query(
+        "UPDATE vuln_kb_pocs SET name = $2, content = $3, updated_at = NOW() WHERE id = $1",
+    )
+    .bind(id)
+    .bind(&name)
+    .bind(&content)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -256,9 +245,7 @@ pub async fn vuln_link_remove_poc(
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     let id: uuid::Uuid = poc_id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    golish_db::repo::wiki_kb::delete_poc(pool, id)
-        .await
-?;
+    golish_db::repo::wiki_kb::delete_poc(pool, id).await?;
     Ok(())
 }
 
@@ -271,11 +258,9 @@ pub async fn vuln_link_add_scan(
     details: Option<String>,
 ) -> Result<VulnScanEntry, GolishError> {
     let pool = state.pool_ready().await?;
-    let scan = golish_db::repo::vuln_scan::add_scan(
-        pool, &cve_id, &target, &result, details.as_deref(),
-    )
-    .await
-?;
+    let scan =
+        golish_db::repo::vuln_scan::add_scan(pool, &cve_id, &target, &result, details.as_deref())
+            .await?;
     Ok(VulnScanEntry {
         id: scan.id.to_string(),
         target: scan.target,
@@ -292,9 +277,7 @@ pub async fn vuln_link_remove_scan(
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     let id: uuid::Uuid = scan_id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    golish_db::repo::vuln_scan::delete_scan(pool, id)
-        .await
-?;
+    golish_db::repo::vuln_scan::delete_scan(pool, id).await?;
     Ok(())
 }
 
@@ -318,11 +301,19 @@ pub async fn vuln_link_add_poc_full(
 ) -> Result<VulnPocEntry, GolishError> {
     let pool = state.pool_ready().await?;
     let poc = golish_db::repo::wiki_kb::upsert_poc_full(
-        pool, &cve_id, &name, &poc_type, &language, &content,
-        &source, &source_url, &severity, &description, &tags,
+        pool,
+        &cve_id,
+        &name,
+        &poc_type,
+        &language,
+        &content,
+        &source,
+        &source_url,
+        &severity,
+        &description,
+        &tags,
     )
-    .await
-?;
+    .await?;
     Ok(poc_to_entry(poc))
 }
 
@@ -341,9 +332,7 @@ pub async fn vuln_poc_list_cves(
     state: tauri::State<'_, DbState>,
 ) -> Result<Vec<CvePocSummaryResponse>, GolishError> {
     let pool = state.pool_ready().await?;
-    let rows = golish_db::repo::wiki_kb::list_cves_with_pocs(pool)
-        .await
-?;
+    let rows = golish_db::repo::wiki_kb::list_cves_with_pocs(pool).await?;
     Ok(rows
         .into_iter()
         .map(|r| CvePocSummaryResponse {
@@ -363,9 +352,7 @@ pub async fn vuln_poc_list_unresearched(
     limit: Option<i64>,
 ) -> Result<Vec<CvePocSummaryResponse>, GolishError> {
     let pool = state.pool_ready().await?;
-    let rows = golish_db::repo::wiki_kb::list_unresearched_cves(pool, limit.unwrap_or(20))
-        .await
-?;
+    let rows = golish_db::repo::wiki_kb::list_unresearched_cves(pool, limit.unwrap_or(20)).await?;
     Ok(rows
         .into_iter()
         .map(|r| CvePocSummaryResponse {
@@ -401,7 +388,6 @@ pub async fn vuln_poc_set_verified(
         .bind(id)
         .bind(verified)
         .execute(pool)
-        .await
-?;
+        .await?;
     Ok(())
 }

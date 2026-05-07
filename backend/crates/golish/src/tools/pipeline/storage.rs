@@ -3,7 +3,9 @@
 //! `golish-pipeline`; this module is purely about delegation.
 
 use async_trait::async_trait;
-use golish_pipeline::{extract_hostname, ParsedItem, PipelineError, PipelineResult, PipelineStorage};
+use golish_pipeline::{
+    extract_hostname, ParsedItem, PipelineError, PipelineResult, PipelineStorage,
+};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -32,7 +34,9 @@ impl PipelineStorage for MainStorage {
         } else if let Some(url) = item.fields.get("url") {
             extract_hostname(url)
         } else {
-            return Err(PipelineError::Storage("No hostname/host/ip/url field".into()));
+            return Err(PipelineError::Storage(
+                "No hostname/host/ip/url field".into(),
+            ));
         };
 
         let existed = sqlx::query_scalar::<_, bool>(
@@ -83,7 +87,10 @@ impl PipelineStorage for MainStorage {
         )
         .await
         .map_err(|e| PipelineError::Storage(e.to_string()))?;
-        let target_uuid: Uuid = target.id.parse().map_err(|e: uuid::Error| PipelineError::Storage(e.to_string()))?;
+        let target_uuid: Uuid = target
+            .id
+            .parse()
+            .map_err(|e: uuid::Error| PipelineError::Storage(e.to_string()))?;
 
         let mut update = targets::ReconUpdate::new();
         if let Some(ip) = item.fields.get("ip") {
@@ -160,7 +167,10 @@ impl PipelineStorage for MainStorage {
         tool_name: &str,
         project_path: Option<&str>,
     ) -> PipelineResult<bool> {
-        let url = item.fields.get("url").ok_or_else(|| PipelineError::Storage("No url field".into()))?;
+        let url = item
+            .fields
+            .get("url")
+            .ok_or_else(|| PipelineError::Storage("No url field".into()))?;
 
         let existed = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM directory_entries WHERE url = $1 AND project_path = $2)",

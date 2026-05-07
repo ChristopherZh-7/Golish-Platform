@@ -62,14 +62,11 @@ pub async fn save_skill(
                     "Working directory required for project skills".into(),
                 )
             })?;
-            std::path::PathBuf::from(wd)
-                .join(".golish")
-                .join("skills")
+            std::path::PathBuf::from(wd).join(".golish").join("skills")
         }
         _ => {
-            let home = dirs::home_dir().ok_or_else(|| {
-                crate::error::GolishError::Internal("No home directory".into())
-            })?;
+            let home = dirs::home_dir()
+                .ok_or_else(|| crate::error::GolishError::Internal("No home directory".into()))?;
             home.join(".golish").join("skills")
         }
     };

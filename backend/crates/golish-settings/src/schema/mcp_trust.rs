@@ -7,8 +7,8 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
 use super::enums::LogLevel;
+use serde::{Deserialize, Serialize};
 
 /// MCP (Model Context Protocol) server configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

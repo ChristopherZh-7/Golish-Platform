@@ -13,10 +13,7 @@ pub(super) fn context_warning(
     })
 }
 
-pub(super) fn compaction_started(
-    tokens_before: u64,
-    messages_before: usize,
-) -> serde_json::Value {
+pub(super) fn compaction_started(tokens_before: u64, messages_before: usize) -> serde_json::Value {
     serde_json::json!({
         "tokens_before": tokens_before,
         "messages_before": messages_before

@@ -86,15 +86,15 @@ pub(super) fn record_last_user_text_for_span(llm_span: &Span, chat_history: &[Me
     llm_span.record("langfuse.observation.input", prompt_for_span.as_str());
 }
 
-pub(crate) fn record_agent_turn_start(
-    ctx: &AgenticLoopContext<'_>,
-    chat_history: &[Message],
-) {
+pub(crate) fn record_agent_turn_start(ctx: &AgenticLoopContext<'_>, chat_history: &[Message]) {
     if let Some(tracker) = ctx.events.db_tracker {
         tracker.audit(
             "agent_turn_start",
             "ai",
-            &format!("model={} provider={}", ctx.llm.model_name, ctx.llm.provider_name),
+            &format!(
+                "model={} provider={}",
+                ctx.llm.model_name, ctx.llm.provider_name
+            ),
         );
         let user_msg_preview = chat_history
             .last()
@@ -233,7 +233,10 @@ pub(crate) fn record_final_output_and_usage(
     agent_span: &Span,
 ) {
     let output_for_span = if accumulated_response.len() > 2000 {
-        format!("{}... [truncated]", truncate_str(accumulated_response, 2000))
+        format!(
+            "{}... [truncated]",
+            truncate_str(accumulated_response, 2000)
+        )
     } else {
         accumulated_response.to_string()
     };

@@ -47,7 +47,7 @@ impl From<VaultRow> for VaultEntrySafe {
             tags: serde_json::from_value(r.tags).unwrap_or_default(),
             status: r.status,
             source_url: r.source_url,
-            last_validated_at: r.last_validated_at.map(|dt| ts_from_dt(dt)),
+            last_validated_at: r.last_validated_at.map(ts_from_dt),
             created_at: ts_from_dt(r.created_at),
             updated_at: ts_from_dt(r.updated_at),
         }
@@ -143,8 +143,7 @@ pub async fn vault_get_value(
     let enc: String = sqlx::query_scalar("SELECT value FROM vault_entries WHERE id = $1")
         .bind(uid)
         .fetch_one(pool)
-        .await
-?;
+        .await?;
     Ok(deobfuscate(&enc)?)
 }
 
@@ -166,28 +165,46 @@ pub async fn vault_update(
 
     if let Some(n) = &name {
         sqlx::query("UPDATE vault_entries SET name=$1, updated_at=NOW() WHERE id=$2")
-            .bind(n).bind(uid).execute(pool).await?;
+            .bind(n)
+            .bind(uid)
+            .execute(pool)
+            .await?;
     }
     if let Some(v) = &value {
         sqlx::query("UPDATE vault_entries SET value=$1, updated_at=NOW() WHERE id=$2")
-            .bind(obfuscate(v)).bind(uid).execute(pool).await?;
+            .bind(obfuscate(v))
+            .bind(uid)
+            .execute(pool)
+            .await?;
     }
     if let Some(u) = &username {
         sqlx::query("UPDATE vault_entries SET username=$1, updated_at=NOW() WHERE id=$2")
-            .bind(u).bind(uid).execute(pool).await?;
+            .bind(u)
+            .bind(uid)
+            .execute(pool)
+            .await?;
     }
     if let Some(n) = &notes {
         sqlx::query("UPDATE vault_entries SET notes=$1, updated_at=NOW() WHERE id=$2")
-            .bind(n).bind(uid).execute(pool).await?;
+            .bind(n)
+            .bind(uid)
+            .execute(pool)
+            .await?;
     }
     if let Some(p) = &project {
         sqlx::query("UPDATE vault_entries SET project=$1, updated_at=NOW() WHERE id=$2")
-            .bind(p).bind(uid).execute(pool).await?;
+            .bind(p)
+            .bind(uid)
+            .execute(pool)
+            .await?;
     }
     if let Some(t) = &tags {
         let j = serde_json::to_value(t).unwrap_or_else(|_| serde_json::json!([]));
         sqlx::query("UPDATE vault_entries SET tags=$1, updated_at=NOW() WHERE id=$2")
-            .bind(&j).bind(uid).execute(pool).await?;
+            .bind(&j)
+            .bind(uid)
+            .execute(pool)
+            .await?;
     }
 
     let row: VaultRow = sqlx::query_as(
@@ -216,8 +233,7 @@ pub async fn vault_update_status(
         .bind(&status)
         .bind(uid)
         .execute(pool)
-        .await
-?;
+        .await?;
     Ok(())
 }
 
@@ -231,35 +247,30 @@ pub async fn vault_validate(
     let _ = &project_path;
     let uid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
-    let (enc_value, source_url, entry_type): (String, String, String) = sqlx::query_as(
-        "SELECT value, source_url, entry_type::TEXT FROM vault_entries WHERE id=$1",
-    )
-    .bind(uid)
-    .fetch_one(pool)
-    .await
-?;
+    let (enc_value, source_url, entry_type): (String, String, String) =
+        sqlx::query_as("SELECT value, source_url, entry_type::TEXT FROM vault_entries WHERE id=$1")
+            .bind(uid)
+            .fetch_one(pool)
+            .await?;
 
     let value = deobfuscate(&enc_value)?;
 
     if source_url.is_empty() {
-        return Err(GolishError::Internal("No source URL to validate against".into()));
+        return Err(GolishError::Internal(
+            "No source URL to validate against".into(),
+        ));
     }
 
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .timeout(std::time::Duration::from_secs(10))
         .no_proxy()
-        .build()
-?;
+        .build()?;
 
     let mut req = client.get(&source_url);
     match entry_type.as_str() {
-        "token" => {
-            if value.starts_with("Bearer ") {
-                req = req.header("Authorization", &value);
-            } else {
-                req = req.header("Authorization", format!("Bearer {}", value));
-            }
+        "token" if value.starts_with("Bearer ") => {
+            req = req.header("Authorization", &value);
         }
         "api_key" => {
             req = req.header("X-API-Key", &value);
@@ -290,8 +301,7 @@ pub async fn vault_validate(
         .bind(status)
         .bind(uid)
         .execute(pool)
-        .await
-?;
+        .await?;
 
     Ok(status.to_string())
 }
@@ -308,8 +318,7 @@ pub async fn vault_delete(
     sqlx::query("DELETE FROM vault_entries WHERE id = $1")
         .bind(uid)
         .execute(pool)
-        .await
-?;
+        .await?;
     Ok(())
 }
 
@@ -320,7 +329,9 @@ pub async fn vault_resolve(
     project_path: Option<String>,
 ) -> Result<String, GolishError> {
     let pool = state.pool_ready().await?;
-    let name = reference.trim_start_matches("{{vault:").trim_end_matches("}}");
+    let name = reference
+        .trim_start_matches("{{vault:")
+        .trim_end_matches("}}");
     let enc: String = if let Some(ref pp) = project_path {
         sqlx::query_scalar(
             "SELECT value FROM vault_entries WHERE (name=$1 OR id::TEXT=$1) AND project_path = $2",

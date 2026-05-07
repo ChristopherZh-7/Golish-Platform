@@ -26,7 +26,10 @@ pub(super) fn convert_hitl_or_task(event: &AiEvent) -> CliJsonEvent {
             task_id,
             status,
             message,
-        } => CliJsonEvent::new("task_progress", task::task_progress(task_id, status, message)),
+        } => CliJsonEvent::new(
+            "task_progress",
+            task::task_progress(task_id, status, message),
+        ),
         AiEvent::SubtaskCreated {
             task_id,
             subtask_id,

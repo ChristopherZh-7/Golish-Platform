@@ -73,10 +73,7 @@ where
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let summary = args
-                .get("summary")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let summary = args.get("summary").and_then(|v| v.as_str()).unwrap_or("");
 
             tracing::info!(
                 "[sub-agent] Barrier tool '{}' called: summary='{}', result_len={}",
@@ -105,8 +102,7 @@ where
         }
 
         // ── Nested delegation ───────────────────────────────────────────
-        if tool_name.starts_with("sub_agent_") {
-            let delegate_id = &tool_name["sub_agent_".len()..];
+        if let Some(delegate_id) = tool_name.strip_prefix("sub_agent_") {
             let delegate_task = tool_call
                 .function
                 .arguments
@@ -223,8 +219,7 @@ where
             });
         }
 
-        let args_for_span =
-            serde_json::to_string(&tool_args).unwrap_or_else(|_| "{}".to_string());
+        let args_for_span = serde_json::to_string(&tool_args).unwrap_or_else(|_| "{}".to_string());
         let args_truncated = if args_for_span.chars().count() > 500 {
             format!("{}...[truncated]", truncate_str(&args_for_span, 500))
         } else {
@@ -257,12 +252,19 @@ where
             {
                 result
             } else if tool_name == "run_pty_cmd" || tool_name == "run_command" {
-                let command = tool_args.get("command").and_then(|c| c.as_str()).unwrap_or("");
+                let command = tool_args
+                    .get("command")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("");
                 let cwd = tool_args.get("cwd").and_then(|c| c.as_str());
-                let timeout_secs = tool_args.get("timeout").and_then(|t| t.as_u64()).unwrap_or(120);
+                let timeout_secs = tool_args
+                    .get("timeout")
+                    .and_then(|t| t.as_u64())
+                    .unwrap_or(120);
                 let workspace = ctx.workspace.read().await;
 
-                let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel::<golish_shell_exec::OutputChunk>(64);
+                let (chunk_tx, mut chunk_rx) =
+                    tokio::sync::mpsc::channel::<golish_shell_exec::OutputChunk>(64);
 
                 let event_tx = ctx.event_tx.clone();
                 let chunk_request_id = request_id.clone();
@@ -285,8 +287,15 @@ where
                 });
 
                 match golish_shell_exec::execute_streaming(
-                    command, cwd, timeout_secs, &workspace, None, chunk_tx,
-                ).await {
+                    command,
+                    cwd,
+                    timeout_secs,
+                    &workspace,
+                    None,
+                    chunk_tx,
+                )
+                .await
+                {
                     Ok(r) => {
                         let ok = r.exit_code == 0;
                         let mut v = serde_json::json!({
@@ -299,9 +308,14 @@ where
                             v["cwd"] = serde_json::json!(c);
                         }
                         if !ok {
-                            let err_detail = if r.stderr.is_empty() { &r.stdout } else { &r.stderr };
+                            let err_detail = if r.stderr.is_empty() {
+                                &r.stdout
+                            } else {
+                                &r.stderr
+                            };
                             v["error"] = serde_json::json!(format!(
-                                "Command exited with code {}: {}", r.exit_code, err_detail
+                                "Command exited with code {}: {}",
+                                r.exit_code, err_detail
                             ));
                         }
                         if r.timed_out {

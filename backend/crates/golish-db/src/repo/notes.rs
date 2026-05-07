@@ -27,7 +27,11 @@ pub async fn create(
     Ok(row)
 }
 
-pub async fn list_for_entity(pool: &PgPool, entity_type: &str, entity_id: &str) -> Result<Vec<Note>> {
+pub async fn list_for_entity(
+    pool: &PgPool,
+    entity_type: &str,
+    entity_id: &str,
+) -> Result<Vec<Note>> {
     let rows = sqlx::query_as::<_, Note>(
         "SELECT * FROM notes WHERE entity_type = $1 AND entity_id = $2 ORDER BY created_at DESC",
     )

@@ -27,43 +27,160 @@ pub async fn execute_sub_agent_with_client(
 
     match client {
         LlmClient::VertexAnthropic(model) => {
-            execute_sub_agent(agent_def, args, context, model, ctx, tool_provider, parent_request_id).await
+            execute_sub_agent(
+                agent_def,
+                args,
+                context,
+                model,
+                ctx,
+                tool_provider,
+                parent_request_id,
+            )
+            .await
         }
         LlmClient::RigOpenRouter(model) => {
-            execute_sub_agent(agent_def, args, context, model, ctx, tool_provider, parent_request_id).await
+            execute_sub_agent(
+                agent_def,
+                args,
+                context,
+                model,
+                ctx,
+                tool_provider,
+                parent_request_id,
+            )
+            .await
         }
         LlmClient::RigOpenAi(model) => {
-            execute_sub_agent(agent_def, args, context, model, ctx, tool_provider, parent_request_id).await
+            execute_sub_agent(
+                agent_def,
+                args,
+                context,
+                model,
+                ctx,
+                tool_provider,
+                parent_request_id,
+            )
+            .await
         }
         LlmClient::RigOpenAiResponses(model) => {
-            execute_sub_agent(agent_def, args, context, model, ctx, tool_provider, parent_request_id).await
+            execute_sub_agent(
+                agent_def,
+                args,
+                context,
+                model,
+                ctx,
+                tool_provider,
+                parent_request_id,
+            )
+            .await
         }
         LlmClient::OpenAiReasoning(model) => {
-            execute_sub_agent(agent_def, args, context, model, ctx, tool_provider, parent_request_id).await
+            execute_sub_agent(
+                agent_def,
+                args,
+                context,
+                model,
+                ctx,
+                tool_provider,
+                parent_request_id,
+            )
+            .await
         }
         LlmClient::RigAnthropic(model) => {
-            execute_sub_agent(agent_def, args, context, model, ctx, tool_provider, parent_request_id).await
+            execute_sub_agent(
+                agent_def,
+                args,
+                context,
+                model,
+                ctx,
+                tool_provider,
+                parent_request_id,
+            )
+            .await
         }
         LlmClient::RigOllama(model) => {
-            execute_sub_agent(agent_def, args, context, model, ctx, tool_provider, parent_request_id).await
+            execute_sub_agent(
+                agent_def,
+                args,
+                context,
+                model,
+                ctx,
+                tool_provider,
+                parent_request_id,
+            )
+            .await
         }
         LlmClient::RigGemini(model) => {
-            execute_sub_agent(agent_def, args, context, model, ctx, tool_provider, parent_request_id).await
+            execute_sub_agent(
+                agent_def,
+                args,
+                context,
+                model,
+                ctx,
+                tool_provider,
+                parent_request_id,
+            )
+            .await
         }
         LlmClient::RigGroq(model) => {
-            execute_sub_agent(agent_def, args, context, model, ctx, tool_provider, parent_request_id).await
+            execute_sub_agent(
+                agent_def,
+                args,
+                context,
+                model,
+                ctx,
+                tool_provider,
+                parent_request_id,
+            )
+            .await
         }
         LlmClient::RigXai(model) => {
-            execute_sub_agent(agent_def, args, context, model, ctx, tool_provider, parent_request_id).await
+            execute_sub_agent(
+                agent_def,
+                args,
+                context,
+                model,
+                ctx,
+                tool_provider,
+                parent_request_id,
+            )
+            .await
         }
         LlmClient::RigZaiSdk(model) => {
-            execute_sub_agent(agent_def, args, context, model, ctx, tool_provider, parent_request_id).await
+            execute_sub_agent(
+                agent_def,
+                args,
+                context,
+                model,
+                ctx,
+                tool_provider,
+                parent_request_id,
+            )
+            .await
         }
         LlmClient::RigNvidia(model) => {
-            execute_sub_agent(agent_def, args, context, model, ctx, tool_provider, parent_request_id).await
+            execute_sub_agent(
+                agent_def,
+                args,
+                context,
+                model,
+                ctx,
+                tool_provider,
+                parent_request_id,
+            )
+            .await
         }
         LlmClient::VertexGemini(model) => {
-            execute_sub_agent(agent_def, args, context, model, ctx, tool_provider, parent_request_id).await
+            execute_sub_agent(
+                agent_def,
+                args,
+                context,
+                model,
+                ctx,
+                tool_provider,
+                parent_request_id,
+            )
+            .await
         }
         LlmClient::Mock => Err(anyhow::anyhow!("Cannot execute sub-agent with Mock client")),
     }
@@ -117,20 +234,20 @@ pub(crate) async fn build_sub_agent_briefing(
             }
             if let Some(steps) = plan.steps.as_array() {
                 for (i, step) in steps.iter().enumerate() {
-                    let name = step.get("name").and_then(|v| v.as_str()).unwrap_or("unnamed");
-                    let status = step.get("status").and_then(|v| v.as_str()).unwrap_or("pending");
+                    let name = step
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unnamed");
+                    let status = step
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("pending");
                     let marker = if i as i32 == plan.current_step {
                         ">>>"
                     } else {
                         "   "
                     };
-                    briefing.push_str(&format!(
-                        "  {} {}. {} [{}]\n",
-                        marker,
-                        i + 1,
-                        name,
-                        status
-                    ));
+                    briefing.push_str(&format!("  {} {}. {} [{}]\n", marker, i + 1, name, status));
                 }
             }
         }
@@ -178,7 +295,10 @@ pub(crate) fn is_sub_agent_tool(tool_name: &str) -> bool {
 #[allow(clippy::type_complexity)]
 pub(crate) fn partition_tool_calls(
     tool_calls: Vec<rig::message::ToolCall>,
-) -> (Vec<(usize, rig::message::ToolCall)>, Vec<(usize, rig::message::ToolCall)>) {
+) -> (
+    Vec<(usize, rig::message::ToolCall)>,
+    Vec<(usize, rig::message::ToolCall)>,
+) {
     let mut sub_agent_calls = Vec::new();
     let mut other_calls = Vec::new();
 

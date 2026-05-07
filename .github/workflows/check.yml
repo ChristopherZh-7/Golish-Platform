@@ -88,3 +88,49 @@ jobs:
       - name: Rust tests (verbose on failure)
         if: failure()
         run: just test-rust-verbose
+
+  windows-check:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    name: Windows compile check
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          shared-key: rust-windows-msvc-v1
+          cache-targets: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Frontend typecheck (cross-platform)
+        run: pnpm typecheck
+
+      - name: Frontend lint (cross-platform)
+        run: pnpm check
+
+      - name: Cargo check (Windows MSVC)
+        working-directory: backend
+        run: cargo check --workspace --all-features --target x86_64-pc-windows-msvc

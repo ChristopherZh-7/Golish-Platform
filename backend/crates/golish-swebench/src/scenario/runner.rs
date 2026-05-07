@@ -344,9 +344,7 @@ impl Scenario for SWEBenchScenario {
                 }
             }
         } else {
-            eprintln!(
-                "        Using fallback Docker evaluation (swebench package not installed)"
-            );
+            eprintln!("        Using fallback Docker evaluation (swebench package not installed)");
             match run_fallback_evaluation(&self.instance, &workspace).await {
                 Ok(result) => result,
                 Err(e) => {

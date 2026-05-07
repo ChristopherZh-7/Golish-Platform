@@ -33,11 +33,8 @@ pub(super) async fn build_tool_definitions<P: ToolProvider>(
     // that are in the agent's allowed_tools but not in the static definitions.
     {
         let existing_names: HashSet<String> = tools.iter().map(|t| t.name.clone()).collect();
-        let allowed_set: HashSet<&str> = agent_def
-            .allowed_tools
-            .iter()
-            .map(|s| s.as_str())
-            .collect();
+        let allowed_set: HashSet<&str> =
+            agent_def.allowed_tools.iter().map(|s| s.as_str()).collect();
         let registry = ctx.tool_registry.read().await;
         for td in registry.get_tool_definitions() {
             if allowed_set.contains(td.name.as_str()) && !existing_names.contains(&td.name) {
@@ -86,10 +83,11 @@ pub(super) async fn build_tool_definitions<P: ToolProvider>(
 fn barrier_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: BARRIER_TOOL_NAME.to_string(),
-        description: "Submit your final structured result and complete this task. You MUST call this \
+        description:
+            "Submit your final structured result and complete this task. You MUST call this \
             tool when your work is done — do NOT end with a plain text message. Include your key \
             findings, outputs, and whether the task succeeded."
-            .to_string(),
+                .to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {

@@ -12,7 +12,6 @@ use golish_core::events::AiEvent;
 use super::super::context::AgenticLoopContext;
 use super::super::helpers::estimate_message_tokens;
 
-
 /// Update `total_usage`, `compaction_state`, and the LLM span with token usage
 /// extracted from the provider's `Final` chunk. Falls back to a `tokenx-rs`
 /// estimate when the provider didn't report usage.

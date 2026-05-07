@@ -20,8 +20,7 @@ fn envelope_serializes_with_flattened_event() {
 
 #[test]
 fn envelope_deserializes_correctly() {
-    let json =
-        r#"{"seq":42,"ts":"2024-01-15T10:30:00Z","type":"started","turn_id":"turn-1"}"#;
+    let json = r#"{"seq":42,"ts":"2024-01-15T10:30:00Z","type":"started","turn_id":"turn-1"}"#;
     let envelope: AiEventEnvelope = serde_json::from_str(json).unwrap();
 
     assert_eq!(envelope.seq, 42);

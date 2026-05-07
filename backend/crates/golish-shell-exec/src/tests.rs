@@ -4,7 +4,7 @@ use serde_json::json;
 use tempfile::tempdir;
 
 use crate::common::truncate_output;
-use crate::shell::{get_shell_config, ShellType};
+use crate::shell::{build_command, get_shell_config, rc_file, ShellType};
 use crate::tool::RunPtyCmdTool;
 use golish_core::Tool;
 
@@ -12,53 +12,41 @@ use golish_core::Tool;
 
 #[test]
 fn test_shell_type_from_path_zsh() {
-    assert_eq!(ShellType::from_path(Path::new("/bin/zsh")), ShellType::Zsh);
+    assert_eq!(ShellType::from_path("/bin/zsh"), ShellType::Zsh);
+    assert_eq!(ShellType::from_path("/usr/local/bin/zsh"), ShellType::Zsh);
     assert_eq!(
-        ShellType::from_path(Path::new("/usr/local/bin/zsh")),
-        ShellType::Zsh
-    );
-    assert_eq!(
-        ShellType::from_path(Path::new("/opt/homebrew/bin/zsh")),
+        ShellType::from_path("/opt/homebrew/bin/zsh"),
         ShellType::Zsh
     );
 }
 
 #[test]
 fn test_shell_type_from_path_bash() {
-    assert_eq!(
-        ShellType::from_path(Path::new("/bin/bash")),
-        ShellType::Bash
-    );
-    assert_eq!(
-        ShellType::from_path(Path::new("/usr/bin/bash")),
-        ShellType::Bash
-    );
+    assert_eq!(ShellType::from_path("/bin/bash"), ShellType::Bash);
+    assert_eq!(ShellType::from_path("/usr/bin/bash"), ShellType::Bash);
 }
 
 #[test]
 fn test_shell_type_from_path_fish() {
+    assert_eq!(ShellType::from_path("/usr/bin/fish"), ShellType::Fish);
     assert_eq!(
-        ShellType::from_path(Path::new("/usr/bin/fish")),
-        ShellType::Fish
-    );
-    assert_eq!(
-        ShellType::from_path(Path::new("/opt/homebrew/bin/fish")),
+        ShellType::from_path("/opt/homebrew/bin/fish"),
         ShellType::Fish
     );
 }
 
 #[test]
 fn test_shell_type_from_path_sh() {
-    assert_eq!(ShellType::from_path(Path::new("/bin/sh")), ShellType::Sh);
-    assert_eq!(ShellType::from_path(Path::new("/bin/dash")), ShellType::Sh);
-    assert_eq!(ShellType::from_path(Path::new("/bin/tcsh")), ShellType::Sh);
+    assert_eq!(ShellType::from_path("/bin/sh"), ShellType::Sh);
+    assert_eq!(ShellType::from_path("/bin/dash"), ShellType::Unknown);
+    assert_eq!(ShellType::from_path("/bin/tcsh"), ShellType::Unknown);
 }
 
 #[test]
 fn test_shell_type_rc_file_zsh() {
     let home = PathBuf::from("/home/user");
     assert_eq!(
-        ShellType::Zsh.rc_file(&home),
+        rc_file(ShellType::Zsh, &home),
         Some(PathBuf::from("/home/user/.zshrc"))
     );
 }
@@ -67,7 +55,7 @@ fn test_shell_type_rc_file_zsh() {
 fn test_shell_type_rc_file_fish() {
     let home = PathBuf::from("/home/user");
     assert_eq!(
-        ShellType::Fish.rc_file(&home),
+        rc_file(ShellType::Fish, &home),
         Some(PathBuf::from("/home/user/.config/fish/config.fish"))
     );
 }
@@ -75,7 +63,7 @@ fn test_shell_type_rc_file_fish() {
 #[test]
 fn test_shell_type_rc_file_sh() {
     let home = PathBuf::from("/home/user");
-    assert_eq!(ShellType::Sh.rc_file(&home), None);
+    assert_eq!(rc_file(ShellType::Sh, &home), None);
 }
 
 #[test]
@@ -84,7 +72,7 @@ fn test_build_command_zsh_with_rc() {
     let home = dir.path();
     std::fs::write(home.join(".zshrc"), "# zshrc").unwrap();
 
-    let (shell, cmd) = ShellType::Zsh.build_command(Path::new("/bin/zsh"), "echo hello", home);
+    let (shell, cmd) = build_command(ShellType::Zsh, Path::new("/bin/zsh"), "echo hello", home);
 
     assert_eq!(shell, "/bin/zsh");
     assert!(cmd.contains("source"));
@@ -97,7 +85,7 @@ fn test_build_command_zsh_without_rc() {
     let dir = tempdir().unwrap();
     let home = dir.path();
 
-    let (shell, cmd) = ShellType::Zsh.build_command(Path::new("/bin/zsh"), "echo hello", home);
+    let (shell, cmd) = build_command(ShellType::Zsh, Path::new("/bin/zsh"), "echo hello", home);
 
     assert_eq!(shell, "/bin/zsh");
     assert_eq!(cmd, "echo hello");
@@ -109,7 +97,7 @@ fn test_build_command_bash_with_bashrc() {
     let home = dir.path();
     std::fs::write(home.join(".bashrc"), "# bashrc").unwrap();
 
-    let (shell, cmd) = ShellType::Bash.build_command(Path::new("/bin/bash"), "echo hello", home);
+    let (shell, cmd) = build_command(ShellType::Bash, Path::new("/bin/bash"), "echo hello", home);
 
     assert_eq!(shell, "/bin/bash");
     assert!(cmd.contains("source"));
@@ -123,7 +111,7 @@ fn test_build_command_bash_with_bash_profile() {
     let home = dir.path();
     std::fs::write(home.join(".bash_profile"), "# bash_profile").unwrap();
 
-    let (shell, cmd) = ShellType::Bash.build_command(Path::new("/bin/bash"), "echo hello", home);
+    let (shell, cmd) = build_command(ShellType::Bash, Path::new("/bin/bash"), "echo hello", home);
 
     assert_eq!(shell, "/bin/bash");
     assert!(cmd.contains("source"));
@@ -136,7 +124,7 @@ fn test_build_command_sh() {
     let dir = tempdir().unwrap();
     let home = dir.path();
 
-    let (shell, cmd) = ShellType::Sh.build_command(Path::new("/bin/sh"), "echo hello", home);
+    let (shell, cmd) = build_command(ShellType::Sh, Path::new("/bin/sh"), "echo hello", home);
 
     assert_eq!(shell, "/bin/sh");
     assert_eq!(cmd, "echo hello");
@@ -149,7 +137,12 @@ fn test_build_command_fish_with_config() {
     std::fs::create_dir_all(home.join(".config/fish")).unwrap();
     std::fs::write(home.join(".config/fish/config.fish"), "# fish config").unwrap();
 
-    let (shell, cmd) = ShellType::Fish.build_command(Path::new("/usr/bin/fish"), "echo hello", home);
+    let (shell, cmd) = build_command(
+        ShellType::Fish,
+        Path::new("/usr/bin/fish"),
+        "echo hello",
+        home,
+    );
 
     assert_eq!(shell, "/usr/bin/fish");
     assert!(cmd.contains("source"));

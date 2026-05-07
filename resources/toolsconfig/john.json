@@ -12,7 +12,9 @@
     "tags": ["brute", "password", "hash", "offline"],
     "install": {
       "method": "homebrew",
-      "source": "john-jumbo"
+      "source": "john-jumbo",
+      "windows": { "method": "github", "source": "openwall/john" },
+      "linux": { "method": "github", "source": "openwall/john" }
     },
     "params": [
       {

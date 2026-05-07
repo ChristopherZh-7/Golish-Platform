@@ -9,7 +9,6 @@ use rig::client::CompletionClient;
 use super::super::LlmClient;
 use super::LlmProvider;
 
-
 /// Gemini provider implementation.
 pub struct GeminiProviderImpl {
     pub api_key: String,

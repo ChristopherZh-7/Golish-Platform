@@ -29,11 +29,17 @@ impl AgentBridge {
     }
 
     pub async fn add_tool_always_allow(&self, tool_name: &str) -> Result<()> {
-        self.access.approval_recorder.add_always_allow(tool_name).await
+        self.access
+            .approval_recorder
+            .add_always_allow(tool_name)
+            .await
     }
 
     pub async fn remove_tool_always_allow(&self, tool_name: &str) -> Result<()> {
-        self.access.approval_recorder.remove_always_allow(tool_name).await
+        self.access
+            .approval_recorder
+            .remove_always_allow(tool_name)
+            .await
     }
 
     pub async fn reset_approval_patterns(&self) -> Result<()> {

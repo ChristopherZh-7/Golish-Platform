@@ -6,7 +6,6 @@ use tokio::sync::RwLock;
 use super::config::TokenBudgetConfig;
 use super::stats::{TokenAlertLevel, TokenUsageStats};
 
-
 /// Manages token budget for a conversation
 #[derive(Debug)]
 pub struct TokenBudgetManager {
@@ -156,4 +155,3 @@ impl TokenBudgetManager {
         *stats = new_stats;
     }
 }
-

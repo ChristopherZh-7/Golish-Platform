@@ -1,7 +1,7 @@
 mod platform;
-use platform::{find_system_pgvector, copy_binary, platform_strings};
+use platform::{copy_binary, find_system_pgvector};
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -43,8 +43,7 @@ impl EmbeddedPg {
         // macOS: remove quarantine BEFORE setup() — initdb and pg_ctl
         // will fail if Gatekeeper blocks execution of the unsigned binaries.
         // Binaries live in the cache dir, not the database dir.
-        #[cfg(target_os = "macos")]
-        Self::clear_quarantine(&Self::cache_dir());
+        golish_platform::postgres::clear_quarantine_dirs(&Self::cache_dir(), &["bin", "lib"]);
 
         let pg_settings = PgSettings {
             database_dir: config.pg_data_dir.clone(),
@@ -96,11 +95,7 @@ impl EmbeddedPg {
             }
         }
 
-        if !pg
-            .database_exists(&config.database)
-            .await
-            .unwrap_or(false)
-        {
+        if !pg.database_exists(&config.database).await.unwrap_or(false) {
             info!(db = %config.database, "Creating database");
             pg.create_database(&config.database)
                 .await
@@ -154,7 +149,7 @@ impl EmbeddedPg {
         let txz = std::fs::read_dir(&tmp)?
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .find(|p| p.extension().map_or(false, |ext| ext == "txz"));
+            .find(|p| p.extension().is_some_and(|ext| ext == "txz"));
 
         if let Some(txz_path) = txz {
             let status = std::process::Command::new("tar")
@@ -179,7 +174,7 @@ impl EmbeddedPg {
 
     /// Returns the pg-embed per-version cache directory.
     fn cache_dir() -> PathBuf {
-        let (os, arch) = platform_strings();
+        let (os, arch) = golish_platform::postgres::pg_embed_fetch_tag();
         let version = PG_V17.0;
         dirs::cache_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
@@ -190,21 +185,8 @@ impl EmbeddedPg {
     }
 
     fn zip_filename() -> String {
-        let (os, arch) = platform_strings();
+        let (os, arch) = golish_platform::postgres::pg_embed_fetch_tag();
         format!("{os}-{arch}-{}.zip", PG_V17.0)
-    }
-
-    #[cfg(target_os = "macos")]
-    fn clear_quarantine(pg_data_dir: &Path) {
-        for subdir in &["bin", "lib"] {
-            let dir = pg_data_dir.join(subdir);
-            if dir.exists() {
-                info!(dir = %dir.display(), "Clearing macOS quarantine attributes");
-                let _ = std::process::Command::new("xattr")
-                    .args(["-cr", &dir.to_string_lossy()])
-                    .output();
-            }
-        }
     }
 
     /// Try to find and install the pgvector extension from system paths.
@@ -215,18 +197,12 @@ impl EmbeddedPg {
     /// pg-embed cache. Runs between `setup()` and `start_db()`.
     async fn try_install_pgvector(pg: &PgEmbed) {
         let cache_dir = Self::cache_dir();
-        let ext_name = if cfg!(target_os = "macos") {
-            "vector.dylib"
-        } else if cfg!(target_os = "windows") {
-            "vector.dll"
-        } else {
-            "vector.so"
-        };
+        let ext_name = golish_platform::postgres::pgvector_library_name();
 
         // PostgreSQL loads extension libraries from lib/postgresql/ ($libdir),
         // NOT from lib/. Check the correct directory.
         let pkglib_dir = cache_dir.join("lib").join("postgresql");
-        let pkglib_marker = pkglib_dir.join(ext_name);
+        let pkglib_marker = pkglib_dir.join(&ext_name);
 
         if pkglib_marker.exists() {
             info!("pgvector already installed in pg-embed cache");
@@ -235,7 +211,7 @@ impl EmbeddedPg {
 
         // Fix up: pg.install_extension() may have placed the .dylib in lib/
         // instead of lib/postgresql/. Relocate it.
-        let misplaced = cache_dir.join("lib").join(ext_name);
+        let misplaced = cache_dir.join("lib").join(&ext_name);
         if misplaced.exists() {
             info!("pgvector .dylib found in lib/ but not lib/postgresql/, relocating");
             let _ = std::fs::create_dir_all(&pkglib_dir);
@@ -290,18 +266,20 @@ impl EmbeddedPg {
         let _ = std::fs::create_dir_all(&pkglib_dir);
         if !pkglib_marker.exists() {
             // Try from the misplaced lib/ location
-            let misplaced = cache_dir.join("lib").join(ext_name);
+            let misplaced = cache_dir.join("lib").join(&ext_name);
             let src = if misplaced.exists() {
                 Some(misplaced)
             } else {
                 // Last resort: from staging
-                let s = staging.join(ext_name);
+                let s = staging.join(&ext_name);
                 s.exists().then_some(s)
             };
             if let Some(src) = src {
                 match copy_binary(&src, &pkglib_marker) {
                     Ok(()) => info!("pgvector .dylib installed to lib/postgresql/"),
-                    Err(e) => warn!(error = %e, "Failed to install pgvector .dylib to lib/postgresql/"),
+                    Err(e) => {
+                        warn!(error = %e, "Failed to install pgvector .dylib to lib/postgresql/")
+                    }
                 }
             }
         }
@@ -321,10 +299,7 @@ impl EmbeddedPg {
         let log_file = config.pg_data_dir.join("server.log");
 
         if !pg_ctl.exists() {
-            return Err(anyhow::anyhow!(
-                "pg_ctl not found at {}",
-                pg_ctl.display()
-            ));
+            return Err(anyhow::anyhow!("pg_ctl not found at {}", pg_ctl.display()));
         }
 
         // Check if PG is already running on this port
@@ -363,10 +338,10 @@ impl EmbeddedPg {
             // Read last few lines of the log file for more details
             let log_tail = std::fs::read_to_string(&log_file)
                 .ok()
-                .and_then(|content| {
+                .map(|content| {
                     let lines: Vec<&str> = content.lines().collect();
                     let start = lines.len().saturating_sub(10);
-                    Some(lines[start..].join("\n"))
+                    lines[start..].join("\n")
                 })
                 .unwrap_or_default();
 

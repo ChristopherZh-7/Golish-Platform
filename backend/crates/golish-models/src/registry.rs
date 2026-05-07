@@ -3,13 +3,13 @@
 //! The central `MODEL_REGISTRY` provides a single source of truth for all
 //! known model definitions. Models can be looked up by ID or filtered by provider.
 
-use once_cell::sync::Lazy;
+use crate::capabilities::ModelCapabilities;
+use crate::providers::*;
 use golish_settings::schema::AiProvider;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::RwLock;
-use crate::capabilities::ModelCapabilities;
-use crate::providers::*;
 
 /// Definition of an LLM model with its capabilities.
 ///

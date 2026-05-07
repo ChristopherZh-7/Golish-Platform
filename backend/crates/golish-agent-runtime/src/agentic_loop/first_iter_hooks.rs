@@ -85,16 +85,7 @@ pub(super) fn is_low_signal_input(text: &str) -> bool {
     }
     matches!(
         trimmed.to_ascii_lowercase().as_str(),
-        "hi" | "hello"
-            | "hey"
-            | "test"
-            | "ok"
-            | "okay"
-            | "你好"
-            | "哈喽"
-            | "测试"
-            | "在吗"
-            | "嗯"
+        "hi" | "hello" | "hey" | "test" | "ok" | "okay" | "你好" | "哈喽" | "测试" | "在吗" | "嗯"
     )
 }
 
@@ -259,8 +250,6 @@ mod tests {
             "scan 192.168.1.1 with nmap and report open ports"
         ));
         assert!(!is_low_signal_input("分析 src/auth.rs 的鉴权逻辑"));
-        assert!(!is_low_signal_input(
-            "请帮我看下登录流程的潜在 IDOR 漏洞"
-        ));
+        assert!(!is_low_signal_input("请帮我看下登录流程的潜在 IDOR 漏洞"));
     }
 }

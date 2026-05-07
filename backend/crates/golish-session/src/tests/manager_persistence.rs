@@ -284,8 +284,8 @@ fn test_backwards_compatibility_snapshot_without_total_tokens() {
         ]
     }"#;
 
-    let snapshot: GolishSessionSnapshot = serde_json::from_str(json_without_total_tokens)
-        .expect("Failed to deserialize old format");
+    let snapshot: GolishSessionSnapshot =
+        serde_json::from_str(json_without_total_tokens).expect("Failed to deserialize old format");
 
     assert_eq!(snapshot.workspace_label, "test");
     assert_eq!(snapshot.total_messages, 2);

@@ -5,7 +5,6 @@ use golish_settings::schema::AiProvider;
 use crate::capabilities::ModelCapabilities;
 use crate::registry::ModelDefinition;
 
-
 /// Z.AI SDK model definitions.
 pub fn zai_sdk_models() -> Vec<ModelDefinition> {
     vec![

@@ -95,6 +95,9 @@ mod tests {
             !state.reflector_active,
             "sub-agent must NOT alter reflector_active"
         );
-        assert!(history.is_empty(), "sub-agent must NOT inject hook messages");
+        assert!(
+            history.is_empty(),
+            "sub-agent must NOT inject hook messages"
+        );
     }
 }

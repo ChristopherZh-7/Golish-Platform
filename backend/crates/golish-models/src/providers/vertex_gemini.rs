@@ -5,7 +5,6 @@ use golish_settings::schema::AiProvider;
 use crate::capabilities::ModelCapabilities;
 use crate::registry::ModelDefinition;
 
-
 /// Vertex AI Gemini model definitions.
 ///
 /// These are Gemini models accessed via Google Cloud Vertex AI (using

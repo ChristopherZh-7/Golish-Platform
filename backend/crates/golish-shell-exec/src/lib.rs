@@ -27,6 +27,7 @@
 //! command to complete.
 
 mod common;
+mod cross_shell;
 mod process_group;
 mod shell;
 mod streaming;
@@ -35,8 +36,11 @@ mod tool;
 #[cfg(test)]
 mod tests;
 
-// Re-export the Tool trait from golish-core for convenience.
 pub use golish_core::Tool;
 
+pub use cross_shell::{
+    build_shell_command, build_tokio_shell_command, default_shell_invocation, lookup_program,
+    which_executable, which_executable_async,
+};
 pub use streaming::{execute_streaming, OutputChunk, OutputStream, StreamingResult};
 pub use tool::RunPtyCmdTool;

@@ -14,7 +14,11 @@ impl AgentExecutor for BridgeAgentExecutor {
     async fn generate_subtasks(&self, task_input: &str) -> Result<GeneratorOutput> {
         tracing::info!("[TaskMode/Generator] Decomposing task into subtasks");
         let response = self
-            .simple_completion_for_phase(prompts::generator_prompt(), task_input, Some("pipeline_generator"))
+            .simple_completion_for_phase(
+                prompts::generator_prompt(),
+                task_input,
+                Some("pipeline_generator"),
+            )
             .await
             .context("Generator LLM call failed")?;
 
@@ -43,12 +47,10 @@ impl AgentExecutor for BridgeAgentExecutor {
         let prompt = {
             let registry = self.bridge.sub_agent_registry();
             let reg = registry.read().await;
-            let orchestrator_prompt = reg
-                .get("orchestrator")
-                .map(|def| {
-                    def.system_prompt
-                        .replace("{{execution_context}}", &execution_context.render_xml())
-                });
+            let orchestrator_prompt = reg.get("orchestrator").map(|def| {
+                def.system_prompt
+                    .replace("{{execution_context}}", &execution_context.render_xml())
+            });
             drop(reg);
 
             if let Some(base_prompt) = orchestrator_prompt {
@@ -102,7 +104,11 @@ impl AgentExecutor for BridgeAgentExecutor {
         let system = prompts::refiner_prompt(&execution_context.summary(), &remaining_json);
 
         let response = self
-            .simple_completion_for_phase(&system, "Analyze completed work and adjust the remaining plan.", Some("pipeline_refiner"))
+            .simple_completion_for_phase(
+                &system,
+                "Analyze completed work and adjust the remaining plan.",
+                Some("pipeline_refiner"),
+            )
             .await
             .context("Refiner LLM call failed")?;
 
@@ -117,7 +123,12 @@ impl AgentExecutor for BridgeAgentExecutor {
         tracing::info!("[TaskMode/Reporter] Generating final report");
         let start = std::time::Instant::now();
         let system = prompts::reporter_prompt(&execution_context.summary());
-        let content = self.simple_completion_for_phase(&system, "Generate the final task report based on all completed subtask results.", Some("pipeline_reporter"))
+        let content = self
+            .simple_completion_for_phase(
+                &system,
+                "Generate the final task report based on all completed subtask results.",
+                Some("pipeline_reporter"),
+            )
             .await
             .context("Reporter LLM call failed")?;
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -133,11 +144,7 @@ impl AgentExecutor for BridgeAgentExecutor {
         ))
     }
 
-    async fn reflect(
-        &self,
-        subtask_title: &str,
-        agent_response: &str,
-    ) -> Result<String> {
+    async fn reflect(&self, subtask_title: &str, agent_response: &str) -> Result<String> {
         tracing::info!(
             "[TaskMode/Reflector] Agent returned text for '{}', redirecting to tool usage",
             subtask_title
@@ -183,16 +190,11 @@ impl AgentExecutor for BridgeAgentExecutor {
         {
             Ok(enrichment) => {
                 let trimmed = enrichment.trim();
-                if trimmed.is_empty()
-                    || trimmed.to_lowercase().contains("no additional context")
-                {
+                if trimmed.is_empty() || trimmed.to_lowercase().contains("no additional context") {
                     tracing::debug!("[TaskMode/Enricher] No enrichment needed");
                     Ok(None)
                 } else {
-                    tracing::info!(
-                        "[TaskMode/Enricher] Enrichment: {} chars",
-                        trimmed.len()
-                    );
+                    tracing::info!("[TaskMode/Enricher] Enrichment: {} chars", trimmed.len());
                     Ok(Some(trimmed.to_string()))
                 }
             }
@@ -235,10 +237,7 @@ impl AgentExecutor for BridgeAgentExecutor {
                 if trimmed.is_empty() {
                     Ok(None)
                 } else {
-                    tracing::info!(
-                        "[TaskMode/Planner] Plan generated: {} chars",
-                        trimmed.len()
-                    );
+                    tracing::info!("[TaskMode/Planner] Plan generated: {} chars", trimmed.len());
                     Ok(Some(trimmed.to_string()))
                 }
             }

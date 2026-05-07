@@ -53,15 +53,15 @@ mod llm_helpers;
 mod llm_stream_start;
 mod reflector;
 mod single_tool_call;
-pub mod sub_agent_dispatch;
 mod stream_processor;
+mod stream_retry;
+pub mod sub_agent_dispatch;
 mod tool_dispatch;
 mod tool_execution;
 mod tool_list;
 pub mod toolcall_fixer;
 mod turn;
 mod unified_helpers;
-mod stream_retry;
 
 pub mod compaction;
 

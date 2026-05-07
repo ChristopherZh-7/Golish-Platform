@@ -17,9 +17,9 @@ mod storage;
 pub use commands::*;
 
 pub use golish_pipeline::{
-    get_builtin_recon_basic, now_ts, Pipeline, PipelineConnection, PipelineRunResult,
-    PipelineStep, PipelineStepInfo, StepResult, PIPELINE_CANCELLED,
+    get_builtin_recon_basic, now_ts, Pipeline, PipelineConnection, PipelineRunResult, PipelineStep,
+    PipelineStepInfo, StepResult, PIPELINE_CANCELLED,
 };
 
-pub use storage::MainStorage;
 pub use commands::pipeline_save_template_inner;
+pub use storage::MainStorage;

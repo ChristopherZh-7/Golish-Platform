@@ -157,10 +157,7 @@ pub async fn load_project_json(project_root: &Path) -> Result<Option<PentestProj
 }
 
 /// Save the pentest project config to `project.json`.
-pub async fn save_project_json(
-    project_root: &Path,
-    config: &PentestProjectConfig,
-) -> Result<()> {
+pub async fn save_project_json(project_root: &Path, config: &PentestProjectConfig) -> Result<()> {
     let path = project_root.join(GOLISH_DIR).join("project.json");
     tokio::fs::create_dir_all(path.parent().unwrap()).await?;
     let json = serde_json::to_string_pretty(config)?;
@@ -173,7 +170,7 @@ pub async fn save_project_json(
 // ── Host resolution & path helpers ──────────────────────────────────────
 
 fn host_slug(host: &str) -> String {
-    host.replace('/', "_").replace('\\', "_")
+    host.replace(['/', '\\'], "_")
 }
 
 fn is_ip(s: &str) -> bool {
@@ -240,10 +237,7 @@ pub fn scripts_dir(project_root: &Path, category: &str) -> PathBuf {
     } else {
         "utils"
     };
-    project_root
-        .join(GOLISH_DIR)
-        .join(SCRIPTS_DIR)
-        .join(cat)
+    project_root.join(GOLISH_DIR).join(SCRIPTS_DIR).join(cat)
 }
 
 pub fn temp_dir(project_root: &Path) -> PathBuf {
@@ -273,10 +267,7 @@ mod tests {
     #[test]
     fn test_resolve_host_dir_prefers_hostname() {
         let mut map = std::collections::HashMap::new();
-        map.insert(
-            "93.184.216.34".to_string(),
-            vec!["example.com".to_string()],
-        );
+        map.insert("93.184.216.34".to_string(), vec!["example.com".to_string()]);
 
         assert_eq!(resolve_host_dir("93.184.216.34", &map), "example.com");
         assert_eq!(resolve_host_dir("example.com", &map), "example.com");

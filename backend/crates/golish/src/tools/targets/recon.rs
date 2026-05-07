@@ -6,8 +6,6 @@ use uuid::Uuid;
 
 use super::types::ts_from_chrono;
 
-
-
 /// Fields for an extended recon update.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReconUpdate {

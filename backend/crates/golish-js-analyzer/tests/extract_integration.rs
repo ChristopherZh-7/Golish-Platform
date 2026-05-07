@@ -47,7 +47,10 @@ fn realistic_app_extracts_expected_count() {
         12,
         "expected 12 endpoints in realistic_app.js, got {}: {:#?}",
         endpoints.len(),
-        endpoints.iter().map(|e| (&e.method, &e.path)).collect::<Vec<_>>()
+        endpoints
+            .iter()
+            .map(|e| (&e.method, &e.path))
+            .collect::<Vec<_>>()
     );
 
     // Spot-check kinds and url_kinds.

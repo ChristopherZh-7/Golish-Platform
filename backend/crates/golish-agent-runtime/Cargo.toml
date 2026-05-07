@@ -55,10 +55,15 @@ rig-openai-responses = { path = "../rig-openai-responses" }
 # HTTP client (used by retry helpers / eval_support)
 reqwest = { workspace = true }
 
+# tempfile is required when the `test-utils` feature is enabled (it
+# powers the `TestContextBuilder` helpers). Marked `optional` so a normal
+# release build of downstream crates does not pay for it.
+tempfile = { workspace = true, optional = true }
+
 [features]
 default = []
 # Expose `test_utils` for downstream crates' test/dev builds.
-test-utils = ["golish-agent-kit/test-utils"]
+test-utils = ["golish-agent-kit/test-utils", "dep:tempfile"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

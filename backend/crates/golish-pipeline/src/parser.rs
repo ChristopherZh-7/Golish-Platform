@@ -120,7 +120,11 @@ pub fn parse_text(raw: &str, patterns: &[PatternConfig]) -> Vec<ParsedItem> {
         for caps in re.captures_iter(raw) {
             let mut fields = HashMap::new();
             for (field_name, group_ref) in &pattern.fields {
-                let value = if let Ok(idx) = group_ref.strip_prefix('$').unwrap_or(group_ref).parse::<usize>() {
+                let value = if let Ok(idx) = group_ref
+                    .strip_prefix('$')
+                    .unwrap_or(group_ref)
+                    .parse::<usize>()
+                {
                     caps.get(idx).map(|m| m.as_str().to_string())
                 } else {
                     caps.name(group_ref).map(|m| m.as_str().to_string())

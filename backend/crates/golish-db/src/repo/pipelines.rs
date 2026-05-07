@@ -4,7 +4,12 @@ use uuid::Uuid;
 
 use crate::models::Pipeline;
 
-pub async fn upsert(pool: &PgPool, id: Uuid, data: &serde_json::Value, project_path: Option<&str>) -> Result<()> {
+pub async fn upsert(
+    pool: &PgPool,
+    id: Uuid,
+    data: &serde_json::Value,
+    project_path: Option<&str>,
+) -> Result<()> {
     sqlx::query(
         r#"INSERT INTO pipelines (id, data, project_path)
            VALUES ($1, $2, $3)

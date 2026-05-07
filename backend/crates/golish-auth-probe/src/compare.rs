@@ -122,10 +122,8 @@ fn compare_cross_user(rounds: &[Option<&Round>]) -> (Verdict, Severity, String) 
     }
     match r2.outcome {
         RoundOutcome::Success => {
-            let r3_says_legitimately_owned = matches!(
-                r3.map(|r| r.outcome),
-                Some(RoundOutcome::Success)
-            );
+            let r3_says_legitimately_owned =
+                matches!(r3.map(|r| r.outcome), Some(RoundOutcome::Success));
             if r3_says_legitimately_owned {
                 (
                     Verdict::Vulnerable,
@@ -173,15 +171,13 @@ fn compare_privilege(rounds: &[Option<&Round>]) -> (Verdict, Severity, String) {
             Some(r) if r.outcome == RoundOutcome::AuthDenied => (
                 Verdict::Inconclusive,
                 Severity::Info,
-                "endpoint denies both authed and anonymous — needs a higher-priv token to exercise".into(),
+                "endpoint denies both authed and anonymous — needs a higher-priv token to exercise"
+                    .into(),
             ),
             _ => (
                 Verdict::NotVulnerable,
                 Severity::Info,
-                format!(
-                    "low-privilege token correctly denied (HTTP {})",
-                    r1.status
-                ),
+                format!("low-privilege token correctly denied (HTTP {})", r1.status),
             ),
         },
         _ => (
@@ -263,10 +259,7 @@ mod tests {
         let r1 = round(200, RoundOutcome::Success, "{\"id\":1}");
         let r2 = round(200, RoundOutcome::Success, "{\"id\":2}");
         let r3 = round(200, RoundOutcome::Success, "{\"id\":2}");
-        let (v, s, _) = compare_rounds(
-            Scenario::CrossUser,
-            &[Some(&r1), Some(&r2), Some(&r3)],
-        );
+        let (v, s, _) = compare_rounds(Scenario::CrossUser, &[Some(&r1), Some(&r2), Some(&r3)]);
         assert_eq!(v, Verdict::Vulnerable);
         assert_eq!(s, Severity::High);
     }
@@ -275,8 +268,7 @@ mod tests {
     fn cross_user_403_on_b_is_not_vulnerable() {
         let r1 = round(200, RoundOutcome::Success, "{}");
         let r2 = round(403, RoundOutcome::AuthDenied, "");
-        let (v, _, _) =
-            compare_rounds(Scenario::CrossUser, &[Some(&r1), Some(&r2), None]);
+        let (v, _, _) = compare_rounds(Scenario::CrossUser, &[Some(&r1), Some(&r2), None]);
         assert_eq!(v, Verdict::NotVulnerable);
     }
 

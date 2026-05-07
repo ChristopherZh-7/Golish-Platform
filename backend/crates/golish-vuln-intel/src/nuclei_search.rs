@@ -63,16 +63,9 @@ pub async fn search_nuclei_templates(
         .as_bytes(),
     )
     .collect::<String>();
-    let url = format!(
-        "https://api.github.com/search/code?q={}&per_page=20",
-        query
-    );
+    let url = format!("https://api.github.com/search/code?q={}&per_page=20", query);
 
-    let resp = client
-        .get(&url)
-        .headers(headers.clone())
-        .send()
-        .await?;
+    let resp = client.get(&url).headers(headers.clone()).send().await?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -85,7 +78,10 @@ pub async fn search_nuclei_templates(
 
     let data: GhCodeSearchResponse = resp.json().await?;
 
-    tracing::info!(items = data.items.len(), "[nuclei-search] GitHub returned results");
+    tracing::info!(
+        items = data.items.len(),
+        "[nuclei-search] GitHub returned results"
+    );
 
     let mut results: Vec<NucleiTemplateResult> = Vec::new();
 
@@ -104,7 +100,13 @@ pub async fn search_nuclei_templates(
             .send()
             .await
             .ok()
-            .and_then(|r| if r.status().is_success() { Some(r) } else { None });
+            .and_then(|r| {
+                if r.status().is_success() {
+                    Some(r)
+                } else {
+                    None
+                }
+            });
 
         let content_text = match content {
             Some(r) => r.text().await.ok(),
@@ -131,7 +133,10 @@ pub async fn batch_search_nuclei_templates(
     headers: &HeaderMap,
     cve_ids: &[String],
 ) -> crate::VulnIntelResult<Vec<BatchNucleiResult>> {
-    tracing::info!(count = cve_ids.len(), "[nuclei-batch] Starting batch search");
+    tracing::info!(
+        count = cve_ids.len(),
+        "[nuclei-batch] Starting batch search"
+    );
     let mut results = Vec::new();
 
     for (i, cve_id) in cve_ids.iter().enumerate() {
@@ -147,10 +152,7 @@ pub async fn batch_search_nuclei_templates(
             .as_bytes(),
         )
         .collect::<String>();
-        let url = format!(
-            "https://api.github.com/search/code?q={}&per_page=5",
-            query
-        );
+        let url = format!("https://api.github.com/search/code?q={}&per_page=5", query);
 
         tracing::info!(cve_id = %cve_id, "[nuclei-batch] Sending request");
         let resp = client.get(&url).headers(headers.clone()).send().await;
@@ -165,8 +167,7 @@ pub async fn batch_search_nuclei_templates(
                             tracing::info!(cve_id = %cve_id, items = d.items.len(), "[nuclei-batch] Parsed results");
                             let mut templates = Vec::new();
                             for item in d.items {
-                                if item.repository.full_name
-                                    != "projectdiscovery/nuclei-templates"
+                                if item.repository.full_name != "projectdiscovery/nuclei-templates"
                                 {
                                     continue;
                                 }
@@ -180,9 +181,7 @@ pub async fn batch_search_nuclei_templates(
                                     .send()
                                     .await
                                 {
-                                    Ok(cr) if cr.status().is_success() => {
-                                        cr.text().await.ok()
-                                    }
+                                    Ok(cr) if cr.status().is_success() => cr.text().await.ok(),
                                     _ => None,
                                 };
 
@@ -222,11 +221,7 @@ pub async fn batch_search_nuclei_templates(
                     results.push(BatchNucleiResult {
                         cve_id: cve_id.clone(),
                         templates: vec![],
-                        error: Some(format!(
-                            "HTTP {}: {}",
-                            status,
-                            &body[..body.len().min(200)]
-                        )),
+                        error: Some(format!("HTTP {}: {}", status, &body[..body.len().min(200)])),
                     });
                 }
             }

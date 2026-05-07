@@ -13,7 +13,6 @@ use crate::runner::{AgentOutput, ToolCall as EvalToolCall, VerboseConfig};
 
 use super::build_production_system_prompt;
 
-
 /// Output from a multi-turn evaluation.
 #[derive(Debug)]
 pub struct MultiTurnAgentOutput {
@@ -156,9 +155,13 @@ where
     let system_prompt = build_production_system_prompt(workspace, provider);
 
     // Run multi-turn evaluation
-    let multi_output =
-        golish_agent_runtime::eval_support::run_multi_turn_eval(&model, &system_prompt, prompts, ai_config)
-            .await?;
+    let multi_output = golish_agent_runtime::eval_support::run_multi_turn_eval(
+        &model,
+        &system_prompt,
+        prompts,
+        ai_config,
+    )
+    .await?;
 
     tracing::info!(
         "Multi-turn eval completed: {} turns in {}ms",

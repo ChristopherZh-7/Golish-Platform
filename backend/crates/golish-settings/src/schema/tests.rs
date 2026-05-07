@@ -209,8 +209,10 @@ fn test_openrouter_preferences_is_empty() {
 
 #[test]
 fn test_openrouter_preferences_not_empty_with_order() {
-    let mut prefs = OpenRouterProviderPreferences::default();
-    prefs.order = Some(vec!["deepinfra".to_string()]);
+    let prefs = OpenRouterProviderPreferences {
+        order: Some(vec!["deepinfra".to_string()]),
+        ..Default::default()
+    };
     assert!(!prefs.is_empty());
 }
 
@@ -323,7 +325,10 @@ fn test_openrouter_settings_with_preferences_in_full_config() {
 
     let settings: GolishSettings = toml::from_str(toml_str).unwrap();
     assert_eq!(settings.ai.default_provider, AiProvider::Openrouter);
-    assert_eq!(settings.ai.openrouter.api_key, Some("sk-or-v1-test".to_string()));
+    assert_eq!(
+        settings.ai.openrouter.api_key,
+        Some("sk-or-v1-test".to_string())
+    );
     let prefs = settings.ai.openrouter.provider_preferences.unwrap();
     assert_eq!(
         prefs.order,

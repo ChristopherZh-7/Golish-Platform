@@ -38,7 +38,9 @@ impl ScanStorage for MockScanStorage {
             "{}|{}|{}",
             tool,
             url,
-            status_code.map(|s| s.to_string()).unwrap_or_else(|| "?".into())
+            status_code
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "?".into())
         ));
         Ok(())
     }

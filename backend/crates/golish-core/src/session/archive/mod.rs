@@ -124,17 +124,9 @@ impl SessionArchive {
     /// (`{workspace}/.golish/sessions/`). Falls back to `~/.golish/sessions/` when
     /// workspace is "." or empty.
     pub async fn new(metadata: SessionArchiveMetadata) -> Result<Self> {
-        let sessions_dir = if !metadata.workspace_path.is_empty()
-            && metadata.workspace_path != "."
-        {
-            let dir = PathBuf::from(&metadata.workspace_path)
-                .join(".golish")
-                .join("sessions");
-            std::fs::create_dir_all(&dir).context("Failed to create project sessions directory")?;
-            dir
-        } else {
-            storage::get_sessions_dir().context("Failed to get sessions directory")?
-        };
+        let sessions_dir =
+            storage::get_sessions_dir_for(PathBuf::from(&metadata.workspace_path).as_path())
+                .context("Failed to get sessions directory")?;
 
         Ok(Self {
             metadata,
@@ -188,4 +180,3 @@ impl SessionArchive {
         self.started_at
     }
 }
-

@@ -12,7 +12,9 @@
     "tags": ["web", "scanner", "vulnerability", "templates"],
     "install": {
       "method": "homebrew",
-      "source": "nuclei"
+      "source": "nuclei",
+      "windows": { "method": "github", "source": "projectdiscovery/nuclei" },
+      "linux": { "method": "github", "source": "projectdiscovery/nuclei" }
     },
     "params": [
       {

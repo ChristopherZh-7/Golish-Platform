@@ -24,8 +24,7 @@ async fn creates_pending_artifact() {
         PathBuf::from("/project/README.md"),
         "Test artifact".to_string(),
     );
-    let artifact =
-        ArtifactFile::new("README.md".to_string(), meta, "# Content".to_string());
+    let artifact = ArtifactFile::new("README.md".to_string(), meta, "# Content".to_string());
 
     let path = manager.create_artifact(&artifact).await.unwrap();
 
@@ -70,8 +69,7 @@ async fn gets_specific_pending_artifact() {
         PathBuf::from("/project/README.md"),
         "Test artifact".to_string(),
     );
-    let artifact =
-        ArtifactFile::new("README.md".to_string(), meta, "# Content".to_string());
+    let artifact = ArtifactFile::new("README.md".to_string(), meta, "# Content".to_string());
     manager.create_artifact(&artifact).await.unwrap();
 
     let found = manager.get_pending("README.md").await.unwrap();
@@ -91,8 +89,7 @@ async fn discards_pending_artifact() {
         PathBuf::from("/project/README.md"),
         "Test artifact".to_string(),
     );
-    let artifact =
-        ArtifactFile::new("README.md".to_string(), meta, "# Content".to_string());
+    let artifact = ArtifactFile::new("README.md".to_string(), meta, "# Content".to_string());
     manager.create_artifact(&artifact).await.unwrap();
 
     let discarded = manager.discard_artifact("README.md").await.unwrap();
@@ -224,8 +221,7 @@ async fn apply_artifact_moves_to_applied() {
 
     let target_path = git_root.join("README.md");
     let meta = ArtifactMeta::new(target_path.clone(), "Test artifact".to_string());
-    let artifact =
-        ArtifactFile::new("README.md".to_string(), meta, "# Content".to_string());
+    let artifact = ArtifactFile::new("README.md".to_string(), meta, "# Content".to_string());
     manager.create_artifact(&artifact).await.unwrap();
 
     // Verify artifact is in pending
@@ -264,13 +260,11 @@ async fn apply_all_artifacts_applies_multiple() {
 
     // Create two artifacts
     let meta1 = ArtifactMeta::new(git_root.join("README.md"), "First".to_string());
-    let artifact1 =
-        ArtifactFile::new("README.md".to_string(), meta1, "# README".to_string());
+    let artifact1 = ArtifactFile::new("README.md".to_string(), meta1, "# README".to_string());
     manager.create_artifact(&artifact1).await.unwrap();
 
     let meta2 = ArtifactMeta::new(git_root.join("CLAUDE.md"), "Second".to_string());
-    let artifact2 =
-        ArtifactFile::new("CLAUDE.md".to_string(), meta2, "# CLAUDE".to_string());
+    let artifact2 = ArtifactFile::new("CLAUDE.md".to_string(), meta2, "# CLAUDE".to_string());
     manager.create_artifact(&artifact2).await.unwrap();
 
     // Apply all

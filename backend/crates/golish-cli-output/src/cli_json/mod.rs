@@ -82,9 +82,7 @@ impl CliJsonEvent {
 pub fn convert_to_cli_json(event: &AiEvent) -> CliJsonEvent {
     match event {
         // ── lifecycle ────────────────────────────────────────────────────
-        AiEvent::Started { turn_id } => {
-            CliJsonEvent::new("started", lifecycle::started(turn_id))
-        }
+        AiEvent::Started { turn_id } => CliJsonEvent::new("started", lifecycle::started(turn_id)),
         AiEvent::UserMessage { content } => {
             CliJsonEvent::new("user_message", lifecycle::user_message(content))
         }
@@ -96,15 +94,19 @@ pub fn convert_to_cli_json(event: &AiEvent) -> CliJsonEvent {
             duration_ms,
         } => CliJsonEvent::new(
             "completed",
-            lifecycle::completed(response, reasoning, *input_tokens, *output_tokens, *duration_ms),
+            lifecycle::completed(
+                response,
+                reasoning,
+                *input_tokens,
+                *output_tokens,
+                *duration_ms,
+            ),
         ),
         AiEvent::Error {
             message,
             error_type,
         } => CliJsonEvent::new("error", lifecycle::error(message, error_type)),
-        AiEvent::Warning { message } => {
-            CliJsonEvent::new("warning", lifecycle::warning(message))
-        }
+        AiEvent::Warning { message } => CliJsonEvent::new("warning", lifecycle::warning(message)),
 
         // ── streaming ────────────────────────────────────────────────────
         AiEvent::TextDelta { delta, accumulated } => {
@@ -136,14 +138,7 @@ pub fn convert_to_cli_json(event: &AiEvent) -> CliJsonEvent {
         } => CliJsonEvent::new(
             "tool_approval",
             tools::tool_approval_request(
-                request_id,
-                tool_name,
-                args,
-                stats,
-                risk_level,
-                *can_learn,
-                suggestion,
-                source,
+                request_id, tool_name, args, stats, risk_level, *can_learn, suggestion, source,
             ),
         ),
         AiEvent::ToolAutoApproved {

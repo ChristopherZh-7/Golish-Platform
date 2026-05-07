@@ -51,7 +51,15 @@ pub async fn get(pool: &PgPool, id: Uuid) -> Result<Option<VaultEntry>> {
     Ok(row)
 }
 
-pub async fn update(pool: &PgPool, id: Uuid, name: &str, value: &str, username: &str, notes: &str, tags: &serde_json::Value) -> Result<()> {
+pub async fn update(
+    pool: &PgPool,
+    id: Uuid,
+    name: &str,
+    value: &str,
+    username: &str,
+    notes: &str,
+    tags: &serde_json::Value,
+) -> Result<()> {
     sqlx::query(
         "UPDATE vault_entries SET name=$1, value=$2, username=$3, notes=$4, tags=$5, updated_at=NOW() WHERE id=$6",
     )

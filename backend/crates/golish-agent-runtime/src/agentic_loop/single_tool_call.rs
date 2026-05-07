@@ -1,16 +1,18 @@
+use super::context::{
+    emit_to_frontend, AgenticLoopContext, LoopCaptureContext, ToolExecutionResult,
+};
+use super::helpers::handle_loop_detection;
+use super::llm_helpers::{mentor_one_shot, summarize_tool_output};
+use super::tool_execution::execute_with_hitl_generic;
+use super::{normalize_run_pty_cmd_args, toolcall_fixer, SUMMARIZE_THRESHOLD_TOKENS};
+use golish_agent_kit::system_hooks::{HookRegistry, PostToolContext};
+use golish_core::events::AiEvent;
+use golish_core::utils::truncate_str;
+use golish_sub_agents::SubAgentContext;
 use rig::completion::CompletionModel as RigCompletionModel;
 use rig::message::{Text, ToolCall, ToolResult, ToolResultContent, UserContent};
 use rig::one_or_many::OneOrMany;
 use serde_json::json;
-use golish_core::events::AiEvent;
-use golish_core::utils::truncate_str;
-use golish_sub_agents::SubAgentContext;
-use super::context::{AgenticLoopContext, LoopCaptureContext, ToolExecutionResult, emit_to_frontend};
-use super::helpers::handle_loop_detection;
-use super::llm_helpers::{summarize_tool_output, mentor_one_shot};
-use super::tool_execution::execute_with_hitl_generic;
-use super::{normalize_run_pty_cmd_args, toolcall_fixer, SUMMARIZE_THRESHOLD_TOKENS};
-use golish_agent_kit::system_hooks::{HookRegistry, PostToolContext};
 
 pub(super) async fn execute_single_tool_call<M>(
     tool_call: ToolCall,
@@ -37,7 +39,9 @@ where
         "[tool-dispatch] Executing tool: name={}, id={}, args_len={}",
         tool_name,
         tool_id,
-        serde_json::to_string(&tool_args).map(|s| s.len()).unwrap_or(0),
+        serde_json::to_string(&tool_args)
+            .map(|s| s.len())
+            .unwrap_or(0),
     );
 
     // Create span for tool call
@@ -99,7 +103,8 @@ where
 
     // Start DB tracking for tool call timing
     let db_guard = ctx
-        .events.db_tracker
+        .events
+        .db_tracker
         .map(|t| t.start_tool_call(&tool_id, tool_name, &tool_args));
 
     // Execute tool with HITL approval check
@@ -121,14 +126,17 @@ where
     // Tool Call Auto-Fixer: if execution failed with a schema/argument error,
     // try a lightweight LLM call to repair the args and retry once.
     if !result.success {
-        let error_text = result.value.get("error")
+        let error_text = result
+            .value
+            .get("error")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
 
         let tool_schema = {
             let registry = ctx.tool_registry.read().await;
-            registry.get_tool_definitions()
+            registry
+                .get_tool_definitions()
                 .into_iter()
                 .find(|td| td.name == *tool_name)
                 .map(|td| td.parameters)
@@ -140,7 +148,9 @@ where
             &tool_args,
             &error_text,
             tool_schema.as_ref(),
-        ).await {
+        )
+        .await
+        {
             tracing::info!(
                 "[toolcall-fixer] Retrying '{}' with repaired args",
                 tool_name
@@ -169,20 +179,30 @@ where
 
         // Record search logs for web search tools
         if tool_name.starts_with("tavily_") || tool_name.starts_with("web_search") {
-            let query = tool_args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let query = tool_args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let result_preview = serde_json::to_string(&result.value)
                 .ok()
                 .map(|s| truncate_str(&s, 10000).to_string());
             tracker.record_search(
-                if tool_name.starts_with("tavily_") { "tavily" } else { "web" },
+                if tool_name.starts_with("tavily_") {
+                    "tavily"
+                } else {
+                    "web"
+                },
                 query,
                 result_preview.as_deref(),
             );
         }
 
         // Record terminal logs for shell/PTY commands
-        if tool_name == "run_pty_cmd" || tool_name == "run_command" || tool_name == "run_shell_cmd" {
-            let output = result.value.get("output")
+        if tool_name == "run_pty_cmd" || tool_name == "run_command" || tool_name == "run_shell_cmd"
+        {
+            let output = result
+                .value
+                .get("output")
                 .or_else(|| result.value.get("stdout"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
@@ -197,24 +217,23 @@ where
         }
 
         // Skip memory storage for shell commands that have structured output storage
-        let skip_memory = if result.success
-            && (tool_name == "run_pty_cmd" || tool_name == "run_command")
-        {
-            let cmd = tool_args
-                .get("command")
-                .and_then(|c| c.as_str())
-                .unwrap_or("");
-            let stdout = result
-                .value
-                .get("stdout")
-                .and_then(|s| s.as_str())
-                .unwrap_or("");
-            ctx.output_classifier
-                .as_ref()
-                .map_or(false, |classifier| classifier(cmd, stdout))
-        } else {
-            false
-        };
+        let skip_memory =
+            if result.success && (tool_name == "run_pty_cmd" || tool_name == "run_command") {
+                let cmd = tool_args
+                    .get("command")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("");
+                let stdout = result
+                    .value
+                    .get("stdout")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("");
+                ctx.output_classifier
+                    .as_ref()
+                    .is_some_and(|classifier| classifier(cmd, stdout))
+            } else {
+                false
+            };
 
         if !skip_memory {
             tracker.maybe_store_tool_memory(tool_name, &tool_args, &result.value, result.success);
@@ -265,7 +284,8 @@ where
                 repeat_count,
             );
             let advice = {
-                let mentor_system = golish_agent_kit::task_orchestrator::prompts::mentor_system_prompt();
+                let mentor_system =
+                    golish_agent_kit::task_orchestrator::prompts::mentor_system_prompt();
                 let mentor_user = golish_agent_kit::task_orchestrator::prompts::mentor_user_prompt(
                     tool_name,
                     &repeated_tool,
@@ -278,10 +298,16 @@ where
                             "[ExecutionMentor] LLM mentor produced {} chars of advice",
                             llm_advice.len()
                         );
-                        format!("\n\n--- EXECUTION ADVISOR ---\n{}\n-------------------------", llm_advice)
+                        format!(
+                            "\n\n--- EXECUTION ADVISOR ---\n{}\n-------------------------",
+                            llm_advice
+                        )
                     }
                     Err(e) => {
-                        tracing::warn!("[ExecutionMentor] LLM mentor failed, using static fallback: {}", e);
+                        tracing::warn!(
+                            "[ExecutionMentor] LLM mentor failed, using static fallback: {}",
+                            e
+                        );
                         format!(
                             "\n\n--- EXECUTION ADVISOR ---\n\
                              You have called '{}' {} times. Consider a different approach:\n\
@@ -329,7 +355,8 @@ where
 
         // If truncated output is still large, attempt LLM summarization
         if truncated_tokens > SUMMARIZE_THRESHOLD_TOKENS {
-            match summarize_tool_output(ctx.llm.client, tool_name, &truncation_result.content).await {
+            match summarize_tool_output(ctx.llm.client, tool_name, &truncation_result.content).await
+            {
                 Ok(summary) => {
                     tracing::info!(
                         "[ToolSummarizer] Summarized '{}' output: {} -> {} tokens",

@@ -444,7 +444,8 @@ fn extract_cve_from_template(template_id: &str) -> Option<String> {
 }
 
 fn extract_cve_from_tags(tags: Option<&Vec<String>>) -> Option<String> {
-    tags?.iter()
+    tags?
+        .iter()
         .find(|t| t.to_uppercase().starts_with("CVE-"))
         .map(|t| t.to_uppercase())
 }

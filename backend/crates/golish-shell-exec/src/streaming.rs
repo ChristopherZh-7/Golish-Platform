@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 
 use crate::common::{resolve_cwd, truncate_output, MAX_OUTPUT_SIZE};
 use crate::process_group::{configure_process_group, kill_process_group};
-use crate::shell::get_shell_config;
+use crate::shell::{build_command, get_shell_config};
 
 /// Output chunk from a streaming command execution.
 #[derive(Debug, Clone)]
@@ -95,14 +95,9 @@ pub async fn execute_streaming(
     }
 
     // Determine shell and command to use.
-    let (shell, wrapped_command) = if cfg!(target_os = "windows") {
-        ("cmd".to_string(), command.to_string())
-    } else {
-        let (shell_path, shell_type, home) = get_shell_config(shell_override);
-        shell_type.build_command(&shell_path, command, &home)
-    };
-
-    let shell_arg = if cfg!(target_os = "windows") { "/c" } else { "-c" };
+    let (shell_path, shell_type, home) = get_shell_config(shell_override);
+    let (shell, wrapped_command) = build_command(shell_type, &shell_path, command, &home);
+    let shell_arg = shell_type.command_arg();
 
     tracing::info!(
         shell = %shell,

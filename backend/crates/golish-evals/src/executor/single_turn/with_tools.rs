@@ -31,22 +31,37 @@ pub async fn execute_eval_prompt_with_tools(
     match provider {
         EvalProvider::VertexClaude => {
             execute_with_vertex_claude_and_tools(
-                workspace, prompt, system_prompt, verbose_config, &config,
-                additional_tools, custom_executor,
+                workspace,
+                prompt,
+                system_prompt,
+                verbose_config,
+                &config,
+                additional_tools,
+                custom_executor,
             )
             .await
         }
         EvalProvider::Zai => {
             execute_with_zai_and_tools(
-                workspace, prompt, system_prompt, verbose_config, &config,
-                additional_tools, custom_executor,
+                workspace,
+                prompt,
+                system_prompt,
+                verbose_config,
+                &config,
+                additional_tools,
+                custom_executor,
             )
             .await
         }
         EvalProvider::OpenAi => {
             execute_with_openai_and_tools(
-                workspace, prompt, system_prompt, verbose_config, &config,
-                additional_tools, custom_executor,
+                workspace,
+                prompt,
+                system_prompt,
+                verbose_config,
+                &config,
+                additional_tools,
+                custom_executor,
             )
             .await
         }
@@ -92,8 +107,15 @@ async fn execute_with_vertex_claude_and_tools(
     let model = client.completion_model(model_id).with_web_search();
 
     execute_with_model_and_tools(
-        workspace, prompt, system_prompt, verbose_config, model,
-        model_name, EvalProvider::VertexClaude, additional_tools, custom_executor,
+        workspace,
+        prompt,
+        system_prompt,
+        verbose_config,
+        model,
+        model_name,
+        EvalProvider::VertexClaude,
+        additional_tools,
+        custom_executor,
     )
     .await
 }
@@ -122,8 +144,15 @@ async fn execute_with_zai_and_tools(
     let model = client.completion_model(model_id);
 
     execute_with_model_and_tools(
-        workspace, prompt, system_prompt, verbose_config, model,
-        model_name, EvalProvider::Zai, additional_tools, custom_executor,
+        workspace,
+        prompt,
+        system_prompt,
+        verbose_config,
+        model,
+        model_name,
+        EvalProvider::Zai,
+        additional_tools,
+        custom_executor,
     )
     .await
 }
@@ -153,8 +182,15 @@ async fn execute_with_openai_and_tools(
     let model = client.completion_model(model_id);
 
     execute_with_model_and_tools(
-        workspace, prompt, system_prompt, verbose_config, model,
-        model_name, EvalProvider::OpenAi, additional_tools, custom_executor,
+        workspace,
+        prompt,
+        system_prompt,
+        verbose_config,
+        model,
+        model_name,
+        EvalProvider::OpenAi,
+        additional_tools,
+        custom_executor,
     )
     .await
 }

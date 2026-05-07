@@ -37,11 +37,17 @@ pub(in super::super) async fn run_foreach_step<'a>(
             let _ = std::fs::write(&output_file, &msg);
             return SingleStepResult {
                 step_result: StepResult {
-                    step_id: step.id.clone(), tool_name: step.tool_name.clone(),
-                    command: String::new(), exit_code: Some(-6),
-                    stdout_lines: 0, stderr_preview: msg, store_stats: None, duration_ms: 0,
+                    step_id: step.id.clone(),
+                    tool_name: step.tool_name.clone(),
+                    command: String::new(),
+                    exit_code: Some(-6),
+                    stdout_lines: 0,
+                    stderr_preview: msg,
+                    store_stats: None,
+                    duration_ms: 0,
                 },
-                output_path: output_file, stored_count: 0,
+                output_path: output_file,
+                stored_count: 0,
             };
         }
     };
@@ -53,11 +59,17 @@ pub(in super::super) async fn run_foreach_step<'a>(
             let _ = std::fs::write(&output_file, &msg);
             return SingleStepResult {
                 step_result: StepResult {
-                    step_id: step.id.clone(), tool_name: step.tool_name.clone(),
-                    command: String::new(), exit_code: Some(-6),
-                    stdout_lines: 0, stderr_preview: msg, store_stats: None, duration_ms: 0,
+                    step_id: step.id.clone(),
+                    tool_name: step.tool_name.clone(),
+                    command: String::new(),
+                    exit_code: Some(-6),
+                    stdout_lines: 0,
+                    stderr_preview: msg,
+                    store_stats: None,
+                    duration_ms: 0,
                 },
-                output_path: output_file, stored_count: 0,
+                output_path: output_file,
+                stored_count: 0,
             };
         }
     };
@@ -72,27 +84,48 @@ pub(in super::super) async fn run_foreach_step<'a>(
     if lines.is_empty() {
         let _ = std::fs::write(&output_file, "No iteration targets");
         let duration_ms = step_start.elapsed().as_millis() as u64;
-        emit_pipeline_event(runner.emitter, &PipelineEvent {
-            pipeline_id: pipeline_id.to_string(), run_id: run_id.to_string(),
-            step_id: step.id.clone(), step_index, total_steps,
-            status: "completed".to_string(), tool_name: step.tool_name.clone(),
-            message: Some("foreach: 0 iterations".to_string()), store_stats: None,
-            pipeline_name: None, target: None, all_steps: None,
-            output: None, duration_ms: Some(duration_ms), exit_code: Some(0),
-        });
+        emit_pipeline_event(
+            runner.emitter,
+            &PipelineEvent {
+                pipeline_id: pipeline_id.to_string(),
+                run_id: run_id.to_string(),
+                step_id: step.id.clone(),
+                step_index,
+                total_steps,
+                status: "completed".to_string(),
+                tool_name: step.tool_name.clone(),
+                message: Some("foreach: 0 iterations".to_string()),
+                store_stats: None,
+                pipeline_name: None,
+                target: None,
+                all_steps: None,
+                output: None,
+                duration_ms: Some(duration_ms),
+                exit_code: Some(0),
+            },
+        );
         return SingleStepResult {
             step_result: StepResult {
-                step_id: step.id.clone(), tool_name: step.tool_name.clone(),
-                command: format!("[foreach:{}]", source_id), exit_code: Some(0),
-                stdout_lines: 0, stderr_preview: String::new(), store_stats: None, duration_ms,
+                step_id: step.id.clone(),
+                tool_name: step.tool_name.clone(),
+                command: format!("[foreach:{}]", source_id),
+                exit_code: Some(0),
+                stdout_lines: 0,
+                stderr_preview: String::new(),
+                store_stats: None,
+                duration_ms,
             },
-            output_path: output_file, stored_count: 0,
+            output_path: output_file,
+            stored_count: 0,
         };
     }
 
     tracing::info!(
         "[pipeline] foreach '{}': {} targets from '{}', max_parallel={}",
-        step.tool_name, lines.len(), source_id, max_par
+        step.tool_name,
+        lines.len(),
+        source_id,
+        max_par
     );
 
     let mut total_stored = 0usize;
@@ -108,19 +141,29 @@ pub(in super::super) async fn run_foreach_step<'a>(
             async move {
                 if let Some(sub_pipeline) = resolve_sub_pipeline(step) {
                     execute_pipeline_inner(
-                        runner, &sub_pipeline, iter_target, project_path, depth + 1,
-                    ).await
+                        runner,
+                        &sub_pipeline,
+                        iter_target,
+                        project_path,
+                        depth + 1,
+                    )
+                    .await
                 } else if !step.command_template.is_empty() {
-                    let cmd = resolve_tool_command(&step.command_template, runner.config_manager).await;
+                    let cmd =
+                        resolve_tool_command(&step.command_template, runner.config_manager).await;
                     let args_str = step.args.join(" ");
-                    let mut cmd_str = if args_str.is_empty() { cmd } else { format!("{} {}", cmd, args_str) };
+                    let mut cmd_str = if args_str.is_empty() {
+                        cmd
+                    } else {
+                        format!("{} {}", cmd, args_str)
+                    };
                     cmd_str = cmd_str.replace("{target}", iter_target);
 
-                    let output = tokio::process::Command::new("sh")
-                        .arg("-c").arg(&cmd_str)
+                    let output = golish_shell_exec::build_tokio_shell_command(&cmd_str)
                         .stdout(std::process::Stdio::piped())
                         .stderr(std::process::Stdio::piped())
-                        .output().await;
+                        .output()
+                        .await;
 
                     match output {
                         Ok(out) => {
@@ -134,7 +177,10 @@ pub(in super::super) async fn run_foreach_step<'a>(
                                     command: cmd_str,
                                     exit_code: out.status.code(),
                                     stdout_lines: stdout.lines().count(),
-                                    stderr_preview: String::from_utf8_lossy(&out.stderr).chars().take(200).collect(),
+                                    stderr_preview: String::from_utf8_lossy(&out.stderr)
+                                        .chars()
+                                        .take(200)
+                                        .collect(),
                                     store_stats: None,
                                     duration_ms: 0,
                                 }],
@@ -145,7 +191,9 @@ pub(in super::super) async fn run_foreach_step<'a>(
                         Err(e) => Err(anyhow::anyhow!("foreach cmd error: {}", e)),
                     }
                 } else {
-                    Err(anyhow::anyhow!("foreach step has neither sub_pipeline nor command_template"))
+                    Err(anyhow::anyhow!(
+                        "foreach step has neither sub_pipeline nor command_template"
+                    ))
                 }
             }
         });
@@ -174,25 +222,45 @@ pub(in super::super) async fn run_foreach_step<'a>(
     let _ = std::fs::write(&output_file, &combined_output);
     let duration_ms = step_start.elapsed().as_millis() as u64;
 
-    emit_pipeline_event(runner.emitter, &PipelineEvent {
-        pipeline_id: pipeline_id.to_string(), run_id: run_id.to_string(),
-        step_id: step.id.clone(), step_index, total_steps,
-        status: if any_failed { "error" } else { "completed" }.to_string(),
-        tool_name: step.tool_name.clone(),
-        message: Some(format!("foreach: {} iterations, {} stored", lines.len(), total_stored)),
-        store_stats: None, pipeline_name: None, target: None, all_steps: None,
-        output: if combined_output.len() > 4096 { Some(combined_output[..4096].to_string()) } else { Some(combined_output) },
-        duration_ms: Some(duration_ms),
-        exit_code: if any_failed { Some(1) } else { Some(0) },
-    });
+    emit_pipeline_event(
+        runner.emitter,
+        &PipelineEvent {
+            pipeline_id: pipeline_id.to_string(),
+            run_id: run_id.to_string(),
+            step_id: step.id.clone(),
+            step_index,
+            total_steps,
+            status: if any_failed { "error" } else { "completed" }.to_string(),
+            tool_name: step.tool_name.clone(),
+            message: Some(format!(
+                "foreach: {} iterations, {} stored",
+                lines.len(),
+                total_stored
+            )),
+            store_stats: None,
+            pipeline_name: None,
+            target: None,
+            all_steps: None,
+            output: if combined_output.len() > 4096 {
+                Some(combined_output[..4096].to_string())
+            } else {
+                Some(combined_output)
+            },
+            duration_ms: Some(duration_ms),
+            exit_code: if any_failed { Some(1) } else { Some(0) },
+        },
+    );
 
     SingleStepResult {
         step_result: StepResult {
-            step_id: step.id.clone(), tool_name: step.tool_name.clone(),
+            step_id: step.id.clone(),
+            tool_name: step.tool_name.clone(),
             command: format!("[foreach:{}:{}]", source_id, lines.len()),
             exit_code: if any_failed { Some(1) } else { Some(0) },
             stdout_lines: total_lines,
-            stderr_preview: String::new(), store_stats: None, duration_ms,
+            stderr_preview: String::new(),
+            store_stats: None,
+            duration_ms,
         },
         output_path: output_file,
         stored_count: total_stored,

@@ -21,10 +21,10 @@ pub fn should_store(tool_name: &str, status: ToolcallStatus) -> StoreDecision {
         ("write_file" | "edit_file" | "create_file", ToolcallStatus::Finished) => {
             StoreDecision::StoreSummary(MemoryType::Technique)
         }
-        ("nmap" | "nikto" | "sqlmap" | "nuclei" | "ffuf" | "gobuster" | "dirsearch",
-         ToolcallStatus::Finished) => {
-            StoreDecision::Store(MemoryType::Observation)
-        }
+        (
+            "nmap" | "nikto" | "sqlmap" | "nuclei" | "ffuf" | "gobuster" | "dirsearch",
+            ToolcallStatus::Finished,
+        ) => StoreDecision::Store(MemoryType::Observation),
         _ if tool_name.starts_with("pentest_") && status == ToolcallStatus::Finished => {
             StoreDecision::Store(MemoryType::Vulnerability)
         }
@@ -77,19 +77,13 @@ fn strip_ansi(s: &str) -> String {
 }
 
 /// Build a search-friendly markdown document from tool invocation details.
-pub fn build_memory_content(
-    tool_name: &str,
-    args: &serde_json::Value,
-    result: &str,
-) -> String {
+pub fn build_memory_content(tool_name: &str, args: &serde_json::Value, result: &str) -> String {
     match tool_name {
         "run_command" | "bash" | "shell" => {
             let cmd = extract_str(args, "command")
                 .or_else(|| extract_str(args, "cmd"))
                 .unwrap_or_default();
-            format!(
-                "## Command Execution\n**Command:** `{cmd}`\n\n**Output:**\n```\n{result}\n```"
-            )
+            format!("## Command Execution\n**Command:** `{cmd}`\n\n**Output:**\n```\n{result}\n```")
         }
         "web_search" | "tavily_search" => {
             let query = extract_str(args, "query").unwrap_or_default();

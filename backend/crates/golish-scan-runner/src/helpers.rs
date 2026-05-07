@@ -144,18 +144,7 @@ pub async fn audit_scan_failed(
 }
 
 pub async fn which_tool(name: &str) -> Option<String> {
-    let output = tokio::process::Command::new("which")
-        .arg(name)
-        .output()
+    golish_shell_exec::which_executable_async(name)
         .await
-        .ok()?;
-    if output.status.success() {
-        Some(
-            String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .to_string(),
-        )
-    } else {
-        None
-    }
+        .map(|p| p.to_string_lossy().to_string())
 }

@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 
 use super::{replace, search};
 
-use golish_core::utils::{get_required_str, get_optional_str};
+use golish_core::utils::{get_optional_str, get_required_str};
 
 // ============================================================================
 // ast_grep (search)

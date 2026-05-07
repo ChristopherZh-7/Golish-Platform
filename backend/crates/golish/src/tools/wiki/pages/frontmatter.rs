@@ -86,13 +86,25 @@ pub(in crate::tools::wiki) fn extract_frontmatter(
             .find(|l| l.starts_with('#'))
             .map(|l| l.trim_start_matches('#').trim().to_string())
             .unwrap_or_default();
-        return (title, "uncategorized".to_string(), vec![], "draft".to_string());
+        return (
+            title,
+            "uncategorized".to_string(),
+            vec![],
+            "draft".to_string(),
+        );
     }
     let rest = &content[3..];
     let end = rest.find("\n---");
     let fm = match end {
         Some(i) => &rest[..i],
-        None => return (String::new(), "uncategorized".to_string(), vec![], "draft".to_string()),
+        None => {
+            return (
+                String::new(),
+                "uncategorized".to_string(),
+                vec![],
+                "draft".to_string(),
+            )
+        }
     };
 
     let mut title = String::new();

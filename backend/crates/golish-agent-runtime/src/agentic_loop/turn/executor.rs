@@ -160,13 +160,8 @@ where
 
             // Phase 2: Compaction — pre-turn (iter 1) or inter-turn (>1).
             // `inter_turn_compaction` may surface a terminal error via Fail.
-            match compaction_phase::run(
-                &turn_state,
-                ctx,
-                &mut chat_history,
-                &accumulated_response,
-            )
-            .await
+            match compaction_phase::run(&turn_state, ctx, &mut chat_history, &accumulated_response)
+                .await
             {
                 PhaseOutcome::Continue => {}
                 PhaseOutcome::Break(_) => break,
