@@ -12,7 +12,9 @@
     "tags": ["web", "scanner", "vulnerability", "fingerprint"],
     "install": {
       "method": "homebrew",
-      "source": "nikto"
+      "source": "nikto",
+      "windows": { "method": "github", "source": "sullo/nikto" },
+      "linux": { "method": "github", "source": "sullo/nikto" }
     },
     "params": [
       {

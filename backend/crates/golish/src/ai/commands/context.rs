@@ -15,7 +15,10 @@ pub async fn get_context_summary(
     session_id: Option<String>,
 ) -> Result<ContextSummary, GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_context_summary().await);
     }
@@ -30,7 +33,10 @@ pub async fn get_token_usage_stats(
     session_id: Option<String>,
 ) -> Result<TokenUsageStats, GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_token_usage_stats().await);
     }
@@ -45,7 +51,10 @@ pub async fn get_token_alert_level(
     session_id: Option<String>,
 ) -> Result<TokenAlertLevel, GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_token_alert_level().await);
     }
@@ -60,7 +69,10 @@ pub async fn get_context_utilization(
     session_id: Option<String>,
 ) -> Result<f64, GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_context_utilization().await);
     }
@@ -75,7 +87,10 @@ pub async fn get_remaining_tokens(
     session_id: Option<String>,
 ) -> Result<usize, GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_remaining_tokens().await);
     }
@@ -90,7 +105,10 @@ pub async fn reset_context_manager(
     session_id: Option<String>,
 ) -> Result<(), GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         bridge.reset_context_manager().await;
         return Ok(());
@@ -107,11 +125,17 @@ pub async fn get_context_trim_config(
     session_id: Option<String>,
 ) -> Result<ContextTrimConfig, GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_context_trim_config());
     }
-    state.ai_state.with_legacy_bridge(|b| b.get_context_trim_config()).await
+    state
+        .ai_state
+        .with_legacy_bridge(|b| b.get_context_trim_config())
+        .await
 }
 
 /// Check if context management is enabled.
@@ -121,11 +145,17 @@ pub async fn is_context_management_enabled(
     session_id: Option<String>,
 ) -> Result<bool, GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.is_context_management_enabled());
     }
-    state.ai_state.with_legacy_bridge(|b| b.is_context_management_enabled()).await
+    state
+        .ai_state
+        .with_legacy_bridge(|b| b.is_context_management_enabled())
+        .await
 }
 
 /// Retry context compaction for a specific session.
@@ -140,5 +170,8 @@ pub async fn retry_compaction(
         .await
         .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
 
-    bridge.retry_compaction().await.map_err(GolishError::Internal)
+    bridge
+        .retry_compaction()
+        .await
+        .map_err(GolishError::Internal)
 }

@@ -142,9 +142,8 @@ pub async fn save_rule(
             PathBuf::from(wd).join(".golish").join("rules")
         }
         _ => {
-            let home = dirs::home_dir().ok_or_else(|| {
-                crate::error::GolishError::Internal("No home directory".into())
-            })?;
+            let home = dirs::home_dir()
+                .ok_or_else(|| crate::error::GolishError::Internal("No home directory".into()))?;
             home.join(".golish").join("rules")
         }
     };

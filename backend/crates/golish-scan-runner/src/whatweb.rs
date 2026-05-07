@@ -138,9 +138,7 @@ fn infer_whatweb_category(plugin_name: &str) -> String {
         || lower.contains("fastly")
     {
         "cdn".to_string()
-    } else if lower.contains("waf")
-        || lower.contains("firewall")
-        || lower.contains("mod_security")
+    } else if lower.contains("waf") || lower.contains("firewall") || lower.contains("mod_security")
     {
         "security".to_string()
     } else if lower.contains("os")
@@ -222,7 +220,8 @@ pub async fn run_whatweb(
             )
             .await;
             return Err(crate::ScanRunnerError::WhatWeb(
-                "WhatWeb not found. Install via: brew install whatweb or gem install whatweb".into(),
+                "WhatWeb not found. Install via: brew install whatweb or gem install whatweb"
+                    .into(),
             ));
         }
     };
@@ -298,10 +297,7 @@ pub async fn run_whatweb(
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     if stdout.trim().is_empty() {
-        let msg = format!(
-            "WhatWeb returned no output. stderr: {}",
-            stderr.trim()
-        );
+        let msg = format!("WhatWeb returned no output. stderr: {}", stderr.trim());
         audit_scan_failed(
             pool,
             parent_audit_id,
@@ -320,8 +316,7 @@ pub async fn run_whatweb(
 
     emit_progress(emitter, "whatweb", "parsing", 1, 2, "Parsing results...");
 
-    let (stored, errors) =
-        parse_whatweb_and_store(pool, &stdout, target_id, project_path).await;
+    let (stored, errors) = parse_whatweb_and_store(pool, &stdout, target_id, project_path).await;
 
     emit_progress(
         emitter,

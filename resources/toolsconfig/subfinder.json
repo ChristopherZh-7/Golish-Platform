@@ -12,7 +12,9 @@
     "tags": ["recon", "subdomain", "passive"],
     "install": {
       "method": "homebrew",
-      "source": "subfinder"
+      "source": "subfinder",
+      "windows": { "method": "github", "source": "projectdiscovery/subfinder" },
+      "linux": { "method": "github", "source": "projectdiscovery/subfinder" }
     },
     "params": [
       {

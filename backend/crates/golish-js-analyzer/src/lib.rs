@@ -186,8 +186,7 @@ pub fn extract_from_source(source_file: &str, content: &str) -> Vec<Endpoint> {
     let axios_config_re = Regex::new(patterns::AXIOS_CONFIG).expect("AXIOS_CONFIG regex valid");
     let jquery_re = Regex::new(patterns::JQUERY_AJAX).expect("JQUERY_AJAX regex valid");
     let new_request_re = Regex::new(patterns::NEW_REQUEST).expect("NEW_REQUEST regex valid");
-    let fetch_concat_re =
-        Regex::new(patterns::FETCH_CONCAT).expect("FETCH_CONCAT regex valid");
+    let fetch_concat_re = Regex::new(patterns::FETCH_CONCAT).expect("FETCH_CONCAT regex valid");
     let fetch_template_re =
         Regex::new(patterns::FETCH_TEMPLATE).expect("FETCH_TEMPLATE regex valid");
 
@@ -196,8 +195,7 @@ pub fn extract_from_source(source_file: &str, content: &str) -> Vec<Endpoint> {
     // same call site as a Literal. Otherwise `fetch('/api/' + id)` would
     // produce two endpoints — one Concatenated, one Literal with truncated
     // path.
-    let mut shadowed_offsets: std::collections::HashSet<usize> =
-        std::collections::HashSet::new();
+    let mut shadowed_offsets: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
     for cap in fetch_concat_re.captures_iter(scrubbed_str) {
         let off = match cap.get(0) {
@@ -347,7 +345,9 @@ mod tests {
         let eps = extract_from_source("a.js", src);
         assert_eq!(eps.len(), 3);
         assert!(eps.iter().any(|e| e.method == "GET" && e.path == "/users"));
-        assert!(eps.iter().any(|e| e.method == "POST" && e.path == "/orders"));
+        assert!(eps
+            .iter()
+            .any(|e| e.method == "POST" && e.path == "/orders"));
         assert!(eps
             .iter()
             .any(|e| e.method == "DELETE" && e.path == "/items/123"));
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn extract_from_files_dedupes_unique_count() {
-        let files = vec![
+        let files = [
             ("a.js", r#"fetch('/api/x', {method:'GET'})"#),
             ("b.js", r#"fetch('/api/x', {method:'GET'})"#),
             ("c.js", r#"axios.post('/api/y', body)"#),

@@ -8,8 +8,10 @@ mod summarizer;
 #[cfg(test)]
 mod tests;
 
-pub use summarizer::{format_for_summarizer, build_summarizer_input, save_summarizer_input, save_summary};
 use std::path::{Path, PathBuf};
+pub use summarizer::{
+    build_summarizer_input, format_for_summarizer, save_summarizer_input, save_summary,
+};
 
 use chrono::{DateTime, Utc};
 use golish_core::events::AiEvent;

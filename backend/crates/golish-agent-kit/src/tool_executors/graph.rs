@@ -12,8 +12,8 @@
 use serde_json::json;
 use uuid::Uuid;
 
-use super::graph_trait::{GraphEntityView, GraphKnowledgeBase};
 use super::common::{error_result, extract_string_param, ToolResult};
+use super::graph_trait::{GraphEntityView, GraphKnowledgeBase};
 
 /// Execute graph tool calls (graph_add_entity, graph_add_relation,
 /// graph_search, graph_neighbors, graph_attack_paths).
@@ -63,10 +63,7 @@ pub async fn execute_graph_tool(
                     ));
                 }
             };
-            let properties = args
-                .get("properties")
-                .cloned()
-                .unwrap_or_else(|| json!({}));
+            let properties = args.get("properties").cloned().unwrap_or_else(|| json!({}));
 
             match client
                 .upsert_entity(&entity_type, &name, properties, None)
@@ -100,10 +97,7 @@ pub async fn execute_graph_tool(
                     ));
                 }
             };
-            let properties = args
-                .get("properties")
-                .cloned()
-                .unwrap_or_else(|| json!({}));
+            let properties = args.get("properties").cloned().unwrap_or_else(|| json!({}));
 
             let from_id = match resolve_entity_id(client, &from_ref).await {
                 Ok(id) => id,
@@ -177,14 +171,15 @@ pub async fn execute_graph_tool(
         }
 
         "graph_neighbors" => {
-            let entity_ref = match extract_string_param(args, &["entity", "entity_id", "id", "name"]) {
-                Some(s) => s,
-                None => {
-                    return Some(error_result(
-                        "graph_neighbors requires 'entity' (name or UUID)",
-                    ));
-                }
-            };
+            let entity_ref =
+                match extract_string_param(args, &["entity", "entity_id", "id", "name"]) {
+                    Some(s) => s,
+                    None => {
+                        return Some(error_result(
+                            "graph_neighbors requires 'entity' (name or UUID)",
+                        ));
+                    }
+                };
             let relation_type = args
                 .get("relation_type")
                 .and_then(|v| v.as_str())
@@ -286,7 +281,10 @@ pub async fn execute_graph_tool(
 /// to a name search via [`GraphClient::search_entities`] and returns the
 /// most recently updated match. Returns a human-readable error message on
 /// failure suitable for direct surfacing to the LLM.
-async fn resolve_entity_id(client: &dyn GraphKnowledgeBase, reference: &str) -> Result<Uuid, String> {
+async fn resolve_entity_id(
+    client: &dyn GraphKnowledgeBase,
+    reference: &str,
+) -> Result<Uuid, String> {
     if let Ok(id) = Uuid::parse_str(reference) {
         return Ok(id);
     }

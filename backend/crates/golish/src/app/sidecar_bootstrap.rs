@@ -22,9 +22,7 @@ pub(crate) fn spawn_sidecar_initialization(
         let settings = settings_manager.get().await;
 
         if !settings.sidecar.enabled {
-            tracing::debug!(
-                "[tauri-setup] Sidecar disabled in settings, skipping initialization"
-            );
+            tracing::debug!("[tauri-setup] Sidecar disabled in settings, skipping initialization");
             return;
         }
 

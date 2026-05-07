@@ -2,7 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-
 /// Model-specific context window sizes
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelContextLimits {

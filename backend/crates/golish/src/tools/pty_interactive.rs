@@ -24,6 +24,12 @@ pub struct PtyOutputTap {
     sender: broadcast::Sender<PtyOutputEvent>,
 }
 
+impl Default for PtyOutputTap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PtyOutputTap {
     pub fn new() -> Self {
         let (sender, _) = broadcast::channel(1024);
@@ -82,7 +88,10 @@ impl VisibleRunPtyCmdTool {
             }));
         }
         let first = sessions.into_iter().next().unwrap();
-        tracing::info!("[run_pty_cmd] No active session set, falling back to: {}", first);
+        tracing::info!(
+            "[run_pty_cmd] No active session set, falling back to: {}",
+            first
+        );
         Ok(first)
     }
 }
@@ -137,7 +146,9 @@ impl Tool for VisibleRunPtyCmdTool {
 
         tracing::info!(
             "[run_pty_cmd] Executing in visible terminal: session={}, command={}, timeout_ms={}",
-            session_id, command, timeout_ms
+            session_id,
+            command,
+            timeout_ms
         );
 
         if let Err(e) = self.pty_manager.get_session(&session_id) {
@@ -195,7 +206,11 @@ impl Tool for VisibleRunPtyCmdTool {
         let truncated = output.len() > max_output_len;
         let stdout = if truncated {
             let end = output.floor_char_boundary(max_output_len);
-            format!("{}...\n[Output truncated, {} bytes total]", &output[..end], output.len())
+            format!(
+                "{}...\n[Output truncated, {} bytes total]",
+                &output[..end],
+                output.len()
+            )
         } else {
             output
         };

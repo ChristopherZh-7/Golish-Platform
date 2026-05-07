@@ -6,9 +6,8 @@ use crate::error::GolishError;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::types::{detect_type, Target, TargetRow, TargetType};
 use super::recon::ReconUpdate;
-
+use super::types::{detect_type, Target, TargetRow, TargetType};
 
 // ============================================================================
 // Standalone DB functions for AI tool integration (no Tauri state needed)
@@ -23,7 +22,9 @@ pub async fn db_target_add(
     source: &str,
     parent_id: Option<Uuid>,
 ) -> Result<Target, GolishError> {
-    let tt = target_type.map(TargetType::from_str).unwrap_or_else(|| detect_type(value));
+    let tt = target_type
+        .map(TargetType::from_str)
+        .unwrap_or_else(|| detect_type(value));
     let n = if name.is_empty() { value } else { name };
 
     let existing = sqlx::query_as::<_, TargetRow>(
@@ -78,8 +79,7 @@ pub async fn db_target_list(
     )
     .bind(project_path)
     .fetch_all(pool)
-    .await
-?;
+    .await?;
 
     Ok(rows.into_iter().map(Target::from).collect())
 }
@@ -93,8 +93,7 @@ pub async fn db_target_update_status(
         .bind(status)
         .bind(id)
         .execute(pool)
-        .await
-?;
+        .await?;
     Ok(())
 }
 
@@ -103,14 +102,11 @@ pub async fn db_target_update_recon(
     id: Uuid,
     ports: &serde_json::Value,
 ) -> Result<(), GolishError> {
-    sqlx::query(
-        "UPDATE targets SET ports=$1, updated_at=NOW() WHERE id=$2",
-    )
-    .bind(ports)
-    .bind(id)
-    .execute(pool)
-    .await
-?;
+    sqlx::query("UPDATE targets SET ports=$1, updated_at=NOW() WHERE id=$2")
+        .bind(ports)
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 

@@ -170,7 +170,9 @@ pub fn get_git_worktrees(repo_path: &Path) -> Vec<GitWorktree> {
 }
 
 /// Build `BranchInfo` entries for all worktrees in a repository.
-pub fn build_branch_infos(repo_path: &Path) -> Vec<(BranchInfo, Option<chrono::DateTime<chrono::Utc>>)> {
+pub fn build_branch_infos(
+    repo_path: &Path,
+) -> Vec<(BranchInfo, Option<chrono::DateTime<chrono::Utc>>)> {
     get_git_worktrees(repo_path)
         .iter()
         .map(|wt| {

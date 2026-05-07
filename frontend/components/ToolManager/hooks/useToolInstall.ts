@@ -41,6 +41,58 @@ export function isAutoInstallMethod(method?: string | null) {
   return !!method && AUTO_INSTALL_METHODS.has(method);
 }
 
+type InstallSubBlock = { method: string; source?: string } | null | undefined;
+
+interface InstallLikeShape {
+  method: string;
+  source: string;
+  macos?: InstallSubBlock;
+  linux?: InstallSubBlock;
+  windows?: InstallSubBlock;
+}
+
+export function detectInstallPlatform(): "windows" | "macos" | "linux" {
+  const ua = (navigator.userAgent || "").toLowerCase();
+  const platformStr = (navigator.platform || "").toLowerCase();
+  if (platformStr.includes("win") || ua.includes("windows")) return "windows";
+  if (platformStr.includes("mac") || platformStr.includes("darwin") || ua.includes("mac"))
+    return "macos";
+  return "linux";
+}
+
+/**
+ * Resolve the (method, source) tuple to use on the current platform.
+ *
+ * Falls back to the top-level `install.method` / `install.source` if the
+ * platform-specific sub-block is missing. Returns `null` when the tool's
+ * default method cannot be auto-installed on this platform (e.g.
+ * Homebrew on Windows without a `windows` block) so the caller can show
+ * an actionable error.
+ */
+export function resolveInstallForPlatform(
+  install: InstallLikeShape | null | undefined
+): { method: string; source: string } | null {
+  if (!install) return null;
+  const platform = detectInstallPlatform();
+  let block: InstallSubBlock;
+  if (platform === "windows") block = install.windows;
+  else if (platform === "macos") block = install.macos;
+  else block = install.linux;
+  if (block?.method) {
+    return {
+      method: block.method,
+      source: block.source && block.source.length > 0 ? block.source : install.source,
+    };
+  }
+  if (platform === "windows") {
+    const homebrewMethods = new Set(["homebrew", "homebrew-cask", "brew", "brew-cask"]);
+    if (homebrewMethods.has(install.method)) {
+      return null;
+    }
+  }
+  return { method: install.method, source: install.source };
+}
+
 interface InstallOptions {
   interactive?: boolean;
   refresh?: boolean;
@@ -119,7 +171,18 @@ export function useToolInstall(
       const reportError = options.reportError ?? true;
       if (busy && !options.force) return { success: false, cancelled: false };
       cancelRef.current = false;
-      const method = tool.install?.method;
+      const resolved = resolveInstallForPlatform(tool.install ?? null);
+      if (!resolved) {
+        const error = t("toolManager.windowsManualInstall", {
+          name: tool.name,
+          defaultValue:
+            "{{name}} 在 Windows 上需要手动安装，请参考 docs/windows-support.md（可用 winget / scoop 等价方案）",
+        });
+        if (reportError) setError(error);
+        return { success: false, error };
+      }
+      const method = resolved.method;
+      const resolvedSource = resolved.source;
       if (!isAutoInstallMethod(method)) {
         const error = t("toolManager.noInstallMethod", { name: tool.name });
         if (reportError) setError(error);
@@ -246,7 +309,7 @@ export function useToolInstall(
       setError(null);
       try {
         if (method === "github") {
-          const source = tool.install?.source;
+          const source = resolvedSource;
           if (!source) throw new Error(t("install.missingGithubSource"));
           const [owner, repo] = source.split("/");
           if (!owner || !repo) throw new Error(t("install.githubSourceFormat"));
@@ -257,17 +320,32 @@ export function useToolInstall(
           try {
             const release = await fetchGitHubRelease(owner, repo);
             releaseVersion = release.tag_name;
+            const ua = (navigator.userAgent || "").toLowerCase();
+            const platformStr = (navigator.platform || "").toLowerCase();
             const isMac =
-              navigator.platform.toLowerCase().includes("mac") ||
-              navigator.platform.toLowerCase().includes("darwin");
+              platformStr.includes("mac") || platformStr.includes("darwin") || ua.includes("mac");
+            const isWin = !isMac && (platformStr.includes("win") || ua.includes("windows"));
+            const arch = ua.includes("arm64") || ua.includes("aarch64") ? "arm64" : "x64";
             const SKIP_EXTS = [".txt", ".md", ".sha256", ".sha512", ".asc", ".sig", ".pem"];
             const isSkippable = (name: string) =>
               SKIP_EXTS.some((e) => name.toLowerCase().endsWith(e)) ||
               /checksums?/i.test(name) ||
               /\.sbom\b/i.test(name);
             const archiveExts = [".zip", ".tar.gz", ".tgz", ".jar"];
+            const winInstallerExts = [".exe", ".msi"];
             const isArchive = (name: string) =>
               archiveExts.some((e) => name.toLowerCase().endsWith(e));
+            const isWinInstaller = (name: string) =>
+              winInstallerExts.some((e) => name.toLowerCase().endsWith(e));
+            const archMatches = (n: string) => {
+              if (arch === "arm64") {
+                return n.includes("arm64") || n.includes("aarch64");
+              }
+              if (n.includes("arm64") || n.includes("aarch64")) return false;
+              return (
+                n.includes("x86_64") || n.includes("x64") || n.includes("amd64") || n.includes("64")
+              );
+            };
             const platformAssets = release.assets.filter((a) => {
               if (isSkippable(a.name)) return false;
               const n = a.name.toLowerCase();
@@ -278,9 +356,24 @@ export function useToolInstall(
                   n.includes("mac") ||
                   n.includes("osx")
                 );
+              if (isWin)
+                return (
+                  n.includes("windows") ||
+                  n.includes("win64") ||
+                  n.includes("win32") ||
+                  n.includes("win-") ||
+                  n.endsWith(".exe") ||
+                  n.endsWith(".msi") ||
+                  /[-_.]win[-_.]/i.test(a.name)
+                );
               return n.includes("linux");
             });
+            const archScored = platformAssets.filter((a) => archMatches(a.name.toLowerCase()));
+            const candidatePool = archScored.length > 0 ? archScored : platformAssets;
             binaryAsset =
+              (isWin && candidatePool.find((a) => isWinInstaller(a.name))) ||
+              candidatePool.find((a) => isArchive(a.name)) ||
+              candidatePool[0] ||
               platformAssets.find((a) => isArchive(a.name)) ||
               platformAssets[0] ||
               release.assets.find((a) => !isSkippable(a.name) && isArchive(a.name)) ||
@@ -427,7 +520,7 @@ export function useToolInstall(
           }
         } else if (method === "homebrew") {
           setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.brewInstalling") }));
-          const pkg = tool.install?.source || tool.name;
+          const pkg = resolvedSource || tool.name;
           const r = await installRuntime(`brew:${pkg}`, proxyUrl);
           if (!r.success) throw new Error(r.message || `brew install ${pkg} failed`);
           const m = r.message?.match(/BREW_VERSION=(.+)/);
@@ -440,16 +533,16 @@ export function useToolInstall(
             });
         } else if (method === "homebrew-cask") {
           setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.brewInstalling") }));
-          const pkg = tool.install?.source || tool.name;
+          const pkg = resolvedSource || tool.name;
           const r = await installRuntime(`brew-cask:${pkg}`, proxyUrl);
           if (!r.success) throw new Error(r.message || `brew install --cask ${pkg} failed`);
         } else if (method === "gem") {
-          const pkg = tool.install?.source || tool.name;
+          const pkg = resolvedSource || tool.name;
           setInstallProgress((p) => ({ ...p, [tool.id]: `Installing ${pkg} via gem...` }));
           const r = await installRuntime(`gem:${pkg}`, proxyUrl);
           if (!r.success) throw new Error(r.message || `gem install ${pkg} failed`);
         } else if (method === "pip") {
-          const pkg = tool.install?.source || tool.name;
+          const pkg = resolvedSource || tool.name;
           const ver = (tool.runtimeVersion || "").replace(/\+$/, "");
           const envName = ver ? `python${ver}_env` : "base";
           setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.pipInstalling", { pkg }) }));

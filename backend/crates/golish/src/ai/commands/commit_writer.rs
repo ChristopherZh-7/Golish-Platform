@@ -107,7 +107,12 @@ pub async fn generate_commit_message(
 
     let client_guard = client.read().await;
     let response_text = client_guard
-        .one_shot_completion(COMMIT_WRITER_SYSTEM_PROMPT, &user_prompt, Some(0.3), Some(1024))
+        .one_shot_completion(
+            COMMIT_WRITER_SYSTEM_PROMPT,
+            &user_prompt,
+            Some(0.3),
+            Some(1024),
+        )
         .await
         .map_err(|e| format!("LLM completion failed: {}", e))?;
 

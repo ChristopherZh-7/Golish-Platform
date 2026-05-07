@@ -31,9 +31,9 @@ pub mod pentest_context;
 pub mod plan;
 pub mod prompt;
 pub mod ready_gate;
-pub mod utils;
 pub mod session_manager;
 pub mod skill_provider;
+pub mod utils;
 pub mod vault;
 pub mod web_fetch;
 
@@ -44,28 +44,26 @@ pub use api_request_stats::{
 };
 pub use event_emitter::{emit_opt, EventEmitter, EventEmitterHandle, NullEmitter};
 pub use events::*; // Re-export all event types
-pub use pentest_context::PentestEngineContext;
 pub use hitl::{
     ApprovalDecision, ApprovalPattern, RiskLevel, ToolApprovalConfig,
     HITL_AUTO_APPROVE_MIN_APPROVALS, HITL_AUTO_APPROVE_THRESHOLD,
 };
 pub use message::{PromptPart, PromptPayload};
+pub use pentest_context::PentestEngineContext;
 pub use plan::{PlanStep, PlanSummary, StepStatus, TaskPlan, MAX_PLAN_STEPS, MIN_PLAN_STEPS};
 pub use prompt::{
     PromptContext, PromptContributor, PromptMatchedSkill, PromptPriority, PromptSection,
     PromptSkillInfo,
 };
+pub use ready_gate::DbReadyGate;
 pub use runtime::{ApprovalResult, GolishRuntime, RuntimeError, RuntimeEvent};
 pub use session::{
     find_session_by_identifier, list_recent_sessions, MessageContent, MessageRole, SessionArchive,
     SessionArchiveMetadata, SessionListing, SessionMessage, SessionSnapshot,
 };
-pub use session_kind::{
-    is_title_gen_session_id, title_gen_session_id, TITLE_GEN_SESSION_PREFIX,
-};
-pub use ready_gate::DbReadyGate;
-pub use tool::Tool;
-pub use tool_name::{ToolCategory, ToolName};
+pub use session_kind::{is_title_gen_session_id, title_gen_session_id, TITLE_GEN_SESSION_PREFIX};
 pub use session_manager::{SessionManager, SessionManagerFactory};
 pub use skill_provider::{SkillMatch, SkillMetadata, SkillProvider};
+pub use tool::Tool;
+pub use tool_name::{ToolCategory, ToolName};
 pub use web_fetch::{WebFetchProvider, WebFetchResult};

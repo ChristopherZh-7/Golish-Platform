@@ -4,9 +4,9 @@
 //! allowing listing, reading, saving, and deleting agent definitions.
 
 use crate::error::GolishError;
-use golish_sub_agents::file_loader::{serialize_agent_to_md, AgentFileInfo};
-use golish_sub_agents::discovery::{discover_agents, seed_default_agent_files};
 use golish_sub_agents::definition::AgentSource;
+use golish_sub_agents::discovery::{discover_agents, seed_default_agent_files};
+use golish_sub_agents::file_loader::{serialize_agent_to_md, AgentFileInfo};
 use std::path::PathBuf;
 
 /// List all discovered agents (built-in + file-based).
@@ -21,7 +21,10 @@ pub async fn list_agent_definitions(
 
 /// Read the full body (system prompt) of an agent file.
 #[tauri::command]
-pub async fn read_agent_prompt(agent_id: String, working_directory: Option<String>) -> Result<String, GolishError> {
+pub async fn read_agent_prompt(
+    agent_id: String,
+    working_directory: Option<String>,
+) -> Result<String, GolishError> {
     let workspace = working_directory.map(PathBuf::from);
     let agents = discover_agents(workspace.as_deref());
     let agent = agents
@@ -65,13 +68,16 @@ pub async fn save_agent_definition(
         // Explicit scope provided — force save location
         match scope_str.as_str() {
             "project" => {
-                let ws = workspace.as_ref().ok_or_else(|| GolishError::Internal("Working directory required for project agents".into()))?;
+                let ws = workspace.as_ref().ok_or_else(|| {
+                    GolishError::Internal("Working directory required for project agents".into())
+                })?;
                 let agents_dir = ws.join(".golish").join("agents");
                 std::fs::create_dir_all(&agents_dir)?;
                 agents_dir.join(format!("{agent_id}.md"))
             }
             _ => {
-                let home = dirs::home_dir().ok_or_else(|| GolishError::Internal("No home directory".into()))?;
+                let home = dirs::home_dir()
+                    .ok_or_else(|| GolishError::Internal("No home directory".into()))?;
                 let agents_dir = home.join(".golish").join("agents");
                 std::fs::create_dir_all(&agents_dir)?;
                 agents_dir.join(format!("{agent_id}.md"))
@@ -82,14 +88,16 @@ pub async fn save_agent_definition(
             Some(agent) => match &agent.source {
                 AgentSource::File(path) => path.clone(),
                 AgentSource::BuiltIn => {
-                    let home = dirs::home_dir().ok_or_else(|| GolishError::Internal("No home directory".into()))?;
+                    let home = dirs::home_dir()
+                        .ok_or_else(|| GolishError::Internal("No home directory".into()))?;
                     let agents_dir = home.join(".golish").join("agents");
                     std::fs::create_dir_all(&agents_dir)?;
                     agents_dir.join(format!("{agent_id}.md"))
                 }
             },
             None => {
-                let home = dirs::home_dir().ok_or_else(|| GolishError::Internal("No home directory".into()))?;
+                let home = dirs::home_dir()
+                    .ok_or_else(|| GolishError::Internal("No home directory".into()))?;
                 let agents_dir = home.join(".golish").join("agents");
                 std::fs::create_dir_all(&agents_dir)?;
                 agents_dir.join(format!("{agent_id}.md"))
@@ -97,12 +105,8 @@ pub async fn save_agent_definition(
         }
     };
 
-    let mut def = golish_sub_agents::SubAgentDefinition::new(
-        &agent_id,
-        name,
-        description,
-        system_prompt,
-    );
+    let mut def =
+        golish_sub_agents::SubAgentDefinition::new(&agent_id, name, description, system_prompt);
     def.allowed_tools = allowed_tools;
     if let Some(max) = max_iterations {
         def.max_iterations = max;

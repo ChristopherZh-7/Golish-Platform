@@ -12,7 +12,9 @@
     "tags": ["recon", "crawler", "web", "endpoints"],
     "install": {
       "method": "homebrew",
-      "source": "katana"
+      "source": "katana",
+      "windows": { "method": "github", "source": "projectdiscovery/katana" },
+      "linux": { "method": "github", "source": "projectdiscovery/katana" }
     },
     "params": [
       {

@@ -37,35 +37,35 @@ use std::path::PathBuf;
 // so without the macro re-export the build fails with "could not find
 // `__cmd__wiki_init` in `wiki`".
 pub use dashboard::{
-    wiki_backlinks, wiki_changelog_list, wiki_orphan_pages, wiki_pages_for_paths,
-    wiki_pages_grouped, wiki_stats_full, wiki_suggest_for_cve, __cmd__wiki_backlinks,
-    __cmd__wiki_changelog_list, __cmd__wiki_orphan_pages, __cmd__wiki_pages_for_paths,
-    __cmd__wiki_pages_grouped, __cmd__wiki_stats_full, __cmd__wiki_suggest_for_cve,
+    __cmd__wiki_backlinks, __cmd__wiki_changelog_list, __cmd__wiki_orphan_pages,
+    __cmd__wiki_pages_for_paths, __cmd__wiki_pages_grouped, __cmd__wiki_stats_full,
+    __cmd__wiki_suggest_for_cve, wiki_backlinks, wiki_changelog_list, wiki_orphan_pages,
+    wiki_pages_for_paths, wiki_pages_grouped, wiki_stats_full, wiki_suggest_for_cve,
 };
 pub use kb_research::{
-    kb_research_clear, kb_research_load, kb_research_save_turn, kb_research_set_status,
     __cmd__kb_research_clear, __cmd__kb_research_load, __cmd__kb_research_save_turn,
-    __cmd__kb_research_set_status,
+    __cmd__kb_research_set_status, kb_research_clear, kb_research_load, kb_research_save_turn,
+    kb_research_set_status,
 };
 pub use pages::{
+    __cmd__wiki_create_cve, __cmd__wiki_create_dir, __cmd__wiki_delete, __cmd__wiki_init,
+    __cmd__wiki_list, __cmd__wiki_read, __cmd__wiki_reindex, __cmd__wiki_rename, __cmd__wiki_write,
     wiki_create_cve, wiki_create_dir, wiki_delete, wiki_init, wiki_list, wiki_read, wiki_reindex,
-    wiki_rename, wiki_write, __cmd__wiki_create_cve, __cmd__wiki_create_dir, __cmd__wiki_delete,
-    __cmd__wiki_init, __cmd__wiki_list, __cmd__wiki_read, __cmd__wiki_reindex, __cmd__wiki_rename,
-    __cmd__wiki_write,
+    wiki_rename, wiki_write,
 };
 pub use search::{
-    wiki_search, wiki_search_db, wiki_stats, __cmd__wiki_search, __cmd__wiki_search_db,
-    __cmd__wiki_stats,
+    __cmd__wiki_search, __cmd__wiki_search_db, __cmd__wiki_stats, wiki_search, wiki_search_db,
+    wiki_stats,
 };
 pub use vuln_links::{
-    vuln_link_add_poc, vuln_link_add_poc_full, vuln_link_add_scan, vuln_link_add_wiki,
-    vuln_link_get, vuln_link_get_all, vuln_link_remove_poc, vuln_link_remove_scan,
-    vuln_link_remove_wiki, vuln_link_update_poc, vuln_poc_list_cves, vuln_poc_list_unresearched,
-    vuln_poc_set_verified, vuln_poc_stats, __cmd__vuln_link_add_poc, __cmd__vuln_link_add_poc_full,
-    __cmd__vuln_link_add_scan, __cmd__vuln_link_add_wiki, __cmd__vuln_link_get,
-    __cmd__vuln_link_get_all, __cmd__vuln_link_remove_poc, __cmd__vuln_link_remove_scan,
-    __cmd__vuln_link_remove_wiki, __cmd__vuln_link_update_poc, __cmd__vuln_poc_list_cves,
-    __cmd__vuln_poc_list_unresearched, __cmd__vuln_poc_set_verified, __cmd__vuln_poc_stats,
+    __cmd__vuln_link_add_poc, __cmd__vuln_link_add_poc_full, __cmd__vuln_link_add_scan,
+    __cmd__vuln_link_add_wiki, __cmd__vuln_link_get, __cmd__vuln_link_get_all,
+    __cmd__vuln_link_remove_poc, __cmd__vuln_link_remove_scan, __cmd__vuln_link_remove_wiki,
+    __cmd__vuln_link_update_poc, __cmd__vuln_poc_list_cves, __cmd__vuln_poc_list_unresearched,
+    __cmd__vuln_poc_set_verified, __cmd__vuln_poc_stats, vuln_link_add_poc, vuln_link_add_poc_full,
+    vuln_link_add_scan, vuln_link_add_wiki, vuln_link_get, vuln_link_get_all, vuln_link_remove_poc,
+    vuln_link_remove_scan, vuln_link_remove_wiki, vuln_link_update_poc, vuln_poc_list_cves,
+    vuln_poc_list_unresearched, vuln_poc_set_verified, vuln_poc_stats,
 };
 
 /// Wiki file extensions recognised by the on-disk filtering / search code.
@@ -74,11 +74,49 @@ pub use vuln_links::{
 /// both filesystem traversal and FTS-style code paths stay consistent when
 /// extensions are added.
 pub(super) const WIKI_EXTENSIONS: &[&str] = &[
-    ".md", ".txt", ".py", ".sh", ".bash", ".zsh", ".go", ".rs", ".rb", ".pl",
-    ".js", ".ts", ".jsx", ".tsx", ".c", ".cpp", ".h", ".hpp", ".java", ".cs",
-    ".swift", ".kt", ".lua", ".r", ".ps1", ".bat", ".cmd", ".php", ".html",
-    ".css", ".xml", ".json", ".yaml", ".yml", ".toml", ".ini", ".conf", ".cfg",
-    ".sql", ".graphql", ".proto", ".dockerfile", ".nse",
+    ".md",
+    ".txt",
+    ".py",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".go",
+    ".rs",
+    ".rb",
+    ".pl",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".java",
+    ".cs",
+    ".swift",
+    ".kt",
+    ".lua",
+    ".r",
+    ".ps1",
+    ".bat",
+    ".cmd",
+    ".php",
+    ".html",
+    ".css",
+    ".xml",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".conf",
+    ".cfg",
+    ".sql",
+    ".graphql",
+    ".proto",
+    ".dockerfile",
+    ".nse",
 ];
 
 /// Predicate: is this filename one of our supported wiki content files?
@@ -112,6 +150,5 @@ pub(super) fn is_text_searchable(name: &str) -> bool {
 /// app has already started, so this is a configuration bug rather than
 /// something to recover from.
 pub(super) fn wiki_base_dir() -> PathBuf {
-    golish_core::paths::wiki_dir()
-        .expect("cannot resolve home directory")
+    golish_core::paths::wiki_dir().expect("cannot resolve home directory")
 }

@@ -263,24 +263,22 @@ pub(super) fn track_file_changes(event: &SessionEvent, session_state: &mut Sessi
             );
             session_state.file_tracker.record_change(path.clone());
         }
-        EventType::ToolCall { tool_name, .. } => {
-            if is_write_tool(tool_name) {
-                if event.files_modified.is_empty() {
-                    tracing::debug!(
-                        "[processor] ToolCall {} is write tool but files_modified is empty",
-                        tool_name
-                    );
-                } else {
-                    tracing::debug!(
-                        "[processor] ToolCall {} tracking {} file(s): {:?}",
-                        tool_name,
-                        event.files_modified.len(),
-                        event.files_modified
-                    );
-                }
-                for path in &event.files_modified {
-                    session_state.file_tracker.record_change(path.clone());
-                }
+        EventType::ToolCall { tool_name, .. } if is_write_tool(tool_name) => {
+            if event.files_modified.is_empty() {
+                tracing::debug!(
+                    "[processor] ToolCall {} is write tool but files_modified is empty",
+                    tool_name
+                );
+            } else {
+                tracing::debug!(
+                    "[processor] ToolCall {} tracking {} file(s): {:?}",
+                    tool_name,
+                    event.files_modified.len(),
+                    event.files_modified
+                );
+            }
+            for path in &event.files_modified {
+                session_state.file_tracker.record_change(path.clone());
             }
         }
         _ => {}

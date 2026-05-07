@@ -5,7 +5,9 @@
 //! `pub(super)` free functions so the `CompletionModel` trait impl can call
 //! them while the public API surface stays in `mod.rs`.
 
-use rig::completion::{AssistantContent, CompletionRequest, CompletionResponse, Message, ToolDefinition, Usage};
+use rig::completion::{
+    AssistantContent, CompletionRequest, CompletionResponse, Message, ToolDefinition, Usage,
+};
 use rig::one_or_many::OneOrMany;
 
 use crate::types::{
@@ -168,11 +170,7 @@ pub(super) fn build_request(
     model: &CompletionModel,
     request: &CompletionRequest,
 ) -> GenerateContentRequest {
-    let contents: Vec<Content> = request
-        .chat_history
-        .iter()
-        .map(convert_message)
-        .collect();
+    let contents: Vec<Content> = request.chat_history.iter().map(convert_message).collect();
 
     let max_output_tokens = request
         .max_tokens
@@ -229,9 +227,9 @@ pub(super) fn convert_response(
             if let Some(text) = &part.text {
                 if !text.is_empty() {
                     if part.thought == Some(true) {
-                        content.push(AssistantContent::Reasoning(
-                            rig::message::Reasoning::multi(vec![text.clone()]),
-                        ));
+                        content.push(AssistantContent::Reasoning(rig::message::Reasoning::multi(
+                            vec![text.clone()],
+                        )));
                     } else {
                         content.push(AssistantContent::Text(Text { text: text.clone() }));
                     }

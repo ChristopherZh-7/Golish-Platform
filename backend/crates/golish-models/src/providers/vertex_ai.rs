@@ -5,7 +5,6 @@ use golish_settings::schema::AiProvider;
 use crate::capabilities::ModelCapabilities;
 use crate::registry::ModelDefinition;
 
-
 /// Vertex AI (Anthropic Claude) model definitions.
 pub fn vertex_ai_models() -> Vec<ModelDefinition> {
     vec![

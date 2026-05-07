@@ -159,9 +159,8 @@ pub(crate) async fn restore_window_state_on_startup(app_handle: &tauri::AppHandl
         } => {
             let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
             if let (Some(x), Some(y)) = (x, y) {
-                let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
-                    x, y,
-                )));
+                let _ = window
+                    .set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
             }
         }
     }

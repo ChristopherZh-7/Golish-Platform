@@ -5,7 +5,6 @@ use golish_settings::schema::AiProvider;
 use crate::capabilities::ModelCapabilities;
 use crate::registry::ModelDefinition;
 
-
 /// NVIDIA NIM model definitions.
 pub fn nvidia_models() -> Vec<ModelDefinition> {
     vec![

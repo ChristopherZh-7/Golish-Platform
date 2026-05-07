@@ -152,11 +152,9 @@ fn test_planner_is_mostly_readonly() {
     let agents = create_default_sub_agents();
     let planner = agents.iter().find(|a| a.id == "planner").unwrap();
 
-    assert!(
-        planner
-            .allowed_tools
-            .contains(&"search_memories".to_string())
-    );
+    assert!(planner
+        .allowed_tools
+        .contains(&"search_memories".to_string()));
     assert!(!planner.allowed_tools.contains(&"run_pty_cmd".to_string()));
     assert!(!planner.allowed_tools.contains(&"write_file".to_string()));
     assert_eq!(planner.max_iterations, 5);

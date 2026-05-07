@@ -1,5 +1,5 @@
-/// macOS-only IME (Input Method Editor) switching via Carbon Text Input Source Services.
-/// Returns no-op results on non-macOS platforms.
+//! macOS-only IME (Input Method Editor) switching via Carbon Text Input Source Services.
+//! Returns no-op results on non-macOS platforms.
 
 #[cfg(target_os = "macos")]
 mod macos {

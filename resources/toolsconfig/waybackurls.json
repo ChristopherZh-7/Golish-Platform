@@ -12,7 +12,9 @@
     "tags": ["recon", "wayback", "url", "passive"],
     "install": {
       "method": "homebrew",
-      "source": "waybackurls"
+      "source": "waybackurls",
+      "windows": { "method": "github", "source": "tomnomnom/waybackurls" },
+      "linux": { "method": "github", "source": "tomnomnom/waybackurls" }
     },
     "params": [
       {

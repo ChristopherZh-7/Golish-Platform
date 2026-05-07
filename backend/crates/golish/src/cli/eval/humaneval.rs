@@ -217,7 +217,8 @@ async fn run_sequential_benchmark(
                     if !report.passed {
                         for metric in &report.metrics {
                             if !metric.result.passed() {
-                                if let golish_evals::MetricResult::Fail { reason } = &metric.result {
+                                if let golish_evals::MetricResult::Fail { reason } = &metric.result
+                                {
                                     println!("  {} failed: {}", metric.name, reason);
                                 }
                             }

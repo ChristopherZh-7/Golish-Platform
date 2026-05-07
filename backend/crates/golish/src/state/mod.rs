@@ -99,7 +99,9 @@ impl AppState {
             .wait_timeout(std::time::Duration::from_secs(15))
             .await
         {
-            return Err(GolishError::Internal("Database is still starting up, please retry".into()));
+            return Err(GolishError::Internal(
+                "Database is still starting up, please retry".into(),
+            ));
         }
         Ok(&self.db_pool)
     }

@@ -5,7 +5,6 @@ use golish_settings::schema::AiProvider;
 use crate::capabilities::ModelCapabilities;
 use crate::registry::ModelDefinition;
 
-
 /// xAI (Grok) model definitions.
 pub fn xai_models() -> Vec<ModelDefinition> {
     vec![

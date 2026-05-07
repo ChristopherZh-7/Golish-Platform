@@ -75,12 +75,10 @@ fn search_file(
 ) -> Result<()> {
     let lang = match lang {
         Some(l) => l,
-        None => {
-            match file_path.to_str().and_then(detect_language) {
-                Some(l) => l,
-                None => return Ok(()),
-            }
-        }
+        None => match file_path.to_str().and_then(detect_language) {
+            Some(l) => l,
+            None => return Ok(()),
+        },
     };
 
     let source = fs::read_to_string(file_path)

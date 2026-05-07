@@ -63,8 +63,7 @@ impl From<MetaRow> for RecordingMeta {
 
 impl From<RecordingRow> for Recording {
     fn from(r: RecordingRow) -> Self {
-        let events: Vec<(f64, String)> =
-            serde_json::from_value(r.events).unwrap_or_default();
+        let events: Vec<(f64, String)> = serde_json::from_value(r.events).unwrap_or_default();
         Self {
             meta: RecordingMeta {
                 id: r.id,
@@ -149,8 +148,7 @@ pub async fn recording_list(
          FROM recordings ORDER BY created_at DESC",
     )
     .fetch_all(pool)
-    .await
-?;
+    .await?;
 
     Ok(rows.into_iter().map(RecordingMeta::from).collect())
 }
@@ -165,8 +163,7 @@ pub async fn recording_delete(
     sqlx::query("DELETE FROM recordings WHERE id = $1")
         .bind(&id)
         .execute(pool)
-        .await
-?;
+        .await?;
     tracing::debug!("[recording_delete] Deleted recording {id}");
     Ok(())
 }

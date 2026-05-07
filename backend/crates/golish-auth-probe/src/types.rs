@@ -149,7 +149,11 @@ impl Default for ProbeConfig {
             token_b: TokenSource::None,
             id_pool_a: Vec::new(),
             id_pool_b: Vec::new(),
-            scenarios: vec![Scenario::Anonymous, Scenario::CrossUser, Scenario::Privilege],
+            scenarios: vec![
+                Scenario::Anonymous,
+                Scenario::CrossUser,
+                Scenario::Privilege,
+            ],
             rate_limit_ms: 1000,
             timeout_ms: 10_000,
             max_endpoints: 500,

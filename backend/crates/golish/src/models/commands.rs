@@ -23,7 +23,9 @@ pub async fn get_available_models(
 
 /// Get a specific model by ID.
 #[tauri::command]
-pub async fn get_model_by_id(model_id: String) -> Result<Option<OwnedModelDefinition>, GolishError> {
+pub async fn get_model_by_id(
+    model_id: String,
+) -> Result<Option<OwnedModelDefinition>, GolishError> {
     Ok(get_model_owned(&model_id))
 }
 

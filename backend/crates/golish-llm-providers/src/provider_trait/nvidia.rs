@@ -9,7 +9,6 @@ use rig::client::CompletionClient;
 use super::super::LlmClient;
 use super::LlmProvider;
 
-
 /// NVIDIA NIM provider implementation (OpenAI-compatible).
 pub struct NvidiaProviderImpl {
     pub api_key: String,

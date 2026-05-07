@@ -12,8 +12,7 @@ fn status_strategy() -> impl Strategy<Value = StepStatus> {
 
 /// Strategy for generating a non-empty step description
 fn step_description_strategy() -> impl Strategy<Value = String> {
-    "[a-zA-Z0-9 ]{1,50}"
-        .prop_filter("must not be empty after trim", |s| !s.trim().is_empty())
+    "[a-zA-Z0-9 ]{1,50}".prop_filter("must not be empty after trim", |s| !s.trim().is_empty())
 }
 
 /// Strategy for generating a valid plan step input

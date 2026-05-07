@@ -12,7 +12,9 @@
     "tags": ["recon", "screenshot", "visual", "bulk"],
     "install": {
       "method": "homebrew",
-      "source": "gowitness"
+      "source": "gowitness",
+      "windows": { "method": "github", "source": "sensepost/gowitness" },
+      "linux": { "method": "github", "source": "sensepost/gowitness" }
     },
     "params": [
       {

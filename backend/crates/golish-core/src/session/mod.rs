@@ -103,8 +103,7 @@ pub use message::{MessageContent, MessageRole, SessionMessage};
 
 // Also export storage utilities for testing/internal use
 pub use storage::{
-    find_session_in_workspace, get_sessions_dir, get_sessions_dir_for,
-    list_sessions_for_workspace,
+    find_session_in_workspace, get_sessions_dir, get_sessions_dir_for, list_sessions_for_workspace,
 };
 
 #[cfg(test)]

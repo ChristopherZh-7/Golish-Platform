@@ -12,7 +12,9 @@
     "tags": ["recon", "port-scan", "network", "fingerprint"],
     "install": {
       "method": "homebrew",
-      "source": "nmap"
+      "source": "nmap",
+      "windows": { "method": "github", "source": "nmap/nmap" },
+      "linux": { "method": "github", "source": "nmap/nmap" }
     },
     "params": [
       {

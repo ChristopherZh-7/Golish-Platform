@@ -52,8 +52,7 @@ pub async fn get_user(&self, user_id: UserId) -> Result<Option<User>> {
         old_lines: vec![
             "impl UserService {".to_string(),
             "    /// Fetches a user by their unique identifier.".to_string(),
-            "    pub async fn get_user(&self, id: UserId) -> Result<Option<User>> {"
-                .to_string(),
+            "    pub async fn get_user(&self, id: UserId) -> Result<Option<User>> {".to_string(),
             "        let user = self.db.query_user(id).await?;".to_string(),
             "        Ok(user)".to_string(),
             "    }".to_string(),
@@ -62,8 +61,7 @@ pub async fn get_user(&self, user_id: UserId) -> Result<Option<User>> {
         new_lines: vec![
             "impl UserService {".to_string(),
             "    /// Fetches a user by their unique identifier.".to_string(),
-            "    pub async fn get_user(&self, id: UserId) -> Result<Option<User>> {"
-                .to_string(),
+            "    pub async fn get_user(&self, id: UserId) -> Result<Option<User>> {".to_string(),
             "        let user = self.db.query_user(id).await?;".to_string(),
             "        tracing::debug!(\"Fetched user: {:?}\", user);".to_string(),
             "        Ok(user)".to_string(),

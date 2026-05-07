@@ -33,7 +33,8 @@ pub(crate) fn build_request(
     stream: bool,
 ) -> types::CompletionRequest {
     // Convert chat history to messages
-    let mut messages: Vec<types::Message> = request.chat_history.iter().map(convert_message).collect();
+    let mut messages: Vec<types::Message> =
+        request.chat_history.iter().map(convert_message).collect();
 
     // Add normalized documents as user messages
     for doc in &request.documents {

@@ -5,7 +5,6 @@ use golish_settings::schema::AiProvider;
 use crate::capabilities::ModelCapabilities;
 use crate::registry::ModelDefinition;
 
-
 /// OpenRouter model definitions.
 ///
 /// Note: OpenRouter provides access to many models. These are curated defaults.

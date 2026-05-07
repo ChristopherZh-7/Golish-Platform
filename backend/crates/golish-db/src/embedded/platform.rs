@@ -8,56 +8,12 @@ use super::EmbeddedPg;
 /// Search common system paths for pgvector extension files.
 /// Returns paths to the shared library (.dylib/.so) and the control + SQL files.
 pub(super) fn find_system_pgvector() -> Vec<PathBuf> {
-    let lib_ext = if cfg!(target_os = "macos") {
-        "dylib"
-    } else if cfg!(target_os = "windows") {
-        "dll"
-    } else {
-        "so"
-    };
-
-    let lib_candidates: Vec<PathBuf> = if cfg!(target_os = "macos") {
-        vec![
-            // Homebrew Apple Silicon
-            PathBuf::from("/opt/homebrew/lib/postgresql@17/vector.dylib"),
-            PathBuf::from("/opt/homebrew/opt/postgresql@17/lib/postgresql/vector.dylib"),
-            // Homebrew Intel
-            PathBuf::from("/usr/local/lib/postgresql@17/vector.dylib"),
-            PathBuf::from("/usr/local/opt/postgresql@17/lib/postgresql/vector.dylib"),
-            // Unversioned Homebrew
-            PathBuf::from("/opt/homebrew/lib/postgresql/vector.dylib"),
-            PathBuf::from("/usr/local/lib/postgresql/vector.dylib"),
-        ]
-    } else if cfg!(target_os = "linux") {
-        vec![
-            PathBuf::from("/usr/lib/postgresql/17/lib/vector.so"),
-            PathBuf::from("/usr/lib64/pgsql/vector.so"),
-        ]
-    } else {
-        vec![]
-    };
-
-    let ext_candidates: Vec<PathBuf> = if cfg!(target_os = "macos") {
-        vec![
-            PathBuf::from("/opt/homebrew/share/postgresql@17/extension"),
-            PathBuf::from("/opt/homebrew/opt/postgresql@17/share/postgresql@17/extension"),
-            PathBuf::from("/usr/local/share/postgresql@17/extension"),
-            PathBuf::from("/usr/local/opt/postgresql@17/share/postgresql@17/extension"),
-            PathBuf::from("/opt/homebrew/share/postgresql/extension"),
-            PathBuf::from("/usr/local/share/postgresql/extension"),
-        ]
-    } else if cfg!(target_os = "linux") {
-        vec![
-            PathBuf::from("/usr/share/postgresql/17/extension"),
-            PathBuf::from("/usr/share/pgsql/extension"),
-        ]
-    } else {
-        vec![]
-    };
+    let candidates = golish_platform::postgres::system_pgvector_candidates();
+    let lib_ext = golish_platform::Platform::current().shared_lib_extension();
 
     let mut files = Vec::new();
 
-    let lib_found = lib_candidates.iter().find(|p| p.exists());
+    let lib_found = candidates.library_files.iter().find(|p| p.exists());
     if lib_found.is_none() {
         // Also try pg_config --pkglibdir if available
         if let Ok(output) = std::process::Command::new("pg_config")
@@ -76,13 +32,18 @@ pub(super) fn find_system_pgvector() -> Vec<PathBuf> {
         files.push(path.clone());
     }
 
-    let ext_found = ext_candidates.iter().find(|p| p.join("vector.control").exists());
+    let ext_found = candidates
+        .extension_dirs
+        .iter()
+        .find(|p| p.join("vector.control").exists());
     if let Some(ext_dir) = ext_found {
         if let Ok(entries) = std::fs::read_dir(ext_dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name_str = name.to_string_lossy();
-                if name_str.starts_with("vector") && (name_str.ends_with(".control") || name_str.ends_with(".sql")) {
+                if name_str.starts_with("vector")
+                    && (name_str.ends_with(".control") || name_str.ends_with(".sql"))
+                {
                     files.push(entry.path());
                 }
             }
@@ -101,7 +62,9 @@ pub(super) fn find_system_pgvector() -> Vec<PathBuf> {
                         for entry in entries.flatten() {
                             let name = entry.file_name();
                             let name_str = name.to_string_lossy();
-                            if name_str.starts_with("vector") && (name_str.ends_with(".control") || name_str.ends_with(".sql")) {
+                            if name_str.starts_with("vector")
+                                && (name_str.ends_with(".control") || name_str.ends_with(".sql"))
+                            {
                                 files.push(entry.path());
                             }
                         }
@@ -113,16 +76,16 @@ pub(super) fn find_system_pgvector() -> Vec<PathBuf> {
 
     if !files.is_empty() {
         let has_lib = files.iter().any(|f| {
-            f.extension().map_or(false, |e| e == "dylib" || e == "so" || e == "dll")
+            f.extension()
+                .is_some_and(|e| e == "dylib" || e == "so" || e == "dll")
         });
-        let has_control = files.iter().any(|f| {
-            f.extension().map_or(false, |e| e == "control")
-        });
+        let has_control = files
+            .iter()
+            .any(|f| f.extension().is_some_and(|e| e == "control"));
         if !has_lib || !has_control {
             info!(
                 has_lib,
-                has_control,
-                "Incomplete pgvector installation found, skipping"
+                has_control, "Incomplete pgvector installation found, skipping"
             );
             return vec![];
         }
@@ -136,28 +99,7 @@ pub(super) fn find_system_pgvector() -> Vec<PathBuf> {
 pub(super) fn copy_binary(src: &Path, dst: &Path) -> std::io::Result<()> {
     let data = std::fs::read(src)?;
     std::fs::write(dst, &data)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dst, std::fs::Permissions::from_mode(0o755))?;
-    }
-    Ok(())
-}
-
-pub(super) fn platform_strings() -> (&'static str, &'static str) {
-    let os = if cfg!(target_os = "macos") {
-        "darwin"
-    } else if cfg!(target_os = "windows") {
-        "windows"
-    } else {
-        "linux"
-    };
-    let arch = if cfg!(target_arch = "aarch64") {
-        "arm64v8"
-    } else {
-        "amd64"
-    };
-    (os, arch)
+    golish_platform::fs_perms::set_executable(dst)
 }
 
 impl Drop for EmbeddedPg {

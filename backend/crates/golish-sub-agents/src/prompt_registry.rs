@@ -15,8 +15,8 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tera::{Context, Tera};
+use tokio::sync::RwLock;
 
 // Embed all default templates at compile time
 static TEMPLATES: &[(&str, &str)] = &[
@@ -33,11 +33,20 @@ static TEMPLATES: &[(&str, &str)] = &[
     ("worker", include_str!("../prompts/worker.tera")),
     ("generator", include_str!("../prompts/generator.tera")),
     ("refiner", include_str!("../prompts/refiner.tera")),
-    ("task_reporter", include_str!("../prompts/task_reporter.tera")),
-    ("task_reflector", include_str!("../prompts/task_reflector.tera")),
+    (
+        "task_reporter",
+        include_str!("../prompts/task_reporter.tera"),
+    ),
+    (
+        "task_reflector",
+        include_str!("../prompts/task_reflector.tera"),
+    ),
     ("mentor", include_str!("../prompts/mentor.tera")),
     ("summarizer", include_str!("../prompts/summarizer.tera")),
-    ("toolcall_fixer", include_str!("../prompts/toolcall_fixer.tera")),
+    (
+        "toolcall_fixer",
+        include_str!("../prompts/toolcall_fixer.tera"),
+    ),
     // Newly added — these mirror their hardcoded `build_*_prompt` fallbacks
     // so the registry-driven `create_default_sub_agents_from_registry`
     // path no longer logs `Template '...' not found` on startup.
@@ -84,9 +93,7 @@ impl PromptRegistry {
         let mut engine = self.engine.write().await;
         for (name, content) in &rows {
             if let Err(e) = engine.add_raw_template(name, content) {
-                tracing::warn!(
-                    "[prompt-registry] Failed to load DB override for '{name}': {e}"
-                );
+                tracing::warn!("[prompt-registry] Failed to load DB override for '{name}': {e}");
             } else {
                 tracing::info!("[prompt-registry] Loaded DB override for '{name}'");
             }
@@ -104,7 +111,11 @@ impl PromptRegistry {
 
     /// Render a template synchronously (for non-async contexts).
     /// Requires that no concurrent writes are happening.
-    pub fn render_blocking(&self, template_name: &str, ctx: &PromptContext) -> anyhow::Result<String> {
+    pub fn render_blocking(
+        &self,
+        template_name: &str,
+        ctx: &PromptContext,
+    ) -> anyhow::Result<String> {
         let engine = self.engine.blocking_read();
         let tera_ctx = ctx.to_tera_context();
         let rendered = engine.render(template_name, &tera_ctx)?;
@@ -136,7 +147,10 @@ impl PromptRegistry {
     pub async fn get_raw(&self, name: &str) -> Option<String> {
         let engine = self.engine.read().await;
         if engine.get_template(name).is_ok() {
-            TEMPLATES.iter().find(|(n, _)| *n == name).map(|(_, c)| c.to_string())
+            TEMPLATES
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, c)| c.to_string())
         } else {
             None
         }

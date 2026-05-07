@@ -21,20 +21,13 @@ pub async fn create(pool: &PgPool, log: NewAgentLog) -> Result<AgentLog> {
     Ok(row)
 }
 
-pub async fn complete(
-    pool: &PgPool,
-    id: Uuid,
-    result: &str,
-    duration_ms: i32,
-) -> Result<()> {
-    sqlx::query(
-        "UPDATE agent_logs SET result = $1, duration_ms = $2 WHERE id = $3",
-    )
-    .bind(result)
-    .bind(duration_ms)
-    .bind(id)
-    .execute(pool)
-    .await?;
+pub async fn complete(pool: &PgPool, id: Uuid, result: &str, duration_ms: i32) -> Result<()> {
+    sqlx::query("UPDATE agent_logs SET result = $1, duration_ms = $2 WHERE id = $3")
+        .bind(result)
+        .bind(duration_ms)
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -48,7 +41,10 @@ pub async fn list_by_session(pool: &PgPool, session_id: Uuid) -> Result<Vec<Agen
     Ok(rows)
 }
 
-pub async fn stats_by_executor(pool: &PgPool, session_id: Option<Uuid>) -> Result<Vec<AgentCallStats>> {
+pub async fn stats_by_executor(
+    pool: &PgPool,
+    session_id: Option<Uuid>,
+) -> Result<Vec<AgentCallStats>> {
     let rows = if let Some(sid) = session_id {
         sqlx::query_as::<_, AgentCallStats>(
             r#"SELECT executor, COUNT(*) as call_count,

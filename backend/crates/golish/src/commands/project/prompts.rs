@@ -71,7 +71,7 @@ pub async fn list_prompts(working_directory: Option<String>) -> Result<Vec<Promp
 
     // Convert to sorted vector
     let mut result: Vec<PromptInfo> = prompts.into_values().collect();
-    result.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    result.sort_by_key(|a| a.name.to_lowercase());
 
     Ok(result)
 }

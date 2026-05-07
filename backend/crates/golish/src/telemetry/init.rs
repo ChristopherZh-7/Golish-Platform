@@ -19,7 +19,6 @@ use super::guard::TelemetryGuard;
 use super::langfuse::LangfuseConfig;
 use super::stats::TelemetryStats;
 
-
 /// Initialize tracing with optional Langfuse/OpenTelemetry export.
 ///
 /// This function sets up:
@@ -311,8 +310,8 @@ macro_rules! record_llm_output {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::filter::should_filter_field;
+    use super::*;
 
     #[test]
     fn test_langfuse_config_default() {

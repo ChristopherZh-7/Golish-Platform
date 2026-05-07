@@ -160,8 +160,9 @@ mod tests {
         let client = Arc::new(RwLock::new(LlmClient::Mock));
         let ctx = test_ctx.as_agentic_context_with_client(&client);
         let config = AgenticLoopConfig::main_agent_generic();
-        let model =
-            MockCompletionModel::new(vec![MockResponse::text("Hello from completion phase test.")]);
+        let model = MockCompletionModel::new(vec![MockResponse::text(
+            "Hello from completion phase test.",
+        )]);
         let history = vec![user_message("Say hello.")];
         let state = TurnState {
             iteration: 1,
@@ -196,7 +197,9 @@ mod tests {
                     "text-only response must not produce tool calls"
                 );
                 assert!(
-                    outcome.text_content.contains("Hello from completion phase test."),
+                    outcome
+                        .text_content
+                        .contains("Hello from completion phase test."),
                     "text content must come from the mock model, got: {:?}",
                     outcome.text_content
                 );

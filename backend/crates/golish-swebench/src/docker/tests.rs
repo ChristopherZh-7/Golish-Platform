@@ -57,7 +57,9 @@ fn test_parse_django_test_output() {
         problem_statement: "Test".to_string(),
         patch: "".to_string(),
         test_patch: "".to_string(),
-        fail_to_pass: r#"["test_utils.tests.OverrideSettingsTests.test_override_file_upload_permissions"]"#.to_string(),
+        fail_to_pass:
+            r#"["test_utils.tests.OverrideSettingsTests.test_override_file_upload_permissions"]"#
+                .to_string(),
         pass_to_pass: "[]".to_string(),
         version: "3.0".to_string(),
         environment_setup_commit: "def456".to_string(),
@@ -96,7 +98,9 @@ fn test_parse_django_test_output_with_module_failure() {
         problem_statement: "Test".to_string(),
         patch: "".to_string(),
         test_patch: "".to_string(),
-        fail_to_pass: r#"["test_utils.tests.OverrideSettingsTests.test_override_file_upload_permissions"]"#.to_string(),
+        fail_to_pass:
+            r#"["test_utils.tests.OverrideSettingsTests.test_override_file_upload_permissions"]"#
+                .to_string(),
         pass_to_pass: "[]".to_string(),
         version: "3.0".to_string(),
         environment_setup_commit: "def456".to_string(),

@@ -38,11 +38,7 @@ impl StreamingResponse {
                 index,
             } => match content_block {
                 ContentBlock::ToolUse { id, name, .. } => {
-                    tracing::info!(
-                        "event_to_chunk: ToolUseStart index={} name={}",
-                        index,
-                        name
-                    );
+                    tracing::info!("event_to_chunk: ToolUseStart index={} name={}", index, name);
                     Some(StreamChunk::ToolUseStart { id, name })
                 }
                 ContentBlock::Thinking { .. } => {

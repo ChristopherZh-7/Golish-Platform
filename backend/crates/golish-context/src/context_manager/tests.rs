@@ -189,7 +189,10 @@ fn test_should_compact_below_threshold() {
 
     let check = manager.should_compact(&state, "claude-3-5-sonnet");
 
-    assert!(!check.should_compact, "50% usage should not trigger compaction");
+    assert!(
+        !check.should_compact,
+        "50% usage should not trigger compaction"
+    );
     assert_eq!(check.current_tokens, 100_000);
     assert_eq!(check.max_tokens, 200_000);
     assert!((check.threshold - 0.80).abs() < f64::EPSILON);
@@ -220,7 +223,10 @@ fn test_should_compact_already_attempted() {
 
     let check = manager.should_compact(&state, "claude-3-5-sonnet");
 
-    assert!(!check.should_compact, "Should not compact if already attempted");
+    assert!(
+        !check.should_compact,
+        "Should not compact if already attempted"
+    );
     assert_eq!(check.reason, "Already attempted this turn");
 }
 
@@ -346,7 +352,10 @@ fn test_should_compact_with_heuristic() {
     let check = manager.should_compact(&state, "claude-3-5-sonnet");
 
     assert!(check.should_compact);
-    assert!(check.using_heuristic, "Should indicate heuristic is being used");
+    assert!(
+        check.using_heuristic,
+        "Should indicate heuristic is being used"
+    );
 }
 
 #[test]
@@ -395,7 +404,10 @@ fn test_proactive_estimate_triggers_compaction() {
 
     state.update_tokens(100_000);
     let check = manager.should_compact(&state, "claude-3-5-sonnet");
-    assert!(!check.should_compact, "100k/200k (50%) should not trigger compaction");
+    assert!(
+        !check.should_compact,
+        "100k/200k (50%) should not trigger compaction"
+    );
 
     state.update_tokens_estimated(180_000);
     let check = manager.should_compact(&state, "claude-3-5-sonnet");
@@ -416,7 +428,10 @@ fn test_estimated_tokens_below_threshold_no_compaction() {
 
     state.update_tokens_estimated(140_000); // 70%
     let check = manager.should_compact(&state, "claude-3-5-sonnet");
-    assert!(!check.should_compact, "140k/200k (70%) should not trigger compaction");
+    assert!(
+        !check.should_compact,
+        "140k/200k (70%) should not trigger compaction"
+    );
 }
 
 #[test]
@@ -425,17 +440,31 @@ fn test_multiple_tool_results_accumulation() {
     let mut state = CompactionState::new();
 
     state.update_tokens(80_000);
-    assert!(!manager.should_compact(&state, "claude-3-5-sonnet").should_compact);
+    assert!(
+        !manager
+            .should_compact(&state, "claude-3-5-sonnet")
+            .should_compact
+    );
 
     state.update_tokens_estimated(100_000);
-    assert!(!manager.should_compact(&state, "claude-3-5-sonnet").should_compact);
+    assert!(
+        !manager
+            .should_compact(&state, "claude-3-5-sonnet")
+            .should_compact
+    );
 
     state.update_tokens_estimated(130_000);
-    assert!(!manager.should_compact(&state, "claude-3-5-sonnet").should_compact);
+    assert!(
+        !manager
+            .should_compact(&state, "claude-3-5-sonnet")
+            .should_compact
+    );
 
     state.update_tokens_estimated(165_000);
     assert!(
-        manager.should_compact(&state, "claude-3-5-sonnet").should_compact,
+        manager
+            .should_compact(&state, "claude-3-5-sonnet")
+            .should_compact,
         "165k/200k should trigger compaction"
     );
 }

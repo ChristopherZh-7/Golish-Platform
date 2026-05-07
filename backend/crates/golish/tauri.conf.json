@@ -40,6 +40,19 @@
     "macOS": {
       "signingIdentity": null,
       "entitlements": "entitlements.plist"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "wix": {
+        "language": ["en-US", "zh-CN"]
+      },
+      "nsis": {
+        "displayLanguageSelector": true,
+        "languages": ["English", "SimpChinese"],
+        "installMode": "currentUser"
+      }
     }
   }
 }

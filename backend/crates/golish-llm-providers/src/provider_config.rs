@@ -1,7 +1,7 @@
 //! Per-provider configuration structs and the unified `ProviderConfig` enum.
 
-use std::path::PathBuf;
 use serde::Deserialize;
+use std::path::PathBuf;
 
 /// Configuration for creating an AgentBridge with OpenRouter
 pub struct OpenRouterClientConfig<'a> {

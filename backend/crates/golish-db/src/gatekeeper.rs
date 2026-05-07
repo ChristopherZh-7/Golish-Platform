@@ -41,10 +41,10 @@ pub fn should_store(tool_name: &str, status: ToolcallStatus) -> StoreDecision {
         }
 
         // Security-specific tools
-        ("nmap" | "nikto" | "sqlmap" | "nuclei" | "ffuf" | "gobuster" | "dirsearch",
-         ToolcallStatus::Finished) => {
-            StoreDecision::Store(MemoryType::Observation)
-        }
+        (
+            "nmap" | "nikto" | "sqlmap" | "nuclei" | "ffuf" | "gobuster" | "dirsearch",
+            ToolcallStatus::Finished,
+        ) => StoreDecision::Store(MemoryType::Observation),
 
         // Pentest / exploitation results
         _ if tool_name.starts_with("pentest_") && status == ToolcallStatus::Finished => {
@@ -110,11 +110,7 @@ fn strip_ansi(s: &str) -> String {
 // ── Layer 3: Structured content builder ─────────────────────────────
 
 /// Build a search-friendly markdown document from tool invocation details.
-pub fn build_memory_content(
-    tool_name: &str,
-    args: &serde_json::Value,
-    result: &str,
-) -> String {
+pub fn build_memory_content(tool_name: &str, args: &serde_json::Value, result: &str) -> String {
     match tool_name {
         "run_command" | "bash" | "shell" => {
             let cmd = extract_str(args, "command")

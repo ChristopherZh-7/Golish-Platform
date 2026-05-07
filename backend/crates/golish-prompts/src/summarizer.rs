@@ -149,14 +149,8 @@ pub async fn generate_summary(client: &LlmClient, conversation: &str) -> Result<
         SUMMARIZER_SYSTEM_PROMPT.len(),
         user_prompt.len()
     );
-    tracing::debug!(
-        "[summarizer] System prompt:\n{}",
-        SUMMARIZER_SYSTEM_PROMPT
-    );
-    tracing::debug!(
-        "[summarizer] User message:\n{}",
-        user_prompt
-    );
+    tracing::debug!("[summarizer] System prompt:\n{}", SUMMARIZER_SYSTEM_PROMPT);
+    tracing::debug!("[summarizer] User message:\n{}", user_prompt);
 
     // Build the user message
     let user_message = Message::User {
@@ -187,24 +181,27 @@ async fn call_summarizer_model(client: &LlmClient, user_message: Message) -> Res
     }
 
     let user_text = match &user_message {
-        Message::User { content } => {
-            content
-                .iter()
-                .filter_map(|c| {
-                    if let rig::message::UserContent::Text(t) = c {
-                        Some(t.text.as_str())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
+        Message::User { content } => content
+            .iter()
+            .filter_map(|c| {
+                if let rig::message::UserContent::Text(t) = c {
+                    Some(t.text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
         _ => String::new(),
     };
 
     client
-        .one_shot_completion(SUMMARIZER_SYSTEM_PROMPT, &user_text, Some(0.3f64), Some(64_000))
+        .one_shot_completion(
+            SUMMARIZER_SYSTEM_PROMPT,
+            &user_text,
+            Some(0.3f64),
+            Some(64_000),
+        )
         .await
 }
 

@@ -50,11 +50,7 @@ impl DbTracker {
         self.backend.fetch_active_plans(&project_path).await
     }
 
-    pub async fn list_recent_memories(
-        &self,
-        category: Option<&str>,
-        limit: i64,
-    ) -> Vec<MemoryHit> {
+    pub async fn list_recent_memories(&self, category: Option<&str>, limit: i64) -> Vec<MemoryHit> {
         let mut gate = self.ready_gate.clone();
         if !gate.is_ready() && !gate.wait().await {
             return Vec::new();

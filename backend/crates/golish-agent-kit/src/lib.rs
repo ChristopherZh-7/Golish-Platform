@@ -1,3 +1,15 @@
+// These lints are intentionally allowed across the crate:
+// - `too_many_arguments`: many DB / agent helpers thread a wide context
+//   through the call stack; redesigning each into a struct is out of scope.
+// - `needless_borrow`: tool-trait methods accept `&T` parameters that callers
+//   pass through unchanged, so the explicit `&` is documented intent.
+// - `manual_async_fn`: a few traits use `Box<dyn Future>` for object safety.
+#![allow(
+    clippy::too_many_arguments,
+    clippy::needless_borrow,
+    clippy::manual_async_fn
+)]
+
 //! Lower-level building blocks of the agent runtime (**Layer 4a**).
 //!
 //! Renamed from `golish-agent-loop` in A2. The high-level streaming
@@ -35,8 +47,8 @@
 //!   `golish-agent-bridge` facades.
 
 pub mod db_shim;
-pub mod db_traits;
 pub mod db_tracking;
+pub mod db_traits;
 pub mod execution_mode;
 pub mod hitl;
 pub mod llm_client;

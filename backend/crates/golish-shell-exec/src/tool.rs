@@ -18,7 +18,7 @@ use golish_core::Tool;
 
 use crate::common::{resolve_cwd, truncate_output, DEFAULT_TIMEOUT_SECS, MAX_OUTPUT_SIZE};
 use crate::process_group::{configure_process_group, kill_process_group};
-use crate::shell::get_shell_config;
+use crate::shell::{build_command, get_shell_config};
 
 /// Tool for executing shell commands.
 ///
@@ -100,13 +100,9 @@ impl Tool for RunPtyCmdTool {
         }
 
         let (shell_path, shell_type, home) = get_shell_config(self.shell_override.as_deref());
-        let (shell, wrapped_command) = shell_type.build_command(&shell_path, command_str, &home);
+        let (shell, wrapped_command) = build_command(shell_type, &shell_path, command_str, &home);
 
-        let shell_arg = match shell_type {
-            crate::shell::ShellType::Cmd => "/C",
-            crate::shell::ShellType::PowerShell => "-Command",
-            _ => "-c",
-        };
+        let shell_arg = shell_type.command_arg();
 
         debug!(
             shell = %shell,

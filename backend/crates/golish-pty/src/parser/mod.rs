@@ -1,9 +1,9 @@
 #![allow(dead_code)] // PTY parser implemented but integrated via Tauri feature only
 
 mod performer;
-mod types;
 #[cfg(test)]
 mod tests;
+mod types;
 
 use vte::Parser;
 

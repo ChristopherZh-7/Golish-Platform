@@ -3,12 +3,12 @@
 //! This module provides the `build_function_declarations()` function that returns
 //! tool schemas in the format expected by LLM providers.
 
-mod file_ops;
 mod core_tools;
-mod memory_tools;
-mod knowledge_base;
-mod security_tools;
+mod file_ops;
 mod graph_tools;
+mod knowledge_base;
+mod memory_tools;
+mod security_tools;
 mod sploitus_tools;
 
 use serde::{Deserialize, Serialize};

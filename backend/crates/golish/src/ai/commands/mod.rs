@@ -188,7 +188,12 @@ impl AiState {
 ///
 /// IMPORTANT: Each session gets its own SidecarState instance to enable
 /// per-session isolation and avoid blocking between tabs when agents run concurrently.
-pub async fn configure_bridge(bridge: &mut AgentBridge, state: &AppState, session_id: &str, app_handle: Option<tauri::AppHandle>) {
+pub async fn configure_bridge(
+    bridge: &mut AgentBridge,
+    state: &AppState,
+    session_id: &str,
+    app_handle: Option<tauri::AppHandle>,
+) {
     let is_title_gen = golish_core::is_title_gen_session_id(session_id);
 
     if is_title_gen {
@@ -227,25 +232,34 @@ async fn configure_core_services(bridge: &mut AgentBridge, state: &AppState) {
     if let Err(e) = sidecar_state.initialize(workspace_path).await {
         tracing::warn!("Failed to initialize per-session sidecar: {}", e);
     }
-    let sidecar_backend: std::sync::Arc<dyn golish_agent_kit::sidecar_trait::SessionCaptureBackend> =
-        std::sync::Arc::new(crate::ai::sidecar_bridge::SidecarCaptureBackend::new(sidecar_state));
+    let sidecar_backend: std::sync::Arc<
+        dyn golish_agent_kit::sidecar_trait::SessionCaptureBackend,
+    > = std::sync::Arc::new(crate::ai::sidecar_bridge::SidecarCaptureBackend::new(
+        sidecar_state,
+    ));
 
     // db tracking + readiness + chain persistence travel together and use
     // a generic readiness-gate bound that can't go through `BridgeBackends`,
     // so call `set_db_backend` directly first — `db_repo` / `embedder`
     // applied via `apply_backends` below need the live tracker to exist.
     let tracking_backend: std::sync::Arc<dyn golish_agent_kit::db_traits::DbTrackingBackend> =
-        std::sync::Arc::new(crate::ai::tracking_bridge::PgTrackingBackend::new(state.db_pool.clone()));
+        std::sync::Arc::new(crate::ai::tracking_bridge::PgTrackingBackend::new(
+            state.db_pool.clone(),
+        ));
     let chain_persistence: std::sync::Arc<dyn golish_sub_agents::SubAgentChainPersistence> =
-        std::sync::Arc::new(crate::ai::tracking_bridge::PgChainPersistence::new(state.db_pool.clone()));
+        std::sync::Arc::new(crate::ai::tracking_bridge::PgChainPersistence::new(
+            state.db_pool.clone(),
+        ));
     let ready_gate = crate::ai::tracking_bridge::CoreDbReadyGate(state.db_ready.clone());
     bridge.set_db_backend(tracking_backend, ready_gate, chain_persistence);
 
-    let graph_backend = std::sync::Arc::new(
-        crate::ai::graph_bridge::GraphClientBackend::new(state.db_pool.clone()),
-    );
+    let graph_backend = std::sync::Arc::new(crate::ai::graph_bridge::GraphClientBackend::new(
+        state.db_pool.clone(),
+    ));
     let db_repo: std::sync::Arc<dyn golish_agent_kit::db_traits::DbRepoProvider> =
-        std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(state.db_pool.clone()));
+        std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(
+            state.db_pool.clone(),
+        ));
 
     bridge.apply_backends(golish_agent_bridge::BridgeBackends {
         indexer: Some(state.indexer_state.clone()),
@@ -284,10 +298,14 @@ async fn configure_memory_and_embeddings(
 ) {
     if let Some(ref key) = settings.ai.openai.api_key {
         if !key.is_empty() {
-            let base = settings.ai.openai.base_url.as_deref().unwrap_or("https://api.openai.com/v1");
-            let embedder = golish_db::embeddings::HttpEmbedder::new(
-                base, key, "text-embedding-3-small", 1536,
-            );
+            let base = settings
+                .ai
+                .openai
+                .base_url
+                .as_deref()
+                .unwrap_or("https://api.openai.com/v1");
+            let embedder =
+                golish_db::embeddings::HttpEmbedder::new(base, key, "text-embedding-3-small", 1536);
             let bridged = crate::ai::embedder_bridge::EmbedderBridge::new(embedder);
             bridge.set_embedder(std::sync::Arc::new(bridged));
             tracing::info!("[agent] Semantic memory enabled (text-embedding-3-small)");
@@ -304,14 +322,12 @@ async fn configure_memory_and_embeddings(
     }
     bridge.set_memory_file_path(memory_file_path).await;
 
-    let model_factory = golish_agent_kit::llm_client::LlmClientFactory::new(state.settings_manager.clone());
+    let model_factory =
+        golish_agent_kit::llm_client::LlmClientFactory::new(state.settings_manager.clone());
     bridge.set_model_factory(std::sync::Arc::new(model_factory));
 }
 
-async fn configure_sub_agents(
-    bridge: &AgentBridge,
-    settings: &golish_settings::GolishSettings,
-) {
+async fn configure_sub_agents(bridge: &AgentBridge, settings: &golish_settings::GolishSettings) {
     apply_sub_agent_model_settings(bridge, &settings.ai).await;
 }
 
@@ -359,7 +375,9 @@ async fn register_visible_pty_tool(bridge: &AgentBridge, state: &AppState) {
     );
     let mut registry = bridge.tool_registry().write().await;
     registry.register_tool(Arc::new(visible_cmd_tool));
-    tracing::info!("[configure_bridge] Registered VisibleRunPtyCmdTool for visible terminal execution");
+    tracing::info!(
+        "[configure_bridge] Registered VisibleRunPtyCmdTool for visible terminal execution"
+    );
 }
 
 /// MCP tool executor that routes tool calls through the MCP manager.

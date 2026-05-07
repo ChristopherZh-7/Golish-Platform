@@ -143,10 +143,8 @@ pub(super) async fn initialize_agent(
                 .filter(|p| !p.is_empty())
                 .map(golish_llm_providers::openrouter_preferences_to_json);
 
-            if args.verbose {
-                if provider_preferences.is_some() {
-                    eprintln!("[cli] OpenRouter provider preferences configured");
-                }
+            if args.verbose && provider_preferences.is_some() {
+                eprintln!("[cli] OpenRouter provider preferences configured");
             }
 
             AgentBridge::new_openrouter_with_shared_config(
@@ -177,8 +175,11 @@ pub(super) async fn initialize_agent(
 
     // Inject dependencies (same as init_ai_agent command in Tauri)
     bridge.set_indexer_state(indexer_state);
-    let sidecar_backend: std::sync::Arc<dyn golish_agent_kit::sidecar_trait::SessionCaptureBackend> =
-        std::sync::Arc::new(crate::ai::sidecar_bridge::SidecarCaptureBackend::new(sidecar_state));
+    let sidecar_backend: std::sync::Arc<
+        dyn golish_agent_kit::sidecar_trait::SessionCaptureBackend,
+    > = std::sync::Arc::new(crate::ai::sidecar_bridge::SidecarCaptureBackend::new(
+        sidecar_state,
+    ));
     bridge.set_sidecar_state(sidecar_backend);
 
     // Initialize MCP (Model Context Protocol) integration
@@ -248,8 +249,9 @@ pub(super) async fn initialize_mcp_integration(
         tool_definitions.len()
     );
 
-    let executor: Arc<dyn golish_agent_runtime::agentic_loop::McpToolExecutor> =
-        Arc::new(crate::ai::commands::McpManagerToolExecutor::new(Arc::clone(&manager)));
+    let executor: Arc<dyn golish_agent_runtime::agentic_loop::McpToolExecutor> = Arc::new(
+        crate::ai::commands::McpManagerToolExecutor::new(Arc::clone(&manager)),
+    );
 
     bridge.set_mcp_tools(tool_definitions).await;
     bridge.set_mcp_executor(executor).await;
@@ -259,7 +261,11 @@ pub(super) async fn initialize_mcp_integration(
 
 /// Resolve API key from CLI args, settings, or environment variables.
 #[allow(dead_code)]
-pub(super) fn resolve_api_key(settings: &GolishSettings, provider: &str, args: &Args) -> Result<String> {
+pub(super) fn resolve_api_key(
+    settings: &GolishSettings,
+    provider: &str,
+    args: &Args,
+) -> Result<String> {
     // 1. CLI argument takes precedence
     if let Some(ref key) = args.api_key {
         return Ok(key.clone());

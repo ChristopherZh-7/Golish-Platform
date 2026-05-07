@@ -8,7 +8,6 @@ use golish_models::AiProvider;
 use super::super::LlmClient;
 use super::LlmProvider;
 
-
 /// Vertex AI Gemini provider implementation.
 pub struct VertexGeminiProviderImpl {
     pub credentials_path: Option<String>,

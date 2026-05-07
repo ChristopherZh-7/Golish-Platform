@@ -102,7 +102,10 @@ where
 
     while let Some(chunk_result) = stream.next().await {
         if is_cancelled(ctx) {
-            tracing::info!("Agent cancelled during stream processing (chunk {})", chunk_count);
+            tracing::info!(
+                "Agent cancelled during stream processing (chunk {})",
+                chunk_count
+            );
             drop(stream);
             let _ = ctx.events.event_tx.send(AiEvent::Error {
                 message: "Agent stopped by user".to_string(),
@@ -112,7 +115,7 @@ where
         }
         chunk_count += 1;
         // Log progress every 50 chunks to avoid spam but track stream activity
-        if chunk_count % 50 == 0 {
+        if chunk_count.is_multiple_of(50) {
             tracing::debug!(
                 "[OpenAI Debug] Stream progress: {} chunks processed",
                 chunk_count
@@ -168,11 +171,7 @@ where
                             } else {
                                 json_rest.to_string()
                             };
-                            tracing::info!(
-                                "Parsed web fetch result for {}: {}",
-                                tool_use_id,
-                                url
-                            );
+                            tracing::info!("Parsed web fetch result for {}: {}", tool_use_id, url);
                             emit_event(
                                 ctx,
                                 AiEvent::WebFetchResult {
@@ -343,15 +342,8 @@ where
                     }
                 }
                 StreamedAssistantContent::Final(ref resp) => {
-                    record_token_usage(
-                        ctx,
-                        chat_history,
-                        llm_span,
-                        iteration,
-                        total_usage,
-                        resp,
-                    )
-                    .await;
+                    record_token_usage(ctx, chat_history, llm_span, iteration, total_usage, resp)
+                        .await;
                     extract_openai_reasoning_encrypted_content(
                         resp,
                         &mut thinking_id,
@@ -403,20 +395,14 @@ where
     }
 
     // No usable content + chunk errors observed: surface the error and break.
-    if text_content.is_empty()
-        && thinking_content.is_empty()
-        && tool_calls_to_execute.is_empty()
-    {
+    if text_content.is_empty() && thinking_content.is_empty() && tool_calls_to_execute.is_empty() {
         if let Some(ref err_msg) = last_stream_chunk_error {
             let classification = classify_stream_start_error(err_msg);
             let _ = ctx.events.event_tx.send(AiEvent::Error {
                 message: classification.user_message.clone(),
                 error_type: classification.error_type.to_string(),
             });
-            tracing::error!(
-                "Stream produced no content; last chunk error: {}",
-                err_msg
-            );
+            tracing::error!("Stream produced no content; last chunk error: {}", err_msg);
             return Ok(StreamOutcome::BreakAgentLoop);
         }
     }

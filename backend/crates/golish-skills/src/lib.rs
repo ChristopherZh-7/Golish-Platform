@@ -49,7 +49,10 @@ pub struct DefaultSkillProvider;
 
 impl golish_core::SkillProvider for DefaultSkillProvider {
     fn discover_skills(&self, workspace: Option<&str>) -> Vec<golish_core::SkillMetadata> {
-        discover_skills(workspace).into_iter().map(Into::into).collect()
+        discover_skills(workspace)
+            .into_iter()
+            .map(Into::into)
+            .collect()
     }
 
     fn match_skills(

@@ -7,8 +7,10 @@ use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
-use crate::synthesis::{ArtifactSynthesisConfig, ArtifactSynthesisInput, synthesize_readme, synthesize_claude_md};
-use crate::generators::{generate_readme_update, generate_claude_md_update};
+use crate::generators::{generate_claude_md_update, generate_readme_update};
+use crate::synthesis::{
+    synthesize_claude_md, synthesize_readme, ArtifactSynthesisConfig, ArtifactSynthesisInput,
+};
 use diff::{continue_or_error, generate_simple_diff};
 
 /// Manages artifacts for a session

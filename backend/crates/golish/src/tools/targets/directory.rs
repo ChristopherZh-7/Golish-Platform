@@ -7,8 +7,7 @@ use uuid::Uuid;
 
 use crate::state::DbState;
 
-use super::recon::{DirectoryEntry, DirEntryRow};
-
+use super::recon::{DirEntryRow, DirectoryEntry};
 
 pub async fn db_directory_entry_add(
     pool: &PgPool,
@@ -67,8 +66,7 @@ pub async fn db_directory_entries_list(
         .bind(project_path)
         .fetch_all(pool)
         .await
-    }
-?;
+    }?;
 
     Ok(rows.into_iter().map(DirectoryEntry::from).collect())
 }

@@ -15,7 +15,6 @@ use crate::transcript::TranscriptWriter;
 use super::commands::{CoordinatorCommand, CoordinatorState};
 use super::handle::CoordinatorHandle;
 
-
 /// The EventCoordinator owns all event-related state and processes commands
 /// in a single tokio task, ensuring deterministic ordering and eliminating deadlocks.
 pub struct EventCoordinator {
@@ -231,4 +230,3 @@ impl EventCoordinator {
         }
     }
 }
-

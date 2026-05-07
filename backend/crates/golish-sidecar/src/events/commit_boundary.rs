@@ -1,6 +1,6 @@
-use std::path::PathBuf;
 use chrono::{DateTime, Utc};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 use super::event_type::{EventType, FeedbackType};
 use super::session_event::SessionEvent;
@@ -94,15 +94,11 @@ impl CommitBoundaryDetector {
             EventType::UserFeedback {
                 feedback_type: FeedbackType::Approve,
                 ..
-            } => {
-                if self.recent_edits.len() >= self.min_events {
-                    return Some(self.create_boundary("User approved changes"));
-                }
+            } if self.recent_edits.len() >= self.min_events => {
+                return Some(self.create_boundary("User approved changes"));
             }
-            EventType::SessionEnd { .. } => {
-                if !self.recent_edits.is_empty() {
-                    return Some(self.create_boundary("Session ended"));
-                }
+            EventType::SessionEnd { .. } if !self.recent_edits.is_empty() => {
+                return Some(self.create_boundary("Session ended"));
             }
             _ => {}
         }

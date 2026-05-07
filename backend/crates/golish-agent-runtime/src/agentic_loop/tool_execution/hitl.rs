@@ -16,13 +16,12 @@ use golish_core::events::AiEvent;
 use golish_core::hitl::RiskLevel;
 use golish_sub_agents::SubAgentContext;
 
-use super::direct::execute_tool_direct_generic;
 use super::super::{
     emit_event, emit_to_frontend, AgenticLoopContext, LoopCaptureContext, ToolExecutionResult,
     APPROVAL_TIMEOUT_SECS,
 };
+use super::direct::execute_tool_direct_generic;
 use golish_agent_kit::tool_policy::{PolicyConstraintResult, ToolPolicy};
-
 
 /// Execute a tool with HITL approval check for generic models.
 pub async fn execute_with_hitl_generic<M>(
@@ -141,11 +140,23 @@ where
             },
         );
 
-        return execute_tool_direct_generic(tool_name, &effective_args, ctx, model, context, tool_id)
-            .await;
+        return execute_tool_direct_generic(
+            tool_name,
+            &effective_args,
+            ctx,
+            model,
+            context,
+            tool_id,
+        )
+        .await;
     }
 
-    if ctx.access.approval_recorder.should_auto_approve(tool_name).await {
+    if ctx
+        .access
+        .approval_recorder
+        .should_auto_approve(tool_name)
+        .await
+    {
         emit_event(
             ctx,
             AiEvent::ToolAutoApproved {
@@ -157,8 +168,15 @@ where
             },
         );
 
-        return execute_tool_direct_generic(tool_name, &effective_args, ctx, model, context, tool_id)
-            .await;
+        return execute_tool_direct_generic(
+            tool_name,
+            &effective_args,
+            ctx,
+            model,
+            context,
+            tool_id,
+        )
+        .await;
     }
 
     if tool_name.starts_with("pentest_") {
@@ -174,8 +192,15 @@ where
             },
         );
 
-        return execute_tool_direct_generic(tool_name, &effective_args, ctx, model, context, tool_id)
-            .await;
+        return execute_tool_direct_generic(
+            tool_name,
+            &effective_args,
+            ctx,
+            model,
+            context,
+            tool_id,
+        )
+        .await;
     }
 
     if is_auto_approve {
@@ -195,8 +220,15 @@ where
             },
         );
 
-        return execute_tool_direct_generic(tool_name, &effective_args, ctx, model, context, tool_id)
-            .await;
+        return execute_tool_direct_generic(
+            tool_name,
+            &effective_args,
+            ctx,
+            model,
+            context,
+            tool_id,
+        )
+        .await;
     }
 
     // Need HITL approval

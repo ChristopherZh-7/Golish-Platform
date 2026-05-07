@@ -147,5 +147,8 @@ async fn slugified_directory_is_used_on_disk() {
 
     // Look for the slug "my-cool-project" inside the registry tempdir.
     let registry: PathBuf = std::env::var("GOLISH_PROJECTS_DIR").unwrap().into();
-    assert!(registry.join("my-cool-project").join("config.toml").exists());
+    assert!(registry
+        .join("my-cool-project")
+        .join("config.toml")
+        .exists());
 }

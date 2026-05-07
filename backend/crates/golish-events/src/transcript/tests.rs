@@ -1,5 +1,5 @@
-use super::*;
 use super::summarizer::*;
+use super::*;
 use golish_core::events::AiEvent;
 
 mod writer_tests;

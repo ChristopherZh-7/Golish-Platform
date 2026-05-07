@@ -1,11 +1,9 @@
 //! AI tool / sub-agent commands.
 
-
 use crate::error::GolishError;
 use tauri::State;
 
 use crate::state::AppState;
-
 
 /// Send a prompt to the AI agent and receive streaming response via events.
 /// This is the legacy command - prefer send_ai_prompt_session for new code.
@@ -13,7 +11,10 @@ use crate::state::AppState;
 /// # Arguments
 /// * `prompt` - The user's message
 #[tauri::command]
-pub async fn send_ai_prompt(state: State<'_, AppState>, prompt: String) -> Result<String, GolishError> {
+pub async fn send_ai_prompt(
+    state: State<'_, AppState>,
+    prompt: String,
+) -> Result<String, GolishError> {
     let bridge_guard = state.ai_state.get_legacy_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
 

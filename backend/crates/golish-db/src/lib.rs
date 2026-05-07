@@ -25,6 +25,8 @@
 //! db.stop().await;
 //! ```
 
+#![allow(clippy::too_many_arguments)]
+
 pub mod config;
 pub mod embedded;
 pub mod embeddings;
@@ -37,9 +39,9 @@ use anyhow::Result;
 use sqlx::PgPool;
 
 pub use config::DbConfig;
+pub use golish_core::DbReadyGate;
 pub use models::*;
 pub use pool::create_lazy_pool;
-pub use golish_core::DbReadyGate;
 
 /// Top-level database handle. Owns the embedded PG server and connection pool.
 pub struct GolishDb {

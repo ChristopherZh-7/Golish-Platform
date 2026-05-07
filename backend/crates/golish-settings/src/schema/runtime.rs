@@ -6,12 +6,12 @@
 //! compaction, native OS notifications) plus the OpenTelemetry/Langfuse
 //! tracing pipeline used to observe it.
 
-use serde::{Deserialize, Serialize};
 use super::defaults::{
     default_compaction_threshold, default_context_enabled, default_cooldown_seconds,
     default_protected_turns,
 };
 use super::enums::IndexLocation;
+use serde::{Deserialize, Serialize};
 
 /// Code indexer settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -7,9 +7,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use chrono::Utc;
 
-use golish_core::session::{
-    MessageRole, SessionArchive, SessionArchiveMetadata, SessionMessage,
-};
+use golish_core::session::{MessageRole, SessionArchive, SessionArchiveMetadata, SessionMessage};
 
 use crate::db;
 use crate::types::{GolishMessageRole, GolishSessionMessage, GolishSessionSnapshot};
@@ -22,7 +20,6 @@ fn truncate(s: &str, max_len: usize) -> String {
         format!("{}...", truncated)
     }
 }
-
 
 /// Active session manager for creating and finalizing session archives.
 pub struct GolishSessionManager {

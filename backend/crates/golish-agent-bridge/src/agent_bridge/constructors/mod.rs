@@ -124,9 +124,7 @@ impl AgentBridge {
                 )
                 .await
             }
-            ProviderConfig::Anthropic {
-                model, api_key, ..
-            } => {
+            ProviderConfig::Anthropic { model, api_key, .. } => {
                 Self::new_anthropic_with_shared_config(
                     workspace_path,
                     &model,
@@ -150,9 +148,7 @@ impl AgentBridge {
                 )
                 .await
             }
-            ProviderConfig::Gemini {
-                model, api_key, ..
-            } => {
+            ProviderConfig::Gemini { model, api_key, .. } => {
                 Self::new_gemini_with_shared_config(
                     workspace_path,
                     &model,
@@ -163,9 +159,7 @@ impl AgentBridge {
                 )
                 .await
             }
-            ProviderConfig::Groq {
-                model, api_key, ..
-            } => {
+            ProviderConfig::Groq { model, api_key, .. } => {
                 Self::new_groq_with_shared_config(
                     workspace_path,
                     &model,
@@ -176,9 +170,7 @@ impl AgentBridge {
                 )
                 .await
             }
-            ProviderConfig::Xai {
-                model, api_key, ..
-            } => {
+            ProviderConfig::Xai { model, api_key, .. } => {
                 Self::new_xai_with_shared_config(
                     workspace_path,
                     &model,
@@ -249,7 +241,6 @@ impl AgentBridge {
         }
     }
 
-
     /// Core constructor: builds an AgentBridge from pre-built components.
     pub(super) fn from_components_with_runtime(
         components: AgentBridgeComponents,
@@ -273,11 +264,7 @@ impl AgentBridge {
             openrouter_provider_preferences,
         } = components;
 
-        let coordinator = EventCoordinator::spawn(
-            event_session_id.clone(),
-            runtime.clone(),
-            None,
-        );
+        let coordinator = EventCoordinator::spawn(event_session_id.clone(), runtime.clone(), None);
 
         use super::{
             BridgeAccessControl, BridgeEventBus, BridgeLlmConfig, BridgeServices, BridgeSession,
@@ -350,5 +337,4 @@ impl AgentBridge {
             mcp_tool_executor: Arc::new(RwLock::new(None)),
         }
     }
-
 }

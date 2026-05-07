@@ -30,15 +30,10 @@ pub trait SessionPersistence: Send + Sync {
 
     async fn list_sessions(&self, limit: usize) -> anyhow::Result<Vec<SessionListingInfo>>;
 
-    async fn find_session(
-        &self,
-        identifier: &str,
-    ) -> anyhow::Result<Option<SessionListingInfo>>;
+    async fn find_session(&self, identifier: &str) -> anyhow::Result<Option<SessionListingInfo>>;
 
-    async fn load_session(
-        &self,
-        identifier: &str,
-    ) -> anyhow::Result<Option<GolishSessionSnapshot>>;
+    async fn load_session(&self, identifier: &str)
+        -> anyhow::Result<Option<GolishSessionSnapshot>>;
 }
 
 /// Handle stored in `GolishSessionManager` for dual-write.

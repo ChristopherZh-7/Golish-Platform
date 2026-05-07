@@ -50,5 +50,5 @@ pub mod schema;
 pub use loader::{apply_proxy_env, get_with_env_fallback, settings_path, SettingsManager};
 pub use project::{ProjectSettings, ProjectSettingsManager};
 pub use schema::{
-    LangfuseSettings, NetworkSettings, GolishSettings, TelemetrySettings, WindowSettings,
+    GolishSettings, LangfuseSettings, NetworkSettings, TelemetrySettings, WindowSettings,
 };

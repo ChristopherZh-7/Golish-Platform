@@ -1,11 +1,7 @@
 //! PentAGI-style task-mode events: progress updates, subtask lifecycle,
 //! interactive input, resume, and enricher results.
 
-pub(super) fn task_progress(
-    task_id: &str,
-    status: &str,
-    message: &str,
-) -> serde_json::Value {
+pub(super) fn task_progress(task_id: &str, status: &str, message: &str) -> serde_json::Value {
     serde_json::json!({
         "task_id": task_id,
         "status": status,

@@ -2,9 +2,9 @@
 
 use uuid::Uuid;
 
-use golish_core::events::AiEvent;
-use crate::db_traits::SubtaskStatus;
 use crate::db_shim::subtasks;
+use crate::db_traits::SubtaskStatus;
+use golish_core::events::AiEvent;
 
 use super::super::helpers::{looks_like_text_only_response, truncate};
 use super::super::types::{
@@ -98,7 +98,12 @@ impl TaskOrchestrator {
         for reflector_attempt in 0..=MAX_REFLECTOR_RETRIES {
             let exec_result = if reflector_attempt == 0 {
                 executor
-                    .execute_subtask(&planned.title, &augmented_description, exec_ctx, Some(agent_type))
+                    .execute_subtask(
+                        &planned.title,
+                        &augmented_description,
+                        exec_ctx,
+                        Some(agent_type),
+                    )
                     .await
             } else {
                 let prev_response = last_result
@@ -119,7 +124,12 @@ impl TaskOrchestrator {
                             planned.description, correction
                         );
                         executor
-                            .execute_subtask(&planned.title, &augmented_desc, exec_ctx, Some(agent_type))
+                            .execute_subtask(
+                                &planned.title,
+                                &augmented_desc,
+                                exec_ctx,
+                                Some(agent_type),
+                            )
                             .await
                     }
                     Err(e) => {
@@ -153,12 +163,9 @@ impl TaskOrchestrator {
                             .to_string();
 
                         if let Some(ref st) = db_subtask {
-                            let _ = subtasks::update_status(
-                                &*self.repo,
-                                st.id,
-                                SubtaskStatus::Waiting,
-                            )
-                            .await;
+                            let _ =
+                                subtasks::update_status(&*self.repo, st.id, SubtaskStatus::Waiting)
+                                    .await;
                         }
 
                         self.emit(AiEvent::SubtaskWaitingForInput {
@@ -209,10 +216,7 @@ impl TaskOrchestrator {
                                     .await
                                 {
                                     Ok(final_result) => {
-                                        return (
-                                            final_result.content,
-                                            final_result.token_usage,
-                                        );
+                                        return (final_result.content, final_result.token_usage);
                                     }
                                     Err(e) => {
                                         return (format!("Error after user input: {}", e), None);

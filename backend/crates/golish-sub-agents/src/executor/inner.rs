@@ -167,7 +167,9 @@ where
             None
         };
         let max_tokens = ctx.max_tokens_override.unwrap_or(8192) as u64;
-        let additional_params = ctx.top_p_override.map(|tp| serde_json::json!({ "top_p": tp }));
+        let additional_params = ctx
+            .top_p_override
+            .map(|tp| serde_json::json!({ "top_p": tp }));
 
         let is_nvidia = ctx.provider_name == "nvidia";
         let (preamble, effective_history) = if is_nvidia {
@@ -243,7 +245,7 @@ where
             &mut stream,
             agent_id,
             parent_request_id,
-            &ctx.event_tx,
+            ctx.event_tx,
             &last_activity,
             idle_timeout,
             &llm_span,

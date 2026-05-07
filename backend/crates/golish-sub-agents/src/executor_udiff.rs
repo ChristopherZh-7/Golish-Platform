@@ -1,5 +1,5 @@
-use std::path::Path;
 use golish_udiff::{ApplyResult, UdiffApplier, UdiffParser};
+use std::path::Path;
 
 /// Process udiff output from the coder sub-agent, applying file changes.
 /// Mutates `files_modified` in-place and returns the response with appended summary.
@@ -59,77 +59,75 @@ pub(crate) fn process_coder_udiff(
         }
 
         match std::fs::read_to_string(&file_path) {
-            Ok(content) => {
-                match UdiffApplier::apply_hunks(&content, &diff.hunks) {
-                    ApplyResult::Success { new_content } => {
-                        if let Err(e) = std::fs::write(&file_path, new_content) {
-                            errors.push(format!(
-                                "Failed to write {}: {}",
-                                diff.file_path.display(),
-                                e
-                            ));
-                        } else {
-                            let path_str = diff.file_path.display().to_string();
-                            applied_files.push(path_str.clone());
-                            if !files_modified.contains(&path_str) {
-                                files_modified.push(path_str);
-                            }
-                        }
-                    }
-                    ApplyResult::PartialSuccess {
-                        new_content,
-                        applied,
-                        failed,
-                    } => {
-                        let failed_hunks = failed.clone();
-                        if let Err(e) = std::fs::write(&file_path, new_content) {
-                            errors.push(format!(
-                                "Failed to write {}: {}",
-                                diff.file_path.display(),
-                                e
-                            ));
-                        } else {
-                            let path_str = diff.file_path.display().to_string();
-                            applied_files.push(path_str.clone());
-                            if !files_modified.contains(&path_str) {
-                                files_modified.push(path_str);
-                            }
-                            for (idx, reason) in failed {
-                                errors.push(format!(
-                                    "Hunk {} in {}: {}",
-                                    idx,
-                                    diff.file_path.display(),
-                                    reason
-                                ));
-                            }
-                        }
-                        tracing::info!(
-                            "[coder] Partial success: applied hunks {:?}, failed: {:?}",
-                            applied,
-                            failed_hunks
-                        );
-                    }
-                    ApplyResult::NoMatch {
-                        hunk_idx,
-                        suggestion,
-                    } => {
+            Ok(content) => match UdiffApplier::apply_hunks(&content, &diff.hunks) {
+                ApplyResult::Success { new_content } => {
+                    if let Err(e) = std::fs::write(&file_path, new_content) {
                         errors.push(format!(
-                            "{} (hunk {}): {}",
+                            "Failed to write {}: {}",
                             diff.file_path.display(),
-                            hunk_idx,
-                            suggestion
+                            e
                         ));
-                    }
-                    ApplyResult::MultipleMatches { hunk_idx, count } => {
-                        errors.push(format!(
-                            "{} (hunk {}): Found {} matches, add more context",
-                            diff.file_path.display(),
-                            hunk_idx,
-                            count
-                        ));
+                    } else {
+                        let path_str = diff.file_path.display().to_string();
+                        applied_files.push(path_str.clone());
+                        if !files_modified.contains(&path_str) {
+                            files_modified.push(path_str);
+                        }
                     }
                 }
-            }
+                ApplyResult::PartialSuccess {
+                    new_content,
+                    applied,
+                    failed,
+                } => {
+                    let failed_hunks = failed.clone();
+                    if let Err(e) = std::fs::write(&file_path, new_content) {
+                        errors.push(format!(
+                            "Failed to write {}: {}",
+                            diff.file_path.display(),
+                            e
+                        ));
+                    } else {
+                        let path_str = diff.file_path.display().to_string();
+                        applied_files.push(path_str.clone());
+                        if !files_modified.contains(&path_str) {
+                            files_modified.push(path_str);
+                        }
+                        for (idx, reason) in failed {
+                            errors.push(format!(
+                                "Hunk {} in {}: {}",
+                                idx,
+                                diff.file_path.display(),
+                                reason
+                            ));
+                        }
+                    }
+                    tracing::info!(
+                        "[coder] Partial success: applied hunks {:?}, failed: {:?}",
+                        applied,
+                        failed_hunks
+                    );
+                }
+                ApplyResult::NoMatch {
+                    hunk_idx,
+                    suggestion,
+                } => {
+                    errors.push(format!(
+                        "{} (hunk {}): {}",
+                        diff.file_path.display(),
+                        hunk_idx,
+                        suggestion
+                    ));
+                }
+                ApplyResult::MultipleMatches { hunk_idx, count } => {
+                    errors.push(format!(
+                        "{} (hunk {}): Found {} matches, add more context",
+                        diff.file_path.display(),
+                        hunk_idx,
+                        count
+                    ));
+                }
+            },
             Err(e) => {
                 errors.push(format!("Cannot read {}: {}", diff.file_path.display(), e));
             }

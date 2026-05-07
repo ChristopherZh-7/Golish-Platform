@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 //! Sub-agent system for Golish.
 //!
 //! This crate provides the sub-agent system infrastructure including:

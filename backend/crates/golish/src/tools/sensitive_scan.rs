@@ -14,10 +14,10 @@ use uuid::Uuid;
 
 use crate::state::DbState;
 use golish_db::repo::audit::PentestAudit;
+use golish_pentest::sensitive_scan::{self as scan, ProbeHit, ScanResultStore};
 pub use golish_pentest::sensitive_scan::{
     ScanProgress, SensitiveScanConfig, SensitiveScanResult, DEFAULT_SENSITIVE_PATHS,
 };
-use golish_pentest::sensitive_scan::{self as scan, ProbeHit, ScanResultStore};
 
 static SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
 static SCAN_CANCELLED: AtomicBool = AtomicBool::new(false);
@@ -88,7 +88,9 @@ pub async fn sensitive_scan_start(
     project_path: Option<String>,
 ) -> Result<String, GolishError> {
     if SCAN_RUNNING.load(Ordering::SeqCst) {
-        return Err(GolishError::Internal("A sensitive scan is already running".into()));
+        return Err(GolishError::Internal(
+            "A sensitive scan is already running".into(),
+        ));
     }
     SCAN_RUNNING.store(true, Ordering::SeqCst);
     SCAN_CANCELLED.store(false, Ordering::SeqCst);
@@ -246,10 +248,12 @@ pub async fn sensitive_scan_clear(
     let pool = app_state.pool_ready().await?;
     sqlx::query("DELETE FROM sensitive_scan_results WHERE project_path = $1")
         .bind(project_path.as_deref())
-        .execute(pool).await?;
+        .execute(pool)
+        .await?;
     sqlx::query("DELETE FROM sensitive_scan_history WHERE project_path = $1")
         .bind(project_path.as_deref())
-        .execute(pool).await?;
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -263,15 +267,20 @@ pub async fn sensitive_scan_confirm(
     for id in &ids {
         let uuid: Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
         sqlx::query("UPDATE sensitive_scan_results SET is_confirmed = $1 WHERE id = $2")
-            .bind(confirmed).bind(uuid)
-            .execute(pool).await?;
+            .bind(confirmed)
+            .bind(uuid)
+            .execute(pool)
+            .await?;
     }
     Ok(())
 }
 
 #[tauri::command]
 pub async fn sensitive_scan_default_paths() -> Result<Vec<String>, GolishError> {
-    Ok(DEFAULT_SENSITIVE_PATHS.iter().map(|s| s.to_string()).collect())
+    Ok(DEFAULT_SENSITIVE_PATHS
+        .iter()
+        .map(|s| s.to_string())
+        .collect())
 }
 
 #[tauri::command]
@@ -287,18 +296,28 @@ pub async fn sensitive_scan_apply_verdicts(
          is_confirmed, ai_verdict, created_at FROM sensitive_scan_results WHERE project_path = $1",
     )
     .bind(project_path.as_deref())
-    .fetch_all(pool).await?;
+    .fetch_all(pool)
+    .await?;
 
     let mut tp_count = 0u32;
     let mut applied = 0u32;
     for v in &verdicts {
         let path = v.get("path").and_then(|p| p.as_str()).unwrap_or("");
-        let verdict = v.get("verdict").and_then(|v| v.as_str()).unwrap_or("needs_review");
+        let verdict = v
+            .get("verdict")
+            .and_then(|v| v.as_str())
+            .unwrap_or("needs_review");
         let reason = v.get("reason").and_then(|r| r.as_str()).unwrap_or("");
 
-        if let Some(row) = rows.iter().find(|r| r.probe_path == path || r.full_url == path) {
+        if let Some(row) = rows
+            .iter()
+            .find(|r| r.probe_path == path || r.full_url == path)
+        {
             let _ = sqlx::query("UPDATE sensitive_scan_results SET ai_verdict = $1 WHERE id = $2")
-                .bind(verdict).bind(row.id).execute(pool).await;
+                .bind(verdict)
+                .bind(row.id)
+                .execute(pool)
+                .await;
             applied += 1;
             if verdict == "true_positive" {
                 tp_count += 1;
@@ -316,9 +335,12 @@ pub async fn sensitive_scan_apply_verdicts(
         }
     }
 
-    let _ = app.emit("sensitive-scan-analyzed", serde_json::json!({
-        "analyzed": applied, "truePositives": tp_count,
-    }));
+    let _ = app.emit(
+        "sensitive-scan-analyzed",
+        serde_json::json!({
+            "analyzed": applied, "truePositives": tp_count,
+        }),
+    );
     Ok(serde_json::json!({ "analyzed": applied, "true_positives": tp_count }))
 }
 

@@ -45,11 +45,7 @@ pub async fn search_github_poc(
         query
     );
 
-    let resp = client
-        .get(&url)
-        .headers(headers.clone())
-        .send()
-        .await?;
+    let resp = client.get(&url).headers(headers.clone()).send().await?;
 
     if !resp.status().is_success() {
         let status = resp.status();

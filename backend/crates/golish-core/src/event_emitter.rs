@@ -34,7 +34,9 @@ pub struct EventEmitterHandle {
 
 impl EventEmitterHandle {
     pub fn new<E: EventEmitter + 'static>(emitter: E) -> Self {
-        Self { inner: Arc::new(emitter) }
+        Self {
+            inner: Arc::new(emitter),
+        }
     }
 
     pub fn from_arc(inner: Arc<dyn EventEmitter>) -> Self {

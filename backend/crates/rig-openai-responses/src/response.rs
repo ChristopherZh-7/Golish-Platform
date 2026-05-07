@@ -73,12 +73,13 @@ pub(crate) fn convert_response(response: Response) -> CompletionResponse<Respons
                     // pass it back to OpenAI in subsequent turns for stateless operation.
                     // See: https://platform.openai.com/docs/guides/reasoning
                     content.push(AssistantContent::Reasoning({
-                        let mut r = rig::message::Reasoning::multi(all_parts)
-                            .with_id(reasoning.id.clone());
+                        let mut r =
+                            rig::message::Reasoning::multi(all_parts).with_id(reasoning.id.clone());
                         // Store encrypted_content as signature on the first text block
                         if let Some(sig) = &reasoning.encrypted_content {
-                            if let Some(rig::message::ReasoningContent::Text { signature, .. }) =
-                                r.content.first_mut()
+                            if let Some(rig::message::ReasoningContent::Text {
+                                signature, ..
+                            }) = r.content.first_mut()
                             {
                                 *signature = Some(sig.clone());
                             }

@@ -23,9 +23,9 @@
 //! paths keep working unchanged.
 
 pub use golish_agent_kit::{
-    agent_mode, db_shim, db_traits, db_tracking, execution_mode, hitl, llm_client,
-    loop_detection, memory_file, memory_gatekeeper, planner, sidecar_trait, system_hooks,
-    tool_definitions, tool_execution, tool_executors, tool_policy, tool_provider_impl,
+    agent_mode, db_shim, db_tracking, db_traits, execution_mode, hitl, llm_client, loop_detection,
+    memory_file, memory_gatekeeper, planner, sidecar_trait, system_hooks, tool_definitions,
+    tool_execution, tool_executors, tool_policy, tool_provider_impl,
 };
 pub use golish_agent_runtime::agentic_loop;
 

@@ -8,6 +8,7 @@ description = "PostgreSQL-backed persistence layer for Golish platform"
 
 [dependencies]
 golish-core = { workspace = true }
+golish-platform = { workspace = true }
 
 # Async SQL toolkit with compile-time checked queries
 sqlx = { version = "0.8", features = [

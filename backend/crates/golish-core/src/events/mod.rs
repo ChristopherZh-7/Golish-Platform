@@ -3,7 +3,7 @@
 //! ## Layout
 //!
 //! - [`event`]        — the [`AiEvent`] enum + `event_type()` helper (one big enum
-//!                       on purpose: it is the wire contract with the frontend)
+//!   on purpose: it is the wire contract with the frontend)
 //! - [`tool_source`]  — [`ToolSource`] (origin of a tool call)
 //! - [`envelope`]     — [`AiEventEnvelope`] (seq + ts wrapper for reliable delivery)
 //!

@@ -6,7 +6,7 @@
 //! Layout:
 //! - [`code_research`]      — coder, analyzer, explorer, researcher
 //! - [`execution_planning`] — worker, installer, pentester, memorist, planner,
-//!                            reflector, adviser
+//!   reflector, adviser
 //! - [`reporting`]          — reporter, researcher_fallback, refiner
 //! - [`orchestration`]      — orchestrator, worker_fallback, browser, enricher
 
@@ -23,7 +23,9 @@ pub(super) use execution_planning::{
 pub(super) use orchestration::{
     build_browser_prompt, build_enricher_prompt, build_orchestrator_prompt,
 };
-pub(super) use reporting::{build_refiner_prompt, build_reporter_prompt, build_researcher_prompt_fallback};
+pub(super) use reporting::{
+    build_refiner_prompt, build_reporter_prompt, build_researcher_prompt_fallback,
+};
 
 /// System prompt used when generating optimized prompts for worker agents.
 ///

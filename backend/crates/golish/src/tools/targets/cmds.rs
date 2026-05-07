@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::state::DbState;
 
-use super::types::{detect_type, Target, TargetRow, TargetStatus, TargetStore, TargetType, Scope};
+use super::types::{detect_type, Scope, Target, TargetRow, TargetStatus, TargetStore, TargetType};
 
 #[tauri::command]
 pub async fn target_list(
@@ -25,8 +25,7 @@ pub async fn target_list(
     )
     .bind(pp)
     .fetch_all(pool)
-    .await
-?;
+    .await?;
 
     let targets: Vec<Target> = rows.into_iter().map(Target::from).collect();
 
@@ -87,13 +86,11 @@ pub async fn target_batch_add(
 ) -> Result<Vec<Target>, GolishError> {
     let pool = state.pool_ready().await?;
 
-    let existing: Vec<String> = sqlx::query_scalar(
-        "SELECT value FROM targets WHERE project_path = $1",
-    )
-    .bind(project_path.as_deref())
-    .fetch_all(pool)
-    .await
-?;
+    let existing: Vec<String> =
+        sqlx::query_scalar("SELECT value FROM targets WHERE project_path = $1")
+            .bind(project_path.as_deref())
+            .fetch_all(pool)
+            .await?;
 
     let mut added = Vec::new();
     for line in values.lines() {
@@ -118,8 +115,7 @@ pub async fn target_batch_add(
         .bind(v)
         .bind(project_path.as_deref())
         .fetch_one(pool)
-        .await
-?;
+        .await?;
         added.push(Target::from(row));
     }
     Ok(added)
@@ -146,16 +142,14 @@ pub async fn target_update(
             .bind(n)
             .bind(uid)
             .execute(pool)
-            .await
-?;
+            .await?;
     }
     if let Some(s) = &scope {
         sqlx::query("UPDATE targets SET scope=$1::scope_type, updated_at=NOW() WHERE id=$2")
             .bind(s.as_str())
             .bind(uid)
             .execute(pool)
-            .await
-?;
+            .await?;
     }
     if let Some(t) = &tags {
         let j = serde_json::to_value(t).unwrap_or_default();
@@ -163,24 +157,21 @@ pub async fn target_update(
             .bind(&j)
             .bind(uid)
             .execute(pool)
-            .await
-?;
+            .await?;
     }
     if let Some(n) = &notes {
         sqlx::query("UPDATE targets SET notes=$1, updated_at=NOW() WHERE id=$2")
             .bind(n)
             .bind(uid)
             .execute(pool)
-            .await
-?;
+            .await?;
     }
     if let Some(st) = &status {
         sqlx::query("UPDATE targets SET status=$1::target_status, updated_at=NOW() WHERE id=$2")
             .bind(st.as_str())
             .bind(uid)
             .execute(pool)
-            .await
-?;
+            .await?;
     }
     if let Some(p) = &ports {
         let j = serde_json::to_value(p).unwrap_or_default();
@@ -188,8 +179,7 @@ pub async fn target_update(
             .bind(&j)
             .bind(uid)
             .execute(pool)
-            .await
-?;
+            .await?;
     }
 
     let row = sqlx::query_as::<_, TargetRow>(
@@ -201,8 +191,7 @@ pub async fn target_update(
     )
     .bind(uid)
     .fetch_one(pool)
-    .await
-?;
+    .await?;
 
     Ok(Target::from(row))
 }
@@ -219,8 +208,7 @@ pub async fn target_delete(
     sqlx::query("DELETE FROM targets WHERE id=$1")
         .bind(uid)
         .execute(pool)
-        .await
-?;
+        .await?;
     Ok(())
 }
 
@@ -233,8 +221,7 @@ pub async fn target_clear_all(
     sqlx::query("DELETE FROM targets WHERE project_path = $1")
         .bind(project_path.as_deref())
         .execute(pool)
-        .await
-?;
+        .await?;
     Ok(())
 }
 
@@ -253,8 +240,7 @@ pub async fn target_update_status(
         .bind(status.as_str())
         .bind(uid)
         .execute(pool)
-        .await
-?;
+        .await?;
 
     let row = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
@@ -265,8 +251,7 @@ pub async fn target_update_status(
     )
     .bind(uid)
     .fetch_one(pool)
-    .await
-?;
+    .await?;
 
     Ok(Target::from(row))
 }

@@ -5,7 +5,10 @@ use tauri::State;
 
 use crate::ai::agent_mode::AgentMode;
 use crate::state::AppState;
-use golish_session::{self as golish_sess, GolishMessageRole, GolishSessionSnapshot, SessionListingInfo, SessionPersistence};
+use golish_session::{
+    self as golish_sess, GolishMessageRole, GolishSessionSnapshot, SessionListingInfo,
+    SessionPersistence,
+};
 
 /// Clear the AI agent's conversation history.
 /// Call this when starting a new conversation or when the user wants to reset context.
@@ -18,7 +21,10 @@ pub async fn clear_ai_conversation(
     session_id: Option<String>,
 ) -> Result<(), GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
         bridge.clear_conversation_history().await;
         tracing::info!("AI conversation history cleared for session {}", sid);
@@ -84,7 +90,10 @@ pub async fn get_ai_conversation_length(
     session_id: Option<String>,
 ) -> Result<usize, GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
         return Ok(bridge.conversation_history_len().await);
     }
@@ -160,13 +169,20 @@ pub async fn set_ai_session_persistence(
     session_id: Option<String>,
 ) -> Result<(), GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
         bridge.set_session_persistence_enabled(enabled).await;
         return Ok(());
     }
     let guard = state.ai_state.get_legacy_bridge().await?;
-    guard.as_ref().unwrap().set_session_persistence_enabled(enabled).await;
+    guard
+        .as_ref()
+        .unwrap()
+        .set_session_persistence_enabled(enabled)
+        .await;
     Ok(())
 }
 
@@ -177,12 +193,19 @@ pub async fn is_ai_session_persistence_enabled(
     session_id: Option<String>,
 ) -> Result<bool, GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
         return Ok(bridge.is_session_persistence_enabled().await);
     }
     let guard = state.ai_state.get_legacy_bridge().await?;
-    Ok(guard.as_ref().unwrap().is_session_persistence_enabled().await)
+    Ok(guard
+        .as_ref()
+        .unwrap()
+        .is_session_persistence_enabled()
+        .await)
 }
 
 /// Manually finalize and save the current session.
@@ -192,7 +215,10 @@ pub async fn finalize_ai_session(
     session_id: Option<String>,
 ) -> Result<Option<String>, GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| super::ai_session_not_initialized_error(sid))?;
         let path = bridge.finalize_session().await;
         return Ok(path.map(|p| p.display().to_string()));
@@ -217,8 +243,7 @@ pub async fn export_ai_session_transcript(
     let session = match persistence.load_session(&identifier).await {
         Ok(Some(s)) => s,
         _ => golish_sess::load_session(&identifier)
-            .await
-?
+            .await?
             .ok_or_else(|| format!("Session '{}' not found", identifier))?,
     };
 
@@ -277,8 +302,7 @@ pub async fn restore_ai_session(
     let session = match persistence.load_session(&identifier).await {
         Ok(Some(s)) => s,
         _ => golish_sess::load_session(&identifier)
-            .await
-?
+            .await?
             .ok_or_else(|| format!("Session '{}' not found", identifier))?,
     };
 
@@ -388,10 +412,7 @@ pub async fn restore_ai_session(
                         tracing::info!("Started new sidecar session {} for restored session", sid);
                     }
                     Err(e) => {
-                        tracing::info!(
-                            "Sidecar session not started for restored session: {}",
-                            e
-                        );
+                        tracing::info!("Sidecar session not started for restored session: {}", e);
                     }
                 }
             }
@@ -404,10 +425,7 @@ pub async fn restore_ai_session(
                 tracing::info!("Started new sidecar session {} for restored session", sid);
             }
             Err(e) => {
-                tracing::info!(
-                    "Sidecar session not started for restored session: {}",
-                    e
-                );
+                tracing::info!("Sidecar session not started for restored session: {}", e);
             }
         }
     }

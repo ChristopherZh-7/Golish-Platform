@@ -5,7 +5,6 @@ use crate::reasoning_models::is_reasoning_model;
 
 use super::helpers::model_supports_temperature;
 
-
 // ============================================================================
 // Model Capabilities (existing)
 // ============================================================================

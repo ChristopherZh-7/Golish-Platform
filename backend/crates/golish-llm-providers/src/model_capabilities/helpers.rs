@@ -3,7 +3,6 @@
 
 use crate::reasoning_models::is_reasoning_model;
 
-
 /// Check if a model supports the temperature parameter.
 ///
 /// # Arguments
@@ -92,4 +91,3 @@ pub fn openai_supports_web_search(model: &str) -> bool {
         .iter()
         .any(|m| model.to_lowercase().contains(&m.to_lowercase()))
 }
-

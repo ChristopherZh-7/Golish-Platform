@@ -90,7 +90,11 @@ impl From<&SubAgentDefinition> for AgentFileInfo {
                 let is_global = dirs::home_dir()
                     .map(|h| p.starts_with(h.join(".golish")))
                     .unwrap_or(false);
-                if is_global { "global" } else { "project" }
+                if is_global {
+                    "global"
+                } else {
+                    "project"
+                }
             }
         };
         Self::build(def, scope)

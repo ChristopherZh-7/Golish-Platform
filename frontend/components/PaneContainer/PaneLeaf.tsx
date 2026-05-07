@@ -16,6 +16,7 @@
 
 import React, { lazy, Suspense, useCallback } from "react";
 import { SubAgentDetailView } from "@/components/SubAgentDetailView";
+import { ToolCallDetailView } from "@/components/ToolCallDetailView/ToolCallDetailView";
 import { UnifiedInput } from "@/components/UnifiedInput";
 import { UnifiedTimeline } from "@/components/UnifiedTimeline";
 import { ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -153,11 +154,13 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
                     </div>
                   ) : detailViewMode === "sub-agent-detail" ? (
                     <SubAgentDetailView sessionId={sessionId} />
+                  ) : detailViewMode === "tool-detail" ? (
+                    <ToolCallDetailView sessionId={sessionId} />
                   ) : (
                     <UnifiedTimeline sessionId={sessionId} />
                   )}
                 </div>
-                {detailViewMode !== "sub-agent-detail" && (
+                {detailViewMode !== "sub-agent-detail" && detailViewMode !== "tool-detail" && (
                   <div
                     className={`pane-bottom-terminal origin-bottom transition-[transform,opacity] duration-200 ease-in-out ${
                       isCommandRunning

@@ -3,7 +3,6 @@
 
 use super::super::events::DecisionType;
 
-
 /// Summarize tool args for logging
 pub(super) fn summarize_args(args: &serde_json::Value) -> String {
     let mut parts = Vec::new();
@@ -97,4 +96,3 @@ pub(super) fn truncate_path(path: &str, max_len: usize) -> String {
         format!("...{}", &path[path.len() - keep..])
     }
 }
-

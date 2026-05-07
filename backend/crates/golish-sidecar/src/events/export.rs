@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use super::checkpoint::{Checkpoint, SidecarSession};
 use super::session_event::SessionEvent;

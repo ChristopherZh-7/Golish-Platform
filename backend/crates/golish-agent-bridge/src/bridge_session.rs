@@ -132,9 +132,6 @@ impl AgentBridge {
         let mut history = self.session.conversation_history.write().await;
         *history = messages;
 
-        tracing::info!(
-            "Restored session with {} messages in history",
-            count
-        );
+        tracing::info!("Restored session with {} messages in history", count);
     }
 }

@@ -37,8 +37,7 @@ pub(crate) async fn dispatch_tool_calls<M>(
     let (sub_agent_calls, other_calls) = partition_tool_calls(tool_calls_to_execute);
     let has_concurrent_sub_agents = sub_agent_calls.len() >= 2;
 
-    let mut indexed_results: Vec<Option<(UserContent, Vec<String>)>> =
-        vec![None; total_tool_count];
+    let mut indexed_results: Vec<Option<(UserContent, Vec<String>)>> = vec![None; total_tool_count];
 
     if has_concurrent_sub_agents {
         tracing::info!(
@@ -48,24 +47,18 @@ pub(crate) async fn dispatch_tool_calls<M>(
 
         let futures: Vec<_> = sub_agent_calls
             .into_iter()
-            .map(|(original_idx, tool_call)| {
-                let llm_span = llm_span;
-                let capture_ctx = capture_ctx;
-                let sub_agent_context = sub_agent_context;
-                let hook_registry = hook_registry;
-                async move {
-                    let result = execute_single_tool_call(
-                        tool_call,
-                        ctx,
-                        capture_ctx,
-                        model,
-                        sub_agent_context,
-                        hook_registry,
-                        llm_span,
-                    )
-                    .await;
-                    (original_idx, result)
-                }
+            .map(|(original_idx, tool_call)| async move {
+                let result = execute_single_tool_call(
+                    tool_call,
+                    ctx,
+                    capture_ctx,
+                    model,
+                    sub_agent_context,
+                    hook_registry,
+                    llm_span,
+                )
+                .await;
+                (original_idx, result)
             })
             .collect();
 

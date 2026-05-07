@@ -18,7 +18,10 @@ use super::ai_session_not_initialized_error;
 /// # Returns
 /// The current TaskPlan with version, summary, and steps
 #[tauri::command]
-pub async fn get_plan(session_id: String, state: State<'_, AppState>) -> Result<TaskPlan, GolishError> {
+pub async fn get_plan(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<TaskPlan, GolishError> {
     let bridges = state.ai_state.bridges.read().await;
     let bridge = bridges
         .get(&session_id)

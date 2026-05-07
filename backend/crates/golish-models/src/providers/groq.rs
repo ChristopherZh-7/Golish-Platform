@@ -5,7 +5,6 @@ use golish_settings::schema::AiProvider;
 use crate::capabilities::ModelCapabilities;
 use crate::registry::ModelDefinition;
 
-
 /// Groq model definitions.
 pub fn groq_models() -> Vec<ModelDefinition> {
     vec![

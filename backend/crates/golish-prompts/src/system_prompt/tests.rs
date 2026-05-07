@@ -80,13 +80,8 @@ fn test_prompt_with_contributions_same_as_base() {
     let workspace = PathBuf::from("/tmp/test");
 
     let base_prompt = build_system_prompt(&workspace, AgentMode::Default, None);
-    let composed_prompt = build_system_prompt_with_contributions(
-        &workspace,
-        AgentMode::Default,
-        None,
-        None,
-        None,
-    );
+    let composed_prompt =
+        build_system_prompt_with_contributions(&workspace, AgentMode::Default, None, None, None);
 
     assert_eq!(
         base_prompt, composed_prompt,

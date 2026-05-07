@@ -3,8 +3,8 @@
 
 use std::sync::atomic::AtomicBool;
 
-use crate::types::{Pipeline, PipelineConnection, PipelineStep};
 use super::types::StepResult;
+use crate::types::{Pipeline, PipelineConnection, PipelineStep};
 
 /// Global cancellation flag polled by `execute_pipeline_headless` to allow
 /// the frontend to stop a running pipeline mid-DAG.
@@ -64,8 +64,7 @@ fn user_templates() -> Vec<Pipeline> {
 pub fn builtin_templates() -> Vec<Pipeline> {
     let mut all = embedded_templates();
     let user = user_templates();
-    let user_ids: std::collections::HashSet<&str> =
-        user.iter().map(|p| p.id.as_str()).collect();
+    let user_ids: std::collections::HashSet<&str> = user.iter().map(|p| p.id.as_str()).collect();
     all.retain(|p| !user_ids.contains(p.id.as_str()));
     all.extend(user);
     all
@@ -83,9 +82,7 @@ pub fn detect_target_type(target: &str) -> &'static str {
     if target.starts_with("http://") || target.starts_with("https://") {
         return "url";
     }
-    if target.split('.').count() == 4
-        && target.split('.').all(|s| s.parse::<u8>().is_ok())
-    {
+    if target.split('.').count() == 4 && target.split('.').all(|s| s.parse::<u8>().is_ok()) {
         return "ip";
     }
     "domain"
@@ -102,8 +99,7 @@ pub(super) fn topo_layers<'a>(
         return steps.iter().map(|s| vec![s]).collect();
     }
 
-    let step_ids: std::collections::HashSet<&str> =
-        steps.iter().map(|s| s.id.as_str()).collect();
+    let step_ids: std::collections::HashSet<&str> = steps.iter().map(|s| s.id.as_str()).collect();
 
     let mut in_degree: std::collections::HashMap<&str, usize> =
         steps.iter().map(|s| (s.id.as_str(), 0)).collect();
@@ -111,9 +107,7 @@ pub(super) fn topo_layers<'a>(
     let mut adj: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
 
     for conn in connections {
-        if step_ids.contains(conn.from_step.as_str())
-            && step_ids.contains(conn.to_step.as_str())
-        {
+        if step_ids.contains(conn.from_step.as_str()) && step_ids.contains(conn.to_step.as_str()) {
             *in_degree.entry(conn.to_step.as_str()).or_insert(0) += 1;
             adj.entry(conn.from_step.as_str())
                 .or_default()
@@ -323,42 +317,87 @@ pub fn recon_basic_template() -> Pipeline {
         db_action: Option<&'static str>,
     }
 
-    let steps = vec![
+    let steps = [
         StepDef {
-            id: "dns_lookup", name: "dig", step_type: "dns_lookup",
-            cmd: "dig", args: vec!["+short", "{target}"],
-            input_from: None, requires: Some("domain"),
-            iterate_over: None, db_action: None,
+            id: "dns_lookup",
+            name: "dig",
+            step_type: "dns_lookup",
+            cmd: "dig",
+            args: vec!["+short", "{target}"],
+            input_from: None,
+            requires: Some("domain"),
+            iterate_over: None,
+            db_action: None,
         },
         StepDef {
-            id: "subdomain_enum", name: "subfinder", step_type: "subdomain_enum",
-            cmd: "subfinder", args: vec!["-d", "{target}", "-silent"],
-            input_from: None, requires: Some("domain"),
-            iterate_over: None, db_action: None,
+            id: "subdomain_enum",
+            name: "subfinder",
+            step_type: "subdomain_enum",
+            cmd: "subfinder",
+            args: vec!["-d", "{target}", "-silent"],
+            input_from: None,
+            requires: Some("domain"),
+            iterate_over: None,
+            db_action: None,
         },
         StepDef {
-            id: "port_scan", name: "naabu", step_type: "port_scan",
-            cmd: "naabu", args: vec!["-host", "{target}", "-top-ports", "1000", "-json", "-silent"],
-            input_from: None, requires: None,
-            iterate_over: None, db_action: None,
+            id: "port_scan",
+            name: "naabu",
+            step_type: "port_scan",
+            cmd: "naabu",
+            args: vec![
+                "-host",
+                "{target}",
+                "-top-ports",
+                "1000",
+                "-json",
+                "-silent",
+            ],
+            input_from: None,
+            requires: None,
+            iterate_over: None,
+            db_action: None,
         },
         StepDef {
-            id: "http_probe", name: "httpx", step_type: "http_probe",
-            cmd: "httpx", args: vec!["-u", "{target}", "-sc", "-title", "-tech-detect", "-json", "-silent"],
-            input_from: None, requires: None,
-            iterate_over: Some("ports"), db_action: None,
+            id: "http_probe",
+            name: "httpx",
+            step_type: "http_probe",
+            cmd: "httpx",
+            args: vec![
+                "-u",
+                "{target}",
+                "-sc",
+                "-title",
+                "-tech-detect",
+                "-json",
+                "-silent",
+            ],
+            input_from: None,
+            requires: None,
+            iterate_over: Some("ports"),
+            db_action: None,
         },
         StepDef {
-            id: "tech_fingerprint", name: "whatweb", step_type: "tech_fingerprint",
-            cmd: "whatweb", args: vec!["{target}", "--color=never"],
-            input_from: None, requires: None,
-            iterate_over: Some("ports"), db_action: None,
+            id: "tech_fingerprint",
+            name: "whatweb",
+            step_type: "tech_fingerprint",
+            cmd: "whatweb",
+            args: vec!["{target}", "--color=never"],
+            input_from: None,
+            requires: None,
+            iterate_over: Some("ports"),
+            db_action: None,
         },
         StepDef {
-            id: "web_crawl", name: "katana", step_type: "web_crawl",
-            cmd: "katana", args: vec!["-u", "{target}", "-d", "3", "-js-crawl", "-silent"],
-            input_from: None, requires: None,
-            iterate_over: Some("ports"), db_action: Some("target_add"),
+            id: "web_crawl",
+            name: "katana",
+            step_type: "web_crawl",
+            cmd: "katana",
+            args: vec!["-u", "{target}", "-d", "3", "-js-crawl", "-silent"],
+            input_from: None,
+            requires: None,
+            iterate_over: Some("ports"),
+            db_action: Some("target_add"),
         },
     ];
 
@@ -390,10 +429,26 @@ pub fn recon_basic_template() -> Pipeline {
         .collect();
 
     let connections: Vec<PipelineConnection> = vec![
-        PipelineConnection { from_step: "port_scan".into(), to_step: "http_probe".into(), condition: None },
-        PipelineConnection { from_step: "port_scan".into(), to_step: "tech_fingerprint".into(), condition: None },
-        PipelineConnection { from_step: "http_probe".into(), to_step: "web_crawl".into(), condition: None },
-        PipelineConnection { from_step: "tech_fingerprint".into(), to_step: "web_crawl".into(), condition: None },
+        PipelineConnection {
+            from_step: "port_scan".into(),
+            to_step: "http_probe".into(),
+            condition: None,
+        },
+        PipelineConnection {
+            from_step: "port_scan".into(),
+            to_step: "tech_fingerprint".into(),
+            condition: None,
+        },
+        PipelineConnection {
+            from_step: "http_probe".into(),
+            to_step: "web_crawl".into(),
+            condition: None,
+        },
+        PipelineConnection {
+            from_step: "tech_fingerprint".into(),
+            to_step: "web_crawl".into(),
+            condition: None,
+        },
     ];
 
     Pipeline {

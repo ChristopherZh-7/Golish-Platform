@@ -112,10 +112,7 @@ impl Embedder for HttpEmbedder {
             req = req.bearer_auth(&self.api_key);
         }
 
-        let resp = req
-            .send()
-            .await
-            .context("embedding API request failed")?;
+        let resp = req.send().await.context("embedding API request failed")?;
 
         if !resp.status().is_success() {
             let status = resp.status();

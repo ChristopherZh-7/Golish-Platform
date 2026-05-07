@@ -73,7 +73,7 @@ fn test_shell_info_unknown_shell_tcsh() {
 #[test]
 fn test_shell_info_unknown_shell_sh() {
     let info = ShellInfo::new("/bin/sh");
-    assert_eq!(info.shell_type(), ShellType::Unknown);
+    assert_eq!(info.shell_type(), ShellType::Sh);
 }
 
 #[test]
@@ -142,7 +142,7 @@ fn test_detect_shell_from_env_when_no_settings() {
 fn test_detect_shell_fallback_to_sh() {
     let info = detect_shell(None, None);
     assert_eq!(info.path, PathBuf::from("/bin/sh"));
-    assert_eq!(info.shell_type(), ShellType::Unknown);
+    assert_eq!(info.shell_type(), ShellType::Sh);
 }
 
 #[test]

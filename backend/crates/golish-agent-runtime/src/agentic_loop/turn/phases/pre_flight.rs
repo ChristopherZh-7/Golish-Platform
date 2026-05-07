@@ -114,9 +114,9 @@ mod tests {
             outcome,
             PhaseOutcome::Break(BreakReason::Cancelled)
         ));
-        let cancel_events = test_ctx.find_events(|e| {
-            matches!(e, AiEvent::Error { error_type, .. } if error_type == "cancelled")
-        });
+        let cancel_events = test_ctx.find_events(
+            |e| matches!(e, AiEvent::Error { error_type, .. } if error_type == "cancelled"),
+        );
         assert_eq!(cancel_events.len(), 1, "exactly one cancelled error event");
     }
 
@@ -152,9 +152,9 @@ mod tests {
             PhaseOutcome::Break(BreakReason::MaxIterations)
         ));
         assert_eq!(state.iteration, (MAX_TOOL_ITERATIONS as u32) + 1);
-        let max_iter_events = test_ctx.find_events(|e| {
-            matches!(e, AiEvent::Error { error_type, .. } if error_type == "max_iterations")
-        });
+        let max_iter_events = test_ctx.find_events(
+            |e| matches!(e, AiEvent::Error { error_type, .. } if error_type == "max_iterations"),
+        );
         assert_eq!(max_iter_events.len(), 1);
     }
 }

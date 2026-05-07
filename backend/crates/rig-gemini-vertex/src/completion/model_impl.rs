@@ -75,7 +75,8 @@ impl completion::CompletionModel for CompletionModel {
         // Build URL for streamGenerateContent with SSE.
         let url = format!(
             "{}?alt=sse",
-            self.client().endpoint_url(self.model(), "streamGenerateContent")
+            self.client()
+                .endpoint_url(self.model(), "streamGenerateContent")
         );
         tracing::debug!("stream(): POST {}", url);
 

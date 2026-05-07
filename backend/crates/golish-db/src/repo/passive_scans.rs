@@ -45,7 +45,11 @@ pub async fn insert(
     Ok(row)
 }
 
-pub async fn list_by_target(pool: &PgPool, target_id: Uuid, limit: i64) -> Result<Vec<PassiveScanLog>> {
+pub async fn list_by_target(
+    pool: &PgPool,
+    target_id: Uuid,
+    limit: i64,
+) -> Result<Vec<PassiveScanLog>> {
     let rows = sqlx::query_as::<_, PassiveScanLog>(
         "SELECT * FROM passive_scan_logs WHERE target_id = $1 ORDER BY tested_at DESC LIMIT $2",
     )

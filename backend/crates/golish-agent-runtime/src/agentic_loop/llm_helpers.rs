@@ -23,10 +23,7 @@ Summarize the tool output below, preserving ALL:
 Remove: redundant lines, progress bars, banner art, duplicate entries, verbose formatting.
 Output a clean, structured summary. Keep it under 800 tokens."#;
 
-    let user_msg = format!(
-        "Tool: {}\n\nOutput to summarize:\n{}",
-        tool_name, content
-    );
+    let user_msg = format!("Tool: {}\n\nOutput to summarize:\n{}", tool_name, content);
 
     let summary = mentor_one_shot(client, system, &user_msg).await?;
     if summary.trim().is_empty() {

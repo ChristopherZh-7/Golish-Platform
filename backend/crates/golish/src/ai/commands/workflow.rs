@@ -21,7 +21,9 @@ pub async fn run_recon_pipeline(
     _project_path: String,
     _session_id: Option<String>,
 ) -> Result<String, GolishError> {
-    Err(GolishError::Internal("Pipeline execution is now AI-driven. Use the AI agent to execute pipelines.".into()))
+    Err(GolishError::Internal(
+        "Pipeline execution is now AI-driven. Use the AI agent to execute pipelines.".into(),
+    ))
 }
 
 /// Check if common recon tools are installed.
@@ -29,9 +31,20 @@ pub async fn run_recon_pipeline(
 #[tauri::command]
 pub async fn check_recon_tools_cmd() -> Result<serde_json::Value, GolishError> {
     let tools = [
-        "nmap", "subfinder", "httpx", "nuclei", "whatweb", "katana",
-        "masscan", "rustscan", "nikto", "ffuf", "gobuster", "dirsearch",
-        "feroxbuster", "dig",
+        "nmap",
+        "subfinder",
+        "httpx",
+        "nuclei",
+        "whatweb",
+        "katana",
+        "masscan",
+        "rustscan",
+        "nikto",
+        "ffuf",
+        "gobuster",
+        "dirsearch",
+        "feroxbuster",
+        "dig",
     ];
 
     let mut results = Vec::new();

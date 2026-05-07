@@ -110,7 +110,9 @@ where
             return Err(anyhow::anyhow!("Agent stopped by user"));
         }
 
-        ctx.api_request_stats.record_sent(ctx.llm.provider_name).await;
+        ctx.api_request_stats
+            .record_sent(ctx.llm.provider_name)
+            .await;
 
         let stream_result = tokio::time::timeout(
             STREAM_START_TIMEOUT,
@@ -120,7 +122,9 @@ where
 
         match stream_result {
             Ok(Ok(s)) => {
-                ctx.api_request_stats.record_received(ctx.llm.provider_name).await;
+                ctx.api_request_stats
+                    .record_received(ctx.llm.provider_name)
+                    .await;
                 tracing::info!(
                     "[OpenAI Debug] Stream created successfully on attempt {}",
                     attempt
@@ -227,8 +231,7 @@ fn build_additional_params(ctx: &AgenticLoopContext<'_>) -> Option<serde_json::V
             "Adding OpenAI web_search_preview tool with context_size={}",
             web_config.search_context_size
         );
-        additional_params_json
-            .insert("tools".to_string(), json!([web_config.to_tool_json()]));
+        additional_params_json.insert("tools".to_string(), json!([web_config.to_tool_json()]));
     }
 
     // OpenAI Responses API expects a nested `reasoning` object with:
@@ -249,12 +252,10 @@ fn build_additional_params(ctx: &AgenticLoopContext<'_>) -> Option<serde_json::V
         );
     }
 
-    if let Some(prefs) = ctx.llm.openrouter_provider_preferences {
-        if let serde_json::Value::Object(prefs_map) = prefs {
-            for (key, value) in prefs_map {
-                tracing::info!("Adding OpenRouter provider preference: {}={}", key, value);
-                additional_params_json.insert(key.clone(), value.clone());
-            }
+    if let Some(serde_json::Value::Object(prefs_map)) = ctx.llm.openrouter_provider_preferences {
+        for (key, value) in prefs_map {
+            tracing::info!("Adding OpenRouter provider preference: {}={}", key, value);
+            additional_params_json.insert(key.clone(), value.clone());
         }
     }
 

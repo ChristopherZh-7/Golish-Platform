@@ -100,10 +100,9 @@ impl BridgeAgentExecutor {
             "task": format!("{}\n\n{}", subtask_title, subtask_description),
         });
 
-        let tool_provider =
-            crate::tool_provider_impl::DefaultToolProvider::with_db_tracker(
-                self.bridge.services.db_tracker.as_ref(),
-            );
+        let tool_provider = crate::tool_provider_impl::DefaultToolProvider::with_db_tracker(
+            self.bridge.services.db_tracker.as_ref(),
+        );
 
         let sub_ctx = SubAgentExecutorContext {
             event_tx: &event_tx,
@@ -124,21 +123,20 @@ impl BridgeAgentExecutor {
         };
 
         let client = self.bridge.client().read().await;
-        let result =
-            crate::agentic_loop::sub_agent_dispatch::execute_sub_agent_with_client(
-                agent_def,
-                &args,
-                &context,
-                &*client,
-                sub_ctx,
-                &tool_provider,
-                &parent_request_id,
-            )
-            .await
-            .context(format!(
-                "Sub-agent '{}' failed for subtask '{}'",
-                agent_def.id, subtask_title
-            ))?;
+        let result = crate::agentic_loop::sub_agent_dispatch::execute_sub_agent_with_client(
+            agent_def,
+            &args,
+            &context,
+            &client,
+            sub_ctx,
+            &tool_provider,
+            &parent_request_id,
+        )
+        .await
+        .context(format!(
+            "Sub-agent '{}' failed for subtask '{}'",
+            agent_def.id, subtask_title
+        ))?;
 
         Ok(result.response)
     }
@@ -190,19 +188,19 @@ impl BridgeAgentExecutor {
             )
             .await
         } else {
-            let client = { let g = self.bridge.llm.client.read().await; (*g).clone() };
-            tokio::time::timeout(
-                std::time::Duration::from_secs(120),
-                async move { complete_with_client(&client, request).await },
-            )
+            let client = {
+                let g = self.bridge.llm.client.read().await;
+                (*g).clone()
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(120), async move {
+                complete_with_client(&client, request).await
+            })
             .await
         };
 
-        result
-            .map_err(|_| anyhow::anyhow!(
-                "LLM completion timed out (120s) for phase {:?}",
-                phase_key
-            ))?
+        result.map_err(|_| {
+            anyhow::anyhow!("LLM completion timed out (120s) for phase {:?}", phase_key)
+        })?
     }
 }
 
@@ -214,7 +212,10 @@ struct LlmParamOverrides {
     top_p: Option<f32>,
 }
 
-pub(crate) async fn complete_with_client(client: &LlmClient, request: CompletionRequest) -> Result<String> {
+pub(crate) async fn complete_with_client(
+    client: &LlmClient,
+    request: CompletionRequest,
+) -> Result<String> {
     macro_rules! one_shot {
         ($model:expr) => {{
             let response = $model
@@ -261,9 +262,7 @@ fn build_one_shot_request(
         temperature: Some(overrides.temperature.unwrap_or(0.3) as f64),
         max_tokens: Some(overrides.max_tokens.unwrap_or(8192) as u64),
         tool_choice: None,
-        additional_params: overrides.top_p.map(|tp| {
-            serde_json::json!({ "top_p": tp })
-        }),
+        additional_params: overrides.top_p.map(|tp| serde_json::json!({ "top_p": tp })),
         output_schema: None,
     }
 }

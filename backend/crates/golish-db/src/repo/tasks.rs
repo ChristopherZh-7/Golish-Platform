@@ -46,13 +46,11 @@ pub async fn update_status(pool: &PgPool, id: Uuid, status: TaskStatus) -> Resul
 }
 
 pub async fn set_result(pool: &PgPool, id: Uuid, result: &str, status: TaskStatus) -> Result<()> {
-    sqlx::query(
-        "UPDATE tasks SET result = $1, status = $2, updated_at = NOW() WHERE id = $3",
-    )
-    .bind(result)
-    .bind(status)
-    .bind(id)
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE tasks SET result = $1, status = $2, updated_at = NOW() WHERE id = $3")
+        .bind(result)
+        .bind(status)
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(())
 }

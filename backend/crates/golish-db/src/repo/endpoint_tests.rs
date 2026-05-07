@@ -47,10 +47,7 @@ pub async fn record_endpoint_test(
 }
 
 /// List the test history for a single endpoint, newest first.
-pub async fn list_endpoint_tests(
-    pool: &PgPool,
-    endpoint_id: Uuid,
-) -> Result<Vec<EndpointTest>> {
+pub async fn list_endpoint_tests(pool: &PgPool, endpoint_id: Uuid) -> Result<Vec<EndpointTest>> {
     let rows = sqlx::query_as::<_, EndpointTest>(
         r#"SELECT id, endpoint_id, target_id, test_type, tool_used, payload,
                   result, severity, evidence, detail, tested_at
@@ -86,10 +83,7 @@ pub async fn list_by_target(
 }
 
 /// Aggregate counts grouped by test_type for a given target.
-pub async fn endpoint_test_stats(
-    pool: &PgPool,
-    target_id: Uuid,
-) -> Result<Vec<(String, i64)>> {
+pub async fn endpoint_test_stats(pool: &PgPool, target_id: Uuid) -> Result<Vec<(String, i64)>> {
     let rows: Vec<(String, i64)> = sqlx::query_as(
         r#"SELECT test_type, COUNT(*) AS count
            FROM endpoint_tests
@@ -105,11 +99,10 @@ pub async fn endpoint_test_stats(
 
 /// Total number of tests for a target.
 pub async fn count_by_target(pool: &PgPool, target_id: Uuid) -> Result<i64> {
-    let (count,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM endpoint_tests WHERE target_id = $1",
-    )
-    .bind(target_id)
-    .fetch_one(pool)
-    .await?;
+    let (count,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM endpoint_tests WHERE target_id = $1")
+            .bind(target_id)
+            .fetch_one(pool)
+            .await?;
     Ok(count)
 }

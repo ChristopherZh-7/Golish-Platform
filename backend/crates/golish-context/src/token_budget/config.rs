@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use super::limits::ModelContextLimits;
 use super::usage::DEFAULT_MAX_CONTEXT_TOKENS;
 
-
 /// Configuration for token budget management
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenBudgetConfig {

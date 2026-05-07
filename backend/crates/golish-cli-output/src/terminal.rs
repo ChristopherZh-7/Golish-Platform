@@ -4,8 +4,8 @@ use anyhow::Result;
 use golish_core::events::AiEvent;
 
 use super::formatting::{
-    format_json_pretty, truncate, truncate_output, BOX_BOT, BOX_MID, BOX_TOP, TERMINAL_REASONING_MAX,
-    TERMINAL_TOOL_OUTPUT_MAX,
+    format_json_pretty, truncate, truncate_output, BOX_BOT, BOX_MID, BOX_TOP,
+    TERMINAL_REASONING_MAX, TERMINAL_TOOL_OUTPUT_MAX,
 };
 
 /// Handle AI events for terminal (non-JSON) output.

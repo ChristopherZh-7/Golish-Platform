@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use super::context::MAX_TOOL_OUTPUT_LEN;
 use super::format::truncate;
 
-
 /// Extract tool output from result
 pub(super) fn extract_tool_output(result: &serde_json::Value) -> Option<String> {
     // Try different output formats
@@ -64,7 +63,10 @@ pub(super) fn extract_path_from_args(args: &serde_json::Value) -> Option<PathBuf
 }
 
 /// Extract files modified from tool args
-pub(super) fn extract_files_modified(tool_name: &str, args: Option<&serde_json::Value>) -> Vec<PathBuf> {
+pub(super) fn extract_files_modified(
+    tool_name: &str,
+    args: Option<&serde_json::Value>,
+) -> Vec<PathBuf> {
     let args = match args {
         Some(a) => a,
         None => return vec![],

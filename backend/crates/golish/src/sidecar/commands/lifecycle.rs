@@ -28,7 +28,9 @@ pub async fn sidecar_end_session(
 
 /// Get the current session ID
 #[tauri::command]
-pub async fn sidecar_current_session(state: State<'_, SidecarManaged>) -> Result<Option<String>, GolishError> {
+pub async fn sidecar_current_session(
+    state: State<'_, SidecarManaged>,
+) -> Result<Option<String>, GolishError> {
     Ok(state.sidecar_state.current_session_id())
 }
 

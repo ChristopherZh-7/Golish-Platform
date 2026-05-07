@@ -14,7 +14,9 @@ use crate::error::GolishError;
 use crate::event_emitter::TauriEventEmitter;
 use crate::state::DbState;
 
-pub use runner::{FeroxScanOptions, NucleiScanOptions, PocMatch, ScanProgress, ScanResult, WhatWebOptions};
+pub use runner::{
+    FeroxScanOptions, NucleiScanOptions, PocMatch, ScanProgress, ScanResult, WhatWebOptions,
+};
 
 /// Main-crate adapter: maps the scan-runner's storage callbacks to
 /// `crate::tools::targets::db_directory_entry_add`.
@@ -69,7 +71,15 @@ pub async fn scan_whatweb(
     let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id).map_err(|e| GolishError::Validation(e.to_string()))?;
     let emitter = TauriEventEmitter::handle(app);
-    Ok(runner::run_whatweb(pool, Some(&emitter), &target_url, tid, project_path.as_deref(), options).await?)
+    Ok(runner::run_whatweb(
+        pool,
+        Some(&emitter),
+        &target_url,
+        tid,
+        project_path.as_deref(),
+        options,
+    )
+    .await?)
 }
 
 #[tauri::command]
@@ -96,7 +106,17 @@ pub async fn scan_nuclei_targeted(
     let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id).map_err(|e| GolishError::Validation(e.to_string()))?;
     let emitter = TauriEventEmitter::handle(app);
-    Ok(runner::run_nuclei_targeted(pool, Some(&emitter), &target_url, tid, project_path.as_deref(), &template_ids, severity_filter.as_deref(), options).await?)
+    Ok(runner::run_nuclei_targeted(
+        pool,
+        Some(&emitter),
+        &target_url,
+        tid,
+        project_path.as_deref(),
+        &template_ids,
+        severity_filter.as_deref(),
+        options,
+    )
+    .await?)
 }
 
 #[tauri::command]
@@ -112,7 +132,17 @@ pub async fn scan_feroxbuster(
     let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id).map_err(|e| GolishError::Validation(e.to_string()))?;
     let emitter = TauriEventEmitter::handle(app);
-    Ok(runner::run_feroxbuster(pool, &MainScanStorage, Some(&emitter), &target_url, tid, project_path.as_deref(), &base_paths, options).await?)
+    Ok(runner::run_feroxbuster(
+        pool,
+        &MainScanStorage,
+        Some(&emitter),
+        &target_url,
+        tid,
+        project_path.as_deref(),
+        &base_paths,
+        options,
+    )
+    .await?)
 }
 
 #[tauri::command]

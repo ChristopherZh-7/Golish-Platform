@@ -42,8 +42,10 @@ pub async fn run<M>(
         .partition(|tc| allowed_names.contains(tc.function.name.as_str()));
 
     if !rejected.is_empty() {
-        let rejected_names: Vec<&str> =
-            rejected.iter().map(|tc| tc.function.name.as_str()).collect();
+        let rejected_names: Vec<&str> = rejected
+            .iter()
+            .map(|tc| tc.function.name.as_str())
+            .collect();
         tracing::warn!(
             "[tool-guard] Blocked {} tool call(s) not in allowed list: {:?}",
             rejected.len(),

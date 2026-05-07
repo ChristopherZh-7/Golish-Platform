@@ -15,7 +15,6 @@ use crate::types::{
     SessionListingInfo,
 };
 
-
 /// List recent sessions.
 ///
 /// # Arguments
@@ -213,4 +212,3 @@ fn get_sidecar_session_meta(session_path: &Path) -> SidecarSessionMeta {
 
     SidecarSessionMeta { status, title }
 }
-

@@ -6,7 +6,7 @@
 //!
 //! - [`images`]    — image discovery, pulling, and existence checks
 //! - [`container`] — testbed container lifecycle (start/stop, patch application,
-//!                   `docker exec` helper)
+//!   `docker exec` helper)
 //! - [`runner`]    — full `run_tests` flow + container wait/log/test-command building
 //! - [`parse`]     — pure parsing of pytest/Django test output (no Docker required)
 

@@ -11,11 +11,10 @@ pub async fn intel_list_feeds(
 ) -> Result<Vec<VulnFeed>, GolishError> {
     let pool = state.pool_ready().await?;
     PgVulnIntelStore::new(pool).ensure_default_feeds().await?;
-    let rows: Vec<FeedRow> = sqlx::query_as(
-        "SELECT id, name, feed_type, url, enabled, last_fetched FROM vuln_feeds",
-    )
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<FeedRow> =
+        sqlx::query_as("SELECT id, name, feed_type, url, enabled, last_fetched FROM vuln_feeds")
+            .fetch_all(pool)
+            .await?;
     Ok(rows.into_iter().map(VulnFeed::from).collect())
 }
 

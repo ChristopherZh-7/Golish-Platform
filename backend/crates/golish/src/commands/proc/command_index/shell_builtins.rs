@@ -30,6 +30,7 @@ pub(super) fn shell_builtins(shell_type: ShellType) -> &'static [&'static str] {
         ShellType::Zsh => ZSH_BUILTINS,
         ShellType::Bash => BASH_BUILTINS,
         ShellType::Fish => FISH_BUILTINS,
+        ShellType::Sh => UNKNOWN_BUILTINS,
         ShellType::PowerShell => POWERSHELL_BUILTINS,
         ShellType::Cmd => CMD_BUILTINS,
         ShellType::Unknown => UNKNOWN_BUILTINS,

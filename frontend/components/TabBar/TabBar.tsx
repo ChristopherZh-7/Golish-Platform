@@ -110,12 +110,12 @@ export const TabBar = React.memo(function TabBar({
   const [cmdKeyPressed, setCmdKeyPressed] = React.useState(false);
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Meta" && !e.repeat) {
+      if ((e.key === "Meta" || e.key === "Control") && !e.repeat) {
         setCmdKeyPressed(true);
       }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
-      if (e.key === "Meta") {
+      if (e.key === "Meta" || e.key === "Control") {
         setCmdKeyPressed(false);
       }
     };

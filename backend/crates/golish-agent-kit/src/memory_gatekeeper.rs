@@ -44,7 +44,9 @@ pub async fn should_search_memory(client: &LlmClient, user_message: &str) -> boo
                 &user_message[..{
                     let max = user_message.len().min(80);
                     let mut end = max;
-                    while end > 0 && !user_message.is_char_boundary(end) { end -= 1; }
+                    while end > 0 && !user_message.is_char_boundary(end) {
+                        end -= 1;
+                    }
                     end
                 }]
             );

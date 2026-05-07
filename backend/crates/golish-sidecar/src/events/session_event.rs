@@ -1,9 +1,9 @@
-use std::path::PathBuf;
 use chrono::{DateTime, Utc};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use uuid::Uuid;
 
-use super::event_type::{EventType, FileOperation, DecisionType, FeedbackType};
+use super::event_type::{DecisionType, EventType, FeedbackType, FileOperation};
 use super::helpers::{parse_context_xml, truncate};
 
 /// A captured session event with metadata

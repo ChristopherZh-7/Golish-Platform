@@ -69,11 +69,11 @@ pub(crate) fn strip_noise(src: &str) -> String {
             let quote = b;
             let start = i; // position of the opening quote
             i += 1; // step past opening quote
-            // Walk to the matching closing quote, honouring backslash escapes.
-            // Backticks allow embedded `${...}` — we ignore those structurally
-            // (they may contain nested quotes and parentheses), but treat
-            // them as opaque chars; this works for the noise-stripping use
-            // case because we only check the OUTER literal's content.
+                    // Walk to the matching closing quote, honouring backslash escapes.
+                    // Backticks allow embedded `${...}` — we ignore those structurally
+                    // (they may contain nested quotes and parentheses), but treat
+                    // them as opaque chars; this works for the noise-stripping use
+                    // case because we only check the OUTER literal's content.
             while i < len {
                 let c = bytes[i];
                 if c == b'\\' && i + 1 < len {
@@ -131,7 +131,10 @@ fn blank_range(out: &mut [u8], start: usize, end: usize) {
 /// Used to decide whether a string literal's interior is "noise" (a doc
 /// comment in disguise) vs an actual URL we should preserve.
 fn contains_call_shape(bytes: &[u8]) -> bool {
-    let lower = bytes.iter().map(|b| b.to_ascii_lowercase()).collect::<Vec<u8>>();
+    let lower = bytes
+        .iter()
+        .map(|b| b.to_ascii_lowercase())
+        .collect::<Vec<u8>>();
     contains_subseq(&lower, b"fetch(")
         || contains_subseq(&lower, b"fetch ")
         || contains_subseq(&lower, b"axios.")

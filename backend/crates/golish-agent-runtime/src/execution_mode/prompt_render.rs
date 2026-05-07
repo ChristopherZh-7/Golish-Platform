@@ -25,59 +25,164 @@ struct ToolRow {
 }
 
 const STATIC_FILE_OPS: &[ToolRow] = &[
-    ToolRow { name: "read_file", purpose: "Read file content. Always read before editing." },
-    ToolRow { name: "edit_file", purpose: "Targeted edits in an existing file." },
-    ToolRow { name: "create_file", purpose: "Create a new file (fails if it exists)." },
-    ToolRow { name: "write_file", purpose: "Overwrite an entire file." },
-    ToolRow { name: "delete_file", purpose: "Remove a file." },
-    ToolRow { name: "grep_file", purpose: "Regex search across files." },
-    ToolRow { name: "list_files", purpose: "List / find files by pattern." },
+    ToolRow {
+        name: "read_file",
+        purpose: "Read file content. Always read before editing.",
+    },
+    ToolRow {
+        name: "edit_file",
+        purpose: "Targeted edits in an existing file.",
+    },
+    ToolRow {
+        name: "create_file",
+        purpose: "Create a new file (fails if it exists).",
+    },
+    ToolRow {
+        name: "write_file",
+        purpose: "Overwrite an entire file.",
+    },
+    ToolRow {
+        name: "delete_file",
+        purpose: "Remove a file.",
+    },
+    ToolRow {
+        name: "grep_file",
+        purpose: "Regex search across files.",
+    },
+    ToolRow {
+        name: "list_files",
+        purpose: "List / find files by pattern.",
+    },
 ];
 
 const STATIC_CORE: &[ToolRow] = &[
-    ToolRow { name: "ast_grep", purpose: "Structural code search (function calls, imports)." },
-    ToolRow { name: "ast_grep_replace", purpose: "Structural refactor / rename." },
-    ToolRow { name: "update_plan", purpose: "Create and track task plans." },
+    ToolRow {
+        name: "ast_grep",
+        purpose: "Structural code search (function calls, imports).",
+    },
+    ToolRow {
+        name: "ast_grep_replace",
+        purpose: "Structural refactor / rename.",
+    },
+    ToolRow {
+        name: "update_plan",
+        purpose: "Create and track task plans.",
+    },
 ];
 
 const STATIC_MEMORY: &[ToolRow] = &[
-    ToolRow { name: "search_memories", purpose: "Search long-term memory." },
-    ToolRow { name: "store_memory", purpose: "Store findings to memory." },
-    ToolRow { name: "list_memories", purpose: "List recent memories." },
+    ToolRow {
+        name: "search_memories",
+        purpose: "Search long-term memory.",
+    },
+    ToolRow {
+        name: "store_memory",
+        purpose: "Store findings to memory.",
+    },
+    ToolRow {
+        name: "list_memories",
+        purpose: "List recent memories.",
+    },
 ];
 
 const STATIC_KNOWLEDGE_BASE: &[ToolRow] = &[
-    ToolRow { name: "search_guide", purpose: "Search saved playbooks." },
-    ToolRow { name: "save_guide", purpose: "Save a successful procedure." },
-    ToolRow { name: "search_code", purpose: "Search saved code snippets." },
-    ToolRow { name: "save_code", purpose: "Save a useful code snippet." },
-    ToolRow { name: "search_knowledge_base", purpose: "Search vulnerability knowledge base." },
-    ToolRow { name: "read_knowledge", purpose: "Read a knowledge entry." },
-    ToolRow { name: "write_knowledge", purpose: "Append a knowledge entry." },
+    ToolRow {
+        name: "search_guide",
+        purpose: "Search saved playbooks.",
+    },
+    ToolRow {
+        name: "save_guide",
+        purpose: "Save a successful procedure.",
+    },
+    ToolRow {
+        name: "search_code",
+        purpose: "Search saved code snippets.",
+    },
+    ToolRow {
+        name: "save_code",
+        purpose: "Save a useful code snippet.",
+    },
+    ToolRow {
+        name: "search_knowledge_base",
+        purpose: "Search vulnerability knowledge base.",
+    },
+    ToolRow {
+        name: "read_knowledge",
+        purpose: "Read a knowledge entry.",
+    },
+    ToolRow {
+        name: "write_knowledge",
+        purpose: "Append a knowledge entry.",
+    },
 ];
 
 const STATIC_SECURITY_ANALYSIS: &[ToolRow] = &[
-    ToolRow { name: "log_operation", purpose: "Log a pentest action and outcome." },
-    ToolRow { name: "discover_apis", purpose: "Persist API endpoints per target." },
-    ToolRow { name: "save_js_analysis", purpose: "Persist JS analysis findings." },
-    ToolRow { name: "fingerprint_target", purpose: "Persist tech fingerprint." },
-    ToolRow { name: "log_scan_result", purpose: "Persist a single security test result." },
-    ToolRow { name: "query_target_data", purpose: "Query all known data about a target." },
+    ToolRow {
+        name: "log_operation",
+        purpose: "Log a pentest action and outcome.",
+    },
+    ToolRow {
+        name: "discover_apis",
+        purpose: "Persist API endpoints per target.",
+    },
+    ToolRow {
+        name: "save_js_analysis",
+        purpose: "Persist JS analysis findings.",
+    },
+    ToolRow {
+        name: "fingerprint_target",
+        purpose: "Persist tech fingerprint.",
+    },
+    ToolRow {
+        name: "log_scan_result",
+        purpose: "Persist a single security test result.",
+    },
+    ToolRow {
+        name: "query_target_data",
+        purpose: "Query all known data about a target.",
+    },
 ];
 
 const STATIC_GRAPH: &[ToolRow] = &[
-    ToolRow { name: "graph_search", purpose: "Search the security knowledge graph." },
-    ToolRow { name: "graph_neighbors", purpose: "Walk neighbours of a graph node." },
-    ToolRow { name: "graph_attack_paths", purpose: "Compute attack paths." },
-    ToolRow { name: "graph_add_entity", purpose: "Add a graph entity." },
-    ToolRow { name: "graph_add_relation", purpose: "Add a graph relation." },
+    ToolRow {
+        name: "graph_search",
+        purpose: "Search the security knowledge graph.",
+    },
+    ToolRow {
+        name: "graph_neighbors",
+        purpose: "Walk neighbours of a graph node.",
+    },
+    ToolRow {
+        name: "graph_attack_paths",
+        purpose: "Compute attack paths.",
+    },
+    ToolRow {
+        name: "graph_add_entity",
+        purpose: "Add a graph entity.",
+    },
+    ToolRow {
+        name: "graph_add_relation",
+        purpose: "Add a graph relation.",
+    },
 ];
 
 const STATIC_SPLOITUS: &[ToolRow] = &[
-    ToolRow { name: "search_exploits", purpose: "Search exploit database." },
-    ToolRow { name: "ingest_cve", purpose: "Ingest a CVE record." },
-    ToolRow { name: "save_poc", purpose: "Save a proof-of-concept." },
-    ToolRow { name: "list_cves_with_pocs", purpose: "List CVEs with PoCs." },
+    ToolRow {
+        name: "search_exploits",
+        purpose: "Search exploit database.",
+    },
+    ToolRow {
+        name: "ingest_cve",
+        purpose: "Ingest a CVE record.",
+    },
+    ToolRow {
+        name: "save_poc",
+        purpose: "Save a proof-of-concept.",
+    },
+    ToolRow {
+        name: "list_cves_with_pocs",
+        purpose: "List CVEs with PoCs.",
+    },
 ];
 
 const BRIDGE_ROWS: &[ToolRow] = &[
@@ -101,15 +206,33 @@ const BRIDGE_ROWS: &[ToolRow] = &[
 ];
 
 const RUNTIME_PENTEST: &[ToolRow] = &[
-    ToolRow { name: "pentest_list_tools", purpose: "List installed pentest tools and their skills." },
-    ToolRow { name: "pentest_run", purpose: "Execute a pentest tool by name with arguments." },
-    ToolRow { name: "pentest_read_skill", purpose: "Read a skill document for tool usage." },
+    ToolRow {
+        name: "pentest_list_tools",
+        purpose: "List installed pentest tools and their skills.",
+    },
+    ToolRow {
+        name: "pentest_run",
+        purpose: "Execute a pentest tool by name with arguments.",
+    },
+    ToolRow {
+        name: "pentest_read_skill",
+        purpose: "Read a skill document for tool usage.",
+    },
 ];
 
 const RUNTIME_TAVILY: &[ToolRow] = &[
-    ToolRow { name: "tavily_search", purpose: "Web search with source results." },
-    ToolRow { name: "tavily_search_answer", purpose: "Web search with AI-generated answer." },
-    ToolRow { name: "tavily_extract", purpose: "Extract structured content from URLs." },
+    ToolRow {
+        name: "tavily_search",
+        purpose: "Web search with source results.",
+    },
+    ToolRow {
+        name: "tavily_search_answer",
+        purpose: "Web search with AI-generated answer.",
+    },
+    ToolRow {
+        name: "tavily_extract",
+        purpose: "Extract structured content from URLs.",
+    },
 ];
 
 /// Render a markdown `| Tool | Purpose |` table containing every tool
@@ -202,8 +325,14 @@ pub fn selection_to_tool_names(selection: &ToolSelection) -> HashSet<&'static st
     add_group!(selection.static_groups.file_ops, STATIC_FILE_OPS);
     add_group!(selection.static_groups.core, STATIC_CORE);
     add_group!(selection.static_groups.memory, STATIC_MEMORY);
-    add_group!(selection.static_groups.knowledge_base, STATIC_KNOWLEDGE_BASE);
-    add_group!(selection.static_groups.security_analysis, STATIC_SECURITY_ANALYSIS);
+    add_group!(
+        selection.static_groups.knowledge_base,
+        STATIC_KNOWLEDGE_BASE
+    );
+    add_group!(
+        selection.static_groups.security_analysis,
+        STATIC_SECURITY_ANALYSIS
+    );
     add_group!(selection.static_groups.graph, STATIC_GRAPH);
     add_group!(selection.static_groups.sploitus, STATIC_SPLOITUS);
 
@@ -315,8 +444,7 @@ mod tests {
         use crate::execution_mode::policy::ExecutionModePolicy;
         use std::path::Path;
 
-        const CHAT_RS: &str =
-            include_str!("../../../golish-prompts/src/system_prompt/chat.rs");
+        const CHAT_RS: &str = include_str!("../../../golish-prompts/src/system_prompt/chat.rs");
 
         let s = ChatModePolicy
             .primary_tools(&PolicyContext::new(
@@ -332,14 +460,33 @@ mod tests {
         // If any of them goes missing from ChatModePolicy in the
         // future, this assertion fires and forces a sync update.
         const CRITICAL_NAMES: &[&str] = &[
-            "manage_targets", "run_pipeline", "record_finding", "vault",
-            "log_operation", "discover_apis", "save_js_analysis",
-            "fingerprint_target", "log_scan_result", "query_target_data",
-            "read_file", "edit_file", "write_file", "create_file",
-            "delete_file", "grep_file", "list_files", "ast_grep",
-            "ast_grep_replace", "update_plan", "search_memories",
-            "store_memory", "list_memories", "search_guide", "save_guide",
-            "search_code", "save_code",
+            "manage_targets",
+            "run_pipeline",
+            "record_finding",
+            "vault",
+            "log_operation",
+            "discover_apis",
+            "save_js_analysis",
+            "fingerprint_target",
+            "log_scan_result",
+            "query_target_data",
+            "read_file",
+            "edit_file",
+            "write_file",
+            "create_file",
+            "delete_file",
+            "grep_file",
+            "list_files",
+            "ast_grep",
+            "ast_grep_replace",
+            "update_plan",
+            "search_memories",
+            "store_memory",
+            "list_memories",
+            "search_guide",
+            "save_guide",
+            "search_code",
+            "save_code",
         ];
 
         let mut missing: Vec<&str> = Vec::new();

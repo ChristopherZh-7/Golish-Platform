@@ -38,7 +38,11 @@ impl UdiffApplier {
     /// This method slides a window over the content lines and computes
     /// similarity scores for each candidate position. If exactly one
     /// position meets the threshold, the replacement is applied.
-    pub(super) fn try_fuzzy_apply(content: &str, hunk: &ParsedHunk, threshold: f32) -> FuzzyMatchResult {
+    pub(super) fn try_fuzzy_apply(
+        content: &str,
+        hunk: &ParsedHunk,
+        threshold: f32,
+    ) -> FuzzyMatchResult {
         let old_lines = &hunk.old_lines;
         let new_lines = &hunk.new_lines;
 

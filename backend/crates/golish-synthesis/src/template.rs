@@ -262,4 +262,3 @@ fn generate_body(analysis: &ChangeAnalysis) -> String {
         analysis.lines_deleted
     )
 }
-

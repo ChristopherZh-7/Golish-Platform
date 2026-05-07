@@ -12,7 +12,6 @@ use crate::config::{SynthesisBackend, SynthesisConfig};
 const VERTEX_AI_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
 use crate::prompts::*;
 
-
 /// Input for session title synthesis
 #[derive(Debug, Clone)]
 pub struct SessionTitleInput {
@@ -460,4 +459,3 @@ fn validate_title_response(response: &str) -> Option<String> {
 
     Some(title.to_string())
 }
-

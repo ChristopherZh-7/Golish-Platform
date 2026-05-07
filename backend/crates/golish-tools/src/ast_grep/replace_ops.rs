@@ -137,7 +137,7 @@ fn replace_source_impl(
 
         let mut matches: Vec<_> = grep.root().find_all(pattern.as_str()).collect();
 
-        matches.sort_by(|a, b| b.range().start.cmp(&a.range().start));
+        matches.sort_by_key(|m| std::cmp::Reverse(m.range().start));
 
         for node_match in matches {
             let original = node_match.text().to_string();

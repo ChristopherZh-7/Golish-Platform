@@ -58,7 +58,12 @@ pub async fn list_untested(pool: &PgPool, target_id: Uuid) -> Result<Vec<ApiEndp
     Ok(rows)
 }
 
-pub async fn mark_tested(pool: &PgPool, id: Uuid, status_code: Option<i32>, notes: &str) -> Result<()> {
+pub async fn mark_tested(
+    pool: &PgPool,
+    id: Uuid,
+    status_code: Option<i32>,
+    notes: &str,
+) -> Result<()> {
     sqlx::query(
         "UPDATE api_endpoints SET tested = true, status_code = $2, notes = $3, updated_at = NOW() WHERE id = $1",
     )

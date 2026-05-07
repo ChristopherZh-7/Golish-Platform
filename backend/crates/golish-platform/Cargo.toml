@@ -1,0 +1,18 @@
+[package]
+name = "golish-platform"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Cross-platform abstraction layer: shell invocation, process control, paths, file permissions, URL opening, package-manager detection."
+
+[dependencies]
+dirs = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["process"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["signal", "process"] }
+libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

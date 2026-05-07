@@ -5,7 +5,11 @@ use uuid::Uuid;
 use crate::state::DbState;
 
 fn non_empty(s: &str) -> Option<&str> {
-    if s.is_empty() { None } else { Some(s) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 // ─── Audit / Operation Logs (unified) ──────────────────────────────────
@@ -57,9 +61,8 @@ pub async fn oplog_list(
     limit: Option<i64>,
 ) -> Result<Vec<AuditRow>, GolishError> {
     let pool = state.pool_ready().await?;
-    let rows = golish_db::repo::audit::list(pool, non_empty(&project_path), limit.unwrap_or(100))
-        .await
-?;
+    let rows =
+        golish_db::repo::audit::list(pool, non_empty(&project_path), limit.unwrap_or(100)).await?;
     Ok(rows.into_iter().map(AuditRow::from).collect())
 }
 
@@ -71,9 +74,7 @@ pub async fn oplog_list_by_target(
 ) -> Result<Vec<AuditRow>, GolishError> {
     let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id)?;
-    let rows = golish_db::repo::audit::list_by_target(pool, tid, limit.unwrap_or(100))
-        .await
-?;
+    let rows = golish_db::repo::audit::list_by_target(pool, tid, limit.unwrap_or(100)).await?;
     Ok(rows.into_iter().map(AuditRow::from).collect())
 }
 
@@ -91,8 +92,7 @@ pub async fn oplog_list_by_type(
         non_empty(&project_path),
         limit.unwrap_or(100),
     )
-    .await
-?;
+    .await?;
     Ok(rows.into_iter().map(AuditRow::from).collect())
 }
 
@@ -110,8 +110,7 @@ pub async fn oplog_search(
         &query,
         limit.unwrap_or(100),
     )
-    .await
-?;
+    .await?;
     Ok(rows.into_iter().map(AuditRow::from).collect())
 }
 
@@ -135,9 +134,7 @@ pub async fn target_assets_list(
 ) -> Result<serde_json::Value, GolishError> {
     let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id)?;
-    let rows = golish_db::repo::target_assets::list_by_target(pool, tid)
-        .await
-?;
+    let rows = golish_db::repo::target_assets::list_by_target(pool, tid).await?;
     serde_json::to_value(rows).map_err(GolishError::from)
 }
 
@@ -150,9 +147,7 @@ pub async fn api_endpoints_list(
 ) -> Result<serde_json::Value, GolishError> {
     let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id)?;
-    let rows = golish_db::repo::api_endpoints::list_by_target(pool, tid)
-        .await
-?;
+    let rows = golish_db::repo::api_endpoints::list_by_target(pool, tid).await?;
     serde_json::to_value(rows).map_err(GolishError::from)
 }
 
@@ -163,9 +158,7 @@ pub async fn api_endpoints_untested(
 ) -> Result<serde_json::Value, GolishError> {
     let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id)?;
-    let rows = golish_db::repo::api_endpoints::list_untested(pool, tid)
-        .await
-?;
+    let rows = golish_db::repo::api_endpoints::list_untested(pool, tid).await?;
     serde_json::to_value(rows).map_err(GolishError::from)
 }
 
@@ -178,9 +171,7 @@ pub async fn fingerprints_list(
 ) -> Result<serde_json::Value, GolishError> {
     let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id)?;
-    let rows = golish_db::repo::fingerprints::list_by_target(pool, tid)
-        .await
-?;
+    let rows = golish_db::repo::fingerprints::list_by_target(pool, tid).await?;
     serde_json::to_value(rows).map_err(GolishError::from)
 }
 
@@ -193,9 +184,7 @@ pub async fn js_analysis_list(
 ) -> Result<serde_json::Value, GolishError> {
     let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id)?;
-    let rows = golish_db::repo::js_analysis::list_by_target(pool, tid)
-        .await
-?;
+    let rows = golish_db::repo::js_analysis::list_by_target(pool, tid).await?;
     serde_json::to_value(rows).map_err(GolishError::from)
 }
 
@@ -209,9 +198,8 @@ pub async fn passive_scans_list(
 ) -> Result<serde_json::Value, GolishError> {
     let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id)?;
-    let rows = golish_db::repo::passive_scans::list_by_target(pool, tid, limit.unwrap_or(100))
-        .await
-?;
+    let rows =
+        golish_db::repo::passive_scans::list_by_target(pool, tid, limit.unwrap_or(100)).await?;
     serde_json::to_value(rows).map_err(GolishError::from)
 }
 
@@ -222,9 +210,8 @@ pub async fn passive_scans_by_url(
     limit: Option<i64>,
 ) -> Result<serde_json::Value, GolishError> {
     let pool = state.pool_ready().await?;
-    let rows = golish_db::repo::passive_scans::list_by_url(pool, &url, limit.unwrap_or(500))
-        .await
-?;
+    let rows =
+        golish_db::repo::passive_scans::list_by_url(pool, &url, limit.unwrap_or(500)).await?;
     serde_json::to_value(rows).map_err(GolishError::from)
 }
 
@@ -235,9 +222,7 @@ pub async fn passive_scans_vulnerable(
 ) -> Result<serde_json::Value, GolishError> {
     let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id)?;
-    let rows = golish_db::repo::passive_scans::list_vulnerable(pool, tid)
-        .await
-?;
+    let rows = golish_db::repo::passive_scans::list_vulnerable(pool, tid).await?;
     serde_json::to_value(rows).map_err(GolishError::from)
 }
 

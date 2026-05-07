@@ -25,7 +25,11 @@ fn test_js_recon_template_loads_and_uses_ai_tools() {
         );
     }
     // Verify the canonical 3-step shape — js_collect → js_extract_apis → auth_probe.
-    let names: Vec<&str> = js_recon.steps.iter().map(|s| s.tool_name.as_str()).collect();
+    let names: Vec<&str> = js_recon
+        .steps
+        .iter()
+        .map(|s| s.tool_name.as_str())
+        .collect();
     assert_eq!(names, &["js_collect", "js_extract_apis", "auth_probe"]);
 }
 
@@ -43,26 +47,49 @@ fn test_detect_target_type() {
 #[test]
 fn test_recon_basic_has_requires() {
     let pipeline = recon_basic_template();
-    let dig = pipeline.steps.iter().find(|s| s.tool_name == "dig").unwrap();
+    let dig = pipeline
+        .steps
+        .iter()
+        .find(|s| s.tool_name == "dig")
+        .unwrap();
     assert_eq!(dig.requires.as_deref(), Some("domain"));
 
-    let subfinder = pipeline.steps.iter().find(|s| s.tool_name == "subfinder").unwrap();
+    let subfinder = pipeline
+        .steps
+        .iter()
+        .find(|s| s.tool_name == "subfinder")
+        .unwrap();
     assert_eq!(subfinder.requires.as_deref(), Some("domain"));
 
-    let httpx = pipeline.steps.iter().find(|s| s.tool_name == "httpx").unwrap();
+    let httpx = pipeline
+        .steps
+        .iter()
+        .find(|s| s.tool_name == "httpx")
+        .unwrap();
     assert_eq!(httpx.requires, None);
     assert_eq!(httpx.input_from, None);
     assert_eq!(httpx.iterate_over.as_deref(), Some("ports"));
 
-    let naabu = pipeline.steps.iter().find(|s| s.tool_name == "naabu").unwrap();
+    let naabu = pipeline
+        .steps
+        .iter()
+        .find(|s| s.tool_name == "naabu")
+        .unwrap();
     assert_eq!(naabu.requires, None);
 }
 
 #[test]
 fn test_recon_basic_step_order() {
     let pipeline = recon_basic_template();
-    let names: Vec<&str> = pipeline.steps.iter().map(|s| s.tool_name.as_str()).collect();
-    assert_eq!(names, &["dig", "subfinder", "naabu", "httpx", "whatweb", "katana"]);
+    let names: Vec<&str> = pipeline
+        .steps
+        .iter()
+        .map(|s| s.tool_name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        &["dig", "subfinder", "naabu", "httpx", "whatweb", "katana"]
+    );
 
     let naabu_idx = names.iter().position(|n| *n == "naabu").unwrap();
     let httpx_idx = names.iter().position(|n| *n == "httpx").unwrap();
@@ -74,26 +101,50 @@ fn test_recon_basic_step_order() {
 #[test]
 fn test_recon_basic_iterate_over() {
     let pipeline = recon_basic_template();
-    let httpx = pipeline.steps.iter().find(|s| s.tool_name == "httpx").unwrap();
+    let httpx = pipeline
+        .steps
+        .iter()
+        .find(|s| s.tool_name == "httpx")
+        .unwrap();
     assert_eq!(httpx.iterate_over.as_deref(), Some("ports"));
 
-    let whatweb = pipeline.steps.iter().find(|s| s.tool_name == "whatweb").unwrap();
+    let whatweb = pipeline
+        .steps
+        .iter()
+        .find(|s| s.tool_name == "whatweb")
+        .unwrap();
     assert_eq!(whatweb.iterate_over.as_deref(), Some("ports"));
 
-    let katana = pipeline.steps.iter().find(|s| s.tool_name == "katana").unwrap();
+    let katana = pipeline
+        .steps
+        .iter()
+        .find(|s| s.tool_name == "katana")
+        .unwrap();
     assert_eq!(katana.iterate_over.as_deref(), Some("ports"));
     assert_eq!(katana.db_action.as_deref(), Some("target_add"));
 
-    let naabu = pipeline.steps.iter().find(|s| s.tool_name == "naabu").unwrap();
+    let naabu = pipeline
+        .steps
+        .iter()
+        .find(|s| s.tool_name == "naabu")
+        .unwrap();
     assert_eq!(naabu.iterate_over, None);
 }
 
 fn conn(from: &str, to: &str) -> PipelineConnection {
-    PipelineConnection { from_step: from.into(), to_step: to.into(), condition: None }
+    PipelineConnection {
+        from_step: from.into(),
+        to_step: to.into(),
+        condition: None,
+    }
 }
 
 fn conn_if(from: &str, to: &str, cond: &str) -> PipelineConnection {
-    PipelineConnection { from_step: from.into(), to_step: to.into(), condition: Some(cond.into()) }
+    PipelineConnection {
+        from_step: from.into(),
+        to_step: to.into(),
+        condition: Some(cond.into()),
+    }
 }
 
 fn make_step(id: &str) -> PipelineStep {
@@ -159,8 +210,18 @@ fn test_topo_layers_parallel_fan_out() {
 
 #[test]
 fn test_topo_layers_diamond() {
-    let steps = vec![make_step("a"), make_step("b"), make_step("c"), make_step("d")];
-    let conns = vec![conn("a", "b"), conn("a", "c"), conn("b", "d"), conn("c", "d")];
+    let steps = vec![
+        make_step("a"),
+        make_step("b"),
+        make_step("c"),
+        make_step("d"),
+    ];
+    let conns = vec![
+        conn("a", "b"),
+        conn("a", "c"),
+        conn("b", "d"),
+        conn("c", "d"),
+    ];
     let layers = topo_layers(&steps, &conns);
     assert_eq!(layers.len(), 3);
     assert_eq!(layers[0][0].id, "a");
@@ -174,7 +235,11 @@ fn test_topo_layers_recon_basic_dag() {
     let pipeline = recon_basic_template();
     let layers = topo_layers(&pipeline.steps, &pipeline.connections);
 
-    assert_eq!(layers[0].len(), 3, "layer 0 should have dig, subfinder, naabu");
+    assert_eq!(
+        layers[0].len(),
+        3,
+        "layer 0 should have dig, subfinder, naabu"
+    );
     let l0_ids: Vec<&str> = layers[0].iter().map(|s| s.id.as_str()).collect();
     assert!(l0_ids.contains(&"dns_lookup"));
     assert!(l0_ids.contains(&"subdomain_enum"));
@@ -192,7 +257,10 @@ fn test_topo_layers_recon_basic_dag() {
 #[test]
 fn test_topo_layers_disconnected_steps_at_start() {
     let steps = vec![
-        make_step("a"), make_step("b"), make_step("e"), make_step("f"),
+        make_step("a"),
+        make_step("b"),
+        make_step("e"),
+        make_step("f"),
     ];
     let conns = vec![conn("a", "b")];
     let layers = topo_layers(&steps, &conns);
@@ -201,7 +269,10 @@ fn test_topo_layers_disconnected_steps_at_start() {
     assert!(l0_ids.contains(&"a"));
     assert!(l0_ids.contains(&"e"));
     assert!(l0_ids.contains(&"f"));
-    let all_later: Vec<&str> = layers[1..].iter().flat_map(|l| l.iter().map(|s| s.id.as_str())).collect();
+    let all_later: Vec<&str> = layers[1..]
+        .iter()
+        .flat_map(|l| l.iter().map(|s| s.id.as_str()))
+        .collect();
     assert!(all_later.contains(&"b"));
 }
 
@@ -234,7 +305,8 @@ fn test_connection_condition_default() {
 
 #[test]
 fn test_step_sub_pipeline_fields_deser() {
-    let json = r#"{"id":"s1","step_type":"sub_pipeline","tool_name":"web","sub_pipeline":"web_vuln_v1"}"#;
+    let json =
+        r#"{"id":"s1","step_type":"sub_pipeline","tool_name":"web","sub_pipeline":"web_vuln_v1"}"#;
     let step: PipelineStep = serde_json::from_str(json).unwrap();
     assert_eq!(step.step_type, "sub_pipeline");
     assert_eq!(step.sub_pipeline.as_deref(), Some("web_vuln_v1"));
@@ -268,8 +340,16 @@ fn test_evaluate_condition_exit_ok() {
     let tmp = std::env::temp_dir().join("test_cond_exit_ok.txt");
     std::fs::write(&tmp, "some output").unwrap();
 
-    assert!(evaluate_condition("exit_ok", &make_result(Some(0), 1), &tmp));
-    assert!(!evaluate_condition("exit_ok", &make_result(Some(1), 1), &tmp));
+    assert!(evaluate_condition(
+        "exit_ok",
+        &make_result(Some(0), 1),
+        &tmp
+    ));
+    assert!(!evaluate_condition(
+        "exit_ok",
+        &make_result(Some(1), 1),
+        &tmp
+    ));
     assert!(!evaluate_condition("exit_ok", &make_result(None, 0), &tmp));
 }
 
@@ -278,9 +358,21 @@ fn test_evaluate_condition_exit_fail() {
     let tmp = std::env::temp_dir().join("test_cond_exit_fail.txt");
     std::fs::write(&tmp, "").unwrap();
 
-    assert!(evaluate_condition("exit_fail", &make_result(Some(1), 0), &tmp));
-    assert!(!evaluate_condition("exit_fail", &make_result(Some(0), 0), &tmp));
-    assert!(!evaluate_condition("exit_fail", &make_result(None, 0), &tmp));
+    assert!(evaluate_condition(
+        "exit_fail",
+        &make_result(Some(1), 0),
+        &tmp
+    ));
+    assert!(!evaluate_condition(
+        "exit_fail",
+        &make_result(Some(0), 0),
+        &tmp
+    ));
+    assert!(!evaluate_condition(
+        "exit_fail",
+        &make_result(None, 0),
+        &tmp
+    ));
 }
 
 #[test]
@@ -288,8 +380,16 @@ fn test_evaluate_condition_output_not_empty() {
     let tmp = std::env::temp_dir().join("test_cond_not_empty.txt");
     std::fs::write(&tmp, "data").unwrap();
 
-    assert!(evaluate_condition("output_not_empty", &make_result(Some(0), 3), &tmp));
-    assert!(!evaluate_condition("output_not_empty", &make_result(Some(0), 0), &tmp));
+    assert!(evaluate_condition(
+        "output_not_empty",
+        &make_result(Some(0), 3),
+        &tmp
+    ));
+    assert!(!evaluate_condition(
+        "output_not_empty",
+        &make_result(Some(0), 0),
+        &tmp
+    ));
 }
 
 #[test]
@@ -297,9 +397,21 @@ fn test_evaluate_condition_output_contains() {
     let tmp = std::env::temp_dir().join("test_cond_contains.txt");
     std::fs::write(&tmp, "80/tcp open http\n22/tcp open ssh").unwrap();
 
-    assert!(evaluate_condition("output_contains:80", &make_result(Some(0), 2), &tmp));
-    assert!(evaluate_condition("output_contains:22", &make_result(Some(0), 2), &tmp));
-    assert!(!evaluate_condition("output_contains:443", &make_result(Some(0), 2), &tmp));
+    assert!(evaluate_condition(
+        "output_contains:80",
+        &make_result(Some(0), 2),
+        &tmp
+    ));
+    assert!(evaluate_condition(
+        "output_contains:22",
+        &make_result(Some(0), 2),
+        &tmp
+    ));
+    assert!(!evaluate_condition(
+        "output_contains:443",
+        &make_result(Some(0), 2),
+        &tmp
+    ));
 }
 
 #[test]
@@ -307,9 +419,21 @@ fn test_evaluate_condition_output_lines_gt() {
     let tmp = std::env::temp_dir().join("test_cond_lines_gt.txt");
     std::fs::write(&tmp, "").unwrap();
 
-    assert!(evaluate_condition("output_lines_gt:5", &make_result(Some(0), 10), &tmp));
-    assert!(!evaluate_condition("output_lines_gt:5", &make_result(Some(0), 3), &tmp));
-    assert!(!evaluate_condition("output_lines_gt:5", &make_result(Some(0), 5), &tmp));
+    assert!(evaluate_condition(
+        "output_lines_gt:5",
+        &make_result(Some(0), 10),
+        &tmp
+    ));
+    assert!(!evaluate_condition(
+        "output_lines_gt:5",
+        &make_result(Some(0), 3),
+        &tmp
+    ));
+    assert!(!evaluate_condition(
+        "output_lines_gt:5",
+        &make_result(Some(0), 5),
+        &tmp
+    ));
 }
 
 #[test]
@@ -336,7 +460,11 @@ fn test_evaluate_condition_stored_gt() {
 fn test_evaluate_condition_unknown_passes() {
     let tmp = std::env::temp_dir().join("test_cond_unknown.txt");
     std::fs::write(&tmp, "").unwrap();
-    assert!(evaluate_condition("some_future_condition", &make_result(Some(0), 0), &tmp));
+    assert!(evaluate_condition(
+        "some_future_condition",
+        &make_result(Some(0), 0),
+        &tmp
+    ));
 }
 
 #[test]
@@ -398,17 +526,36 @@ fn test_advanced_flow_json_roundtrip() {
     assert_eq!(pipeline.connections.len(), 3);
 
     assert_eq!(pipeline.steps[2].step_type, "sub_pipeline");
-    assert_eq!(pipeline.steps[2].sub_pipeline.as_deref(), Some("web_vuln_v1"));
+    assert_eq!(
+        pipeline.steps[2].sub_pipeline.as_deref(),
+        Some("web_vuln_v1")
+    );
     assert_eq!(pipeline.steps[4].step_type, "foreach");
-    assert_eq!(pipeline.steps[4].foreach_source.as_deref(), Some("subfinder"));
+    assert_eq!(
+        pipeline.steps[4].foreach_source.as_deref(),
+        Some("subfinder")
+    );
     assert_eq!(pipeline.steps[4].max_parallel, Some(3));
 
-    assert_eq!(pipeline.connections[0].condition.as_deref(), Some("output_contains:80"));
-    assert_eq!(pipeline.connections[1].condition.as_deref(), Some("output_contains:22"));
-    assert_eq!(pipeline.connections[2].condition.as_deref(), Some("output_not_empty"));
+    assert_eq!(
+        pipeline.connections[0].condition.as_deref(),
+        Some("output_contains:80")
+    );
+    assert_eq!(
+        pipeline.connections[1].condition.as_deref(),
+        Some("output_contains:22")
+    );
+    assert_eq!(
+        pipeline.connections[2].condition.as_deref(),
+        Some("output_not_empty")
+    );
 
     let layers = topo_layers(&pipeline.steps, &pipeline.connections);
-    assert_eq!(layers[0].len(), 2, "subfinder and naabu in parallel (layer 0)");
+    assert_eq!(
+        layers[0].len(),
+        2,
+        "subfinder and naabu in parallel (layer 0)"
+    );
     let l0_ids: Vec<&str> = layers[0].iter().map(|s| s.id.as_str()).collect();
     assert!(l0_ids.contains(&"subfinder"));
     assert!(l0_ids.contains(&"naabu"));

@@ -177,8 +177,7 @@ fn all_event_types_roundtrip() {
 
     for event in events {
         let json_str = serde_json::to_string(&event).expect("serialize failed");
-        let roundtrip: AiEvent =
-            serde_json::from_str(&json_str).expect("deserialize failed");
+        let roundtrip: AiEvent = serde_json::from_str(&json_str).expect("deserialize failed");
 
         // Verify roundtrip produces identical JSON
         let original_json = serde_json::to_value(&event).unwrap();

@@ -1,9 +1,7 @@
 //! Small helper functions extracted from the agentic loop.
 
 use rig::completion::{AssistantContent, Message};
-use rig::message::{
-    ReasoningContent, Text, ToolResult, ToolResultContent, UserContent,
-};
+use rig::message::{ReasoningContent, Text, ToolResult, ToolResultContent, UserContent};
 use rig::one_or_many::OneOrMany;
 use serde_json::json;
 use tokio::sync::mpsc;

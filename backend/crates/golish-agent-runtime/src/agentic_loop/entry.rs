@@ -1,7 +1,7 @@
 use anyhow::Result;
-use rig::completion::{CompletionModel as RigCompletionModel, Message};
 use golish_context::token_budget::TokenUsage;
 use golish_sub_agents::SubAgentContext;
+use rig::completion::{CompletionModel as RigCompletionModel, Message};
 
 use super::config::AgenticLoopConfig;
 use super::context::AgenticLoopContext;
@@ -61,7 +61,8 @@ pub async fn run_agentic_loop_generic<M>(
 where
     M: RigCompletionModel + Sync,
 {
-    let config = AgenticLoopConfig::with_detection(ctx.llm.provider_name, ctx.llm.model_name, false);
+    let config =
+        AgenticLoopConfig::with_detection(ctx.llm.provider_name, ctx.llm.model_name, false);
 
     run_agentic_loop_unified(model, system_prompt, initial_history, context, ctx, config).await
 }

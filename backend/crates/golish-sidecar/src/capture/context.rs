@@ -27,7 +27,6 @@ pub(super) const MAX_TOOL_OUTPUT_LEN: usize = 2000;
 /// Maximum length for diff storage
 pub(super) const MAX_DIFF_LEN: usize = 4000;
 
-
 /// Capture bridge that processes AI events and forwards them to the sidecar
 pub struct CaptureContext {
     /// Reference to sidecar state

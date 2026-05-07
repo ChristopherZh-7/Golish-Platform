@@ -88,8 +88,7 @@ pub async fn apply_tool_selection(
 
     // 6. Sub-agent dispatch tools — only when the policy enables them
     //    and we still have agent-depth budget.
-    if selection.agent_tools.include_dispatch_tools
-        && sub_agent_context.depth + 1 < MAX_AGENT_DEPTH
+    if selection.agent_tools.include_dispatch_tools && sub_agent_context.depth + 1 < MAX_AGENT_DEPTH
     {
         let registry = ctx.sub_agent_registry.read().await;
         let mut sub_tools = get_sub_agent_tool_definitions(&registry).await;

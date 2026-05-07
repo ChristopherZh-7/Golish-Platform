@@ -11,9 +11,7 @@ use crate::types::PipelineStep;
 use super::super::orchestrator::PipelineRunner;
 use super::super::templates::resolve_port_targets;
 use super::super::tool_resolve::{load_tool_output_config, resolve_tool_command};
-use super::super::types::{
-    emit_pipeline_event, PipelineEvent, SingleStepResult, StepResult,
-};
+use super::super::types::{emit_pipeline_event, PipelineEvent, SingleStepResult, StepResult};
 use super::{run_foreach_step, run_sub_pipeline_step};
 
 pub(in super::super) async fn run_single_step<'a>(
@@ -33,40 +31,77 @@ pub(in super::super) async fn run_single_step<'a>(
 ) -> SingleStepResult {
     let step_start = std::time::Instant::now();
 
-    emit_pipeline_event(runner.emitter, &PipelineEvent {
-        pipeline_id: pipeline_id.to_string(),
-        run_id: run_id.to_string(),
-        step_id: step.id.clone(),
-        step_index,
-        total_steps,
-        status: "running".to_string(),
-        tool_name: step.tool_name.clone(),
-        message: None,
-        store_stats: None,
-        pipeline_name: None, target: None, all_steps: None,
-        output: None, duration_ms: None, exit_code: None,
-    });
+    emit_pipeline_event(
+        runner.emitter,
+        &PipelineEvent {
+            pipeline_id: pipeline_id.to_string(),
+            run_id: run_id.to_string(),
+            step_id: step.id.clone(),
+            step_index,
+            total_steps,
+            status: "running".to_string(),
+            tool_name: step.tool_name.clone(),
+            message: None,
+            store_stats: None,
+            pipeline_name: None,
+            target: None,
+            all_steps: None,
+            output: None,
+            duration_ms: None,
+            exit_code: None,
+        },
+    );
 
     if step.step_type == "sub_pipeline" {
         return run_sub_pipeline_step(
-            runner, step, step_index, total_steps, target, project_path,
-            parent_target_id, tmp_dir, pipeline_id, run_id, depth,
-        ).await;
+            runner,
+            step,
+            step_index,
+            total_steps,
+            target,
+            project_path,
+            parent_target_id,
+            tmp_dir,
+            pipeline_id,
+            run_id,
+            depth,
+        )
+        .await;
     }
 
     if step.step_type == "foreach" {
         return run_foreach_step(
-            runner, step, step_index, total_steps, target, project_path,
-            parent_target_id, tmp_dir, pipeline_id, run_id,
-            step_outputs, depth,
-        ).await;
+            runner,
+            step,
+            step_index,
+            total_steps,
+            target,
+            project_path,
+            parent_target_id,
+            tmp_dir,
+            pipeline_id,
+            run_id,
+            step_outputs,
+            depth,
+        )
+        .await;
     }
 
     if step.step_type == "ai_tool" {
         return run_ai_tool_step(
-            runner, step, step_index, total_steps, target, project_path,
-            parent_target_id, tmp_dir, pipeline_id, run_id, step_start,
-        ).await;
+            runner,
+            step,
+            step_index,
+            total_steps,
+            target,
+            project_path,
+            parent_target_id,
+            tmp_dir,
+            pipeline_id,
+            run_id,
+            step_start,
+        )
+        .await;
     }
 
     let step_parent_id = if let Some(pid) = runner.parent_audit_id {
@@ -74,10 +109,7 @@ pub(in super::super) async fn run_single_step<'a>(
             runner.pool,
             "pipeline_step_started",
             "pentest_pipeline",
-            &format!(
-                "Step '{}' (tool={}) started",
-                step.id, step.tool_name
-            ),
+            &format!("Step '{}' (tool={}) started", step.id, step.tool_name),
             parent_target_id,
             Some(&step.tool_name),
             serde_json::json!({
@@ -133,23 +165,26 @@ pub(in super::super) async fn run_single_step<'a>(
             .await;
         }
 
-        emit_pipeline_event(runner.emitter, &PipelineEvent {
-            pipeline_id: pipeline_id.to_string(),
-            run_id: run_id.to_string(),
-            step_id: step.id.clone(),
-            step_index,
-            total_steps,
-            status: "error".to_string(),
-            tool_name: step.tool_name.clone(),
-            message: Some(err_msg.clone()),
-            store_stats: None,
-            pipeline_name: None,
-            target: None,
-            all_steps: None,
-            output: None,
-            duration_ms: Some(duration_ms),
-            exit_code: Some(127),
-        });
+        emit_pipeline_event(
+            runner.emitter,
+            &PipelineEvent {
+                pipeline_id: pipeline_id.to_string(),
+                run_id: run_id.to_string(),
+                step_id: step.id.clone(),
+                step_index,
+                total_steps,
+                status: "error".to_string(),
+                tool_name: step.tool_name.clone(),
+                message: Some(err_msg.clone()),
+                store_stats: None,
+                pipeline_name: None,
+                target: None,
+                all_steps: None,
+                output: None,
+                duration_ms: Some(duration_ms),
+                exit_code: Some(127),
+            },
+        );
 
         return SingleStepResult {
             step_result: StepResult {
@@ -195,55 +230,52 @@ pub(in super::super) async fn run_single_step<'a>(
 
         tracing::info!(
             "[pipeline] Step {}/{}: {} → {}{}",
-            step_index + 1, total_steps, step.tool_name, cmd_str,
-            if iter_targets.len() > 1 { format!(" (port iter {}/{})", iter_targets.iter().position(|t| t == iter_target).unwrap_or(0) + 1, iter_targets.len()) } else { String::new() }
+            step_index + 1,
+            total_steps,
+            step.tool_name,
+            cmd_str,
+            if iter_targets.len() > 1 {
+                format!(
+                    " (port iter {}/{})",
+                    iter_targets
+                        .iter()
+                        .position(|t| t == iter_target)
+                        .unwrap_or(0)
+                        + 1,
+                    iter_targets.len()
+                )
+            } else {
+                String::new()
+            }
         );
+
+        let make_cmd = || {
+            let mut cmd = golish_shell_exec::build_tokio_shell_command(&cmd_str);
+            cmd.stdin(if let Some(ref pf) = input_file {
+                if step.exec_mode == "pipe" {
+                    match std::fs::File::open(pf) {
+                        Ok(f) => std::process::Stdio::from(f),
+                        Err(_) => std::process::Stdio::null(),
+                    }
+                } else {
+                    std::process::Stdio::null()
+                }
+            } else {
+                std::process::Stdio::null()
+            })
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+            cmd
+        };
 
         let proc_result = if let Some(timeout_s) = step.timeout_secs {
             tokio::time::timeout(
                 std::time::Duration::from_secs(timeout_s),
-                tokio::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(&cmd_str)
-                    .stdin(if let Some(ref pf) = input_file {
-                        if step.exec_mode == "pipe" {
-                            match std::fs::File::open(pf) {
-                                Ok(f) => std::process::Stdio::from(f),
-                                Err(_) => std::process::Stdio::null(),
-                            }
-                        } else {
-                            std::process::Stdio::null()
-                        }
-                    } else {
-                        std::process::Stdio::null()
-                    })
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
-                    .output(),
+                make_cmd().output(),
             )
             .await
         } else {
-            Ok(
-                tokio::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(&cmd_str)
-                    .stdin(if let Some(ref pf) = input_file {
-                        if step.exec_mode == "pipe" {
-                            match std::fs::File::open(pf) {
-                                Ok(f) => std::process::Stdio::from(f),
-                                Err(_) => std::process::Stdio::null(),
-                            }
-                        } else {
-                            std::process::Stdio::null()
-                        }
-                    } else {
-                        std::process::Stdio::null()
-                    })
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
-                    .output()
-                    .await,
-            )
+            Ok(make_cmd().output().await)
         };
 
         match proc_result {
@@ -259,7 +291,10 @@ pub(in super::super) async fn run_single_step<'a>(
                 last_exit_code = Some(-1);
             }
             Err(_) => {
-                combined_stderr.push_str(&format!("Step timed out after {}s\n", step.timeout_secs.unwrap_or(0)));
+                combined_stderr.push_str(&format!(
+                    "Step timed out after {}s\n",
+                    step.timeout_secs.unwrap_or(0)
+                ));
                 last_exit_code = Some(-2);
             }
         }
@@ -331,7 +366,11 @@ pub(in super::super) async fn run_single_step<'a>(
                     .entry("_tool".to_string())
                     .or_insert_with(|| tool_name.clone());
                 if db_action == "target_add" {
-                    match runner.storage.store_target_from_item(runner.pool, &item, project_path, parent_target_id).await {
+                    match runner
+                        .storage
+                        .store_target_from_item(runner.pool, &item, project_path, parent_target_id)
+                        .await
+                    {
                         Ok(is_new) => {
                             stored_count += 1;
                             if is_new {
@@ -350,13 +389,22 @@ pub(in super::super) async fn run_single_step<'a>(
                 }
                 let result = match db_action.as_str() {
                     "target_update_recon" => {
-                        runner.storage.store_recon_from_item(runner.pool, &item, project_path).await
+                        runner
+                            .storage
+                            .store_recon_from_item(runner.pool, &item, project_path)
+                            .await
                     }
                     "directory_entry_add" => {
-                        runner.storage.store_dirent_from_item(runner.pool, &item, tool_name, project_path).await
+                        runner
+                            .storage
+                            .store_dirent_from_item(runner.pool, &item, tool_name, project_path)
+                            .await
                     }
                     "finding_add" => {
-                        runner.storage.store_finding_from_item(runner.pool, &item, tool_name, project_path).await
+                        runner
+                            .storage
+                            .store_finding_from_item(runner.pool, &item, tool_name, project_path)
+                            .await
                     }
                     _ => {
                         skipped_count += 1;
@@ -408,25 +456,34 @@ pub(in super::super) async fn run_single_step<'a>(
             .map(|l| l.trim().to_string())
             .collect();
         if !urls.is_empty() {
-            tracing::info!(count = urls.len(), "[pipeline] Merging katana URLs into sitemap");
-            runner.storage.merge_urls_into_sitemap(runner.pool, &urls, project_path).await;
-            emit_pipeline_event(runner.emitter, &PipelineEvent {
-                pipeline_id: pipeline_id.to_string(),
-                run_id: run_id.to_string(),
-                step_id: "sitemap_merge".to_string(),
-                step_index,
-                total_steps,
-                status: "info".to_string(),
-                tool_name: "katana".to_string(),
-                message: Some(format!("Merged {} URLs into sitemap", urls.len())),
-                store_stats: None,
-                pipeline_name: None,
-                target: None,
-                all_steps: None,
-                output: None,
-                duration_ms: None,
-                exit_code: None,
-            });
+            tracing::info!(
+                count = urls.len(),
+                "[pipeline] Merging katana URLs into sitemap"
+            );
+            runner
+                .storage
+                .merge_urls_into_sitemap(runner.pool, &urls, project_path)
+                .await;
+            emit_pipeline_event(
+                runner.emitter,
+                &PipelineEvent {
+                    pipeline_id: pipeline_id.to_string(),
+                    run_id: run_id.to_string(),
+                    step_id: "sitemap_merge".to_string(),
+                    step_index,
+                    total_steps,
+                    status: "info".to_string(),
+                    tool_name: "katana".to_string(),
+                    message: Some(format!("Merged {} URLs into sitemap", urls.len())),
+                    store_stats: None,
+                    pipeline_name: None,
+                    target: None,
+                    all_steps: None,
+                    output: None,
+                    duration_ms: None,
+                    exit_code: None,
+                },
+            );
         }
     }
 
@@ -441,42 +498,39 @@ pub(in super::super) async fn run_single_step<'a>(
     } else {
         Some(stdout.clone())
     };
-    emit_pipeline_event(runner.emitter, &PipelineEvent {
-        pipeline_id: pipeline_id.to_string(),
-        run_id: run_id.to_string(),
-        step_id: step.id.clone(),
-        step_index,
-        total_steps,
-        status: if exit_code == Some(0) {
-            "completed".to_string()
-        } else {
-            "error".to_string()
+    emit_pipeline_event(
+        runner.emitter,
+        &PipelineEvent {
+            pipeline_id: pipeline_id.to_string(),
+            run_id: run_id.to_string(),
+            step_id: step.id.clone(),
+            step_index,
+            total_steps,
+            status: if exit_code == Some(0) {
+                "completed".to_string()
+            } else {
+                "error".to_string()
+            },
+            tool_name: step.tool_name.clone(),
+            message: Some(format!(
+                "exit={}, lines={}, stored={}",
+                exit_code.unwrap_or(-1),
+                stdout.lines().count(),
+                store_stats.as_ref().map(|s| s.stored_count).unwrap_or(0),
+            )),
+            store_stats: store_stats.clone(),
+            pipeline_name: None,
+            target: None,
+            all_steps: None,
+            output: truncated_output,
+            duration_ms: Some(duration_ms),
+            exit_code,
         },
-        tool_name: step.tool_name.clone(),
-        message: Some(format!(
-            "exit={}, lines={}, stored={}",
-            exit_code.unwrap_or(-1),
-            stdout.lines().count(),
-            store_stats
-                .as_ref()
-                .map(|s| s.stored_count)
-                .unwrap_or(0),
-        )),
-        store_stats: store_stats.clone(),
-        pipeline_name: None,
-        target: None,
-        all_steps: None,
-        output: truncated_output,
-        duration_ms: Some(duration_ms),
-        exit_code,
-    });
+    );
 
     if let Some(pid) = step_parent_id {
         let succeeded = exit_code == Some(0);
-        let stored_count = store_stats
-            .as_ref()
-            .map(|s| s.stored_count)
-            .unwrap_or(0);
+        let stored_count = store_stats.as_ref().map(|s| s.stored_count).unwrap_or(0);
         let detail_extra = serde_json::json!({
             "pipeline_id": pipeline_id,
             "run_id": run_id,
@@ -596,9 +650,18 @@ async fn run_ai_tool_step<'a>(
                 step.id
             );
             return ai_tool_failure(
-                runner, step, step_index, total_steps, parent_target_id,
-                pipeline_id, run_id, step_parent_id, &output_file, msg,
-                step_start.elapsed().as_millis() as u64, 127,
+                runner,
+                step,
+                step_index,
+                total_steps,
+                parent_target_id,
+                pipeline_id,
+                run_id,
+                step_parent_id,
+                &output_file,
+                msg,
+                step_start.elapsed().as_millis() as u64,
+                127,
             )
             .await;
         }
@@ -613,9 +676,18 @@ async fn run_ai_tool_step<'a>(
                 available.join(", ")
             );
             return ai_tool_failure(
-                runner, step, step_index, total_steps, parent_target_id,
-                pipeline_id, run_id, step_parent_id, &output_file, msg,
-                step_start.elapsed().as_millis() as u64, 127,
+                runner,
+                step,
+                step_index,
+                total_steps,
+                parent_target_id,
+                pipeline_id,
+                run_id,
+                step_parent_id,
+                &output_file,
+                msg,
+                step_start.elapsed().as_millis() as u64,
+                127,
             )
             .await;
         }
@@ -661,12 +733,8 @@ async fn run_ai_tool_step<'a>(
     let (stdout, exit_code, stored_count, store_stats) = match exec_result {
         Ok(value) => {
             let exit_code = match value.get("status").and_then(|v| v.as_str()) {
-                Some("ok")
-                | Some("completed")
-                | Some("partial")
-                | Some("truncated")
-                | Some("empty")
-                | Some("no_captures") => 0,
+                Some("ok") | Some("completed") | Some("partial") | Some("truncated")
+                | Some("empty") | Some("no_captures") => 0,
                 Some("error") => 1,
                 _ => {
                     if value.get("error").is_some() {
@@ -677,8 +745,7 @@ async fn run_ai_tool_step<'a>(
                 }
             };
             let stored = ai_tool_stored_count(&value);
-            let pretty =
-                serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+            let pretty = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
             let stats = if stored > 0 {
                 Some(StoreStats {
                     parsed_count: stored,
@@ -707,32 +774,35 @@ async fn run_ai_tool_step<'a>(
         Some(stdout.clone())
     };
 
-    emit_pipeline_event(runner.emitter, &PipelineEvent {
-        pipeline_id: pipeline_id.to_string(),
-        run_id: run_id.to_string(),
-        step_id: step.id.clone(),
-        step_index,
-        total_steps,
-        status: if exit_code == Some(0) {
-            "completed".to_string()
-        } else {
-            "error".to_string()
+    emit_pipeline_event(
+        runner.emitter,
+        &PipelineEvent {
+            pipeline_id: pipeline_id.to_string(),
+            run_id: run_id.to_string(),
+            step_id: step.id.clone(),
+            step_index,
+            total_steps,
+            status: if exit_code == Some(0) {
+                "completed".to_string()
+            } else {
+                "error".to_string()
+            },
+            tool_name: tool_name.to_string(),
+            message: Some(format!(
+                "exit={}, lines={}, stored={}",
+                exit_code.unwrap_or(-1),
+                stdout.lines().count(),
+                stored_count,
+            )),
+            store_stats: store_stats.clone(),
+            pipeline_name: None,
+            target: None,
+            all_steps: None,
+            output: truncated_output,
+            duration_ms: Some(duration_ms),
+            exit_code,
         },
-        tool_name: tool_name.to_string(),
-        message: Some(format!(
-            "exit={}, lines={}, stored={}",
-            exit_code.unwrap_or(-1),
-            stdout.lines().count(),
-            stored_count,
-        )),
-        store_stats: store_stats.clone(),
-        pipeline_name: None,
-        target: None,
-        all_steps: None,
-        output: truncated_output,
-        duration_ms: Some(duration_ms),
-        exit_code,
-    });
+    );
 
     if let Some(pid) = step_parent_id {
         let succeeded = exit_code == Some(0);

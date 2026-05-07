@@ -36,10 +36,7 @@ pub async fn set_agent_mode(
     // If workspace is provided, also persist to project settings
     if let Some(workspace_path) = workspace {
         let project_settings = ProjectSettingsManager::new(&workspace_path).await;
-        project_settings
-            .set_agent_mode(mode.to_string())
-            .await
-?;
+        project_settings.set_agent_mode(mode.to_string()).await?;
     }
 
     Ok(())
@@ -51,7 +48,10 @@ pub async fn set_agent_mode(
 /// * `workspace` - The workspace path to save settings to
 /// * `mode` - The agent mode to save
 #[tauri::command]
-pub async fn save_project_agent_mode(workspace: PathBuf, mode: AgentMode) -> Result<(), GolishError> {
+pub async fn save_project_agent_mode(
+    workspace: PathBuf,
+    mode: AgentMode,
+) -> Result<(), GolishError> {
     let project_settings = ProjectSettingsManager::new(&workspace).await;
     project_settings
         .set_agent_mode(mode.to_string())
