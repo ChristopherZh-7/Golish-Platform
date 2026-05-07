@@ -1,3 +1,9 @@
+// `too_many_arguments`: the streaming loop body threads a wide context
+// (events / hooks / capture / sub-agents / mode / planner …) through every
+// helper, by design. Rewriting them into bundled structs is its own
+// refactor.
+#![allow(clippy::too_many_arguments)]
+
 //! High-level agent runtime (**Layer 4b**).
 //!
 //! Renamed from `golish-agentic-loop` in A2. Split out from

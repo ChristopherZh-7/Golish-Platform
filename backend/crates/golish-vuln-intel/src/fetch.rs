@@ -67,14 +67,11 @@ pub async fn enrich_missing_cvss(client: &reqwest::Client, entries: &mut [VulnEn
                         if let Some(cve) = item.get("cve") {
                             if let Some(metrics) = cve.get("metrics") {
                                 for key in ["cvssMetricV31", "cvssMetricV30", "cvssMetricV2"] {
-                                    if let Some(arr) =
-                                        metrics.get(key).and_then(|m| m.as_array())
-                                    {
+                                    if let Some(arr) = metrics.get(key).and_then(|m| m.as_array()) {
                                         if let Some(first) = arr.first() {
                                             if let Some(data) = first.get("cvssData") {
-                                                if let Some(score) = data
-                                                    .get("baseScore")
-                                                    .and_then(|s| s.as_f64())
+                                                if let Some(score) =
+                                                    data.get("baseScore").and_then(|s| s.as_f64())
                                                 {
                                                     entries[*idx].cvss_score = Some(score);
                                                     entries[*idx].severity = if score >= 9.0 {
@@ -219,8 +216,7 @@ pub async fn fetch_nvd(
                     if let Some(arr) = metrics.get(key).and_then(|m| m.as_array()) {
                         if let Some(first) = arr.first() {
                             if let Some(data) = first.get("cvssData") {
-                                if let Some(score) =
-                                    data.get("baseScore").and_then(|s| s.as_f64())
+                                if let Some(score) = data.get("baseScore").and_then(|s| s.as_f64())
                                 {
                                     cvss_score = Some(score);
                                     severity = if score >= 9.0 {
@@ -286,8 +282,7 @@ pub async fn fetch_rss(
     let mut pub_date = String::new();
 
     let cve_re =
-        regex::Regex::new(r"(?i)(CVE-\d{4}-\d{4,})|(CNVD-\d{4}-\d+)|(CNNVD-\d{6}-\d+)")
-            .unwrap();
+        regex::Regex::new(r"(?i)(CVE-\d{4}-\d{4,})|(CNVD-\d{4}-\d+)|(CNNVD-\d{6}-\d+)").unwrap();
 
     loop {
         match reader.read_event() {
@@ -304,18 +299,14 @@ pub async fn fetch_rss(
                     current_tag = tag;
                 }
             }
-            Ok(quick_xml::events::Event::Text(ref e)) => {
-                if in_item {
-                    let text = e.decode().map(|s| s.to_string()).unwrap_or_default();
-                    match current_tag.as_str() {
-                        "title" => title.push_str(&text),
-                        "link" => link.push_str(&text),
-                        "description" | "summary" | "content" => description.push_str(&text),
-                        "pubDate" | "published" | "updated" | "dc:date" => {
-                            pub_date.push_str(&text)
-                        }
-                        _ => {}
-                    }
+            Ok(quick_xml::events::Event::Text(ref e)) if in_item => {
+                let text = e.decode().map(|s| s.to_string()).unwrap_or_default();
+                match current_tag.as_str() {
+                    "title" => title.push_str(&text),
+                    "link" => link.push_str(&text),
+                    "description" | "summary" | "content" => description.push_str(&text),
+                    "pubDate" | "published" | "updated" | "dc:date" => pub_date.push_str(&text),
+                    _ => {}
                 }
             }
             Ok(quick_xml::events::Event::End(ref e)) => {

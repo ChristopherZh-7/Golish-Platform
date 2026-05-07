@@ -37,11 +37,7 @@ pub(super) async fn maybe_restore_chain(
             Some(cid)
         }
         Err(e) => {
-            tracing::warn!(
-                "[sub-agent:{}] Failed to restore chain: {}",
-                agent_id,
-                e
-            );
+            tracing::warn!("[sub-agent:{}] Failed to restore chain: {}", agent_id, e);
             None
         }
     }

@@ -108,9 +108,7 @@ async fn run_anonymous(
         }
     };
 
-    let rounds: Vec<Round> = std::iter::once(r1.clone())
-        .chain(r2.clone())
-        .collect();
+    let rounds: Vec<Round> = std::iter::once(r1.clone()).chain(r2.clone()).collect();
     let refs: Vec<Option<&Round>> = rounds.iter().map(Some).collect();
     let (verdict, severity, diff) = compare_rounds(Scenario::Anonymous, &refs);
     Some((rounds, verdict, severity, diff))

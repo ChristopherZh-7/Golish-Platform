@@ -33,6 +33,8 @@ fn get_rc_file_paths(home_dir: &std::path::Path, shell_type: ShellType) -> Vec<P
         ShellType::Zsh => vec![home_dir.join(".zshrc")],
         ShellType::Bash => vec![home_dir.join(".bashrc"), home_dir.join(".bash_profile")],
         ShellType::Fish => vec![home_dir.join(".config/fish/conf.d/golish.fish")],
+        // POSIX `sh` reads `~/.profile`; integration is best-effort there.
+        ShellType::Sh => vec![home_dir.join(".profile")],
         // Windows shells: integration not currently supported, fall back to zsh path so
         // the test helpers compile on a fully exhaustive `ShellType` match.
         ShellType::PowerShell | ShellType::Cmd | ShellType::Unknown => {

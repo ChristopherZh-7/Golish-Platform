@@ -56,8 +56,8 @@ fn tool_request_event_json_format() {
 
 #[test]
 fn tool_approval_request_event_json_format() {
-    use chrono::{DateTime, Utc};
     use crate::hitl::{ApprovalPattern, RiskLevel};
+    use chrono::{DateTime, Utc};
 
     let event = AiEvent::ToolApprovalRequest {
         request_id: "req-789".to_string(),

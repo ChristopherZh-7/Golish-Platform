@@ -192,12 +192,9 @@ where
                 }
                 StreamedAssistantContent::Final(ref resp) => {
                     if let Some(usage) = resp.token_usage() {
+                        llm_span.record("gen_ai.usage.prompt_tokens", usage.input_tokens as i64);
                         llm_span
-                            .record("gen_ai.usage.prompt_tokens", usage.input_tokens as i64);
-                        llm_span.record(
-                            "gen_ai.usage.completion_tokens",
-                            usage.output_tokens as i64,
-                        );
+                            .record("gen_ai.usage.completion_tokens", usage.output_tokens as i64);
                     }
 
                     if let Ok(json_value) = serde_json::to_value(resp) {
@@ -243,8 +240,7 @@ where
     }
 
     // Finalize any remaining pending tool call after stream ends
-    if let (Some(prev_id), Some(prev_name)) = (current_tool_id.take(), current_tool_name.take())
-    {
+    if let (Some(prev_id), Some(prev_name)) = (current_tool_id.take(), current_tool_name.take()) {
         let args = golish_json_repair::parse_tool_args(&current_tool_args);
         tracing::debug!(
             "[sub-agent] Finalizing final tool call: {} with args: {}",

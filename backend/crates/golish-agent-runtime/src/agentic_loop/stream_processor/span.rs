@@ -3,7 +3,6 @@
 
 use rig::message::ToolCall;
 
-
 /// Record a (truncated) version of the model's text output (or just the tool
 /// names if it produced only tool calls) on the LLM span for Langfuse.
 pub(super) fn record_completion_for_span(

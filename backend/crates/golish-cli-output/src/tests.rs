@@ -10,7 +10,10 @@ fn test_truncate() {
 #[test]
 fn test_format_args_summary() {
     let short = serde_json::json!({"path": "/tmp"});
-    assert_eq!(formatting::format_args_summary(&short), r#"{"path":"/tmp"}"#);
+    assert_eq!(
+        formatting::format_args_summary(&short),
+        r#"{"path":"/tmp"}"#
+    );
 
     let long = serde_json::json!({
         "path": "/very/long/path/to/some/file/that/exceeds/the/limit.txt",

@@ -6,8 +6,10 @@
 use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 
+use super::{
+    ChatMessageRow, ConversationRow, TerminalStateRow, TimelineBlockRow, WorkspacePreferences,
+};
 use crate::state::DbState;
-use super::{ChatMessageRow, ConversationRow, TerminalStateRow, TimelineBlockRow, WorkspacePreferences};
 
 // ─── Batch Save ─────────────────────────────────────────────────────────────
 
@@ -60,8 +62,7 @@ pub async fn conv_save_batch(
         sqlx::query("DELETE FROM conversations WHERE project_path = $1")
             .bind(&payload.project_path)
             .execute(&mut *tx)
-            .await
-?;
+            .await?;
     } else {
         // Build a ($2, $3, ...) placeholder list for the surviving IDs
         let placeholders: Vec<String> = (0..payload.surviving_ids.len())
@@ -105,8 +106,7 @@ pub async fn conv_save_batch(
         sqlx::query("DELETE FROM chat_messages WHERE conversation_id = $1")
             .bind(&conv.id)
             .execute(&mut *tx)
-            .await
-?;
+            .await?;
 
         for msg in &item.messages {
             sqlx::query(
@@ -139,8 +139,7 @@ pub async fn conv_save_batch(
                 .bind(conv_id)
                 .bind(&ts.session_id)
                 .execute(&mut *tx)
-                .await
-?;
+                .await?;
             }
 
             sqlx::query(
@@ -175,8 +174,7 @@ pub async fn conv_save_batch(
             sqlx::query("DELETE FROM timeline_blocks WHERE session_id = $1")
                 .bind(&entry.session_id)
                 .execute(&mut *tx)
-                .await
-?;
+                .await?;
 
             for block in &entry.blocks {
                 sqlx::query(
@@ -217,12 +215,10 @@ pub async fn conv_save_batch(
     .bind(&payload.preferences.approval_mode)
     .bind(&payload.preferences.approval_patterns)
     .execute(&mut *tx)
-    .await
-?;
+    .await?;
 
     tx.commit().await?;
     Ok(())
 }
 
 // ─── Workspace Preferences ───────────────────────────────────────────────────
-

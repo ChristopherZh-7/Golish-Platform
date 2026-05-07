@@ -42,7 +42,10 @@ fn default_feeds_includes_cisa_and_nvd() {
     let feeds = default_feeds();
     let ids: Vec<&str> = feeds.iter().map(|f: &VulnFeed| f.id.as_str()).collect();
     assert!(ids.contains(&"cisa-kev"), "CISA KEV must be a default feed");
-    assert!(ids.contains(&"nvd-recent"), "NVD recent must be a default feed");
+    assert!(
+        ids.contains(&"nvd-recent"),
+        "NVD recent must be a default feed"
+    );
 
     // Every feed has a non-empty feed_type and a non-empty id.
     for f in &feeds {
@@ -53,8 +56,14 @@ fn default_feeds_includes_cisa_and_nvd() {
     // Core feeds (CISA KEV + NVD recent) must be enabled by default; optional
     // RSS feeds (e.g. cnvd) may ship disabled.
     let by_id = |id: &str| feeds.iter().find(|f| f.id == id).expect("feed present");
-    assert!(by_id("cisa-kev").enabled, "CISA KEV must be enabled by default");
-    assert!(by_id("nvd-recent").enabled, "NVD recent must be enabled by default");
+    assert!(
+        by_id("cisa-kev").enabled,
+        "CISA KEV must be enabled by default"
+    );
+    assert!(
+        by_id("nvd-recent").enabled,
+        "NVD recent must be enabled by default"
+    );
 }
 
 #[test]

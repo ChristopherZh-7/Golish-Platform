@@ -15,9 +15,7 @@ pub async fn kb_research_load(
     cve_id: String,
 ) -> Result<Option<serde_json::Value>, GolishError> {
     let pool = state.pool_ready().await?;
-    let log = golish_db::repo::kb_research::get_log(pool, &cve_id)
-        .await
-?;
+    let log = golish_db::repo::kb_research::get_log(pool, &cve_id).await?;
     Ok(log.map(|l| {
         serde_json::json!({
             "cve_id": l.cve_id,
@@ -38,19 +36,14 @@ pub async fn kb_research_save_turn(
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
 
-    let existing = golish_db::repo::kb_research::get_log(pool, &cve_id)
-        .await
-?;
+    let existing = golish_db::repo::kb_research::get_log(pool, &cve_id).await?;
 
     if existing.is_some() {
-        golish_db::repo::kb_research::append_turn(pool, &cve_id, &turn)
-            .await
-?;
+        golish_db::repo::kb_research::append_turn(pool, &cve_id, &turn).await?;
     } else {
         let turns = serde_json::json!([turn]);
         golish_db::repo::kb_research::upsert_log(pool, &cve_id, &session_id, &turns, "in_progress")
-            .await
-?;
+            .await?;
     }
     Ok(())
 }
@@ -62,9 +55,7 @@ pub async fn kb_research_set_status(
     status: String,
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
-    golish_db::repo::kb_research::set_status(pool, &cve_id, &status)
-        .await
-?;
+    golish_db::repo::kb_research::set_status(pool, &cve_id, &status).await?;
     Ok(())
 }
 
@@ -74,8 +65,6 @@ pub async fn kb_research_clear(
     cve_id: String,
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
-    golish_db::repo::kb_research::delete_log(pool, &cve_id)
-        .await
-?;
+    golish_db::repo::kb_research::delete_log(pool, &cve_id).await?;
     Ok(())
 }

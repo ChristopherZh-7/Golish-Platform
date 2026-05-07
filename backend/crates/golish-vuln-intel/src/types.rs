@@ -146,7 +146,10 @@ pub fn nvd_recent_url(days_back: i64) -> String {
     )
 }
 
-pub(crate) async fn upsert_entries(pool: &sqlx::PgPool, entries: &[VulnEntry]) -> crate::VulnIntelResult<()> {
+pub(crate) async fn upsert_entries(
+    pool: &sqlx::PgPool,
+    entries: &[VulnEntry],
+) -> crate::VulnIntelResult<()> {
     for e in entries {
         let refs_json =
             serde_json::to_value(&e.references).unwrap_or_else(|_| serde_json::json!([]));

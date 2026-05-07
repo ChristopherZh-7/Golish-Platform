@@ -8,10 +8,10 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::schema::AiProvider;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use crate::schema::AiProvider;
 
 /// Per-project settings that override global defaults.
 ///
@@ -205,7 +205,6 @@ impl ProjectSettingsManager {
         Ok(())
     }
 }
-
 
 #[cfg(test)]
 mod tests;

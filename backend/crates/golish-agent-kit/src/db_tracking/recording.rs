@@ -166,7 +166,14 @@ impl DbTracker {
                 return;
             }
             backend
-                .record_audit(&action, &category, &details, &source, &session_id, pp.as_deref())
+                .record_audit(
+                    &action,
+                    &category,
+                    &details,
+                    &source,
+                    &session_id,
+                    pp.as_deref(),
+                )
                 .await;
         });
     }

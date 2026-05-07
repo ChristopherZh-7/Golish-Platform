@@ -128,7 +128,16 @@ pub async fn save_http_capture(
 
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
     let slug = url_path_slug(url_path);
-    let filename = format!("{}_{}{}.json", timestamp, method, if slug.is_empty() { "root".to_string() } else { format!("_{}", slug) });
+    let filename = format!(
+        "{}_{}{}.json",
+        timestamp,
+        method,
+        if slug.is_empty() {
+            "root".to_string()
+        } else {
+            format!("_{}", slug)
+        }
+    );
     let full_path = dir.join(&filename);
     tokio::fs::write(&full_path, content).await?;
 

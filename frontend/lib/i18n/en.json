@@ -291,7 +291,16 @@
     "homebrewDesc": "Homebrew is the macOS package manager, used to install other runtimes. Ready to use, no additional version management needed.",
     "packageManager": "Package Manager",
     "loadFailed": "Failed to load pentest configuration",
-    "switchDir": "Switch directory"
+    "switchDir": "Switch directory",
+    "databaseExtensions": "Database Extensions",
+    "pgvectorTitle": "PostgreSQL Vector Extension (pgvector)",
+    "pgvectorDesc": "AI memory module requires this extension for embedding vector similarity search. After installing it into your system PostgreSQL, the AI can recall relevant past conversations and notes by semantic meaning.",
+    "pgvectorInstalled": "Installed",
+    "pgvectorNotInstalled": "Not installed",
+    "pgvectorWarning": "AI memory semantic search will be unavailable until installed",
+    "pgvectorReady": "pgvector is ready — AI memory vector search is enabled",
+    "pgvectorInstalling": "Installing pgvector via Homebrew, please wait…",
+    "installPgvector": "Install Now"
   },
   "provider": {
     "showInSelector": "Show in model selector",

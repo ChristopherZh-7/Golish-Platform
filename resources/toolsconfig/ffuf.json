@@ -12,7 +12,9 @@
     "tags": ["web", "fuzzer", "directory-brute", "parameter-discovery"],
     "install": {
       "method": "homebrew",
-      "source": "ffuf"
+      "source": "ffuf",
+      "windows": { "method": "github", "source": "ffuf/ffuf" },
+      "linux": { "method": "github", "source": "ffuf/ffuf" }
     },
     "params": [
       {

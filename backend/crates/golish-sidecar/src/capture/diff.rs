@@ -1,6 +1,5 @@
 //! Unified-diff generation for edit/write tool captures.
 
-
 /// Generate unified diff between two strings
 pub(super) fn generate_unified_diff(old: &str, new: &str, filename: &str) -> String {
     use std::fmt::Write;

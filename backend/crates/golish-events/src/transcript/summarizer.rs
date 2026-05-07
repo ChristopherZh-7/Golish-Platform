@@ -1,7 +1,7 @@
-use std::path::{Path, PathBuf};
-use golish_core::utils::truncate_head_tail;
+use super::{read_transcript, TranscriptEvent};
 use golish_core::events::AiEvent;
-use super::{TranscriptEvent, read_transcript};
+use golish_core::utils::truncate_head_tail;
+use std::path::{Path, PathBuf};
 
 pub fn format_for_summarizer(events: &[TranscriptEvent]) -> String {
     let mut output = String::new();
@@ -169,34 +169,61 @@ pub fn format_for_summarizer(events: &[TranscriptEvent]) -> String {
             AiEvent::PromptGenerationStarted { .. } => {} // Internal sub-agent detail
             AiEvent::PromptGenerationCompleted { .. } => {} // Internal sub-agent detail
             AiEvent::SubAgentTextDelta { .. } => {} // Streaming delta, not needed for summarization
-            AiEvent::AskHumanRequest { question, input_type, .. } => {
-                output.push_str(&format!("\n**[Ask Human - {}]** {}\n", input_type, question));
+            AiEvent::AskHumanRequest {
+                question,
+                input_type,
+                ..
+            } => {
+                output.push_str(&format!(
+                    "\n**[Ask Human - {}]** {}\n",
+                    input_type, question
+                ));
             }
-            AiEvent::AskHumanResponse { response, skipped, .. } => {
+            AiEvent::AskHumanResponse {
+                response, skipped, ..
+            } => {
                 if *skipped {
                     output.push_str("\n*[User skipped the question]*\n");
                 } else {
                     output.push_str(&format!("\n**[User Response]** {}\n", response));
                 }
             }
-            AiEvent::TaskProgress { status, message, .. } => {
+            AiEvent::TaskProgress {
+                status, message, ..
+            } => {
                 output.push_str(&format!("\n**[Task {}]** {}\n", status, message));
             }
             AiEvent::SubtaskCreated { title, agent, .. } => {
                 let agent_str = agent.as_deref().unwrap_or("auto");
-                output.push_str(&format!("\n**[Subtask Created]** {} (agent: {})\n", title, agent_str));
+                output.push_str(&format!(
+                    "\n**[Subtask Created]** {} (agent: {})\n",
+                    title, agent_str
+                ));
             }
             AiEvent::SubtaskCompleted { title, result, .. } => {
-                output.push_str(&format!("\n**[Subtask Completed]** {}\n{}\n", title, result));
+                output.push_str(&format!(
+                    "\n**[Subtask Completed]** {}\n{}\n",
+                    title, result
+                ));
             }
             AiEvent::SubtaskWaitingForInput { title, prompt, .. } => {
-                output.push_str(&format!("\n**[Waiting for Input]** {}: {}\n", title, prompt));
+                output.push_str(&format!(
+                    "\n**[Waiting for Input]** {}: {}\n",
+                    title, prompt
+                ));
             }
             AiEvent::SubtaskUserInput { input, .. } => {
                 output.push_str(&format!("\n**[User Input]** {}\n", input));
             }
-            AiEvent::TaskResumed { subtask_index, total_subtasks, .. } => {
-                output.push_str(&format!("\n**[Task Resumed]** from subtask {}/{}\n", subtask_index, total_subtasks));
+            AiEvent::TaskResumed {
+                subtask_index,
+                total_subtasks,
+                ..
+            } => {
+                output.push_str(&format!(
+                    "\n**[Task Resumed]** from subtask {}/{}\n",
+                    subtask_index, total_subtasks
+                ));
             }
             AiEvent::EnricherResult { context_added, .. } => {
                 output.push_str(&format!("\n**[Enricher]** {}\n", context_added));
@@ -221,8 +248,6 @@ pub fn format_for_summarizer(events: &[TranscriptEvent]) -> String {
 /// A formatted string suitable for the summarizer agent.
 ///
 /// # Errors
-///
-
 pub async fn build_summarizer_input(base_dir: &Path, session_id: &str) -> anyhow::Result<String> {
     let events = read_transcript(base_dir, session_id).await?;
     Ok(format_for_summarizer(&events))
@@ -301,4 +326,3 @@ pub fn save_summary(base_dir: &Path, session_id: &str, summary: &str) -> anyhow:
 
     Ok(path)
 }
-

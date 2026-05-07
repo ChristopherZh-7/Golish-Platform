@@ -121,7 +121,12 @@ pub fn primary_agent_subtask_prompt(
     subtask_description: &str,
     execution_context: &str,
 ) -> String {
-    primary_agent_subtask_prompt_with_agent(subtask_title, subtask_description, execution_context, None)
+    primary_agent_subtask_prompt_with_agent(
+        subtask_title,
+        subtask_description,
+        execution_context,
+        None,
+    )
 }
 
 /// Primary agent prompt with optional agent-type hint.
@@ -210,10 +215,7 @@ After all specialists complete, provide:
 /// Refiner prompt — evaluates progress and adjusts the remaining plan.
 ///
 /// Equivalent to PentAGI's `refiner.tmpl`.
-pub fn refiner_prompt(
-    execution_context: &str,
-    remaining_subtasks_json: &str,
-) -> String {
+pub fn refiner_prompt(execution_context: &str, remaining_subtasks_json: &str) -> String {
     format!(
         r#"You are a task plan refiner for penetration testing operations.
 

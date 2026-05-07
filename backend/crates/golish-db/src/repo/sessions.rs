@@ -30,12 +30,11 @@ pub async fn get(pool: &PgPool, id: Uuid) -> Result<Option<Session>> {
 }
 
 pub async fn list(pool: &PgPool, limit: i64) -> Result<Vec<Session>> {
-    let rows = sqlx::query_as::<_, Session>(
-        "SELECT * FROM sessions ORDER BY created_at DESC LIMIT $1",
-    )
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
+    let rows =
+        sqlx::query_as::<_, Session>("SELECT * FROM sessions ORDER BY created_at DESC LIMIT $1")
+            .bind(limit)
+            .fetch_all(pool)
+            .await?;
     Ok(rows)
 }
 

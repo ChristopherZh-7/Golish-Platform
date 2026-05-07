@@ -4,8 +4,6 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Target {
     pub id: String,
@@ -118,6 +116,7 @@ impl TargetStatus {
             Self::Tested => "tested",
         }
     }
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s {
             "recon" => Self::Recon,
@@ -205,4 +204,3 @@ impl From<TargetRow> for Target {
         }
     }
 }
-

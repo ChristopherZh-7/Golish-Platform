@@ -251,10 +251,13 @@ fn test_build_assistant_content_verifies_values() {
 
     // Verify Reasoning content
     if let AssistantContent::Reasoning(reasoning) = &content[0] {
-        assert_eq!(reasoning.content, vec![ReasoningContent::Text {
-            text: "My thinking process".to_string(),
-            signature: Some("sig_789".to_string()),
-        }]);
+        assert_eq!(
+            reasoning.content,
+            vec![ReasoningContent::Text {
+                text: "My thinking process".to_string(),
+                signature: Some("sig_789".to_string()),
+            }]
+        );
         assert_eq!(reasoning.id, Some("id_456".to_string()));
     } else {
         panic!("Expected Reasoning content at index 0");

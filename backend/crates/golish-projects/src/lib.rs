@@ -20,6 +20,5 @@ pub mod storage;
 pub use file_storage::PentestProjectConfig;
 pub use schema::ProjectConfig;
 pub use storage::{
-    delete_project, list_projects, load_project, save_project,
-    load_workspace, save_workspace,
+    delete_project, list_projects, load_project, load_workspace, save_project, save_workspace,
 };

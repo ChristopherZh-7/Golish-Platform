@@ -20,9 +20,7 @@ pub struct TrustedMcpConfigs {
 
 /// Return the set of built-in MCP server names.
 pub fn builtin_server_names() -> HashSet<String> {
-    builtin_configs()
-        .into_keys()
-        .collect()
+    builtin_configs().into_keys().collect()
 }
 
 /// Built-in MCP servers that ship with Golish.
@@ -87,7 +85,10 @@ fn resolve_builtin_tool_path(rel_path: &str) -> Option<String> {
     for base in candidates {
         let full = base.join("tools").join(rel_path);
         if full.exists() {
-            return full.canonicalize().ok().map(|p| p.to_string_lossy().to_string());
+            return full
+                .canonicalize()
+                .ok()
+                .map(|p| p.to_string_lossy().to_string());
         }
     }
 
@@ -263,4 +264,3 @@ fn is_var_start(ch: char) -> bool {
 fn is_var_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_'
 }
-

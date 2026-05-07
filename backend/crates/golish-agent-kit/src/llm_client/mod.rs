@@ -102,7 +102,8 @@ pub(crate) async fn create_shared_components(
     let prompt_registry = golish_sub_agents::PromptRegistry::new();
     let mut sub_agent_registry = SubAgentRegistry::new();
     sub_agent_registry.register_multiple(
-        golish_sub_agents::defaults::create_default_sub_agents_from_registry(&prompt_registry).await,
+        golish_sub_agents::defaults::create_default_sub_agents_from_registry(&prompt_registry)
+            .await,
     );
 
     // Create context manager with config if provided, otherwise use model defaults

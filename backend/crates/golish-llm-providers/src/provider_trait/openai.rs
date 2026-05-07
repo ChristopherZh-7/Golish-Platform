@@ -9,7 +9,6 @@ use rig::client::CompletionClient;
 use super::super::LlmClient;
 use super::LlmProvider;
 
-
 // =============================================================================
 // Provider Implementations
 // =============================================================================

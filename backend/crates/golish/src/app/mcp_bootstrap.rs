@@ -51,9 +51,7 @@ pub(crate) fn spawn_mcp_initialization(
         if config.mcp_servers.is_empty() {
             tracing::debug!("[mcp] No MCP servers configured, skipping initialization");
             // Store empty manager so commands don't get "not initialized" errors.
-            let manager = Arc::new(golish_mcp::McpManager::new(
-                std::collections::HashMap::new(),
-            ));
+            let manager = Arc::new(golish_mcp::McpManager::new(std::collections::HashMap::new()));
             *mcp_manager_slot.write().await = Some(manager);
             let _ = app_handle.emit(
                 "mcp-event",

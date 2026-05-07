@@ -9,7 +9,6 @@ use rig::client::CompletionClient;
 use super::super::LlmClient;
 use super::LlmProvider;
 
-
 /// Groq provider implementation.
 pub struct GroqProviderImpl {
     pub api_key: String,

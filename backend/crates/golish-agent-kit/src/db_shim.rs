@@ -46,10 +46,7 @@ pub mod subtasks {
         pub agent: Option<AgentType>,
     }
 
-    pub async fn create(
-        repo: &dyn DbRepoProvider,
-        sub: NewSubtask,
-    ) -> anyhow::Result<SubtaskView> {
+    pub async fn create(repo: &dyn DbRepoProvider, sub: NewSubtask) -> anyhow::Result<SubtaskView> {
         repo.subtask_create(
             sub.task_id,
             sub.session_id,
@@ -92,10 +89,7 @@ pub mod subtasks {
         repo.subtask_list_by_task(task_id).await
     }
 
-    pub async fn delete_pending(
-        repo: &dyn DbRepoProvider,
-        task_id: Uuid,
-    ) -> anyhow::Result<()> {
+    pub async fn delete_pending(repo: &dyn DbRepoProvider, task_id: Uuid) -> anyhow::Result<()> {
         repo.subtask_delete_pending(task_id).await
     }
 }
@@ -186,10 +180,7 @@ pub mod execution_plans {
 pub mod wiki_kb {
     use super::*;
 
-    pub async fn upsert_page(
-        repo: &dyn DbRepoProvider,
-        page: &NewWikiPage,
-    ) -> anyhow::Result<()> {
+    pub async fn upsert_page(repo: &dyn DbRepoProvider, page: &NewWikiPage) -> anyhow::Result<()> {
         repo.wiki_upsert_page(page).await
     }
 
@@ -201,10 +192,7 @@ pub mod wiki_kb {
         repo.wiki_link_cve(cve, path).await
     }
 
-    pub async fn delete_refs_from(
-        repo: &dyn DbRepoProvider,
-        path: &str,
-    ) -> anyhow::Result<()> {
+    pub async fn delete_refs_from(repo: &dyn DbRepoProvider, path: &str) -> anyhow::Result<()> {
         repo.wiki_delete_refs_from(path).await
     }
 
@@ -261,9 +249,7 @@ pub mod wiki_kb {
         repo.wiki_list_unresearched_cves(limit).await
     }
 
-    pub async fn poc_stats(
-        repo: &dyn DbRepoProvider,
-    ) -> anyhow::Result<serde_json::Value> {
+    pub async fn poc_stats(repo: &dyn DbRepoProvider) -> anyhow::Result<serde_json::Value> {
         repo.wiki_poc_stats().await
     }
 
@@ -281,8 +267,16 @@ pub mod wiki_kb {
         tags: &[String],
     ) -> anyhow::Result<serde_json::Value> {
         repo.wiki_upsert_poc_full(
-            cve_id, name, poc_type, language, content, source, source_url,
-            severity, description, tags,
+            cve_id,
+            name,
+            poc_type,
+            language,
+            content,
+            source,
+            source_url,
+            severity,
+            description,
+            tags,
         )
         .await
     }

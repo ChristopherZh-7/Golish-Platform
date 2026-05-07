@@ -21,6 +21,7 @@ tauri-build = { workspace = true }
 # Foundation crate (zero internal dependencies)
 golish-cli-output = { workspace = true }
 golish-core = { path = "../golish-core" }
+golish-platform = { workspace = true }
 
 # Infrastructure crates
 golish-settings = { path = "../golish-settings" }

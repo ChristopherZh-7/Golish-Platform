@@ -12,7 +12,9 @@
     "tags": ["brute", "password", "network", "auth"],
     "install": {
       "method": "homebrew",
-      "source": "hydra"
+      "source": "hydra",
+      "windows": { "method": "github", "source": "maaaaz/thc-hydra-windows" },
+      "linux": { "method": "github", "source": "vanhauser-thc/thc-hydra" }
     },
     "params": [
       {

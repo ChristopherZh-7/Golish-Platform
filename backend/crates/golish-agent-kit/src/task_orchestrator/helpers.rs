@@ -7,14 +7,14 @@
 
 pub(super) fn parse_agent_type(agent: &Option<String>) -> Option<crate::db_traits::AgentType> {
     use crate::db_traits::AgentType;
-    agent.as_ref().and_then(|a| match a.as_str() {
-        "pentester" => Some(AgentType::Pentester),
-        "coder" => Some(AgentType::Coder),
-        "searcher" | "researcher" => Some(AgentType::Searcher),
-        "memorist" => Some(AgentType::Memorist),
-        "reporter" => Some(AgentType::Reporter),
-        "adviser" => Some(AgentType::Adviser),
-        _ => Some(AgentType::Primary),
+    agent.as_ref().map(|a| match a.as_str() {
+        "pentester" => AgentType::Pentester,
+        "coder" => AgentType::Coder,
+        "searcher" | "researcher" => AgentType::Searcher,
+        "memorist" => AgentType::Memorist,
+        "reporter" => AgentType::Reporter,
+        "adviser" => AgentType::Adviser,
+        _ => AgentType::Primary,
     })
 }
 
@@ -41,7 +41,7 @@ pub(super) fn looks_like_text_only_response(response: &str) -> bool {
 
     // Markers that indicate real tool work was performed
     let tool_evidence = [
-        "```",           // code blocks from tool output
+        "```", // code blocks from tool output
         "scan result",
         "output:",
         "found ",

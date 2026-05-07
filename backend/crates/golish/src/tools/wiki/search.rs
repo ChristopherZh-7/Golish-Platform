@@ -111,17 +111,11 @@ pub async fn wiki_search_db(
     let max = limit.unwrap_or(20);
 
     let pages = if let Some(cat) = category {
-        golish_db::repo::wiki_kb::search_by_category(pool, &cat, max)
-            .await
-?
+        golish_db::repo::wiki_kb::search_by_category(pool, &cat, max).await?
     } else if let Some(t) = tag {
-        golish_db::repo::wiki_kb::search_by_tag(pool, &t, max)
-            .await
-?
+        golish_db::repo::wiki_kb::search_by_tag(pool, &t, max).await?
     } else {
-        golish_db::repo::wiki_kb::search_fts(pool, &query, max)
-            .await
-?
+        golish_db::repo::wiki_kb::search_fts(pool, &query, max).await?
     };
 
     Ok(pages
@@ -145,12 +139,8 @@ pub async fn wiki_stats(
     state: tauri::State<'_, DbState>,
 ) -> Result<serde_json::Value, GolishError> {
     let pool = state.pool_ready().await?;
-    let count = golish_db::repo::wiki_kb::count_pages(pool)
-        .await
-?;
-    let recent = golish_db::repo::wiki_kb::list_recent(pool, 5)
-        .await
-?;
+    let count = golish_db::repo::wiki_kb::count_pages(pool).await?;
+    let recent = golish_db::repo::wiki_kb::list_recent(pool, 5).await?;
     let recent_paths: Vec<String> = recent.into_iter().map(|p| p.path).collect();
     Ok(serde_json::json!({
         "total_pages": count,

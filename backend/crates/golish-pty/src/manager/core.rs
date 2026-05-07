@@ -200,8 +200,6 @@ impl PtyManager {
     /// - `Ok(None)` — no foreground process or shell is in foreground.
     /// - `Err(_)` — failed to query process information.
     pub fn get_foreground_process(&self, session_id: &str) -> Result<Option<String>> {
-        use std::process::Command;
-
         // Verify session exists.
         let sessions = self.sessions.lock();
         if !sessions.contains_key(session_id) {
@@ -209,41 +207,6 @@ impl PtyManager {
         }
         drop(sessions);
 
-        // Platform-specific process detection.
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            // Get the PTY's foreground process group leader. Uses `ps`
-            // to query the terminal's current foreground process.
-            let output = Command::new("sh")
-                .arg("-c")
-                .arg("ps -o comm= -p $(ps -o tpgid= -p $$) 2>/dev/null || echo ''")
-                .output();
-
-            match output {
-                Ok(output) if output.status.success() => {
-                    let process_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
-                    if process_name.is_empty() {
-                        Ok(None)
-                    } else {
-                        // Extract just the binary name (remove path).
-                        let name = process_name
-                            .rsplit('/')
-                            .next()
-                            .unwrap_or(&process_name)
-                            .to_string();
-                        Ok(Some(name))
-                    }
-                }
-                _ => Ok(None),
-            }
-        }
-
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        {
-            // Windows and other platforms don't have the same process
-            // group semantics.
-            Ok(None)
-        }
+        Ok(golish_platform::process::foreground_process_name())
     }
 }

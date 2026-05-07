@@ -12,7 +12,9 @@
     "tags": ["web", "xss", "scanner", "fuzzer"],
     "install": {
       "method": "homebrew",
-      "source": "dalfox"
+      "source": "dalfox",
+      "windows": { "method": "github", "source": "hahwul/dalfox" },
+      "linux": { "method": "github", "source": "hahwul/dalfox" }
     },
     "params": [
       {

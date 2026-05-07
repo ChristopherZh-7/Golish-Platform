@@ -27,9 +27,7 @@ pub async fn get_tool_call_stats(
         .as_deref()
         .and_then(|s| uuid::Uuid::parse_str(s).ok());
 
-    let rows = golish_db::repo::tool_calls::stats_by_name(&state.db_pool, sid)
-        .await
-?;
+    let rows = golish_db::repo::tool_calls::stats_by_name(&state.db_pool, sid).await?;
 
     Ok(rows
         .into_iter()
@@ -56,9 +54,7 @@ pub struct TokenUsageStats {
 pub async fn get_db_token_usage_stats(
     state: State<'_, AppState>,
 ) -> Result<TokenUsageStats, GolishError> {
-    let stats = golish_db::repo::message_chains::usage_stats_total(&state.db_pool)
-        .await
-?;
+    let stats = golish_db::repo::message_chains::usage_stats_total(&state.db_pool).await?;
 
     Ok(TokenUsageStats {
         total_tokens_in: stats.total_tokens_in,
@@ -80,9 +76,7 @@ pub struct AgentUsage {
 pub async fn get_usage_by_agent(
     state: State<'_, AppState>,
 ) -> Result<Vec<AgentUsage>, GolishError> {
-    let rows = golish_db::repo::message_chains::usage_by_agent(&state.db_pool)
-        .await
-?;
+    let rows = golish_db::repo::message_chains::usage_by_agent(&state.db_pool).await?;
 
     Ok(rows
         .into_iter()
@@ -119,18 +113,10 @@ pub async fn get_audit_log(
     let lim = limit.unwrap_or(100);
 
     let rows = if let Some(ref cat) = category {
-        golish_db::repo::audit::list_by_category(
-            &state.db_pool,
-            cat,
-            project_path.as_deref(),
-            lim,
-        )
-        .await
-?
+        golish_db::repo::audit::list_by_category(&state.db_pool, cat, project_path.as_deref(), lim)
+            .await?
     } else {
-        golish_db::repo::audit::list(&state.db_pool, project_path.as_deref(), lim)
-            .await
-?
+        golish_db::repo::audit::list(&state.db_pool, project_path.as_deref(), lim).await?
     };
 
     Ok(rows
@@ -166,9 +152,7 @@ pub async fn search_memories(
     limit: Option<i64>,
 ) -> Result<Vec<MemoryEntry>, GolishError> {
     let lim = limit.unwrap_or(20);
-    let rows = golish_db::repo::memories::search_text(&state.db_pool, &query, None, lim)
-        .await
-?;
+    let rows = golish_db::repo::memories::search_text(&state.db_pool, &query, None, lim).await?;
 
     Ok(rows
         .into_iter()
@@ -188,9 +172,7 @@ pub async fn list_recent_memories(
     limit: Option<i64>,
 ) -> Result<Vec<MemoryEntry>, GolishError> {
     let lim = limit.unwrap_or(50);
-    let rows = golish_db::repo::memories::list_recent(&state.db_pool, lim)
-        .await
-?;
+    let rows = golish_db::repo::memories::list_recent(&state.db_pool, lim).await?;
 
     Ok(rows
         .into_iter()
@@ -205,9 +187,7 @@ pub async fn list_recent_memories(
 }
 
 #[tauri::command]
-pub async fn get_memory_count(
-    state: State<'_, AppState>,
-) -> Result<i64, GolishError> {
+pub async fn get_memory_count(state: State<'_, AppState>) -> Result<i64, GolishError> {
     golish_db::repo::memories::count(&state.db_pool)
         .await
         .map_err(GolishError::from)

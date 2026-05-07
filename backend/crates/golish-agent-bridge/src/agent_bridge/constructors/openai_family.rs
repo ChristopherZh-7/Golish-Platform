@@ -4,6 +4,7 @@
 //! - `new_*_with_runtime`: minimal config, defaults applied.
 //! - `new_*_with_context`: adds an optional `ContextManagerConfig`.
 //! - `new_*_with_shared_config`: full control via `SharedComponentsConfig`.
+//!
 //! All three funnel into [`AgentBridge::from_components_with_runtime`].
 
 use std::path::PathBuf;
@@ -22,7 +23,6 @@ use crate::llm_client::{
 use super::super::AgentBridge;
 
 impl AgentBridge {
-
     pub async fn new_openrouter_with_runtime(
         workspace: PathBuf,
         model: &str,
@@ -45,7 +45,6 @@ impl AgentBridge {
         )
         .await
     }
-
 
     pub async fn new_openrouter_with_shared_config(
         workspace: PathBuf,
@@ -72,7 +71,6 @@ impl AgentBridge {
         ))
     }
 
-
     pub async fn new_openai_with_runtime(
         workspace: PathBuf,
         model: &str,
@@ -92,7 +90,6 @@ impl AgentBridge {
         )
         .await
     }
-
 
     pub async fn new_openai_with_context(
         workspace: PathBuf,
@@ -119,7 +116,6 @@ impl AgentBridge {
         )
         .await
     }
-
 
     #[allow(clippy::too_many_arguments)]
     pub async fn new_openai_with_shared_config(
@@ -149,7 +145,6 @@ impl AgentBridge {
         ))
     }
 
-
     pub async fn new_nvidia_with_shared_config(
         workspace: PathBuf,
         model: &str,
@@ -172,5 +167,4 @@ impl AgentBridge {
             event_session_id.to_string(),
         ))
     }
-
 }

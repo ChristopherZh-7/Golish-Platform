@@ -46,7 +46,9 @@ pub async fn sidecar_get_session_meta(
 
 /// List all sessions
 #[tauri::command]
-pub async fn sidecar_list_sessions(state: State<'_, SidecarManaged>) -> Result<Vec<SessionMeta>, GolishError> {
+pub async fn sidecar_list_sessions(
+    state: State<'_, SidecarManaged>,
+) -> Result<Vec<SessionMeta>, GolishError> {
     state
         .sidecar_state
         .list_sessions()
@@ -61,9 +63,7 @@ pub async fn sidecar_get_session_log(
     session_id: String,
 ) -> Result<String, GolishError> {
     let sessions_dir = state.sidecar_state.config().sessions_dir();
-    let session = Session::load(&sessions_dir, &session_id)
-        .await
-?;
+    let session = Session::load(&sessions_dir, &session_id).await?;
 
     session.read_log().await.map_err(GolishError::from)
 }

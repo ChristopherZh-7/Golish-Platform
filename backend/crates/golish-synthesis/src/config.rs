@@ -5,7 +5,6 @@ use golish_settings::schema::{
     SidecarSettings, SynthesisGrokSettings, SynthesisOpenAiSettings, SynthesisVertexSettings,
 };
 
-
 /// Synthesis backend type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]

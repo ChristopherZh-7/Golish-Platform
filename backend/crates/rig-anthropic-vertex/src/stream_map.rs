@@ -19,7 +19,9 @@ use crate::streaming::StreamChunk;
 /// `RawStreamingChoice`, even when the only thing we can do is surface an
 /// out-of-band event (server-tool result, web-search payload) as a tagged
 /// message that the agentic loop knows how to parse.
-pub(crate) fn map_stream_chunk(chunk: StreamChunk) -> RawStreamingChoice<StreamingCompletionResponseData> {
+pub(crate) fn map_stream_chunk(
+    chunk: StreamChunk,
+) -> RawStreamingChoice<StreamingCompletionResponseData> {
     match chunk {
         StreamChunk::TextDelta { text, .. } => RawStreamingChoice::Message(text),
         StreamChunk::ToolUseStart { id, name } => {
@@ -101,11 +103,7 @@ pub(crate) fn map_stream_chunk(chunk: StreamChunk) -> RawStreamingChoice<Streami
             content,
         } => {
             // Emit as a special message that can be parsed by the agentic loop
-            tracing::info!(
-                "Web fetch result received for {}: {}",
-                tool_use_id,
-                url
-            );
+            tracing::info!("Web fetch result received for {}: {}", tool_use_id, url);
             RawStreamingChoice::Message(format!(
                 "[WEB_FETCH_RESULT:{}:{}:{}]",
                 tool_use_id,

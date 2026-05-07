@@ -60,8 +60,10 @@ fn lifecycle_uninit_then_set_then_shutdown() {
     let state = IndexerState::new();
     assert!(!state.is_initialized());
     assert!(state.workspace_root().is_none());
-    assert!(state.with_indexer(|_| Ok(())).is_err(),
-        "with_indexer must error before set_backend");
+    assert!(
+        state.with_indexer(|_| Ok(())).is_err(),
+        "with_indexer must error before set_backend"
+    );
 
     let workspace = PathBuf::from("/tmp/golish-test-ws");
     state.set_backend(Box::<CountingBackend>::default(), workspace.clone());
@@ -71,8 +73,10 @@ fn lifecycle_uninit_then_set_then_shutdown() {
     state.shutdown();
     assert!(!state.is_initialized());
     assert!(state.workspace_root().is_none());
-    assert!(state.with_indexer(|_| Ok(())).is_err(),
-        "with_indexer must error after shutdown");
+    assert!(
+        state.with_indexer(|_| Ok(())).is_err(),
+        "with_indexer must error after shutdown"
+    );
 }
 
 #[test]
@@ -225,7 +229,10 @@ fn contract_home_dir_round_trips_with_expand() {
     let home = dirs::home_dir().expect("home dir");
     let nested = home.join("projects").join("demo");
     let contracted = contract_home_dir(&nested);
-    assert!(contracted.starts_with("~/"), "expected leading ~/, got {contracted}");
+    assert!(
+        contracted.starts_with("~/"),
+        "expected leading ~/, got {contracted}"
+    );
     assert_eq!(expand_home_dir(&contracted), nested);
 }
 

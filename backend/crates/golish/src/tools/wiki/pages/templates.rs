@@ -8,13 +8,8 @@
 ///
 /// `infer_category_from_path` snaps any unrecognised path back to
 /// `"uncategorized"` so the dashboard always has a valid bucket.
-pub(in crate::tools::wiki) const WIKI_CATEGORIES: &[&str] = &[
-    "products",
-    "techniques",
-    "pocs",
-    "experience",
-    "analysis",
-];
+pub(in crate::tools::wiki) const WIKI_CATEGORIES: &[&str] =
+    &["products", "techniques", "pocs", "experience", "analysis"];
 
 pub(super) const SCHEMA_MD: &str = r#"# Vulnerability Knowledge Base Schema
 

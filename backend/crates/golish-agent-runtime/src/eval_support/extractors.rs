@@ -165,4 +165,3 @@ fn truncate_string(s: &str, max_chars: usize) -> String {
         s
     }
 }
-

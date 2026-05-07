@@ -90,7 +90,9 @@ pub(crate) fn call_site_ranges(source: &str) -> Option<CallSiteRanges> {
     match result {
         Ok(ranges) => Some(CallSiteRanges::from_unsorted(ranges)),
         Err(_) => {
-            tracing::debug!("[js-analyzer] ast-grep parse panicked — filter disabled for this file");
+            tracing::debug!(
+                "[js-analyzer] ast-grep parse panicked — filter disabled for this file"
+            );
             None
         }
     }
@@ -101,8 +103,7 @@ pub(crate) fn call_site_ranges(source: &str) -> Option<CallSiteRanges> {
 pub(crate) fn source_has_real_calls(source: &str) -> Option<bool> {
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
         let grep = SupportLang::JavaScript.ast_grep(source);
-        grep.root().find("$F($$$_)").is_some()
-            || grep.root().find("new $F($$$_)").is_some()
+        grep.root().find("$F($$$_)").is_some() || grep.root().find("new $F($$$_)").is_some()
     }));
     result.ok()
 }

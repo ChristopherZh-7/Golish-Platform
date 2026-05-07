@@ -8,6 +8,7 @@ description = "Scan-runner engine — WhatWeb fingerprinting, Nuclei targeted sc
 [dependencies]
 golish-core = { workspace = true }
 golish-db = { workspace = true }
+golish-shell-exec = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }

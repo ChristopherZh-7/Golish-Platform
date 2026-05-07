@@ -2,9 +2,9 @@
 //!
 //! This struct is intentionally grown incrementally:
 //! - C1-1 (PoC): only `iteration` — prove the module boundary works.
-//! - C1-2+    : migrate more local variables from the main loop
-//!              (`accumulated_response`, `accumulated_thinking`,
-//!              `chat_history`, `total_usage`, counters, etc.)
+//! - C1-2+: migrate more local variables from the main loop
+//!   (`accumulated_response`, `accumulated_thinking`, `chat_history`,
+//!   `total_usage`, counters, etc.)
 //!
 //! Every migration step must keep `cargo check --workspace --tests`
 //! green; adding a field here without a consumer is fine.
@@ -60,8 +60,14 @@ mod tests {
     #[test]
     fn default_state_starts_at_iteration_zero_with_active_reflector() {
         let s = TurnState::default();
-        assert_eq!(s.iteration, 0, "first pre_flight call must produce iteration=1");
-        assert!(s.reflector_active, "reflector starts active until first_iter_hooks decides otherwise");
+        assert_eq!(
+            s.iteration, 0,
+            "first pre_flight call must produce iteration=1"
+        );
+        assert!(
+            s.reflector_active,
+            "reflector starts active until first_iter_hooks decides otherwise"
+        );
         assert_eq!(s.consecutive_no_tool_turns, 0);
         assert_eq!(s.total_reflector_nudges, 0);
     }

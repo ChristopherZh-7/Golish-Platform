@@ -1,6 +1,6 @@
-use serde_json::json;
-use golish_core::WebFetchProvider;
 use super::common::{error_result, ToolResult};
+use golish_core::WebFetchProvider;
+use serde_json::json;
 
 /// Execute a web fetch tool using the injected `WebFetchProvider`.
 pub async fn execute_web_fetch_tool(

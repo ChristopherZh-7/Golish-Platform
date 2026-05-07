@@ -99,12 +99,11 @@ pub async fn search_by_tag(pool: &PgPool, tag: &str, limit: i64) -> Result<Vec<W
 }
 
 pub async fn list_recent(pool: &PgPool, limit: i64) -> Result<Vec<WikiPage>> {
-    let rows = sqlx::query_as::<_, WikiPage>(
-        "SELECT * FROM wiki_pages ORDER BY updated_at DESC LIMIT $1",
-    )
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
+    let rows =
+        sqlx::query_as::<_, WikiPage>("SELECT * FROM wiki_pages ORDER BY updated_at DESC LIMIT $1")
+            .bind(limit)
+            .fetch_all(pool)
+            .await?;
     Ok(rows)
 }
 

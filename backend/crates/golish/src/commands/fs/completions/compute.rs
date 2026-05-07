@@ -10,7 +10,6 @@ use crate::app::workspace::expand_tilde_string;
 
 use super::{PathCompletion, PathCompletionResponse, PathEntryType};
 
-
 /// Compute path completions for a partial path.
 ///
 /// This is the core completion logic, separated from the Tauri command for easier testing.
@@ -216,4 +215,3 @@ fn build_completion_text(
 
     (display_name, insert_text)
 }
-

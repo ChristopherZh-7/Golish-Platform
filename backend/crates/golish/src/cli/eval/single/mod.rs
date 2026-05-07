@@ -39,8 +39,16 @@ pub async fn run_evals(
                 .add_directive(format!("golish={}", log_level).parse().unwrap())
                 .add_directive(format!("golish_evals={}", log_level).parse().unwrap())
                 .add_directive(format!("golish_agent_kit={}", log_level).parse().unwrap())
-                .add_directive(format!("golish_agent_runtime={}", log_level).parse().unwrap())
-                .add_directive(format!("golish_agent_bridge={}", log_level).parse().unwrap())
+                .add_directive(
+                    format!("golish_agent_runtime={}", log_level)
+                        .parse()
+                        .unwrap(),
+                )
+                .add_directive(
+                    format!("golish_agent_bridge={}", log_level)
+                        .parse()
+                        .unwrap(),
+                )
                 .add_directive(format!("golish_prompts={}", log_level).parse().unwrap()),
         )
         .try_init();
@@ -184,8 +192,16 @@ pub async fn run_openai_model_tests(
                 .add_directive(format!("golish={}", log_level).parse().unwrap())
                 .add_directive(format!("golish_evals={}", log_level).parse().unwrap())
                 .add_directive(format!("golish_agent_kit={}", log_level).parse().unwrap())
-                .add_directive(format!("golish_agent_runtime={}", log_level).parse().unwrap())
-                .add_directive(format!("golish_agent_bridge={}", log_level).parse().unwrap())
+                .add_directive(
+                    format!("golish_agent_runtime={}", log_level)
+                        .parse()
+                        .unwrap(),
+                )
+                .add_directive(
+                    format!("golish_agent_bridge={}", log_level)
+                        .parse()
+                        .unwrap(),
+                )
                 .add_directive(format!("golish_prompts={}", log_level).parse().unwrap()),
         )
         .try_init();

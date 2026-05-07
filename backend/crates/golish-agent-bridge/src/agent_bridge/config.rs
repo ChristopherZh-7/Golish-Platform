@@ -62,7 +62,11 @@ impl AgentBridge {
             if let Err(e) = prompt_reg.load_overrides(rows).await {
                 tracing::warn!("[prompt-registry] Failed to load DB overrides: {e}");
             } else {
-                let new_agents = golish_sub_agents::defaults::create_default_sub_agents_from_registry(&prompt_reg).await;
+                let new_agents =
+                    golish_sub_agents::defaults::create_default_sub_agents_from_registry(
+                        &prompt_reg,
+                    )
+                    .await;
                 let mut reg = sub_reg.write().await;
                 reg.register_multiple(new_agents);
                 tracing::info!("[prompt-registry] Reloaded sub-agents with DB template overrides");
@@ -75,21 +79,19 @@ impl AgentBridge {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .filter(|s| s != ".");
-        self.plan_manager = Arc::new(
-            PlanManager::new().with_db_repo(Some(session_uuid), plan_project_path),
-        );
+        self.plan_manager =
+            Arc::new(PlanManager::new().with_db_repo(Some(session_uuid), plan_project_path));
 
         let plan_manager = self.plan_manager.clone();
         let be = backend.clone();
         let mut gate = ready_gate;
         tokio::spawn(async move {
-            if !gate.is_ready() {
-                if tokio::time::timeout(std::time::Duration::from_secs(60), gate.wait())
+            if !gate.is_ready()
+                && tokio::time::timeout(std::time::Duration::from_secs(60), gate.wait())
                     .await
                     .is_err()
-                {
-                    return;
-                }
+            {
+                return;
             }
             be.ensure_session(session_uuid).await;
 
@@ -112,7 +114,10 @@ impl AgentBridge {
     }
 
     /// Set the graph knowledge base backend (decoupled from golish-graphiti).
-    pub fn set_graph_backend(&mut self, backend: Arc<dyn crate::tool_executors::graph_trait::GraphKnowledgeBase>) {
+    pub fn set_graph_backend(
+        &mut self,
+        backend: Arc<dyn crate::tool_executors::graph_trait::GraphKnowledgeBase>,
+    ) {
         self.services.graph_backend = Some(backend);
     }
 
@@ -452,10 +457,7 @@ impl AgentBridge {
         self.mcp_tool_definitions.read().await.clone()
     }
 
-    pub async fn set_mcp_executor(
-        &self,
-        executor: Arc<dyn crate::agentic_loop::McpToolExecutor>,
-    ) {
+    pub async fn set_mcp_executor(&self, executor: Arc<dyn crate::agentic_loop::McpToolExecutor>) {
         *self.mcp_tool_executor.write().await = Some(executor);
     }
 

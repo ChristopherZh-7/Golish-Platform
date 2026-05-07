@@ -42,12 +42,8 @@ fn substitute_literal(endpoint: &Endpoint, kind: SubstituteKind<'_>) -> Option<S
         SubstituteKind::NewId { id } => {
             let pos = endpoint.id_param_position?;
             let leading_slash = endpoint.path.starts_with('/');
-            let trimmed = endpoint
-                .path
-                .trim_start_matches('/')
-                .trim_end_matches('/');
-            let mut segments: Vec<String> =
-                trimmed.split('/').map(|s| s.to_string()).collect();
+            let trimmed = endpoint.path.trim_start_matches('/').trim_end_matches('/');
+            let mut segments: Vec<String> = trimmed.split('/').map(|s| s.to_string()).collect();
             if pos >= segments.len() {
                 return None;
             }
@@ -91,10 +87,7 @@ fn substitute_concatenated(endpoint: &Endpoint, kind: SubstituteKind<'_>) -> Opt
 fn substitute_template(endpoint: &Endpoint, kind: SubstituteKind<'_>) -> Option<String> {
     let pos = endpoint.id_param_position?;
     let leading_slash = endpoint.path.starts_with('/');
-    let trimmed = endpoint
-        .path
-        .trim_start_matches('/')
-        .trim_end_matches('/');
+    let trimmed = endpoint.path.trim_start_matches('/').trim_end_matches('/');
     let mut segments: Vec<String> = trimmed.split('/').map(|s| s.to_string()).collect();
     if pos >= segments.len() {
         return None;
@@ -164,7 +157,12 @@ mod tests {
 
     #[test]
     fn template_replaces_placeholder_segment() {
-        let e = ep("/api/users/${id}/posts", UrlKind::TemplateLiteral, Some(2), true);
+        let e = ep(
+            "/api/users/${id}/posts",
+            UrlKind::TemplateLiteral,
+            Some(2),
+            true,
+        );
         let out = substitute_id(&e, SubstituteKind::NewId { id: "999" });
         assert_eq!(out.as_deref(), Some("/api/users/999/posts"));
     }

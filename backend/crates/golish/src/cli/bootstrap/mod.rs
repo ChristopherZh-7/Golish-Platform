@@ -275,4 +275,3 @@ pub async fn initialize(args: &Args) -> Result<CliContext> {
         args: args.clone(),
     })
 }
-

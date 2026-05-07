@@ -7,5 +7,5 @@
 
 mod commands;
 
-pub use golish_vuln_intel::{GithubPocResult, VulnEntry, VulnFeed};
 pub use commands::*;
+pub use golish_vuln_intel::{GithubPocResult, VulnEntry, VulnFeed};

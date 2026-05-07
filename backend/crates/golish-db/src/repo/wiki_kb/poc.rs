@@ -132,29 +132,24 @@ pub async fn list_unresearched_cves(pool: &PgPool, limit: i64) -> Result<Vec<Cve
 
 /// Count PoCs by source (nuclei_template, github, manual, etc.)
 pub async fn poc_stats(pool: &PgPool) -> Result<serde_json::Value> {
-    let by_source: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT source, COUNT(*) FROM vuln_kb_pocs GROUP BY source",
-    )
-    .fetch_all(pool)
-    .await?;
+    let by_source: Vec<(String, i64)> =
+        sqlx::query_as("SELECT source, COUNT(*) FROM vuln_kb_pocs GROUP BY source")
+            .fetch_all(pool)
+            .await?;
 
-    let by_severity: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT severity, COUNT(*) FROM vuln_kb_pocs GROUP BY severity",
-    )
-    .fetch_all(pool)
-    .await?;
+    let by_severity: Vec<(String, i64)> =
+        sqlx::query_as("SELECT severity, COUNT(*) FROM vuln_kb_pocs GROUP BY severity")
+            .fetch_all(pool)
+            .await?;
 
-    let total_cves: (i64,) = sqlx::query_as(
-        "SELECT COUNT(DISTINCT cve_id) FROM vuln_kb_pocs",
-    )
-    .fetch_one(pool)
-    .await?;
+    let total_cves: (i64,) = sqlx::query_as("SELECT COUNT(DISTINCT cve_id) FROM vuln_kb_pocs")
+        .fetch_one(pool)
+        .await?;
 
-    let verified: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM vuln_kb_pocs WHERE verified = TRUE",
-    )
-    .fetch_one(pool)
-    .await?;
+    let verified: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM vuln_kb_pocs WHERE verified = TRUE")
+            .fetch_one(pool)
+            .await?;
 
     Ok(serde_json::json!({
         "by_source": by_source.into_iter().collect::<std::collections::HashMap<_, _>>(),
@@ -379,17 +374,15 @@ pub async fn wiki_stats_full(pool: &PgPool) -> Result<serde_json::Value> {
     .fetch_all(pool)
     .await?;
 
-    let total_words: (Option<i64>,) = sqlx::query_as(
-        "SELECT SUM(word_count::bigint) FROM wiki_pages",
-    )
-    .fetch_one(pool)
-    .await?;
+    let total_words: (Option<i64>,) =
+        sqlx::query_as("SELECT SUM(word_count::bigint) FROM wiki_pages")
+            .fetch_one(pool)
+            .await?;
 
-    let recent_changes: Vec<WikiChangelog> = sqlx::query_as(
-        "SELECT * FROM wiki_changelog ORDER BY created_at DESC LIMIT 10",
-    )
-    .fetch_all(pool)
-    .await?;
+    let recent_changes: Vec<WikiChangelog> =
+        sqlx::query_as("SELECT * FROM wiki_changelog ORDER BY created_at DESC LIMIT 10")
+            .fetch_all(pool)
+            .await?;
 
     let orphan_count: (i64,) = sqlx::query_as(
         r#"SELECT COUNT(*) FROM wiki_pages w

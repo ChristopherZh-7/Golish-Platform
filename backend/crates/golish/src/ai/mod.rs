@@ -16,8 +16,9 @@ pub mod tracking_bridge;
 
 // --- A3: flat re-exports replacing `pub use golish_ai::*;` ---
 
+pub use golish_agent_bridge::{agent_bridge, AgentBridge};
 pub use golish_agent_kit::{
-    agent_mode, db_shim, db_traits, db_tracking, execution_mode,
+    agent_mode, db_shim, db_tracking, db_traits, execution_mode,
     get_all_tool_definitions_with_config, get_tool_definitions_for_preset,
     get_tool_definitions_with_config, hitl, llm_client, loop_detection, memory_file,
     memory_gatekeeper, normalize_run_pty_cmd_args, planner, route_tool_execution, sidecar_trait,
@@ -28,7 +29,6 @@ pub use golish_agent_kit::{
 };
 pub use golish_agent_runtime::agentic_loop::{OutputClassifier, PostShellHook};
 pub use golish_agent_runtime::{agentic_loop, eval_support};
-pub use golish_agent_bridge::{agent_bridge, AgentBridge};
 pub use golish_events::{
     build_summarizer_input, format_for_summarizer, read_transcript, save_summarizer_input,
     save_summary, transcript_path, CoordinatorHandle, CoordinatorState, EventCoordinator,
@@ -48,32 +48,29 @@ pub mod task_orchestrator {
 }
 
 pub use commands::{
-    add_tool_always_allow, clear_ai_conversation, clear_ai_conversation_session,
-    disable_full_auto_mode, disable_loop_detection, enable_full_auto_mode, enable_loop_detection,
-    execute_ai_tool, export_ai_session_transcript, finalize_ai_session, find_ai_session,
-    generate_commit_message, get_agent_mode, get_ai_conversation_length,
-    get_ai_conversation_length_session, get_api_request_stats, get_approval_patterns,
-    get_audit_log, get_db_token_usage_stats, get_memory_count, get_tool_call_stats,
-    get_usage_by_agent, list_recent_memories, search_memories,
-    list_agent_definitions, read_agent_prompt, save_agent_definition, delete_agent_definition, seed_agents,
-    get_available_tools, get_context_summary, get_context_trim_config, get_context_utilization,
-    get_hitl_config, get_loop_detector_stats, get_loop_protection_config, get_openai_api_key,
-    get_openrouter_api_key, get_plan, get_project_settings, get_remaining_tokens,
-    get_session_ai_config, get_sub_agent_model, get_token_alert_level, get_token_usage_stats,
-    get_tool_approval_pattern, get_tool_policy, get_tool_policy_config, get_vertex_ai_config,
-    get_vision_capabilities, init_ai_agent, init_ai_session, is_ai_initialized,
-    is_ai_session_initialized, is_ai_session_persistence_enabled, is_context_management_enabled,
-    is_full_auto_mode_enabled, is_loop_detection_enabled, list_ai_sessions, list_sub_agents,
-    load_ai_session, load_env_file,
-    remove_tool_always_allow, reset_approval_patterns, reset_context_manager, reset_loop_detector,
-    reset_tool_policies, respond_to_tool_approval, restore_ai_conversation, restore_ai_session,
-    retry_compaction,
-    save_project_agent_mode, save_project_model, send_ai_prompt,
-    send_ai_prompt_session, send_ai_prompt_with_attachments, set_agent_mode,
-    set_ai_session_persistence, set_hitl_config, set_loop_protection_config, set_sub_agent_model,
+    add_tool_always_allow, cancel_ai_generation, check_recon_tools_cmd, clear_ai_conversation,
+    clear_ai_conversation_session, delete_agent_definition, disable_full_auto_mode,
+    disable_loop_detection, enable_full_auto_mode, enable_loop_detection, execute_ai_tool,
+    export_ai_session_transcript, finalize_ai_session, find_ai_session, generate_commit_message,
+    get_agent_mode, get_ai_conversation_length, get_ai_conversation_length_session,
+    get_api_request_stats, get_approval_patterns, get_audit_log, get_available_tools,
+    get_context_summary, get_context_trim_config, get_context_utilization,
+    get_db_token_usage_stats, get_execution_mode, get_hitl_config, get_loop_detector_stats,
+    get_loop_protection_config, get_memory_count, get_openai_api_key, get_openrouter_api_key,
+    get_plan, get_project_settings, get_remaining_tokens, get_session_ai_config,
+    get_sub_agent_model, get_token_alert_level, get_token_usage_stats, get_tool_approval_pattern,
+    get_tool_call_stats, get_tool_policy, get_tool_policy_config, get_usage_by_agent,
+    get_vertex_ai_config, get_vision_capabilities, init_ai_agent, init_ai_session,
+    is_ai_initialized, is_ai_session_initialized, is_ai_session_persistence_enabled,
+    is_context_management_enabled, is_full_auto_mode_enabled, is_loop_detection_enabled,
+    list_agent_definitions, list_ai_sessions, list_recent_memories, list_sub_agents,
+    load_ai_session, load_env_file, read_agent_prompt, remove_tool_always_allow,
+    reset_approval_patterns, reset_context_manager, reset_loop_detector, reset_tool_policies,
+    respond_to_tool_approval, restore_ai_conversation, restore_ai_session, retry_compaction,
+    run_recon_pipeline, save_agent_definition, save_project_agent_mode, save_project_model,
+    search_memories, seed_agents, send_ai_prompt, send_ai_prompt_session,
+    send_ai_prompt_with_attachments, set_agent_mode, set_ai_session_persistence,
+    set_execution_mode, set_hitl_config, set_loop_protection_config, set_sub_agent_model,
     set_tool_policy, set_tool_policy_config, shutdown_ai_agent, shutdown_ai_session,
-    cancel_ai_generation,
-    check_recon_tools_cmd, run_recon_pipeline, signal_frontend_ready,
-    set_execution_mode, get_execution_mode,
-    update_ai_workspace, AiState, CommitMessageResponse,
+    signal_frontend_ready, update_ai_workspace, AiState, CommitMessageResponse,
 };

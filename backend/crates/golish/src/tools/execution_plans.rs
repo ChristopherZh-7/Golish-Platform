@@ -64,8 +64,7 @@ pub async fn plan_create(
     session_id: Option<String>,
 ) -> Result<PlanDto, GolishError> {
     let pool = state.pool_ready().await?;
-    let sid = session_id
-        .and_then(|s| s.parse::<uuid::Uuid>().ok());
+    let sid = session_id.and_then(|s| s.parse::<uuid::Uuid>().ok());
     let steps_json = serde_json::to_value(&steps)?;
 
     let plan = golish_db::repo::execution_plans::create(
@@ -78,8 +77,7 @@ pub async fn plan_create(
             steps: steps_json,
         },
     )
-    .await
-?;
+    .await?;
 
     Ok(model_to_dto(plan))
 }
@@ -91,9 +89,7 @@ pub async fn plan_get(
 ) -> Result<Option<PlanDto>, GolishError> {
     let pool = state.pool_ready().await?;
     let uid: uuid::Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    let plan = golish_db::repo::execution_plans::get(pool, uid)
-        .await
-?;
+    let plan = golish_db::repo::execution_plans::get(pool, uid).await?;
     Ok(plan.map(model_to_dto))
 }
 
@@ -109,8 +105,7 @@ pub async fn plan_list(
         &project_path,
         include_completed.unwrap_or(false),
     )
-    .await
-?;
+    .await?;
     Ok(plans.into_iter().map(model_to_dto).collect())
 }
 
@@ -120,9 +115,7 @@ pub async fn plan_list_active(
     project_path: String,
 ) -> Result<Vec<PlanDto>, GolishError> {
     let pool = state.pool_ready().await?;
-    let plans = golish_db::repo::execution_plans::list_active(pool, &project_path)
-        .await
-?;
+    let plans = golish_db::repo::execution_plans::list_active(pool, &project_path).await?;
     Ok(plans.into_iter().map(model_to_dto).collect())
 }
 
@@ -139,9 +132,15 @@ pub async fn plan_update_steps(
     let steps_json = serde_json::to_value(&steps)?;
     let plan_status = parse_plan_status(&status)?;
 
-    golish_db::repo::execution_plans::update_steps(pool, uid, &steps_json, current_step, plan_status)
-        .await
-        .map_err(GolishError::from)
+    golish_db::repo::execution_plans::update_steps(
+        pool,
+        uid,
+        &steps_json,
+        current_step,
+        plan_status,
+    )
+    .await
+    .map_err(GolishError::from)
 }
 
 #[tauri::command]
@@ -174,10 +173,7 @@ pub async fn plan_update_context(
 }
 
 #[tauri::command]
-pub async fn plan_delete(
-    state: tauri::State<'_, DbState>,
-    id: String,
-) -> Result<(), GolishError> {
+pub async fn plan_delete(state: tauri::State<'_, DbState>, id: String) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     let uid: uuid::Uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
 

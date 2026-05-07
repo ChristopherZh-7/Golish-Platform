@@ -14,7 +14,10 @@ pub async fn get_loop_protection_config(
     session_id: Option<String>,
 ) -> Result<LoopProtectionConfig, GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_loop_protection_config().await);
     }
@@ -30,13 +33,20 @@ pub async fn set_loop_protection_config(
     session_id: Option<String>,
 ) -> Result<(), GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         bridge.set_loop_protection_config(config).await;
         return Ok(());
     }
     let guard = state.ai_state.get_legacy_bridge().await?;
-    guard.as_ref().unwrap().set_loop_protection_config(config).await;
+    guard
+        .as_ref()
+        .unwrap()
+        .set_loop_protection_config(config)
+        .await;
     Ok(())
 }
 
@@ -47,7 +57,10 @@ pub async fn get_loop_detector_stats(
     session_id: Option<String>,
 ) -> Result<LoopDetectorStats, GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_loop_detector_stats().await);
     }
@@ -62,7 +75,10 @@ pub async fn is_loop_detection_enabled(
     session_id: Option<String>,
 ) -> Result<bool, GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.is_loop_detection_enabled().await);
     }
@@ -77,13 +93,20 @@ pub async fn disable_loop_detection(
     session_id: Option<String>,
 ) -> Result<(), GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         bridge.disable_loop_detection_for_session().await;
         return Ok(());
     }
     let guard = state.ai_state.get_legacy_bridge().await?;
-    guard.as_ref().unwrap().disable_loop_detection_for_session().await;
+    guard
+        .as_ref()
+        .unwrap()
+        .disable_loop_detection_for_session()
+        .await;
     Ok(())
 }
 
@@ -94,7 +117,10 @@ pub async fn enable_loop_detection(
     session_id: Option<String>,
 ) -> Result<(), GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         bridge.enable_loop_detection().await;
         return Ok(());
@@ -111,7 +137,10 @@ pub async fn reset_loop_detector(
     session_id: Option<String>,
 ) -> Result<(), GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         bridge.reset_loop_detector().await;
         return Ok(());

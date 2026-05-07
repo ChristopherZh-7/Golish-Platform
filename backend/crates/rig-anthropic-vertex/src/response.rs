@@ -33,9 +33,10 @@ pub(crate) fn convert_response(
                 signature,
             } => {
                 // Convert to AssistantContent::Reasoning with signature
-                thinking_content.push(AssistantContent::Reasoning(
-                    Reasoning::new_with_signature(thinking, Some(signature.clone())),
-                ));
+                thinking_content.push(AssistantContent::Reasoning(Reasoning::new_with_signature(
+                    thinking,
+                    Some(signature.clone()),
+                )));
             }
             ContentBlock::Text { text, .. } => {
                 other_content.push(AssistantContent::Text(Text { text: text.clone() }));

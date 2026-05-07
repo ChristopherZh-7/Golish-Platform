@@ -1,6 +1,5 @@
 //! Classifying tool names by what they do (read / write / edit).
 
-
 /// Check if tool is a read operation
 pub(super) fn is_read_tool(tool_name: &str) -> bool {
     matches!(

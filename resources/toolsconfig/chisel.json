@@ -12,7 +12,9 @@
     "tags": ["tunnel", "pivot", "reverse-proxy", "post-exploit"],
     "install": {
       "method": "homebrew",
-      "source": "chisel"
+      "source": "chisel",
+      "windows": { "method": "github", "source": "jpillora/chisel" },
+      "linux": { "method": "github", "source": "jpillora/chisel" }
     },
     "params": [
       {

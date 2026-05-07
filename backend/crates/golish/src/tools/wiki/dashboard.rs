@@ -45,9 +45,7 @@ pub async fn wiki_pages_grouped(
     state: tauri::State<'_, DbState>,
 ) -> Result<Vec<WikiPageInfo>, GolishError> {
     let pool = state.pool_ready().await?;
-    let pages = golish_db::repo::wiki_kb::list_pages_grouped_by_category(pool)
-        .await
-?;
+    let pages = golish_db::repo::wiki_kb::list_pages_grouped_by_category(pool).await?;
     Ok(pages.into_iter().map(summary_to_info).collect())
 }
 
@@ -57,9 +55,7 @@ pub async fn wiki_pages_for_paths(
     paths: Vec<String>,
 ) -> Result<Vec<WikiPageInfo>, GolishError> {
     let pool = state.pool_ready().await?;
-    let pages = golish_db::repo::wiki_kb::list_pages_for_paths(pool, &paths)
-        .await
-?;
+    let pages = golish_db::repo::wiki_kb::list_pages_for_paths(pool, &paths).await?;
     Ok(pages.into_iter().map(summary_to_info).collect())
 }
 
@@ -70,9 +66,8 @@ pub async fn wiki_suggest_for_cve(
     limit: Option<i64>,
 ) -> Result<Vec<WikiPageInfo>, GolishError> {
     let pool = state.pool_ready().await?;
-    let pages = golish_db::repo::wiki_kb::suggest_pages_for_cve(pool, &cve_id, limit.unwrap_or(10))
-        .await
-?;
+    let pages =
+        golish_db::repo::wiki_kb::suggest_pages_for_cve(pool, &cve_id, limit.unwrap_or(10)).await?;
     Ok(pages.into_iter().map(summary_to_info).collect())
 }
 
@@ -94,9 +89,7 @@ pub async fn wiki_changelog_list(
     limit: Option<i64>,
 ) -> Result<Vec<WikiChangelogEntry>, GolishError> {
     let pool = state.pool_ready().await?;
-    let entries = golish_db::repo::wiki_kb::list_changelog(pool, limit.unwrap_or(50))
-        .await
-?;
+    let entries = golish_db::repo::wiki_kb::list_changelog(pool, limit.unwrap_or(50)).await?;
     Ok(entries
         .into_iter()
         .map(|e| WikiChangelogEntry {
@@ -124,9 +117,7 @@ pub async fn wiki_backlinks(
     path: String,
 ) -> Result<Vec<WikiBacklink>, GolishError> {
     let pool = state.pool_ready().await?;
-    let refs = golish_db::repo::wiki_kb::get_backlinks(pool, &path)
-        .await
-?;
+    let refs = golish_db::repo::wiki_kb::get_backlinks(pool, &path).await?;
     Ok(refs
         .into_iter()
         .map(|r| WikiBacklink {
@@ -152,8 +143,6 @@ pub async fn wiki_orphan_pages(
     limit: Option<i64>,
 ) -> Result<Vec<WikiPageInfo>, GolishError> {
     let pool = state.pool_ready().await?;
-    let pages = golish_db::repo::wiki_kb::list_orphan_pages(pool, limit.unwrap_or(20))
-        .await
-?;
+    let pages = golish_db::repo::wiki_kb::list_orphan_pages(pool, limit.unwrap_or(20)).await?;
     Ok(pages.into_iter().map(summary_to_info).collect())
 }

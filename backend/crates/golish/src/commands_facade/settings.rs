@@ -9,5 +9,5 @@
 //! - **Models & providers**: `get_available_models`, `get_model_by_id`,
 //!   `get_model_capabilities_command`, `get_providers`
 
-pub use crate::settings::commands::*;
 pub use crate::models::commands::*;
+pub use crate::settings::commands::*;

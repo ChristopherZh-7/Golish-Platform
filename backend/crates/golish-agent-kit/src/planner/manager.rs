@@ -61,9 +61,13 @@ impl PlanManager {
     /// Load the most recent active plan from DB for the current project.
     /// Returns true if a plan was loaded.
     pub async fn load_from_db(&self) -> bool {
-        let Some(project_path) = &self.project_path else { return false };
+        let Some(project_path) = &self.project_path else {
+            return false;
+        };
 
-        let Some(repo) = &self.db_repo else { return false };
+        let Some(repo) = &self.db_repo else {
+            return false;
+        };
         match crate::db_shim::execution_plans::list_active(repo.as_ref(), project_path).await {
             Ok(plans) if !plans.is_empty() => {
                 let db_plan = &plans[0];
@@ -231,10 +235,8 @@ impl PlanManager {
             .collect();
 
         // Track which preserved steps the AI already included
-        let incoming_ids: std::collections::HashSet<String> = incoming_steps
-            .iter()
-            .filter_map(|s| s.id.clone())
-            .collect();
+        let incoming_ids: std::collections::HashSet<String> =
+            incoming_steps.iter().filter_map(|s| s.id.clone()).collect();
 
         // Re-inject completed/failed steps that the AI omitted (plan refine
         // dropped them, but we must keep finished work visible).
@@ -289,7 +291,11 @@ impl PlanManager {
                 })
                 .collect();
             let steps_json = serde_json::Value::Array(db_steps);
-            let current_step = result.steps.iter().position(|s| s.status == StepStatus::InProgress).unwrap_or(0) as i32;
+            let current_step = result
+                .steps
+                .iter()
+                .position(|s| s.status == StepStatus::InProgress)
+                .unwrap_or(0) as i32;
 
             let plan_status = if result.summary.completed == result.summary.total {
                 crate::db_traits::PlanStatus::Completed
@@ -300,16 +306,26 @@ impl PlanManager {
             };
 
             tokio::spawn(async move {
-                let existing_id = db_plan_id.read().await.clone();
+                let existing_id = *db_plan_id.read().await;
                 if let Some(id) = existing_id {
                     if let Err(e) = crate::db_shim::execution_plans::update_steps(
-                        repo.as_ref(), id, &steps_json, current_step, plan_status,
-                    ).await {
+                        repo.as_ref(),
+                        id,
+                        &steps_json,
+                        current_step,
+                        plan_status,
+                    )
+                    .await
+                    {
                         tracing::warn!("Failed to update plan in DB: {}", e);
                     }
                 } else {
                     let title = explanation.chars().take(100).collect::<String>();
-                    let title = if title.is_empty() { "Untitled Plan".to_string() } else { title };
+                    let title = if title.is_empty() {
+                        "Untitled Plan".to_string()
+                    } else {
+                        title
+                    };
                     match crate::db_shim::execution_plans::create(
                         repo.as_ref(),
                         crate::db_traits::NewExecutionPlan {
@@ -319,7 +335,9 @@ impl PlanManager {
                             description: explanation,
                             steps: steps_json,
                         },
-                    ).await {
+                    )
+                    .await
+                    {
                         Ok(created) => {
                             let mut db_id = db_plan_id.write().await;
                             *db_id = Some(created.id);

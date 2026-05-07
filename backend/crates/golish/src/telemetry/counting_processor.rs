@@ -7,7 +7,6 @@ use opentelemetry_sdk::trace::SpanProcessor;
 
 use super::stats::TelemetryStats;
 
-
 /// A span processor that counts spans and delegates to an inner processor.
 ///
 /// This wraps the BatchSpanProcessor to track how many spans are being

@@ -18,9 +18,7 @@ use uuid::Uuid;
 use crate::error::GolishError;
 use crate::event_emitter::TauriEventEmitter;
 use crate::state::DbState;
-use crate::tools::pentest_bridge::{
-    ai_tool_catalog_entry, create_pentest_bridge_tools,
-};
+use crate::tools::pentest_bridge::{ai_tool_catalog_entry, create_pentest_bridge_tools};
 
 use super::storage::MainStorage;
 
@@ -51,11 +49,8 @@ pub async fn pipeline_execute(
     // each `Tool` impl borrows the pool / config, both of which already
     // live in `AppState`.
     let pool_arc = std::sync::Arc::new(pool.clone());
-    let ai_tools = create_pentest_bridge_tools(
-        pool_arc,
-        std::sync::Arc::clone(&pentest_cfg),
-        Some(app),
-    );
+    let ai_tools =
+        create_pentest_bridge_tools(pool_arc, std::sync::Arc::clone(&pentest_cfg), Some(app));
 
     let result = golish_pipeline::execute_pipeline_headless_with_ai_tools(
         pool,
@@ -99,11 +94,8 @@ pub async fn pipeline_list_ai_tools(
 ) -> Result<Vec<AiToolMeta>, GolishError> {
     let pool = state.pool_ready().await?;
     let pool_arc = std::sync::Arc::new(pool.clone());
-    let tools = create_pentest_bridge_tools(
-        pool_arc,
-        std::sync::Arc::clone(&pentest_cfg),
-        Some(app),
-    );
+    let tools =
+        create_pentest_bridge_tools(pool_arc, std::sync::Arc::clone(&pentest_cfg), Some(app));
 
     let mut metas = Vec::with_capacity(tools.len());
     for tool in &tools {
@@ -137,8 +129,7 @@ pub async fn pipeline_list(
     )
     .bind(project_path.as_deref())
     .fetch_all(pool)
-    .await
-    ?;
+    .await?;
 
     let items: Vec<Pipeline> = rows
         .into_iter()
@@ -155,7 +146,7 @@ pub async fn pipeline_list(
         .filter(|t| {
             t.workflow_id
                 .as_deref()
-                .map_or(true, |wid| !saved_workflow_ids.contains(wid))
+                .is_none_or(|wid| !saved_workflow_ids.contains(wid))
         })
         .collect();
     result.extend(items);
@@ -196,8 +187,7 @@ pub async fn pipeline_save(
     .bind(&json)
     .bind(project_path.as_deref())
     .execute(pool)
-    .await
-    ?;
+    .await?;
     Ok(id)
 }
 
@@ -215,8 +205,7 @@ pub async fn pipeline_delete(
     sqlx::query("DELETE FROM pipelines WHERE id=$1")
         .bind(uid)
         .execute(pool)
-        .await
-        ?;
+        .await?;
     Ok(())
 }
 
@@ -228,7 +217,9 @@ pub async fn pipeline_load(
 ) -> Result<Pipeline, GolishError> {
     let pool = state.pool_ready().await?;
     let _ = project_path;
-    let uid: Uuid = id.parse().map_err(|e: uuid::Error| GolishError::Validation(e.to_string()))?;
+    let uid: Uuid = id
+        .parse()
+        .map_err(|e: uuid::Error| GolishError::Validation(e.to_string()))?;
     let data: serde_json::Value = sqlx::query_scalar("SELECT data FROM pipelines WHERE id=$1")
         .bind(uid)
         .fetch_one(pool)

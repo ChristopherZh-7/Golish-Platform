@@ -46,8 +46,6 @@ mod route;
 #[cfg(test)]
 mod tests;
 
-pub use direct::{
-    normalize_run_pty_cmd_args, ToolExecutionError, ToolExecutionResult,
-};
+pub use direct::{normalize_run_pty_cmd_args, ToolExecutionError, ToolExecutionResult};
 pub use hitl::{ToolExecutionConfig, ToolExecutionContext, ToolSource};
 pub use route::{route_tool_execution, ToolRoutingCategory};

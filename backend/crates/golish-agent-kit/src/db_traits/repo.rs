@@ -26,26 +26,15 @@ pub trait DbRepoProvider: Send + Sync {
         context: &str,
     ) -> anyhow::Result<()>;
     async fn wiki_add_changelog(&self, entry: &NewWikiChangelog) -> anyhow::Result<()>;
-    async fn wiki_search_fts(
-        &self,
-        query: &str,
-        limit: i64,
-    ) -> anyhow::Result<serde_json::Value>;
+    async fn wiki_search_fts(&self, query: &str, limit: i64) -> anyhow::Result<serde_json::Value>;
     async fn wiki_search_by_category(
         &self,
         category: &str,
         limit: i64,
     ) -> anyhow::Result<serde_json::Value>;
-    async fn wiki_search_by_tag(
-        &self,
-        tag: &str,
-        limit: i64,
-    ) -> anyhow::Result<serde_json::Value>;
+    async fn wiki_search_by_tag(&self, tag: &str, limit: i64) -> anyhow::Result<serde_json::Value>;
     async fn wiki_list_cves_with_pocs(&self) -> anyhow::Result<serde_json::Value>;
-    async fn wiki_list_unresearched_cves(
-        &self,
-        limit: i64,
-    ) -> anyhow::Result<serde_json::Value>;
+    async fn wiki_list_unresearched_cves(&self, limit: i64) -> anyhow::Result<serde_json::Value>;
     async fn wiki_poc_stats(&self) -> anyhow::Result<serde_json::Value>;
     async fn wiki_upsert_poc_full(
         &self,
@@ -108,11 +97,7 @@ pub trait DbRepoProvider: Send + Sync {
         analysis: &serde_json::Value,
     ) -> anyhow::Result<serde_json::Value>;
 
-    async fn js_analysis_update_file_path(
-        &self,
-        id: Uuid,
-        file_path: &str,
-    ) -> anyhow::Result<()>;
+    async fn js_analysis_update_file_path(&self, id: Uuid, file_path: &str) -> anyhow::Result<()>;
 
     async fn fingerprints_upsert(
         &self,
@@ -157,11 +142,7 @@ pub trait DbRepoProvider: Send + Sync {
         description: &str,
         agent: Option<AgentType>,
     ) -> anyhow::Result<SubtaskView>;
-    async fn subtask_update_status(
-        &self,
-        id: Uuid,
-        status: SubtaskStatus,
-    ) -> anyhow::Result<()>;
+    async fn subtask_update_status(&self, id: Uuid, status: SubtaskStatus) -> anyhow::Result<()>;
     async fn subtask_set_result(&self, id: Uuid, result: &str) -> anyhow::Result<()>;
     async fn subtask_next_pending(&self, task_id: Uuid) -> anyhow::Result<Option<SubtaskView>>;
     async fn subtask_list_by_task(&self, task_id: Uuid) -> anyhow::Result<Vec<SubtaskView>>;
@@ -198,10 +179,7 @@ pub trait DbRepoProvider: Send + Sync {
 
     // ── Execution Plans ─────────────────────────────────────────────────
 
-    async fn plan_list_active(
-        &self,
-        project_path: &str,
-    ) -> anyhow::Result<Vec<ExecutionPlanView>>;
+    async fn plan_list_active(&self, project_path: &str) -> anyhow::Result<Vec<ExecutionPlanView>>;
 
     async fn plan_update_steps(
         &self,

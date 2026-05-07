@@ -40,8 +40,7 @@ pub async fn notes_list(
         entity_id.as_deref(),
         project_path.as_deref(),
     )
-    .await
-?;
+    .await?;
     Ok(rows.into_iter().map(to_note).collect())
 }
 
@@ -64,8 +63,7 @@ pub async fn notes_add(
         &c,
         project_path.as_deref(),
     )
-    .await
-?;
+    .await?;
     Ok(note.id.to_string())
 }
 

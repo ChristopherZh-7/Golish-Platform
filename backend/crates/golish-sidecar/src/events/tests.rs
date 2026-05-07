@@ -1,7 +1,7 @@
+use super::helpers::{extract_xml_tag, parse_context_xml, truncate};
+use super::*;
 use std::path::PathBuf;
 use uuid::Uuid;
-use super::*;
-use super::helpers::{parse_context_xml, extract_xml_tag, truncate};
 
 #[test]
 fn test_event_type_names() {
@@ -168,8 +168,7 @@ fn test_tool_call_with_output_basic() {
 #[test]
 fn test_tool_call_with_output_edit() {
     let session_id = Uuid::new_v4().to_string();
-    let diff =
-        "--- src/lib.rs\n+++ src/lib.rs\n@@ -1,1 +1,2 @@\n-old line\n+new line\n+added line";
+    let diff = "--- src/lib.rs\n+++ src/lib.rs\n@@ -1,1 +1,2 @@\n-old line\n+new line\n+added line";
     let event = SessionEvent::tool_call_with_output(
         session_id,
         "edit_file".to_string(),

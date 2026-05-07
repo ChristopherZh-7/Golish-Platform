@@ -8,6 +8,7 @@ description = "PTY and terminal management for Golish"
 [dependencies]
 # Foundation crates
 golish-core = { workspace = true }
+golish-platform = { workspace = true }
 golish-settings = { workspace = true }
 
 # Serialization

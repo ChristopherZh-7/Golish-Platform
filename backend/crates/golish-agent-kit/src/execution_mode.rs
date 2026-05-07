@@ -86,8 +86,14 @@ mod tests {
 
     #[test]
     fn test_from_str() {
-        assert_eq!("chat".parse::<ExecutionMode>().unwrap(), ExecutionMode::Chat);
-        assert_eq!("task".parse::<ExecutionMode>().unwrap(), ExecutionMode::Task);
+        assert_eq!(
+            "chat".parse::<ExecutionMode>().unwrap(),
+            ExecutionMode::Chat
+        );
+        assert_eq!(
+            "task".parse::<ExecutionMode>().unwrap(),
+            ExecutionMode::Task
+        );
         assert!("invalid".parse::<ExecutionMode>().is_err());
     }
 

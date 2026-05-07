@@ -53,50 +53,47 @@ pub fn build_assistant_content(
     content
 }
 
-
 /// Serialize rig Message history to JSON for DB storage.
 pub(crate) fn serialize_chat_history(messages: &[Message]) -> serde_json::Value {
     let entries: Vec<serde_json::Value> = messages
         .iter()
-        .filter_map(|msg| {
-            match msg {
-                Message::System { content } => Some(serde_json::json!({
-                    "role": "system",
-                    "content": content,
-                })),
-                Message::User { content } => {
-                    let texts: Vec<String> = content
-                        .iter()
-                        .filter_map(|c| match c {
-                            UserContent::Text(t) => Some(t.text.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    if texts.is_empty() {
-                        None
-                    } else {
-                        Some(serde_json::json!({
-                            "role": "user",
-                            "content": texts.join("\n"),
-                        }))
-                    }
+        .filter_map(|msg| match msg {
+            Message::System { content } => Some(serde_json::json!({
+                "role": "system",
+                "content": content,
+            })),
+            Message::User { content } => {
+                let texts: Vec<String> = content
+                    .iter()
+                    .filter_map(|c| match c {
+                        UserContent::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if texts.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::json!({
+                        "role": "user",
+                        "content": texts.join("\n"),
+                    }))
                 }
-                Message::Assistant { content, .. } => {
-                    let texts: Vec<String> = content
-                        .iter()
-                        .filter_map(|c| match c {
-                            AssistantContent::Text(t) => Some(t.text.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    if texts.is_empty() {
-                        None
-                    } else {
-                        Some(serde_json::json!({
-                            "role": "assistant",
-                            "content": texts.join("\n"),
-                        }))
-                    }
+            }
+            Message::Assistant { content, .. } => {
+                let texts: Vec<String> = content
+                    .iter()
+                    .filter_map(|c| match c {
+                        AssistantContent::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if texts.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::json!({
+                        "role": "assistant",
+                        "content": texts.join("\n"),
+                    }))
                 }
             }
         })

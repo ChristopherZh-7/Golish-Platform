@@ -4,7 +4,12 @@ use uuid::Uuid;
 
 use crate::models::MethodologyProject;
 
-pub async fn upsert(pool: &PgPool, id: Uuid, data: &serde_json::Value, project_path: Option<&str>) -> Result<()> {
+pub async fn upsert(
+    pool: &PgPool,
+    id: Uuid,
+    data: &serde_json::Value,
+    project_path: Option<&str>,
+) -> Result<()> {
     sqlx::query(
         r#"INSERT INTO methodology_projects (id, data, project_path)
            VALUES ($1, $2, $3)
@@ -19,12 +24,11 @@ pub async fn upsert(pool: &PgPool, id: Uuid, data: &serde_json::Value, project_p
 }
 
 pub async fn get(pool: &PgPool, id: Uuid) -> Result<Option<MethodologyProject>> {
-    let row = sqlx::query_as::<_, MethodologyProject>(
-        "SELECT * FROM methodology_projects WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?;
+    let row =
+        sqlx::query_as::<_, MethodologyProject>("SELECT * FROM methodology_projects WHERE id = $1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
     Ok(row)
 }
 

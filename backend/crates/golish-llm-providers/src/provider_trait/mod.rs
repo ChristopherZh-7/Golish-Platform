@@ -116,7 +116,6 @@ pub use vertex_gemini::VertexGeminiProviderImpl;
 pub use xai::XaiProviderImpl;
 pub use zai_sdk::ZaiSdkProviderImpl;
 
-
 // =============================================================================
 // Provider Factory
 // =============================================================================

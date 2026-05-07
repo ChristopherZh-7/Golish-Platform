@@ -110,8 +110,7 @@ pub async fn conv_delete(
     sqlx::query("DELETE FROM conversations WHERE id = $1")
         .bind(&conversation_id)
         .execute(pool)
-        .await
-?;
+        .await?;
     Ok(())
 }
 
@@ -121,7 +120,17 @@ pub async fn conv_list(
     project_path: Option<String>,
 ) -> Result<Vec<ConversationRow>, GolishError> {
     let pool = state.pool_ready().await?;
-    let rows = sqlx::query_as::<_, (String, String, String, Option<String>, i32, chrono::DateTime<chrono::Utc>)>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            Option<String>,
+            i32,
+            chrono::DateTime<chrono::Utc>,
+        ),
+    >(
         r#"SELECT id, title, ai_session_id, project_path, sort_order, created_at
            FROM conversations
            WHERE ($1::text IS NULL OR project_path = $1)
@@ -129,21 +138,20 @@ pub async fn conv_list(
     )
     .bind(project_path.as_deref())
     .fetch_all(pool)
-    .await
-?;
+    .await?;
 
     Ok(rows
         .into_iter()
-        .map(|(id, title, ai_session_id, project_path, sort_order, created_at)| {
-            ConversationRow {
+        .map(
+            |(id, title, ai_session_id, project_path, sort_order, created_at)| ConversationRow {
                 id,
                 title,
                 ai_session_id,
                 project_path,
                 sort_order,
                 created_at: created_at.timestamp_millis(),
-            }
-        })
+            },
+        )
         .collect())
 }
 
@@ -163,8 +171,7 @@ pub async fn conv_save_messages(
     sqlx::query("DELETE FROM chat_messages WHERE conversation_id = $1")
         .bind(&conversation_id)
         .execute(&mut *tx)
-        .await
-?;
+        .await?;
 
     for msg in &messages {
         sqlx::query(
@@ -211,8 +218,8 @@ pub async fn conv_load_messages(
 
     Ok(rows
         .into_iter()
-        .map(|(id, conversation_id, role, content, thinking, error, tool_calls, tool_calls_content_offset, tool_call_offsets, sort_order, created_at)| {
-            ChatMessageRow {
+        .map(
+            |(
                 id,
                 conversation_id,
                 role,
@@ -223,9 +230,23 @@ pub async fn conv_load_messages(
                 tool_calls_content_offset,
                 tool_call_offsets,
                 sort_order,
-                created_at: created_at.timestamp_millis(),
-            }
-        })
+                created_at,
+            )| {
+                ChatMessageRow {
+                    id,
+                    conversation_id,
+                    role,
+                    content,
+                    thinking,
+                    error,
+                    tool_calls,
+                    tool_calls_content_offset,
+                    tool_call_offsets,
+                    sort_order,
+                    created_at: created_at.timestamp_millis(),
+                }
+            },
+        )
         .collect())
 }
 
@@ -244,8 +265,7 @@ pub async fn conv_save_timeline(
     sqlx::query("DELETE FROM timeline_blocks WHERE session_id = $1")
         .bind(&session_id)
         .execute(&mut *tx)
-        .await
-?;
+        .await?;
 
     for block in &blocks {
         sqlx::query(
@@ -262,8 +282,7 @@ pub async fn conv_save_timeline(
         .bind(block.sort_order)
         .bind(&block.timestamp)
         .execute(&mut *tx)
-        .await
-?;
+        .await?;
     }
 
     tx.commit().await?;
@@ -289,8 +308,8 @@ pub async fn conv_load_timeline(
 
     Ok(rows
         .into_iter()
-        .map(|(id, session_id, conversation_id, block_type, data, batch_id, sort_order, created_at)| {
-            TimelineBlockRow {
+        .map(
+            |(
                 id,
                 session_id,
                 conversation_id,
@@ -298,9 +317,20 @@ pub async fn conv_load_timeline(
                 data,
                 batch_id,
                 sort_order,
-                timestamp: Some(created_at.to_rfc3339()),
-            }
-        })
+                created_at,
+            )| {
+                TimelineBlockRow {
+                    id,
+                    session_id,
+                    conversation_id,
+                    block_type,
+                    data,
+                    batch_id,
+                    sort_order,
+                    timestamp: Some(created_at.to_rfc3339()),
+                }
+            },
+        )
         .collect())
 }
 
@@ -317,14 +347,11 @@ pub async fn conv_save_terminal_state(
     // Remove stale rows for this conversation (handles migration from
     // ephemeral PTY UUIDs to stable logical terminal IDs).
     if let Some(ref conv_id) = terminal.conversation_id {
-        sqlx::query(
-            "DELETE FROM terminal_state WHERE conversation_id = $1 AND session_id != $2",
-        )
-        .bind(conv_id)
-        .bind(&terminal.session_id)
-        .execute(&mut *tx)
-        .await
-?;
+        sqlx::query("DELETE FROM terminal_state WHERE conversation_id = $1 AND session_id != $2")
+            .bind(conv_id)
+            .bind(&terminal.session_id)
+            .execute(&mut *tx)
+            .await?;
     }
 
     sqlx::query(
@@ -375,8 +402,8 @@ pub async fn conv_load_terminal_states(
 
     Ok(rows
         .into_iter()
-        .map(|(session_id, conversation_id, working_directory, scrollback, custom_name, plan_json, execution_mode, retired_plans_json, plan_message_id)| {
-            TerminalStateRow {
+        .map(
+            |(
                 session_id,
                 conversation_id,
                 working_directory,
@@ -386,11 +413,22 @@ pub async fn conv_load_terminal_states(
                 execution_mode,
                 retired_plans_json,
                 plan_message_id,
-            }
-        })
+            )| {
+                TerminalStateRow {
+                    session_id,
+                    conversation_id,
+                    working_directory,
+                    scrollback,
+                    custom_name,
+                    plan_json,
+                    execution_mode,
+                    retired_plans_json,
+                    plan_message_id,
+                }
+            },
+        )
         .collect())
 }
-
 
 // ─── Preferences ────────────────────────────────────────────────────────────
 
@@ -418,8 +456,7 @@ pub async fn conv_save_preferences(
     .bind(&prefs.approval_mode)
     .bind(&prefs.approval_patterns)
     .execute(pool)
-    .await
-?;
+    .await?;
     Ok(())
 }
 
@@ -429,24 +466,33 @@ pub async fn conv_load_preferences(
     project_path: String,
 ) -> Result<Option<WorkspacePreferences>, GolishError> {
     let pool = state.pool_ready().await?;
-    let row = sqlx::query_as::<_, (Option<String>, Option<serde_json::Value>, Option<String>, Option<serde_json::Value>)>(
+    let row = sqlx::query_as::<
+        _,
+        (
+            Option<String>,
+            Option<serde_json::Value>,
+            Option<String>,
+            Option<serde_json::Value>,
+        ),
+    >(
         r#"SELECT active_conversation_id, ai_model, approval_mode, approval_patterns
            FROM workspace_preferences
            WHERE project_path = $1"#,
     )
     .bind(&project_path)
     .fetch_optional(pool)
-    .await
-?;
+    .await?;
 
-    Ok(row.map(|(active_conversation_id, ai_model, approval_mode, approval_patterns)| {
-        WorkspacePreferences {
-            active_conversation_id,
-            ai_model,
-            approval_mode,
-            approval_patterns,
-        }
-    }))
+    Ok(row.map(
+        |(active_conversation_id, ai_model, approval_mode, approval_patterns)| {
+            WorkspacePreferences {
+                active_conversation_id,
+                ai_model,
+                approval_mode,
+                approval_patterns,
+            }
+        },
+    ))
 }
 
 pub mod batch;

@@ -346,7 +346,7 @@ pub async fn list_sessions(sessions_dir: &Path) -> Result<Vec<SessionMeta>> {
         }
     }
 
-    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
 
     Ok(sessions)
 }

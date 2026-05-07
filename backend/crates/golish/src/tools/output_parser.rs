@@ -96,7 +96,11 @@ fn parse_text(raw: &str, patterns: &[PatternConfig]) -> Vec<ParsedItem> {
         for caps in re.captures_iter(raw) {
             let mut fields = HashMap::new();
             for (field_name, group_ref) in &pattern.fields {
-                let value = if let Ok(idx) = group_ref.strip_prefix('$').unwrap_or(group_ref).parse::<usize>() {
+                let value = if let Ok(idx) = group_ref
+                    .strip_prefix('$')
+                    .unwrap_or(group_ref)
+                    .parse::<usize>()
+                {
                     caps.get(idx).map(|m| m.as_str().to_string())
                 } else {
                     caps.name(group_ref).map(|m| m.as_str().to_string())
@@ -245,7 +249,9 @@ pub async fn output_detect_tool(
             if let Ok(data) = std::fs::read_to_string(path) {
                 if let Ok(config_file) = serde_json::from_str::<serde_json::Value>(&data) {
                     if let Some(output) = config_file.pointer("/tool/output") {
-                        if let Ok(output_cfg) = serde_json::from_value::<OutputParserConfig>(output.clone()) {
+                        if let Ok(output_cfg) =
+                            serde_json::from_value::<OutputParserConfig>(output.clone())
+                        {
                             if let Some(ref detect) = output_cfg.detect {
                                 if let Ok(re) = Regex::new(detect) {
                                     if re.is_match(&command) || re.is_match(&raw_output) {
@@ -355,11 +361,11 @@ pub async fn output_parse_and_store(
         let result = match db_action.as_str() {
             "target_add" => store.store_target_add(&item.fields, pp).await,
             "target_update_recon" => {
-                store.store_target_update_recon(&item.fields, pp, tname).await
+                store
+                    .store_target_update_recon(&item.fields, pp, tname)
+                    .await
             }
-            "directory_entry_add" => {
-                store.store_directory_entry(&item.fields, tname, pp).await
-            }
+            "directory_entry_add" => store.store_directory_entry(&item.fields, tname, pp).await,
             "finding_add" => store.store_finding(&item.fields, tname, pp).await,
             other => {
                 skipped_count += 1;

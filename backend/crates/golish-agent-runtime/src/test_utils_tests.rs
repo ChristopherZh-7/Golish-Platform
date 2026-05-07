@@ -209,10 +209,13 @@ async fn test_mock_model_with_thinking() {
     while let Some(chunk) = stream.next().await {
         match chunk.unwrap() {
             StreamedAssistantContent::Reasoning(r) => {
-                assert_eq!(r.content, vec![ReasoningContent::Text {
-                    text: "Let me think about this...".to_string(),
-                    signature: Some("mock-signature".to_string()),
-                }]);
+                assert_eq!(
+                    r.content,
+                    vec![ReasoningContent::Text {
+                        text: "Let me think about this...".to_string(),
+                        signature: Some("mock-signature".to_string()),
+                    }]
+                );
                 found_reasoning = true;
             }
             StreamedAssistantContent::Text(t) => {
@@ -1388,9 +1391,9 @@ async fn test_agentic_loop_max_iterations_reached() {
     // Collect events to verify max iterations event was emitted
     let mut test_ctx = test_ctx;
     let events = test_ctx.collect_events();
-    let has_max_iterations_error = events.iter().any(
-        |e| matches!(e, AiEvent::Error { error_type, .. } if error_type == "max_iterations"),
-    );
+    let has_max_iterations_error = events
+        .iter()
+        .any(|e| matches!(e, AiEvent::Error { error_type, .. } if error_type == "max_iterations"));
     assert!(
         has_max_iterations_error,
         "Should emit max_iterations error event"
@@ -1836,9 +1839,9 @@ async fn test_behavioral_equivalence_tool_execution() {
     // Note: ToolRequest is only captured to sidecar, not emitted to frontend
     // Check for ToolAutoApproved event (emitted via emit_event for policy Allow)
     // Since read_file is in ALLOW_TOOLS, it gets auto-approved by policy (since we're in auto-approve mode)
-    let has_auto_approved = events.iter().any(|e| {
-        matches!(e, AiEvent::ToolAutoApproved { tool_name, .. } if tool_name == "read_file")
-    });
+    let has_auto_approved = events.iter().any(
+        |e| matches!(e, AiEvent::ToolAutoApproved { tool_name, .. } if tool_name == "read_file"),
+    );
     assert!(has_auto_approved, "Should emit ToolAutoApproved event");
 
     // Should have ToolResult event
@@ -1972,9 +1975,9 @@ async fn test_behavioral_equivalence_error_handling() {
         // Verify denial event was emitted
         let mut test_ctx = test_ctx;
         let events = test_ctx.collect_events();
-        let has_denied = events.iter().any(|e| {
-            matches!(e, AiEvent::ToolDenied { tool_name, .. } if tool_name == "forbidden_tool")
-        });
+        let has_denied = events.iter().any(
+            |e| matches!(e, AiEvent::ToolDenied { tool_name, .. } if tool_name == "forbidden_tool"),
+        );
         assert!(has_denied, "Should emit ToolDenied event for policy denial");
     }
 
@@ -2169,8 +2172,7 @@ async fn test_behavioral_equivalence_context_management() {
 // ========================================================================
 
 use golish_sub_agents::{
-    execute_sub_agent, SubAgentDefinition, SubAgentExecutorContext, ToolProvider,
-    MAX_AGENT_DEPTH,
+    execute_sub_agent, SubAgentDefinition, SubAgentExecutorContext, ToolProvider, MAX_AGENT_DEPTH,
 };
 use rig::completion::request::ToolDefinition;
 
@@ -2508,9 +2510,9 @@ async fn test_sub_agent_events_emitted() {
     }
 
     // Verify SubAgentStarted event was emitted
-    let started_event = events.iter().find(|e| {
-        matches!(e, AiEvent::SubAgentStarted { agent_id, .. } if agent_id == "event_tester")
-    });
+    let started_event = events.iter().find(
+        |e| matches!(e, AiEvent::SubAgentStarted { agent_id, .. } if agent_id == "event_tester"),
+    );
     assert!(started_event.is_some(), "Should emit SubAgentStarted event");
 
     // Verify SubAgentStarted has correct fields
@@ -2529,9 +2531,9 @@ async fn test_sub_agent_events_emitted() {
     }
 
     // Verify SubAgentCompleted event was emitted
-    let completed_event = events.iter().find(|e| {
-        matches!(e, AiEvent::SubAgentCompleted { agent_id, .. } if agent_id == "event_tester")
-    });
+    let completed_event = events.iter().find(
+        |e| matches!(e, AiEvent::SubAgentCompleted { agent_id, .. } if agent_id == "event_tester"),
+    );
     assert!(
         completed_event.is_some(),
         "Should emit SubAgentCompleted event"
@@ -2697,8 +2699,7 @@ async fn test_sub_agent_tool_restrictions() {
 
     // Get filtered tools
     let all_tools = tool_provider.get_all_tool_definitions();
-    let filtered_tools =
-        tool_provider.filter_tools_by_allowed(all_tools, &agent_def.allowed_tools);
+    let filtered_tools = tool_provider.filter_tools_by_allowed(all_tools, &agent_def.allowed_tools);
 
     // Verify tool filtering works correctly
     assert_eq!(

@@ -2,8 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-
-
 /// Statistics tracking token usage across different components
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TokenUsageStats {

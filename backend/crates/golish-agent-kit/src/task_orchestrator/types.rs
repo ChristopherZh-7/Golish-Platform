@@ -176,7 +176,9 @@ impl ExecutionContext {
         out.push_str("<completed_subtasks>\n");
         if self.completed_results.is_empty() {
             out.push_str("<status>none</status>\n");
-            out.push_str("<message>No completed subtasks yet. This is the first subtask.</message>\n");
+            out.push_str(
+                "<message>No completed subtasks yet. This is the first subtask.</message>\n",
+            );
         } else {
             for (i, r) in self.completed_results.iter().enumerate() {
                 out.push_str(&format!(
@@ -190,7 +192,10 @@ impl ExecutionContext {
         if let Some(ref current) = self.current_subtask {
             out.push_str("<current_subtask>\n");
             out.push_str(&format!("<title>{}</title>\n", current.title));
-            out.push_str(&format!("<description>{}</description>\n", current.description));
+            out.push_str(&format!(
+                "<description>{}</description>\n",
+                current.description
+            ));
             if let Some(ref agent) = current.agent {
                 out.push_str(&format!("<assigned_agent>{}</assigned_agent>\n", agent));
             }
@@ -248,10 +253,7 @@ impl AgentResult {
 #[async_trait::async_trait]
 pub trait AgentExecutor: Send + Sync {
     /// Run the generator to decompose the task into subtasks.
-    async fn generate_subtasks(
-        &self,
-        task_input: &str,
-    ) -> Result<GeneratorOutput>;
+    async fn generate_subtasks(&self, task_input: &str) -> Result<GeneratorOutput>;
 
     /// Execute a single subtask as the primary agent.
     /// Returns the result text and optional token usage.
@@ -272,21 +274,14 @@ pub trait AgentExecutor: Send + Sync {
     ) -> Result<RefinerOutput>;
 
     /// Run the reporter to generate the final summary.
-    async fn generate_report(
-        &self,
-        execution_context: &ExecutionContext,
-    ) -> Result<AgentResult>;
+    async fn generate_report(&self, execution_context: &ExecutionContext) -> Result<AgentResult>;
 
     /// Run the reflector to redirect an agent that returned plain text.
     ///
     /// Returns a corrective message that should be injected as a user message
     /// before retrying the subtask. The reflector acts as a "proxy user" that
     /// guides the agent back to tool usage (PentAGI's Reflector pattern).
-    async fn reflect(
-        &self,
-        subtask_title: &str,
-        agent_response: &str,
-    ) -> Result<String>;
+    async fn reflect(&self, subtask_title: &str, agent_response: &str) -> Result<String>;
 
     /// Enrich a subtask with supplementary context before execution.
     ///
@@ -302,7 +297,12 @@ pub trait AgentExecutor: Send + Sync {
         execution_context: &ExecutionContext,
         agent_type: &str,
     ) -> Result<Option<String>> {
-        let _ = (subtask_title, subtask_description, execution_context, agent_type);
+        let _ = (
+            subtask_title,
+            subtask_description,
+            execution_context,
+            agent_type,
+        );
         Ok(None)
     }
 
@@ -320,7 +320,12 @@ pub trait AgentExecutor: Send + Sync {
         execution_context: &ExecutionContext,
         agent_type: &str,
     ) -> Result<Option<String>> {
-        let _ = (subtask_title, subtask_description, execution_context, agent_type);
+        let _ = (
+            subtask_title,
+            subtask_description,
+            execution_context,
+            agent_type,
+        );
         Ok(None)
     }
 
@@ -338,7 +343,12 @@ pub trait AgentExecutor: Send + Sync {
         repeat_count: usize,
         recent_tool_calls: &str,
     ) -> Result<Option<String>> {
-        let _ = (subtask_description, repeated_tool, repeat_count, recent_tool_calls);
+        let _ = (
+            subtask_description,
+            repeated_tool,
+            repeat_count,
+            recent_tool_calls,
+        );
         Ok(None)
     }
 
@@ -350,4 +360,3 @@ pub trait AgentExecutor: Send + Sync {
         None
     }
 }
-

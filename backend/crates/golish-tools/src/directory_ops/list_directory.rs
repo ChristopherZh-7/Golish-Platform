@@ -5,11 +5,11 @@ use std::path::Path;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use golish_core::Tool;
 use golish_core::utils::get_required_str;
+use golish_core::Tool;
 use serde_json::{json, Value};
 
-use crate::path_policy::{join_workspace as resolve_path, is_within_workspace};
+use crate::path_policy::{is_within_workspace, join_workspace as resolve_path};
 
 /// Tool for listing directory contents.
 pub struct ListDirectoryTool;

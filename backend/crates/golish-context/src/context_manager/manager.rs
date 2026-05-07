@@ -5,8 +5,12 @@ use rig::message::Message;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::token_budget::{TokenAlertLevel, TokenBudgetConfig, TokenBudgetManager, TokenUsageStats};
-use crate::token_trunc::{aggregate_tool_output, TruncationResult, DEFAULT_MAX_TOOL_RESPONSE_TOKENS};
+use crate::token_budget::{
+    TokenAlertLevel, TokenBudgetConfig, TokenBudgetManager, TokenUsageStats,
+};
+use crate::token_trunc::{
+    aggregate_tool_output, TruncationResult, DEFAULT_MAX_TOOL_RESPONSE_TOKENS,
+};
 
 use super::config::{ContextManagerConfig, ContextTrimConfig};
 use super::events::{ContextEfficiency, ContextEvent, ContextSummary};

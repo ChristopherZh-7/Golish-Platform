@@ -33,6 +33,4 @@ pub mod types;
 
 pub use client::GraphClient;
 pub use error::GraphError;
-pub use types::{
-    EntityType, GraphEntity, GraphQueryResult, GraphRelation, RelationType,
-};
+pub use types::{EntityType, GraphEntity, GraphQueryResult, GraphRelation, RelationType};

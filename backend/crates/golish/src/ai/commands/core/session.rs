@@ -11,10 +11,9 @@ use super::super::super::llm_client::{ProviderConfig, SharedComponentsConfig};
 use super::super::configure_bridge;
 use crate::runtime::TauriRuntime;
 use crate::state::AppState;
-use golish_events::TranscriptWriter;
 use golish_context::ContextManagerConfig;
 use golish_core::runtime::GolishRuntime;
-
+use golish_events::TranscriptWriter;
 
 // ========== Session-specific commands ==========
 
@@ -87,9 +86,8 @@ pub async fn init_ai_session(
     let provider_name = config.provider_name().to_string();
     let model_name = config.model().to_string();
 
-    let mut bridge = AgentBridge::from_provider_config(config, shared_config, runtime, &session_id)
-        .await
-?;
+    let mut bridge =
+        AgentBridge::from_provider_config(config, shared_config, runtime, &session_id).await?;
 
     configure_bridge(&mut bridge, &state, &session_id, Some(app_for_tools)).await;
 
@@ -189,7 +187,10 @@ pub async fn cancel_ai_generation(
 ) -> Result<(), GolishError> {
     if let Some(bridge) = state.ai_state.get_session_bridge(&session_id).await {
         bridge.cancel();
-        tracing::info!("Generation cancelled (session kept alive) for {}", session_id);
+        tracing::info!(
+            "Generation cancelled (session kept alive) for {}",
+            session_id
+        );
         Ok(())
     } else {
         tracing::debug!("No AI agent found for session {} to cancel", session_id);

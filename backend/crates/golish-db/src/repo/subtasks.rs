@@ -61,14 +61,12 @@ pub async fn set_result(
     result: &str,
     status: SubtaskStatus,
 ) -> Result<()> {
-    sqlx::query(
-        "UPDATE subtasks SET result = $1, status = $2, updated_at = NOW() WHERE id = $3",
-    )
-    .bind(result)
-    .bind(status)
-    .bind(id)
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE subtasks SET result = $1, status = $2, updated_at = NOW() WHERE id = $3")
+        .bind(result)
+        .bind(status)
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -95,11 +93,9 @@ pub async fn next_pending(pool: &PgPool, task_id: Uuid) -> Result<Option<Subtask
 }
 
 pub async fn delete_pending(pool: &PgPool, task_id: Uuid) -> Result<u64> {
-    let result = sqlx::query(
-        "DELETE FROM subtasks WHERE task_id = $1 AND status = 'created'",
-    )
-    .bind(task_id)
-    .execute(pool)
-    .await?;
+    let result = sqlx::query("DELETE FROM subtasks WHERE task_id = $1 AND status = 'created'")
+        .bind(task_id)
+        .execute(pool)
+        .await?;
     Ok(result.rows_affected())
 }

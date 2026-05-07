@@ -12,7 +12,9 @@
     "tags": ["recon", "port-scan", "network", "speed"],
     "install": {
       "method": "homebrew",
-      "source": "masscan"
+      "source": "masscan",
+      "windows": { "method": "github", "source": "robertdavidgraham/masscan" },
+      "linux": { "method": "github", "source": "robertdavidgraham/masscan" }
     },
     "params": [
       {

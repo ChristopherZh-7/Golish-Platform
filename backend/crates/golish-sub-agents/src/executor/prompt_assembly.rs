@@ -202,8 +202,10 @@ async fn inject_matched_skills(
         return;
     }
 
-    let metadata: Vec<golish_skills::SkillMetadata> =
-        skills.iter().map(golish_skills::SkillMetadata::from).collect();
+    let metadata: Vec<golish_skills::SkillMetadata> = skills
+        .iter()
+        .map(golish_skills::SkillMetadata::from)
+        .collect();
     let matcher = golish_skills::SkillMatcher::default();
     let matches = matcher.match_skills(task, &metadata);
     for (matched_meta, _score, reason) in &matches {

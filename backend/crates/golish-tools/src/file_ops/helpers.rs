@@ -7,4 +7,3 @@ pub(super) fn is_binary_file(content: &[u8]) -> bool {
     let check_len = content.len().min(8000);
     content[..check_len].contains(&0)
 }
-

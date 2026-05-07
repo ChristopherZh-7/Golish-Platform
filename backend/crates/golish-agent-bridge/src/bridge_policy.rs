@@ -26,7 +26,10 @@ impl AgentBridge {
     }
 
     pub async fn set_tool_policy(&self, tool_name: &str, policy: ToolPolicy) -> Result<()> {
-        self.access.tool_policy_manager.set_policy(tool_name, policy).await
+        self.access
+            .tool_policy_manager
+            .set_policy(tool_name, policy)
+            .await
     }
 
     pub async fn reset_tool_policies(&self) -> Result<()> {
@@ -34,7 +37,8 @@ impl AgentBridge {
     }
 
     pub async fn enable_full_auto_mode(&self, allowed_tools: Vec<String>) {
-        self.access.tool_policy_manager
+        self.access
+            .tool_policy_manager
             .enable_full_auto(allowed_tools)
             .await;
     }
@@ -68,7 +72,11 @@ impl AgentBridge {
     }
 
     pub async fn disable_loop_detection_for_session(&self) {
-        self.access.loop_detector.write().await.disable_for_session();
+        self.access
+            .loop_detector
+            .write()
+            .await
+            .disable_for_session();
     }
 
     pub async fn enable_loop_detection(&self) {

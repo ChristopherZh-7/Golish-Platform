@@ -43,7 +43,9 @@ async fn save_meta(store: &MetaStore) -> Result<(), GolishError> {
     let base = wordlists_base();
     fs::create_dir_all(&base).await?;
     let json = serde_json::to_string_pretty(store)?;
-    fs::write(meta_path(), json).await.map_err(GolishError::from)
+    fs::write(meta_path(), json)
+        .await
+        .map_err(GolishError::from)
 }
 
 fn now_ts() -> u64 {
@@ -67,27 +69,19 @@ pub async fn wordlist_import(
     original_filename: String,
     tags: Option<Vec<String>>,
 ) -> Result<String, GolishError> {
-    let bytes = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        &content_base64,
-    )
-    .map_err(|e| format!("Base64 decode error: {e}"))?;
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &content_base64)
+        .map_err(|e| format!("Base64 decode error: {e}"))?;
 
     let text = String::from_utf8_lossy(&bytes);
     let line_count = text.lines().count() as u64;
 
     let id = uuid::Uuid::new_v4().to_string();
-    let ext = original_filename
-        .rsplit('.')
-        .next()
-        .unwrap_or("txt");
+    let ext = original_filename.rsplit('.').next().unwrap_or("txt");
     let filename = format!("{id}.{ext}");
 
     let base = wordlists_base();
     fs::create_dir_all(&base).await?;
-    fs::write(base.join(&filename), &bytes)
-        .await
-?;
+    fs::write(base.join(&filename), &bytes).await?;
 
     let meta = WordlistMeta {
         id: id.clone(),
@@ -130,9 +124,7 @@ pub async fn wordlist_deduplicate(id: String) -> Result<WordlistMeta, GolishErro
         .ok_or_else(|| GolishError::Internal("Wordlist not found".into()))?;
 
     let file_path = wordlists_base().join(&wl.filename);
-    let content = fs::read_to_string(&file_path)
-        .await
-?;
+    let content = fs::read_to_string(&file_path).await?;
 
     let mut seen = HashSet::new();
     let deduped: Vec<&str> = content
@@ -145,9 +137,7 @@ pub async fn wordlist_deduplicate(id: String) -> Result<WordlistMeta, GolishErro
 
     let new_count = deduped.len() as u64;
     let new_content = deduped.join("\n") + "\n";
-    fs::write(&file_path, &new_content)
-        .await
-?;
+    fs::write(&file_path, &new_content).await?;
 
     wl.line_count = new_count;
     wl.file_size = new_content.len() as u64;
@@ -158,7 +148,11 @@ pub async fn wordlist_deduplicate(id: String) -> Result<WordlistMeta, GolishErro
 }
 
 #[tauri::command]
-pub async fn wordlist_merge(ids: Vec<String>, new_name: String, deduplicate: bool) -> Result<String, GolishError> {
+pub async fn wordlist_merge(
+    ids: Vec<String>,
+    new_name: String,
+    deduplicate: bool,
+) -> Result<String, GolishError> {
     let store = load_meta().await;
     let base = wordlists_base();
 
@@ -190,9 +184,7 @@ pub async fn wordlist_merge(ids: Vec<String>, new_name: String, deduplicate: boo
     let new_id = uuid::Uuid::new_v4().to_string();
     let filename = format!("{new_id}.txt");
 
-    fs::write(base.join(&filename), &merged_content)
-        .await
-?;
+    fs::write(base.join(&filename), &merged_content).await?;
 
     let meta = WordlistMeta {
         id: new_id.clone(),
@@ -223,9 +215,7 @@ pub async fn wordlist_preview(id: String, lines: Option<u32>) -> Result<Vec<Stri
         .ok_or_else(|| GolishError::Internal("Wordlist not found".into()))?;
 
     let file_path = wordlists_base().join(&wl.filename);
-    let content = fs::read_to_string(&file_path)
-        .await
-?;
+    let content = fs::read_to_string(&file_path).await?;
 
     let limit = lines.unwrap_or(50) as usize;
     let preview: Vec<String> = content.lines().take(limit).map(|s| s.to_string()).collect();

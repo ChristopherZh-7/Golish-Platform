@@ -49,7 +49,16 @@ pub async fn get(pool: &PgPool, id: Uuid) -> Result<Option<Target>> {
     Ok(row)
 }
 
-pub async fn update(pool: &PgPool, id: Uuid, name: &str, value: &str, tags: &serde_json::Value, scope: ScopeType, group: &str, notes: &str) -> Result<()> {
+pub async fn update(
+    pool: &PgPool,
+    id: Uuid,
+    name: &str,
+    value: &str,
+    tags: &serde_json::Value,
+    scope: ScopeType,
+    group: &str,
+    notes: &str,
+) -> Result<()> {
     sqlx::query(
         r#"UPDATE targets SET name = $1, value = $2, tags = $3, scope = $4, grp = $5, notes = $6, updated_at = NOW()
            WHERE id = $7"#,

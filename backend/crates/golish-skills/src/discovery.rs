@@ -119,7 +119,7 @@ pub fn discover_skills(working_directory: Option<&str>) -> Vec<SkillInfo> {
 
     // Convert to sorted vector
     let mut result: Vec<SkillInfo> = skills.into_values().collect();
-    result.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    result.sort_by_key(|s| s.name.to_lowercase());
 
     result
 }

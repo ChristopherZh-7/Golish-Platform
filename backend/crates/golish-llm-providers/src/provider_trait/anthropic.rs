@@ -9,7 +9,6 @@ use rig::client::CompletionClient;
 use super::super::LlmClient;
 use super::LlmProvider;
 
-
 /// Anthropic provider implementation (direct API).
 pub struct AnthropicProviderImpl {
     pub api_key: String,

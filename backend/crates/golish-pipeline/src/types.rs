@@ -54,9 +54,15 @@ pub struct PipelineStep {
     pub y: f64,
 }
 
-fn default_step_type() -> String { "shell_command".to_string() }
-fn default_exec_mode() -> String { "pipe".to_string() }
-fn default_on_failure() -> String { "abort".to_string() }
+fn default_step_type() -> String {
+    "shell_command".to_string()
+}
+fn default_exec_mode() -> String {
+    "pipe".to_string()
+}
+fn default_on_failure() -> String {
+    "abort".to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineConnection {

@@ -8,7 +8,9 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use rig::completion::Message;
-use rig::message::{AssistantContent, Text, ToolCall, ToolFunction, ToolResult, ToolResultContent, UserContent};
+use rig::message::{
+    AssistantContent, Text, ToolCall, ToolFunction, ToolResult, ToolResultContent, UserContent,
+};
 use rig::one_or_many::OneOrMany;
 
 use golish_core::events::AiEvent;
@@ -142,25 +144,31 @@ async fn perform_compaction(
     let summaries_dir = get_summaries_dir_for(&workspace);
     drop(workspace);
 
-    let summarizer_input =
-        match golish_events::transcript::build_summarizer_input(&transcript_dir, session_id).await {
-            Ok(input) => input,
-            Err(e) => {
-                tracing::warn!("[compaction] Failed to build summarizer input: {}", e);
-                return CompactionResult {
-                    success: false,
-                    summary: None,
-                    error: Some(format!("Failed to build summarizer input: {}", e)),
-                    tokens_before,
-                    messages_before,
-                    summarizer_input: None,
-                };
-            }
-        };
-
-    if let Err(e) =
-        golish_events::transcript::save_summarizer_input(&artifacts_dir, session_id, &summarizer_input)
+    let summarizer_input = match golish_events::transcript::build_summarizer_input(
+        &transcript_dir,
+        session_id,
+    )
+    .await
     {
+        Ok(input) => input,
+        Err(e) => {
+            tracing::warn!("[compaction] Failed to build summarizer input: {}", e);
+            return CompactionResult {
+                success: false,
+                summary: None,
+                error: Some(format!("Failed to build summarizer input: {}", e)),
+                tokens_before,
+                messages_before,
+                summarizer_input: None,
+            };
+        }
+    };
+
+    if let Err(e) = golish_events::transcript::save_summarizer_input(
+        &artifacts_dir,
+        session_id,
+        &summarizer_input,
+    ) {
         tracing::warn!("[compaction] Failed to save summarizer input: {}", e);
     }
 
@@ -425,11 +433,11 @@ mod tests {
             let entry = content.iter().next().unwrap();
             if let UserContent::ToolResult(tr) = entry {
                 if let ToolResultContent::Text(t) = tr.content.iter().next().unwrap() {
-                assert!(t
-                    .text
-                    .contains("[Context Summary - Previous conversation has been compacted]"));
-                assert!(t.text.contains("This is the summary content"));
-                assert!(t.text.contains("[End of Summary]"));
+                    assert!(t
+                        .text
+                        .contains("[Context Summary - Previous conversation has been compacted]"));
+                    assert!(t.text.contains("This is the summary content"));
+                    assert!(t.text.contains("[End of Summary]"));
                 } else {
                     panic!("Expected tool result text content");
                 }

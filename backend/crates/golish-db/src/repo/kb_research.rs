@@ -45,12 +45,10 @@ pub async fn append_turn(
 }
 
 pub async fn get_log(pool: &PgPool, cve_id: &str) -> Result<Option<KbResearchLog>> {
-    let row = sqlx::query_as::<_, KbResearchLog>(
-        "SELECT * FROM kb_research_log WHERE cve_id = $1",
-    )
-    .bind(cve_id)
-    .fetch_optional(pool)
-    .await?;
+    let row = sqlx::query_as::<_, KbResearchLog>("SELECT * FROM kb_research_log WHERE cve_id = $1")
+        .bind(cve_id)
+        .fetch_optional(pool)
+        .await?;
     Ok(row)
 }
 

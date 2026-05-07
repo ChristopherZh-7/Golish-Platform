@@ -1,5 +1,5 @@
-use serde_json::json;
 use super::common::{error_result, extract_string_param, ToolResult};
+use serde_json::json;
 
 /// Execute memory tool calls (search_memories, store_memory, list_memories).
 ///
@@ -14,10 +14,10 @@ pub async fn execute_memory_tool(
         Some(t) => t,
         None => {
             return match tool_name {
-                "search_memories" | "store_memory" | "list_memories"
-                | "search_code" | "save_code" | "search_guide" | "save_guide" => {
-                    Some(error_result("Memory tools are not available (database not configured)"))
-                }
+                "search_memories" | "store_memory" | "list_memories" | "search_code"
+                | "save_code" | "search_guide" | "save_guide" => Some(error_result(
+                    "Memory tools are not available (database not configured)",
+                )),
                 _ => None,
             };
         }
@@ -27,19 +27,26 @@ pub async fn execute_memory_tool(
         "search_memories" => {
             let query = match extract_string_param(args, &["query", "search_query", "q"]) {
                 Some(q) if !q.is_empty() => q,
-                _ => return Some(error_result(
-                    "search_memories requires a non-empty 'query' string parameter. \
-                     Example: {\"query\": \"nmap scan results for 10.0.0.1\"}"
-                )),
+                _ => {
+                    return Some(error_result(
+                        "search_memories requires a non-empty 'query' string parameter. \
+                     Example: {\"query\": \"nmap scan results for 10.0.0.1\"}",
+                    ))
+                }
             };
-            let category = args.get("category").and_then(|v| v.as_str()).map(String::from);
+            let category = args
+                .get("category")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             let limit = args
                 .get("limit")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(10)
                 .min(50) as i64;
 
-            let memories = tracker.search_memories_by_text(&query, category.as_deref(), limit).await;
+            let memories = tracker
+                .search_memories_by_text(&query, category.as_deref(), limit)
+                .await;
             let results: Vec<serde_json::Value> = memories
                 .iter()
                 .map(|m| {
@@ -109,14 +116,19 @@ pub async fn execute_memory_tool(
             ))
         }
         "list_memories" => {
-            let category = args.get("category").and_then(|v| v.as_str()).map(String::from);
+            let category = args
+                .get("category")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             let limit = args
                 .get("limit")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(20)
                 .min(100) as i64;
 
-            let memories = tracker.list_recent_memories(category.as_deref(), limit).await;
+            let memories = tracker
+                .list_recent_memories(category.as_deref(), limit)
+                .await;
             let results: Vec<serde_json::Value> = memories
                 .iter()
                 .map(|m| {
@@ -140,74 +152,134 @@ pub async fn execute_memory_tool(
         "search_code" => {
             let query = match extract_string_param(args, &["query", "search_query", "q"]) {
                 Some(q) if !q.is_empty() => q,
-                _ => return Some(error_result(
-                    "search_code requires a non-empty 'query' parameter."
-                )),
+                _ => {
+                    return Some(error_result(
+                        "search_code requires a non-empty 'query' parameter.",
+                    ))
+                }
             };
-            let lang = args.get("language").and_then(|v| v.as_str()).map(String::from);
-            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(5).min(20) as i64;
+            let lang = args
+                .get("language")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let limit = args
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(5)
+                .min(20) as i64;
 
-            let memories = tracker.search_memories_by_doc_type(&query, "code", lang.as_deref(), limit).await;
-            let results: Vec<serde_json::Value> = memories.iter().map(|m| {
-                json!({
-                    "content": m.content,
-                    "language": m.metadata.as_ref().and_then(|md| md.get("language")),
-                    "metadata": m.metadata,
-                    "created_at": m.created_at.to_rfc3339(),
+            let memories = tracker
+                .search_memories_by_doc_type(&query, "code", lang.as_deref(), limit)
+                .await;
+            let results: Vec<serde_json::Value> = memories
+                .iter()
+                .map(|m| {
+                    json!({
+                        "content": m.content,
+                        "language": m.metadata.as_ref().and_then(|md| md.get("language")),
+                        "metadata": m.metadata,
+                        "created_at": m.created_at.to_rfc3339(),
+                    })
                 })
-            }).collect();
-            Some((json!({ "code_samples": results, "count": results.len(), "query": query }), true))
+                .collect();
+            Some((
+                json!({ "code_samples": results, "count": results.len(), "query": query }),
+                true,
+            ))
         }
         "save_code" => {
             let content = match args.get("content").and_then(|v| v.as_str()) {
                 Some(c) => c.to_string(),
                 None => return Some(error_result("save_code requires a 'content' parameter")),
             };
-            let language = args.get("language").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-            let description = args.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let language = args
+                .get("language")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let description = args
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
 
-            let tagged = format!("[code:{}] {}{}", language, if description.is_empty() { String::new() } else { format!("{} — ", description) }, content);
-            let metadata = Some(json!({ "language": language, "description": description, "doc_type": "code" }));
+            let tagged = format!(
+                "[code:{}] {}{}",
+                language,
+                if description.is_empty() {
+                    String::new()
+                } else {
+                    format!("{} — ", description)
+                },
+                content
+            );
+            let metadata = Some(
+                json!({ "language": language, "description": description, "doc_type": "code" }),
+            );
 
             tracker.store_memory_with_doc_type(&tagged, "technique", "code", metadata);
 
-            Some((json!({ "success": true, "message": "Code sample stored", "language": language }), true))
+            Some((
+                json!({ "success": true, "message": "Code sample stored", "language": language }),
+                true,
+            ))
         }
 
         "search_guide" => {
             let query = match extract_string_param(args, &["query", "search_query", "q"]) {
                 Some(q) if !q.is_empty() => q,
-                _ => return Some(error_result(
-                    "search_guide requires a non-empty 'query' parameter."
-                )),
+                _ => {
+                    return Some(error_result(
+                        "search_guide requires a non-empty 'query' parameter.",
+                    ))
+                }
             };
             let guide_type = args.get("type").and_then(|v| v.as_str()).map(String::from);
-            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(5).min(20) as i64;
+            let limit = args
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(5)
+                .min(20) as i64;
 
-            let memories = tracker.search_memories_by_doc_type(&query, "guide", guide_type.as_deref(), limit).await;
-            let results: Vec<serde_json::Value> = memories.iter().map(|m| {
-                json!({
-                    "content": m.content,
-                    "guide_type": m.metadata.as_ref().and_then(|md| md.get("guide_type")),
-                    "metadata": m.metadata,
-                    "created_at": m.created_at.to_rfc3339(),
+            let memories = tracker
+                .search_memories_by_doc_type(&query, "guide", guide_type.as_deref(), limit)
+                .await;
+            let results: Vec<serde_json::Value> = memories
+                .iter()
+                .map(|m| {
+                    json!({
+                        "content": m.content,
+                        "guide_type": m.metadata.as_ref().and_then(|md| md.get("guide_type")),
+                        "metadata": m.metadata,
+                        "created_at": m.created_at.to_rfc3339(),
+                    })
                 })
-            }).collect();
-            Some((json!({ "guides": results, "count": results.len(), "query": query }), true))
+                .collect();
+            Some((
+                json!({ "guides": results, "count": results.len(), "query": query }),
+                true,
+            ))
         }
         "save_guide" => {
             let content = match args.get("content").and_then(|v| v.as_str()) {
                 Some(c) => c.to_string(),
                 None => return Some(error_result("save_guide requires a 'content' parameter")),
             };
-            let guide_type = args.get("type").and_then(|v| v.as_str()).unwrap_or("procedure").to_string();
+            let guide_type = args
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("procedure")
+                .to_string();
 
             let tagged = format!("[guide:{}] {}", guide_type, content);
             let metadata = Some(json!({ "guide_type": guide_type, "doc_type": "guide" }));
 
             tracker.store_memory_with_doc_type(&tagged, "technique", "guide", metadata);
 
-            Some((json!({ "success": true, "message": "Guide stored", "type": guide_type }), true))
+            Some((
+                json!({ "success": true, "message": "Guide stored", "type": guide_type }),
+                true,
+            ))
         }
 
         _ => None,

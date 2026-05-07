@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 //! Scan-runner engine for Golish.
 //!
 //! Dispatch table for the various pentest scanners invoked from the GUI/AI:

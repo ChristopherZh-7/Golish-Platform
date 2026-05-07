@@ -6,11 +6,7 @@ use super::*;
 ///
 /// This replicates the exact logic from agent_bridge.rs::prepare_execution_context
 /// so we can verify evals get the same prompt.
-fn build_main_agent_prompt(
-    workspace: &Path,
-    provider_name: &str,
-    has_web_search: bool,
-) -> String {
+fn build_main_agent_prompt(workspace: &Path, provider_name: &str, has_web_search: bool) -> String {
     // Create sub-agent registry (same as main agent)
     let sub_agent_registry = Arc::new(RwLock::new(SubAgentRegistry::new()));
 

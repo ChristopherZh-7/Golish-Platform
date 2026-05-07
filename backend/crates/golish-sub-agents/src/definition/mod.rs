@@ -15,19 +15,14 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 /// Where a sub-agent definition was loaded from
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "path")]
 pub enum AgentSource {
     /// Hardcoded in Rust (system-level agents: worker, memorist, reflector)
+    #[default]
     BuiltIn,
     /// Loaded from a .md file on disk
     File(PathBuf),
-}
-
-impl Default for AgentSource {
-    fn default() -> Self {
-        Self::BuiltIn
-    }
 }
 
 /// Context passed to a sub-agent during execution
@@ -332,4 +327,3 @@ impl SubAgentRegistry {
 
 /// Maximum recursion depth to prevent infinite sub-agent loops
 pub const MAX_AGENT_DEPTH: usize = 5;
-

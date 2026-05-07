@@ -10,10 +10,10 @@ use anyhow::{Context, Result};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use crate::db_shim::{subtasks, tasks};
+use crate::db_traits::{DbRepoProvider, NewTask, SubtaskStatus, TaskStatus};
 use golish_core::events::AiEvent;
 use golish_core::plan::{PlanStep, PlanSummary, StepStatus};
-use crate::db_shim::{tasks, subtasks};
-use crate::db_traits::{DbRepoProvider, SubtaskStatus, TaskStatus, NewTask};
 
 use super::helpers::parse_agent_type;
 use super::types::{AgentExecutor, PlannedSubtask};
@@ -63,16 +63,15 @@ impl TaskOrchestrator {
     ///
     /// This is the top-level entry point, equivalent to PentAGI's
     /// `NewTaskWorker + tw.Run()`.
-    pub async fn run(
-        &mut self,
-        task_input: &str,
-        executor: &dyn AgentExecutor,
-    ) -> Result<String> {
-        let task = tasks::create(&*self.repo, NewTask {
-            session_id: self.session_id,
-            title: None,
-            input: task_input.to_string(),
-        })
+    pub async fn run(&mut self, task_input: &str, executor: &dyn AgentExecutor) -> Result<String> {
+        let task = tasks::create(
+            &*self.repo,
+            NewTask {
+                session_id: self.session_id,
+                title: None,
+                input: task_input.to_string(),
+            },
+        )
         .await
         .context("Failed to create task")?;
 
@@ -140,11 +139,7 @@ impl TaskOrchestrator {
     ///
     /// Reloads all completed subtask results from the DB and continues
     /// execution from the next pending subtask.
-    pub async fn resume(
-        &mut self,
-        task_id: Uuid,
-        executor: &dyn AgentExecutor,
-    ) -> Result<String> {
+    pub async fn resume(&mut self, task_id: Uuid, executor: &dyn AgentExecutor) -> Result<String> {
         let task = tasks::get(&*self.repo, task_id)
             .await?
             .context("Task not found")?;
@@ -181,7 +176,6 @@ impl TaskOrchestrator {
             .await
     }
 
-
     pub(super) fn emit(&self, event: AiEvent) {
         let _ = self.event_tx.send(event);
     }
@@ -201,7 +195,7 @@ impl TaskOrchestrator {
                 let status = if i < current_index {
                     StepStatus::Completed
                 } else if i == current_index {
-                    current_status.clone()
+                    current_status
                 } else {
                     StepStatus::Pending
                 };

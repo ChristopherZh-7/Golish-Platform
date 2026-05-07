@@ -25,34 +25,44 @@ fn default_status() -> String {
     "queued".to_string()
 }
 
+type ScanQueueRow = (
+    String,
+    String,
+    Option<String>,
+    i32,
+    String,
+    serde_json::Value,
+    i64,
+);
+
 #[tauri::command]
 pub async fn scan_queue_list(
     state: tauri::State<'_, DbState>,
     project_path: Option<String>,
 ) -> Result<Vec<ScanEndpoint>, GolishError> {
     let pool = state.pool_ready().await?;
-    let rows: Vec<(String, String, Option<String>, i32, String, serde_json::Value, i64)> =
-        sqlx::query_as(
-            "SELECT id::text, url, scan_id, progress, status, alerts, added_at \
+    let rows: Vec<ScanQueueRow> = sqlx::query_as(
+        "SELECT id::text, url, scan_id, progress, status, alerts, added_at \
              FROM scan_queue WHERE project_path = $1 \
              ORDER BY added_at ASC",
-        )
-        .bind(project_path.as_deref())
-        .fetch_all(pool)
-        .await
-?;
+    )
+    .bind(project_path.as_deref())
+    .fetch_all(pool)
+    .await?;
 
     Ok(rows
         .into_iter()
-        .map(|(id, url, scan_id, progress, status, alerts, added_at)| ScanEndpoint {
-            id: Some(id),
-            url,
-            scan_id,
-            progress,
-            status,
-            alerts,
-            added_at,
-        })
+        .map(
+            |(id, url, scan_id, progress, status, alerts, added_at)| ScanEndpoint {
+                id: Some(id),
+                url,
+                scan_id,
+                progress,
+                status,
+                alerts,
+                added_at,
+            },
+        )
         .collect())
 }
 
@@ -106,8 +116,7 @@ pub async fn scan_queue_save_all(
     sqlx::query("DELETE FROM scan_queue WHERE project_path = $1")
         .bind(project_path.as_deref())
         .execute(pool)
-        .await
-?;
+        .await?;
 
     for ep in &endpoints {
         let id: Uuid = ep
@@ -143,14 +152,11 @@ pub async fn scan_queue_remove(
     project_path: Option<String>,
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
-    sqlx::query(
-        "DELETE FROM scan_queue WHERE url = $1 AND project_path = $2",
-    )
-    .bind(&url)
-    .bind(project_path.as_deref())
-    .execute(pool)
-    .await
-?;
+    sqlx::query("DELETE FROM scan_queue WHERE url = $1 AND project_path = $2")
+        .bind(&url)
+        .bind(project_path.as_deref())
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -160,12 +166,9 @@ pub async fn scan_queue_clear_completed(
     project_path: Option<String>,
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
-    sqlx::query(
-        "DELETE FROM scan_queue WHERE status = 'complete' AND project_path = $1",
-    )
-    .bind(project_path.as_deref())
-    .execute(pool)
-    .await
-?;
+    sqlx::query("DELETE FROM scan_queue WHERE status = 'complete' AND project_path = $1")
+        .bind(project_path.as_deref())
+        .execute(pool)
+        .await?;
     Ok(())
 }

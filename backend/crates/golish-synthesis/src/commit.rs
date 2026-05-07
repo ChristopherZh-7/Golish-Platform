@@ -14,7 +14,6 @@ const VERTEX_AI_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
 use crate::prompts::*;
 use crate::template::generate_template_message;
 
-
 /// Input for commit message synthesis
 #[derive(Debug, Clone)]
 pub struct SynthesisInput {
@@ -75,7 +74,6 @@ pub struct SynthesisResult {
     /// Whether this was regenerated
     pub regenerated: bool,
 }
-
 
 // =============================================================================
 // Synthesizer Trait and Implementations
@@ -430,4 +428,3 @@ pub fn create_synthesizer(config: &SynthesisConfig) -> Result<Box<dyn CommitMess
         }
     }
 }
-

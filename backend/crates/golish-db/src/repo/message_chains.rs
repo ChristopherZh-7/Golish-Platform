@@ -29,11 +29,7 @@ pub async fn create(
     Ok(row)
 }
 
-pub async fn update_chain(
-    pool: &PgPool,
-    id: Uuid,
-    chain: &serde_json::Value,
-) -> Result<()> {
+pub async fn update_chain(pool: &PgPool, id: Uuid, chain: &serde_json::Value) -> Result<()> {
     sqlx::query("UPDATE message_chains SET chain = $1, updated_at = NOW() WHERE id = $2")
         .bind(chain)
         .bind(id)

@@ -389,13 +389,13 @@ impl AgentBridge {
         let count = history.len();
         let mut guard = self.session.conversation_history.write().await;
         *guard = history;
-        tracing::info!("[restore] Restored {} messages to conversation history", count);
+        tracing::info!(
+            "[restore] Restored {} messages to conversation history",
+            count
+        );
     }
 
-    pub(super) async fn persist_terminal_error_state(
-        &self,
-        terminal_state: &TerminalErrorState,
-    ) {
+    pub(super) async fn persist_terminal_error_state(&self, terminal_state: &TerminalErrorState) {
         if let Some(final_history) = terminal_state.final_history.clone() {
             let mut history_guard = self.session.conversation_history.write().await;
             *history_guard = final_history;

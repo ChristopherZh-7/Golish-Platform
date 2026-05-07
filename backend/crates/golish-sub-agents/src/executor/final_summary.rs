@@ -45,7 +45,9 @@ pub(super) async fn run_final_summary<M>(
         None
     };
     let max_tokens = ctx.max_tokens_override.unwrap_or(8192) as u64;
-    let additional_params = ctx.top_p_override.map(|tp| serde_json::json!({ "top_p": tp }));
+    let additional_params = ctx
+        .top_p_override
+        .map(|tp| serde_json::json!({ "top_p": tp }));
 
     // NVIDIA NIM workaround: provider serialises system content as an array of
     // text parts but only accepts plain strings. Reroute the system prompt as

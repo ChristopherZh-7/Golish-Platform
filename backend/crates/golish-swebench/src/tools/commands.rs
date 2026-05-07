@@ -23,11 +23,7 @@ use super::SWEBenchContext;
 /// - The agent's working directory is `/workspace/repo` (mounted from host)
 /// - The conda environment expects tests to run from `/testbed`
 /// - Running from `/workspace/repo` causes pytest `ImportPathMismatchError`
-pub(super) fn build_test_command(
-    ctx: &SWEBenchContext,
-    test_path: &str,
-    _verbose: bool,
-) -> String {
+pub(super) fn build_test_command(ctx: &SWEBenchContext, test_path: &str, _verbose: bool) -> String {
     format!(
         r#"
 cd /workspace/repo

@@ -37,8 +37,8 @@ pub(crate) async fn execute_round(
     url: &str,
     token: &TokenSource,
 ) -> Round {
-    let method_parsed = reqwest::Method::from_bytes(method.as_bytes())
-        .unwrap_or(reqwest::Method::GET);
+    let method_parsed =
+        reqwest::Method::from_bytes(method.as_bytes()).unwrap_or(reqwest::Method::GET);
     let mut req = client.request(method_parsed, url);
     if let TokenSource::Plain { value } = token {
         req = req.header("Authorization", format!("Bearer {}", value));

@@ -15,7 +15,10 @@ pub async fn get_approval_patterns(
     session_id: Option<String>,
 ) -> Result<Vec<ApprovalPattern>, GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_approval_patterns().await);
     }
@@ -32,7 +35,10 @@ pub async fn get_tool_approval_pattern(
     session_id: Option<String>,
 ) -> Result<Option<ApprovalPattern>, GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_tool_approval_pattern(&tool_name).await);
     }
@@ -48,7 +54,10 @@ pub async fn get_hitl_config(
     session_id: Option<String>,
 ) -> Result<ToolApprovalConfig, GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
         return Ok(bridge.get_hitl_config().await);
     }
@@ -65,13 +74,22 @@ pub async fn set_hitl_config(
     session_id: Option<String>,
 ) -> Result<(), GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        return bridge.set_hitl_config(config).await.map_err(GolishError::from);
+        return bridge
+            .set_hitl_config(config)
+            .await
+            .map_err(GolishError::from);
     }
     let bridge_guard = state.ai_state.get_legacy_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
-    bridge.set_hitl_config(config).await.map_err(GolishError::from)
+    bridge
+        .set_hitl_config(config)
+        .await
+        .map_err(GolishError::from)
 }
 
 /// Add a tool to the always-allow list.
@@ -82,13 +100,22 @@ pub async fn add_tool_always_allow(
     session_id: Option<String>,
 ) -> Result<(), GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        return bridge.add_tool_always_allow(&tool_name).await.map_err(GolishError::from);
+        return bridge
+            .add_tool_always_allow(&tool_name)
+            .await
+            .map_err(GolishError::from);
     }
     let bridge_guard = state.ai_state.get_legacy_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
-    bridge.add_tool_always_allow(&tool_name).await.map_err(GolishError::from)
+    bridge
+        .add_tool_always_allow(&tool_name)
+        .await
+        .map_err(GolishError::from)
 }
 
 /// Remove a tool from the always-allow list.
@@ -99,13 +126,22 @@ pub async fn remove_tool_always_allow(
     session_id: Option<String>,
 ) -> Result<(), GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        return bridge.remove_tool_always_allow(&tool_name).await.map_err(GolishError::from);
+        return bridge
+            .remove_tool_always_allow(&tool_name)
+            .await
+            .map_err(GolishError::from);
     }
     let bridge_guard = state.ai_state.get_legacy_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
-    bridge.remove_tool_always_allow(&tool_name).await.map_err(GolishError::from)
+    bridge
+        .remove_tool_always_allow(&tool_name)
+        .await
+        .map_err(GolishError::from)
 }
 
 /// Reset all approval patterns (does not reset configuration).
@@ -115,13 +151,22 @@ pub async fn reset_approval_patterns(
     session_id: Option<String>,
 ) -> Result<(), GolishError> {
     if let Some(ref sid) = session_id {
-        let bridge = state.ai_state.get_session_bridge(sid).await
+        let bridge = state
+            .ai_state
+            .get_session_bridge(sid)
+            .await
             .ok_or_else(|| ai_session_not_initialized_error(sid))?;
-        return bridge.reset_approval_patterns().await.map_err(GolishError::from);
+        return bridge
+            .reset_approval_patterns()
+            .await
+            .map_err(GolishError::from);
     }
     let bridge_guard = state.ai_state.get_legacy_bridge().await?;
     let bridge = bridge_guard.as_ref().unwrap();
-    bridge.reset_approval_patterns().await.map_err(GolishError::from)
+    bridge
+        .reset_approval_patterns()
+        .await
+        .map_err(GolishError::from)
 }
 
 /// Respond to a tool approval request.

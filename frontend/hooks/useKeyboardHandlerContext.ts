@@ -155,8 +155,7 @@ export function createKeyboardHandler(
       return;
     }
 
-    // Cmd+[1-9] for tab switching - read sessions at event time
-    if (e.metaKey && !e.shiftKey && !e.altKey && e.key >= "1" && e.key <= "9") {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key >= "1" && e.key <= "9") {
       const tabIndex = parseInt(e.key, 10) - 1;
       const tabIds = Object.keys(useStore.getState().sessions);
       if (tabIndex < tabIds.length) {
@@ -252,15 +251,13 @@ export function createKeyboardHandler(
       return;
     }
 
-    // Cmd+D: Split pane vertically
-    if (e.metaKey && e.key === "d" && !e.shiftKey) {
+    if ((e.metaKey || e.ctrlKey) && e.key === "d" && !e.shiftKey) {
       e.preventDefault();
       ctx.handleSplitPane("vertical");
       return;
     }
 
-    // Cmd+Shift+D: Split pane horizontally
-    if (e.metaKey && e.shiftKey && e.key === "d") {
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "d") {
       e.preventDefault();
       ctx.handleSplitPane("horizontal");
       return;

@@ -38,12 +38,7 @@ impl GraphKnowledgeBase for GraphClientBackend {
         let project_id_str = session_id.map(|id| id.to_string());
         let entity = self
             .client
-            .upsert_entity(
-                entity_type,
-                name,
-                properties,
-                project_id_str.as_deref(),
-            )
+            .upsert_entity(entity_type, name, properties, project_id_str.as_deref())
             .await?;
         Ok(GraphEntityView {
             id: entity.id,
@@ -51,7 +46,7 @@ impl GraphKnowledgeBase for GraphClientBackend {
             name: entity.name,
             properties: entity.properties,
             session_id: entity.session_id,
-            project_id: entity.project_id.map(|s| Uuid::parse_str(&s).ok()).flatten(),
+            project_id: entity.project_id.and_then(|s| Uuid::parse_str(&s).ok()),
             created_at: entity.created_at,
             updated_at: entity.updated_at,
         })
@@ -84,7 +79,10 @@ impl GraphKnowledgeBase for GraphClientBackend {
         entity_type: Option<&str>,
         limit: i64,
     ) -> anyhow::Result<Vec<GraphEntityView>> {
-        let entities = self.client.search_entities(query, entity_type, limit).await?;
+        let entities = self
+            .client
+            .search_entities(query, entity_type, limit)
+            .await?;
         Ok(entities
             .into_iter()
             .map(|e| GraphEntityView {
@@ -93,7 +91,7 @@ impl GraphKnowledgeBase for GraphClientBackend {
                 name: e.name,
                 properties: e.properties,
                 session_id: e.session_id,
-                project_id: e.project_id.map(|s| Uuid::parse_str(&s).ok()).flatten(),
+                project_id: e.project_id.and_then(|s| Uuid::parse_str(&s).ok()),
                 created_at: e.created_at,
                 updated_at: e.updated_at,
             })
@@ -105,10 +103,7 @@ impl GraphKnowledgeBase for GraphClientBackend {
         entity_id: Uuid,
         relation_type: Option<&str>,
     ) -> anyhow::Result<Vec<(GraphRelationView, GraphEntityView)>> {
-        let rows = self
-            .client
-            .get_neighbors(entity_id, relation_type)
-            .await?;
+        let rows = self.client.get_neighbors(entity_id, relation_type).await?;
         Ok(rows
             .into_iter()
             .map(|(rel, ent)| {
@@ -127,7 +122,7 @@ impl GraphKnowledgeBase for GraphClientBackend {
                         name: ent.name,
                         properties: ent.properties,
                         session_id: ent.session_id,
-                        project_id: ent.project_id.map(|s| Uuid::parse_str(&s).ok()).flatten(),
+                        project_id: ent.project_id.and_then(|s| Uuid::parse_str(&s).ok()),
                         created_at: ent.created_at,
                         updated_at: ent.updated_at,
                     },
@@ -152,7 +147,7 @@ impl GraphKnowledgeBase for GraphClientBackend {
                         name: e.name,
                         properties: e.properties,
                         session_id: e.session_id,
-                        project_id: e.project_id.map(|s| Uuid::parse_str(&s).ok()).flatten(),
+                        project_id: e.project_id.and_then(|s| Uuid::parse_str(&s).ok()),
                         created_at: e.created_at,
                         updated_at: e.updated_at,
                     })

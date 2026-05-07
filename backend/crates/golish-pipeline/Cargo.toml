@@ -9,6 +9,7 @@ description = "Pipeline orchestration engine — tool chaining, DAG execution, a
 golish-core = { workspace = true }
 golish-db = { workspace = true }
 golish-pentest = { workspace = true }
+golish-shell-exec = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }

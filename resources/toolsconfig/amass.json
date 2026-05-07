@@ -12,7 +12,9 @@
     "tags": ["recon", "subdomain", "osint", "asn"],
     "install": {
       "method": "homebrew",
-      "source": "amass"
+      "source": "amass",
+      "windows": { "method": "github", "source": "owasp-amass/amass" },
+      "linux": { "method": "github", "source": "owasp-amass/amass" }
     },
     "params": [
       {

@@ -5,7 +5,6 @@ use golish_settings::schema::AiProvider;
 use crate::capabilities::ModelCapabilities;
 use crate::registry::ModelDefinition;
 
-
 /// Direct Anthropic API model definitions.
 pub fn anthropic_models() -> Vec<ModelDefinition> {
     vec![

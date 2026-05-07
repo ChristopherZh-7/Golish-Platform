@@ -4,13 +4,13 @@ use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::state::DbState;
+use golish_projects::file_storage;
 use golish_projects::{
     delete_project as storage_delete, list_projects as storage_list, load_project as storage_load,
-    save_project as storage_save, ProjectConfig, PentestProjectConfig,
-    load_workspace, save_workspace,
+    load_workspace, save_project as storage_save, save_workspace, PentestProjectConfig,
+    ProjectConfig,
 };
-use golish_projects::file_storage;
-use crate::state::DbState;
 
 /// Project form data from the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,13 +106,10 @@ pub async fn delete_project_config(
         ];
         let mut total_deleted = 0u64;
         for table in &tables_with_project_path {
-            match sqlx::query(&format!(
-                "DELETE FROM {} WHERE project_path = $1",
-                table
-            ))
-            .bind(path)
-            .execute(pool)
-            .await
+            match sqlx::query(&format!("DELETE FROM {} WHERE project_path = $1", table))
+                .bind(path)
+                .execute(pool)
+                .await
             {
                 Ok(r) => total_deleted += r.rows_affected(),
                 Err(e) => {
@@ -122,7 +119,8 @@ pub async fn delete_project_config(
         }
         tracing::info!(
             "[delete-project] Cleaned {} DB records for project_path={}",
-            total_deleted, path
+            total_deleted,
+            path
         );
     }
 
@@ -164,9 +162,7 @@ pub async fn save_project_workspace(
 
 /// Load workspace state for a project. Returns None if no saved state exists.
 #[tauri::command]
-pub async fn load_project_workspace(
-    project_name: String,
-) -> Result<Option<String>, GolishError> {
+pub async fn load_project_workspace(project_name: String) -> Result<Option<String>, GolishError> {
     load_workspace(&project_name)
         .await
         .map_err(|e| GolishError::Internal(format!("Failed to load workspace: {}", e)))
@@ -193,10 +189,11 @@ pub struct HostCaptures {
 
 /// Load the pentest project config (project.json) for a project.
 #[tauri::command]
-pub async fn get_pentest_config(project_name: String) -> Result<Option<PentestProjectConfig>, GolishError> {
+pub async fn get_pentest_config(
+    project_name: String,
+) -> Result<Option<PentestProjectConfig>, GolishError> {
     let project = storage_load(&project_name)
-        .await
-?
+        .await?
         .ok_or_else(|| format!("Project '{}' not found", project_name))?;
 
     file_storage::load_project_json(&project.root_path)
@@ -211,8 +208,7 @@ pub async fn save_pentest_config(
     config: PentestProjectConfig,
 ) -> Result<(), GolishError> {
     let project = storage_load(&project_name)
-        .await
-?
+        .await?
         .ok_or_else(|| format!("Project '{}' not found", project_name))?;
 
     file_storage::save_project_json(&project.root_path, &config)
@@ -224,28 +220,18 @@ pub async fn save_pentest_config(
 #[tauri::command]
 pub async fn list_captures(project_name: String) -> Result<CaptureOverview, GolishError> {
     let project = storage_load(&project_name)
-        .await
-?
+        .await?
         .ok_or_else(|| format!("Project '{}' not found", project_name))?;
 
-    let hosts = file_storage::list_capture_hosts(&project.root_path)
-        .await
-?;
+    let hosts = file_storage::list_capture_hosts(&project.root_path).await?;
 
     let mut host_captures = Vec::new();
     for host in hosts {
-        let ports = file_storage::list_capture_ports(&project.root_path, &host)
-            .await
-?;
-        host_captures.push(HostCaptures {
-            host,
-            ports,
-        });
+        let ports = file_storage::list_capture_ports(&project.root_path, &host).await?;
+        host_captures.push(HostCaptures { host, ports });
     }
 
-    let tool_outputs = file_storage::list_tool_outputs(&project.root_path)
-        .await
-?;
+    let tool_outputs = file_storage::list_tool_outputs(&project.root_path).await?;
 
     Ok(CaptureOverview {
         hosts: host_captures,
@@ -262,8 +248,7 @@ pub async fn list_capture_files(
     file_type: String,
 ) -> Result<Vec<String>, GolishError> {
     let project = storage_load(&project_name)
-        .await
-?
+        .await?
         .ok_or_else(|| format!("Project '{}' not found", project_name))?;
 
     file_storage::list_capture_files(&project.root_path, &host, port, &file_type)
@@ -278,13 +263,10 @@ pub async fn read_project_file(
     rel_path: String,
 ) -> Result<String, GolishError> {
     let project = storage_load(&project_name)
-        .await
-?
+        .await?
         .ok_or_else(|| format!("Project '{}' not found", project_name))?;
 
-    let content = file_storage::read_file(&project.root_path, &rel_path)
-        .await
-?;
+    let content = file_storage::read_file(&project.root_path, &rel_path).await?;
 
     String::from_utf8(content)
         .map_err(|e| GolishError::Internal(format!("File is not valid UTF-8: {}", e)))
@@ -294,17 +276,12 @@ pub async fn read_project_file(
 #[tauri::command]
 pub async fn init_project_structure(project_name: String) -> Result<(), GolishError> {
     let project = storage_load(&project_name)
-        .await
-?
+        .await?
         .ok_or_else(|| format!("Project '{}' not found", project_name))?;
 
-    file_storage::init_project_dirs(&project.root_path)
-        .await
-?;
+    file_storage::init_project_dirs(&project.root_path).await?;
 
-    file_storage::init_project_json(&project.root_path, &project.name)
-        .await
-?;
+    file_storage::init_project_json(&project.root_path, &project.name).await?;
 
     Ok(())
 }
@@ -313,8 +290,7 @@ pub async fn init_project_structure(project_name: String) -> Result<(), GolishEr
 #[tauri::command]
 pub async fn clean_project_temp(project_name: String) -> Result<u64, GolishError> {
     let project = storage_load(&project_name)
-        .await
-?
+        .await?
         .ok_or_else(|| format!("Project '{}' not found", project_name))?;
 
     file_storage::clean_temp(&project.root_path)

@@ -1,7 +1,7 @@
 //! Step executors split by kind.
 
-use crate::types::{Pipeline, PipelineStep};
 use super::templates::builtin_templates;
+use crate::types::{Pipeline, PipelineStep};
 
 mod foreach;
 mod single;

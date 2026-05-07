@@ -2,9 +2,8 @@
 //! Vertex Gemini, OpenRouter (incl. provider preferences), Anthropic, OpenAI,
 //! Ollama, Gemini, Groq, xAI, Z.AI SDK, and NVIDIA NIM.
 
-use serde::{Deserialize, Serialize};
 use super::defaults::*;
-
+use serde::{Deserialize, Serialize};
 
 /// Vertex AI (Anthropic on Google Cloud) settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,10 +65,7 @@ pub struct OpenRouterSettings {
 
     /// Provider preferences for routing and filtering (optional).
     /// See https://openrouter.ai/docs/guides/routing/provider-selection
-    #[serde(
-        default,
-        skip_serializing_if = "provider_preferences_is_empty"
-    )]
+    #[serde(default, skip_serializing_if = "provider_preferences_is_empty")]
     pub provider_preferences: Option<OpenRouterProviderPreferences>,
 }
 
@@ -89,7 +85,7 @@ fn provider_preferences_is_empty(prefs: &Option<OpenRouterProviderPreferences>) 
 /// <https://openrouter.ai/docs/guides/routing/provider-selection>
 ///
 /// All fields are optional. Only non-None fields are sent to the API.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OpenRouterProviderPreferences {
     /// Provider priority ordering. Try these providers first, in order.
@@ -149,26 +145,6 @@ pub struct OpenRouterProviderPreferences {
     /// Valid values: "int4", "int8", "fp8", "fp16", "bf16", "fp32", "unknown"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quantizations: Option<Vec<String>>,
-}
-
-impl Default for OpenRouterProviderPreferences {
-    fn default() -> Self {
-        Self {
-            order: None,
-            only: None,
-            ignore: None,
-            allow_fallbacks: None,
-            require_parameters: None,
-            data_collection: None,
-            zdr: None,
-            sort: None,
-            preferred_min_throughput: None,
-            preferred_max_latency: None,
-            max_price_prompt: None,
-            max_price_completion: None,
-            quantizations: None,
-        }
-    }
 }
 
 impl OpenRouterProviderPreferences {
@@ -334,7 +310,6 @@ pub struct NvidiaSettings {
     #[serde(default = "default_true")]
     pub show_in_selector: bool,
 }
-
 
 impl Default for VertexAiSettings {
     fn default() -> Self {

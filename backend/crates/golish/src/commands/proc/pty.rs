@@ -63,7 +63,10 @@ pub async fn set_active_terminal_session(
     state: State<'_, PtyState>,
     session_id: String,
 ) -> Result<()> {
-    tracing::info!("[active-terminal] Frontend reports active session: {}", session_id);
+    tracing::info!(
+        "[active-terminal] Frontend reports active session: {}",
+        session_id
+    );
     let mut active = state.active_session.lock();
     *active = Some(session_id);
     Ok(())

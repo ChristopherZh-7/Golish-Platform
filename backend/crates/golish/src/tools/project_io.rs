@@ -45,8 +45,7 @@ fn add_directory_to_zip(
     if !dir.exists() {
         return Ok(());
     }
-    let options =
-        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     let walker = walkdir::WalkDir::new(dir)
         .into_iter()
         .filter_map(|e| e.ok());
@@ -75,22 +74,15 @@ fn add_json_to_zip(
     if json == b"[]" || json == b"null" {
         return Ok(());
     }
-    let options =
-        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     zip.start_file(archive_name, options)?;
     zip.write_all(json)?;
     *count += 1;
     Ok(())
 }
 
-async fn export_table_as_json(
-    pool: &sqlx::PgPool,
-    query: &str,
-) -> Result<Vec<u8>, GolishError> {
-    let rows: Vec<serde_json::Value> = sqlx::query_scalar(query)
-        .fetch_all(pool)
-        .await
-?;
+async fn export_table_as_json(pool: &sqlx::PgPool, query: &str) -> Result<Vec<u8>, GolishError> {
+    let rows: Vec<serde_json::Value> = sqlx::query_scalar(query).fetch_all(pool).await?;
     serde_json::to_vec_pretty(&rows).map_err(GolishError::from)
 }
 
@@ -110,12 +102,15 @@ pub async fn project_export(
     let mut count = 0usize;
 
     // Global shared data (file-based, unchanged)
-    let wiki_dir = golish_core::paths::wiki_dir()
-        .unwrap_or_else(|| base.join("wiki"));
+    let wiki_dir = golish_core::paths::wiki_dir().unwrap_or_else(|| base.join("wiki"));
     add_directory_to_zip(&mut zip, &wiki_dir, "wiki", &mut count)?;
-    add_directory_to_zip(&mut zip, &base.join("toolsconfig"), "toolsconfig", &mut count)?;
-    let skills_dir = golish_core::paths::skills_dir()
-        .unwrap_or_else(|| base.join("skills"));
+    add_directory_to_zip(
+        &mut zip,
+        &base.join("toolsconfig"),
+        "toolsconfig",
+        &mut count,
+    )?;
+    let skills_dir = golish_core::paths::skills_dir().unwrap_or_else(|| base.join("skills"));
     add_directory_to_zip(&mut zip, &skills_dir, "skills", &mut count)?;
 
     // Export database tables as JSON
@@ -137,29 +132,59 @@ pub async fn project_export(
     let topo = export_table_as_json(pool, "SELECT row_to_json(t) FROM sitemap_store t").await?;
     add_json_to_zip(&mut zip, "golish/db/sitemap_store.json", &topo, &mut count)?;
 
-    let meth = export_table_as_json(pool, "SELECT row_to_json(t) FROM methodology_projects t").await?;
-    add_json_to_zip(&mut zip, "golish/db/methodology_projects.json", &meth, &mut count)?;
+    let meth =
+        export_table_as_json(pool, "SELECT row_to_json(t) FROM methodology_projects t").await?;
+    add_json_to_zip(
+        &mut zip,
+        "golish/db/methodology_projects.json",
+        &meth,
+        &mut count,
+    )?;
 
     let pipes = export_table_as_json(pool, "SELECT row_to_json(t) FROM pipelines t").await?;
     add_json_to_zip(&mut zip, "golish/db/pipelines.json", &pipes, &mut count)?;
 
     let recordings = export_table_as_json(pool, "SELECT row_to_json(t) FROM recordings t").await?;
-    add_json_to_zip(&mut zip, "golish/db/recordings.json", &recordings, &mut count)?;
+    add_json_to_zip(
+        &mut zip,
+        "golish/db/recordings.json",
+        &recordings,
+        &mut count,
+    )?;
 
     let vuln_feeds = export_table_as_json(pool, "SELECT row_to_json(t) FROM vuln_feeds t").await?;
-    add_json_to_zip(&mut zip, "golish/db/vuln_feeds.json", &vuln_feeds, &mut count)?;
+    add_json_to_zip(
+        &mut zip,
+        "golish/db/vuln_feeds.json",
+        &vuln_feeds,
+        &mut count,
+    )?;
 
-    let vuln_entries = export_table_as_json(pool, "SELECT row_to_json(t) FROM vuln_entries t").await?;
-    add_json_to_zip(&mut zip, "golish/db/vuln_entries.json", &vuln_entries, &mut count)?;
+    let vuln_entries =
+        export_table_as_json(pool, "SELECT row_to_json(t) FROM vuln_entries t").await?;
+    add_json_to_zip(
+        &mut zip,
+        "golish/db/vuln_entries.json",
+        &vuln_entries,
+        &mut count,
+    )?;
 
     // File-based project data
     if let Some(ref gd) = golish_dir {
-        add_directory_to_zip(&mut zip, &gd.join("evidence"), "golish/evidence", &mut count)?;
+        add_directory_to_zip(
+            &mut zip,
+            &gd.join("evidence"),
+            "golish/evidence",
+            &mut count,
+        )?;
     }
 
     zip.finish()?;
     let meta = std::fs::metadata(&output)?;
-    debug!("[project_export] Exported {} files to {}", count, output_path);
+    debug!(
+        "[project_export] Exported {} files to {}",
+        count, output_path
+    );
 
     Ok(ExportResult {
         path: output_path,
@@ -173,22 +198,27 @@ async fn import_json_rows(
     table: &str,
     json_data: &[u8],
 ) -> Result<usize, GolishError> {
-    let rows: Vec<serde_json::Value> =
-        serde_json::from_slice(json_data)?;
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(json_data)?;
     if rows.is_empty() {
         return Ok(0);
     }
 
     let mut imported = 0usize;
     for row in &rows {
-        let obj = row.as_object().ok_or_else(|| GolishError::Internal("Expected JSON object".into()))?;
+        let obj = row
+            .as_object()
+            .ok_or_else(|| GolishError::Internal("Expected JSON object".into()))?;
         let columns: Vec<&String> = obj.keys().collect();
         let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("${i}")).collect();
 
         let sql = format!(
             "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT DO NOTHING",
             table,
-            columns.iter().map(|c| format!("\"{}\"", c)).collect::<Vec<_>>().join(", "),
+            columns
+                .iter()
+                .map(|c| format!("\"{}\"", c))
+                .collect::<Vec<_>>()
+                .join(", "),
             placeholders.join(", ")
         );
 
@@ -264,7 +294,10 @@ pub async fn project_import(
         ("golish/db/notes.json", "notes"),
         ("golish/db/audit_log.json", "audit_log"),
         ("golish/db/sitemap_store.json", "sitemap_store"),
-        ("golish/db/methodology_projects.json", "methodology_projects"),
+        (
+            "golish/db/methodology_projects.json",
+            "methodology_projects",
+        ),
         ("golish/db/pipelines.json", "pipelines"),
         ("golish/db/recordings.json", "recordings"),
         ("golish/db/vuln_feeds.json", "vuln_feeds"),

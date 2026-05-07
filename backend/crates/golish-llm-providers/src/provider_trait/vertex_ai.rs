@@ -8,7 +8,6 @@ use golish_models::AiProvider;
 use super::super::LlmClient;
 use super::LlmProvider;
 
-
 /// Vertex AI (Anthropic Claude on Google Cloud) provider implementation.
 pub struct VertexAiProviderImpl {
     pub credentials_path: Option<String>,

@@ -4,7 +4,9 @@
 //! with the Golish tool registry.
 
 mod crawl;
-pub use crawl::{BraveSearchTool, WebCrawlTool, WebMapTool, create_brave_tools, create_tavily_tools};
+pub use crawl::{
+    create_brave_tools, create_tavily_tools, BraveSearchTool, WebCrawlTool, WebMapTool,
+};
 
 use std::path::Path;
 use std::sync::Arc;
@@ -250,4 +252,3 @@ impl Tool for WebExtractTool {
         }
     }
 }
-
