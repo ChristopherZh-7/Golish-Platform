@@ -214,7 +214,6 @@ export function useProviderForm(settings: AiSettings, onChange: (settings: AiSet
 
   // Re-partition deliberately only when `providers` or `selectedId` change.
   // `settings` is intentionally NOT in the deps — that's the whole point.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: see comment above
   useEffect(() => {
     setStableConfigured(providers.filter((p) => p.getConfigured(settings)));
     setStableUnconfigured(providers.filter((p) => !p.getConfigured(settings)));

@@ -59,7 +59,6 @@ export function useChatAutoScroll<T>(messages: readonly T[]): ChatAutoScrollStat
   // (including streaming chunks that swap out the array reference) so the
   // user sees content arrive at the bottom without a paint flicker. Skip
   // the auto-jump only when the user explicitly wheeled up earlier.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: we want to fire on every messages tick, including streaming substitutions.
   useLayoutEffect(() => {
     if (userScrolledUpRef.current) return;
     const container = messagesContainerRef.current;
