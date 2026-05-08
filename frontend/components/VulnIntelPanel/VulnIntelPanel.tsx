@@ -1,12 +1,4 @@
-import {
-  Bell,
-  Crosshair,
-  History,
-  Loader2,
-  RefreshCw,
-  Search,
-  X,
-} from "lucide-react";
+import { Bell, Crosshair, History, Loader2, RefreshCw, Search, X } from "lucide-react";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CustomSelect } from "@/components/ui/custom-select";

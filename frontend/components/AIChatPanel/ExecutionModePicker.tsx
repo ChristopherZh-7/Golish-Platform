@@ -1,5 +1,5 @@
-import { ChevronDown, MessageSquare, Search, Users, Zap } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { ChevronDown, MessageSquare, Search, Users, Zap } from "lucide-react";
 import { memo, useEffect, useMemo, useState } from "react";
 import {
   DropdownMenu,
@@ -7,11 +7,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  listExecutionModes,
-  type AgentMode,
-  type ExecutionModeDescriptor,
-} from "@/lib/ai";
+import { type AgentMode, type ExecutionModeDescriptor, listExecutionModes } from "@/lib/ai";
 import { cn } from "@/lib/utils";
 
 const ICON_MAP: Record<string, LucideIcon> = {
@@ -24,10 +20,8 @@ const ICON_MAP: Record<string, LucideIcon> = {
 const BADGE_TRIGGER_CLASSES: Record<string, string> = {
   magenta:
     "bg-[var(--ansi-magenta)]/10 text-[var(--ansi-magenta)] hover:bg-[var(--ansi-magenta)]/20",
-  green:
-    "bg-[var(--ansi-green)]/10 text-[var(--ansi-green)] hover:bg-[var(--ansi-green)]/20",
-  blue:
-    "bg-[var(--ansi-blue)]/10 text-[var(--ansi-blue)] hover:bg-[var(--ansi-blue)]/20",
+  green: "bg-[var(--ansi-green)]/10 text-[var(--ansi-green)] hover:bg-[var(--ansi-green)]/20",
+  blue: "bg-[var(--ansi-blue)]/10 text-[var(--ansi-blue)] hover:bg-[var(--ansi-blue)]/20",
   muted: "bg-muted text-foreground hover:bg-[var(--bg-hover)]",
 };
 
@@ -52,7 +46,8 @@ const FALLBACK_MODES: ExecutionModeDescriptor[] = [
     displayName: "Task",
     icon: "Zap",
     badgeColor: "magenta",
-    description: "Auto: plan \u2192 execute \u2192 refine \u2192 report (multi-agent orchestration).",
+    description:
+      "Auto: plan \u2192 execute \u2192 refine \u2192 report (multi-agent orchestration).",
     allowsSubAgents: true,
   },
 ];
@@ -116,10 +111,7 @@ export const ExecutionModePicker = memo(function ExecutionModePicker({
           type="button"
           className={cn(
             "flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors",
-            resolveTriggerClass(
-              activeMode?.badgeColor ?? "muted",
-              chatExecutionMode !== "chat"
-            )
+            resolveTriggerClass(activeMode?.badgeColor ?? "muted", chatExecutionMode !== "chat")
           )}
         >
           <ActiveIcon className="w-3 h-3" />
@@ -140,9 +132,7 @@ export const ExecutionModePicker = memo(function ExecutionModePicker({
               key={mode.id}
               onClick={() => {
                 onExecutionModeChange(mode.id);
-                onAgentModeChange(
-                  mode.allowsSubAgents ? "auto-approve" : "default"
-                );
+                onAgentModeChange(mode.allowsSubAgents ? "auto-approve" : "default");
               }}
               className={cn(
                 "text-xs cursor-pointer flex items-start gap-2 py-2.5",
@@ -154,9 +144,7 @@ export const ExecutionModePicker = memo(function ExecutionModePicker({
               <Icon className="w-4 h-4 mt-0.5 shrink-0" />
               <div className="flex flex-col">
                 <span className="font-medium">{mode.displayName}</span>
-                <span className="text-[10px] text-muted-foreground">
-                  {mode.description}
-                </span>
+                <span className="text-[10px] text-muted-foreground">{mode.description}</span>
               </div>
             </DropdownMenuItem>
           );

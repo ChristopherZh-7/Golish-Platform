@@ -220,14 +220,18 @@ export function AppShell(props: AppShellProps) {
     if (isMockBrowserMode() || isOnHomeTab) return;
     try {
       const [toolsResult, envResult, mcpResult] = await Promise.allSettled([
-        scanTools(), checkEnvSetup(), listServers(),
+        scanTools(),
+        checkEnvSetup(),
+        listServers(),
       ]);
       let toolCount = 0;
       let rtCount = 0;
       let mcpCount = 0;
       if (toolsResult.status === "fulfilled" && toolsResult.value.success) {
         toolCount = toolsResult.value.tools.filter(
-          (t: ToolConfig) => (t.tier === "essential" || t.tier === "recommended") && (t as ToolConfig & { installed?: boolean }).installed === false
+          (t: ToolConfig) =>
+            (t.tier === "essential" || t.tier === "recommended") &&
+            (t as ToolConfig & { installed?: boolean }).installed === false
         ).length;
       }
       if (envResult.status === "fulfilled") {
@@ -240,12 +244,16 @@ export function AppShell(props: AppShellProps) {
         if (!env.pgvector_installed) rtCount++;
       }
       if (mcpResult.status === "fulfilled") {
-        mcpCount = mcpResult.value.filter((s) => s.enabled && (s.status === "disconnected" || s.status === "error")).length;
+        mcpCount = mcpResult.value.filter(
+          (s) => s.enabled && (s.status === "disconnected" || s.status === "error")
+        ).length;
       }
       setToolIssueCount(toolCount);
       setRuntimeIssueCount(rtCount);
       setMcpIssueCount(mcpCount);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }, [isOnHomeTab]);
   useEffect(() => {
     refreshEnvHealth();
@@ -314,7 +322,12 @@ export function AppShell(props: AppShellProps) {
       case "settings":
         return (
           <Suspense fallback={null}>
-            <SettingsNav activeSection={settingsSection} onSectionChange={setSettingsSection} envIssueCount={runtimeIssueCount} mcpIssueCount={mcpIssueCount} />
+            <SettingsNav
+              activeSection={settingsSection}
+              onSectionChange={setSettingsSection}
+              envIssueCount={runtimeIssueCount}
+              mcpIssueCount={mcpIssueCount}
+            />
           </Suspense>
         );
       default:

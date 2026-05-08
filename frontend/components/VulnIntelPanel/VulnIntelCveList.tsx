@@ -1,7 +1,14 @@
-import { Loader2 } from "lucide-react";
 import type { TFunction } from "i18next";
+import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { SEV_COLORS, SEV_DOT, type DetailTab, type VulnEntry, type VulnLink, type ViewMode } from "./types";
+import {
+  type DetailTab,
+  SEV_COLORS,
+  SEV_DOT,
+  type ViewMode,
+  type VulnEntry,
+  type VulnLink,
+} from "./types";
 
 interface VulnIntelCveListProps {
   displayedEntries: VulnEntry[];

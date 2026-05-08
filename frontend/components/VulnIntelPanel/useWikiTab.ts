@@ -74,17 +74,18 @@ export function filterTree(nodes: WikiTreeNode[], q: string): WikiTreeNode[] {
     if (node.is_dir) {
       const filtered = filterTree(node.children || [], q);
       if (filtered.length > 0) acc.push({ ...node, children: filtered });
-    } else if (
-      node.name.toLowerCase().includes(lower) ||
-      node.path.toLowerCase().includes(lower)
-    ) {
+    } else if (node.name.toLowerCase().includes(lower) || node.path.toLowerCase().includes(lower)) {
       acc.push(node);
     }
     return acc;
   }, []);
 }
 
-export function useWikiTab(link: VulnLink, cveId: string, onUpdateLink: (updater: (l: VulnLink) => VulnLink) => void) {
+export function useWikiTab(
+  link: VulnLink,
+  cveId: string,
+  onUpdateLink: (updater: (l: VulnLink) => VulnLink) => void
+) {
   const [fullTree, setFullTree] = useState<WikiTreeNode[]>([]);
   const [loadingTree, setLoadingTree] = useState(true);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);

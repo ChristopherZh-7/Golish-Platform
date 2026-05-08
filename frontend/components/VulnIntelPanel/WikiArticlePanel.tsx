@@ -2,10 +2,10 @@ import { BookOpen, FileText, Link2, Loader2 } from "lucide-react";
 import { useCallback } from "react";
 import { Markdown } from "@/components/Markdown";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
-import type { WikiBacklinkInfo } from "@/lib/wiki";
 import { cn } from "@/lib/utils";
-import { PROSE_CLASSES, STATUS_COLORS } from "./useWikiTab";
+import type { WikiBacklinkInfo } from "@/lib/wiki";
 import type { VulnLink } from "./types";
+import { PROSE_CLASSES, STATUS_COLORS } from "./useWikiTab";
 
 interface WikiArticlePanelProps {
   selectedPath: string | null;
@@ -191,9 +191,7 @@ export function WikiArticlePanel({
             <Markdown content={selectedBody} />
           </div>
         ) : (
-          <div className="text-[10px] text-muted-foreground/20 py-8 text-center">
-            Empty article
-          </div>
+          <div className="text-[10px] text-muted-foreground/20 py-8 text-center">Empty article</div>
         )}
 
         {/* Backlinks */}

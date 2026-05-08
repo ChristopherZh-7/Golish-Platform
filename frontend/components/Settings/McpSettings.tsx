@@ -249,12 +249,12 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
       </div>
 
       {/* Node.js warning for built-in servers */}
-      {servers.some((s) => (s as mcp.McpServerInfo & { setupStatus?: string }).setupStatus === "needs_node") && (
+      {servers.some(
+        (s) => (s as mcp.McpServerInfo & { setupStatus?: string }).setupStatus === "needs_node"
+      ) && (
         <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg border border-amber-500/20 bg-amber-500/5">
           <AlertTriangle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
-          <span className="text-[11px] text-amber-300/90">
-            {t("mcp.nodeRequired")}
-          </span>
+          <span className="text-[11px] text-amber-300/90">{t("mcp.nodeRequired")}</span>
         </div>
       )}
 
@@ -362,7 +362,8 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
                         )}
                         <span className="ml-2">Disconnect</span>
                       </Button>
-                    ) : (server as mcp.McpServerInfo & { setupStatus?: string }).setupStatus === "needs_build" ? (
+                    ) : (server as mcp.McpServerInfo & { setupStatus?: string }).setupStatus ===
+                      "needs_build" ? (
                       <Button
                         variant="outline"
                         size="sm"
@@ -375,9 +376,14 @@ export function McpSettings({ workspacePath }: McpSettingsProps) {
                         ) : (
                           <Download className="w-4 h-4" />
                         )}
-                        <span className="ml-2">{settingUpServers.has(server.name) ? t("common.loading") : t("common.install")}</span>
+                        <span className="ml-2">
+                          {settingUpServers.has(server.name)
+                            ? t("common.loading")
+                            : t("common.install")}
+                        </span>
                       </Button>
-                    ) : (server as mcp.McpServerInfo & { setupStatus?: string }).setupStatus === "needs_node" ? (
+                    ) : (server as mcp.McpServerInfo & { setupStatus?: string }).setupStatus ===
+                      "needs_node" ? (
                       <span className="text-[10px] text-amber-400">{t("mcp.needsNode")}</span>
                     ) : (
                       <Button

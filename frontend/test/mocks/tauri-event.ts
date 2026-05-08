@@ -12,10 +12,7 @@ interface EventListener<T = unknown> {
 const listeners: EventListener[] = [];
 
 // Mock listen function
-async function listen<T>(
-  eventName: string,
-  callback: EventCallback<T>
-): Promise<UnlistenFn> {
+async function listen<T>(eventName: string, callback: EventCallback<T>): Promise<UnlistenFn> {
   const listener: EventListener<T> = { eventName, callback };
   listeners.push(listener as EventListener);
 
