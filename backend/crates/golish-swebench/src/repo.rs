@@ -199,9 +199,11 @@ impl RepoManager {
     ///
     /// This prevents the agent from modifying test files, which is forbidden
     /// in SWE-bench evaluation. The agent should only modify source files.
+    ///
+    /// Cross-platform: on Unix this clears the write bits (`mode & !0o222`),
+    /// on Windows it sets the NTFS read-only attribute. Both achieve the same
+    /// goal — `std::fs::write` returns `PermissionDenied` afterwards.
     pub fn protect_test_files(&self, repo_path: &Path) -> Result<usize> {
-        use std::os::unix::fs::PermissionsExt;
-
         let mut protected_count = 0;
 
         // Common test directory patterns
@@ -232,13 +234,21 @@ impl RepoManager {
                 || (rel_str.starts_with("test_") && rel_str.ends_with(".py"));
 
             if is_test_file {
-                // Make file read-only (remove write permission)
                 if let Ok(metadata) = path.metadata() {
                     let mut perms = metadata.permissions();
-                    let mode = perms.mode();
-                    // Remove write bits (owner, group, other)
-                    let new_mode = mode & !0o222;
-                    perms.set_mode(new_mode);
+
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let mode = perms.mode();
+                        perms.set_mode(mode & !0o222);
+                    }
+
+                    #[cfg(not(unix))]
+                    {
+                        perms.set_readonly(true);
+                    }
+
                     if std::fs::set_permissions(path, perms).is_ok() {
                         protected_count += 1;
                     }
