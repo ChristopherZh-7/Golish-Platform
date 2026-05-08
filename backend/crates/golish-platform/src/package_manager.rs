@@ -11,6 +11,10 @@ use crate::detect::Platform;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PackageManager {
     Homebrew,
+    /// macOS Homebrew Cask — installs GUI apps via `brew install --cask`.
+    /// Tracked separately because it has its own list/install/uninstall
+    /// surface that doesn't intersect with formulas.
+    HomebrewCask,
     Apt,
     Yum,
     Pacman,
@@ -44,6 +48,7 @@ impl PackageManager {
     pub fn install_command(self, package: &str) -> String {
         match self {
             PackageManager::Homebrew => format!("brew install {package}"),
+            PackageManager::HomebrewCask => format!("brew install --cask {package}"),
             PackageManager::Apt => format!("sudo apt install {package}"),
             PackageManager::Yum => format!("sudo yum install {package}"),
             PackageManager::Pacman => format!("sudo pacman -S {package}"),
@@ -60,6 +65,7 @@ impl PackageManager {
     pub const fn label(self) -> &'static str {
         match self {
             PackageManager::Homebrew => "Homebrew",
+            PackageManager::HomebrewCask => "Homebrew Cask",
             PackageManager::Apt => "APT",
             PackageManager::Yum => "YUM",
             PackageManager::Pacman => "pacman",
@@ -69,6 +75,40 @@ impl PackageManager {
             PackageManager::None => "manual",
         }
     }
+
+    /// Return the list of installed packages tracked by this manager.
+    ///
+    /// Only `Homebrew` and `HomebrewCask` are currently implemented; other
+    /// managers return an empty set. Spawning the underlying CLI (`brew`)
+    /// also fails gracefully on platforms where it's not available, so
+    /// callers don't need to add their own `cfg!(target_os = …)` guards.
+    pub fn installed_packages(self) -> std::collections::HashSet<String> {
+        match self {
+            PackageManager::Homebrew => list_brew_packages("formula"),
+            PackageManager::HomebrewCask => list_brew_packages("cask"),
+            _ => std::collections::HashSet::new(),
+        }
+    }
+}
+
+fn list_brew_packages(kind: &str) -> std::collections::HashSet<String> {
+    let arg = match kind {
+        "cask" => "--cask",
+        _ => "--formula",
+    };
+    std::process::Command::new("brew")
+        .args(["list", arg, "-1"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
