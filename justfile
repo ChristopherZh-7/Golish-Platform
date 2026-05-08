@@ -76,6 +76,13 @@ test-rust-all:
 test-rust-verbose:
     cd backend && cargo nextest run --status-level all
 
+# Run Rust unit tests; Unix-only tests are skipped via cfg_attr ignore on Windows.
+test-rust-windows-safe:
+    @cd backend && cargo nextest run \
+        --workspace \
+        --no-fail-fast \
+        --status-level fail
+
 # ============================================
 # Building
 # ============================================

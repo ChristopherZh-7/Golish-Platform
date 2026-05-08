@@ -363,6 +363,7 @@ async fn test_delete_file_is_directory() {
 // Path security tests
 // ========================================================================
 
+#[cfg_attr(target_os = "windows", ignore = "requires_unix path semantics")]
 #[tokio::test]
 async fn test_path_traversal_blocked() {
     let dir = tempdir().unwrap();

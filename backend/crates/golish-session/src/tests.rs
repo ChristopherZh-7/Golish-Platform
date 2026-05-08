@@ -140,6 +140,7 @@ fn test_golish_message_to_rig_assistant() {
     }
 }
 
+#[cfg_attr(target_os = "windows", ignore = "requires_unix shell semantics")]
 #[test]
 fn test_golish_message_to_rig_system_returns_none() {
     let golish_msg = GolishSessionMessage::system("System prompt");

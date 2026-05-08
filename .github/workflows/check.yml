@@ -135,6 +135,13 @@ jobs:
         working-directory: backend
         run: cargo check --workspace --all-features --target x86_64-pc-windows-msvc
 
+      - name: Install cargo-nextest (Windows)
+        uses: taiki-e/install-action@nextest
+
+      - name: Cargo nextest (Windows MSVC, unix-safe subset)
+        working-directory: backend
+        run: cargo nextest run --workspace --no-fail-fast --status-level fail
+
   macos-check:
     runs-on: macos-14
     permissions:
