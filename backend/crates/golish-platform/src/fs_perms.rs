@@ -15,7 +15,7 @@ pub fn has_execute_bit(path: &Path) -> bool {
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::metadata(path)
-            .map(|meta| meta.permissions().mode() & 0o111 != 0)
+            .map(|meta| has_execute_bit_from_mode(meta.permissions().mode()))
             .unwrap_or(false)
     }
     #[cfg(target_os = "windows")]
@@ -33,6 +33,15 @@ pub fn has_execute_bit(path: &Path) -> bool {
         let _ = path;
         false
     }
+}
+
+/// Unix-only: check whether any of the user/group/other execute bits are set
+/// in `mode`. Useful when callers already have a `Metadata` and don't want
+/// to re-stat the path inside [`has_execute_bit`].
+#[cfg(unix)]
+#[inline]
+pub fn has_execute_bit_from_mode(mode: u32) -> bool {
+    mode & 0o111 != 0
 }
 
 /// Make a single file executable.

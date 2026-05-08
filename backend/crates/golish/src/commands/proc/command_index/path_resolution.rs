@@ -9,7 +9,7 @@
 #[cfg(unix)]
 pub(super) fn is_executable(metadata: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    metadata.permissions().mode() & 0o111 != 0
+    golish_platform::fs_perms::has_execute_bit_from_mode(metadata.permissions().mode())
 }
 
 #[cfg(not(unix))]
@@ -23,38 +23,13 @@ pub(super) fn is_executable(_metadata: &std::fs::Metadata) -> bool {
 /// files (e.g. `~/.local/bin` from `.zshrc`/`.bashrc`).
 #[cfg(unix)]
 pub(super) fn resolve_shell_path() -> Option<String> {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| {
-        if cfg!(target_os = "macos") {
-            "/bin/zsh".to_string()
-        } else {
-            "/bin/sh".to_string()
-        }
-    });
-
-    let output = std::process::Command::new(&shell)
-        .args(["-lic", "echo __QBIT_CMD_IDX_PATH__=$PATH"])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        tracing::warn!(
-            "[command-index] Login shell exited with status {} while resolving PATH",
-            output.status
-        );
-        return None;
+    let path = golish_platform::shell::resolve_login_shell_path();
+    if let Some(ref p) = path {
+        tracing::debug!("[command-index] Resolved shell PATH: {}", p);
+    } else {
+        tracing::warn!("[command-index] Failed to extract PATH from login shell output");
     }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        if let Some(path) = line.strip_prefix("__QBIT_CMD_IDX_PATH__=") {
-            let path = path.trim().to_string();
-            tracing::debug!("[command-index] Resolved shell PATH: {}", path);
-            return Some(path);
-        }
-    }
-
-    tracing::warn!("[command-index] Failed to extract PATH from login shell output");
-    None
+    path
 }
 
 #[cfg(not(unix))]
