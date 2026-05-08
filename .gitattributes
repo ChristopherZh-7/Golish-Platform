@@ -1,0 +1,31 @@
+# Force LF line endings on every checkout (including Windows runners).
+# Without this, `core.autocrlf=true` on Windows converts LF -> CRLF on
+# checkout, which makes Biome's formatter (LF-only by default) flag the
+# entire frontend tree as malformed in CI.
+* text=auto eol=lf
+
+# Treat shell scripts as text/LF unconditionally (just to be explicit).
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Binary assets — never normalize.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.pdf binary
+*.mp4 binary
+*.mov binary
+*.wav binary
+*.mp3 binary
