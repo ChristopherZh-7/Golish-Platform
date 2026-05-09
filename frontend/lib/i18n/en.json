@@ -283,6 +283,7 @@
     "createFailed": "Create failed: {{error}}",
     "deleteFailed": "Delete failed: {{error}}",
     "uninstallSdkman": "Uninstall SDKMAN",
+    "uninstallWingetJava": "Uninstall Java (winget)",
     "uninstallNvm": "Uninstall NVM",
     "uninstallMiniconda": "Uninstall Miniconda",
     "setDefault": "Set as default",

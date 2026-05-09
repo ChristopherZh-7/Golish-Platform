@@ -13,6 +13,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { listServers, type McpServerInfo } from "@/lib/api/mcp";
+import { isWindows } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { checkEnvSetup, installRuntime, scanTools } from "@/lib/pentest/api";
 import type { EnvSetupStatus, ToolConfig } from "@/lib/pentest/types";
@@ -51,11 +52,14 @@ const HEALTH_REFRESH_MS = 30_000;
 
 function buildRuntimeStatuses(env: EnvSetupStatus | null): RuntimeStatus[] {
   if (!env) return [];
-  return [
+  const all: RuntimeStatus[] = [
     { key: "homebrew", label: "Homebrew", installed: env.homebrew_installed },
     { key: "conda", label: "Conda (Python)", installed: env.conda_installed },
     { key: "nvm", label: "NVM (Node.js)", installed: env.nvm_installed },
   ];
+  // Homebrew 在 Windows 上由后端硬编码 false、install_homebrew 直接拒绝执行；
+  // 此处一并跳过，避免横幅出现无法完成的"安装 Homebrew"按钮。
+  return all.filter((rt) => !(isWindows() && rt.key === "homebrew"));
 }
 
 export function SetupHealthBanner() {

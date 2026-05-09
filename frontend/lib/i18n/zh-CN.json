@@ -283,6 +283,7 @@
     "createFailed": "创建失败: {{error}}",
     "deleteFailed": "删除失败: {{error}}",
     "uninstallSdkman": "卸载 SDKMAN",
+    "uninstallWingetJava": "卸载 Java (winget)",
     "uninstallNvm": "卸载 NVM",
     "uninstallMiniconda": "卸载 Miniconda",
     "setDefault": "设为默认",
