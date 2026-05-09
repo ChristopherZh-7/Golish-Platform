@@ -8,6 +8,7 @@ import type { ToolConfig } from "@/lib/pentest/types";
 import { cn } from "@/lib/utils";
 import { isMockBrowserMode } from "@/mocks";
 import { ActivityBar, type ActivityView } from "../components/ActivityBar/ActivityBar";
+import { WindowControls } from "../components/WindowControls/WindowControls";
 import { AIChatPanel } from "../components/AIChatPanel/AIChatPanel";
 import { CommandPalette, type PageRoute } from "../components/CommandPalette";
 import { SETUP_BANNER_NAVIGATE_EVENT } from "../components/HomeView/SetupHealthBanner";
@@ -346,14 +347,17 @@ export function AppShell(props: AppShellProps) {
           height: `calc(100vh / ${uiScale})`,
         }}
       >
-        {/* Window drag region — macOS traffic lights (left) / Windows controls (right) */}
+        {/* Window drag region — macOS traffic lights (left) / Windows custom controls (right) */}
         <div
           className={cn(
-            "w-full titlebar-drag flex-shrink-0",
+            "w-full titlebar-drag flex-shrink-0 flex items-center",
             isWindows() ? "h-[32px]" : "h-[38px]"
           )}
           data-tauri-drag-region
-        />
+        >
+          <div className="flex-1" data-tauri-drag-region />
+          <WindowControls />
+        </div>
 
         {/* Content - floating panels */}
         <div className="flex-1 flex overflow-hidden gap-2 px-2 pb-2 min-h-0 relative">

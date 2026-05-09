@@ -225,7 +225,16 @@ pub(crate) fn spawn_ensure_settings_file(settings_manager: Arc<SettingsManager>)
 /// The signature matches `tauri::Builder::setup`'s expected closure, which
 /// boxes its error.
 pub(crate) fn setup_subsystems(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "macos")]
     crate::app::menu::install_app_menu(app)?;
+
+    #[cfg(target_os = "windows")]
+    {
+        use tauri::Manager;
+        if let Some(window) = app.get_webview_window("main") {
+            window.set_decorations(false).ok();
+        }
+    }
 
     let state = app.state::<AppState>();
     let app_handle = app.handle().clone();
