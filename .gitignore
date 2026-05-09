@@ -140,8 +140,16 @@ resources/wordlists/*
 # Editor / tooling backup files (e.g. .cursor extension auto-renames)
 *.bak
 *.bak-*
-.cursor/**/*.bak*
-.cursor/**/*.bak-*
+
+# Cursor IDE workflow configs (rules / skills / mcp.json) — local-only,
+# never commit. Covers root .cursor/ and any nested .cursor/ folders that
+# the IDE may auto-create inside crates / runtimes.
+.cursor/
+**/.cursor/
+
+# Local rescue artifacts produced during git history realignment.
+rescue-wip.patch
+rescue-*.patch
 
 # Stray vite build artifacts at repo root (build output should land in
 # `dist/` only; this catches the rare cases where vite drops a hashed
