@@ -119,8 +119,15 @@ impl EmbeddedPg {
             return Ok(());
         }
 
-        if cache_dir.join("bin").join("initdb").exists() {
+        let initdb_name = if cfg!(windows) { "initdb.exe" } else { "initdb" };
+        if cache_dir.join("bin").join(initdb_name).exists() {
             info!("PG binaries already extracted in cache, skipping");
+            return Ok(());
+        }
+
+        let postgres_name = if cfg!(windows) { "postgres.exe" } else { "postgres" };
+        if cache_dir.join("bin").join(postgres_name).exists() {
+            info!("PG binaries already present (possibly in use), skipping extraction");
             return Ok(());
         }
 
@@ -133,15 +140,12 @@ impl EmbeddedPg {
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp)?;
 
-        let status = std::process::Command::new("unzip")
-            .args(["-o", "-q"])
-            .arg(&cache_zip)
-            .arg("-d")
-            .arg(&tmp)
-            .status()
-            .context("Failed to run unzip")?;
-        if !status.success() {
-            warn!("unzip failed with status {status}, skipping cache extraction");
+        let zip_file = std::fs::File::open(&cache_zip)
+            .context("Failed to open cached zip")?;
+        let mut archive = zip::ZipArchive::new(zip_file)
+            .context("Failed to read zip archive")?;
+        if let Err(e) = archive.extract(&tmp) {
+            warn!("zip extraction failed: {e}, skipping cache extraction");
             let _ = std::fs::remove_dir_all(&tmp);
             return Ok(());
         }
