@@ -101,6 +101,7 @@ pub fn foreground_process_name() -> Option<String> {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn normalize_process_name(output: &str) -> Option<String> {
     let process_name = output.trim();
     if process_name.is_empty() {
