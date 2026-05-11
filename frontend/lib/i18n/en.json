@@ -456,6 +456,20 @@
     "collapse": "Collapse",
     "expandAll": "Expand all ({{kb}}k chars)"
   },
+  "home": {
+    "tagline": "Penetration Testing Platform",
+    "openProject": "Open Project",
+    "newProject": "New Project",
+    "recentProjects": "Recent projects",
+    "active": "Active",
+    "deleteProjectTitle": "Delete Project",
+    "deleteProjectDesc": "Remove <0>{{name}}</0> from Golish? This deletes the project configuration but won't delete any files.",
+    "deleteProjectButton": "Delete project",
+    "noProjects": "No projects yet. Create one to get started.",
+    "openProjectFolderDialog": "Open project folder",
+    "deleteWorktreeConfirm": "Are you sure you want to delete worktree \"{{branch}}\"?",
+    "deleteWorktreeFailed": "Failed to delete worktree: {{error}}"
+  },
   "input": {
     "searchToolName": "Search tool name...",
     "enterCommand": "Enter command...",

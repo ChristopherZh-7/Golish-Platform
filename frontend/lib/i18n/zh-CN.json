@@ -456,6 +456,20 @@
     "collapse": "收起",
     "expandAll": "展开全部（{{kb}}k 字符）"
   },
+  "home": {
+    "tagline": "渗透测试平台",
+    "openProject": "打开项目",
+    "newProject": "新建项目",
+    "recentProjects": "最近项目",
+    "active": "进行中",
+    "deleteProjectTitle": "删除项目",
+    "deleteProjectDesc": "从 Golish 中移除 <0>{{name}}</0>？此操作仅删除项目配置，不会删除任何文件。",
+    "deleteProjectButton": "删除项目",
+    "noProjects": "暂无项目，新建一个开始使用。",
+    "openProjectFolderDialog": "打开项目文件夹",
+    "deleteWorktreeConfirm": "确定删除 worktree \"{{branch}}\"？",
+    "deleteWorktreeFailed": "删除 worktree 失败：{{error}}"
+  },
   "input": {
     "searchToolName": "搜索工具名称...",
     "enterCommand": "输入命令...",
