@@ -99,16 +99,19 @@ export async function setLanguagePreference(pref: LanguagePreference): Promise<v
   } catch {
     /* localStorage unavailable */
   }
-  // Force a full webview reload so the new preference is picked up by
-  // `resolveLanguage()` in i18n.init(). We tried three subscription-based
-  // fixes first (load:currentOnly drop / useSuspense:false / explicit
-  // I18nextProvider) — all reproduced as "no-op" in the user's Tauri
-  // webview because dozens of `useTranslation` consumers sit behind
-  // React.lazy() boundaries that the languageChanged event apparently
-  // can't traverse. Reload is correctness-first; the preference is
-  // already persisted so the next boot uses it.
-  if (typeof window !== "undefined") {
-    window.location.reload();
+  // Compute the concrete language code the same way `resolveLanguage()`
+  // does at boot, then ask i18next to switch to it live. With the
+  // simplified init (no async detector, single inline-resource set,
+  // useSuspense:false, explicit I18nextProvider at the root) the
+  // `languageChanged` event reaches every `useTranslation` subscriber and
+  // they re-render synchronously — no reload needed.
+  const next: SupportedLanguage =
+    pref === "zh-CN" || pref === "en" ? pref : resolveLanguage();
+  if (i18n.language !== next) {
+    await i18n.changeLanguage(next);
+  }
+  if (typeof document !== "undefined") {
+    document.documentElement.lang = next;
   }
 }
 
