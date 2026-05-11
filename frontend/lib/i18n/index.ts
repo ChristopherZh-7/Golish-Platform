@@ -1,5 +1,4 @@
 import i18n from "i18next";
-import LanguageDetector from "i18next-browser-languagedetector";
 import { initReactI18next } from "react-i18next";
 import en from "./en.json";
 import zhCN from "./zh-CN.json";
@@ -7,11 +6,7 @@ import zhCN from "./zh-CN.json";
 export const SUPPORTED_LANGUAGES = ["zh-CN", "en"] as const;
 export type SupportedLanguage = (typeof SUPPORTED_LANGUAGES)[number];
 
-/**
- * `system` means "follow the browser/OS — i.e. let the LanguageDetector decide".
- * Stored as a separate sentinel in localStorage so we can distinguish
- * "user explicitly chose Chinese" from "user chose to follow the system".
- */
+/** "system" means follow the browser/OS; otherwise a concrete language. */
 export type LanguagePreference = SupportedLanguage | "system";
 
 const STORAGE_KEY = "golish.language";
@@ -26,57 +21,36 @@ function readPreference(): LanguagePreference {
   return "system";
 }
 
-// Custom detector that respects the `system` sentinel: when the user chose
-// "follow the system", we return undefined so the next detector (navigator)
-// runs. When the user chose a concrete language, we return it.
-const detector = new LanguageDetector();
-detector.addDetector({
-  name: "customLocalStorage",
-  lookup() {
-    const pref = readPreference();
-    if (pref === "system") return undefined;
-    return pref;
+/** Resolve "system" / persisted preference to an actual language code. */
+function resolveLanguage(): SupportedLanguage {
+  const pref = readPreference();
+  if (pref === "zh-CN" || pref === "en") return pref;
+  // pref === "system": derive from navigator/OS.
+  if (typeof navigator !== "undefined") {
+    const nav = (navigator.language || "").toLowerCase();
+    if (nav.startsWith("zh")) return "zh-CN";
+  }
+  return "en";
+}
+
+i18n.use(initReactI18next).init({
+  // Bypass i18next-browser-languagedetector entirely. We saw repeated reports
+  // of `changeLanguage("zh-CN")` not propagating to subscribers in Tauri's
+  // webview after multiple re-spawns; resolving the language ourselves at
+  // boot avoids the detector's async resolution path completely.
+  lng: resolveLanguage(),
+  resources: {
+    "zh-CN": { translation: zhCN },
+    en: { translation: en },
   },
-  cacheUserLanguage() {
-    /* writes are routed through `setLanguagePreference` below. */
+  fallbackLng: "en",
+  supportedLngs: SUPPORTED_LANGUAGES,
+  interpolation: { escapeValue: false },
+  returnEmptyString: false,
+  react: {
+    useSuspense: false,
   },
 });
-
-i18n
-  .use(detector)
-  .use(initReactI18next)
-  .init({
-    resources: {
-      "zh-CN": { translation: zhCN },
-      en: { translation: en },
-    },
-    fallbackLng: "en",
-    supportedLngs: SUPPORTED_LANGUAGES,
-    // Map zh / zh-TW / zh-HK / zh-SG → zh-CN so users with non-mainland zh
-    // browsers still see Chinese instead of falling back to English.
-    nonExplicitSupportedLngs: true,
-    // We ship resources inline (no backend plugin), so let i18next pre-load
-    // every supportedLng up front. `load: "currentOnly"` would tell it to
-    // try to *fetch* zh-CN on first changeLanguage — with no backend that's
-    // a silent no-op and `t()` keeps returning English.
-    interpolation: { escapeValue: false },
-    returnEmptyString: false,
-    react: {
-      // Don't suspend on language change. With Suspense enabled, the very
-      // first `changeLanguage("zh-CN")` would suspend Settings → AppearanceSettings
-      // (a lazy()-loaded module) and Radix Select would render the *previous*
-      // resolved snapshot, making the switch look like a no-op.
-      useSuspense: false,
-    },
-    detection: {
-      // Manual `golish.language` wins. Then navigator. We *don't* read i18next's
-      // own cookie or `i18nextLng` localStorage — that would shadow our own
-      // sentinel and confuse "system" mode after a refresh.
-      order: ["customLocalStorage", "navigator", "htmlTag"],
-      caches: [],
-      lookupLocalStorage: STORAGE_KEY,
-    },
-  });
 
 function syncHtmlLang(lng: string) {
   if (typeof document !== "undefined") {
@@ -125,22 +99,14 @@ export async function setLanguagePreference(pref: LanguagePreference): Promise<v
   } catch {
     /* localStorage unavailable */
   }
-  if (pref === "system") {
-    // Re-detect from navigator. The detector chain skips customLocalStorage
-    // (returns undefined for "system") and falls through to navigator.
-    const detected = i18n.services.languageDetector.detect();
-    const next = Array.isArray(detected) ? detected[0] : detected;
-    await i18n.changeLanguage(next || "en");
-  } else {
-    await i18n.changeLanguage(pref);
-  }
-  // Force a full webview reload so every component re-renders against the
-  // new language. We tried three softer fixes first (load:currentOnly /
-  // useSuspense:false / explicit I18nextProvider) and the Tauri webview
-  // still didn't propagate `languageChanged` to all `useTranslation`
-  // subscribers — many of which live deep inside React.lazy() chunks.
-  // A reload guarantees correctness; the language preference is already
-  // persisted in localStorage so the next boot picks it up immediately.
+  // Force a full webview reload so the new preference is picked up by
+  // `resolveLanguage()` in i18n.init(). We tried three subscription-based
+  // fixes first (load:currentOnly drop / useSuspense:false / explicit
+  // I18nextProvider) — all reproduced as "no-op" in the user's Tauri
+  // webview because dozens of `useTranslation` consumers sit behind
+  // React.lazy() boundaries that the languageChanged event apparently
+  // can't traverse. Reload is correctness-first; the preference is
+  // already persisted so the next boot uses it.
   if (typeof window !== "undefined") {
     window.location.reload();
   }
