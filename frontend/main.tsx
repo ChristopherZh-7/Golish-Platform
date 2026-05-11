@@ -1,7 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { I18nextProvider } from "react-i18next";
 import "./index.css";
-import "./lib/i18n";
+import i18n from "./lib/i18n";
 import { isTauri } from "@/lib/env";
 
 function getDetachedParams(): { sessionId: string; tabType: string } | null {
@@ -32,9 +33,11 @@ async function initApp(): Promise<void> {
     const { DetachedView } = await import("./components/DetachedView/DetachedView");
     ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       <React.StrictMode>
-        <ErrorBoundary>
-          <DetachedView sessionId={detached.sessionId} tabType={detached.tabType} />
-        </ErrorBoundary>
+        <I18nextProvider i18n={i18n}>
+          <ErrorBoundary>
+            <DetachedView sessionId={detached.sessionId} tabType={detached.tabType} />
+          </ErrorBoundary>
+        </I18nextProvider>
       </React.StrictMode>
     );
     return;
@@ -43,9 +46,11 @@ async function initApp(): Promise<void> {
   const { default: App } = await import("./App");
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
-      <ErrorBoundary>
-        <App />
-      </ErrorBoundary>
+      <I18nextProvider i18n={i18n}>
+        <ErrorBoundary>
+          <App />
+        </ErrorBoundary>
+      </I18nextProvider>
     </React.StrictMode>
   );
 }
