@@ -134,6 +134,16 @@ export async function setLanguagePreference(pref: LanguagePreference): Promise<v
   } else {
     await i18n.changeLanguage(pref);
   }
+  // Force a full webview reload so every component re-renders against the
+  // new language. We tried three softer fixes first (load:currentOnly /
+  // useSuspense:false / explicit I18nextProvider) and the Tauri webview
+  // still didn't propagate `languageChanged` to all `useTranslation`
+  // subscribers — many of which live deep inside React.lazy() chunks.
+  // A reload guarantees correctness; the language preference is already
+  // persisted in localStorage so the next boot picks it up immediately.
+  if (typeof window !== "undefined") {
+    window.location.reload();
+  }
 }
 
 export default i18n;
