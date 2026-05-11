@@ -75,10 +75,23 @@ export function AppearanceSettings({
   const setDisplaySettings = useStore((state) => state.setDisplaySettings);
   const [langPref, setLangPref] = useState<LanguagePreference>(getLanguagePreference);
 
-  const handleLanguageChange = useCallback(async (next: LanguagePreference) => {
-    setLangPref(next);
-    await setLanguagePreference(next);
-  }, []);
+  const handleLanguageChange = useCallback(
+    async (next: LanguagePreference) => {
+      setLangPref(next);
+      try {
+        await setLanguagePreference(next);
+        // Force this component (and only it) to re-render after i18n's
+        // languageChanged event fires; useTranslation's subscription does
+        // the same for `t(...)`, but Select's display value is wired to
+        // local state so we keep the explicit setLangPref above.
+      } catch (e) {
+        // Surface the failure instead of silently no-op'ing.
+        // eslint-disable-next-line no-console
+        console.error("[i18n] setLanguagePreference failed:", e);
+      }
+    },
+    []
+  );
 
   // Caret settings (from terminal settings in settings.toml)
   const caret: CaretSettings = terminalSettings?.caret ?? DEFAULT_CARET_SETTINGS;

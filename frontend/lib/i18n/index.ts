@@ -55,9 +55,19 @@ i18n
     // Map zh / zh-TW / zh-HK / zh-SG → zh-CN so users with non-mainland zh
     // browsers still see Chinese instead of falling back to English.
     nonExplicitSupportedLngs: true,
-    load: "currentOnly",
+    // We ship resources inline (no backend plugin), so let i18next pre-load
+    // every supportedLng up front. `load: "currentOnly"` would tell it to
+    // try to *fetch* zh-CN on first changeLanguage — with no backend that's
+    // a silent no-op and `t()` keeps returning English.
     interpolation: { escapeValue: false },
     returnEmptyString: false,
+    react: {
+      // Don't suspend on language change. With Suspense enabled, the very
+      // first `changeLanguage("zh-CN")` would suspend Settings → AppearanceSettings
+      // (a lazy()-loaded module) and Radix Select would render the *previous*
+      // resolved snapshot, making the switch look like a no-op.
+      useSuspense: false,
+    },
     detection: {
       // Manual `golish.language` wins. Then navigator. We *don't* read i18next's
       // own cookie or `i18nextLng` localStorage — that would shadow our own
