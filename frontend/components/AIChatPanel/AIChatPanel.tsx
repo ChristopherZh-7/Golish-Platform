@@ -287,7 +287,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
                 <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/50">
                   <Wrench className="w-3 h-3" />
                   <span>
-                    {pentestTools.length} {t("ai.toolsAvailable", "tools available")}
+                    {pentestTools.length} {t("ai.toolsAvailable")}
                   </span>
                 </div>
               )}

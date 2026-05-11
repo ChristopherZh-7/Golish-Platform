@@ -103,7 +103,7 @@ pub fn default_feeds() -> Vec<VulnFeed> {
         },
         VulnFeed {
             id: "cnvd".to_string(),
-            name: "CNVD 国家信息安全漏洞共享平台".to_string(),
+            name: "CNVD National Vulnerability Database".to_string(),
             feed_type: "rss".to_string(),
             url: "https://www.cnvd.org.cn/rssXml".to_string(),
             enabled: false,
@@ -111,7 +111,7 @@ pub fn default_feeds() -> Vec<VulnFeed> {
         },
         VulnFeed {
             id: "seebug-paper".to_string(),
-            name: "Seebug Paper 安全技术精粹".to_string(),
+            name: "Seebug Paper — security research highlights".to_string(),
             feed_type: "rss".to_string(),
             url: "https://paper.seebug.org/rss/".to_string(),
             enabled: true,

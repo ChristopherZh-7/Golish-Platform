@@ -426,14 +426,14 @@ int main(int argc, char *argv[]) {
     <div className="space-y-2">
       <div className="flex items-center justify-between">
         <span className="text-[8px] text-muted-foreground/30 uppercase tracking-wider">
-          {t("vulnIntel.pocTemplates", "PoC Templates")}
+          {t("vulnIntel.pocTemplates")}
         </span>
         <button
           type="button"
           onClick={handleNewPoc}
           className="flex items-center gap-1 text-[9px] text-accent/60 hover:text-accent transition-colors"
         >
-          <Plus className="w-2.5 h-2.5" /> {t("vulnIntel.addPoc", "Add PoC")}
+          <Plus className="w-2.5 h-2.5" /> {t("vulnIntel.addPoc")}
         </button>
       </div>
 
@@ -443,7 +443,7 @@ int main(int argc, char *argv[]) {
             <input
               value={formName}
               onChange={(e) => setFormName(e.target.value)}
-              placeholder={t("vulnIntel.pocName", "PoC name...")}
+              placeholder={t("vulnIntel.pocName")}
               className="flex-1 h-6 px-2 text-[10px] bg-[var(--bg-hover)]/30 rounded border border-border/15 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40"
             />
             <CustomSelect
@@ -476,10 +476,7 @@ int main(int argc, char *argv[]) {
           <textarea
             value={formContent}
             onChange={(e) => setFormContent(e.target.value)}
-            placeholder={t(
-              "vulnIntel.pocContentPlaceholder",
-              "Paste or write your PoC template here..."
-            )}
+            placeholder={t("vulnIntel.pocContentPlaceholder")}
             rows={12}
             className="w-full px-3 py-2 text-[10px] font-mono bg-[var(--bg-hover)]/30 rounded border border-border/15 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40 resize-y leading-relaxed"
           />
@@ -490,7 +487,7 @@ int main(int argc, char *argv[]) {
               disabled={!formName.trim() || !formContent.trim()}
               className="px-3 py-1 rounded text-[9px] font-medium text-accent bg-accent/10 hover:bg-accent/20 transition-colors disabled:opacity-30"
             >
-              {editing.id ? t("vulnIntel.updatePoc", "Update") : t("vulnIntel.savePoc", "Save PoC")}
+              {editing.id ? t("vulnIntel.updatePoc") : t("vulnIntel.savePoc")}
             </button>
             <button
               type="button"
@@ -698,12 +695,9 @@ int main(int argc, char *argv[]) {
       {link.pocTemplates.length === 0 && !editing ? (
         <div className="flex flex-col items-center justify-center py-4 gap-2 text-muted-foreground/20">
           <Code className="w-8 h-8" />
-          <p className="text-[10px]">{t("vulnIntel.noPoc", "No PoC templates")}</p>
+          <p className="text-[10px]">{t("vulnIntel.noPoc")}</p>
           <p className="text-[9px] text-muted-foreground/15 max-w-xs text-center">
-            {t(
-              "vulnIntel.pocHint",
-              "Add Nuclei YAML templates, scripts, or manual testing notes for this vulnerability"
-            )}
+            {t("vulnIntel.pocHint")}
           </p>
         </div>
       ) : (

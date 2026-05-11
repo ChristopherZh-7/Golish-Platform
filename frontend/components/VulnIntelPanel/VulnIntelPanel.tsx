@@ -464,12 +464,12 @@ export function VulnIntelPanel() {
             value={severityFilter}
             onChange={(v) => setSeverityFilter(v as SeverityFilter)}
             options={[
-              { value: "all", label: t("vulnIntel.severityAll", "All Severity") },
-              { value: "critical", label: t("vulnIntel.severityCritical", "Critical") },
-              { value: "high", label: t("vulnIntel.severityHigh", "High") },
-              { value: "medium", label: t("vulnIntel.severityMedium", "Medium") },
-              { value: "low", label: t("vulnIntel.severityLow", "Low") },
-              { value: "info", label: t("vulnIntel.severityInfo", "Info") },
+              { value: "all", label: t("vulnIntel.severityAll") },
+              { value: "critical", label: t("vulnIntel.severityCritical") },
+              { value: "high", label: t("vulnIntel.severityHigh") },
+              { value: "medium", label: t("vulnIntel.severityMedium") },
+              { value: "low", label: t("vulnIntel.severityLow") },
+              { value: "info", label: t("vulnIntel.severityInfo") },
             ]}
             size="xs"
             className="min-w-[80px]"
@@ -479,10 +479,10 @@ export function VulnIntelPanel() {
             value={filterMode}
             onChange={(v) => setFilterMode(v as FilterMode)}
             options={[
-              { value: "all", label: t("vulnIntel.filterAll", "All") },
-              { value: "has-poc", label: t("vulnIntel.filterHasPoc", "Has PoC") },
-              { value: "has-wiki", label: t("vulnIntel.filterHasWiki", "Has Wiki") },
-              { value: "no-poc", label: t("vulnIntel.filterNoPoc", "No PoC") },
+              { value: "all", label: t("vulnIntel.filterAll") },
+              { value: "has-poc", label: t("vulnIntel.filterHasPoc") },
+              { value: "has-wiki", label: t("vulnIntel.filterHasWiki") },
+              { value: "no-poc", label: t("vulnIntel.filterNoPoc") },
             ]}
             size="xs"
             className="min-w-[60px]"
@@ -492,10 +492,10 @@ export function VulnIntelPanel() {
             value={sourceFilter}
             onChange={(v) => setSourceFilter(v as SourceFilter)}
             options={[
-              { value: "all", label: t("vulnIntel.sourceAll", "All Sources") },
+              { value: "all", label: t("vulnIntel.sourceAll") },
               { value: "cve", label: "CVE" },
               { value: "cnvd", label: "CNVD / CNNVD" },
-              { value: "other", label: t("vulnIntel.sourceOther", "Other") },
+              { value: "other", label: t("vulnIntel.sourceOther") },
             ]}
             size="xs"
             className="min-w-[80px]"
@@ -510,7 +510,7 @@ export function VulnIntelPanel() {
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleSearch()}
                 onFocus={() => searchHistory.length > 0 && setShowSearchHistory(true)}
-                placeholder={t("vulnIntel.searchPlaceholder", "Search CVEs...")}
+                placeholder={t("vulnIntel.searchPlaceholder")}
                 className="text-[10px] py-0.5 bg-transparent outline-none w-28"
               />
               {searchQuery && (
@@ -535,7 +535,7 @@ export function VulnIntelPanel() {
                     ? "text-accent"
                     : "text-muted-foreground/30 hover:text-muted-foreground/60"
                 )}
-                title={t("vulnIntel.searchHistory", "Search history")}
+                title={t("vulnIntel.searchHistory")}
               >
                 <History className="w-2.5 h-2.5" />
               </button>
@@ -545,14 +545,14 @@ export function VulnIntelPanel() {
               <div className="absolute right-0 top-full mt-1 z-50 w-64 max-h-60 overflow-y-auto rounded-lg border border-border/20 bg-background shadow-xl">
                 <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/10">
                   <span className="text-[10px] text-muted-foreground/50">
-                    {t("vulnIntel.recentSearches", "Recent searches")}
+                    {t("vulnIntel.recentSearches")}
                   </span>
                   <button
                     type="button"
                     onClick={clearSearchHistory}
                     className="text-[9px] text-muted-foreground/30 hover:text-destructive transition-colors"
                   >
-                    {t("vulnIntel.clearHistory", "Clear")}
+                    {t("vulnIntel.clearHistory")}
                   </button>
                 </div>
                 {searchHistory.map((q) => (

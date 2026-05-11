@@ -132,8 +132,8 @@ fn minified_webpack_still_extracts_endpoints() {
             .collect::<Vec<_>>()
     );
 
-    // Verify the admin path was caught — this is a critical IDOR/未授权
-    // testing target downstream.
+    // Verify the admin path was caught — this is a critical IDOR / unauthorized
+    // access testing target downstream.
     assert!(
         endpoints.iter().any(|e| e.path == "/admin/dashboard"),
         "/admin/dashboard must be extracted from minified bundle"

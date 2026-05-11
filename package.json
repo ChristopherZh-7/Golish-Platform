@@ -13,6 +13,7 @@
     "format": "biome format --write ./frontend",
     "check": "biome check ./frontend",
     "check:fix": "biome check --write ./frontend",
+    "check:i18n": "node scripts/i18n_check.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
     "test:run": "vitest run",

@@ -83,7 +83,7 @@ export function useTabSplitEvents({
             logAudit({
               action: "findings_imported",
               category: "findings",
-              details: `${detected.tool_name} 自动导入 ${added}/${vulnItems.length} 条 finding`,
+              details: `${detected.tool_name} auto-imported ${added}/${vulnItems.length} findings`,
             });
           }
         }

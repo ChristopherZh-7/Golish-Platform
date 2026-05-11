@@ -1,5 +1,6 @@
 import { ChevronDown, ChevronRight, ChevronsUpDown, Loader2 } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { AnchorChip } from "@/components/ui/AnchorChip";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -105,6 +106,7 @@ function parseShellResult(result: unknown): ShellResult | null {
 const PREVIEW_LIMIT = 2000;
 
 function OutputBlock({ text, isShellCommand }: { text: string; isShellCommand: boolean }) {
+  const { t } = useTranslation();
   const isLong = text.length > PREVIEW_LIMIT;
   const [expanded, setExpanded] = useState(false);
 
@@ -128,7 +130,9 @@ function OutputBlock({ text, isShellCommand }: { text: string; isShellCommand: b
           className="mt-0.5 flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-foreground/80 transition-colors"
         >
           <ChevronsUpDown className="w-3 h-3" />
-          {expanded ? "收起" : `展开全部 (${(text.length / 1000).toFixed(1)}k 字符)`}
+          {expanded
+            ? t("toolExecution.collapse")
+            : t("toolExecution.expandAll", { kb: (text.length / 1000).toFixed(1) })}
         </button>
       )}
     </div>

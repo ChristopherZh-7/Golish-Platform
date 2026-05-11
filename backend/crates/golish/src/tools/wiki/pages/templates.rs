@@ -70,19 +70,19 @@ pub(super) fn cve_scaffold(
 ) -> (String, String, String) {
     let readme = format!(
         "# {cve_id}: {title}\n\n\
-         ## 概述\n\n\
-         <!-- 漏洞描述 -->\n\n\
-         ## 影响范围\n\n\
-         - 产品/版本:\n\
+         ## Overview\n\n\
+         <!-- vulnerability description -->\n\n\
+         ## Affected Scope\n\n\
+         - Product / version:\n\
          - CVSS:\n\
-         - 类型:\n\n\
-         ## 复现步骤\n\n\
+         - Type:\n\n\
+         ## Reproduction Steps\n\n\
          1. \n\n\
-         ## POC\n\n\
-         参见 `poc` 文件。\n\n\
-         ## 修复建议\n\n\
-         <!-- 修复方案 -->\n\n\
-         ## 参考\n\n\
+         ## PoC\n\n\
+         See the `poc` file.\n\n\
+         ## Remediation\n\n\
+         <!-- remediation guidance -->\n\n\
+         ## References\n\n\
          - https://nvd.nist.gov/vuln/detail/{cve_id}\n"
     );
 

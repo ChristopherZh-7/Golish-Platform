@@ -39,13 +39,10 @@ export function BrowserView({ initialUrl = "" }: BrowserViewProps) {
         <Globe className="w-14 h-14 text-muted-foreground/15" />
         <div className="text-center">
           <h2 className="text-[16px] font-semibold text-foreground/80 mb-1">
-            {t("browser.title", "Browser")}
+            {t("browser.title")}
           </h2>
           <p className="text-[12px] text-muted-foreground/40 max-w-md">
-            {t(
-              "browser.externalHint",
-              "Configure proxy in your browser to capture traffic through ZAP, then open it from here."
-            )}
+            {t("browser.externalHint")}
           </p>
         </div>
 
@@ -53,7 +50,7 @@ export function BrowserView({ initialUrl = "" }: BrowserViewProps) {
           {/* Proxy info */}
           <div className="rounded-xl border border-border/15 bg-[var(--bg-hover)]/15 p-4">
             <span className="text-[11px] font-medium text-muted-foreground/50 block mb-2">
-              {t("browser.proxyConfig", "Proxy Configuration")}
+              {t("browser.proxyConfig")}
             </span>
             <div className="flex items-center gap-2 bg-background/50 rounded-lg px-3 py-2 border border-border/10">
               <span className="text-[11px] text-muted-foreground/40 flex-shrink-0">
@@ -83,7 +80,7 @@ export function BrowserView({ initialUrl = "" }: BrowserViewProps) {
           {/* SSL Certificate */}
           <div className="rounded-xl border border-border/15 bg-[var(--bg-hover)]/15 p-4">
             <span className="text-[11px] font-medium text-muted-foreground/50 block mb-2">
-              {t("browser.sslCert", "HTTPS Certificate")}
+              {t("browser.sslCert")}
             </span>
             <p className="text-[10px] text-muted-foreground/30 mb-3 leading-relaxed">
               {t(
@@ -103,7 +100,7 @@ export function BrowserView({ initialUrl = "" }: BrowserViewProps) {
                 ) : (
                   <Download className="w-3.5 h-3.5" />
                 )}
-                {t("browser.downloadCert", "Download Cert")}
+                {t("browser.downloadCert")}
               </button>
               <button
                 type="button"
@@ -116,7 +113,7 @@ export function BrowserView({ initialUrl = "" }: BrowserViewProps) {
                 ) : (
                   <ShieldCheck className="w-3.5 h-3.5" />
                 )}
-                {t("browser.installCert", "Install to Keychain")}
+                {t("browser.installCert")}
               </button>
             </div>
             {certResult && (
@@ -134,7 +131,7 @@ export function BrowserView({ initialUrl = "" }: BrowserViewProps) {
           {/* URL + Launch */}
           <div className="rounded-xl border border-border/15 bg-[var(--bg-hover)]/15 p-4">
             <label className="text-[11px] font-medium text-muted-foreground/50 block mb-2">
-              {t("browser.targetUrl", "Target URL")}
+              {t("browser.targetUrl")}
             </label>
             <div className="flex items-center gap-2">
               <div className="relative flex-1">
@@ -153,7 +150,7 @@ export function BrowserView({ initialUrl = "" }: BrowserViewProps) {
                 className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[11px] font-medium bg-accent/10 text-accent hover:bg-accent/20 transition-colors flex-shrink-0"
               >
                 <ExternalLink className="w-3.5 h-3.5" />
-                {t("browser.openBrowser", "Open Browser")}
+                {t("browser.openBrowser")}
               </button>
             </div>
           </div>

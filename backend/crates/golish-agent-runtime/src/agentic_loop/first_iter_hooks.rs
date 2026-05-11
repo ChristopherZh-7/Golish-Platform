@@ -154,8 +154,8 @@ pub(super) async fn run_first_iteration_hooks(
             || lower.contains("exploit")
             || lower.contains("fuzz")
             || lower.contains("pentest")
-            || trimmed.contains("渗透")
-            || trimmed.contains("扫描");
+            || trimmed.contains("Exploitation")
+            || trimmed.contains("Scan");
         let is_trivial = trimmed.len() < 20 && !has_pentest_keyword;
 
         // Low-signal inputs ("123", "hi", pure digits, common chitchat) must

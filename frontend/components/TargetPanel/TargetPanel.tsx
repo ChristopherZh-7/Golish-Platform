@@ -65,7 +65,7 @@ export function TargetPanel() {
             onClick={() => setActiveTab("security")}
           >
             <Shield className="w-3.5 h-3.5" />
-            {t("security.title", "Security")}
+            {t("security.title")}
           </button>
 
           {activeTab === "targets" && (
@@ -81,7 +81,7 @@ export function TargetPanel() {
                       : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
                   )}
                   onClick={() => setViewMode("list")}
-                  title={t("targets.listView", "List View")}
+                  title={t("targets.listView")}
                 >
                   <LayoutList className="w-3.5 h-3.5" />
                 </button>
@@ -94,7 +94,7 @@ export function TargetPanel() {
                       : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
                   )}
                   onClick={() => setViewMode("graph")}
-                  title={t("targets.graphView", "Graph View")}
+                  title={t("targets.graphView")}
                 >
                   <GitFork className="w-3.5 h-3.5" />
                 </button>

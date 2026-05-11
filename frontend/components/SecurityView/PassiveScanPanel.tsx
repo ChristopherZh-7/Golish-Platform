@@ -231,7 +231,7 @@ export function PassiveScanPanel() {
       logAudit({
         action: "findings_imported",
         category: "findings",
-        details: `Custom Passive Scan 导入 ${items.length} 条 finding`,
+        details: `Custom Passive Scan imported ${items.length} findings`,
       });
     }
   }, [customRules]);

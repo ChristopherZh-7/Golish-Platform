@@ -163,12 +163,12 @@ export function ToolManagerList(props: ToolManagerListProps) {
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-red-500/10 border border-red-500/20">
                 <div className="w-1.5 h-1.5 rounded-full bg-red-500" />
                 <span className="text-[11px] font-medium text-red-400">
-                  {t("toolManager.requiredSection", "Required")}
+                  {t("toolManager.requiredSection")}
                 </span>
                 <span className="text-[10px] text-red-400/50">{requiredTools.length}</span>
               </div>
               <span className="text-[10px] text-muted-foreground/60">
-                {t("toolManager.requiredHint", "Core tools needed for full functionality")}
+                {t("toolManager.requiredHint")}
               </span>
               {uninstalledRequired.length > 0 && (
                 <div className="ml-auto flex items-center gap-1.5">
@@ -189,7 +189,7 @@ export function ToolManagerList(props: ToolManagerListProps) {
                       className="flex items-center gap-1.5 px-3 py-1 rounded-md text-[10px] font-medium bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                     >
                       <Download className="w-3 h-3" />
-                      {t("toolManager.installAllRequired", "Install All")}
+                      {t("toolManager.installAllRequired")}
                       <span className="text-[9px] px-1.5 py-px rounded-full bg-accent/15">
                         {uninstalledRequired.length}
                       </span>
@@ -222,12 +222,12 @@ export function ToolManagerList(props: ToolManagerListProps) {
                   )}
                 />
                 <span className="text-[11px] font-medium text-muted-foreground/70">
-                  {t("toolManager.optionalSection", "Optional")}
+                  {t("toolManager.optionalSection")}
                 </span>
                 <span className="text-[10px] text-muted-foreground/50">{optionalTools.length}</span>
               </div>
               <span className="text-[10px] text-muted-foreground/60">
-                {t("toolManager.optionalHint", "Install as needed for specific tasks")}
+                {t("toolManager.optionalHint")}
               </span>
             </button>
             {!optionalCollapsed && (

@@ -248,11 +248,11 @@ export function DashboardPanel() {
           </div>
           <div>
             <div className="text-sm font-semibold">
-              {currentProjectName || t("dashboard.title", "Project Dashboard")}
+              {currentProjectName || t("dashboard.title")}
             </div>
             {currentProjectName && (
               <div className="text-[10px] text-muted-foreground/40">
-                {t("dashboard.title", "Project Dashboard")}
+                {t("dashboard.title")}
               </div>
             )}
           </div>
@@ -266,13 +266,10 @@ export function DashboardPanel() {
               <Layers className="w-8 h-8 text-muted-foreground/15" />
             </div>
             <p className="text-sm text-muted-foreground/40 font-medium">
-              {t("dashboard.empty", "No project data yet")}
+              {t("dashboard.empty")}
             </p>
             <p className="text-[11px] text-muted-foreground/25 max-w-[280px]">
-              {t(
-                "dashboard.emptyHint",
-                "Add targets, run scans, or start a methodology to see stats here"
-              )}
+              {t("dashboard.emptyHint")}
             </p>
           </div>
         ) : (
@@ -284,21 +281,21 @@ export function DashboardPanel() {
                   <MetricCard
                     icon={Target}
                     value={stats.targets.length}
-                    label={t("dashboard.targets", "Targets")}
+                    label={t("dashboard.targets")}
                     detail={`${derived.inScope} in · ${derived.outScope} out`}
                     accent="blue"
                   />
                   <MetricCard
                     icon={Bug}
                     value={stats.findings.length}
-                    label={t("dashboard.findings", "Findings")}
+                    label={t("dashboard.findings")}
                     detail={derived.openCount > 0 ? `${derived.openCount} open` : undefined}
                     accent="red"
                   />
                   <MetricCard
                     icon={KeyRound}
                     value={stats.vaultEntries.length}
-                    label={t("dashboard.credentials", "Credentials")}
+                    label={t("dashboard.credentials")}
                     detail={
                       Object.entries(derived.vaultByType)
                         .map(([k, v]) => `${v} ${k}`)

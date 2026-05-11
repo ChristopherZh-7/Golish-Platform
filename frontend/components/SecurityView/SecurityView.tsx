@@ -204,15 +204,15 @@ export function SecurityView({
 
   const tabs: { id: SecurityTab; label: string; icon: React.ElementType }[] = [
     { id: "history", label: t("security.history"), icon: History },
-    { id: "sitemap", label: t("security.siteMap", "Site Map"), icon: Globe },
+    { id: "sitemap", label: t("security.siteMap"), icon: Globe },
     { id: "scanner", label: t("security.scanner"), icon: ShieldAlert },
     { id: "repeater", label: t("security.repeater"), icon: Send },
     { id: "intruder", label: "Intruder", icon: Crosshair },
-    { id: "passive", label: t("security.passiveScan", "Passive Scan"), icon: Eye },
-    { id: "scantools", label: t("security.scanTools", "Scan Tools"), icon: Crosshair },
+    { id: "passive", label: t("security.passiveScan"), icon: Eye },
+    { id: "scantools", label: t("security.scanTools"), icon: Crosshair },
     { id: "sensitive", label: "Sensitive Scan", icon: FileSearch },
-    { id: "timeline", label: t("security.timeline", "Timeline"), icon: Activity },
-    { id: "vault", label: t("vault.title", "Credential Vault"), icon: KeyRound },
+    { id: "timeline", label: t("security.timeline"), icon: Activity },
+    { id: "vault", label: t("vault.title"), icon: KeyRound },
   ];
 
   const visibleTabs = isRunning

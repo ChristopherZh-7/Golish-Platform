@@ -173,11 +173,7 @@ export function useToolInstall(
       cancelRef.current = false;
       const resolved = resolveInstallForPlatform(tool.install ?? null);
       if (!resolved) {
-        const error = t("toolManager.windowsManualInstall", {
-          name: tool.name,
-          defaultValue:
-            "{{name}} 在 Windows 上需要手动安装，请参考 docs/windows-support.md（可用 winget / scoop 等价方案）",
-        });
+        const error = t("toolManager.windowsManualInstall", { name: tool.name });
         if (reportError) setError(error);
         return { success: false, error };
       }

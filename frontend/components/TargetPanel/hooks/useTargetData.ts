@@ -105,7 +105,7 @@ export function useTargetData() {
         logAudit({
           action: "targets_batch_added",
           category: "targets",
-          details: `已添加 ${count} 个目标`,
+          details: `Added ${count} targets`,
         });
       } catch (e) {
         console.error("Failed to batch add:", e);

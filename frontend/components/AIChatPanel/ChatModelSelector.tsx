@@ -49,10 +49,10 @@ export const ChatModelSelector = memo(function ChatModelSelector({
         {filtered.length === 0 ? (
           <div className="px-3 py-4 text-center">
             <p className="text-xs text-muted-foreground">
-              {t("ai.noProviders", "No providers configured")}
+              {t("ai.noProviders")}
             </p>
             <p className="text-[10px] text-muted-foreground/60 mt-1">
-              {t("ai.configureInSettings", "Configure API keys in Settings → Providers")}
+              {t("ai.configureInSettings")}
             </p>
           </div>
         ) : (

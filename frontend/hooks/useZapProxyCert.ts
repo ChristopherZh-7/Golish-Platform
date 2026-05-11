@@ -36,7 +36,7 @@ export function useZapProxyCert(proxyAddr: string) {
       const path = await zapInstallRootCert();
       setCertResult({
         ok: true,
-        msg: t("browser.certInstalled", `Certificate installed: ${path}`),
+        msg: t("browser.certInstalled", { path }),
       });
     } catch (e) {
       setCertResult({ ok: false, msg: String(e) });

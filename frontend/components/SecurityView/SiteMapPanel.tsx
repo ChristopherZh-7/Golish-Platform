@@ -403,7 +403,7 @@ export function SiteMapPanel({
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder={t("security.filterSiteMap", "Filter endpoints...")}
+            placeholder={t("security.filterSiteMap")}
             className="w-full h-7 pl-8 pr-3 text-[11px] bg-[var(--bg-hover)]/30 rounded-lg border border-border/15 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40 transition-colors"
           />
         </div>
@@ -442,8 +442,8 @@ export function SiteMapPanel({
           </button>
         )}
         <span className="text-[10px] text-muted-foreground/50">
-          {hostCount} {t("security.hosts", "hosts")} · {endpointCount}{" "}
-          {t("security.endpoints", "endpoints")}
+          {hostCount} {t("security.hosts")} · {endpointCount}{" "}
+          {t("security.endpoints")}
           {capturedCount > 0 && (
             <>
               {" "}
@@ -454,13 +454,13 @@ export function SiteMapPanel({
         <button
           type="button"
           onClick={() => {
-            if (!confirm(t("security.clearSiteMapConfirm", "Clear all site map data?"))) return;
+            if (!confirm(t("security.clearSiteMapConfirm"))) return;
             const maxId = allEntries.reduce((m, e) => Math.max(m, e.id), 0);
             setHideBeforeId(maxId);
             setSelectedEntry(null);
             setDetail(null);
           }}
-          title={t("security.clearSiteMap", "Clear site map")}
+          title={t("security.clearSiteMap")}
           className="p-1.5 rounded-md text-muted-foreground/40 hover:text-destructive hover:bg-destructive/10 transition-colors"
         >
           <Trash2 className="w-3 h-3" />
@@ -479,7 +479,7 @@ export function SiteMapPanel({
           {deduped.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground/40">
               <Globe className="w-8 h-8" />
-              <p className="text-[11px]">{t("security.noSiteData", "No site data yet")}</p>
+              <p className="text-[11px]">{t("security.noSiteData")}</p>
             </div>
           ) : (
             <div className="py-1">
@@ -569,7 +569,7 @@ export function SiteMapPanel({
               <div className="flex flex-col items-center gap-2">
                 <Search className="w-8 h-8" />
                 <p className="text-[12px]">
-                  {t("security.selectEndpoint", "Select an endpoint to view details")}
+                  {t("security.selectEndpoint")}
                 </p>
               </div>
             </div>

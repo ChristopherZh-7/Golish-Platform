@@ -22,7 +22,8 @@
     "recommended": "推荐",
     "default": "默认",
     "none": "无",
-    "noResults": "无匹配结果"
+    "noResults": "无匹配结果",
+    "create": "创建"
   },
   "activity": {
     "home": "主页",
@@ -77,25 +78,27 @@
     "clearAll": "清空所有",
     "clearConfirm": "确定清空所有目标吗？此操作不可撤销。",
     "filterScope": "筛选范围",
-    "all": "全部"
+    "all": "全部",
+    "listView": "列表视图",
+    "graphView": "图谱视图"
   },
   "toolManager": {
     "title": "工具管理",
     "addTool": "添加工具",
     "searchPlaceholder": "搜索工具名称、描述...",
-    "loadFailed": "加载失败: {{error}}",
+    "loadFailed": "加载失败： {{error}}",
     "noInstallMethod": "工具 {{name}} 没有配置安装方式",
     "installAllRequired": "一键安装",
     "installing": "安装中...",
     "downloadRelease": "下载 Release...",
     "detectExecutable": "检测可执行文件...",
     "installComplete": "安装完成",
-    "installFailed": "安装失败: {{error}}",
-    "uninstallFailed": "卸载失败: {{error}}",
-    "saveFailed": "保存失败: {{error}}",
-    "deleteFailed": "删除失败: {{error}}",
-    "scanFailed": "扫描失败: {{error}}",
-    "depInstallFailed": "依赖安装失败: {{error}}",
+    "installFailed": "安装失败： {{error}}",
+    "uninstallFailed": "卸载失败： {{error}}",
+    "saveFailed": "保存失败： {{error}}",
+    "deleteFailed": "删除失败： {{error}}",
+    "scanFailed": "扫描失败： {{error}}",
+    "depInstallFailed": "依赖安装失败： {{error}}",
     "depInstallDone": "依赖安装完成",
     "noDepFiles": "无外部依赖文件",
     "installingDeps": "安装 {{file}}...",
@@ -185,10 +188,26 @@
     "permissionMissing": "缺少执行权限",
     "fixPermission": "修复权限",
     "fixingPermission": "修复执行权限...",
-    "fixPermissionFailed": "修复权限失败: {{error}}",
+    "fixPermissionFailed": "修复权限失败： {{error}}",
     "importGithub": "GitHub 导入",
     "importGithubHint": "输入 GitHub 仓库地址，自动分析 README 和仓库信息生成工具配置。",
-    "analyzeImport": "分析并导入"
+    "analyzeImport": "分析并导入",
+    "system": "系统",
+    "requiredSection": "必需",
+    "requiredHint": "完整功能所需的核心工具",
+    "optionalSection": "可选",
+    "optionalHint": "按需安装的特定任务工具",
+    "validationNameRequired": "请填写工具名称",
+    "validationIdRequired": "请填写工具 ID",
+    "validationExecRequired": "请填写可执行文件",
+    "validationRuntime": "运行时 '{{value}}' 无效，可选值：{{allowed}}",
+    "validationLaunchMode": "启动方式 '{{value}}' 无效，可选值：{{allowed}}",
+    "validationTier": "工具层级 '{{value}}' 无效，可选值：{{allowed}}",
+    "validationInstallMethod": "安装方式 '{{value}}' 无效，可选值：{{allowed}}",
+    "validationRuntimeVersion": "{{runtime}} 版本 '{{value}}' 无效，可选值：{{allowed}}",
+    "validationParamType": "参数 #{{index}} 类型 '{{value}}' 无效，可选值：{{allowed}}",
+    "validationUnknownFields": "未知字段将被忽略：{{fields}}",
+    "windowsManualInstall": "{{name}} 在 Windows 上需要手动安装，请参考 docs/windows-support.md（可使用 winget / scoop 等价方案）"
   },
   "toolSearch": {
     "placeholder": "搜索工具...",
@@ -209,12 +228,12 @@
   "install": {
     "checkPythonEnv": "检查 Python 环境 {{env}}...",
     "missingPythonEnv": "缺少 Python {{ver}} 环境，正在创建...",
-    "pythonEnvFailed": "Python {{ver}} 环境创建失败: {{error}}",
+    "pythonEnvFailed": "Python {{ver}} 环境创建失败： {{error}}",
     "checkJavaEnv": "检查 Java {{ver}} 环境...",
     "missingJava": "缺少 Java {{ver}}，正在查找可用版本...",
     "installingJava": "正在安装 Java {{id}}...",
     "javaNotFound": "未找到可用的 Java {{ver}} 版本，请在环境设置中手动安装",
-    "javaFailed": "Java {{ver}} 安装失败: {{error}}",
+    "javaFailed": "Java {{ver}} 安装失败： {{error}}",
     "detectMethod": "检测安装方式...",
     "githubRateLimit": "GitHub API 请求频率超限 (403)。请在「设置 → 网络」中配置 GitHub Token，或等待一小时后重试。",
     "missingGithubSource": "缺少 GitHub 仓库地址",
@@ -223,24 +242,29 @@
     "notInstalledWarning": "{{name}} 未安装，请先在工具管理中安装"
   },
   "settings": {
-    "title": "Settings",
+    "title": "设置",
     "environment": "环境配置",
     "envDescription": "Python / Java / Node.js 运行环境",
     "vault": "凭证保险箱",
     "vaultDesc": "加密存储密码、Token、SSH Key",
-    "providers": "Providers",
-    "providersDesc": "配置 AI 提供商凭证",
-    "aiModels": "AI & Models",
-    "aiModelsDesc": "默认提供商和合成设置",
-    "terminal": "Terminal",
-    "editor": "Editor",
+    "providers": "服务商",
+    "providersDesc": "配置 AI 服务商的凭证",
+    "aiModels": "AI 与模型",
+    "aiModelsDesc": "默认服务商与合成设置",
+    "terminal": "终端",
+    "editor": "编辑器",
     "agent": "Agent",
-    "mcp": "MCP Servers",
-    "codebases": "Codebases",
-    "network": "Network",
-    "notifications": "Notifications",
-    "appearance": "Appearance",
-    "advanced": "Advanced"
+    "mcp": "MCP 服务",
+    "codebases": "代码库",
+    "network": "网络",
+    "notifications": "通知",
+    "appearance": "外观",
+    "advanced": "高级",
+    "language": "语言",
+    "languageHint": "选择界面语言。\"跟随系统\" 会按浏览器/操作系统的语言自动切换。",
+    "languageSystem": "跟随系统",
+    "languageZh": "简体中文",
+    "languageEn": "English"
   },
   "network": {
     "proxyUrl": "Proxy URL",
@@ -278,10 +302,10 @@
     "availableJava": "可用 Java 版本",
     "availableNode": "可用 Node.js 版本",
     "availablePython": "可用 Python 版本",
-    "installFailed": "安装失败: {{error}}",
-    "uninstallFailed": "卸载失败: {{error}}",
-    "createFailed": "创建失败: {{error}}",
-    "deleteFailed": "删除失败: {{error}}",
+    "installFailed": "安装失败： {{error}}",
+    "uninstallFailed": "卸载失败： {{error}}",
+    "createFailed": "创建失败： {{error}}",
+    "deleteFailed": "删除失败： {{error}}",
     "uninstallSdkman": "卸载 SDKMAN",
     "uninstallWingetJava": "卸载 Java (winget)",
     "uninstallNvm": "卸载 NVM",
@@ -301,14 +325,23 @@
     "pgvectorWarning": "未安装时 AI 记忆的语义搜索功能将不可用",
     "pgvectorReady": "pgvector 已就绪，AI 记忆向量搜索可用",
     "pgvectorInstalling": "正在通过 Homebrew 安装 pgvector，请稍候…",
-    "installPgvector": "立即安装"
+    "installPgvector": "立即安装",
+    "rubyEnv": "Ruby 环境",
+    "uninstallRbenv": "卸载 rbenv",
+    "noInstalledRuby": "暂无已安装的 Ruby 版本",
+    "availableRuby": "可用 Ruby 版本",
+    "outputDetection": "输出检测",
+    "autoDetectDesc": "自动解析终端输出并将结果导入拓扑 / 漏洞发现",
+    "cancellingHint": "取消中… 当前步骤完成后停止"
   },
   "provider": {
     "showInSelector": "在模型选择器中显示",
     "showInSelectorDesc": "启用后可在模型列表中选择此供应商",
     "selectProvider": "← 选择一个供应商进行配置",
     "defaultModel": "默认模型",
-    "defaultModelDesc": "新对话默认使用的模型"
+    "defaultModelDesc": "新对话默认使用的模型",
+    "active": "已启用",
+    "available": "可选"
   },
   "browser": {
     "back": "后退",
@@ -323,7 +356,13 @@
     "sslCertHint": "要拦截 HTTPS 流量，需要安装 ZAP 的根 CA 证书为可信证书。否则浏览器访问 HTTPS 站点时会弹出证书警告。",
     "downloadCert": "下载证书",
     "installCert": "安装到钥匙串",
-    "certInstalled": "证书安装成功"
+    "certInstalled": "证书已安装：{{path}}",
+    "externalHint": "在浏览器中配置代理以通过 ZAP 抓取流量，然后从这里打开。",
+    "proxyConfig": "代理配置",
+    "proxyManualHint": "在浏览器中配置此代理（如 FoxyProxy）以将流量路由至 ZAP。",
+    "targetUrl": "目标 URL",
+    "openBrowser": "打开浏览器",
+    "httpProxy": "HTTP 代理"
   },
   "ai": {
     "title": "Golish AI",
@@ -398,13 +437,33 @@
       }
     }
   },
+  "backend": {
+    "errors": {
+      "java": {
+        "install_failed": "Java 安装失败：{{detail}}",
+        "uninstall_failed": "Java 卸载失败：{{detail}}",
+        "download_script_failed": "下载 SDKMAN 安装脚本失败",
+        "sdkman_layout_corrupt": "SDKMAN 安装后结构不完整，日志：\n{{log}}",
+        "winget_call_failed": "winget 调用失败（是否已安装 winget？）：{{detail}}"
+      },
+      "common": {
+        "delete_failed": "删除失败：{{detail}}",
+        "home_dir_unavailable": "无法定位用户主目录"
+      }
+    }
+  },
+  "toolExecution": {
+    "collapse": "收起",
+    "expandAll": "展开全部（{{kb}}k 字符）"
+  },
   "input": {
     "searchToolName": "搜索工具名称...",
     "enterCommand": "输入命令...",
     "enterParamsHint": "输入参数... 点击上方标签快速添加"
   },
   "slash": {
-    "tool": "工具"
+    "tool": "工具",
+    "builtinT": "搜索并启动渗透工具"
   },
   "terminal": {
     "shell": "Shell",
@@ -428,8 +487,8 @@
     "edit": "编辑",
     "preview": "预览",
     "selectFile": "选择一个文件查看或编辑",
-    "saveFailed": "保存失败: {{error}}",
-    "loadFailed": "加载失败: {{error}}",
+    "saveFailed": "保存失败： {{error}}",
+    "loadFailed": "加载失败： {{error}}",
     "autoSaved": "已自动保存",
     "fileCount": "{{count}} 个文件",
     "renameFile": "重命名",
@@ -439,7 +498,7 @@
     "newCve": "新建 CVE",
     "cveId": "CVE 编号",
     "cveTitle": "漏洞标题",
-    "cveTitlePlaceholder": "例: Apache Struts2 RCE",
+    "cveTitlePlaceholder": "例： Apache Struts2 RCE",
     "pocLang": "POC 语言",
     "createCve": "创建"
   },
@@ -477,7 +536,7 @@
     "responseBody": "响应体",
     "noHistory": "暂无 HTTP 记录。启动浏览器或配置代理后，流量将在此显示。",
     "noDetail": "选择一条请求查看详情",
-    "scanTargetPlaceholder": "输入目标 URL (例: https://example.com)",
+    "scanTargetPlaceholder": "输入目标 URL（例：https://example.com）",
     "startScan": "开始扫描",
     "stopScan": "停止扫描",
     "scanning": "扫描中...",
@@ -541,7 +600,7 @@
     "customRules": "自定义规则",
     "addRule": "添加规则",
     "ruleName": "规则名称",
-    "regexPattern": "正则表达式 (例如 SQL syntax|mysql_fetch)",
+    "regexPattern": "正则表达式（例如 SQL syntax|mysql_fetch）",
     "runScan": "执行扫描",
     "matchesFound": "个匹配",
     "noCustomRules": "暂无自定义规则",
@@ -557,7 +616,28 @@
     "addTarget": "添加",
     "noScanTargets": "暂无扫描目标",
     "addTargetsHint": "在上方添加 URL 或在 HTTP 历史 / 站点地图右键 → 主动扫描",
-    "selectEndpoint": "选择一个接口查看扫描结果"
+    "selectEndpoint": "选择一个接口查看扫描结果",
+    "noCredential": "无凭证（未认证）",
+    "alertsTab": "告警",
+    "testsTab": "测试详情",
+    "noTestLogs": "暂无测试日志",
+    "defaultPolicy": "默认策略（全部）",
+    "configurePlugins": "配置扫描插件",
+    "clearAll": "全部清空",
+    "scanPlugins": "扫描插件",
+    "enabled": "已启用",
+    "disableAll": "全部禁用",
+    "enableAll": "全部启用",
+    "loadingPlugins": "正在加载插件...",
+    "requestsSent": "个请求已发送",
+    "siteMap": "站点地图",
+    "scanTools": "扫描工具",
+    "timeline": "时间线",
+    "filterSiteMap": "过滤端点...",
+    "hosts": "台主机",
+    "clearSiteMapConfirm": "确定清空所有站点地图数据？此操作不可撤销。",
+    "clearSiteMap": "清空站点地图",
+    "noSiteData": "暂无站点数据"
   },
   "vulnKb": {
     "title": "漏洞知识库",
@@ -599,14 +679,25 @@
     "historyHint": "使用此漏洞的 PoC 测试目标后，扫描记录将显示在此",
     "vulnerable": "存在漏洞",
     "notVulnerable": "不受影响",
-    "pending": "待检测"
+    "pending": "待检测",
+    "severityAll": "全部严重度",
+    "severityCritical": "严重",
+    "severityHigh": "高危",
+    "severityMedium": "中危",
+    "severityLow": "低危",
+    "severityInfo": "提示",
+    "sourceAll": "全部来源",
+    "sourceOther": "其它",
+    "searchHistory": "搜索历史",
+    "recentSearches": "最近搜索",
+    "clearHistory": "清空"
   },
   "vault": {
     "title": "凭证保险箱",
     "description": "加密存储渗透测试中使用的各种凭证。工具配置中可通过 {{vault:名称}} 引用。",
     "addEntry": "添加凭证",
     "name": "名称",
-    "namePlaceholder": "例如: target-api-token",
+    "namePlaceholder": "例如： target-api-token",
     "type": "类型",
     "value": "值",
     "valuePlaceholder": "输入密码/Token/Key...",
@@ -621,7 +712,7 @@
     "copyValue": "复制",
     "copied": "已复制到剪贴板",
     "copyRef": "复制引用",
-    "refCopied": "引用已复制: {{ref}}",
+    "refCopied": "引用已复制： {{ref}}",
     "deleteConfirm": "确定删除凭证 {{name}} 吗？",
     "password": "密码",
     "token": "Token",
@@ -630,7 +721,18 @@
     "cookie": "Cookie",
     "certificate": "证书",
     "other": "其他",
-    "total": "共 {{count}} 个凭证"
+    "total": "共 {{count}} 个凭证",
+    "credentials": "条凭证",
+    "refHint": "引用：{{vault:name}}",
+    "manual": "手动",
+    "valid": "有效",
+    "expired": "已过期",
+    "validate": "验证凭证",
+    "status": "状态",
+    "unknown": "未知",
+    "lastChecked": "校验于",
+    "captured": "捕获时间",
+    "updated": "更新于"
   },
   "categories": {
     "recon": "信息收集",
@@ -699,5 +801,23 @@
     "needsNode": "需要 Node.js",
     "setupComplete": "{{name}} 配置完成",
     "setupInProgress": "正在配置..."
+  },
+  "dashboard": {
+    "title": "项目总览",
+    "empty": "暂无项目数据",
+    "emptyHint": "添加目标、运行扫描或启动方法论后，这里会展示统计数据",
+    "targets": "目标",
+    "findings": "漏洞发现",
+    "credentials": "凭证"
+  },
+  "methodology": {
+    "title": "方法论",
+    "newProject": "新建",
+    "projects": "项目",
+    "templates": "模板",
+    "createProject": "新建方法论项目",
+    "projectName": "项目名称...",
+    "selectTemplate": "选择模板...",
+    "deleteConfirm": "确定删除此项目？"
   }
 }

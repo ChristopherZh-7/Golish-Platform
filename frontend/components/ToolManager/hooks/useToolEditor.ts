@@ -172,11 +172,11 @@ export function useToolEditor(
     (data: Record<string, unknown>): string[] => {
       const errors: string[] = [];
       if (!data.name || !(data.name as string).trim())
-        errors.push(t("toolManager.validationNameRequired", "Name is required"));
+        errors.push(t("toolManager.validationNameRequired"));
       if (!data.id || !(data.id as string).trim())
-        errors.push(t("toolManager.validationIdRequired", "ID is required"));
+        errors.push(t("toolManager.validationIdRequired"));
       if (!data.executable || !(data.executable as string).trim())
-        errors.push(t("toolManager.validationExecRequired", "Executable is required"));
+        errors.push(t("toolManager.validationExecRequired"));
 
       const rt = ((data.runtime as string) || "").trim().toLowerCase();
       if (rt && !(VALID_RUNTIMES as readonly string[]).includes(rt)) {
@@ -291,10 +291,7 @@ export function useToolEditor(
       ]);
       const unknownFields = Object.keys(data).filter((k) => !KNOWN_FIELDS.has(k));
       if (unknownFields.length > 0) {
-        const msg = t("toolManager.validationUnknownFields", {
-          fields: unknownFields.join(", "),
-          defaultValue: `Unknown fields will be ignored: ${unknownFields.join(", ")}`,
-        });
+        const msg = t("toolManager.validationUnknownFields", { fields: unknownFields.join(", ") });
         console.warn("[ToolEditor]", msg);
       }
 

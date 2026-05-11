@@ -607,8 +607,8 @@ export function DetailTabs({ detail }: { detail: HttpMessageDetail }) {
             )}
           >
             {id === "request"
-              ? t("security.request", "Request")
-              : t("security.response", "Response")}
+              ? t("security.request")
+              : t("security.response")}
             {tab === id && (
               <div className="absolute bottom-0 left-1 right-1 h-[1.5px] bg-accent rounded-full" />
             )}
@@ -628,7 +628,7 @@ export function DetailTabs({ detail }: { detail: HttpMessageDetail }) {
             {detail.request_body && (
               <>
                 <div className="px-3 py-1 text-[9px] font-medium text-muted-foreground/50 bg-[var(--bg-hover)]/10 border-y border-border/5">
-                  {t("security.requestBody", "Request Body")}
+                  {t("security.requestBody")}
                 </div>
                 <BodyView content={detail.request_body} headers={detail.request_headers} />
               </>
@@ -638,7 +638,7 @@ export function DetailTabs({ detail }: { detail: HttpMessageDetail }) {
           <>
             <HeaderTable raw={detail.response_headers} />
             <div className="px-3 py-1 text-[9px] font-medium text-muted-foreground/50 bg-[var(--bg-hover)]/10 border-y border-border/5">
-              {t("security.responseBody", "Response Body")}
+              {t("security.responseBody")}
             </div>
             <BodyView content={detail.response_body} headers={detail.response_headers} />
           </>

@@ -119,7 +119,7 @@ export function useChatSend(opts: UseChatSendOptions) {
         .getState()
         .setMessageError(
           conv.id,
-          t("ai.noModelSelected", "Please select a model first (bottom-left dropdown)")
+          t("ai.noModelSelected")
         );
       return;
     }

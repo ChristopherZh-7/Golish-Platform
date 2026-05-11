@@ -53,7 +53,7 @@ pub fn default_feeds() -> Vec<VulnFeed> {
         },
         VulnFeed {
             id: "seebug-paper".to_string(),
-            name: "Seebug Paper 安全技术精粹".to_string(),
+            name: "Seebug Paper — security research highlights".to_string(),
             feed_type: "rss".to_string(),
             url: "https://paper.seebug.org/rss/".to_string(),
             enabled: true,

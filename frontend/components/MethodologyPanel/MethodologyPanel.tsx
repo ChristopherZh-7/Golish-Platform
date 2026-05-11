@@ -115,7 +115,7 @@ export function MethodologyPanel() {
 
   const handleDeleteProject = useCallback(
     async (id: string) => {
-      if (!confirm(t("methodology.deleteConfirm", "Delete this project?"))) return;
+      if (!confirm(t("methodology.deleteConfirm"))) return;
       try {
         await methodology.deleteProject(id, getProjectPath());
         await loadData();
@@ -370,7 +370,7 @@ export function MethodologyPanel() {
       {/* Header */}
       <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border/30 flex-shrink-0">
         <ClipboardList className="w-4 h-4 text-accent" />
-        <span className="text-sm font-medium">{t("methodology.title", "Methodology")}</span>
+        <span className="text-sm font-medium">{t("methodology.title")}</span>
         <div className="flex-1" />
         <button
           type="button"
@@ -378,7 +378,7 @@ export function MethodologyPanel() {
           onClick={() => setShowNewProject(true)}
         >
           <Plus className="w-3.5 h-3.5" />
-          {t("methodology.newProject", "New")}
+          {t("methodology.newProject")}
         </button>
       </div>
 
@@ -387,7 +387,7 @@ export function MethodologyPanel() {
         {projects.length > 0 && (
           <div>
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium mb-2">
-              {t("methodology.projects", "Projects")}
+              {t("methodology.projects")}
             </div>
             <div className="space-y-1.5">
               {projects.map((p) => {
@@ -437,7 +437,7 @@ export function MethodologyPanel() {
         {/* Templates */}
         <div>
           <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium mb-2">
-            {t("methodology.templates", "Templates")}
+            {t("methodology.templates")}
           </div>
           <div className="space-y-1.5">
             {templates.map((tmpl) => (
@@ -463,21 +463,21 @@ export function MethodologyPanel() {
         <div className="absolute inset-0 z-30 bg-background/80 backdrop-blur-sm flex items-center justify-center">
           <div className="w-80 bg-card rounded-xl border border-border/50 shadow-2xl">
             <div className="px-4 py-3 border-b border-border/30 text-sm font-medium">
-              {t("methodology.createProject", "Create Methodology Project")}
+              {t("methodology.createProject")}
             </div>
             <div className="p-4 space-y-3">
               <input
                 className="w-full text-xs px-3 py-2 rounded-md bg-background border border-border/50 focus:border-accent outline-none"
-                placeholder={t("methodology.projectName", "Project name...")}
+                placeholder={t("methodology.projectName")}
                 value={newProjectName}
                 onChange={(e) => setNewProjectName(e.target.value)}
               />
               <CustomSelect
                 value={newTemplateId}
                 onChange={setNewTemplateId}
-                placeholder={t("methodology.selectTemplate", "Select template...")}
+                placeholder={t("methodology.selectTemplate")}
                 options={[
-                  { value: "", label: t("methodology.selectTemplate", "Select template...") },
+                  { value: "", label: t("methodology.selectTemplate") },
                   ...templates.map((tmpl) => ({
                     value: tmpl.id,
                     label: `${tmpl.name} - ${tmpl.description}`,
@@ -496,7 +496,7 @@ export function MethodologyPanel() {
                   setNewTemplateId("");
                 }}
               >
-                {t("common.cancel", "Cancel")}
+                {t("common.cancel")}
               </button>
               <button
                 type="button"
@@ -504,7 +504,7 @@ export function MethodologyPanel() {
                 onClick={handleCreateProject}
                 disabled={!newProjectName.trim() || !newTemplateId}
               >
-                {t("common.create", "Create")}
+                {t("common.create")}
               </button>
             </div>
           </div>

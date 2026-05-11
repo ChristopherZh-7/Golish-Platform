@@ -370,13 +370,13 @@ pub fn strip_html_tags(input: &str) -> String {
 
 pub fn guess_severity(text: &str) -> String {
     let lower = text.to_lowercase();
-    if lower.contains("critical") || lower.contains("严重") || lower.contains("超危") {
+    if lower.contains("critical") || lower.contains("critical") || lower.contains("Severe") {
         "critical".to_string()
-    } else if lower.contains("high") || lower.contains("高危") || lower.contains("高风险") {
+    } else if lower.contains("high") || lower.contains("High") || lower.contains("High Risk") {
         "high".to_string()
-    } else if lower.contains("medium") || lower.contains("中危") || lower.contains("中风险") {
+    } else if lower.contains("medium") || lower.contains("Medium") || lower.contains("Medium Risk") {
         "medium".to_string()
-    } else if lower.contains("low") || lower.contains("低危") || lower.contains("低风险") {
+    } else if lower.contains("low") || lower.contains("Low") || lower.contains("Low Risk") {
         "low".to_string()
     } else {
         "info".to_string()

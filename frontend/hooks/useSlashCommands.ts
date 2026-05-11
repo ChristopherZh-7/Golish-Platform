@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { listPrompts, listSkills, type PromptInfo, type SkillInfo } from "@/lib/api/files";
 import { logger } from "@/lib/logger";
 
@@ -14,6 +15,7 @@ export interface SlashCommand {
 }
 
 export function useSlashCommands(workingDirectory?: string) {
+  const { t } = useTranslation();
   const [commands, setCommands] = useState<SlashCommand[]>([]);
   const [prompts, setPrompts] = useState<PromptInfo[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -62,13 +64,12 @@ export function useSlashCommands(workingDirectory?: string) {
         });
       }
 
-      // Add built-in commands
       commandMap.set("t", {
         name: "t",
         path: "",
         source: "global",
         type: "builtin",
-        description: "搜索并启动渗透工具",
+        description: t("slash.builtinT"),
       });
 
       // Convert to sorted array
@@ -80,7 +81,7 @@ export function useSlashCommands(workingDirectory?: string) {
     } finally {
       setIsLoading(false);
     }
-  }, [workingDirectory]);
+  }, [workingDirectory, t]);
 
   // Load commands on mount and when working directory changes
   useEffect(() => {

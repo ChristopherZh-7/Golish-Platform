@@ -467,7 +467,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
         <div>
           <div className="flex items-center gap-3 mb-3">
             <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-emerald-400/80">
-              {t("provider.active", "Active")}
+              {t("provider.active")}
             </span>
             <span className="text-[10px] font-semibold text-emerald-400/50 bg-emerald-400/[0.08] rounded-full px-2 py-0.5 min-w-[20px] text-center">
               {configuredProviders.length}
@@ -556,7 +556,7 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
         <div>
           <div className="flex items-center gap-3 mb-3">
             <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-muted-foreground/40">
-              {t("provider.available", "Available")}
+              {t("provider.available")}
             </span>
             <span className="text-[10px] font-semibold text-muted-foreground/30 bg-foreground/[0.03] rounded-full px-2 py-0.5 min-w-[20px] text-center">
               {unconfiguredProviders.length}

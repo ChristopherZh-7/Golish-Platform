@@ -12,7 +12,14 @@
 //! `Result<T, GolishError>` and use `?` with the `From` impls defined here.
 
 use serde::Serialize;
+use serde_json::Value as JsonValue;
 use thiserror::Error;
+
+/// Sentinel prefix used to mark a serialized error as "i18n-coded" so the
+/// frontend can route it through `localizeBackendError` (which calls
+/// `i18next.t("backend.errors." + code, params)`). Keep this prefix in sync
+/// with `frontend/lib/errors.ts`.
+pub const I18N_ERROR_PREFIX: &str = "[i18n]";
 
 #[derive(Debug, Error)]
 #[allow(dead_code)]
@@ -67,12 +74,31 @@ pub enum GolishError {
 
     #[error("{0}")]
     Internal(String),
+
+    /// I18n-coded error. `code` resolves on the frontend to a translated
+    /// string under the `backend.errors.` namespace; `params` is forwarded
+    /// to i18next interpolation. Use this for any user-facing error you
+    /// want translated. The `Display` impl renders the raw English code so
+    /// CLI / log consumers still see something readable.
+    #[error("[i18n:{code}] {params}")]
+    I18n { code: String, params: JsonValue },
 }
 
 impl GolishError {
     /// Wrap an `anyhow::Error` as an internal error.
     pub fn from_anyhow(err: anyhow::Error) -> Self {
         Self::Internal(err.to_string())
+    }
+
+    /// Construct an i18n-coded error. `code` should be a dotted path under
+    /// the `backend.errors.` namespace (e.g. `"java.install_failed"`).
+    /// `params` are passed to i18next interpolation; pass `serde_json::json!({})`
+    /// when there are none.
+    pub fn i18n(code: impl Into<String>, params: JsonValue) -> Self {
+        Self::I18n {
+            code: code.into(),
+            params,
+        }
     }
 }
 
@@ -135,7 +161,17 @@ impl Serialize for GolishError {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(&self.to_string())
+        // I18n errors get a sentinel-prefixed format the frontend can parse
+        // back into `{ code, params }`; everything else stays as a plain
+        // user-facing string for backwards compatibility with the existing
+        // `catch (err) { toast(String(err)) }` pattern across the app.
+        match self {
+            Self::I18n { code, params } => {
+                let payload = format!("{}{}|{}", I18N_ERROR_PREFIX, code, params);
+                serializer.serialize_str(&payload)
+            }
+            _ => serializer.serialize_str(&self.to_string()),
+        }
     }
 }
 

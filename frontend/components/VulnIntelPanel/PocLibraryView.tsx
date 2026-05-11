@@ -207,7 +207,7 @@ export const PocLibraryView = memo(function PocLibraryView({
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder={t("vulnKb.searchPoc", "Search PoC templates...")}
+            placeholder={t("vulnKb.searchPoc")}
             className="w-full h-7 pl-8 pr-3 text-[11px] bg-[var(--bg-hover)]/30 rounded-lg border border-border/15 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40 transition-colors"
           />
         </div>
@@ -215,7 +215,7 @@ export const PocLibraryView = memo(function PocLibraryView({
           value={filterType}
           onChange={(v) => setFilterType(v as typeof filterType)}
           options={[
-            { value: "all", label: t("vulnKb.allTypes", "All Types") },
+            { value: "all", label: t("vulnKb.allTypes") },
             { value: "nuclei", label: "Nuclei" },
             { value: "script", label: "Script" },
             { value: "manual", label: "Manual" },
@@ -266,7 +266,7 @@ export const PocLibraryView = memo(function PocLibraryView({
           <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground/20">
             <Code className="w-12 h-12" />
             <p className="text-[13px] font-medium">
-              {t("vulnKb.noPocTemplates", "No PoC templates")}
+              {t("vulnKb.noPocTemplates")}
             </p>
             <p className="text-[11px] text-muted-foreground/15 max-w-sm text-center">
               {t(

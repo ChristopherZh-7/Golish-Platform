@@ -50,10 +50,10 @@ export function VulnIntelCveList({
       {displayEntries.length === 0 ? (
         <div className="text-center text-[11px] text-muted-foreground/30 py-12">
           {loading
-            ? t("vulnIntel.fetching", "Fetching vulnerability data...")
+            ? t("vulnIntel.fetching")
             : viewMode === "matched"
-              ? t("vulnIntel.noMatched", "No matched vulnerabilities")
-              : t("vulnIntel.clickRefresh", "Click refresh to fetch latest CVEs")}
+              ? t("vulnIntel.noMatched")
+              : t("vulnIntel.clickRefresh")}
         </div>
       ) : (
         <>

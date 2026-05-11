@@ -130,6 +130,7 @@ step recipe:
 check-fe:
     @pnpm --silent check > /dev/null
     @pnpm --silent typecheck
+    @node scripts/i18n_check.mjs
 
 # Fast Rust check (type check + fmt check)
 check-rust:

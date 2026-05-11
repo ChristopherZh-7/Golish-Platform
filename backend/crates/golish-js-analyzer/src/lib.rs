@@ -2,7 +2,7 @@
 //!
 //! Extracts API endpoint call-sites from JS source code, returning a
 //! structured list of `{ method, path, params, auth, body_schema, ... }`
-//! tuples that downstream pentest tools (e.g. `auth_probe`, IDOR/未授权
+//! tuples that downstream pentest tools (e.g. `auth_probe`, IDOR/unauthorized
 //! testing) can consume directly without paying LLM tokens to "read" each
 //! bundle.
 //!

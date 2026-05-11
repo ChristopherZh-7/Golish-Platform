@@ -181,10 +181,10 @@ export function VaultSettings() {
     <div className="h-full flex flex-col">
       <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border/10 flex-shrink-0">
         <span className="text-[11px] text-muted-foreground/40">
-          {entries.length} {t("vault.credentials", "credentials")}
+          {entries.length} {t("vault.credentials")}
         </span>
         <span className="text-[10px] text-muted-foreground/20 ml-1">
-          {t("vault.refHint", "Reference: {{vault:name}}")}
+          {t("vault.refHint")}
         </span>
         <div className="flex-1" />
         <button
@@ -300,7 +300,7 @@ export function VaultSettings() {
             {groupedEntries.map(([groupKey, groupItems]) => {
               const isGroupExpanded = expandedGroups.has(groupKey);
               const isUngrouped = groupKey === "__ungrouped__";
-              const groupLabel = isUngrouped ? t("vault.manual", "Manual") : groupKey;
+              const groupLabel = isUngrouped ? t("vault.manual") : groupKey;
               return (
                 <div key={groupKey}>
                   <div
@@ -371,13 +371,13 @@ export function VaultSettings() {
                               {entry.status === "valid" && (
                                 <span className="flex items-center gap-0.5 text-[8px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 font-medium">
                                   <ShieldCheck className="w-2.5 h-2.5" />
-                                  {t("vault.valid", "Valid")}
+                                  {t("vault.valid")}
                                 </span>
                               )}
                               {entry.status === "expired" && (
                                 <span className="flex items-center gap-0.5 text-[8px] px-1.5 py-0.5 rounded-full bg-red-500/15 text-red-400 font-medium">
                                   <ShieldX className="w-2.5 h-2.5" />
-                                  {t("vault.expired", "Expired")}
+                                  {t("vault.expired")}
                                 </span>
                               )}
                               <div
@@ -391,7 +391,7 @@ export function VaultSettings() {
                                       "p-1 rounded hover:bg-muted/30 text-muted-foreground/40 hover:text-accent",
                                       validatingIds.has(entry.id) && "pointer-events-none"
                                     )}
-                                    title={t("vault.validate", "Validate credential")}
+                                    title={t("vault.validate")}
                                     onClick={() => handleValidate(entry.id)}
                                   >
                                     {validatingIds.has(entry.id) ? (
@@ -436,13 +436,13 @@ export function VaultSettings() {
                               <div className="px-3 pb-3 ml-[22px] space-y-2 border-t border-border/10 pt-2">
                                 <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-[10px]">
                                   <span className="text-muted-foreground/50 font-medium">
-                                    {t("vault.name", "Name")}
+                                    {t("vault.name")}
                                   </span>
                                   <span className="text-foreground/70 font-mono truncate">
                                     {entry.name}
                                   </span>
                                   <span className="text-muted-foreground/50 font-medium">
-                                    {t("vault.type", "Type")}
+                                    {t("vault.type")}
                                   </span>
                                   <span className="text-foreground/70">
                                     {t(TYPE_LABEL_KEYS[entry.type] || entry.type)}
@@ -450,7 +450,7 @@ export function VaultSettings() {
                                   {entry.username && (
                                     <>
                                       <span className="text-muted-foreground/50 font-medium">
-                                        {t("vault.username", "Username")}
+                                        {t("vault.username")}
                                       </span>
                                       <span className="text-foreground/70 font-mono">
                                         {entry.username}
@@ -458,7 +458,7 @@ export function VaultSettings() {
                                     </>
                                   )}
                                   <span className="text-muted-foreground/50 font-medium">
-                                    {t("vault.value", "Value")}
+                                    {t("vault.value")}
                                   </span>
                                   <div className="flex items-center gap-1.5 min-w-0">
                                     {revealedIds.has(entry.id) && revealedValues[entry.id] ? (
@@ -483,7 +483,7 @@ export function VaultSettings() {
                                     </button>
                                   </div>
                                   <span className="text-muted-foreground/50 font-medium">
-                                    {t("vault.notes", "Notes")}
+                                    {t("vault.notes")}
                                   </span>
                                   <InlineNotes
                                     entryId={entry.id}
@@ -510,7 +510,7 @@ export function VaultSettings() {
                                   {entry.status !== "unknown" && (
                                     <>
                                       <span className="text-muted-foreground/50 font-medium">
-                                        {t("vault.status", "Status")}
+                                        {t("vault.status")}
                                       </span>
                                       <span
                                         className={cn(
@@ -523,13 +523,13 @@ export function VaultSettings() {
                                         )}
                                       >
                                         {entry.status === "valid"
-                                          ? t("vault.valid", "Valid")
+                                          ? t("vault.valid")
                                           : entry.status === "expired"
-                                            ? t("vault.expired", "Expired")
-                                            : t("vault.unknown", "Unknown")}
+                                            ? t("vault.expired")
+                                            : t("vault.unknown")}
                                         {entry.last_validated_at && (
                                           <span className="text-muted-foreground/30 ml-2 font-normal">
-                                            ({t("vault.lastChecked", "checked")}{" "}
+                                            ({t("vault.lastChecked")}{" "}
                                             {new Date(
                                               entry.last_validated_at * 1000
                                             ).toLocaleString()}
@@ -540,13 +540,13 @@ export function VaultSettings() {
                                     </>
                                   )}
                                   <span className="text-muted-foreground/50 font-medium">
-                                    {t("vault.captured", "Captured")}
+                                    {t("vault.captured")}
                                   </span>
                                   <span className="text-foreground/50 text-[9px] tabular-nums">
                                     {new Date(entry.created_at * 1000).toLocaleString()}
                                     {entry.updated_at !== entry.created_at && (
                                       <span className="text-muted-foreground/30 ml-2">
-                                        ({t("vault.updated", "updated")}{" "}
+                                        ({t("vault.updated")}{" "}
                                         {new Date(entry.updated_at * 1000).toLocaleString()})
                                       </span>
                                     )}

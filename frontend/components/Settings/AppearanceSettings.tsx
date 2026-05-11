@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { HexColorPicker } from "react-colorful";
+import { useTranslation } from "react-i18next";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -11,6 +12,11 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import {
+  getLanguagePreference,
+  type LanguagePreference,
+  setLanguagePreference,
+} from "@/lib/i18n";
 import {
   type CaretSettings,
   DEFAULT_CARET_SETTINGS,
@@ -64,8 +70,15 @@ export function AppearanceSettings({
   terminalSettings,
   onTerminalChange,
 }: AppearanceSettingsProps) {
+  const { t } = useTranslation();
   const displaySettings = useStore(selectDisplaySettings);
   const setDisplaySettings = useStore((state) => state.setDisplaySettings);
+  const [langPref, setLangPref] = useState<LanguagePreference>(getLanguagePreference);
+
+  const handleLanguageChange = useCallback(async (next: LanguagePreference) => {
+    setLangPref(next);
+    await setLanguagePreference(next);
+  }, []);
 
   // Caret settings (from terminal settings in settings.toml)
   const caret: CaretSettings = terminalSettings?.caret ?? DEFAULT_CARET_SETTINGS;
@@ -113,6 +126,30 @@ export function AppearanceSettings({
 
   return (
     <div className="space-y-8">
+      {/* Language */}
+      <div className="space-y-2">
+        <h3 className="text-sm font-medium text-foreground mb-4">{t("settings.language")}</h3>
+        <div className="flex items-start justify-between gap-4">
+          <p className="text-xs text-muted-foreground flex-1">{t("settings.languageHint")}</p>
+          <Select
+            value={langPref}
+            onValueChange={(v: LanguagePreference) => void handleLanguageChange(v)}
+          >
+            <SelectTrigger className="w-44 shrink-0">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="system">{t("settings.languageSystem")}</SelectItem>
+              <SelectItem value="zh-CN">{t("settings.languageZh")}</SelectItem>
+              <SelectItem value="en">{t("settings.languageEn")}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      {/* Divider */}
+      <div className="border-t border-[var(--border-medium)]" />
+
       {/* Theme */}
       <div className="space-y-2">
         <h3 className="text-sm font-medium text-foreground mb-4">Theme</h3>

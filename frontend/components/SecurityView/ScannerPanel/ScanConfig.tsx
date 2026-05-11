@@ -115,7 +115,7 @@ export function CredentialDropdown({
       >
         <KeyRound className="w-3 h-3 flex-shrink-0" />
         <span className="truncate max-w-[140px]">
-          {selected ? selected.name : t("security.noCredential", "No credential (unauthenticated)")}
+          {selected ? selected.name : t("security.noCredential")}
         </span>
         <ChevronDown
           className={cn(
@@ -137,7 +137,7 @@ export function CredentialDropdown({
               onToggle();
             }}
           >
-            {t("security.noCredential", "No credential (unauthenticated)")}
+            {t("security.noCredential")}
           </button>
           {filtered.map((entry) => (
             <button

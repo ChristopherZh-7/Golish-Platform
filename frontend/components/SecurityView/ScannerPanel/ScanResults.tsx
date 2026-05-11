@@ -205,7 +205,7 @@ export function ScanDetailTabs({ alerts, scanLogs }: { alerts: ZapAlert[]; scanL
           )}
           onClick={() => setTab("alerts")}
         >
-          {t("security.alertsTab", "Alerts")} ({alerts.length})
+          {t("security.alertsTab")} ({alerts.length})
         </button>
         <button
           type="button"
@@ -217,7 +217,7 @@ export function ScanDetailTabs({ alerts, scanLogs }: { alerts: ZapAlert[]; scanL
           )}
           onClick={() => setTab("tests")}
         >
-          {t("security.testsTab", "Test Details")} ({scanLogs.length})
+          {t("security.testsTab")} ({scanLogs.length})
         </button>
         {tab === "tests" && vulnCount > 0 && (
           <span className="text-[9px] text-red-400 font-medium ml-1">{vulnCount} vulnerable</span>
@@ -253,7 +253,7 @@ export function ScanDetailTabs({ alerts, scanLogs }: { alerts: ZapAlert[]; scanL
         ) : scanLogs.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground/20">
             <List className="w-10 h-10" />
-            <p className="text-[12px]">{t("security.noTestLogs", "No test logs available")}</p>
+            <p className="text-[12px]">{t("security.noTestLogs")}</p>
           </div>
         ) : (
           <div className="px-4 py-3 space-y-1">

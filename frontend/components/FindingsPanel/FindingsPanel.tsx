@@ -271,7 +271,7 @@ export function FindingsPanel() {
       logAudit({
         action: "findings_deduplicated",
         category: "findings",
-        details: `合并去重 ${removed} 条 finding`,
+        details: `Deduplicated ${removed} findings`,
       });
     } catch {
       /* ignore */
@@ -285,7 +285,7 @@ export function FindingsPanel() {
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
             <Bug className="w-4 h-4 text-accent" />
-            <h2 className="text-sm font-semibold">{t("activity.findings", "Findings")}</h2>
+            <h2 className="text-sm font-semibold">{t("activity.findings")}</h2>
             <span className="text-[10px] text-muted-foreground/50 bg-muted/20 px-1.5 py-0.5 rounded-full">
               {stats.total}
             </span>

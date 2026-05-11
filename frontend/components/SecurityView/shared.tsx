@@ -209,10 +209,7 @@ export function ZapNotRunning({
           {t("security.startZap")}
         </button>
         <p className="text-[10px] text-muted-foreground/40 text-center">
-          {t(
-            "security.setupHintTopRight",
-            "Need to install the HTTPS root cert? Click the gear icon in the top-right after starting ZAP."
-          )}
+          {t("security.setupHintTopRight")}
         </p>
       </div>
     </div>

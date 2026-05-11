@@ -42,8 +42,8 @@ export function SetupPopover({ isRunning, onStart, loading, error }: SetupPopove
       <PopoverTrigger asChild>
         <button
           type="button"
-          aria-label={t("security.setupTitle", "Proxy & Certificate Setup")}
-          title={t("security.setupTitle", "Proxy & Certificate Setup")}
+          aria-label={t("security.setupTitle")}
+          title={t("security.setupTitle")}
           className="flex items-center justify-center w-7 h-7 rounded-lg text-foreground/60 hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors"
         >
           <Settings className="w-3.5 h-3.5" />
@@ -57,7 +57,7 @@ export function SetupPopover({ isRunning, onStart, loading, error }: SetupPopove
         <div className="flex items-center gap-2 px-4 py-3 border-b border-border/15">
           <Settings className="w-3.5 h-3.5 text-accent" />
           <h3 className="text-[12px] font-semibold text-foreground/80">
-            {t("security.setupTitle", "Proxy & Certificate Setup")}
+            {t("security.setupTitle")}
           </h3>
         </div>
 
@@ -67,13 +67,10 @@ export function SetupPopover({ isRunning, onStart, loading, error }: SetupPopove
               <AlertCircle className="w-3.5 h-3.5 text-amber-400 mt-[2px] flex-shrink-0" />
               <div className="flex-1">
                 <p className="text-[11px] font-medium text-amber-300/90">
-                  {t("security.setupZapStoppedTitle", "ZAP is stopped")}
+                  {t("security.setupZapStoppedTitle")}
                 </p>
                 <p className="text-[10px] text-amber-300/60 leading-relaxed mt-1">
-                  {t(
-                    "security.setupZapStoppedHint",
-                    "Start ZAP first to fetch and install the root certificate."
-                  )}
+                  {t("security.setupZapStoppedHint")}
                 </p>
                 <button
                   type="button"
@@ -97,7 +94,7 @@ export function SetupPopover({ isRunning, onStart, loading, error }: SetupPopove
 
           <div>
             <span className="text-[10px] font-medium text-foreground/50 block mb-1.5">
-              {t("browser.proxyConfig", "HTTP Proxy")}
+              {t("browser.proxyConfig")}
             </span>
             <div className="flex items-center gap-1.5 bg-background/50 rounded-md px-2.5 py-1.5 border border-border/10">
               <code className="text-[11px] font-mono text-accent/80 flex-1">{proxyAddr}</code>
@@ -115,16 +112,13 @@ export function SetupPopover({ isRunning, onStart, loading, error }: SetupPopove
               </button>
             </div>
             <p className="text-[9px] text-muted-foreground/40 mt-1 leading-relaxed">
-              {t(
-                "browser.proxyManualHint",
-                "Configure this proxy in your browser (e.g. FoxyProxy) to route traffic through ZAP."
-              )}
+              {t("browser.proxyManualHint")}
             </p>
           </div>
 
           <div>
             <span className="text-[10px] font-medium text-foreground/50 block mb-1.5">
-              {t("browser.sslCert", "HTTPS Certificate")}
+              {t("browser.sslCert")}
             </span>
             <p className="text-[9px] text-muted-foreground/40 mb-2 leading-relaxed">
               {t(
@@ -139,7 +133,7 @@ export function SetupPopover({ isRunning, onStart, loading, error }: SetupPopove
                 disabled={certDisabled}
                 title={
                   !isRunning
-                    ? t("security.setupNeedZapRunning", "Start ZAP first to enable this action")
+                    ? t("security.setupNeedZapRunning")
                     : undefined
                 }
                 className={cn(
@@ -154,7 +148,7 @@ export function SetupPopover({ isRunning, onStart, loading, error }: SetupPopove
                 ) : (
                   <Download className="w-3 h-3" />
                 )}
-                {t("browser.downloadCert", "Download")}
+                {t("browser.downloadCert")}
               </button>
               <button
                 type="button"
@@ -162,7 +156,7 @@ export function SetupPopover({ isRunning, onStart, loading, error }: SetupPopove
                 disabled={certDisabled}
                 title={
                   !isRunning
-                    ? t("security.setupNeedZapRunning", "Start ZAP first to enable this action")
+                    ? t("security.setupNeedZapRunning")
                     : undefined
                 }
                 className={cn(
@@ -177,7 +171,7 @@ export function SetupPopover({ isRunning, onStart, loading, error }: SetupPopove
                 ) : (
                   <ShieldCheck className="w-3 h-3" />
                 )}
-                {t("browser.installCert", "Install to Keychain")}
+                {t("browser.installCert")}
               </button>
             </div>
             {certResult && (

@@ -169,9 +169,9 @@ export function ScannerPanel({
 
   const statusBadge = (s: ScanEndpoint["status"]) => {
     const map: Record<string, { label: string; cls: string }> = {
-      queued: { label: t("security.scanQueued", "Queued"), cls: "text-zinc-400 bg-zinc-500/10" },
+      queued: { label: t("security.scanQueued"), cls: "text-zinc-400 bg-zinc-500/10" },
       spidering: {
-        label: t("security.spidering", "Crawling"),
+        label: t("security.spidering"),
         cls: "text-blue-400 bg-blue-500/10",
       },
       scanning: { label: t("security.scanning"), cls: "text-orange-400 bg-orange-500/10" },
@@ -205,7 +205,7 @@ export function ScannerPanel({
           disabled={!targetUrl.trim()}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium bg-accent/10 text-accent hover:bg-accent/20 transition-colors disabled:opacity-30"
         >
-          <Plus className="w-3 h-3" /> {t("security.addTarget", "Add")}
+          <Plus className="w-3 h-3" /> {t("security.addTarget")}
         </button>
         {queuedCount > 0 && (
           <button
@@ -215,7 +215,7 @@ export function ScannerPanel({
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium bg-orange-500/10 text-orange-400 hover:bg-orange-500/20 transition-colors disabled:opacity-30"
           >
             {scanning ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
-            {t("security.scanAll", "Scan All")} ({queuedCount})
+            {t("security.scanAll")} ({queuedCount})
           </button>
         )}
         {scanningCount > 0 && pausedCount === 0 && (
@@ -261,7 +261,7 @@ export function ScannerPanel({
           value={selectedPolicy}
           onChange={setSelectedPolicy}
           options={[
-            { value: "", label: t("security.defaultPolicy", "Default Policy (all)") },
+            { value: "", label: t("security.defaultPolicy") },
             ...scanPolicies.map((p) => ({ value: p, label: p })),
           ]}
         />
@@ -280,7 +280,7 @@ export function ScannerPanel({
             }
             setShowPlugins(!showPlugins);
           }}
-          title={t("security.configurePlugins", "Configure scan plugins")}
+          title={t("security.configurePlugins")}
         >
           <Crosshair className="w-3 h-3" />
         </button>
@@ -294,7 +294,7 @@ export function ScannerPanel({
             onClick={handleClearCompleted}
             className="text-[9px] text-muted-foreground/30 hover:text-foreground transition-colors"
           >
-            {t("security.clearCompleted", "Clear Done")}
+            {t("security.clearCompleted")}
           </button>
         )}
         {endpoints.length > 0 && (
@@ -303,7 +303,7 @@ export function ScannerPanel({
             onClick={handleClearAll}
             className="flex items-center gap-1 text-[9px] text-muted-foreground/30 hover:text-destructive transition-colors"
           >
-            <Trash2 className="w-2.5 h-2.5" /> {t("security.clearAll", "Clear All")}
+            <Trash2 className="w-2.5 h-2.5" /> {t("security.clearAll")}
           </button>
         )}
       </div>
@@ -312,11 +312,11 @@ export function ScannerPanel({
         <div className="border-b border-border/10 bg-muted/5 max-h-[300px] flex flex-col">
           <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border/5 flex-shrink-0">
             <span className="text-[10px] font-medium text-foreground/50">
-              {t("security.scanPlugins", "Scan Plugins")}
+              {t("security.scanPlugins")}
             </span>
             <span className="text-[9px] text-muted-foreground/30">
               {scannerRules.filter((r) => r.enabled).length}/{scannerRules.length}{" "}
-              {t("security.enabled", "enabled")}
+              {t("security.enabled")}
             </span>
             <div className="flex-1" />
             <button
@@ -334,15 +334,15 @@ export function ScannerPanel({
               }}
             >
               {scannerRules.every((r) => r.enabled)
-                ? t("security.disableAll", "Disable All")
-                : t("security.enableAll", "Enable All")}
+                ? t("security.disableAll")
+                : t("security.enableAll")}
             </button>
           </div>
           <div className="overflow-y-auto flex-1">
             {scannerRules.length === 0 ? (
               <div className="flex items-center justify-center py-6 text-muted-foreground/20 text-[11px]">
                 <Loader2 className="w-4 h-4 animate-spin mr-2" />{" "}
-                {t("security.loadingPlugins", "Loading plugins...")}
+                {t("security.loadingPlugins")}
               </div>
             ) : (
               <div className="divide-y divide-border/5">
@@ -395,13 +395,10 @@ export function ScannerPanel({
               <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground/20">
                 <Zap className="w-10 h-10" />
                 <p className="text-[12px] font-medium">
-                  {t("security.noScanTargets", "No scan targets")}
+                  {t("security.noScanTargets")}
                 </p>
                 <p className="text-[10px] text-muted-foreground/15 max-w-[220px] text-center">
-                  {t(
-                    "security.addTargetsHint",
-                    "Add URLs above or right-click endpoints in HTTP History / Site Map → Active Scan"
-                  )}
+                  {t("security.addTargetsHint")}
                 </p>
               </div>
             ) : (
@@ -571,7 +568,7 @@ export function ScannerPanel({
                       </span>
                       {sel.messageCount != null && sel.messageCount > 0 && (
                         <span className="text-[11px] text-muted-foreground/40">
-                          {sel.messageCount} {t("security.requestsSent", "requests sent")}
+                          {sel.messageCount} {t("security.requestsSent")}
                         </span>
                       )}
                       {sel.alerts.length > 0 && (
@@ -598,7 +595,7 @@ export function ScannerPanel({
               <ShieldCheck className="w-12 h-12" />
               <p className="text-[13px] font-medium">
                 {endpoints.length > 0
-                  ? t("security.selectEndpoint", "Select an endpoint to view results")
+                  ? t("security.selectEndpoint")
                   : t("security.scanHint")}
               </p>
             </div>

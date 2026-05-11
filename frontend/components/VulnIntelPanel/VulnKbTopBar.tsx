@@ -12,15 +12,15 @@ export function VulnKbTopBar({
 }) {
   const { t } = useTranslation();
   const tabs: { id: TopTab; icon: typeof Shield; label: string }[] = [
-    { id: "intel", icon: Shield, label: t("vulnKb.intelTab", "Intel") },
-    { id: "wiki", icon: BookOpen, label: t("vulnKb.wikiTab", "Wiki") },
-    { id: "poc-library", icon: Code, label: t("vulnKb.pocTab", "PoC Library") },
+    { id: "intel", icon: Shield, label: t("vulnKb.intelTab") },
+    { id: "wiki", icon: BookOpen, label: t("vulnKb.wikiTab") },
+    { id: "poc-library", icon: Code, label: t("vulnKb.pocTab") },
   ];
 
   return (
     <div className="flex items-center gap-1 px-3 py-2 border-b border-border/20 flex-shrink-0">
       <AlertTriangle className="w-3.5 h-3.5 text-accent/70 mr-1" />
-      <span className="text-[11px] font-medium mr-3">{t("vulnKb.title", "Vulnerability KB")}</span>
+      <span className="text-[11px] font-medium mr-3">{t("vulnKb.title")}</span>
       {tabs.map((tab) => (
         <button
           type="button"

@@ -137,7 +137,7 @@ function SkillsPane({ skills }: { skills: ToolManagerEditorProps["skills"] }) {
                   skills.setNewSkillName("");
                 }
               }}
-              placeholder={t("toolManager.newSkillName", "Skill name...")}
+              placeholder={t("toolManager.newSkillName")}
               className="flex-1 px-2 py-1 text-[11px] rounded bg-background border border-border/20 text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-accent/40"
             />
             <button
@@ -165,7 +165,7 @@ function SkillsPane({ skills }: { skills: ToolManagerEditorProps["skills"] }) {
             <div className="flex flex-col items-center justify-center h-24 gap-2">
               <BookOpen className="w-4 h-4 text-muted-foreground/40" />
               <span className="text-[11px] text-muted-foreground/50">
-                {t("toolManager.noSkills", "No skills yet")}
+                {t("toolManager.noSkills")}
               </span>
             </div>
           ) : (
@@ -242,7 +242,7 @@ function SkillsPane({ skills }: { skills: ToolManagerEditorProps["skills"] }) {
           <div className="flex-1 flex flex-col items-center justify-center gap-3">
             <BookOpen className="w-8 h-8 text-muted-foreground/30" />
             <p className="text-[12px] text-muted-foreground/50">
-              {t("toolManager.selectSkill", "Select a skill to edit or create a new one")}
+              {t("toolManager.selectSkill")}
             </p>
           </div>
         )}
@@ -390,7 +390,7 @@ function FormPane({
               { value: "homebrew-cask", label: "Homebrew Cask" },
               { value: "pip", label: "pip" },
               { value: "gem", label: "RubyGem" },
-              { value: "system", label: t("toolManager.system", "System") },
+              { value: "system", label: t("toolManager.system") },
               { value: "manual", label: t("toolManager.manual") },
             ]}
             ctx={fieldCtx}
