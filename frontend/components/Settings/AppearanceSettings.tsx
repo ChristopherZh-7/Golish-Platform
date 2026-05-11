@@ -70,25 +70,21 @@ export function AppearanceSettings({
   terminalSettings,
   onTerminalChange,
 }: AppearanceSettingsProps) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const displaySettings = useStore(selectDisplaySettings);
   const setDisplaySettings = useStore((state) => state.setDisplaySettings);
   const [langPref, setLangPref] = useState<LanguagePreference>(getLanguagePreference);
 
-  const handleLanguageChange = useCallback(
-    async (next: LanguagePreference) => {
-      setLangPref(next);
-      try {
-        await setLanguagePreference(next);
-        // eslint-disable-next-line no-console
-        console.log("[i18n] preference set to", next, "; i18n.language=", i18n.language);
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.error("[i18n] setLanguagePreference failed:", e);
-      }
-    },
-    [i18n]
-  );
+  const handleLanguageChange = useCallback(async (next: LanguagePreference) => {
+    setLangPref(next);
+    try {
+      await setLanguagePreference(next);
+    } catch (e) {
+      // Surface failures instead of silently no-op'ing.
+      // eslint-disable-next-line no-console
+      console.error("[i18n] setLanguagePreference failed:", e);
+    }
+  }, []);
 
   // Caret settings (from terminal settings in settings.toml)
   const caret: CaretSettings = terminalSettings?.caret ?? DEFAULT_CARET_SETTINGS;
@@ -140,12 +136,7 @@ export function AppearanceSettings({
       <div className="space-y-2">
         <h3 className="text-sm font-medium text-foreground mb-4">{t("settings.language")}</h3>
         <div className="flex items-start justify-between gap-4">
-          <div className="flex-1 space-y-1">
-            <p className="text-xs text-muted-foreground">{t("settings.languageHint")}</p>
-            <p className="text-[10px] text-muted-foreground/40 font-mono">
-              i18n.language = {i18n.language} · pref = {langPref}
-            </p>
-          </div>
+          <p className="text-xs text-muted-foreground flex-1">{t("settings.languageHint")}</p>
           <Select
             value={langPref}
             onValueChange={(v: LanguagePreference) => void handleLanguageChange(v)}

@@ -61,9 +61,8 @@ syncHtmlLang(i18n.language);
 i18n.on("languageChanged", syncHtmlLang);
 
 // Dev-only diagnostics handle. Run `__golishI18nDebug()` in the Tauri webview
-// console to see the full i18n state in one shot — useful when "switch did
-// nothing" is reported and we need to know whether i18next actually flipped
-// language vs. the issue is somewhere else.
+// console to see the full i18n state in one shot. Kept after shipping — costs
+// nothing and is useful when a future regression breaks the switch again.
 if (typeof window !== "undefined") {
   (window as unknown as { __golishI18nDebug?: unknown }).__golishI18nDebug = () => {
     const out = {
@@ -73,8 +72,6 @@ if (typeof window !== "undefined") {
       htmlLang: typeof document !== "undefined" ? document.documentElement.lang : null,
       hasZh: i18n.hasResourceBundle("zh-CN", "translation"),
       hasEn: i18n.hasResourceBundle("en", "translation"),
-      // Resolve the same key in both languages and at the active language so
-      // we can see whether the active language is actually serving Chinese.
       sample_active: i18n.t("settings.languageHint"),
       sample_zh: i18n.t("settings.languageHint", { lng: "zh-CN" }),
       sample_en: i18n.t("settings.languageHint", { lng: "en" }),
