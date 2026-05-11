@@ -86,6 +86,31 @@ function syncHtmlLang(lng: string) {
 syncHtmlLang(i18n.language);
 i18n.on("languageChanged", syncHtmlLang);
 
+// Dev-only diagnostics handle. Run `__golishI18nDebug()` in the Tauri webview
+// console to see the full i18n state in one shot — useful when "switch did
+// nothing" is reported and we need to know whether i18next actually flipped
+// language vs. the issue is somewhere else.
+if (typeof window !== "undefined") {
+  (window as unknown as { __golishI18nDebug?: unknown }).__golishI18nDebug = () => {
+    const out = {
+      storedPref: readPreference(),
+      i18nLanguage: i18n.language,
+      i18nLanguages: i18n.languages,
+      htmlLang: typeof document !== "undefined" ? document.documentElement.lang : null,
+      hasZh: i18n.hasResourceBundle("zh-CN", "translation"),
+      hasEn: i18n.hasResourceBundle("en", "translation"),
+      // Resolve the same key in both languages and at the active language so
+      // we can see whether the active language is actually serving Chinese.
+      sample_active: i18n.t("settings.languageHint"),
+      sample_zh: i18n.t("settings.languageHint", { lng: "zh-CN" }),
+      sample_en: i18n.t("settings.languageHint", { lng: "en" }),
+    };
+    // eslint-disable-next-line no-console
+    console.log("[golish-i18n-debug]", out);
+    return out;
+  };
+}
+
 export function getLanguagePreference(): LanguagePreference {
   return readPreference();
 }

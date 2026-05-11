@@ -70,7 +70,7 @@ export function AppearanceSettings({
   terminalSettings,
   onTerminalChange,
 }: AppearanceSettingsProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const displaySettings = useStore(selectDisplaySettings);
   const setDisplaySettings = useStore((state) => state.setDisplaySettings);
   const [langPref, setLangPref] = useState<LanguagePreference>(getLanguagePreference);
@@ -80,17 +80,14 @@ export function AppearanceSettings({
       setLangPref(next);
       try {
         await setLanguagePreference(next);
-        // Force this component (and only it) to re-render after i18n's
-        // languageChanged event fires; useTranslation's subscription does
-        // the same for `t(...)`, but Select's display value is wired to
-        // local state so we keep the explicit setLangPref above.
+        // eslint-disable-next-line no-console
+        console.log("[i18n] preference set to", next, "; i18n.language=", i18n.language);
       } catch (e) {
-        // Surface the failure instead of silently no-op'ing.
         // eslint-disable-next-line no-console
         console.error("[i18n] setLanguagePreference failed:", e);
       }
     },
-    []
+    [i18n]
   );
 
   // Caret settings (from terminal settings in settings.toml)
@@ -143,7 +140,12 @@ export function AppearanceSettings({
       <div className="space-y-2">
         <h3 className="text-sm font-medium text-foreground mb-4">{t("settings.language")}</h3>
         <div className="flex items-start justify-between gap-4">
-          <p className="text-xs text-muted-foreground flex-1">{t("settings.languageHint")}</p>
+          <div className="flex-1 space-y-1">
+            <p className="text-xs text-muted-foreground">{t("settings.languageHint")}</p>
+            <p className="text-[10px] text-muted-foreground/40 font-mono">
+              i18n.language = {i18n.language} · pref = {langPref}
+            </p>
+          </div>
           <Select
             value={langPref}
             onValueChange={(v: LanguagePreference) => void handleLanguageChange(v)}
