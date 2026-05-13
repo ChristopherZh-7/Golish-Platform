@@ -53,20 +53,27 @@ export function stripOscSequences(str: string): string {
   result = result.replace(/\](?:133|7|0|1|2|9);[^\x1b\x07]*(?:\x07|\x1b\\)?/g, "");
 
   // Handle cursor-up overwrite patterns BEFORE stripping CSI sequences.
-  // When terminal outputs: content1\n\x1b[1A\rcontent2
-  // It means: output line 1, newline, cursor up 1 line, carriage return, overwrite with line 2.
-  // We collapse this pattern to just \r so line 1 gets properly overwritten by line 2.
-  // This handles npm/pnpm/yarn multi-line progress displays.
+  // When terminal outputs: content1\n\x1b[1A\x1b[Kcontent2
+  // It means: output line 1, newline, cursor up 1 line, erase line, write line 2.
+  // We collapse this pattern to just \r so line 1 gets properly overwritten by
+  // line 2. This handles npm/pnpm/yarn multi-line progress displays.
+  //
+  // IMPORTANT: only collapse when the cursor-up is *followed by an explicit
+  // erase* (\x1b[K / \x1b[2K). PowerShell's `Format-Table` and a couple of
+  // PSReadLine prompt-fix paths emit a bare `\n\x1b[1A` (cursor-up with no
+  // erase) to "park" the cursor without clobbering the line above; treating
+  // that as an overwrite ate the entire "Mode  LastWriteTime …" header row
+  // for `dir`, collapsing it into the preceding `Directory:` GroupBy line.
 
   // Apply repeatedly to handle nested patterns (e.g., multiple consecutive overwrites)
   let prev: string;
   do {
     prev = result;
-    // Pattern: newline, cursor-up (any count), optional erase sequences
-    // \n\x1b[1A\r → \r (cursor up then CR to overwrite)
-    // \n\x1b[1A\x1b[K → \r (cursor up then erase line)
-    // \n\x1b[1A\x1b[2K\r → \r (cursor up, erase entire line, then CR)
-    result = result.replace(/\n\x1b\[\d*A(?:\x1b\[\d*K)*/g, "\r");
+    // Pattern: newline, cursor-up (any count), then *at least one* erase
+    // sequence. We deliberately *don't* match bare `\n\x1b[Nh` cursor-up.
+    // \n\x1b[1A\x1b[K  → \r (cursor up, erase line)
+    // \n\x1b[1A\x1b[2K → \r (cursor up, erase entire line)
+    result = result.replace(/\n\x1b\[\d*A(?:\x1b\[\d*K)+/g, "\r");
   } while (result !== prev);
 
   // Strip ALL non-SGR CSI sequences while keeping \x1b[...m (colors/styles).
