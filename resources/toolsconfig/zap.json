@@ -1,0 +1,134 @@
+{
+  "tool": {
+    "id": "zap",
+    "name": "ZAP",
+    "description": "OWASP ZAP - free, open-source Web application security scanner with intercepting proxy, active/passive scan, fuzzer and spider; the de-facto open-source replacement for Burp Suite",
+    "executable": "ZAP/zap.sh",
+    "runtime": "java",
+    "runtimeVersion": "17",
+    "launchMode": "gui",
+    "category": "web",
+    "subcategory": "proxy",
+    "tier": "essential",
+    "tags": ["web", "proxy", "scanner", "fuzzer", "spider", "intercept"],
+    "install": {
+      "method": "github",
+      "source": "zaproxy/zaproxy",
+      "macos": { "method": "homebrew-cask", "source": "zap" },
+      "linux": { "method": "github", "source": "zaproxy/zaproxy" },
+      "windows": { "method": "github", "source": "zaproxy/zaproxy" }
+    },
+    "params": [
+      {
+        "label": "Daemon (headless)",
+        "flag": "-daemon",
+        "type": "boolean",
+        "description": "Run ZAP as a headless daemon (for API / CLI usage)"
+      },
+      {
+        "label": "API Port",
+        "flag": "-port",
+        "type": "string",
+        "description": "ZAP API listen port",
+        "placeholder": "8080"
+      },
+      {
+        "label": "Host",
+        "flag": "-host",
+        "type": "string",
+        "description": "ZAP API bind host",
+        "placeholder": "127.0.0.1"
+      },
+      {
+        "label": "ZAP Home",
+        "flag": "-dir",
+        "type": "string",
+        "description": "ZAP home directory (sessions, configs, add-ons)",
+        "placeholder": "~/.ZAP"
+      },
+      {
+        "label": "New Session",
+        "flag": "-newsession",
+        "type": "string",
+        "description": "Create and open a new session file",
+        "placeholder": "engagement"
+      },
+      {
+        "label": "Session",
+        "flag": "-session",
+        "type": "string",
+        "description": "Load an existing session",
+        "placeholder": "engagement.session"
+      },
+      {
+        "label": "Quick URL",
+        "flag": "-quickurl",
+        "type": "string",
+        "description": "Quick-scan a single URL (spider + passive baseline)",
+        "placeholder": "https://target.com"
+      },
+      {
+        "label": "Quick Out",
+        "flag": "-quickout",
+        "type": "string",
+        "description": "Output file for quickurl results (.html / .json / .md / .xml)",
+        "placeholder": "report.html"
+      },
+      {
+        "label": "Quick Progress",
+        "flag": "-quickprogress",
+        "type": "boolean",
+        "description": "Print scan progress to stdout"
+      },
+      {
+        "label": "Config",
+        "flag": "-config",
+        "type": "string",
+        "description": "Override a single ZAP config key (repeatable, e.g. api.key=changeme)",
+        "placeholder": "api.disablekey=true"
+      },
+      {
+        "label": "Silent",
+        "flag": "-silent",
+        "type": "boolean",
+        "description": "Suppress check-for-updates and telemetry"
+      }
+    ],
+    "skills": [
+      {
+        "id": "gui-launch",
+        "name": "Launch GUI",
+        "description": "Start ZAP in interactive GUI mode (default)",
+        "args": "",
+        "tags": ["interactive"]
+      },
+      {
+        "id": "daemon",
+        "name": "Headless daemon @ 8080",
+        "description": "Run ZAP as a headless API daemon on 127.0.0.1:8080 with API key disabled (dev only)",
+        "args": "-daemon -host 127.0.0.1 -port 8080 -config api.disablekey=true",
+        "tags": ["api", "automation"]
+      },
+      {
+        "id": "quick-baseline",
+        "name": "Quick baseline scan",
+        "description": "Spider + passive baseline scan of a target URL, output HTML report",
+        "args": "-cmd -quickurl {{url}} -quickout {{report}} -quickprogress",
+        "tags": ["scan", "report"]
+      },
+      {
+        "id": "resume-session",
+        "name": "Resume engagement session",
+        "description": "Re-open an existing engagement session file in GUI",
+        "args": "-session {{session_file}}",
+        "tags": ["project"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["vulnerability", "url"],
+      "detect": "ZAP|OWASP|zaproxy",
+      "patterns": []
+    }
+  }
+}
