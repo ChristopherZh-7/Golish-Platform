@@ -3,8 +3,7 @@
 // VirtualEnvChangedEvent, SessionEndedEvent, AlternateScreenEvent) now
 // live in `@/lib/events/payloads` as the single source of truth
 // (EventPayloadMap). Consumers should use `onEvent("<channel>", ...)`
-// which infers the payload type automatically — see
-// `useTauriEvents.ts` / `services/terminal-events.ts`.
+// which infers the payload type automatically — see `useTauriEvents.ts`.
 
 export const PROCESS_DETECTION_DELAY_MS = 300;
 export const SHELL_PROCESSES = new Set(["zsh", "bash", "sh", "fish"]);

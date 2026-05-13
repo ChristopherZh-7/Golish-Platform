@@ -99,6 +99,15 @@ export function setupGlobalErrorHandlers(): void {
       return true;
     }
 
+    // ResizeObserver loop completed with undelivered notifications — benign
+    // Chromium warning emitted whenever a ResizeObserver callback dirties the
+    // layout it observes. We can't act on it and the browser recovers on the
+    // next frame; downgrade to debug so it doesn't pollute the console.
+    if (msg.includes("ResizeObserver loop")) {
+      logger.debug("[ResizeObserver] Benign loop notification:", msg);
+      return true;
+    }
+
     logger.error("[GlobalError] Uncaught error:", {
       message: msg,
       source,

@@ -50,11 +50,12 @@ export function useTauriEvents() {
     function shortId(id: string): string {
       return id.slice(0, 8);
     }
-    // High-visibility timeline trace for terminal command lifecycle. Goes
-    // through `console.warn` so users can copy it out of DevTools without
-    // having to bump the log level. Tag stays uniform so it's grep-friendly.
+    // Diagnostic trace for the terminal command-block lifecycle. Lives at
+    // debug level so it doesn't show up in the console by default; bump the
+    // logger to debug when investigating ordering bugs like the
+    // PowerShell-on-Windows first-prompt race.
     function trace(event: string, sessionId: string, extra?: Record<string, unknown>): void {
-      console.warn(
+      logger.debug(
         `[timeline-trace] ${event} sid=${shortId(sessionId)} t=${Date.now()}`,
         extra ?? {}
       );

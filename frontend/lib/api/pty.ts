@@ -7,6 +7,15 @@ export interface PtySession {
   cols: number;
 }
 
+// Default PTY size used when a caller doesn't pass rows/cols. 80×24 is the
+// classic vt100 minimum, but it makes Windows PowerShell's `Format-Table`
+// (used by `dir`/`Get-ChildItem`) collapse the `Mode` column into the
+// preceding `Directory:` header line until ResizeObserver fires the first
+// real resize. 120×30 matches the modern Windows Terminal / Console host
+// defaults and is wide enough for `Format-Table` to render the full table.
+const DEFAULT_PTY_ROWS = 30;
+const DEFAULT_PTY_COLS = 120;
+
 export async function ptyCreate(
   workingDirectory?: string,
   rows?: number,
@@ -14,8 +23,8 @@ export async function ptyCreate(
 ): Promise<PtySession> {
   return invoke<PtySession>("pty_create", {
     workingDirectory,
-    rows: rows ?? 24,
-    cols: cols ?? 80,
+    rows: rows ?? DEFAULT_PTY_ROWS,
+    cols: cols ?? DEFAULT_PTY_COLS,
   });
 }
 
