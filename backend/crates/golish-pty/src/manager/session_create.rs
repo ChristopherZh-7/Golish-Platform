@@ -8,10 +8,21 @@ use parking_lot::Mutex;
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
+use std::fmt::Write as _;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
+
+/// Lower-case hex encode for `QBIT_PTY_DUMP=1` raw-byte trace logging.
+/// Inlined to avoid pulling in the `hex` crate just for a debug helper.
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        let _ = write!(out, "{:02x}", b);
+    }
+    out
+}
 
 use uuid::Uuid;
 
@@ -334,6 +345,33 @@ impl PtyManager {
                             parser.parse_filtered(data)
                         };
 
+                        // Optional raw-byte dump (gated on QBIT_PTY_DUMP=1).
+                        // Enables diagnosing the "PowerShell `dir` first-N
+                        // commands collapse Mode/Directory rows" bug by
+                        // comparing what ConPTY actually emits vs. what the
+                        // OSC 133 parser passes through. Truncates large
+                        // bursts to keep logs readable.
+                        if std::env::var("QBIT_PTY_DUMP")
+                            .map(|v| v == "1")
+                            .unwrap_or(false)
+                        {
+                            const MAX_DUMP: usize = 512;
+                            let raw_preview = &data[..data.len().min(MAX_DUMP)];
+                            let filtered_preview =
+                                &parse_result.output[..parse_result.output.len().min(MAX_DUMP)];
+                            tracing::info!(
+                                session_id = %reader_session_id,
+                                raw_len = data.len(),
+                                raw_hex = %hex_encode(raw_preview),
+                                raw_utf8 = %String::from_utf8_lossy(raw_preview),
+                                filtered_len = parse_result.output.len(),
+                                filtered_hex = %hex_encode(filtered_preview),
+                                filtered_utf8 = %String::from_utf8_lossy(filtered_preview),
+                                events = ?parse_result.events,
+                                "[pty-dump] raw read"
+                            );
+                        }
+
                         if !parse_result.events.is_empty() {
                             tracing::trace!(
                                 session_id = %reader_session_id,
@@ -436,6 +474,21 @@ impl PtyManager {
                         // Emit the coalesced batch.
                         let output = process_utf8_with_buffer(&mut utf8_buffer, &coalesce_buf);
                         if !output.is_empty() {
+                            if std::env::var("QBIT_PTY_DUMP")
+                                .map(|v| v == "1")
+                                .unwrap_or(false)
+                            {
+                                const MAX_DUMP: usize = 512;
+                                let preview = &output.as_bytes()
+                                    [..output.as_bytes().len().min(MAX_DUMP)];
+                                tracing::info!(
+                                    session_id = %output_session_id,
+                                    coalesced_len = output.len(),
+                                    coalesced_hex = %hex_encode(preview),
+                                    coalesced_utf8 = %String::from_utf8_lossy(preview),
+                                    "[pty-dump] emit to frontend"
+                                );
+                            }
                             emitter_for_output.emit_output(&output_session_id, &output);
                         }
                         coalesce_buf.clear();

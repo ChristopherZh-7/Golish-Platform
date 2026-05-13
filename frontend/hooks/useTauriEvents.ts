@@ -315,6 +315,36 @@ export function useTauriEvents() {
           bytes: data.length,
           hasDeferredEnd: deferredExitCodes.has(session_id),
         });
+        // Opt-in raw-byte dump for the PowerShell-on-Windows `dir` collapse
+        // bug. Enable by running `localStorage.setItem('QBIT_PTY_TRACE','1')`
+        // in the Webview devtools console and reproducing the issue, then
+        // copy the resulting `[pty-trace]` lines back to the developer.
+        // Pairs with the backend `QBIT_PTY_DUMP=1` log so we can correlate
+        // ConPTY raw → OSC133 filtered → emitter coalesced → frontend
+        // received bytes for the same window of time.
+        try {
+          if (
+            typeof window !== "undefined" &&
+            window.localStorage &&
+            window.localStorage.getItem("QBIT_PTY_TRACE") === "1"
+          ) {
+            const MAX_PREVIEW = 512;
+            const preview = data.length > MAX_PREVIEW ? data.slice(0, MAX_PREVIEW) : data;
+            const hex = Array.from(preview)
+              .map((c) => c.charCodeAt(0).toString(16).padStart(2, "0"))
+              .join("");
+            // eslint-disable-next-line no-console
+            console.log(
+              `[pty-trace] sid=${session_id.slice(0, 8)} len=${data.length} json=`,
+              JSON.stringify(preview),
+              "hex=",
+              hex
+            );
+          }
+        } catch {
+          // localStorage can throw in private mode / Webview restrictions —
+          // the trace is best-effort, never let it break output handling.
+        }
         virtualTerminalManager.write(session_id, data);
         liveTerminalManager.write(session_id, data);
         store.getState().appendOutput(session_id, data);
