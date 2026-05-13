@@ -156,5 +156,16 @@ export function stripOscSequences(str: string): string {
   // 2+ blank lines; replacement leaves exactly 1 blank line.)
   result = result.replace(/\n{3,}/g, "\n\n");
 
+  // Strip leading "invisible-only" prefix before the final trim: SGR
+  // escapes (`\x1b[Nm`), DEC private modes (`\x1b[?Nh/l`), and ASCII
+  // whitespace. Without this, PowerShell's stray `\x1b[0m\r\n` echo
+  // between the command and its output (only present from the *second*
+  // dir onward, when PSReadLine inserts an extra SGR reset) prevents
+  // `String.trim()` from removing the leading blank line+indent — making
+  // dir 1 render tight and dir 2+ render with `Directory:` pushed one
+  // row down with a 4-space indent. Stripping the invisible prefix first
+  // gives every `dir` the same flush-left layout.
+  result = result.replace(/^(?:\x1b\[[\d;?]*[a-zA-Z]|\s)+/, "");
+
   return result.trim();
 }
