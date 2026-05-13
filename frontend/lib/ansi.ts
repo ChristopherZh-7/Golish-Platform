@@ -31,12 +31,33 @@ export function stripAllAnsi(str: string): string {
   return result.trim();
 }
 
+// Module-local counter for the version sanity log below. Module-local
+// (not globalThis) so it can't possibly throw during initialisation —
+// previous globalThis-cast attempt (commit 4a5fe9d, reverted) blacked
+// out the Webview on Windows. This one is the simplest possible shape
+// that any JS engine can run: a `let` plus a `++`.
+let __ansiInvocationCount = 0;
+
 /**
  * Strip OSC (Operating System Command) sequences from terminal output.
  * These are control sequences like directory changes and shell integration markers,
  * not display formatting. ANSI color codes are preserved for rendering.
  */
 export function stripOscSequences(str: string): string {
+  // Print the first few invocations to console so we can verify on the
+  // user's Windows session that the new logic is actually executing
+  // (HMR is unreliable for utility modules). Bumping the [v…] tag every
+  // time the algorithm changes makes the live build self-identify.
+  if (__ansiInvocationCount < 5) {
+    __ansiInvocationCount += 1;
+    // eslint-disable-next-line no-console
+    console.log(
+      "[ansi v3.1 cup2nn+lead-strip] call#" +
+        __ansiInvocationCount +
+        " input head=" +
+        JSON.stringify(str.slice(0, 80))
+    );
+  }
   // OSC sequences start with ESC ] and end with BEL (\x07) or ST (\x1b\)
   // Common OSC codes:
   // - OSC 0/1/2: Window/icon title
