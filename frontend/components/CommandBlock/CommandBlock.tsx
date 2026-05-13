@@ -20,10 +20,23 @@ const codeStyle = {
 // PTY noise (cursor moves, OSC 133 residue, zero-width joiners, etc.) doesn't
 // hide an empty line or break the leading-line equality test.
 const INVISIBLE_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b-\u200d\ufeff]/g;
-const SGR_RE = /\x1b\[[0-9;]*m/g;
+// Match any CSI sequence: ESC [ <intermediate/params> <final-byte>.
+// Final byte is any letter; parameters include digits / `;` / `?` / `:` / `<>=`.
+// Windows ConPTY wraps the echoed command line in cursor-mode toggles
+// (`\x1b[?25l`, `\x1b[K`, `\x1b[?25h`, …) — stripping ESC alone leaves the
+// `[?25l[K…` debris that breaks the `visible === cmd` equality test below.
+const CSI_RE = /\x1b\[[\d;?:<>= ]*[a-zA-Z]/g;
 
 function stripInvisible(s: string): string {
   return s.replace(INVISIBLE_RE, "");
+}
+
+// Reduce a raw output line to the user-visible text it would render as, with
+// every CSI escape (cursor moves, SGR colours, DEC private modes) and every
+// C0/C1 control byte removed. Used to compare the leading line of `output`
+// against the typed command — see `stripCommandEcho` below.
+function visibleText(line: string): string {
+  return line.replace(CSI_RE, "").replace(INVISIBLE_RE, "").trim();
 }
 
 // Strip a single leading line that is the shell's echo of the typed command.
@@ -34,13 +47,15 @@ function stripCommandEcho(output: string, command: string): string {
   if (!cmd) return output;
   const lines = output.split("\n");
   for (let i = 0; i < lines.length; i++) {
-    const visible = stripInvisible(lines[i]).trim();
+    const visible = visibleText(lines[i]);
     if (visible === "") continue;
     if (visible === cmd) {
       return lines.slice(i + 1).join("\n");
     }
     if (visible.startsWith(`${cmd} `) || visible.startsWith(`${cmd}\t`)) {
-      const rawLine = lines[i];
+      // Operate on the CSI-stripped version of the line so we don't reinsert
+      // cursor-mode debris when we keep the trailing text after `cmd`.
+      const rawLine = lines[i].replace(CSI_RE, "");
       const idx = rawLine.indexOf(cmd);
       if (idx !== -1) {
         const remainder = rawLine.slice(idx + cmd.length).replace(/^[\s\u3000]+/, "");
@@ -76,11 +91,12 @@ export function CommandBlock({
     return stripCommandEcho(stripped, block.command ?? "");
   }, [block.output, block.command]);
 
-  // `hasOutput` must reflect *visible* output — otherwise lone SGR escapes or
-  // bare control characters keep the empty output panel expanded ("black box"
-  // right after the first command of a new PowerShell session).
+  // `hasOutput` must reflect *visible* output — otherwise lone CSI escapes
+  // (cursor moves, DEC private modes, SGR colour resets) or bare control
+  // characters keep the empty output panel expanded ("black box" right after
+  // the first command of a new PowerShell session).
   const hasOutput = useMemo(() => {
-    const visible = stripInvisible(cleanOutput.replace(SGR_RE, "")).trim();
+    const visible = stripInvisible(cleanOutput.replace(CSI_RE, "")).trim();
     return visible.length > 0;
   }, [cleanOutput]);
 

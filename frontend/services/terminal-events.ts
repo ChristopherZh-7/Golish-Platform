@@ -42,6 +42,12 @@ export function createTerminalEventService() {
   const gitRefreshSeq = new Map<string, number>();
   const gitRefreshInFlight = new Set<string>();
   const lastStartedCommand = new Map<string, string | null>();
+  // Per-session timestamp of the last prompt_start that consumed a pending
+  // deferred command_end. Used to suppress a stray *second* prompt_start that
+  // arrives within a short window after the first one — see the PowerShell /
+  // ConPTY race documented in the prompt_start handler below.
+  const lastPromptStartConsumedAt = new Map<string, number>();
+  const PROMPT_START_DEDUPE_MS = 300;
   let fulltermCommands = new Set(BUILTIN_FULLTERM_COMMANDS);
   let gitStatusPollInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -110,6 +116,7 @@ export function createTerminalEventService() {
               clearTimeout(deferred.fallbackTimer);
               deferredExitCodes.delete(session_id);
               liveTerminalManager.scrollToBottom(session_id);
+              lastPromptStartConsumedAt.set(session_id, Date.now());
 
               void (async () => {
                 await new Promise((resolve) => setTimeout(resolve, 150));
@@ -119,10 +126,28 @@ export function createTerminalEventService() {
                 store.getState().handlePromptStart(session_id);
               })();
             } else {
-              virtualTerminalManager.dispose(session_id);
-              liveTerminalManager.scrollToBottom(session_id);
-              liveTerminalManager.dispose(session_id);
-              state.handlePromptStart(session_id);
+              // Dedupe: on Windows PowerShell with ConPTY we sometimes see a
+              // *second* prompt_start hit within ~300 ms of the first one, in
+              // which case the first prompt_start already scheduled an async
+              // handleCommandEnd + handlePromptStart pair. Running another
+              // handlePromptStart synchronously here would race the async
+              // cleanup and create an empty CommandBlock (no exit code, no
+              // duration) for the still-pending command — the "two cards on
+              // first dir" bug. Skip when we're inside the dedupe window.
+              const consumedAt = lastPromptStartConsumedAt.get(session_id);
+              const withinDedupeWindow =
+                consumedAt !== undefined && Date.now() - consumedAt < PROMPT_START_DEDUPE_MS;
+              if (withinDedupeWindow) {
+                logger.debug(
+                  "[prompt_start] Suppressing duplicate prompt_start within dedupe window:",
+                  session_id
+                );
+              } else {
+                virtualTerminalManager.dispose(session_id);
+                liveTerminalManager.scrollToBottom(session_id);
+                liveTerminalManager.dispose(session_id);
+                state.handlePromptStart(session_id);
+              }
             }
 
             lastStartedCommand.delete(session_id);
@@ -298,6 +323,7 @@ export function createTerminalEventService() {
       processDetectionTimers.clear();
       for (const { fallbackTimer } of deferredExitCodes.values()) clearTimeout(fallbackTimer);
       deferredExitCodes.clear();
+      lastPromptStartConsumedAt.clear();
       if (gitStatusPollInterval) clearInterval(gitStatusPollInterval);
       Promise.all(
         unlisteners.map((p) =>
