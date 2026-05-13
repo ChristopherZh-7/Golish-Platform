@@ -43,6 +43,25 @@ export function stripOscSequences(str: string): string {
   // - OSC 7: Current directory
   // - OSC 133: Shell integration (prompt markers)
 
+  // Diagnostic: prove which version of stripOscSequences the Webview is
+  // actually running. Bump the tag whenever the algorithm changes so we
+  // can read in devtools console which build is live. Cap to first 8
+  // invocations per page-load to keep the console quiet.
+  const ANSI_VERSION_TAG = "ansi-v3-cup2nn-collapse3";
+  // biome-ignore lint/suspicious/noExplicitAny: throwaway diag global
+  const w = globalThis as any;
+  if (!w.__ansiCallCount) w.__ansiCallCount = 0;
+  if (w.__ansiCallCount < 8) {
+    w.__ansiCallCount += 1;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[${ANSI_VERSION_TAG}] call#${w.__ansiCallCount} input=`,
+      JSON.stringify(str.slice(0, 300)),
+      "len=",
+      str.length
+    );
+  }
+
   let result = str;
 
   // Remove OSC sequences with ESC prefix: \x1b] ... (\x07 | \x1b\)
@@ -156,5 +175,19 @@ export function stripOscSequences(str: string): string {
   // 2+ blank lines; replacement leaves exactly 1 blank line.)
   result = result.replace(/\n{3,}/g, "\n\n");
 
-  return result.trim();
+  const finalResult = result.trim();
+
+  // biome-ignore lint/suspicious/noExplicitAny: diag global, removed once verified
+  const w = globalThis as any;
+  if (w.__ansiCallCount && w.__ansiCallCount <= 8) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[ansi-v3-cup2nn-collapse3] call#${w.__ansiCallCount} output=`,
+      JSON.stringify(finalResult.slice(0, 300)),
+      "len=",
+      finalResult.length
+    );
+  }
+
+  return finalResult;
 }
