@@ -46,6 +46,12 @@ export function useTauriEvents() {
     const seenCommandEnd = new Set<string>();
     const lastPromptStartConsumedAt = new Map<string, number>();
     const PROMPT_START_DEDUPE_MS = 300;
+    // Bounded per-session counter for the default-on `[pty-trace]`
+    // raw-byte dump in the terminal_output handler below — covers about
+    // one `dir`'s worth of bytes per fresh session, then goes quiet so
+    // the console isn't flooded for the rest of the day.
+    const ptyTraceEventsBySession = new Map<string, number>();
+    const PTY_TRACE_CAP_PER_SESSION = 80;
 
     function shortId(id: string): string {
       return id.slice(0, 8);
@@ -315,19 +321,21 @@ export function useTauriEvents() {
           bytes: data.length,
           hasDeferredEnd: deferredExitCodes.has(session_id),
         });
-        // Opt-in raw-byte dump for the PowerShell-on-Windows `dir` collapse
-        // bug. Enable by running `localStorage.setItem('QBIT_PTY_TRACE','1')`
-        // in the Webview devtools console and reproducing the issue, then
-        // copy the resulting `[pty-trace]` lines back to the developer.
-        // Pairs with the backend `QBIT_PTY_DUMP=1` log so we can correlate
-        // ConPTY raw → OSC133 filtered → emitter coalesced → frontend
-        // received bytes for the same window of time.
+        // Default-on raw-byte dump for the PowerShell-on-Windows `dir`
+        // collapse bug. First N events per session get console.log'd so
+        // we can correlate with the backend `[pty-dump]` lines without
+        // needing to ferry env vars or localStorage flags through the
+        // user's setup. After the per-session cap is hit, this goes
+        // quiet for the rest of the page lifetime. Set
+        // `localStorage.QBIT_PTY_TRACE_DISABLE = '1'` to opt out.
         try {
-          if (
+          const traceDisabled =
             typeof window !== "undefined" &&
             window.localStorage &&
-            window.localStorage.getItem("QBIT_PTY_TRACE") === "1"
-          ) {
+            window.localStorage.getItem("QBIT_PTY_TRACE_DISABLE") === "1";
+          const seenSoFar = ptyTraceEventsBySession.get(session_id) ?? 0;
+          if (!traceDisabled && seenSoFar < PTY_TRACE_CAP_PER_SESSION) {
+            ptyTraceEventsBySession.set(session_id, seenSoFar + 1);
             const MAX_PREVIEW = 512;
             const preview = data.length > MAX_PREVIEW ? data.slice(0, MAX_PREVIEW) : data;
             const hex = Array.from(preview)
@@ -335,7 +343,7 @@ export function useTauriEvents() {
               .join("");
             // eslint-disable-next-line no-console
             console.log(
-              `[pty-trace] sid=${session_id.slice(0, 8)} len=${data.length} json=`,
+              `[pty-trace] sid=${session_id.slice(0, 8)} seq=${seenSoFar + 1} len=${data.length} json=`,
               JSON.stringify(preview),
               "hex=",
               hex

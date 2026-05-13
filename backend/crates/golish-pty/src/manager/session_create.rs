@@ -313,6 +313,9 @@ impl PtyManager {
 
             let mut buf = [0u8; 4096];
             let mut total_bytes_read: u64 = 0;
+            // Bounded counter for the default-on `[pty-dump]` raw-byte
+            // trace below; first N reads get dumped, then we go quiet.
+            let mut pty_dump_reads_counter: u64 = 0;
             // Note: utf8_buffer moved to emitter thread — UTF-8
             // boundary handling happens there.
 
@@ -345,22 +348,31 @@ impl PtyManager {
                             parser.parse_filtered(data)
                         };
 
-                        // Optional raw-byte dump (gated on QBIT_PTY_DUMP=1).
-                        // Enables diagnosing the "PowerShell `dir` first-N
-                        // commands collapse Mode/Directory rows" bug by
-                        // comparing what ConPTY actually emits vs. what the
-                        // OSC 133 parser passes through. Truncates large
-                        // bursts to keep logs readable.
-                        if std::env::var("QBIT_PTY_DUMP")
-                            .map(|v| v == "1")
-                            .unwrap_or(false)
-                        {
+                        // Raw-byte dump for diagnosing the
+                        // "PowerShell `dir` first-N commands collapse
+                        // Mode/Directory rows" bug. Default-on for the
+                        // first N reads of each session so we don't need
+                        // to chase env-var plumbing across npm → cargo →
+                        // tauri; set `QBIT_PTY_DUMP_MAX` env to override
+                        // the read cap (default 80 reads ~= one `dir`
+                        // worth of bytes), or `QBIT_PTY_DUMP=0` to
+                        // disable entirely.
+                        let dump_cap: u64 = std::env::var("QBIT_PTY_DUMP_MAX")
+                            .ok()
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(80);
+                        let dump_enabled = std::env::var("QBIT_PTY_DUMP")
+                            .map(|v| v != "0")
+                            .unwrap_or(true);
+                        if dump_enabled && pty_dump_reads_counter < dump_cap {
+                            pty_dump_reads_counter += 1;
                             const MAX_DUMP: usize = 512;
                             let raw_preview = &data[..data.len().min(MAX_DUMP)];
                             let filtered_preview =
                                 &parse_result.output[..parse_result.output.len().min(MAX_DUMP)];
                             tracing::info!(
                                 session_id = %reader_session_id,
+                                read_seq = pty_dump_reads_counter,
                                 raw_len = data.len(),
                                 raw_hex = %hex_encode(raw_preview),
                                 raw_utf8 = %String::from_utf8_lossy(raw_preview),
@@ -433,6 +445,17 @@ impl PtyManager {
             let mut utf8_buffer = Utf8IncompleteBuffer::new();
             let mut coalesce_buf: Vec<u8> = Vec::with_capacity(16 * 1024);
             let timeout = std::time::Duration::from_millis(16);
+            // Bounded counter for the default-on `[pty-dump]` emit trace
+            // below — matches the reader-thread counter so both halves of
+            // the pipeline produce comparable evidence.
+            let mut pty_dump_emits_counter: u64 = 0;
+            let pty_dump_emit_cap: u64 = std::env::var("QBIT_PTY_DUMP_MAX")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(80);
+            let pty_dump_emit_enabled = std::env::var("QBIT_PTY_DUMP")
+                .map(|v| v != "0")
+                .unwrap_or(true);
 
             loop {
                 match output_rx.recv_timeout(timeout) {
@@ -474,15 +497,16 @@ impl PtyManager {
                         // Emit the coalesced batch.
                         let output = process_utf8_with_buffer(&mut utf8_buffer, &coalesce_buf);
                         if !output.is_empty() {
-                            if std::env::var("QBIT_PTY_DUMP")
-                                .map(|v| v == "1")
-                                .unwrap_or(false)
+                            if pty_dump_emit_enabled
+                                && pty_dump_emits_counter < pty_dump_emit_cap
                             {
+                                pty_dump_emits_counter += 1;
                                 const MAX_DUMP: usize = 512;
                                 let preview = &output.as_bytes()
                                     [..output.as_bytes().len().min(MAX_DUMP)];
                                 tracing::info!(
                                     session_id = %output_session_id,
+                                    emit_seq = pty_dump_emits_counter,
                                     coalesced_len = output.len(),
                                     coalesced_hex = %hex_encode(preview),
                                     coalesced_utf8 = %String::from_utf8_lossy(preview),
