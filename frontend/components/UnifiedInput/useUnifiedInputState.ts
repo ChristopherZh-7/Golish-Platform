@@ -78,10 +78,15 @@ export interface StateRefValue {
 
 export function useInputState({
   sessionId,
-  maxHeight = 200,
+  desiredHeight = 0,
 }: {
   sessionId: string;
-  maxHeight?: number;
+  /**
+   * Height (in px) the user has dragged the input panel to. `0` means
+   * "user has never dragged" → legacy auto-grow (one line, cap 200px).
+   * `>0` means textarea must be at least this tall, up to 800px.
+   */
+  desiredHeight?: number;
 }) {
   const { t } = useTranslation();
   const workingDirectory = useStore((state) => state.sessions[sessionId]?.workingDirectory);
@@ -225,15 +230,19 @@ export function useInputState({
 
   // ── textarea auto-resize ──
   const lastTextareaHeightRef = useRef<number>(0);
-  const maxHeightRef = useRef(maxHeight);
-  maxHeightRef.current = maxHeight;
+  const desiredHeightRef = useRef(desiredHeight);
+  desiredHeightRef.current = desiredHeight;
   const adjustTextareaHeight = useCallback(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
     requestAnimationFrame(() => {
       textarea.style.height = "auto";
       const scrollHeight = textarea.scrollHeight;
-      const newHeight = Math.min(scrollHeight, maxHeightRef.current);
+      const desired = desiredHeightRef.current;
+      const newHeight =
+        desired > 0
+          ? Math.min(Math.max(scrollHeight, desired), 800)
+          : Math.min(scrollHeight, 200);
       if (newHeight !== lastTextareaHeightRef.current) {
         lastTextareaHeightRef.current = newHeight;
       }
@@ -259,7 +268,7 @@ export function useInputState({
 
   useEffect(() => {
     adjustTextareaHeight();
-  }, [input, maxHeight, adjustTextareaHeight]);
+  }, [input, desiredHeight, adjustTextareaHeight]);
 
   // ── tool context refs ──
   const toolContextRef = useRef<{ cdPrefix: string; baseCmd: string }>({

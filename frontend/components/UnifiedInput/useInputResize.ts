@@ -1,49 +1,58 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const STORAGE_KEY = "golish.unifiedInput.maxHeight";
-const DEFAULT_MAX_HEIGHT = 200;
-const MIN_MAX_HEIGHT = 80;
-const MAX_MAX_HEIGHT = 800;
+const STORAGE_KEY = "golish.unifiedInput.desiredHeight";
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
+const UNSET = 0; // 0 = user has never dragged; legacy auto-grow behavior applies
+const MIN_USER_HEIGHT = 80;
+const MAX_USER_HEIGHT = 800;
+const IMPLICIT_START = 200; // legacy cap, used as the starting point when user first drags
+
+function clampUser(value: number): number {
+  return Math.max(MIN_USER_HEIGHT, Math.min(MAX_USER_HEIGHT, value));
 }
 
 function readStored(): number {
-  if (typeof window === "undefined") return DEFAULT_MAX_HEIGHT;
+  if (typeof window === "undefined") return UNSET;
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return DEFAULT_MAX_HEIGHT;
+    if (!raw) return UNSET;
     const parsed = Number(raw);
-    if (!Number.isFinite(parsed)) return DEFAULT_MAX_HEIGHT;
-    return clamp(parsed, MIN_MAX_HEIGHT, MAX_MAX_HEIGHT);
+    if (!Number.isFinite(parsed) || parsed <= 0) return UNSET;
+    return clampUser(parsed);
   } catch {
-    return DEFAULT_MAX_HEIGHT;
+    return UNSET;
   }
 }
 
 /**
- * Manages the resizable max-height of the UnifiedInput textarea. The user
- * drags the top edge of the input panel up/down to enlarge the textarea
- * when composing long commands. The chosen value is persisted to
- * localStorage so it survives reloads.
+ * Resizable command input panel.
  *
- * Works identically on macOS and Windows because it relies purely on
- * pointer events + CSS — no native window APIs.
+ * `desiredHeight` is the height the user dragged the top handle to. The
+ * textarea will be **at least** this tall (and at most 800px) once the
+ * user has interacted with the handle; before that, the textarea keeps
+ * the legacy auto-grow behavior (one line by default, growing up to 200px).
+ *
+ * The value is persisted to localStorage so the chosen height survives
+ * reloads. Works identically on macOS and Windows because it relies on
+ * pointer events + CSS only.
  */
 export function useInputResize() {
-  const [maxHeight, setMaxHeight] = useState<number>(() => readStored());
-  const maxHeightRef = useRef(maxHeight);
-  maxHeightRef.current = maxHeight;
+  const [desiredHeight, setDesiredHeight] = useState<number>(() => readStored());
+  const desiredHeightRef = useRef(desiredHeight);
+  desiredHeightRef.current = desiredHeight;
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      window.localStorage.setItem(STORAGE_KEY, String(maxHeight));
+      if (desiredHeight === UNSET) {
+        window.localStorage.removeItem(STORAGE_KEY);
+      } else {
+        window.localStorage.setItem(STORAGE_KEY, String(desiredHeight));
+      }
     } catch {
       // localStorage may be disabled (e.g. strict privacy mode); ignore.
     }
-  }, [maxHeight]);
+  }, [desiredHeight]);
 
   useEffect(() => {
     return () => {
@@ -56,14 +65,14 @@ export function useInputResize() {
     if (e.button !== 0) return;
     e.preventDefault();
     const startY = e.clientY;
-    const startHeight = maxHeightRef.current;
+    const startHeight =
+      desiredHeightRef.current === UNSET ? IMPLICIT_START : desiredHeightRef.current;
     const pointerId = e.pointerId;
 
     const onMove = (ev: PointerEvent) => {
       if (ev.pointerId !== pointerId) return;
       const delta = startY - ev.clientY;
-      const next = clamp(startHeight + delta, MIN_MAX_HEIGHT, MAX_MAX_HEIGHT);
-      setMaxHeight(next);
+      setDesiredHeight(clampUser(startHeight + delta));
     };
     const onUp = (ev: PointerEvent) => {
       if (ev.pointerId !== pointerId) return;
@@ -82,8 +91,8 @@ export function useInputResize() {
   }, []);
 
   const resetToDefault = useCallback(() => {
-    setMaxHeight(DEFAULT_MAX_HEIGHT);
+    setDesiredHeight(UNSET);
   }, []);
 
-  return { maxHeight, handlePointerDown, resetToDefault };
+  return { desiredHeight, handlePointerDown, resetToDefault };
 }

@@ -35,8 +35,8 @@ const GhostTextHint = memo(function GhostTextHint({
 });
 
 export function UnifiedInput({ sessionId }: UnifiedInputProps) {
-  const { maxHeight, handlePointerDown, resetToDefault } = useInputResize();
-  const state = useInputState({ sessionId, maxHeight });
+  const { desiredHeight, handlePointerDown, resetToDefault } = useInputResize();
+  const state = useInputState({ sessionId, desiredHeight });
   const handleKeyDown = useInputKeyboard(state);
 
   const {
@@ -154,17 +154,14 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
               }
               rows={1}
               className={cn(
-                "w-full py-0 min-h-[26px]",
+                "w-full py-0 min-h-[26px] max-h-[800px]",
                 "bg-transparent border-none shadow-none resize-none",
                 "font-mono text-[13px] text-foreground leading-[26px] align-middle",
                 "focus:outline-none focus:ring-0",
                 "disabled:opacity-50 disabled:cursor-not-allowed",
                 "placeholder:text-muted-foreground"
               )}
-              style={{
-                maxHeight: `${maxHeight}px`,
-                ...(isBlockCaret ? { caretColor: "transparent" } : null),
-              }}
+              style={isBlockCaret ? { caretColor: "transparent" } : undefined}
               onFocus={handleFocus}
               onBlur={handleBlur}
               spellCheck={false}
