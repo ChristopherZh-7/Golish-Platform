@@ -23,6 +23,58 @@ use super::core::{ActiveSession, PtyManager, PtySession};
 use super::emitter::PtyEventEmitter;
 use super::utf8::{process_utf8_with_buffer, OutputMessage, Utf8IncompleteBuffer};
 
+/// Dispatch a batch of OSC events through the supplied emitter, applying
+/// the session-local side effects (e.g. updating
+/// [`ActiveSession::working_directory`]). Called from both the reader
+/// thread and [`PtyManager::write`] so behaviour is consistent for
+/// real-PTY events and synthesized events alike.
+pub(super) fn dispatch_parsed_events(
+    events: Vec<OscEvent>,
+    session_id: &str,
+    session: &Arc<ActiveSession>,
+    emitter: &Arc<dyn PtyEventEmitter>,
+) {
+    for event in events {
+        match &event {
+            OscEvent::DirectoryChanged { path } => {
+                let new_path = PathBuf::from(path);
+                let mut current = session.working_directory.lock();
+                if *current != new_path {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        old_dir = %current.display(),
+                        new_dir = %new_path.display(),
+                        "[cwd-debug] PTY manager emitting directory_changed event"
+                    );
+                    *current = new_path;
+                    drop(current);
+                    emitter.emit_directory_changed(session_id, path);
+                }
+            }
+            OscEvent::VirtualEnvChanged { name } => {
+                emitter.emit_virtual_env_changed(session_id, name.as_deref());
+            }
+            OscEvent::AlternateScreenEnabled => {
+                emitter.emit_alternate_screen(session_id, true);
+            }
+            OscEvent::AlternateScreenDisabled => {
+                emitter.emit_alternate_screen(session_id, false);
+            }
+            OscEvent::SynchronizedOutputEnabled => {
+                emitter.emit_synchronized_output(session_id, true);
+            }
+            OscEvent::SynchronizedOutputDisabled => {
+                emitter.emit_synchronized_output(session_id, false);
+            }
+            _ => {
+                if let Some((event_name, payload)) = event.to_command_block_event(session_id) {
+                    emitter.emit_command_block(event_name, payload);
+                }
+            }
+        }
+    }
+}
+
 impl PtyManager {
     /// Internal implementation that takes a generic emitter.
     ///
@@ -182,6 +234,17 @@ impl PtyManager {
 
         let master = Arc::new(Mutex::new(pair.master));
 
+        // Erase the emitter's static type so it can be stored in
+        // ActiveSession (which can't carry a generic parameter without
+        // poisoning every call site). The reader thread + write-side
+        // injection logic both work through this type-erased Arc.
+        let emitter: Arc<dyn PtyEventEmitter> = emitter;
+
+        // Shared parser so [`PtyManager::write`] can synthesize OSC
+        // events (e.g. CommandStart for PowerShell on Windows) without
+        // racing the reader thread's view of the parser state.
+        let parser = Arc::new(Mutex::new(TerminalParser::new()));
+
         let session = Arc::new(ActiveSession {
             child: Mutex::new(child),
             master: master.clone(),
@@ -189,6 +252,9 @@ impl PtyManager {
             working_directory: Mutex::new(work_dir.clone()),
             rows: Mutex::new(rows),
             cols: Mutex::new(cols),
+            shell_type: shell_info.shell_type(),
+            parser: parser.clone(),
+            emitter: emitter.clone(),
         });
 
         // Store session.
@@ -200,6 +266,8 @@ impl PtyManager {
         // Start read thread with the generic emitter.
         let reader_session_id = session_id.clone();
         let reader_session = session.clone();
+        let reader_emitter = emitter.clone();
+        let reader_parser = parser.clone();
 
         // Get a reader from the master.
         let mut reader = {
@@ -232,7 +300,6 @@ impl PtyManager {
                 "PTY reader thread started"
             );
 
-            let mut parser = TerminalParser::new();
             let mut buf = [0u8; 4096];
             let mut total_bytes_read: u64 = 0;
             // Note: utf8_buffer moved to emitter thread — UTF-8
@@ -258,8 +325,14 @@ impl PtyManager {
 
                         // Parse and filter: only Output region bytes are
                         // returned. Prompt (A→B) and Input (B→C)
-                        // regions are suppressed.
-                        let parse_result = parser.parse_filtered(data);
+                        // regions are suppressed. Parser is shared with
+                        // PtyManager::write so synthesized OSC events
+                        // (e.g. PowerShell CommandStart) stay coherent
+                        // with reader-thread region tracking.
+                        let parse_result = {
+                            let mut parser = reader_parser.lock();
+                            parser.parse_filtered(data)
+                        };
 
                         if !parse_result.events.is_empty() {
                             tracing::trace!(
@@ -276,60 +349,12 @@ impl PtyManager {
                         // Delivery ordering of semantic vs. output
                         // events via Tauri IPC was never strictly
                         // guaranteed, so this is acceptable.
-                        for event in parse_result.events {
-                            match &event {
-                                OscEvent::DirectoryChanged { path } => {
-                                    // Update the session's working
-                                    // directory so path completion uses
-                                    // the current directory, not the
-                                    // initial one.
-                                    let new_path = PathBuf::from(path);
-                                    let mut current = reader_session.working_directory.lock();
-                                    if *current != new_path {
-                                        tracing::warn!(
-                                            session_id = %reader_session_id,
-                                            old_dir = %current.display(),
-                                            new_dir = %new_path.display(),
-                                            "[cwd-debug] PTY manager emitting directory_changed event"
-                                        );
-                                        tracing::trace!(
-                                            session_id = %reader_session_id,
-                                            old_dir = %current.display(),
-                                            new_dir = %new_path.display(),
-                                            "Working directory changed"
-                                        );
-                                        *current = new_path;
-                                        drop(current); // Release lock before emitting.
-                                        emitter.emit_directory_changed(&reader_session_id, path);
-                                    }
-                                }
-                                OscEvent::VirtualEnvChanged { name } => {
-                                    emitter.emit_virtual_env_changed(
-                                        &reader_session_id,
-                                        name.as_deref(),
-                                    );
-                                }
-                                OscEvent::AlternateScreenEnabled => {
-                                    emitter.emit_alternate_screen(&reader_session_id, true);
-                                }
-                                OscEvent::AlternateScreenDisabled => {
-                                    emitter.emit_alternate_screen(&reader_session_id, false);
-                                }
-                                OscEvent::SynchronizedOutputEnabled => {
-                                    emitter.emit_synchronized_output(&reader_session_id, true);
-                                }
-                                OscEvent::SynchronizedOutputDisabled => {
-                                    emitter.emit_synchronized_output(&reader_session_id, false);
-                                }
-                                _ => {
-                                    if let Some((event_name, payload)) =
-                                        event.to_command_block_event(&reader_session_id)
-                                    {
-                                        emitter.emit_command_block(event_name, payload);
-                                    }
-                                }
-                            }
-                        }
+                        dispatch_parsed_events(
+                            parse_result.events,
+                            &reader_session_id,
+                            &reader_session,
+                            &reader_emitter,
+                        );
 
                         // Send raw output bytes to the emitter thread
                         // for coalescing. UTF-8 boundary handling
