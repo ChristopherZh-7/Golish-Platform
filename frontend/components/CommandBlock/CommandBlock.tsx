@@ -15,6 +15,43 @@ const codeStyle = {
   fontFamily: "SF Mono, Menlo, Monaco, JetBrains Mono, Consolas, monospace",
 } as const;
 
+// Drop C0/C1 control characters (except CR/LF/TAB) and common zero-width chars.
+// Used for visibility checks and for command-echo detection, so that invisible
+// PTY noise (cursor moves, OSC 133 residue, zero-width joiners, etc.) doesn't
+// hide an empty line or break the leading-line equality test.
+const INVISIBLE_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b-\u200d\ufeff]/g;
+const SGR_RE = /\x1b\[[0-9;]*m/g;
+
+function stripInvisible(s: string): string {
+  return s.replace(INVISIBLE_RE, "");
+}
+
+// Strip a single leading line that is the shell's echo of the typed command.
+// Tolerates leading blank/control-only lines and the case where extra text
+// (e.g. `dir   Directory: ...`) was appended on the same line as the echo.
+function stripCommandEcho(output: string, command: string): string {
+  const cmd = command.trim();
+  if (!cmd) return output;
+  const lines = output.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const visible = stripInvisible(lines[i]).trim();
+    if (visible === "") continue;
+    if (visible === cmd) {
+      return lines.slice(i + 1).join("\n");
+    }
+    if (visible.startsWith(`${cmd} `) || visible.startsWith(`${cmd}\t`)) {
+      const rawLine = lines[i];
+      const idx = rawLine.indexOf(cmd);
+      if (idx !== -1) {
+        const remainder = rawLine.slice(idx + cmd.length).replace(/^[\s\u3000]+/, "");
+        return [remainder, ...lines.slice(i + 1)].join("\n");
+      }
+    }
+    return output;
+  }
+  return output;
+}
+
 interface CommandBlockProps {
   block: CommandBlockType;
   sessionId?: string;
@@ -30,21 +67,22 @@ export function CommandBlock({
 }: CommandBlockProps) {
   const isSuccess = block.exitCode === 0;
 
-  // Strip OSC sequences but keep ANSI color codes for rendering.
-  // Also strip a leading line that exactly matches the typed command — this
-  // happens on Windows ConPTY where the shell echoes back the input line.
+  // Strip OSC sequences but keep ANSI color codes for rendering, then drop a
+  // leading line that is just the shell echoing the typed command back. The
+  // echo happens on Windows ConPTY and sometimes on POSIX shells when stdin
+  // is in cooked mode.
   const cleanOutput = useMemo(() => {
     const stripped = stripOscSequences(block.output);
-    const cmd = (block.command ?? "").trim();
-    if (!cmd) return stripped;
-    const newlineIdx = stripped.indexOf("\n");
-    const firstLine = newlineIdx === -1 ? stripped : stripped.slice(0, newlineIdx);
-    if (firstLine.trim() === cmd) {
-      return newlineIdx === -1 ? "" : stripped.slice(newlineIdx + 1);
-    }
-    return stripped;
+    return stripCommandEcho(stripped, block.command ?? "");
   }, [block.output, block.command]);
-  const hasOutput = cleanOutput.trim().length > 0;
+
+  // `hasOutput` must reflect *visible* output — otherwise lone SGR escapes or
+  // bare control characters keep the empty output panel expanded ("black box"
+  // right after the first command of a new PowerShell session).
+  const hasOutput = useMemo(() => {
+    const visible = stripInvisible(cleanOutput.replace(SGR_RE, "")).trim();
+    return visible.length > 0;
+  }, [cleanOutput]);
 
   // Content for copying (command + output)
   const copyContent = useMemo(() => {
