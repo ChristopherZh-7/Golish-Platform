@@ -1,4 +1,5 @@
-//! [`ShellIntegration`] — automatic OSC 133 injection via ZDOTDIR / `--rcfile`.
+//! [`ShellIntegration`] — automatic OSC 133 injection via ZDOTDIR /
+//! `--rcfile` / `-File`.
 //!
 //! For zsh, uses the ZDOTDIR approach:
 //! 1. Creates a wrapper `.zshrc` in a config directory.
@@ -11,12 +12,23 @@
 //! 2. Creates a wrapper script that sources integration + user's `.bashrc`.
 //! 3. Spawns bash with `--rcfile <wrapper>`.
 //!
+//! For PowerShell (Windows), uses the `-File <wrapper.ps1>` approach:
+//! 1. Writes an `integration.ps1` that rewires `prompt` + PSReadLine
+//!    Enter handler to emit OSC 133 sequences.
+//! 2. Writes a `wrapper.ps1` that dot-sources integration first, then
+//!    the user's `$PROFILE`.
+//! 3. Spawns `pwsh.exe` / `powershell.exe` with
+//!    `-NoLogo -NoExit -ExecutionPolicy Bypass -File <wrapper.ps1>`.
+//!
 //! Either way, shell integration works without modifying user config files.
 
 use std::fs;
 use std::path::PathBuf;
 
-use super::scripts::{BASH_INTEGRATION_SCRIPT, ZSH_INTEGRATION_SCRIPT, ZSH_WRAPPER_ZSHRC};
+use super::scripts::{
+    BASH_INTEGRATION_SCRIPT, POWERSHELL_INTEGRATION_SCRIPT, POWERSHELL_WRAPPER_SCRIPT,
+    ZSH_INTEGRATION_SCRIPT, ZSH_WRAPPER_ZSHRC,
+};
 use super::ShellType;
 
 /// Manages shell integration files for automatic OSC 133 injection.
@@ -37,6 +49,7 @@ impl ShellIntegration {
         match shell_type {
             ShellType::Zsh => Self::setup_zsh(),
             ShellType::Bash => Self::setup_bash(),
+            ShellType::PowerShell => Self::setup_powershell(),
             // TODO: Add fish support via conf.d
             _ => None,
         }
@@ -139,6 +152,50 @@ fi
         })
     }
 
+    /// Set up PowerShell integration using `-File <wrapper.ps1>`.
+    ///
+    /// PowerShell on Windows has no equivalent of `ZDOTDIR` or `--rcfile`,
+    /// so we drop a wrapper script onto disk and launch the shell with
+    /// `-File` (see [`Self::shell_args`]). The wrapper sources the Golish
+    /// integration first, then the user's `$PROFILE`, so OSC 133 hooks
+    /// are always installed even if the user has a custom profile.
+    fn setup_powershell() -> Option<Self> {
+        let config_dir = dirs::config_dir()?
+            .join("golish")
+            .join("shell")
+            .join("powershell");
+
+        if fs::create_dir_all(&config_dir).is_err() {
+            tracing::warn!("Failed to create powershell integration directory");
+            return None;
+        }
+
+        let integration_path = config_dir.join("integration.ps1");
+        if let Err(e) = fs::write(&integration_path, POWERSHELL_INTEGRATION_SCRIPT) {
+            tracing::warn!("Failed to write powershell integration script: {}", e);
+            return None;
+        }
+
+        let wrapper_path = config_dir.join("wrapper.ps1");
+        if let Err(e) = fs::write(&wrapper_path, POWERSHELL_WRAPPER_SCRIPT) {
+            tracing::warn!("Failed to write powershell wrapper script: {}", e);
+            return None;
+        }
+
+        tracing::debug!(
+            config_dir = %config_dir.display(),
+            integration = %integration_path.display(),
+            wrapper = %wrapper_path.display(),
+            "PowerShell integration configured"
+        );
+
+        Some(Self {
+            shell_type: ShellType::PowerShell,
+            config_dir,
+            integration_path,
+        })
+    }
+
     /// Get environment variables to set for the shell process.
     ///
     /// Returns a list of `(key, value)` pairs to set in the PTY environment.
@@ -167,7 +224,7 @@ fi
 
                 vars
             }
-            ShellType::Bash => {
+            ShellType::Bash | ShellType::PowerShell => {
                 vec![(
                     "QBIT_INTEGRATION_PATH",
                     self.integration_path.to_string_lossy().to_string(),
@@ -179,14 +236,30 @@ fi
 
     /// Get additional arguments to pass to the shell.
     ///
-    /// For bash, this returns `["--rcfile", "/path/to/wrapper.bash"]`.
-    /// For other shells, returns empty.
+    /// - **Bash**: `["--rcfile", "<path>/wrapper.bash"]`.
+    /// - **PowerShell**: `["-NoLogo", "-NoExit", "-ExecutionPolicy",
+    ///   "Bypass", "-File", "<path>/wrapper.ps1"]`. `-File` skips the
+    ///   default `$PROFILE` load — the wrapper restores it after Golish
+    ///   hooks are installed. `-ExecutionPolicy Bypass` keeps us working
+    ///   on Windows hosts that ship with `Restricted` policy.
+    /// - Other shells: empty.
     pub fn shell_args(&self) -> Vec<String> {
         match self.shell_type {
             ShellType::Bash => {
                 let wrapper_path = self.config_dir.join("wrapper.bash");
                 vec![
                     "--rcfile".to_string(),
+                    wrapper_path.to_string_lossy().to_string(),
+                ]
+            }
+            ShellType::PowerShell => {
+                let wrapper_path = self.config_dir.join("wrapper.ps1");
+                vec![
+                    "-NoLogo".to_string(),
+                    "-NoExit".to_string(),
+                    "-ExecutionPolicy".to_string(),
+                    "Bypass".to_string(),
+                    "-File".to_string(),
                     wrapper_path.to_string_lossy().to_string(),
                 ]
             }

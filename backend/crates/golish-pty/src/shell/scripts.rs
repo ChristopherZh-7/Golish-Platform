@@ -248,6 +248,111 @@ elif [[ "$PROMPT_COMMAND" != *"__golish_precmd"* ]]; then
 fi
 "#;
 
+/// The PowerShell integration script that emits OSC 133 sequences.
+///
+/// Mirrors the zsh/bash hooks: it wraps the user's `prompt` function to
+/// emit `133;A` / `133;B` and `133;D;<exit>` markers, and uses a
+/// PSReadLine Enter-key handler to emit `133;C;<command>` before the
+/// command actually runs. Also emits OSC 7 to report the working
+/// directory so the Timeline can track `cd` changes.
+///
+/// Compatible with Windows PowerShell 5.1 (uses `[char]0x1b` rather than
+/// the PowerShell 7+ `` `e `` escape).
+pub(super) const POWERSHELL_INTEGRATION_SCRIPT: &str = r#"# Golish PowerShell Integration (auto-injected)
+# Emits OSC 133 sequences so the Golish Timeline can track command blocks.
+
+if ($env:__QBIT_OSC133_LOADED) { return }
+$env:__QBIT_OSC133_LOADED = '1'
+
+$Global:__QbitEsc = [char]0x1b
+$Global:__QbitBel = [char]0x07
+$Global:__QbitOriginalPrompt = $function:prompt
+$Global:__QbitLastHistoryId = -1
+
+function Global:__Qbit-EscapeValue {
+    param([string]$value)
+    if ([string]::IsNullOrEmpty($value)) { return $value }
+    return [regex]::Replace($value, '[\u0000-\u001f\u007f-\u009f;]', {
+        param($m)
+        '\x{0:x2}' -f [int][char]$m.Value[0]
+    })
+}
+
+function Global:__Qbit-ReportCwd {
+    $cwd = ($PWD.Path -replace '\\','/')
+    $hostName = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { 'localhost' }
+    [Console]::Write("$($Global:__QbitEsc)]7;file://$hostName/$cwd$($Global:__QbitBel)")
+}
+
+function Global:prompt {
+    $exitCode = if ($?) { 0 } else { 1 }
+    if ($LASTEXITCODE) { $exitCode = $LASTEXITCODE }
+
+    $result = ''
+    $lastHistory = Get-History -Count 1 -ErrorAction SilentlyContinue
+    if ($lastHistory -and ($lastHistory.Id -ne $Global:__QbitLastHistoryId)) {
+        $result += "$($Global:__QbitEsc)]133;D;$exitCode$($Global:__QbitBel)"
+        $Global:__QbitLastHistoryId = $lastHistory.Id
+    }
+
+    $result += "$($Global:__QbitEsc)]133;A$($Global:__QbitBel)"
+
+    try {
+        $promptText = & $Global:__QbitOriginalPrompt
+        if ($promptText) { $result += $promptText }
+    } catch {
+        $result += "PS $($PWD.Path)> "
+    }
+
+    $result += "$($Global:__QbitEsc)]133;B$($Global:__QbitBel)"
+
+    Global:__Qbit-ReportCwd
+
+    return $result
+}
+
+if (Get-Command Set-PSReadLineKeyHandler -ErrorAction SilentlyContinue) {
+    try {
+        Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {
+            $esc = [char]0x1b
+            $bel = [char]0x07
+            $line = $null
+            $cursor = $null
+            [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$cursor)
+            if ($line) {
+                $escaped = & __Qbit-EscapeValue $line
+                [Console]::Write("$esc]133;C;$escaped$bel")
+            } else {
+                [Console]::Write("$esc]133;C$bel")
+            }
+            [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
+        }
+    } catch {
+        # Older PSReadLine versions may not support all parameters - ignore.
+    }
+}
+
+Global:__Qbit-ReportCwd
+"#;
+
+/// Wrapper script that sources the Golish PowerShell integration before
+/// the user's `$PROFILE`. We launch PowerShell with `-File <wrapper>` so
+/// the user's profile isn't loaded automatically (PowerShell skips
+/// `$PROFILE` when started with `-File`); the wrapper restores that
+/// behaviour after our hooks are in place.
+pub(super) const POWERSHELL_WRAPPER_SCRIPT: &str = r#"# Golish PowerShell wrapper (auto-generated)
+# Sources Golish integration before user's $PROFILE.
+
+$integration = $env:QBIT_INTEGRATION_PATH
+if ($integration -and (Test-Path -LiteralPath $integration)) {
+    . $integration
+}
+
+if ($PROFILE -and (Test-Path -LiteralPath $PROFILE)) {
+    . $PROFILE
+}
+"#;
+
 /// The wrapper `.zshrc` that sources our integration BEFORE the user's
 /// config. This ensures our hooks run even if the user's `.zshrc` has old
 /// integration lines.
