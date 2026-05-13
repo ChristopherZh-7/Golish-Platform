@@ -336,7 +336,8 @@ impl EmbeddedPg {
     /// explicit library path and a log file is more reliable.
     async fn manual_pg_ctl_start(config: &DbConfig) -> Result<()> {
         let cache_dir = Self::cache_dir();
-        let pg_ctl = cache_dir.join("bin").join("pg_ctl");
+        let pg_ctl_name = if cfg!(windows) { "pg_ctl.exe" } else { "pg_ctl" };
+        let pg_ctl = cache_dir.join("bin").join(pg_ctl_name);
         let lib_dir = cache_dir.join("lib");
         let log_file = config.pg_data_dir.join("server.log");
 
