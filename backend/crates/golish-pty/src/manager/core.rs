@@ -267,7 +267,7 @@ impl PtyManager {
         *session.rows.lock() = rows;
         *session.cols.lock() = cols;
 
-        tracing::trace!(
+        tracing::info!(
             session_id = %session_id,
             old_size = %format!("{}x{}", old_cols, old_rows),
             new_size = %format!("{}x{}", cols, rows),
