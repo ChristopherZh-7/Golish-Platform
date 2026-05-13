@@ -76,6 +76,24 @@ export function stripOscSequences(str: string): string {
     result = result.replace(/\n\x1b\[\d*A(?:\x1b\[\d*K)+/g, "\r");
   } while (result !== prev);
 
+  // CUP — Cursor Position. PowerShell's `Format-Table` on ConPTY uses
+  // absolute cursor positioning (`\x1b[7;1H`) to lay out tables when
+  // `$Host.UI.RawUI` reports a real VT terminal — it writes the GroupBy
+  // header (`Directory: …`), then jumps the cursor to row 7 col 1 and
+  // writes the `Mode  LastWriteTime  Length Name` row there. In a real
+  // xterm the rows between are pre-existing blank screen cells; here we
+  // are filling a static `<pre>` and have no grid, so the generic CSI
+  // stripper below would erase `\x1b[7;1H` and weld the `Mode …` line
+  // straight onto the end of `…\test`. Replacing CUP with `\n` is the
+  // closest text-flow equivalent: it preserves the line break that the
+  // caller intended, at the cost of one fewer blank row than a real
+  // terminal would show (a totally acceptable trade-off for command
+  // output in a chat-style timeline).
+  //
+  // CUP wire formats handled: `\x1b[H` (home), `\x1b[Nf`, `\x1b[N;MH`,
+  // `\x1b[N;Mf`. The `?` on the row digits keeps `\x1b[H` matching too.
+  result = result.replace(/\x1b\[\d*(?:;\d*)?[Hf]/g, "\n");
+
   // Strip ALL non-SGR CSI sequences while keeping \x1b[...m (colors/styles).
   // Covers cursor movement, erase, DEC private modes, bracketed paste, etc.
   result = result.replace(/\x1b\[[0-9;?]*[a-ln-zA-Z]/g, "");
