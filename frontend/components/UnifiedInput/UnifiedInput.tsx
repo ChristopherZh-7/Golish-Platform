@@ -5,6 +5,7 @@ import { ContextBar } from "./ContextBar";
 import { InputPopups } from "./InputPopups";
 import { InputBadges, SendButton, ToolParamsPanel } from "./InputToolbar";
 import { useInputKeyboard } from "./useInputKeyboard";
+import { useInputResize } from "./useInputResize";
 import { useInputState } from "./useUnifiedInputState";
 
 interface UnifiedInputProps {
@@ -34,7 +35,8 @@ const GhostTextHint = memo(function GhostTextHint({
 });
 
 export function UnifiedInput({ sessionId }: UnifiedInputProps) {
-  const state = useInputState({ sessionId });
+  const { maxHeight, handlePointerDown, resetToDefault } = useInputResize();
+  const state = useInputState({ sessionId, maxHeight });
   const handleKeyDown = useInputKeyboard(state);
 
   const {
@@ -91,6 +93,16 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
 
   return (
     <div className="border-t border-[var(--border-subtle)]">
+      <div
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize command input"
+        title="Drag to resize · double-click to reset"
+        className="h-1 -mt-px cursor-ns-resize bg-transparent hover:bg-accent/40 active:bg-accent/60 transition-colors titlebar-no-drag"
+        onPointerDown={handlePointerDown}
+        onDoubleClick={resetToDefault}
+      />
+
       <ContextBar sessionId={sessionId} />
 
       <ToolParamsPanel
@@ -142,14 +154,17 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
               }
               rows={1}
               className={cn(
-                "w-full max-h-[200px] py-0 min-h-[26px]",
+                "w-full py-0 min-h-[26px]",
                 "bg-transparent border-none shadow-none resize-none",
                 "font-mono text-[13px] text-foreground leading-[26px] align-middle",
                 "focus:outline-none focus:ring-0",
                 "disabled:opacity-50 disabled:cursor-not-allowed",
                 "placeholder:text-muted-foreground"
               )}
-              style={isBlockCaret ? { caretColor: "transparent" } : undefined}
+              style={{
+                maxHeight: `${maxHeight}px`,
+                ...(isBlockCaret ? { caretColor: "transparent" } : null),
+              }}
               onFocus={handleFocus}
               onBlur={handleBlur}
               spellCheck={false}

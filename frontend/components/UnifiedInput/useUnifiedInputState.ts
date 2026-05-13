@@ -76,7 +76,13 @@ export interface StateRefValue {
   activeTool: ToolConfig | null;
 }
 
-export function useInputState({ sessionId }: { sessionId: string }) {
+export function useInputState({
+  sessionId,
+  maxHeight = 200,
+}: {
+  sessionId: string;
+  maxHeight?: number;
+}) {
   const { t } = useTranslation();
   const workingDirectory = useStore((state) => state.sessions[sessionId]?.workingDirectory);
 
@@ -219,13 +225,15 @@ export function useInputState({ sessionId }: { sessionId: string }) {
 
   // ── textarea auto-resize ──
   const lastTextareaHeightRef = useRef<number>(0);
+  const maxHeightRef = useRef(maxHeight);
+  maxHeightRef.current = maxHeight;
   const adjustTextareaHeight = useCallback(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
     requestAnimationFrame(() => {
       textarea.style.height = "auto";
       const scrollHeight = textarea.scrollHeight;
-      const newHeight = Math.min(scrollHeight, 200);
+      const newHeight = Math.min(scrollHeight, maxHeightRef.current);
       if (newHeight !== lastTextareaHeightRef.current) {
         lastTextareaHeightRef.current = newHeight;
       }
@@ -251,7 +259,7 @@ export function useInputState({ sessionId }: { sessionId: string }) {
 
   useEffect(() => {
     adjustTextareaHeight();
-  }, [input, adjustTextareaHeight]);
+  }, [input, maxHeight, adjustTextareaHeight]);
 
   // ── tool context refs ──
   const toolContextRef = useRef<{ cdPrefix: string; baseCmd: string }>({
