@@ -15,6 +15,7 @@ import {
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { effectiveInstallMethod, effectiveInstallSource } from "@/lib/pentest/installPlatform";
 import { cn } from "@/lib/utils";
 import type { ToolWithMeta } from "./OutputParserEditor";
 
@@ -117,8 +118,8 @@ export function UninstallConfirmDialog({
   const { t } = useTranslation();
 
   const via = target.installedVia;
-  const method = target.install?.method;
-  const pkg = target.install?.source?.trim() || target.name;
+  const method = effectiveInstallMethod(target.install);
+  const pkg = effectiveInstallSource(target.install).trim() || target.name;
 
   let actionDesc = t("toolManager.uninstallKeepConfig");
   if (via === "homebrew" || method === "homebrew") {

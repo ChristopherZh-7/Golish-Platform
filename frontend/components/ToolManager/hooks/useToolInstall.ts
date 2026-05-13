@@ -31,6 +31,11 @@ import {
   uninstallToolFiles,
   updateToolExecutable,
 } from "@/lib/pentest/api";
+import {
+  effectiveInstallMethod,
+  effectiveInstallSource,
+  resolveInstallForPlatform,
+} from "@/lib/pentest/installPlatform";
 import { getSettings } from "@/lib/settings";
 import type { ExecPickerState, ToolUpdateInfo } from "../Dialogs";
 import type { ToolWithMeta } from "../OutputParserEditor";
@@ -41,57 +46,31 @@ export function isAutoInstallMethod(method?: string | null) {
   return !!method && AUTO_INSTALL_METHODS.has(method);
 }
 
-type InstallSubBlock = { method: string; source?: string } | null | undefined;
-
-interface InstallLikeShape {
-  method: string;
-  source: string;
-  macos?: InstallSubBlock;
-  linux?: InstallSubBlock;
-  windows?: InstallSubBlock;
-}
-
-export function detectInstallPlatform(): "windows" | "macos" | "linux" {
-  const ua = (navigator.userAgent || "").toLowerCase();
-  const platformStr = (navigator.platform || "").toLowerCase();
-  if (platformStr.includes("win") || ua.includes("windows")) return "windows";
-  if (platformStr.includes("mac") || platformStr.includes("darwin") || ua.includes("mac"))
-    return "macos";
-  return "linux";
-}
-
 /**
- * Resolve the (method, source) tuple to use on the current platform.
+ * Extract the Java major version from any of the version strings the
+ * backend may surface, so the auto-install flow can match a tool's
+ * `runtimeVersion` regardless of which catalog produced it.
  *
- * Falls back to the top-level `install.method` / `install.source` if the
- * platform-specific sub-block is missing. Returns `null` when the tool's
- * default method cannot be auto-installed on this platform (e.g.
- * Homebrew on Windows without a `windows` block) so the caller can show
- * an actionable error.
+ * Cross-platform formats observed:
+ *   - SDKMAN (macOS/Linux):     `8.0.402-tem`, `17.0.4-tem`, `21.0.1-tem`
+ *   - winget Temurin (Windows): `EclipseAdoptium.Temurin.8.JDK`
+ *   - winget Corretto (Windows):`Amazon.Corretto.8.JDK`
+ *   - winget Microsoft (Win):   `Microsoft.OpenJDK.11`  (no `.JDK` suffix)
+ *   - bare major (UI input):    `8`
+ *
+ * Returns the bare major (`"8"`) or `""` if the format isn't recognised.
  */
-export function resolveInstallForPlatform(
-  install: InstallLikeShape | null | undefined
-): { method: string; source: string } | null {
-  if (!install) return null;
-  const platform = detectInstallPlatform();
-  let block: InstallSubBlock;
-  if (platform === "windows") block = install.windows;
-  else if (platform === "macos") block = install.macos;
-  else block = install.linux;
-  if (block?.method) {
-    return {
-      method: block.method,
-      source: block.source && block.source.length > 0 ? block.source : install.source,
-    };
-  }
-  if (platform === "windows") {
-    const homebrewMethods = new Set(["homebrew", "homebrew-cask", "brew", "brew-cask"]);
-    if (homebrewMethods.has(install.method)) {
-      return null;
-    }
-  }
-  return { method: install.method, source: install.source };
+function parseJavaMajor(version: string): string {
+  if (!version) return "";
+  if (/^\d+$/.test(version)) return version;
+  const winget = version.match(/\.(\d+)(?:\.JDK)?$/);
+  if (winget) return winget[1];
+  const sdkman = version.match(/^(\d+)\./);
+  if (sdkman) return sdkman[1];
+  return "";
 }
+
+export { detectInstallPlatform, resolveInstallForPlatform } from "@/lib/pentest/installPlatform";
 
 interface InstallOptions {
   interactive?: boolean;
@@ -234,9 +213,7 @@ export function useToolInstall(
         try {
           const r = await listInstalledJava();
           if (r.success && r.versions.length > 0)
-            javaReady = r.versions.some(
-              (v) => v.version.startsWith(`${requiredMajor}.`) || v.version === requiredMajor
-            );
+            javaReady = r.versions.some((v) => parseJavaMajor(v.version) === requiredMajor);
         } catch {}
         if (!javaReady) {
           setError(null);
@@ -250,11 +227,14 @@ export function useToolInstall(
             const available = await listAvailableJava();
             if (available.success) {
               const majorMatches = available.versions.filter(
-                (v) => v.version.startsWith(`${requiredMajor}.`) || v.version === requiredMajor
+                (v) => parseJavaMajor(v.version) === requiredMajor
               );
               const match =
                 majorMatches.find((v) => v.version.includes("-fx")) ||
                 majorMatches.find((v) => v.version.endsWith("-tem")) ||
+                majorMatches.find((v) => v.version.startsWith("EclipseAdoptium.Temurin.")) ||
+                majorMatches.find((v) => v.version.startsWith("Amazon.Corretto.")) ||
+                majorMatches.find((v) => v.version.startsWith("Microsoft.OpenJDK.")) ||
                 majorMatches[0];
               if (match) identifier = match.version;
             }
@@ -607,8 +587,8 @@ export function useToolInstall(
       setBusy(tool.id);
       try {
         const via = tool.installedVia;
-        const method = tool.install?.method;
-        const pkg = tool.install?.source?.trim() || tool.name;
+        const method = effectiveInstallMethod(tool.install);
+        const pkg = effectiveInstallSource(tool.install).trim() || tool.name;
         if (via === "homebrew" || method === "homebrew") await uninstallBrewPackage(pkg);
         else if (via === "gem" || method === "gem") await uninstallGemPackage(pkg);
         else if (via === "pip" || method === "pip") {
@@ -735,7 +715,7 @@ export function useToolInstall(
         (t) =>
           (t.tier === "essential" || t.tier === "recommended") &&
           !t.installed &&
-          isAutoInstallMethod(t.install?.method)
+          isAutoInstallMethod(effectiveInstallMethod(t.install))
       );
       if (toInstall.length === 0) return;
       setBatchInstalling(true);

@@ -6,6 +6,7 @@ import {
   getCategories,
   scanTools,
 } from "@/lib/pentest/api";
+import { effectiveInstallMethod } from "@/lib/pentest/installPlatform";
 import type { ToolCategory, ToolConfig } from "@/lib/pentest/types";
 import type { SortKey, ToolWithMeta } from "../OutputParserEditor";
 
@@ -80,7 +81,7 @@ export function useToolData() {
               needPerm.map(({ tool }) => ({
                 executable: tool.executable,
                 runtime: tool.runtime,
-                installMethod: tool.install?.method,
+                installMethod: effectiveInstallMethod(tool.install) || undefined,
               }))
             );
           } catch {
@@ -90,7 +91,7 @@ export function useToolData() {
                   return await checkToolExecutablePermission({
                     executable: tool.executable,
                     runtime: tool.runtime,
-                    installMethod: tool.install?.method,
+                    installMethod: effectiveInstallMethod(tool.install) || undefined,
                   });
                 } catch {
                   return { ok: true as const, reason: undefined };

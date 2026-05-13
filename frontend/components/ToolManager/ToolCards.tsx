@@ -1,5 +1,6 @@
 import { Check, Download, Loader2, Trash2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { effectiveInstallMethod } from "@/lib/pentest/installPlatform";
 import { cn } from "@/lib/utils";
 import type { ToolWithMeta } from "./OutputParserEditor";
 
@@ -62,10 +63,11 @@ export function installMethodBadge(method: string) {
 }
 
 export function getInstallMethodLabel(tool: ToolWithMeta, t: (key: string) => string) {
-  const method = tool.install?.method;
+  const method = effectiveInstallMethod(tool.install);
   if (!method || method === "manual") return t("toolManager.manual");
   if (method === "github") return "GitHub";
   if (method === "homebrew") return "Homebrew";
+  if (method === "homebrew-cask") return "Homebrew Cask";
   if (method === "gem") return "RubyGem";
   if (method === "pip") return "pip";
   return method;
@@ -102,16 +104,15 @@ export function TagBadges({ tool, compact }: { tool: ToolWithMeta; compact?: boo
         {tool.runtime}
         {tool.runtimeVersion ? ` ${tool.runtimeVersion}` : ""}
       </span>
-      {tool.install?.method && tool.install.method !== "manual" && (
-        <span
-          className={cn(
-            "text-[9px] px-1.5 py-0.5 rounded-full",
-            installMethodBadge(tool.install.method)
-          )}
-        >
-          {getInstallMethodLabel(tool, t)}
-        </span>
-      )}
+      {(() => {
+        const method = effectiveInstallMethod(tool.install);
+        if (!method || method === "manual") return null;
+        return (
+          <span className={cn("text-[9px] px-1.5 py-0.5 rounded-full", installMethodBadge(method))}>
+            {getInstallMethodLabel(tool, t)}
+          </span>
+        );
+      })()}
       {tool.installed && provBadge && (
         <span
           title={t("toolManager.installedVia", { source: provBadge.label })}
