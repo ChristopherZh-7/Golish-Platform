@@ -92,7 +92,18 @@ export function stripOscSequences(str: string): string {
   //
   // CUP wire formats handled: `\x1b[H` (home), `\x1b[Nf`, `\x1b[N;MH`,
   // `\x1b[N;Mf`. The `?` on the row digits keeps `\x1b[H` matching too.
-  result = result.replace(/\x1b\[\d*(?:;\d*)?[Hf]/g, "\n");
+  //
+  // Why `\n\n` and not `\n`: PowerShell's CUP-era Format-Table rendering
+  // (first ~3 dir invocations of a fresh PSReadLine session) jumps row
+  // counts in 3-line steps (`\x1b[15;1H` → `\x1b[18;1H`), assuming the
+  // intervening rows are blank screen cells the user can see. Once PSReadLine
+  // settles into plain-text mode (4th dir onwards), PowerShell emits a true
+  // `\n\n\n` between `Directory:` and `Mode`. Replacing CUP with a single
+  // `\n` makes the CUP-era output look noticeably tighter than the plain-
+  // text-era output side-by-side. `\n\n` lands midway and the trailing
+  // dedupe below evens both eras out to "exactly one blank line between
+  // logical rows", which is what the user perceives as consistent.
+  result = result.replace(/\x1b\[\d*(?:;\d*)?[Hf]/g, "\n\n");
 
   // Strip ALL non-SGR CSI sequences while keeping \x1b[...m (colors/styles).
   // Covers cursor movement, erase, DEC private modes, bracketed paste, etc.
@@ -134,6 +145,16 @@ export function stripOscSequences(str: string): string {
 
   // Clean up trailing whitespace
   result = result.replace(/\n\s*$/g, "\n");
+
+  // Collapse 3-or-more consecutive blank lines to a single blank line.
+  // PowerShell's plain-text-mode Format-Table emits `\n\n\n` between the
+  // GroupBy header (`Directory: …`) and the column header (`Mode  …`),
+  // while our CUP-era path produces `\n\n` (CUP → `\n\n`). Both eras
+  // collapse here to "exactly one blank line", which means the user sees
+  // consistent spacing whether they ran `dir` during PSReadLine warmup
+  // or after it stabilised. (`\n{3,}` matches 3+ literal newlines, i.e.
+  // 2+ blank lines; replacement leaves exactly 1 blank line.)
+  result = result.replace(/\n{3,}/g, "\n\n");
 
   return result.trim();
 }
