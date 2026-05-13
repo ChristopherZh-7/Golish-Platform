@@ -1,5 +1,5 @@
-import { ChevronDown, ChevronRight, Clock, Maximize2, Minimize2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { ChevronDown, ChevronRight, Clock } from "lucide-react";
+import { useMemo } from "react";
 import { Ansi } from "@/components/Ansi/Ansi";
 import { CopyButton } from "@/components/Markdown/CopyButton";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -29,10 +29,21 @@ export function CommandBlock({
   source,
 }: CommandBlockProps) {
   const isSuccess = block.exitCode === 0;
-  const [outputExpanded, setOutputExpanded] = useState(false);
 
-  // Strip OSC sequences but keep ANSI color codes for rendering
-  const cleanOutput = useMemo(() => stripOscSequences(block.output), [block.output]);
+  // Strip OSC sequences but keep ANSI color codes for rendering.
+  // Also strip a leading line that exactly matches the typed command — this
+  // happens on Windows ConPTY where the shell echoes back the input line.
+  const cleanOutput = useMemo(() => {
+    const stripped = stripOscSequences(block.output);
+    const cmd = (block.command ?? "").trim();
+    if (!cmd) return stripped;
+    const newlineIdx = stripped.indexOf("\n");
+    const firstLine = newlineIdx === -1 ? stripped : stripped.slice(0, newlineIdx);
+    if (firstLine.trim() === cmd) {
+      return newlineIdx === -1 ? "" : stripped.slice(newlineIdx + 1);
+    }
+    return stripped;
+  }, [block.output, block.command]);
   const hasOutput = cleanOutput.trim().length > 0;
 
   // Content for copying (command + output)
@@ -99,42 +110,15 @@ export function CommandBlock({
         />
       </div>
 
-      {/* Output with fixed height preview + expand */}
+      {/* Output is always fully expanded — no inner expand/collapse toggle. */}
       <CollapsibleContent>
         <div className="px-5 pb-2">
-          <div
-            className={cn(
-              "relative overflow-hidden transition-[max-height] duration-200",
-              !outputExpanded && "max-h-[120px]"
-            )}
+          <pre
+            className="ansi-output whitespace-pre-wrap break-words m-0 text-muted-foreground"
+            style={codeStyle}
           >
-            <pre
-              className="ansi-output whitespace-pre-wrap break-words m-0 text-muted-foreground"
-              style={codeStyle}
-            >
-              <Ansi useClasses>{cleanOutput}</Ansi>
-            </pre>
-            {!outputExpanded && cleanOutput.length > 200 && (
-              <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-card to-transparent pointer-events-none" />
-            )}
-          </div>
-          {cleanOutput.length > 200 && (
-            <button
-              type="button"
-              className="flex items-center gap-1 mt-1 text-[10px] text-muted-foreground/50 hover:text-muted-foreground/70 transition-colors"
-              onClick={() => setOutputExpanded(!outputExpanded)}
-            >
-              {outputExpanded ? (
-                <>
-                  <Minimize2 className="w-3 h-3" /> Collapse
-                </>
-              ) : (
-                <>
-                  <Maximize2 className="w-3 h-3" /> Expand
-                </>
-              )}
-            </button>
-          )}
+            <Ansi useClasses>{cleanOutput}</Ansi>
+          </pre>
         </div>
       </CollapsibleContent>
     </Collapsible>
