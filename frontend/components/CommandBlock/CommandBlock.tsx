@@ -3,7 +3,7 @@ import { useMemo } from "react";
 import { Ansi } from "@/components/Ansi/Ansi";
 import { CopyButton } from "@/components/Markdown/CopyButton";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { stripOscSequences } from "@/lib/ansi";
+import { stripAllAnsi, stripOscSequences } from "@/lib/ansi";
 import { formatDurationLong } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import type { CommandBlock as CommandBlockType } from "@/store";
@@ -26,10 +26,6 @@ const INVISIBLE_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b-\u200d\ufeff]/g;
 // (`\x1b[?25l`, `\x1b[K`, `\x1b[?25h`, …) — stripping ESC alone leaves the
 // `[?25l[K…` debris that breaks the `visible === cmd` equality test below.
 const CSI_RE = /\x1b\[[\d;?:<>= ]*[a-zA-Z]/g;
-
-function stripInvisible(s: string): string {
-  return s.replace(INVISIBLE_RE, "");
-}
 
 // Reduce a raw output line to the user-visible text it would render as, with
 // every CSI escape (cursor moves, SGR colours, DEC private modes) and every
@@ -91,14 +87,13 @@ export function CommandBlock({
     return stripCommandEcho(stripped, block.command ?? "");
   }, [block.output, block.command]);
 
-  // `hasOutput` must reflect *visible* output — otherwise lone CSI escapes
-  // (cursor moves, DEC private modes, SGR colour resets) or bare control
-  // characters keep the empty output panel expanded ("black box" right after
-  // the first command of a new PowerShell session).
-  const hasOutput = useMemo(() => {
-    const visible = stripInvisible(cleanOutput.replace(CSI_RE, "")).trim();
-    return visible.length > 0;
-  }, [cleanOutput]);
+  // `hasOutput` must reflect *visible* output — otherwise CSI escapes,
+  // charset selection (ESC ( B), bare ESC sequences, or stray control bytes
+  // keep the collapsible expanded with an empty pre ("black box" right after
+  // the first command of a new PowerShell session). Delegate the check to
+  // stripAllAnsi which handles every escape family (OSC, CSI, DCS-ish bare
+  // ESC, charset, control chars) we care about.
+  const hasOutput = useMemo(() => stripAllAnsi(cleanOutput).length > 0, [cleanOutput]);
 
   // Content for copying (command + output)
   const copyContent = useMemo(() => {

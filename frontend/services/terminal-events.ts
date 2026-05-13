@@ -48,6 +48,16 @@ export function createTerminalEventService() {
   // ConPTY race documented in the prompt_start handler below.
   const lastPromptStartConsumedAt = new Map<string, number>();
   const PROMPT_START_DEDUPE_MS = 300;
+  // Per-session flag tracking whether we've seen at least one command_end on
+  // this session. Used to guard against the *first* prompt_start emitted by a
+  // freshly-spawned shell (zsh/bash/PowerShell all emit 133;A immediately on
+  // startup before the user has run anything): on Windows the chat input box
+  // can race the shell's startup, synthesise an OSC 133;C for the user's
+  // command before the first 133;A reaches the front-end, and then have the
+  // shell's startup 133;A turn the still-running command's pending entry
+  // into an empty timeline card. While `seenCommandEnd` is false we discard
+  // pending instead of converting it into a (necessarily empty) block.
+  const seenCommandEnd = new Set<string>();
   let fulltermCommands = new Set(BUILTIN_FULLTERM_COMMANDS);
   let gitStatusPollInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -142,6 +152,25 @@ export function createTerminalEventService() {
                   "[prompt_start] Suppressing duplicate prompt_start within dedupe window:",
                   session_id
                 );
+              } else if (!seenCommandEnd.has(session_id) && pendingCommand) {
+                // First prompt_start on this session AND pending is already
+                // armed with a real command — this is the
+                // PowerShell-on-Windows startup race: the user clicked Send
+                // before the shell's startup 133;A reached us, so the
+                // synthetic 133;C set pending="dir" first and the shell's
+                // very first prompt_start is now about to turn that pending
+                // entry into an empty timeline card. Drop the pending without
+                // producing a block; the real handleCommandEnd that follows
+                // dir's 133;D will create the proper card with output + time.
+                logger.debug(
+                  "[prompt_start] Discarding pending on first-prompt race:",
+                  session_id,
+                  pendingCommand
+                );
+                virtualTerminalManager.dispose(session_id);
+                liveTerminalManager.scrollToBottom(session_id);
+                liveTerminalManager.dispose(session_id);
+                store.getState().discardPendingCommand(session_id);
               } else {
                 virtualTerminalManager.dispose(session_id);
                 liveTerminalManager.scrollToBottom(session_id);
@@ -198,6 +227,11 @@ export function createTerminalEventService() {
           }
 
           case "command_end": {
+            // Mark this session as having completed at least one command so
+            // future prompt_start events fall through to handlePromptStart
+            // (the first-prompt-on-startup guard above is keyed off this).
+            seenCommandEnd.add(session_id);
+
             const commandText =
               command ??
               lastStartedCommand.get(session_id) ??
@@ -297,6 +331,10 @@ export function createTerminalEventService() {
     unlisteners.push(
       onEvent("session_ended", (payload) => {
         if (isStale()) return;
+        // Clear per-session bookkeeping so a future session id reuse (rare,
+        // but possible if tests recycle uuids) doesn't inherit stale guards.
+        lastPromptStartConsumedAt.delete(payload.sessionId);
+        seenCommandEnd.delete(payload.sessionId);
         store.getState().removeSession(payload.sessionId);
       })
     );
@@ -324,6 +362,7 @@ export function createTerminalEventService() {
       for (const { fallbackTimer } of deferredExitCodes.values()) clearTimeout(fallbackTimer);
       deferredExitCodes.clear();
       lastPromptStartConsumedAt.clear();
+      seenCommandEnd.clear();
       if (gitStatusPollInterval) clearInterval(gitStatusPollInterval);
       Promise.all(
         unlisteners.map((p) =>

@@ -70,6 +70,18 @@ export function createSessionTerminalActions(
       // Ready for input - nothing to do for now
     },
 
+    discardPendingCommand: (sessionId: string) => {
+      // Drop pending without producing a timeline block, and preserve the
+      // output buffer so the eventual handleCommandEnd has the full bytes.
+      // See SessionActions.discardPendingCommand for the Windows-specific
+      // race this guards against.
+      set((state) => {
+        if (state.pendingCommand[sessionId]) {
+          state.pendingCommand[sessionId] = null;
+        }
+      });
+    },
+
     handleCommandStart: (sessionId: string, command: string | null) => {
       deleteOutputBuffer(sessionId);
       set((state) => {

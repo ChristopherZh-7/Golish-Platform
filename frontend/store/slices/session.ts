@@ -94,6 +94,20 @@ export interface SessionActions {
   // Terminal lifecycle
   handlePromptStart: (sessionId: string) => void;
   handlePromptEnd: (sessionId: string) => void;
+  /**
+   * Drop a pending command WITHOUT producing a timeline block.
+   *
+   * Used by the prompt_start dispatcher to swallow the very first `OSC 133;A`
+   * a shell emits after startup: with the PowerShell-on-Windows synthetic
+   * `OSC 133;C` mechanism, a user can submit a command before the shell's
+   * own first prompt round-trips, leaving `pendingCommand` set to the
+   * user's command at the moment the spurious prompt_start arrives. Falling
+   * through to `handlePromptStart` would then materialize an empty card
+   * (no exit code, no duration) for the still-running command. Callers in
+   * this situation use `discardPendingCommand` instead so the buffered
+   * output is preserved for the real `handleCommandEnd` to consume.
+   */
+  discardPendingCommand: (sessionId: string) => void;
   handleCommandStart: (sessionId: string, command: string | null) => void;
   handleCommandEnd: (sessionId: string, exitCode: number, endTime?: number) => void;
   appendOutput: (sessionId: string, data: string) => void;
