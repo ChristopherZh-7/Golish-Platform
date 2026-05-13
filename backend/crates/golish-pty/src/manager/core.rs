@@ -18,6 +18,7 @@ use parking_lot::Mutex;
 use portable_pty::{Child, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
@@ -109,18 +110,42 @@ impl PtyManager {
             .clone();
         drop(sessions);
 
+        // PowerShell + PSReadLine on ConPTY treat a bare `\n` as
+        // LineFeed (the "continue input on the next line" key), not as
+        // Enter. So when the front-end injects a command with a
+        // trailing `\n` from the chat input box, PowerShell shows its
+        // `>>` continuation prompt and waits for more input instead of
+        // executing. We rewrite a trailing bare `\n` (and any other
+        // bare LFs that aren't already part of a CRLF pair) to `\r`
+        // before forwarding the bytes to the shell. zsh / bash / fish
+        // on Unix accept `\n` natively so they're untouched.
+        let translated: Cow<'_, [u8]> = if Self::needs_lf_to_cr_translation(session.shell_type) {
+            match translate_lf_to_cr_for_powershell(data) {
+                Some(buf) => Cow::Owned(buf),
+                None => Cow::Borrowed(data),
+            }
+        } else {
+            Cow::Borrowed(data)
+        };
+        let data = translated.as_ref();
+
         // For PowerShell sessions we synthesize the OSC 133;C
         // (CommandStart) sequence when the caller injects a complete
         // command via stdin. PowerShell has no preexec hook (unlike zsh
-        // preexec / bash DEBUG trap) so the integration script can't
-        // emit CommandStart by itself. Without this hook, the Timeline
-        // never sees a CommandStart for stdin-injected commands and so
-        // it never produces a command block.
+        // preexec / bash DEBUG trap), and even with PSReadLine's Enter
+        // handler the resulting OSC 133;C only arrives after the shell
+        // round-trips the keystroke; without an early synthetic event,
+        // the Timeline never sees a CommandStart for stdin-injected
+        // commands and so it never produces a command block.
         //
         // We feed a synthetic byte sequence into the shared parser so
         // its region state stays coherent with what the reader thread
         // sees, then dispatch the resulting events through the same
-        // emitter the reader thread uses.
+        // emitter the reader thread uses. If PSReadLine later emits its
+        // own OSC 133;C, the parser is already in the Output region so
+        // the duplicate just re-emits a CommandStart with the same
+        // command text — `handleCommandStart` on the front-end is
+        // idempotent for repeated identical commands.
         if Self::needs_synthetic_command_start(session.shell_type) {
             if let Some(cmd) = Self::extract_injected_command(data) {
                 Self::inject_command_start(&session, session_id, &cmd);
@@ -134,6 +159,12 @@ impl PtyManager {
         Ok(())
     }
 
+    /// PowerShell / `cmd.exe` need bare LFs rewritten to CR so the
+    /// shell sees Enter rather than the LineFeed continuation key.
+    fn needs_lf_to_cr_translation(shell_type: ShellType) -> bool {
+        matches!(shell_type, ShellType::PowerShell | ShellType::Cmd)
+    }
+
     /// PowerShell (and `cmd.exe`) on Windows have no preexec / DEBUG
     /// trap. We synthesize OSC 133;C for those shells so the Timeline
     /// sees CommandStart even when a command is injected via stdin from
@@ -145,15 +176,17 @@ impl PtyManager {
     /// Extract a single complete command line from a stdin write, or
     /// `None` if the write does not look like a complete command.
     ///
-    /// A "complete command" is the substring before the first `\n` (or
-    /// `\r\n`), with leading whitespace trimmed. We deliberately ignore
-    /// writes that don't end with a newline (typing one character at a
-    /// time) and writes that are pure whitespace.
+    /// A "complete command" is the substring before the first line
+    /// terminator (LF, CR, or CRLF), with leading / trailing whitespace
+    /// trimmed. CR is treated as a terminator alongside LF because the
+    /// PowerShell write path (see [`Self::write`]) rewrites trailing
+    /// LFs to CRs before this function runs. We deliberately ignore
+    /// writes that don't end with a terminator (typing one character
+    /// at a time) and writes that are pure whitespace.
     fn extract_injected_command(data: &[u8]) -> Option<String> {
         let text = std::str::from_utf8(data).ok()?;
-        let newline_idx = text.find('\n')?;
-        let line = &text[..newline_idx];
-        let line = line.trim_end_matches('\r').trim();
+        let terminator_idx = text.find(['\n', '\r'])?;
+        let line = text[..terminator_idx].trim();
         if line.is_empty() {
             return None;
         }
@@ -317,6 +350,33 @@ impl PtyManager {
     }
 }
 
+/// Rewrite bare LFs in a stdin payload to CRs so PowerShell /
+/// `cmd.exe` see them as Enter. `\r\n` pairs are left alone (the LF
+/// after a CR is harmless and preserving it keeps round-trip behaviour
+/// for callers that already use CRLF). Returns `None` when the input
+/// contains no bare LFs so the caller can skip the allocation.
+fn translate_lf_to_cr_for_powershell(data: &[u8]) -> Option<Vec<u8>> {
+    let has_bare_lf = data
+        .iter()
+        .enumerate()
+        .any(|(i, &b)| b == b'\n' && i.checked_sub(1).is_none_or(|j| data[j] != b'\r'));
+    if !has_bare_lf {
+        return None;
+    }
+
+    let mut out = Vec::with_capacity(data.len());
+    let mut prev: u8 = 0;
+    for &b in data {
+        if b == b'\n' && prev != b'\r' {
+            out.push(b'\r');
+        } else {
+            out.push(b);
+        }
+        prev = b;
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,6 +460,67 @@ mod tests {
         assert_eq!(
             PtyManager::extract_injected_command(b"first\nsecond\n"),
             Some("first".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_command_terminated_by_cr() {
+        // The PowerShell write path rewrites `\n` to `\r` before
+        // extracting, so CR-only terminators must work too.
+        assert_eq!(
+            PtyManager::extract_injected_command(b"dir\r"),
+            Some("dir".to_string())
+        );
+    }
+
+    #[test]
+    fn lf_to_cr_translation_only_for_windows_shells() {
+        assert!(PtyManager::needs_lf_to_cr_translation(ShellType::PowerShell));
+        assert!(PtyManager::needs_lf_to_cr_translation(ShellType::Cmd));
+        assert!(!PtyManager::needs_lf_to_cr_translation(ShellType::Zsh));
+        assert!(!PtyManager::needs_lf_to_cr_translation(ShellType::Bash));
+        assert!(!PtyManager::needs_lf_to_cr_translation(ShellType::Fish));
+        assert!(!PtyManager::needs_lf_to_cr_translation(ShellType::Sh));
+        assert!(!PtyManager::needs_lf_to_cr_translation(ShellType::Unknown));
+    }
+
+    #[test]
+    fn translate_lf_to_cr_rewrites_bare_lf() {
+        assert_eq!(translate_lf_to_cr_for_powershell(b"dir\n"), Some(b"dir\r".to_vec()));
+    }
+
+    #[test]
+    fn translate_lf_to_cr_preserves_crlf() {
+        // `\r\n` callers (some xterm key handlers send CRLF) must reach
+        // PowerShell unchanged so the CR triggers Enter and the LF is
+        // ignored by PSReadLine.
+        assert_eq!(translate_lf_to_cr_for_powershell(b"dir\r\n"), None);
+    }
+
+    #[test]
+    fn translate_lf_to_cr_returns_none_when_no_change_needed() {
+        assert_eq!(translate_lf_to_cr_for_powershell(b"ls"), None);
+        assert_eq!(translate_lf_to_cr_for_powershell(b""), None);
+        assert_eq!(translate_lf_to_cr_for_powershell(b"already\rterminated"), None);
+    }
+
+    #[test]
+    fn translate_lf_to_cr_handles_multiple_bare_lfs() {
+        // Pasting a multi-line script via the input box should turn
+        // every embedded `\n` into `\r` so PSReadLine sees a sequence
+        // of Enter presses rather than line-feed continuations.
+        assert_eq!(
+            translate_lf_to_cr_for_powershell(b"a\nb\nc\n"),
+            Some(b"a\rb\rc\r".to_vec())
+        );
+    }
+
+    #[test]
+    fn translate_lf_to_cr_handles_mixed_line_endings() {
+        // Mixed CR / LF / CRLF input: rewrite only the bare LFs.
+        assert_eq!(
+            translate_lf_to_cr_for_powershell(b"a\rb\nc\r\nd\n"),
+            Some(b"a\rb\rc\r\nd\r".to_vec())
         );
     }
 }
