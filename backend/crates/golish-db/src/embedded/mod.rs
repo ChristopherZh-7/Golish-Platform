@@ -19,9 +19,47 @@ pub struct EmbeddedPg {
 }
 
 impl EmbeddedPg {
+    /// Tweak the process environment so the embedded PostgreSQL child
+    /// processes produce stable, UTF-8-decodable output.
+    ///
+    /// `pg-embed` 1.0.0 strictly decodes child stdout/stderr as UTF-8.
+    /// On non-English Windows installs (Chinese/Japanese/Korean) the
+    /// default OEM code page is not UTF-8, so localized error messages
+    /// from `initdb.exe` / `postgres.exe` make `pg-embed` blow up with
+    /// `Error reading process output: stream did not contain valid
+    /// UTF-8` → `PgInitFailure`. Forcing the C locale keeps postgres
+    /// messages plain ASCII (always valid UTF-8) and flipping the
+    /// console code page to 65001 makes any stray localized byte still
+    /// land as UTF-8.
+    fn configure_postgres_environment() {
+        std::env::set_var("PGCLIENTENCODING", "UTF8");
+
+        #[cfg(target_os = "windows")]
+        {
+            std::env::set_var("LC_ALL", "C");
+            std::env::set_var("LC_CTYPE", "C");
+            std::env::set_var("LC_MESSAGES", "C");
+            std::env::set_var("LANG", "C");
+
+            // Best-effort: switch the process console code page to UTF-8
+            // (65001) for any postgres message that ignores LC_*. Errors
+            // (e.g. no attached console under Tauri) are ignored.
+            unsafe {
+                extern "system" {
+                    fn SetConsoleOutputCP(wCodePageID: u32) -> i32;
+                    fn SetConsoleCP(wCodePageID: u32) -> i32;
+                }
+                let _ = SetConsoleOutputCP(65001);
+                let _ = SetConsoleCP(65001);
+            }
+        }
+    }
+
     /// Download (if needed), initialize, and start the embedded PostgreSQL server.
     /// On first run this downloads ~30 MB of PG binaries; subsequent starts are fast.
     pub async fn start(config: DbConfig) -> Result<Self> {
+        Self::configure_postgres_environment();
+
         info!(
             port = config.port,
             data_dir = %config.pg_data_dir.display(),
