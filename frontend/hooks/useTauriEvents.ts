@@ -41,6 +41,24 @@ export function useTauriEvents() {
     const gitRefreshSeq = new Map<string, number>();
     const gitRefreshInFlight = new Set<string>();
     const lastStartedCommand = new Map<string, string | null>();
+    // Per-session bookkeeping used to defuse the PowerShell-on-Windows
+    // "first dir produces two cards" race. See the prompt_start handler.
+    const seenCommandEnd = new Set<string>();
+    const lastPromptStartConsumedAt = new Map<string, number>();
+    const PROMPT_START_DEDUPE_MS = 300;
+
+    function shortId(id: string): string {
+      return id.slice(0, 8);
+    }
+    // High-visibility timeline trace for terminal command lifecycle. Goes
+    // through `console.warn` so users can copy it out of DevTools without
+    // having to bump the log level. Tag stays uniform so it's grep-friendly.
+    function trace(event: string, sessionId: string, extra?: Record<string, unknown>): void {
+      console.warn(
+        `[timeline-trace] ${event} sid=${shortId(sessionId)} t=${Date.now()}`,
+        extra ?? {}
+      );
+    }
 
     let fulltermCommands = new Set(BUILTIN_FULLTERM_COMMANDS);
 
@@ -99,11 +117,20 @@ export function useTauriEvents() {
           case "prompt_start": {
             const pendingCommand = state.pendingCommand[session_id]?.command;
             const deferred = deferredExitCodes.get(session_id);
+            trace("prompt_start", session_id, {
+              pendingCommand,
+              hasDeferred: !!deferred,
+              seenCommandEnd: seenCommandEnd.has(session_id),
+              lastConsumedAgoMs: lastPromptStartConsumedAt.has(session_id)
+                ? Date.now() - (lastPromptStartConsumedAt.get(session_id) as number)
+                : null,
+            });
 
             if (deferred) {
               clearTimeout(deferred.fallbackTimer);
               deferredExitCodes.delete(session_id);
               liveTerminalManager.scrollToBottom(session_id);
+              lastPromptStartConsumedAt.set(session_id, Date.now());
 
               void (async () => {
                 await new Promise((resolve) => setTimeout(resolve, 150));
@@ -112,16 +139,53 @@ export function useTauriEvents() {
                   bufferSize: _drainOutputBufferSize(session_id),
                   exitCode: deferred.exitCode,
                 });
+                trace("prompt_start.deferred.flush", session_id, {
+                  exitCode: deferred.exitCode,
+                  bufferSize: _drainOutputBufferSize(session_id),
+                });
                 virtualTerminalManager.dispose(session_id);
                 liveTerminalManager.dispose(session_id);
                 store.getState().handleCommandEnd(session_id, deferred.exitCode, deferred.endTime);
                 store.getState().handlePromptStart(session_id);
               })();
             } else {
-              virtualTerminalManager.dispose(session_id);
-              liveTerminalManager.scrollToBottom(session_id);
-              liveTerminalManager.dispose(session_id);
-              state.handlePromptStart(session_id);
+              // Guard 1 (dedupe): swallow a second prompt_start that lands
+              // shortly after one that consumed a deferred command_end. The
+              // async cleanup above is still in flight and will handle the
+              // block creation; running handlePromptStart synchronously here
+              // would race it.
+              const consumedAt = lastPromptStartConsumedAt.get(session_id);
+              const withinDedupeWindow =
+                consumedAt !== undefined && Date.now() - consumedAt < PROMPT_START_DEDUPE_MS;
+              // Guard 2 (first-prompt race): the very first prompt_start a
+              // session receives, while pending is *already* armed with a
+              // real command and no command_end has been processed yet, is
+              // the PowerShell-on-Windows startup race — synthetic 133;C
+              // armed pending before the shell's startup 133;A reached us.
+              // Drop pending without producing a card; the real handleCommand
+              // End that follows dir's 133;D will create the proper block.
+              const isFirstPromptRace = !seenCommandEnd.has(session_id) && !!pendingCommand;
+
+              if (withinDedupeWindow) {
+                trace("prompt_start.suppress.dedupe", session_id, {
+                  consumedAgoMs: consumedAt ? Date.now() - consumedAt : null,
+                  pendingCommand,
+                });
+              } else if (isFirstPromptRace) {
+                trace("prompt_start.suppress.firstPrompt", session_id, {
+                  pendingCommand,
+                });
+                virtualTerminalManager.dispose(session_id);
+                liveTerminalManager.scrollToBottom(session_id);
+                liveTerminalManager.dispose(session_id);
+                store.getState().discardPendingCommand(session_id);
+              } else {
+                trace("prompt_start.handle", session_id, { pendingCommand });
+                virtualTerminalManager.dispose(session_id);
+                liveTerminalManager.scrollToBottom(session_id);
+                liveTerminalManager.dispose(session_id);
+                state.handlePromptStart(session_id);
+              }
             }
 
             lastStartedCommand.delete(session_id);
@@ -135,9 +199,15 @@ export function useTauriEvents() {
             break;
           }
           case "prompt_end":
+            trace("prompt_end", session_id);
             state.handlePromptEnd(session_id);
             break;
           case "command_start": {
+            trace("command_start", session_id, {
+              command,
+              pendingBefore: state.pendingCommand[session_id]?.command,
+              seenCommandEnd: seenCommandEnd.has(session_id),
+            });
             state.handleCommandStart(session_id, command);
             lastStartedCommand.set(session_id, command);
             usedAlternateScreen.set(session_id, false);
@@ -173,6 +243,16 @@ export function useTauriEvents() {
             break;
           }
           case "command_end": {
+            trace("command_end", session_id, {
+              command,
+              exit_code,
+              pendingCommand: state.pendingCommand[session_id]?.command,
+            });
+            // Mark this session as having completed at least one command so
+            // the first-prompt race guard above stops suppressing further
+            // prompt_start events.
+            seenCommandEnd.add(session_id);
+
             const commandText =
               command ??
               lastStartedCommand.get(session_id) ??
@@ -277,6 +357,9 @@ export function useTauriEvents() {
     unlisteners.push(
       onEvent("session_ended", (payload) => {
         if (isStale()) return;
+        trace("session_ended", payload.sessionId);
+        seenCommandEnd.delete(payload.sessionId);
+        lastPromptStartConsumedAt.delete(payload.sessionId);
         store.getState().removeSession(payload.sessionId);
       })
     );
@@ -305,6 +388,8 @@ export function useTauriEvents() {
       processDetectionTimers.clear();
       for (const { fallbackTimer } of deferredExitCodes.values()) clearTimeout(fallbackTimer);
       deferredExitCodes.clear();
+      seenCommandEnd.clear();
+      lastPromptStartConsumedAt.clear();
       clearInterval(gitStatusPollInterval);
       Promise.all(
         unlisteners.map((p) =>
