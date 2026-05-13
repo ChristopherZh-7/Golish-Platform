@@ -82,9 +82,21 @@ export function CommandBlock({
   // leading line that is just the shell echoing the typed command back. The
   // echo happens on Windows ConPTY and sometimes on POSIX shells when stdin
   // is in cooked mode.
+  //
+  // Final `replace(/^\s+/, "")`: after `stripCommandEcho` slices the echoed
+  // `dir` line off the top, the bytes that PowerShell put *between* the echo
+  // and the first row of real output (typically `\n\n    ` — a blank line
+  // plus the GroupBy `Directory:` indent) become the new leading characters.
+  // Without this strip, dir 2+ renders with the `Directory:` row pushed
+  // down by one blank line and indented by 4 spaces, while dir 1 (which
+  // has no echoed dir line in this fragment) renders flush-left. The strip
+  // here is whitespace-only — SGR colour escapes that may carry a meaningful
+  // first-row colour are *not* affected because they were already preserved
+  // by `stripOscSequences` and aren't whitespace.
   const cleanOutput = useMemo(() => {
     const stripped = stripOscSequences(block.output);
-    return stripCommandEcho(stripped, block.command ?? "");
+    const noEcho = stripCommandEcho(stripped, block.command ?? "");
+    return noEcho.replace(/^\s+/, "");
   }, [block.output, block.command]);
 
   // `hasOutput` must reflect *visible* output — otherwise CSI escapes,
