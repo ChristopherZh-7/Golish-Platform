@@ -56,7 +56,15 @@ impl EmbeddedPg {
     }
 
     /// Download (if needed), initialize, and start the embedded PostgreSQL server.
-    /// On first run this downloads ~30 MB of PG binaries; subsequent starts are fast.
+    ///
+    /// On first run this downloads ~30 MB of PG binaries; subsequent starts
+    /// are fast. If the first attempt fails with a recoverable error
+    /// (corrupted download, half-initialized data directory, etc.) the
+    /// pg-embed binary cache and the pgdata directory are purged and the
+    /// whole setup is retried once. This avoids requiring users to run a
+    /// manual cleanup script every time the cache or data directory get
+    /// stuck in a bad state — a common failure mode on Windows where
+    /// downloads or unpacks can be interrupted.
     pub async fn start(config: DbConfig) -> Result<Self> {
         Self::configure_postgres_environment();
 
@@ -71,17 +79,60 @@ impl EmbeddedPg {
         std::fs::create_dir_all(&config.pg_bin_cache_dir)
             .context("Failed to create PG binary cache directory")?;
 
-        // If binaries aren't extracted in the cache yet, extract from the
-        // downloaded zip before pg-embed's setup() — avoids a slow re-download.
+        match Self::try_setup_and_start(config.clone()).await {
+            Ok(this) => Ok(this),
+            Err(first_err) => {
+                if !Self::is_recoverable_setup_error(&first_err) {
+                    return Err(first_err);
+                }
+
+                warn!(
+                    error = %first_err,
+                    "PG startup failed with a recoverable error; \
+                     purging corrupted state and retrying once"
+                );
+                Self::purge_corrupted_state(&config);
+
+                match Self::try_setup_and_start(config.clone()).await {
+                    Ok(this) => {
+                        info!("Embedded PostgreSQL recovered after self-heal retry");
+                        Ok(this)
+                    }
+                    Err(retry_err) => {
+                        error!(
+                            first_error = %first_err,
+                            retry_error = %retry_err,
+                            "PG startup failed even after self-heal retry"
+                        );
+                        Err(anyhow::anyhow!(
+                            "PostgreSQL failed to start after self-heal retry.\n\
+                             First attempt: {first_err}\n\
+                             Retry attempt: {retry_err}\n\
+                             You may need to manually delete the data directory \
+                             ({}) and the pg-embed cache, or check that the \
+                             download was not blocked by a firewall / anti-virus.",
+                            config.pg_data_dir.display()
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
+    /// One-shot attempt: download (if needed), initialize, and start the
+    /// embedded PostgreSQL server. Called twice by [`Self::start`] with a
+    /// state purge in between.
+    async fn try_setup_and_start(config: DbConfig) -> Result<Self> {
         let cache_dir = Self::cache_dir();
-        if !cache_dir.join("bin").join("initdb").exists() {
+        let initdb_name = if cfg!(windows) { "initdb.exe" } else { "initdb" };
+        if !cache_dir.join("bin").join(initdb_name).exists() {
             Self::try_extract_from_cache(&config)?;
         }
 
         // macOS: remove quarantine BEFORE setup() — initdb and pg_ctl
         // will fail if Gatekeeper blocks execution of the unsigned binaries.
         // Binaries live in the cache dir, not the database dir.
-        golish_platform::postgres::clear_quarantine_dirs(&Self::cache_dir(), &["bin", "lib"]);
+        golish_platform::postgres::clear_quarantine_dirs(&cache_dir, &["bin", "lib"]);
 
         let pg_settings = PgSettings {
             database_dir: config.pg_data_dir.clone(),
@@ -143,6 +194,52 @@ impl EmbeddedPg {
         info!(port = config.port, "Embedded PostgreSQL is ready");
 
         Ok(Self { pg, config })
+    }
+
+    /// Decide whether an error returned by [`Self::try_setup_and_start`] is
+    /// likely caused by corrupted on-disk state (in which case purging the
+    /// cache + data dir and retrying makes sense) rather than a permanent
+    /// configuration problem (port conflict, missing runtime, etc.).
+    fn is_recoverable_setup_error(err: &anyhow::Error) -> bool {
+        let msg = format!("{err:?}");
+        msg.contains("UnpackFailure")
+            || msg.contains("PgInitFailure")
+            || msg.contains("PgPurgeFailure")
+            || msg.contains("PgStartFailure")
+            // pg-embed wraps zip errors here when the cached download is partial.
+            || msg.contains("invalid zip archive")
+    }
+
+    /// Delete the pg-embed binary cache and the pgdata directory so the
+    /// next [`Self::try_setup_and_start`] starts from a known-clean slate.
+    ///
+    /// We intentionally swallow IO errors here — if a delete fails because
+    /// a stale `postgres.exe` is still locking files, the next setup will
+    /// surface a clearer error than what we could synthesise.
+    fn purge_corrupted_state(config: &DbConfig) {
+        let cache_dir = Self::cache_dir();
+        if cache_dir.exists() {
+            warn!(
+                cache_dir = %cache_dir.display(),
+                "Purging pg-embed binary cache"
+            );
+            if let Err(e) = std::fs::remove_dir_all(&cache_dir) {
+                warn!(error = %e, "Failed to fully purge pg-embed cache directory");
+            }
+        }
+
+        if config.pg_data_dir.exists() {
+            warn!(
+                data_dir = %config.pg_data_dir.display(),
+                "Purging pgdata directory"
+            );
+            if let Err(e) = std::fs::remove_dir_all(&config.pg_data_dir) {
+                warn!(error = %e, "Failed to fully purge pgdata directory");
+            }
+            if let Err(e) = std::fs::create_dir_all(&config.pg_data_dir) {
+                warn!(error = %e, "Failed to recreate pgdata directory after purge");
+            }
+        }
     }
 
     /// Locate the pg-embed binary cache zip and extract binaries into the
