@@ -3,6 +3,7 @@
     "id": "hydra",
     "name": "hydra",
     "description": "Fast network logon brute-forcer for many protocols (SSH, FTP, HTTP, SMB, RDP, etc.)",
+    "descriptionI18n": { "zh": "高速网络登录爆破工具，支持 SSH / FTP / HTTP / SMB / RDP 等多种协议" },
     "executable": "hydra",
     "runtime": "native",
     "launchMode": "cli",
@@ -10,6 +11,7 @@
     "subcategory": "online",
     "tier": "essential",
     "tags": ["brute", "password", "network", "auth"],
+    "tagsI18n": { "zh": ["爆破", "密码", "网络", "认证"] },
     "install": {
       "method": "homebrew",
       "source": "hydra",
@@ -19,125 +21,153 @@
     "params": [
       {
         "label": "Target",
+        "labelI18n": { "zh": "目标" },
         "flag": "",
         "type": "string",
         "required": true,
         "description": "Target host or IP",
+        "descriptionI18n": { "zh": "目标主机或 IP" },
         "placeholder": "192.168.1.10"
       },
       {
         "label": "Service",
+        "labelI18n": { "zh": "服务" },
         "flag": "",
         "type": "select",
         "required": true,
         "description": "Service / protocol to attack (appended after target)",
+        "descriptionI18n": { "zh": "要攻击的服务 / 协议(放在目标之后)" },
         "options": [
-          { "value": "ssh", "label": "ssh" },
-          { "value": "ftp", "label": "ftp" },
-          { "value": "telnet", "label": "telnet" },
-          { "value": "smb", "label": "smb" },
-          { "value": "rdp", "label": "rdp" },
-          { "value": "vnc", "label": "vnc" },
-          { "value": "mysql", "label": "mysql" },
-          { "value": "postgres", "label": "postgres" },
-          { "value": "mssql", "label": "mssql" },
-          { "value": "redis", "label": "redis" },
-          { "value": "mongodb", "label": "mongodb" },
-          { "value": "imap", "label": "imap" },
-          { "value": "pop3", "label": "pop3" },
-          { "value": "smtp", "label": "smtp" },
-          { "value": "http-get", "label": "http-get" },
-          { "value": "http-post-form", "label": "http-post-form" },
-          { "value": "https-get", "label": "https-get" },
-          { "value": "https-post-form", "label": "https-post-form" }
+          { "value": "ssh", "label": "ssh", "labelI18n": { "zh": "SSH" } },
+          { "value": "ftp", "label": "ftp", "labelI18n": { "zh": "FTP" } },
+          { "value": "telnet", "label": "telnet", "labelI18n": { "zh": "Telnet" } },
+          { "value": "smb", "label": "smb", "labelI18n": { "zh": "SMB" } },
+          { "value": "rdp", "label": "rdp", "labelI18n": { "zh": "RDP" } },
+          { "value": "vnc", "label": "vnc", "labelI18n": { "zh": "VNC" } },
+          { "value": "mysql", "label": "mysql", "labelI18n": { "zh": "MySQL" } },
+          { "value": "postgres", "label": "postgres", "labelI18n": { "zh": "PostgreSQL" } },
+          { "value": "mssql", "label": "mssql", "labelI18n": { "zh": "MSSQL" } },
+          { "value": "redis", "label": "redis", "labelI18n": { "zh": "Redis" } },
+          { "value": "mongodb", "label": "mongodb", "labelI18n": { "zh": "MongoDB" } },
+          { "value": "imap", "label": "imap", "labelI18n": { "zh": "IMAP" } },
+          { "value": "pop3", "label": "pop3", "labelI18n": { "zh": "POP3" } },
+          { "value": "smtp", "label": "smtp", "labelI18n": { "zh": "SMTP" } },
+          { "value": "http-get", "label": "http-get", "labelI18n": { "zh": "HTTP GET" } },
+          { "value": "http-post-form", "label": "http-post-form", "labelI18n": { "zh": "HTTP POST 表单" } },
+          { "value": "https-get", "label": "https-get", "labelI18n": { "zh": "HTTPS GET" } },
+          { "value": "https-post-form", "label": "https-post-form", "labelI18n": { "zh": "HTTPS POST 表单" } }
         ]
       },
       {
         "label": "Username",
+        "labelI18n": { "zh": "用户名" },
         "flag": "-l",
         "type": "string",
         "description": "Single username",
+        "descriptionI18n": { "zh": "单个用户名" },
         "placeholder": "admin"
       },
       {
         "label": "User List",
+        "labelI18n": { "zh": "用户名列表" },
         "flag": "-L",
         "type": "string",
         "description": "Path to username file",
+        "descriptionI18n": { "zh": "用户名文件路径" },
         "placeholder": "users.txt"
       },
       {
         "label": "Password",
+        "labelI18n": { "zh": "密码" },
         "flag": "-p",
         "type": "string",
         "description": "Single password",
+        "descriptionI18n": { "zh": "单个密码" },
         "placeholder": "password"
       },
       {
         "label": "Password List",
+        "labelI18n": { "zh": "密码列表" },
         "flag": "-P",
         "type": "string",
         "description": "Path to password file",
+        "descriptionI18n": { "zh": "密码文件路径" },
         "placeholder": "rockyou.txt"
       },
       {
         "label": "Combo File",
+        "labelI18n": { "zh": "user:pass 组合文件" },
         "flag": "-C",
         "type": "string",
         "description": "user:pass combo file (replaces -L/-P)",
+        "descriptionI18n": { "zh": "user:pass 组合文件(可替代 -L/-P)" },
         "placeholder": "combos.txt"
       },
       {
         "label": "Tasks",
+        "labelI18n": { "zh": "并发任务" },
         "flag": "-t",
         "type": "string",
         "description": "Parallel connect tasks per target (default 16)",
+        "descriptionI18n": { "zh": "每个目标的并发连接数(默认 16)" },
         "default": "16",
         "placeholder": "16"
       },
       {
         "label": "Port",
+        "labelI18n": { "zh": "端口" },
         "flag": "-s",
         "type": "string",
         "description": "Override default port",
+        "descriptionI18n": { "zh": "覆盖默认端口" },
         "placeholder": "2222"
       },
       {
         "label": "Stop on First",
+        "labelI18n": { "zh": "命中即停(单主机)" },
         "flag": "-f",
         "type": "boolean",
-        "description": "Exit after first valid login per host"
+        "description": "Exit after first valid login per host",
+        "descriptionI18n": { "zh": "每个主机找到一组有效凭据后退出" }
       },
       {
         "label": "Stop Globally",
+        "labelI18n": { "zh": "命中即停(全局)" },
         "flag": "-F",
         "type": "boolean",
-        "description": "Exit after first valid login (any host)"
+        "description": "Exit after first valid login (any host)",
+        "descriptionI18n": { "zh": "任何主机找到一组有效凭据后退出" }
       },
       {
         "label": "Output File",
+        "labelI18n": { "zh": "输出文件" },
         "flag": "-o",
         "type": "string",
         "description": "Save output to file",
+        "descriptionI18n": { "zh": "把输出保存到文件" },
         "placeholder": "hydra.txt"
       },
       {
         "label": "Verbose",
+        "labelI18n": { "zh": "详细输出" },
         "flag": "-V",
         "type": "boolean",
-        "description": "Show login+pass for each attempt"
+        "description": "Show login+pass for each attempt",
+        "descriptionI18n": { "zh": "每次尝试都打印 login + pass" }
       },
       {
         "label": "Try Empty / Login as Pass",
+        "labelI18n": { "zh": "常见弱口令策略" },
         "flag": "-e",
         "type": "select",
         "description": "Add common bypasses",
+        "descriptionI18n": { "zh": "追加常见弱口令策略" },
         "options": [
-          { "value": "n", "label": "n - empty password" },
-          { "value": "s", "label": "s - login as password" },
-          { "value": "r", "label": "r - reverse login" },
-          { "value": "ns", "label": "ns - empty + same" },
-          { "value": "nsr", "label": "nsr - all three" }
+          { "value": "n", "label": "n - empty password", "labelI18n": { "zh": "n - 空密码" } },
+          { "value": "s", "label": "s - login as password", "labelI18n": { "zh": "s - 用户名当密码" } },
+          { "value": "r", "label": "r - reverse login", "labelI18n": { "zh": "r - 用户名反转当密码" } },
+          { "value": "ns", "label": "ns - empty + same", "labelI18n": { "zh": "ns - 空 + 同用户名" } },
+          { "value": "nsr", "label": "nsr - all three", "labelI18n": { "zh": "nsr - 三个全开" } }
         ]
       }
     ],
@@ -145,51 +175,72 @@
       {
         "id": "ssh-userlist",
         "name": "SSH Brute (user list + passlist)",
+        "nameI18n": { "zh": "SSH 爆破(用户列表 + 密码列表)" },
         "description": "SSH user/pass brute force, exit on first hit",
+        "descriptionI18n": { "zh": "SSH 用户/密码爆破，命中即停" },
         "args": "-L {{users}} -P {{passes}} -t 4 -f {{target}} ssh",
-        "tags": ["ssh"]
+        "tags": ["ssh"],
+        "tagsI18n": { "zh": ["SSH"] }
       },
       {
         "id": "ssh-single-user",
         "name": "SSH Brute (single user)",
+        "nameI18n": { "zh": "SSH 爆破(单用户)" },
         "description": "SSH brute on root with passlist",
+        "descriptionI18n": { "zh": "针对 root 的 SSH 密码爆破" },
         "args": "-l root -P {{passes}} -t 4 -f {{target}} ssh",
-        "tags": ["ssh"]
+        "tags": ["ssh"],
+        "tagsI18n": { "zh": ["SSH"] }
       },
       {
         "id": "ftp-brute",
         "name": "FTP Brute",
+        "nameI18n": { "zh": "FTP 爆破" },
         "description": "FTP user/pass brute",
+        "descriptionI18n": { "zh": "FTP 用户 / 密码爆破" },
         "args": "-L {{users}} -P {{passes}} -f {{target}} ftp",
-        "tags": ["ftp"]
+        "tags": ["ftp"],
+        "tagsI18n": { "zh": ["FTP"] }
       },
       {
         "id": "rdp-brute",
         "name": "RDP Brute (single user)",
+        "nameI18n": { "zh": "RDP 爆破(单用户)" },
         "description": "RDP brute against Administrator",
+        "descriptionI18n": { "zh": "针对 Administrator 的 RDP 爆破" },
         "args": "-l Administrator -P {{passes}} -t 1 -f {{target}} rdp",
-        "tags": ["rdp", "windows"]
+        "tags": ["rdp", "windows"],
+        "tagsI18n": { "zh": ["RDP", "Windows"] }
       },
       {
         "id": "http-form",
         "name": "HTTP POST Login Form",
+        "nameI18n": { "zh": "HTTP POST 登录表单" },
         "description": "Brute web login form (custom :form_path:body:fail_marker)",
+        "descriptionI18n": { "zh": "爆破 Web 登录表单(自定义 :路径:请求体:失败特征)" },
         "args": "-l {{user}} -P {{passes}} {{target}} http-post-form \"/login:user=^USER^&pass=^PASS^:Invalid\"",
-        "tags": ["web", "http"]
+        "tags": ["web", "http"],
+        "tagsI18n": { "zh": ["Web", "HTTP"] }
       },
       {
         "id": "smb-domain",
         "name": "SMB Domain Brute",
+        "nameI18n": { "zh": "SMB 域账号爆破" },
         "description": "SMB brute with stop-on-first per host",
+        "descriptionI18n": { "zh": "SMB 爆破，单主机命中即停" },
         "args": "-L {{users}} -P {{passes}} -t 1 -f {{target}} smb",
-        "tags": ["smb", "windows"]
+        "tags": ["smb", "windows"],
+        "tagsI18n": { "zh": ["SMB", "Windows"] }
       },
       {
         "id": "redis-noauth",
         "name": "Redis No-Auth Check",
+        "nameI18n": { "zh": "Redis 未授权检测" },
         "description": "Try empty password on Redis",
+        "descriptionI18n": { "zh": "用空密码尝试连 Redis" },
         "args": "-l '' -p '' -t 1 -f {{target}} redis",
-        "tags": ["redis"]
+        "tags": ["redis"],
+        "tagsI18n": { "zh": ["Redis"] }
       }
     ],
     "output": {

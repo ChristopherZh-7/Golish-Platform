@@ -3,6 +3,7 @@
     "id": "john",
     "name": "john",
     "description": "John the Ripper - offline password hash cracker for many formats (NTLM, MD5, SHA, bcrypt, etc.)",
+    "descriptionI18n": { "zh": "John the Ripper —— 离线密码哈希破解工具，支持 NTLM / MD5 / SHA / bcrypt 等众多格式" },
     "executable": "john",
     "runtime": "native",
     "launchMode": "cli",
@@ -10,6 +11,7 @@
     "subcategory": "offline",
     "tier": "recommended",
     "tags": ["brute", "password", "hash", "offline"],
+    "tagsI18n": { "zh": ["爆破", "密码", "哈希", "离线"] },
     "install": {
       "method": "homebrew",
       "source": "john-jumbo",
@@ -19,107 +21,131 @@
     "params": [
       {
         "label": "Hash File",
+        "labelI18n": { "zh": "哈希文件" },
         "flag": "",
         "type": "string",
         "required": true,
         "description": "Path to hashes file (one hash per line, or formatted)",
+        "descriptionI18n": { "zh": "哈希文件路径(每行一个哈希或带格式)" },
         "placeholder": "hashes.txt"
       },
       {
         "label": "Format",
+        "labelI18n": { "zh": "哈希格式" },
         "flag": "--format=",
         "type": "select",
         "description": "Hash format (run --list=formats for full list)",
+        "descriptionI18n": { "zh": "哈希格式(完整列表见 --list=formats)" },
         "options": [
-          { "value": "raw-md5", "label": "raw-md5" },
-          { "value": "raw-sha1", "label": "raw-sha1" },
-          { "value": "raw-sha256", "label": "raw-sha256" },
-          { "value": "raw-sha512", "label": "raw-sha512" },
-          { "value": "md5crypt", "label": "md5crypt ($1$)" },
-          { "value": "sha512crypt", "label": "sha512crypt ($6$)" },
-          { "value": "bcrypt", "label": "bcrypt ($2$)" },
-          { "value": "nt", "label": "nt (NTLM)" },
-          { "value": "lm", "label": "lm (LanMan)" },
-          { "value": "netntlmv2", "label": "netntlmv2" },
-          { "value": "krb5tgs", "label": "krb5tgs (Kerberoasting)" },
-          { "value": "ZIP", "label": "ZIP archive" },
-          { "value": "rar", "label": "RAR archive" },
-          { "value": "pdf", "label": "PDF" },
-          { "value": "pkzip", "label": "pkzip" }
+          { "value": "raw-md5", "label": "raw-md5", "labelI18n": { "zh": "raw-md5" } },
+          { "value": "raw-sha1", "label": "raw-sha1", "labelI18n": { "zh": "raw-sha1" } },
+          { "value": "raw-sha256", "label": "raw-sha256", "labelI18n": { "zh": "raw-sha256" } },
+          { "value": "raw-sha512", "label": "raw-sha512", "labelI18n": { "zh": "raw-sha512" } },
+          { "value": "md5crypt", "label": "md5crypt ($1$)", "labelI18n": { "zh": "md5crypt ($1$)" } },
+          { "value": "sha512crypt", "label": "sha512crypt ($6$)", "labelI18n": { "zh": "sha512crypt ($6$)" } },
+          { "value": "bcrypt", "label": "bcrypt ($2$)", "labelI18n": { "zh": "bcrypt ($2$)" } },
+          { "value": "nt", "label": "nt (NTLM)", "labelI18n": { "zh": "nt (NTLM)" } },
+          { "value": "lm", "label": "lm (LanMan)", "labelI18n": { "zh": "lm (LanMan)" } },
+          { "value": "netntlmv2", "label": "netntlmv2", "labelI18n": { "zh": "netntlmv2" } },
+          { "value": "krb5tgs", "label": "krb5tgs (Kerberoasting)", "labelI18n": { "zh": "krb5tgs(Kerberoasting)" } },
+          { "value": "ZIP", "label": "ZIP archive", "labelI18n": { "zh": "ZIP 压缩包" } },
+          { "value": "rar", "label": "RAR archive", "labelI18n": { "zh": "RAR 压缩包" } },
+          { "value": "pdf", "label": "PDF", "labelI18n": { "zh": "PDF" } },
+          { "value": "pkzip", "label": "pkzip", "labelI18n": { "zh": "pkzip" } }
         ]
       },
       {
         "label": "Wordlist",
+        "labelI18n": { "zh": "字典" },
         "flag": "--wordlist=",
         "type": "string",
         "description": "Wordlist for dictionary attack",
+        "descriptionI18n": { "zh": "字典攻击用的字典" },
         "placeholder": "/usr/share/wordlists/rockyou.txt"
       },
       {
         "label": "Rules",
+        "labelI18n": { "zh": "变形规则" },
         "flag": "--rules",
         "type": "string",
         "description": "Apply mangling rules (default = all built-in)",
+        "descriptionI18n": { "zh": "应用变形规则(默认 = 全部内置规则)" },
         "placeholder": "Best64"
       },
       {
         "label": "Mask",
+        "labelI18n": { "zh": "掩码" },
         "flag": "--mask=",
         "type": "string",
         "description": "Mask attack pattern (e.g. ?l?l?l?l?d?d)",
+        "descriptionI18n": { "zh": "掩码攻击模式(如 ?l?l?l?l?d?d)" },
         "placeholder": "?u?l?l?l?l?d?d"
       },
       {
         "label": "Incremental",
+        "labelI18n": { "zh": "增量模式" },
         "flag": "--incremental",
         "type": "select",
         "description": "Brute force mode",
+        "descriptionI18n": { "zh": "暴力破解字符集" },
         "options": [
-          { "value": "Digits", "label": "Digits" },
-          { "value": "Lower", "label": "Lower" },
-          { "value": "Alpha", "label": "Alpha" },
-          { "value": "Alnum", "label": "Alnum" },
-          { "value": "ASCII", "label": "ASCII" }
+          { "value": "Digits", "label": "Digits", "labelI18n": { "zh": "Digits(数字)" } },
+          { "value": "Lower", "label": "Lower", "labelI18n": { "zh": "Lower(小写)" } },
+          { "value": "Alpha", "label": "Alpha", "labelI18n": { "zh": "Alpha(字母)" } },
+          { "value": "Alnum", "label": "Alnum", "labelI18n": { "zh": "Alnum(字母+数字)" } },
+          { "value": "ASCII", "label": "ASCII", "labelI18n": { "zh": "ASCII" } }
         ]
       },
       {
         "label": "Single Mode",
+        "labelI18n": { "zh": "Single 模式" },
         "flag": "--single",
         "type": "boolean",
-        "description": "Single crack mode (uses GECOS / login)"
+        "description": "Single crack mode (uses GECOS / login)",
+        "descriptionI18n": { "zh": "Single 破解模式(利用 GECOS / 登录名)" }
       },
       {
         "label": "Show Cracked",
+        "labelI18n": { "zh": "显示已破解" },
         "flag": "--show",
         "type": "boolean",
-        "description": "Show passwords already cracked"
+        "description": "Show passwords already cracked",
+        "descriptionI18n": { "zh": "显示已经破解出来的密码" }
       },
       {
         "label": "Restore Session",
+        "labelI18n": { "zh": "恢复会话" },
         "flag": "--restore",
         "type": "string",
         "description": "Restore named session",
+        "descriptionI18n": { "zh": "按名字恢复会话" },
         "placeholder": "myjob"
       },
       {
         "label": "Session Name",
+        "labelI18n": { "zh": "会话名" },
         "flag": "--session=",
         "type": "string",
         "description": "Save current run with this name",
+        "descriptionI18n": { "zh": "以该名字保存当前任务" },
         "placeholder": "myjob"
       },
       {
         "label": "Forks",
+        "labelI18n": { "zh": "进程数" },
         "flag": "--fork=",
         "type": "string",
         "description": "Number of parallel processes (CPU cores)",
+        "descriptionI18n": { "zh": "并行进程数(CPU 核心数)" },
         "placeholder": "4"
       },
       {
         "label": "Pot File",
+        "labelI18n": { "zh": "Pot 文件" },
         "flag": "--pot=",
         "type": "string",
         "description": "Custom pot file (cracked store)",
+        "descriptionI18n": { "zh": "自定义 pot 文件(存放已破解密码)" },
         "placeholder": "custom.pot"
       }
     ],
@@ -127,51 +153,72 @@
       {
         "id": "auto-detect",
         "name": "Auto-detect & wordlist",
+        "nameI18n": { "zh": "自动识别 + 字典" },
         "description": "Let john detect format, run rockyou",
+        "descriptionI18n": { "zh": "让 john 自动识别格式并跑 rockyou 字典" },
         "args": "--wordlist=/usr/share/wordlists/rockyou.txt {{hashes}}",
-        "tags": ["dict"]
+        "tags": ["dict"],
+        "tagsI18n": { "zh": ["字典"] }
       },
       {
         "id": "ntlm-rules",
         "name": "NTLM with rules",
+        "nameI18n": { "zh": "NTLM + 变形规则" },
         "description": "Crack NTLM with rockyou + mangling rules",
+        "descriptionI18n": { "zh": "rockyou + 变形规则破解 NTLM" },
         "args": "--format=nt --wordlist=/usr/share/wordlists/rockyou.txt --rules {{hashes}}",
-        "tags": ["ntlm", "windows"]
+        "tags": ["ntlm", "windows"],
+        "tagsI18n": { "zh": ["NTLM", "Windows"] }
       },
       {
         "id": "shadow-md5crypt",
         "name": "Linux /etc/shadow MD5",
+        "nameI18n": { "zh": "Linux /etc/shadow MD5" },
         "description": "Crack md5crypt from shadow file",
+        "descriptionI18n": { "zh": "破解 shadow 文件中的 md5crypt 哈希" },
         "args": "--format=md5crypt --wordlist=/usr/share/wordlists/rockyou.txt {{hashes}}",
-        "tags": ["linux"]
+        "tags": ["linux"],
+        "tagsI18n": { "zh": ["Linux"] }
       },
       {
         "id": "kerberoast",
         "name": "Kerberoast TGS",
+        "nameI18n": { "zh": "Kerberoast TGS" },
         "description": "Crack Kerberos TGS hashes (Active Directory)",
+        "descriptionI18n": { "zh": "破解 Kerberos TGS 哈希(AD 域)" },
         "args": "--format=krb5tgs --wordlist=/usr/share/wordlists/rockyou.txt {{hashes}}",
-        "tags": ["ad", "kerberos"]
+        "tags": ["ad", "kerberos"],
+        "tagsI18n": { "zh": ["AD 域", "Kerberos"] }
       },
       {
         "id": "zip-archive",
         "name": "ZIP archive crack",
+        "nameI18n": { "zh": "ZIP 压缩包破解" },
         "description": "Use zip2john + john to crack ZIP password",
+        "descriptionI18n": { "zh": "用 zip2john + john 破解 ZIP 密码" },
         "args": "--format=ZIP --wordlist=/usr/share/wordlists/rockyou.txt {{hashes}}",
-        "tags": ["archive"]
+        "tags": ["archive"],
+        "tagsI18n": { "zh": ["压缩包"] }
       },
       {
         "id": "mask-attack",
         "name": "Mask attack",
+        "nameI18n": { "zh": "掩码攻击" },
         "description": "Pattern-based brute (8 chars, lower+digit)",
+        "descriptionI18n": { "zh": "基于规律的爆破(8 位，小写 + 数字)" },
         "args": "--mask=?l?l?l?l?l?l?d?d {{hashes}}",
-        "tags": ["mask"]
+        "tags": ["mask"],
+        "tagsI18n": { "zh": ["掩码"] }
       },
       {
         "id": "show-cracked",
         "name": "Show cracked",
+        "nameI18n": { "zh": "查看已破解" },
         "description": "Display all already-cracked passwords",
+        "descriptionI18n": { "zh": "显示所有已破解的密码" },
         "args": "--show {{hashes}}",
-        "tags": ["report"]
+        "tags": ["report"],
+        "tagsI18n": { "zh": ["报告"] }
       }
     ],
     "output": {

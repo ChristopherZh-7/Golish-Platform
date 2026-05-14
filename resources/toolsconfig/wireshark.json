@@ -3,6 +3,7 @@
     "id": "wireshark",
     "name": "wireshark",
     "description": "Industry-standard graphical network protocol analyzer for capture and dissection",
+    "descriptionI18n": { "zh": "业界标准的图形化网络协议分析工具，用于抓包与协议解析" },
     "executable": "wireshark",
     "runtime": "native",
     "launchMode": "gui",
@@ -10,6 +11,7 @@
     "subcategory": "sniffer",
     "tier": "optional",
     "tags": ["network", "sniffer", "analyzer", "gui"],
+    "tagsI18n": { "zh": ["网络", "嗅探", "分析", "GUI"] },
     "install": {
       "method": "homebrew-cask",
       "source": "wireshark"
@@ -17,77 +19,99 @@
     "params": [
       {
         "label": "Interface",
+        "labelI18n": { "zh": "网卡" },
         "flag": "-i",
         "type": "string",
         "description": "Capture interface name (run -D to list)",
+        "descriptionI18n": { "zh": "抓包网卡名(用 -D 列出可选项)" },
         "placeholder": "en0"
       },
       {
         "label": "Capture Filter",
+        "labelI18n": { "zh": "抓包过滤(BPF)" },
         "flag": "-f",
         "type": "string",
         "description": "BPF capture filter expression",
+        "descriptionI18n": { "zh": "BPF 抓包过滤表达式" },
         "placeholder": "tcp port 80"
       },
       {
         "label": "Display Filter",
+        "labelI18n": { "zh": "显示过滤" },
         "flag": "-Y",
         "type": "string",
         "description": "Wireshark display filter expression",
+        "descriptionI18n": { "zh": "Wireshark 显示过滤表达式" },
         "placeholder": "http.request.method == \"POST\""
       },
       {
         "label": "Read File",
+        "labelI18n": { "zh": "读取文件" },
         "flag": "-r",
         "type": "string",
         "description": "Open existing pcap/pcapng file",
+        "descriptionI18n": { "zh": "打开已有 pcap / pcapng 文件" },
         "placeholder": "capture.pcapng"
       },
       {
         "label": "Write File",
+        "labelI18n": { "zh": "写入文件" },
         "flag": "-w",
         "type": "string",
         "description": "Write captured packets to file",
+        "descriptionI18n": { "zh": "把抓到的包写入文件" },
         "placeholder": "out.pcapng"
       },
       {
         "label": "Packet Count",
+        "labelI18n": { "zh": "包数上限" },
         "flag": "-c",
         "type": "string",
         "description": "Stop after capturing N packets",
+        "descriptionI18n": { "zh": "抓到 N 个包后停止" },
         "placeholder": "1000"
       },
       {
         "label": "Capture Duration",
+        "labelI18n": { "zh": "抓包时长" },
         "flag": "-a",
         "type": "string",
         "description": "Auto-stop condition (e.g. duration:60)",
+        "descriptionI18n": { "zh": "自动停止条件(如 duration:60 秒)" },
         "placeholder": "duration:60"
       },
       {
         "label": "Promiscuous Mode",
+        "labelI18n": { "zh": "混杂模式" },
         "flag": "-p",
         "type": "boolean",
-        "description": "Disable promiscuous mode"
+        "description": "Disable promiscuous mode",
+        "descriptionI18n": { "zh": "禁用混杂模式" }
       },
       {
         "label": "Snap Length",
+        "labelI18n": { "zh": "抓包长度" },
         "flag": "-s",
         "type": "string",
         "description": "Bytes per packet to capture (0 = full)",
+        "descriptionI18n": { "zh": "每个包抓取的字节数(0 = 完整)" },
         "placeholder": "65535"
       },
       {
         "label": "List Interfaces",
+        "labelI18n": { "zh": "列出网卡" },
         "flag": "-D",
         "type": "boolean",
-        "description": "Print available interfaces & exit"
+        "description": "Print available interfaces & exit",
+        "descriptionI18n": { "zh": "列出可用网卡后退出" }
       },
       {
         "label": "Update Interval",
+        "labelI18n": { "zh": "刷新间隔(毫秒)" },
         "flag": "-u",
         "type": "string",
         "description": "Display update interval ms",
+        "descriptionI18n": { "zh": "界面刷新间隔(毫秒)" },
         "placeholder": "200"
       }
     ],
@@ -95,44 +119,62 @@
       {
         "id": "open-pcap",
         "name": "Open pcap file",
+        "nameI18n": { "zh": "打开 pcap 文件" },
         "description": "Just open a saved capture",
+        "descriptionI18n": { "zh": "打开已保存的抓包文件" },
         "args": "-r {{pcap_file}}",
-        "tags": ["analysis"]
+        "tags": ["analysis"],
+        "tagsI18n": { "zh": ["分析"] }
       },
       {
         "id": "live-http",
         "name": "Live HTTP capture",
+        "nameI18n": { "zh": "实时 HTTP 抓包" },
         "description": "Capture HTTP traffic on default interface",
+        "descriptionI18n": { "zh": "在默认网卡上抓 HTTP 流量" },
         "args": "-i {{interface}} -f \"tcp port 80\"",
-        "tags": ["live", "web"]
+        "tags": ["live", "web"],
+        "tagsI18n": { "zh": ["实时", "Web"] }
       },
       {
         "id": "live-dns",
         "name": "Live DNS capture",
+        "nameI18n": { "zh": "实时 DNS 抓包" },
         "description": "Capture DNS queries",
+        "descriptionI18n": { "zh": "抓取 DNS 查询" },
         "args": "-i {{interface}} -f \"udp port 53\"",
-        "tags": ["live", "dns"]
+        "tags": ["live", "dns"],
+        "tagsI18n": { "zh": ["实时", "DNS"] }
       },
       {
         "id": "host-traffic",
         "name": "Filter by host",
+        "nameI18n": { "zh": "按主机过滤" },
         "description": "Capture only traffic to/from specific IP",
+        "descriptionI18n": { "zh": "只抓与指定 IP 相关的流量" },
         "args": "-i {{interface}} -f \"host {{ip}}\"",
-        "tags": ["live"]
+        "tags": ["live"],
+        "tagsI18n": { "zh": ["实时"] }
       },
       {
         "id": "save-rotating",
         "name": "Capture with limit + write",
+        "nameI18n": { "zh": "限量抓包并保存" },
         "description": "Capture 5000 packets, save to file",
+        "descriptionI18n": { "zh": "抓 5000 个包并保存到文件" },
         "args": "-i {{interface}} -c 5000 -w out.pcapng",
-        "tags": ["live", "save"]
+        "tags": ["live", "save"],
+        "tagsI18n": { "zh": ["实时", "保存"] }
       },
       {
         "id": "list-ifaces",
         "name": "List interfaces",
+        "nameI18n": { "zh": "列出网卡" },
         "description": "Show available interfaces and exit",
+        "descriptionI18n": { "zh": "显示可用网卡后退出" },
         "args": "-D",
-        "tags": ["info"]
+        "tags": ["info"],
+        "tagsI18n": { "zh": ["信息"] }
       }
     ],
     "output": {
