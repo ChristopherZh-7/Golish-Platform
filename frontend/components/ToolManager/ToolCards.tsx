@@ -78,6 +78,8 @@ function provenanceBadge(via: string | undefined): { className: string; label: s
   switch (via) {
     case "homebrew":
       return { className: "bg-amber-500/15 text-amber-400", label: "Homebrew" };
+    case "homebrew_cask":
+      return { className: "bg-amber-500/15 text-amber-400", label: "Homebrew Cask" };
     case "gem":
       return { className: "bg-rose-500/15 text-rose-400", label: "RubyGem" };
     case "system_path":

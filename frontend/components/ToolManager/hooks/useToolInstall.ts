@@ -26,6 +26,7 @@ import {
   pipInstall,
   pipUninstall,
   renameToolDir,
+  uninstallBrewCaskPackage,
   uninstallBrewPackage,
   uninstallGemPackage,
   uninstallToolFiles,
@@ -589,8 +590,16 @@ export function useToolInstall(
         const via = tool.installedVia;
         const method = effectiveInstallMethod(tool.install);
         const pkg = effectiveInstallSource(tool.install).trim() || tool.name;
-        if (via === "homebrew" || method === "homebrew") await uninstallBrewPackage(pkg);
-        else if (via === "gem" || method === "gem") await uninstallGemPackage(pkg);
+        // Order matters: cask must come BEFORE the plain `homebrew` branch.
+        // Backend scanner used to lump cask-installed tools under
+        // `InstalledVia::Homebrew` (now fixed to `HomebrewCask`), but the
+        // method-based fallback still needs to win for legacy scans where the
+        // installedVia field is stale.
+        if (via === "homebrew_cask" || method === "homebrew-cask") {
+          await uninstallBrewCaskPackage(pkg);
+        } else if (via === "homebrew" || method === "homebrew") {
+          await uninstallBrewPackage(pkg);
+        } else if (via === "gem" || method === "gem") await uninstallGemPackage(pkg);
         else if (via === "pip" || method === "pip") {
           const ver = (tool.runtimeVersion || "").replace(/\+$/, "");
           const envName = ver ? `python${ver}_env` : "base";

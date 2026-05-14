@@ -15,6 +15,7 @@ import type { SortKey, ToolWithMeta } from "../OutputParserEditor";
 
 const VIA_NO_CHMOD: Array<NonNullable<ToolConfig["installedVia"]>> = [
   "homebrew",
+  "homebrew_cask",
   "gem",
   "pip",
   "system_path",

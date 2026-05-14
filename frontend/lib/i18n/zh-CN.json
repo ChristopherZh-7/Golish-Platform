@@ -109,6 +109,7 @@
     "uninstallConfirm": "卸载 {{name}}",
     "uninstallKeepConfig": "配置保留，可重新安装",
     "uninstallBrewCmd": "将运行：brew uninstall --formula {{pkg}}",
+    "uninstallBrewCaskCmd": "将运行：brew uninstall --cask {{pkg}}",
     "uninstallGemCmd": "将运行：gem uninstall --all {{pkg}}",
     "uninstallPipCmd": "将运行：pip uninstall {{pkg}}",
     "uninstallSystemPath": "{{executable}} 由系统提供（不是 Golish 安装的），请手动卸载",

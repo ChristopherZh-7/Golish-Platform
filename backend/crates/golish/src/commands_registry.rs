@@ -113,7 +113,7 @@ fn install_handlers(
         pentest_download_and_extract, pentest_cancel_download,
         pentest_find_tool_executables, pentest_list_tool_dir_files,
         pentest_rename_tool_dir, pentest_uninstall_tool_files,
-        pentest_uninstall_brew_pkg, pentest_uninstall_gem_pkg,
+        pentest_uninstall_brew_pkg, pentest_uninstall_brew_cask_pkg, pentest_uninstall_gem_pkg,
         pentest_read_tool_config, pentest_save_tool_config,
         pentest_git_clone_tool, pentest_pip_install_tool, pentest_pip_install, pentest_pip_uninstall,
         pentest_conda_install_tool, pentest_resolve_python_path, pentest_resolve_java_path,

@@ -122,7 +122,12 @@ export function UninstallConfirmDialog({
   const pkg = effectiveInstallSource(target.install).trim() || target.name;
 
   let actionDesc = t("toolManager.uninstallKeepConfig");
-  if (via === "homebrew" || method === "homebrew") {
+  if (via === "homebrew_cask" || method === "homebrew-cask") {
+    actionDesc = t("toolManager.uninstallBrewCaskCmd", {
+      pkg,
+      defaultValue: `brew uninstall --cask ${pkg}`,
+    });
+  } else if (via === "homebrew" || method === "homebrew") {
     actionDesc = t("toolManager.uninstallBrewCmd", { pkg });
   } else if (via === "gem" || method === "gem") {
     actionDesc = t("toolManager.uninstallGemCmd", { pkg });

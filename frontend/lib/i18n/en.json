@@ -109,6 +109,7 @@
     "uninstallConfirm": "Uninstall {{name}}",
     "uninstallKeepConfig": "Config will be preserved, can reinstall later",
     "uninstallBrewCmd": "Will run: brew uninstall --formula {{pkg}}",
+    "uninstallBrewCaskCmd": "Will run: brew uninstall --cask {{pkg}}",
     "uninstallGemCmd": "Will run: gem uninstall --all {{pkg}}",
     "uninstallPipCmd": "Will run: pip uninstall {{pkg}}",
     "uninstallSystemPath": "{{executable}} is provided by the system (not installed by Golish). Uninstall it manually.",
