@@ -187,7 +187,17 @@ export function SecurityView({
         const versionManagerLabel = isWindows() ? "winget" : "SDKMAN";
         try {
           setError(t("security.javaBootstrapping", { ver: missingMajor }));
+          // Pull the user-configured proxy URL from Settings → Network so
+          // winget gets `--proxy <url>` on Windows. Without this, winget
+          // falls through to WinINet's default network stack which often
+          // can't reach GitHub Releases from CN networks (the bug
+          // we just patched in `runWindowsFallbackChain`). Tool Manager
+          // already forwards proxyUrl via `useToolInstall.getProxy()`;
+          // ZAP launch had been silently dropping it.
+          const { getSettings } = await import("@/lib/settings");
+          const proxyUrl = (await getSettings().catch(() => null))?.network?.proxy_url || undefined;
           await ensureJavaInstalled(missingMajor, {
+            proxyUrl,
             onProgress: (stage) => {
               if (stage === "bootstrap-runtime") {
                 setError(t("security.javaManagerBootstrap", { manager: versionManagerLabel }));
