@@ -183,33 +183,43 @@ export function SecurityView({
     } catch (e) {
       const missingMajor = isJavaMissingError(e);
       if (missingMajor) {
-        const consent = window.confirm(
-          t("security.javaMissingPrompt", { ver: missingMajor })
-        );
-        if (consent) {
-          try {
-            setError(t("security.javaInstalling", { ver: missingMajor, id: "..." }));
-            await ensureJavaInstalled(missingMajor, {
-              onProgress: (id) =>
-                setError(t("security.javaInstalling", { ver: missingMajor, id })),
-            });
-            setError(null);
-            const result = await zapStart(undefined, undefined, currentProjectPath);
-            setZapState(result);
-            setGlobalZapRunning(result.status === "running");
-            return;
-          } catch (installErr) {
-            const errMsg = String(installErr);
-            const message = errMsg.startsWith("NO_JAVA_CANDIDATE:")
-              ? t("security.javaNoCandidate", { ver: missingMajor })
-              : t("security.javaInstallFailed", {
-                  ver: missingMajor,
-                  error: errMsg,
-                });
-            setError(message);
-            setZapState((s) => ({ ...s, status: "error", error: message }));
-            return;
-          }
+        try {
+          setError(
+            t("security.javaBootstrapping", { ver: missingMajor })
+          );
+          await ensureJavaInstalled(missingMajor, {
+            onProgress: (stage) => {
+              if (stage === "bootstrap-runtime") {
+                setError(t("security.javaSdkmanBootstrap"));
+              } else if (stage === "runtime-bootstrapped") {
+                setError(t("security.javaSdkmanDone"));
+              } else {
+                setError(
+                  t("security.javaInstalling", { ver: missingMajor, id: stage })
+                );
+              }
+            },
+          });
+          setError(t("security.javaInstalledRetrying"));
+          const result = await zapStart(undefined, undefined, currentProjectPath);
+          setZapState(result);
+          setGlobalZapRunning(result.status === "running");
+          setError(null);
+          return;
+        } catch (installErr) {
+          const errMsg =
+            installErr instanceof Error
+              ? installErr.message
+              : String(installErr);
+          const message = errMsg.startsWith("NO_JAVA_CANDIDATE:")
+            ? t("security.javaNoCandidate", { ver: missingMajor })
+            : t("security.javaInstallFailed", {
+                ver: missingMajor,
+                error: errMsg,
+              });
+          setError(message);
+          setZapState((s) => ({ ...s, status: "error", error: message }));
+          return;
         }
       }
       setError(String(e));
