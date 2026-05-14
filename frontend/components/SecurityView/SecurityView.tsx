@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { isWindows } from "@/lib/env";
 import { ensureJavaInstalled, isJavaMissingError } from "@/lib/pentest/javaInstaller";
 import type { ZapStatusInfo } from "@/lib/pentest/types";
 import { zapDetectPath, zapStart, zapStatus, zapStop } from "@/lib/pentest/zap-api";
@@ -183,6 +184,7 @@ export function SecurityView({
     } catch (e) {
       const missingMajor = isJavaMissingError(e);
       if (missingMajor) {
+        const versionManagerLabel = isWindows() ? "winget" : "SDKMAN";
         try {
           setError(
             t("security.javaBootstrapping", { ver: missingMajor })
@@ -190,9 +192,13 @@ export function SecurityView({
           await ensureJavaInstalled(missingMajor, {
             onProgress: (stage) => {
               if (stage === "bootstrap-runtime") {
-                setError(t("security.javaSdkmanBootstrap"));
+                setError(
+                  t("security.javaManagerBootstrap", { manager: versionManagerLabel })
+                );
               } else if (stage === "runtime-bootstrapped") {
-                setError(t("security.javaSdkmanDone"));
+                setError(
+                  t("security.javaManagerDone", { manager: versionManagerLabel })
+                );
               } else {
                 setError(
                   t("security.javaInstalling", { ver: missingMajor, id: stage })
