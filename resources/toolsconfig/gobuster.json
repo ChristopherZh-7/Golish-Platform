@@ -3,6 +3,7 @@
     "id": "gobuster",
     "name": "gobuster",
     "description": "Directory, DNS, vhost, and S3 bucket brute-forcer in Go",
+    "descriptionI18n": { "zh": "Go 编写的目录 / DNS / vhost / S3 桶爆破工具" },
     "executable": "gobuster",
     "runtime": "native",
     "launchMode": "cli",
@@ -10,6 +11,7 @@
     "subcategory": "fuzzer",
     "tier": "recommended",
     "tags": ["web", "dir-brute", "dns", "vhost"],
+    "tagsI18n": { "zh": ["Web", "目录爆破", "DNS", "vhost"] },
     "install": {
       "method": "homebrew",
       "source": "gobuster",
@@ -19,152 +21,197 @@
     "params": [
       {
         "label": "Mode",
+        "labelI18n": { "zh": "模式" },
         "flag": "",
         "type": "select",
         "required": true,
         "description": "Sub-command mode (placed first)",
+        "descriptionI18n": { "zh": "gobuster 子命令(放在最前)" },
         "options": [
-          { "value": "dir", "label": "dir - directory/file brute" },
-          { "value": "dns", "label": "dns - subdomain brute" },
-          { "value": "vhost", "label": "vhost - virtual host brute" },
-          { "value": "fuzz", "label": "fuzz - HTTP fuzzer" },
-          { "value": "s3", "label": "s3 - AWS S3 bucket brute" },
-          { "value": "gcs", "label": "gcs - GCP storage brute" },
-          { "value": "tftp", "label": "tftp - TFTP file brute" }
+          { "value": "dir", "label": "dir - directory/file brute", "labelI18n": { "zh": "dir - 目录/文件爆破" } },
+          { "value": "dns", "label": "dns - subdomain brute", "labelI18n": { "zh": "dns - 子域名爆破" } },
+          { "value": "vhost", "label": "vhost - virtual host brute", "labelI18n": { "zh": "vhost - 虚拟主机爆破" } },
+          { "value": "fuzz", "label": "fuzz - HTTP fuzzer", "labelI18n": { "zh": "fuzz - HTTP 模糊测试" } },
+          { "value": "s3", "label": "s3 - AWS S3 bucket brute", "labelI18n": { "zh": "s3 - AWS S3 桶爆破" } },
+          { "value": "gcs", "label": "gcs - GCP storage brute", "labelI18n": { "zh": "gcs - GCP 存储桶爆破" } },
+          { "value": "tftp", "label": "tftp - TFTP file brute", "labelI18n": { "zh": "tftp - TFTP 文件爆破" } }
         ]
       },
       {
         "label": "URL / Domain",
+        "labelI18n": { "zh": "URL / 域名" },
         "flag": "-u",
         "type": "string",
         "required": true,
         "description": "Target URL (dir/vhost/fuzz) or domain (dns)",
+        "descriptionI18n": { "zh": "目标 URL(dir/vhost/fuzz) 或域名(dns)" },
         "placeholder": "https://target.com"
       },
       {
         "label": "Wordlist",
+        "labelI18n": { "zh": "字典" },
         "flag": "-w",
         "type": "string",
         "required": true,
         "description": "Wordlist path",
+        "descriptionI18n": { "zh": "字典文件路径" },
         "placeholder": "/usr/share/wordlists/dirb/common.txt"
       },
       {
         "label": "Threads",
+        "labelI18n": { "zh": "线程数" },
         "flag": "-t",
         "type": "string",
         "description": "Number of concurrent threads (default 10)",
+        "descriptionI18n": { "zh": "并发线程数(默认 10)" },
         "default": "10"
       },
       {
         "label": "Extensions (dir mode)",
+        "labelI18n": { "zh": "扩展名(dir 模式)" },
         "flag": "-x",
         "type": "string",
         "description": "Comma-separated extensions to append (e.g. php,html,txt)",
+        "descriptionI18n": { "zh": "要追加的扩展名(逗号分隔，如 php,html,txt)" },
         "placeholder": "php,html,txt"
       },
       {
         "label": "Status Codes",
+        "labelI18n": { "zh": "白名单状态码" },
         "flag": "-s",
         "type": "string",
         "description": "Show only these HTTP status codes (comma list)",
+        "descriptionI18n": { "zh": "仅显示这些 HTTP 状态码(逗号分隔)" },
         "placeholder": "200,204,301,302,307,401,403"
       },
       {
         "label": "Blacklist Codes",
+        "labelI18n": { "zh": "黑名单状态码" },
         "flag": "-b",
         "type": "string",
         "description": "Hide these status codes",
+        "descriptionI18n": { "zh": "隐藏这些状态码" },
         "placeholder": "404"
       },
       {
         "label": "Cookie",
+        "labelI18n": { "zh": "Cookie" },
         "flag": "-c",
         "type": "string",
         "description": "Cookie header value",
+        "descriptionI18n": { "zh": "Cookie 头取值" },
         "placeholder": "session=abcd"
       },
       {
         "label": "User-Agent",
+        "labelI18n": { "zh": "User-Agent" },
         "flag": "-a",
         "type": "string",
         "description": "Custom User-Agent",
+        "descriptionI18n": { "zh": "自定义 User-Agent" },
         "placeholder": "Mozilla/5.0"
       },
       {
         "label": "Headers",
+        "labelI18n": { "zh": "自定义头" },
         "flag": "-H",
         "type": "string",
         "description": "Custom header (key:value, repeatable)",
+        "descriptionI18n": { "zh": "自定义请求头(格式 key:value，可多次)" },
         "placeholder": "X-Auth: token"
       },
       {
         "label": "Follow Redirects",
+        "labelI18n": { "zh": "跟随跳转" },
         "flag": "-r",
         "type": "boolean",
-        "description": "Follow HTTP 3xx redirects"
+        "description": "Follow HTTP 3xx redirects",
+        "descriptionI18n": { "zh": "跟随 HTTP 3xx 跳转" }
       },
       {
         "label": "Skip TLS Verify",
+        "labelI18n": { "zh": "跳过证书校验" },
         "flag": "-k",
         "type": "boolean",
-        "description": "Skip SSL/TLS certificate verification"
+        "description": "Skip SSL/TLS certificate verification",
+        "descriptionI18n": { "zh": "跳过 SSL/TLS 证书校验" }
       },
       {
         "label": "Output File",
+        "labelI18n": { "zh": "输出文件" },
         "flag": "-o",
         "type": "string",
         "description": "Output file path",
+        "descriptionI18n": { "zh": "输出文件路径" },
         "placeholder": "gobuster.txt"
       },
       {
         "label": "Quiet",
+        "labelI18n": { "zh": "安静模式" },
         "flag": "-q",
         "type": "boolean",
-        "description": "Don't print banner & progress"
+        "description": "Don't print banner & progress",
+        "descriptionI18n": { "zh": "不打印 Banner 和进度" }
       },
       {
         "label": "Verbose",
+        "labelI18n": { "zh": "详细输出" },
         "flag": "-v",
         "type": "boolean",
-        "description": "Verbose output"
+        "description": "Verbose output",
+        "descriptionI18n": { "zh": "详细输出" }
       }
     ],
     "skills": [
       {
         "id": "dir-common",
         "name": "Directory brute (common.txt)",
+        "nameI18n": { "zh": "目录爆破(common.txt)" },
         "description": "Standard directory enumeration",
+        "descriptionI18n": { "zh": "标准目录枚举" },
         "args": "dir -u {{target}} -w /usr/share/wordlists/dirb/common.txt -t 30",
-        "tags": ["dir"]
+        "tags": ["dir"],
+        "tagsI18n": { "zh": ["目录"] }
       },
       {
         "id": "dir-ext",
         "name": "Directory brute with extensions",
+        "nameI18n": { "zh": "目录爆破 + 扩展名" },
         "description": "Brute with PHP/HTML/TXT extensions",
+        "descriptionI18n": { "zh": "带 PHP/HTML/TXT 扩展名的目录爆破" },
         "args": "dir -u {{target}} -w /usr/share/wordlists/dirb/common.txt -x php,html,txt -t 30",
-        "tags": ["dir", "files"]
+        "tags": ["dir", "files"],
+        "tagsI18n": { "zh": ["目录", "文件"] }
       },
       {
         "id": "subdomains",
         "name": "Subdomain brute",
+        "nameI18n": { "zh": "子域名爆破" },
         "description": "DNS subdomain enumeration",
+        "descriptionI18n": { "zh": "DNS 子域名枚举" },
         "args": "dns -d {{domain}} -w /usr/share/wordlists/seclists/Discovery/DNS/subdomains-top1million-5000.txt -t 50",
-        "tags": ["dns", "subdomain"]
+        "tags": ["dns", "subdomain"],
+        "tagsI18n": { "zh": ["DNS", "子域名"] }
       },
       {
         "id": "vhost",
         "name": "Vhost brute",
+        "nameI18n": { "zh": "vhost 爆破" },
         "description": "Virtual host enumeration",
+        "descriptionI18n": { "zh": "虚拟主机枚举" },
         "args": "vhost -u https://{{target}} -w /usr/share/wordlists/seclists/Discovery/DNS/subdomains-top1million-5000.txt -t 30",
-        "tags": ["vhost"]
+        "tags": ["vhost"],
+        "tagsI18n": { "zh": ["vhost"] }
       },
       {
         "id": "s3-buckets",
         "name": "S3 bucket brute",
+        "nameI18n": { "zh": "S3 桶爆破" },
         "description": "Discover open AWS S3 buckets",
+        "descriptionI18n": { "zh": "发现公开可访问的 AWS S3 桶" },
         "args": "s3 -w /usr/share/wordlists/buckets.txt -t 30",
-        "tags": ["aws", "cloud"]
+        "tags": ["aws", "cloud"],
+        "tagsI18n": { "zh": ["AWS", "云"] }
       }
     ],
     "output": {

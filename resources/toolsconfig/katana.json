@@ -3,6 +3,7 @@
     "id": "katana",
     "name": "katana",
     "description": "Next-gen web crawler from ProjectDiscovery (headless + JS endpoint extraction + sitemap / robots / wayback / form parsing)",
+    "descriptionI18n": { "zh": "ProjectDiscovery 出品的新一代 Web 爬虫(支持 headless + JS 接口提取 + sitemap / robots / wayback / 表单解析)" },
     "executable": "katana",
     "runtime": "native",
     "launchMode": "cli",
@@ -10,6 +11,7 @@
     "subcategory": "crawler",
     "tier": "recommended",
     "tags": ["recon", "crawler", "web", "endpoints"],
+    "tagsI18n": { "zh": ["侦察", "爬虫", "Web", "接口"] },
     "install": {
       "method": "homebrew",
       "source": "katana",
@@ -19,180 +21,234 @@
     "params": [
       {
         "label": "URL",
+        "labelI18n": { "zh": "URL" },
         "flag": "-u",
         "type": "string",
         "description": "Single target URL",
+        "descriptionI18n": { "zh": "单个目标 URL" },
         "placeholder": "https://target.com"
       },
       {
         "label": "URL List",
+        "labelI18n": { "zh": "URL 列表" },
         "flag": "-list",
         "type": "string",
         "description": "File of URLs",
+        "descriptionI18n": { "zh": "URL 列表文件" },
         "placeholder": "urls.txt"
       },
       {
         "label": "Depth",
+        "labelI18n": { "zh": "爬行深度" },
         "flag": "-d",
         "type": "string",
         "description": "Crawl depth",
+        "descriptionI18n": { "zh": "爬行深度" },
         "default": "3"
       },
       {
         "label": "Headless",
+        "labelI18n": { "zh": "Headless 模式" },
         "flag": "-headless",
         "type": "boolean",
-        "description": "Use headless Chrome (extracts JS endpoints)"
+        "description": "Use headless Chrome (extracts JS endpoints)",
+        "descriptionI18n": { "zh": "使用 headless Chrome(可提取 JS 中的接口)" }
       },
       {
         "label": "JS Crawl",
+        "labelI18n": { "zh": "JS 爬取" },
         "flag": "-jc",
         "type": "boolean",
-        "description": "Parse and crawl JS files for endpoints"
+        "description": "Parse and crawl JS files for endpoints",
+        "descriptionI18n": { "zh": "解析并爬取 JS 文件中的接口" }
       },
       {
         "label": "Crawl Scope",
+        "labelI18n": { "zh": "作用域(白)" },
         "flag": "-cs",
         "type": "string",
         "description": "Regex pattern - in-scope URLs",
+        "descriptionI18n": { "zh": "正则——属于作用域内的 URL" },
         "placeholder": "target\\.com"
       },
       {
         "label": "Crawl Out Scope",
+        "labelI18n": { "zh": "作用域(黑)" },
         "flag": "-cos",
         "type": "string",
         "description": "Regex - out-of-scope URLs",
+        "descriptionI18n": { "zh": "正则——超出作用域的 URL" },
         "placeholder": "logout|signout"
       },
       {
         "label": "Field",
+        "labelI18n": { "zh": "输出字段" },
         "flag": "-f",
         "type": "select",
         "description": "Output field",
+        "descriptionI18n": { "zh": "输出字段类型" },
         "options": [
-          { "value": "url", "label": "url - URLs only" },
-          { "value": "qurl", "label": "qurl - URLs with query" },
-          { "value": "path", "label": "path - paths only" },
-          { "value": "fqdn", "label": "fqdn - domains only" },
-          { "value": "rdn", "label": "rdn - root domain" },
-          { "value": "rurl", "label": "rurl - root URL" },
-          { "value": "ufile", "label": "ufile - URL with file" },
-          { "value": "key", "label": "key - param keys" },
-          { "value": "value", "label": "value - param values" },
-          { "value": "kv", "label": "kv - key=value pairs" },
-          { "value": "dir", "label": "dir - directory paths" }
+          { "value": "url", "label": "url - URLs only", "labelI18n": { "zh": "url - 仅 URL" } },
+          { "value": "qurl", "label": "qurl - URLs with query", "labelI18n": { "zh": "qurl - 带 query 的 URL" } },
+          { "value": "path", "label": "path - paths only", "labelI18n": { "zh": "path - 仅路径" } },
+          { "value": "fqdn", "label": "fqdn - domains only", "labelI18n": { "zh": "fqdn - 仅域名" } },
+          { "value": "rdn", "label": "rdn - root domain", "labelI18n": { "zh": "rdn - 根域名" } },
+          { "value": "rurl", "label": "rurl - root URL", "labelI18n": { "zh": "rurl - 根 URL" } },
+          { "value": "ufile", "label": "ufile - URL with file", "labelI18n": { "zh": "ufile - 含文件名的 URL" } },
+          { "value": "key", "label": "key - param keys", "labelI18n": { "zh": "key - 参数名" } },
+          { "value": "value", "label": "value - param values", "labelI18n": { "zh": "value - 参数值" } },
+          { "value": "kv", "label": "kv - key=value pairs", "labelI18n": { "zh": "kv - key=value 对" } },
+          { "value": "dir", "label": "dir - directory paths", "labelI18n": { "zh": "dir - 目录路径" } }
         ]
       },
       {
         "label": "Match Regex",
+        "labelI18n": { "zh": "匹配正则" },
         "flag": "-mr",
         "type": "string",
         "description": "Match URLs by regex",
+        "descriptionI18n": { "zh": "用正则匹配 URL" },
         "placeholder": "/admin"
       },
       {
         "label": "Filter Regex",
+        "labelI18n": { "zh": "过滤正则" },
         "flag": "-fr",
         "type": "string",
         "description": "Filter out URLs by regex",
+        "descriptionI18n": { "zh": "用正则过滤掉 URL" },
         "placeholder": "logout|signout"
       },
       {
         "label": "Timeout",
+        "labelI18n": { "zh": "超时(秒)" },
         "flag": "-timeout",
         "type": "string",
         "description": "Request timeout (seconds)",
+        "descriptionI18n": { "zh": "单请求超时(秒)" },
         "default": "10"
       },
       {
         "label": "Concurrency",
+        "labelI18n": { "zh": "并发数" },
         "flag": "-c",
         "type": "string",
         "description": "Concurrent fetchers",
+        "descriptionI18n": { "zh": "并发抓取线程数" },
         "default": "10"
       },
       {
         "label": "Parallelism",
+        "labelI18n": { "zh": "并行限速" },
         "flag": "-p",
         "type": "string",
         "description": "URLs per second budget",
+        "descriptionI18n": { "zh": "每秒 URL 抓取上限" },
         "default": "10"
       },
       {
         "label": "Headers",
+        "labelI18n": { "zh": "自定义头" },
         "flag": "-H",
         "type": "string",
         "description": "Custom header (repeatable)",
+        "descriptionI18n": { "zh": "自定义请求头(可多次)" },
         "placeholder": "Cookie: session=abcd"
       },
       {
         "label": "Output File",
+        "labelI18n": { "zh": "输出文件" },
         "flag": "-o",
         "type": "string",
         "description": "Save URLs to file",
+        "descriptionI18n": { "zh": "把 URL 保存到文件" },
         "placeholder": "urls.txt"
       },
       {
         "label": "JSONL",
+        "labelI18n": { "zh": "JSONL 输出" },
         "flag": "-jsonl",
         "type": "boolean",
-        "description": "JSONL with full metadata"
+        "description": "JSONL with full metadata",
+        "descriptionI18n": { "zh": "JSONL 输出，包含完整元数据" }
       },
       {
         "label": "Silent",
+        "labelI18n": { "zh": "静默" },
         "flag": "-silent",
         "type": "boolean",
-        "description": "Only output URLs"
+        "description": "Only output URLs",
+        "descriptionI18n": { "zh": "仅输出 URL" }
       },
       {
         "label": "Form Extract",
+        "labelI18n": { "zh": "解析表单" },
         "flag": "-fx",
         "type": "boolean",
-        "description": "Parse and submit HTML forms"
+        "description": "Parse and submit HTML forms",
+        "descriptionI18n": { "zh": "解析并提交 HTML 表单" }
       }
     ],
     "skills": [
       {
         "id": "default-crawl",
         "name": "Default crawl",
+        "nameI18n": { "zh": "默认爬取" },
         "description": "Standard crawl, depth 3",
+        "descriptionI18n": { "zh": "标准爬取，深度 3" },
         "args": "-u {{target}} -silent",
-        "tags": ["crawl"]
+        "tags": ["crawl"],
+        "tagsI18n": { "zh": ["爬取"] }
       },
       {
         "id": "headless-js",
         "name": "Headless + JS endpoints",
+        "nameI18n": { "zh": "Headless + JS 接口提取" },
         "description": "Render JS, parse JS files for endpoints",
+        "descriptionI18n": { "zh": "渲染 JS，并从 JS 文件中提取接口" },
         "args": "-u {{target}} -headless -jc -silent",
-        "tags": ["js", "thorough"]
+        "tags": ["js", "thorough"],
+        "tagsI18n": { "zh": ["JS", "全面"] }
       },
       {
         "id": "scope-only",
         "name": "Scope-restricted crawl",
+        "nameI18n": { "zh": "限定作用域爬取" },
         "description": "Stay in target domain only",
+        "descriptionI18n": { "zh": "只在目标域内爬取" },
         "args": "-u {{target}} -cs \"{{domain_regex}}\" -fr \"logout|signout\" -silent",
-        "tags": ["scope"]
+        "tags": ["scope"],
+        "tagsI18n": { "zh": ["作用域"] }
       },
       {
         "id": "qurls-only",
         "name": "URLs with query params (for fuzzing)",
+        "nameI18n": { "zh": "仅带参数 URL(用于 fuzz)" },
         "description": "Output only URLs that have ?params - feed dalfox / sqlmap",
+        "descriptionI18n": { "zh": "仅输出含 ?params 的 URL ——可直接喂给 dalfox / sqlmap" },
         "args": "-u {{target}} -f qurl -silent",
-        "tags": ["pipeline"]
+        "tags": ["pipeline"],
+        "tagsI18n": { "zh": ["Pipeline"] }
       },
       {
         "id": "to-dalfox",
         "name": "Pipe to dalfox (XSS)",
+        "nameI18n": { "zh": "管道到 dalfox(XSS)" },
         "description": "Crawl + dalfox XSS scan in one pipe",
+        "descriptionI18n": { "zh": "爬取 + dalfox XSS 扫描一条管道完成" },
         "args": "-u {{target}} -f qurl -silent | dalfox pipe --silence",
-        "tags": ["pipeline", "xss"]
+        "tags": ["pipeline", "xss"],
+        "tagsI18n": { "zh": ["Pipeline", "XSS"] }
       },
       {
         "id": "jsonl-pipeline",
         "name": "JSONL output for downstream",
+        "nameI18n": { "zh": "JSONL 输出供下游" },
         "description": "Full metadata JSONL",
+        "descriptionI18n": { "zh": "完整元数据 JSONL" },
         "args": "-u {{target}} -jsonl -o katana.jsonl",
-        "tags": ["pipeline"]
+        "tags": ["pipeline"],
+        "tagsI18n": { "zh": ["Pipeline"] }
       }
     ],
     "output": {

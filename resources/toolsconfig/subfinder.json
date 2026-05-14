@@ -3,6 +3,7 @@
     "id": "subfinder",
     "name": "subfinder",
     "description": "Passive subdomain discovery tool from ProjectDiscovery (uses public sources)",
+    "descriptionI18n": { "zh": "ProjectDiscovery 出品的被动子域名发现工具，基于公开数据源" },
     "executable": "subfinder",
     "runtime": "native",
     "launchMode": "cli",
@@ -10,6 +11,7 @@
     "subcategory": "subdomain",
     "tier": "recommended",
     "tags": ["recon", "subdomain", "passive"],
+    "tagsI18n": { "zh": ["侦察", "子域名", "被动收集"] },
     "install": {
       "method": "homebrew",
       "source": "subfinder",
@@ -19,132 +21,175 @@
     "params": [
       {
         "label": "Domain",
+        "labelI18n": { "zh": "域名" },
         "flag": "-d",
         "type": "string",
         "description": "Single domain to enumerate",
+        "descriptionI18n": { "zh": "要枚举的单个域名" },
         "placeholder": "target.com"
       },
       {
         "label": "Domain List",
+        "labelI18n": { "zh": "域名列表" },
         "flag": "-dL",
         "type": "string",
         "description": "File with one domain per line",
+        "descriptionI18n": { "zh": "每行一个域名的文件" },
         "placeholder": "domains.txt"
       },
       {
         "label": "Sources",
+        "labelI18n": { "zh": "数据源" },
         "flag": "-s",
         "type": "string",
         "description": "Comma-separated source list (e.g. crtsh,virustotal,shodan)",
+        "descriptionI18n": { "zh": "逗号分隔的数据源列表（如 crtsh,virustotal,shodan）" },
         "placeholder": "crtsh,virustotal"
       },
       {
         "label": "All Sources",
+        "labelI18n": { "zh": "全部数据源" },
         "flag": "-all",
         "type": "boolean",
-        "description": "Use all sources (slower, more results)"
+        "description": "Use all sources (slower, more results)",
+        "descriptionI18n": { "zh": "启用全部数据源（速度更慢，结果更多）" }
       },
       {
         "label": "Recursive",
+        "labelI18n": { "zh": "递归" },
         "flag": "-recursive",
         "type": "boolean",
-        "description": "Use recursion-supporting sources"
+        "description": "Use recursion-supporting sources",
+        "descriptionI18n": { "zh": "使用支持递归的数据源" }
       },
       {
         "label": "Resolve",
+        "labelI18n": { "zh": "过滤泛解析" },
         "flag": "-nW",
         "type": "boolean",
-        "description": "Skip wildcard subdomains (filter dead/wild)"
+        "description": "Skip wildcard subdomains (filter dead/wild)",
+        "descriptionI18n": { "zh": "过滤泛解析子域名（去除失活/通配结果）" }
       },
       {
         "label": "Resolvers",
+        "labelI18n": { "zh": "DNS 解析器" },
         "flag": "-rL",
         "type": "string",
         "description": "Custom DNS resolvers list",
+        "descriptionI18n": { "zh": "自定义 DNS 解析器列表文件" },
         "placeholder": "resolvers.txt"
       },
       {
         "label": "Timeout",
+        "labelI18n": { "zh": "超时(秒)" },
         "flag": "-timeout",
         "type": "string",
         "description": "Source timeout (seconds)",
+        "descriptionI18n": { "zh": "每个数据源的超时时间（秒）" },
         "default": "30"
       },
       {
         "label": "Max Time",
+        "labelI18n": { "zh": "最长耗时(分钟)" },
         "flag": "-max-time",
         "type": "string",
         "description": "Total time per domain (minutes)",
+        "descriptionI18n": { "zh": "每个域名的最长总耗时（分钟）" },
         "default": "10"
       },
       {
         "label": "Threads",
+        "labelI18n": { "zh": "线程数" },
         "flag": "-t",
         "type": "string",
         "description": "Threads for resolve",
+        "descriptionI18n": { "zh": "解析时使用的线程数" },
         "default": "10"
       },
       {
         "label": "Output File",
+        "labelI18n": { "zh": "输出文件" },
         "flag": "-o",
         "type": "string",
         "description": "Save subdomains to file",
+        "descriptionI18n": { "zh": "将子域名保存到文件" },
         "placeholder": "subs.txt"
       },
       {
         "label": "JSON Output",
+        "labelI18n": { "zh": "JSON 输出" },
         "flag": "-oJ",
         "type": "boolean",
-        "description": "Write JSONL with source metadata"
+        "description": "Write JSONL with source metadata",
+        "descriptionI18n": { "zh": "输出 JSONL，包含每条记录的来源元数据" }
       },
       {
         "label": "Silent",
+        "labelI18n": { "zh": "静默模式" },
         "flag": "-silent",
         "type": "boolean",
-        "description": "Show only subdomains in output"
+        "description": "Show only subdomains in output",
+        "descriptionI18n": { "zh": "输出只显示子域名本身" }
       },
       {
         "label": "Verbose",
+        "labelI18n": { "zh": "详细输出" },
         "flag": "-v",
         "type": "boolean",
-        "description": "Show source per subdomain"
+        "description": "Show source per subdomain",
+        "descriptionI18n": { "zh": "为每条子域名显示发现源" }
       }
     ],
     "skills": [
       {
         "id": "quick-passive",
         "name": "Quick passive enum",
+        "nameI18n": { "zh": "快速被动枚举" },
         "description": "Fast passive subdomain enum (default sources)",
+        "descriptionI18n": { "zh": "使用默认数据源进行快速被动枚举" },
         "args": "-d {{domain}} -silent",
-        "tags": ["passive", "fast"]
+        "tags": ["passive", "fast"],
+        "tagsI18n": { "zh": ["被动", "快速"] }
       },
       {
         "id": "deep-all-sources",
         "name": "Deep enum (all sources)",
+        "nameI18n": { "zh": "深度枚举(全部数据源)" },
         "description": "Use every source, longer timeout",
+        "descriptionI18n": { "zh": "启用全部数据源，超时更宽松" },
         "args": "-d {{domain}} -all -recursive -silent -o subs.txt",
-        "tags": ["thorough", "slow"]
+        "tags": ["thorough", "slow"],
+        "tagsI18n": { "zh": ["全面", "耗时长"] }
       },
       {
         "id": "bulk-domains",
         "name": "Bulk domain enum",
+        "nameI18n": { "zh": "批量域名枚举" },
         "description": "Enumerate multiple domains from file",
+        "descriptionI18n": { "zh": "从文件读取多个域名批量枚举" },
         "args": "-dL {{domain_list}} -silent -o subs.txt",
-        "tags": ["bulk"]
+        "tags": ["bulk"],
+        "tagsI18n": { "zh": ["批量"] }
       },
       {
         "id": "json-pipeline",
         "name": "JSON for pipeline",
+        "nameI18n": { "zh": "Pipeline 用 JSON 输出" },
         "description": "JSONL output for downstream processing",
+        "descriptionI18n": { "zh": "JSONL 输出，方便下游 pipeline 处理" },
         "args": "-d {{domain}} -all -oJ -o subs.jsonl",
-        "tags": ["pipeline"]
+        "tags": ["pipeline"],
+        "tagsI18n": { "zh": ["Pipeline"] }
       },
       {
         "id": "to-httpx",
         "name": "Pipe to httpx",
+        "nameI18n": { "zh": "管道到 httpx" },
         "description": "Pipe live subdomains directly to httpx",
+        "descriptionI18n": { "zh": "把存活子域名直接管道传给 httpx" },
         "args": "-d {{domain}} -silent | httpx -silent",
-        "tags": ["pipeline", "httpx"]
+        "tags": ["pipeline", "httpx"],
+        "tagsI18n": { "zh": ["Pipeline", "httpx"] }
       }
     ],
     "output": {

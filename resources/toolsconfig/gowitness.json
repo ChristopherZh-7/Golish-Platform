@@ -3,6 +3,7 @@
     "id": "gowitness",
     "name": "gowitness",
     "description": "Web screenshot utility using Chrome Headless - bulk capture, indexed DB, HTML report",
+    "descriptionI18n": { "zh": "基于 Chrome Headless 的 Web 截图工具，支持批量抓取、本地索引库与 HTML 报告" },
     "executable": "gowitness",
     "runtime": "native",
     "launchMode": "cli",
@@ -10,6 +11,7 @@
     "subcategory": "visual",
     "tier": "recommended",
     "tags": ["recon", "screenshot", "visual", "bulk"],
+    "tagsI18n": { "zh": ["侦察", "截图", "可视化", "批量"] },
     "install": {
       "method": "homebrew",
       "source": "gowitness",
@@ -19,113 +21,143 @@
     "params": [
       {
         "label": "Mode",
+        "labelI18n": { "zh": "模式" },
         "flag": "",
         "type": "select",
         "required": true,
         "description": "Sub-command",
+        "descriptionI18n": { "zh": "gowitness 子命令" },
         "options": [
-          { "value": "single", "label": "single - one URL" },
-          { "value": "file", "label": "file - URL list file" },
-          { "value": "scan", "label": "scan - CIDR scan + screenshot" },
-          { "value": "report", "label": "report - serve HTML report" },
-          { "value": "server", "label": "server - REST API server" }
+          { "value": "single", "label": "single - one URL", "labelI18n": { "zh": "single - 单个 URL" } },
+          { "value": "file", "label": "file - URL list file", "labelI18n": { "zh": "file - URL 列表文件" } },
+          { "value": "scan", "label": "scan - CIDR scan + screenshot", "labelI18n": { "zh": "scan - 网段扫描并截图" } },
+          { "value": "report", "label": "report - serve HTML report", "labelI18n": { "zh": "report - 启动 HTML 报告服务" } },
+          { "value": "server", "label": "server - REST API server", "labelI18n": { "zh": "server - REST API 服务" } }
         ]
       },
       {
         "label": "URL",
+        "labelI18n": { "zh": "URL" },
         "flag": "-u",
         "type": "string",
         "description": "single mode: URL",
+        "descriptionI18n": { "zh": "single 模式：单个 URL" },
         "placeholder": "https://target.com"
       },
       {
         "label": "File",
+        "labelI18n": { "zh": "文件" },
         "flag": "-f",
         "type": "string",
         "description": "file mode: URLs file",
+        "descriptionI18n": { "zh": "file 模式：URL 列表文件" },
         "placeholder": "urls.txt"
       },
       {
         "label": "CIDR",
+        "labelI18n": { "zh": "CIDR 网段" },
         "flag": "--cidr",
         "type": "string",
         "description": "scan mode: target CIDR",
+        "descriptionI18n": { "zh": "scan 模式：目标 CIDR 网段" },
         "placeholder": "10.0.0.0/24"
       },
       {
         "label": "Ports",
+        "labelI18n": { "zh": "端口" },
         "flag": "--ports",
         "type": "string",
         "description": "scan mode: ports list",
+        "descriptionI18n": { "zh": "scan 模式：要扫描的端口列表" },
         "default": "80,443",
         "placeholder": "80,443,8080,8443"
       },
       {
         "label": "Threads",
+        "labelI18n": { "zh": "线程数" },
         "flag": "-t",
         "type": "string",
         "description": "Concurrent screenshots",
+        "descriptionI18n": { "zh": "并发截图线程数" },
         "default": "4"
       },
       {
         "label": "Timeout",
+        "labelI18n": { "zh": "超时(秒)" },
         "flag": "--timeout",
         "type": "string",
         "description": "Per-URL timeout (seconds)",
+        "descriptionI18n": { "zh": "单个 URL 的超时时间(秒)" },
         "default": "10"
       },
       {
         "label": "Resolution",
+        "labelI18n": { "zh": "分辨率宽" },
         "flag": "--resolution-x",
         "type": "string",
         "description": "Screenshot width",
+        "descriptionI18n": { "zh": "截图宽度(像素)" },
         "default": "1440"
       },
       {
         "label": "Resolution Y",
+        "labelI18n": { "zh": "分辨率高" },
         "flag": "--resolution-y",
         "type": "string",
         "description": "Screenshot height",
+        "descriptionI18n": { "zh": "截图高度(像素)" },
         "default": "900"
       },
       {
         "label": "Output Dir",
+        "labelI18n": { "zh": "输出目录" },
         "flag": "--screenshot-path",
         "type": "string",
         "description": "Where to save PNGs",
+        "descriptionI18n": { "zh": "PNG 截图保存目录" },
         "default": "screenshots/"
       },
       {
         "label": "DB File",
+        "labelI18n": { "zh": "数据库文件" },
         "flag": "--db-uri",
         "type": "string",
         "description": "SQLite DB path",
+        "descriptionI18n": { "zh": "SQLite 数据库路径" },
         "placeholder": "gowitness.sqlite3"
       },
       {
         "label": "Disable DB",
+        "labelI18n": { "zh": "禁用数据库" },
         "flag": "--disable-db",
         "type": "boolean",
-        "description": "Don't write to SQLite"
+        "description": "Don't write to SQLite",
+        "descriptionI18n": { "zh": "不写入 SQLite 数据库" }
       },
       {
         "label": "User Agent",
+        "labelI18n": { "zh": "User-Agent" },
         "flag": "--user-agent",
         "type": "string",
         "description": "Custom UA",
+        "descriptionI18n": { "zh": "自定义 User-Agent" },
         "placeholder": "Mozilla/5.0"
       },
       {
         "label": "No Cert Verify",
+        "labelI18n": { "zh": "忽略证书错误" },
         "flag": "--ignore-cert-errors",
         "type": "boolean",
-        "description": "Ignore SSL errors"
+        "description": "Ignore SSL errors",
+        "descriptionI18n": { "zh": "忽略 SSL 证书错误" }
       },
       {
         "label": "Report Address",
+        "labelI18n": { "zh": "报告服务地址" },
         "flag": "--address",
         "type": "string",
         "description": "report server bind",
+        "descriptionI18n": { "zh": "report 子命令的服务监听地址" },
         "default": "localhost:7171"
       }
     ],
@@ -133,44 +165,62 @@
       {
         "id": "single-url",
         "name": "Single URL screenshot",
+        "nameI18n": { "zh": "单 URL 截图" },
         "description": "Capture one site",
+        "descriptionI18n": { "zh": "抓取单个站点截图" },
         "args": "single -u {{target}}",
-        "tags": ["fast"]
+        "tags": ["fast"],
+        "tagsI18n": { "zh": ["快速"] }
       },
       {
         "id": "bulk-file",
         "name": "Bulk from file",
+        "nameI18n": { "zh": "批量截图(文件)" },
         "description": "Screenshot all URLs in a file",
+        "descriptionI18n": { "zh": "对文件中所有 URL 批量截图" },
         "args": "file -f {{urls}} -t 8",
-        "tags": ["bulk"]
+        "tags": ["bulk"],
+        "tagsI18n": { "zh": ["批量"] }
       },
       {
         "id": "cidr-scan",
         "name": "CIDR scan + screenshot",
+        "nameI18n": { "zh": "CIDR 扫描并截图" },
         "description": "Scan a network and screenshot live web hosts",
+        "descriptionI18n": { "zh": "扫描网段并对存活的 Web 主机截图" },
         "args": "scan --cidr {{cidr}} --ports 80,443,8080,8443",
-        "tags": ["recon", "discovery"]
+        "tags": ["recon", "discovery"],
+        "tagsI18n": { "zh": ["侦察", "主机发现"] }
       },
       {
         "id": "from-httpx",
         "name": "Pipe httpx → gowitness",
+        "nameI18n": { "zh": "httpx → gowitness 管道" },
         "description": "Use httpx output as URL list",
+        "descriptionI18n": { "zh": "把 httpx 输出当作 URL 列表" },
         "args": "file -f live.txt -t 8 --screenshot-path shots/",
-        "tags": ["pipeline"]
+        "tags": ["pipeline"],
+        "tagsI18n": { "zh": ["Pipeline"] }
       },
       {
         "id": "report-server",
         "name": "Serve HTML report",
+        "nameI18n": { "zh": "启动 HTML 报告服务" },
         "description": "Browse all screenshots in browser",
+        "descriptionI18n": { "zh": "在浏览器中浏览全部截图" },
         "args": "report serve --address localhost:7171",
-        "tags": ["report"]
+        "tags": ["report"],
+        "tagsI18n": { "zh": ["报告"] }
       },
       {
         "id": "ignore-ssl",
         "name": "Capture self-signed sites",
+        "nameI18n": { "zh": "抓取自签名站点" },
         "description": "Skip SSL cert verify",
+        "descriptionI18n": { "zh": "跳过 SSL 证书校验" },
         "args": "file -f {{urls}} --ignore-cert-errors",
-        "tags": ["bulk", "ssl"]
+        "tags": ["bulk", "ssl"],
+        "tagsI18n": { "zh": ["批量", "SSL"] }
       }
     ],
     "output": {

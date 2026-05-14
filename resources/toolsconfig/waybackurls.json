@@ -3,6 +3,7 @@
     "id": "waybackurls",
     "name": "waybackurls",
     "description": "Fetch all the URLs that the Wayback Machine knows about for a domain (lighter alternative to gau)",
+    "descriptionI18n": { "zh": "拉取域名在 Wayback Machine 上已知的全部 URL(gau 的轻量替代)" },
     "executable": "waybackurls",
     "runtime": "native",
     "launchMode": "cli",
@@ -10,6 +11,7 @@
     "subcategory": "url-history",
     "tier": "recommended",
     "tags": ["recon", "wayback", "url", "passive"],
+    "tagsI18n": { "zh": ["侦察", "Wayback", "URL", "被动"] },
     "install": {
       "method": "homebrew",
       "source": "waybackurls",
@@ -19,79 +21,108 @@
     "params": [
       {
         "label": "Domain",
+        "labelI18n": { "zh": "域名" },
         "flag": "",
         "type": "string",
         "description": "Single domain or read from stdin",
+        "descriptionI18n": { "zh": "单个域名，或通过 stdin 读取" },
         "placeholder": "target.com"
       },
       {
         "label": "Subdomains",
+        "labelI18n": { "zh": "排除子域名" },
         "flag": "-no-subs",
         "type": "boolean",
-        "description": "Don't include subdomains (default = include)"
+        "description": "Don't include subdomains (default = include)",
+        "descriptionI18n": { "zh": "不包含子域名(默认会包含)" }
       },
       {
         "label": "Date Range",
+        "labelI18n": { "zh": "时间范围" },
         "flag": "-dates",
         "type": "boolean",
-        "description": "Include first-seen / last-seen dates"
+        "description": "Include first-seen / last-seen dates",
+        "descriptionI18n": { "zh": "输出 first-seen / last-seen 时间" }
       },
       {
         "label": "Get Versions",
+        "labelI18n": { "zh": "查询版本" },
         "flag": "-get-versions",
         "type": "boolean",
-        "description": "List archived versions of a single URL"
+        "description": "List archived versions of a single URL",
+        "descriptionI18n": { "zh": "列出单个 URL 的所有归档版本" }
       }
     ],
     "skills": [
       {
         "id": "default",
         "name": "All wayback URLs",
+        "nameI18n": { "zh": "全部 Wayback URL" },
         "description": "Default - includes subdomains",
+        "descriptionI18n": { "zh": "默认行为——包含子域名" },
         "args": "{{domain}}",
-        "tags": ["passive"]
+        "tags": ["passive"],
+        "tagsI18n": { "zh": ["被动"] }
       },
       {
         "id": "main-only",
         "name": "Main domain only",
+        "nameI18n": { "zh": "仅主域名" },
         "description": "Skip subdomains",
+        "descriptionI18n": { "zh": "跳过子域名" },
         "args": "{{domain}} -no-subs",
-        "tags": ["filter"]
+        "tags": ["filter"],
+        "tagsI18n": { "zh": ["过滤"] }
       },
       {
         "id": "with-dates",
         "name": "URLs with dates",
+        "nameI18n": { "zh": "带时间戳的 URL" },
         "description": "Include first/last seen dates",
+        "descriptionI18n": { "zh": "包含 first/last seen 时间戳" },
         "args": "{{domain}} -dates -o wayback.txt",
-        "tags": ["dates"]
+        "tags": ["dates"],
+        "tagsI18n": { "zh": ["时间戳"] }
       },
       {
         "id": "from-domains-file",
         "name": "From domain list (stdin)",
+        "nameI18n": { "zh": "从域名列表(stdin)" },
         "description": "Read multiple domains from a file",
+        "descriptionI18n": { "zh": "从文件读取多个域名" },
         "args": "< domains.txt",
-        "tags": ["bulk"]
+        "tags": ["bulk"],
+        "tagsI18n": { "zh": ["批量"] }
       },
       {
         "id": "to-httpx",
         "name": "Pipe to httpx (find live)",
+        "nameI18n": { "zh": "管道到 httpx(找存活)" },
         "description": "Fetch wayback URLs and check which are still live",
+        "descriptionI18n": { "zh": "拉取 Wayback URL 后用 httpx 判断哪些仍然存活" },
         "args": "{{domain}} | httpx -silent | tee live.txt",
-        "tags": ["pipeline"]
+        "tags": ["pipeline"],
+        "tagsI18n": { "zh": ["Pipeline"] }
       },
       {
         "id": "to-dalfox",
         "name": "Pipe to dalfox (XSS)",
+        "nameI18n": { "zh": "管道到 dalfox(XSS)" },
         "description": "Direct XSS scan on historic URLs",
+        "descriptionI18n": { "zh": "对历史 URL 直接进行 XSS 扫描" },
         "args": "{{domain}} | dalfox pipe --silence",
-        "tags": ["pipeline", "xss"]
+        "tags": ["pipeline", "xss"],
+        "tagsI18n": { "zh": ["Pipeline", "XSS"] }
       },
       {
         "id": "params-only",
         "name": "Only URLs with params (for fuzz)",
+        "nameI18n": { "zh": "仅带参数的 URL(用于 fuzz)" },
         "description": "Filter URLs that have ? param",
+        "descriptionI18n": { "zh": "过滤出含 ? 参数的 URL" },
         "args": "{{domain}} | grep '?' | sort -u",
-        "tags": ["fuzz", "filter"]
+        "tags": ["fuzz", "filter"],
+        "tagsI18n": { "zh": ["Fuzz", "过滤"] }
       }
     ],
     "output": {

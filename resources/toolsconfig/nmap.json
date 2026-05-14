@@ -3,6 +3,7 @@
     "id": "nmap",
     "name": "nmap",
     "description": "Network exploration tool and security/port scanner",
+    "descriptionI18n": { "zh": "网络探测与安全/端口扫描工具" },
     "executable": "nmap",
     "runtime": "native",
     "launchMode": "cli",
@@ -10,6 +11,7 @@
     "subcategory": "port-scan",
     "tier": "essential",
     "tags": ["recon", "port-scan", "network", "fingerprint"],
+    "tagsI18n": { "zh": ["侦察", "端口扫描", "网络", "指纹识别"] },
     "install": {
       "method": "homebrew",
       "source": "nmap",
@@ -19,135 +21,175 @@
     "params": [
       {
         "label": "Target",
+        "labelI18n": { "zh": "目标" },
         "flag": "",
         "type": "string",
         "required": true,
         "description": "Target host, CIDR, or hostname (e.g. 192.168.1.0/24, scanme.nmap.org)",
+        "descriptionI18n": { "zh": "目标主机、CIDR 网段或域名（如 192.168.1.0/24、scanme.nmap.org）" },
         "placeholder": "scanme.nmap.org"
       },
       {
         "label": "Scan Type",
+        "labelI18n": { "zh": "扫描类型" },
         "flag": "",
         "type": "select",
         "description": "Choose scan technique",
+        "descriptionI18n": { "zh": "选择扫描技术" },
         "options": [
-          { "value": "-sS", "label": "TCP SYN (stealth)" },
-          { "value": "-sT", "label": "TCP Connect" },
-          { "value": "-sU", "label": "UDP Scan" },
-          { "value": "-sn", "label": "Ping sweep (no port scan)" },
-          { "value": "-sV", "label": "Service/version detection" }
+          { "value": "-sS", "label": "TCP SYN (stealth)", "labelI18n": { "zh": "TCP SYN(隐蔽扫描)" } },
+          { "value": "-sT", "label": "TCP Connect", "labelI18n": { "zh": "TCP 全连接" } },
+          { "value": "-sU", "label": "UDP Scan", "labelI18n": { "zh": "UDP 扫描" } },
+          { "value": "-sn", "label": "Ping sweep (no port scan)", "labelI18n": { "zh": "Ping 扫描(不扫端口)" } },
+          { "value": "-sV", "label": "Service/version detection", "labelI18n": { "zh": "服务/版本探测" } }
         ]
       },
       {
         "label": "Ports",
+        "labelI18n": { "zh": "端口" },
         "flag": "-p",
         "type": "string",
         "description": "Port spec (e.g. 22,80,443 or 1-65535 or - for all)",
+        "descriptionI18n": { "zh": "端口规则（如 22,80,443 或 1-65535，或 - 表示全部）" },
         "placeholder": "1-1000"
       },
       {
         "label": "Top Ports",
+        "labelI18n": { "zh": "热门端口数" },
         "flag": "--top-ports",
         "type": "string",
         "description": "Scan N most common ports",
+        "descriptionI18n": { "zh": "扫描使用最广泛的前 N 个端口" },
         "placeholder": "100"
       },
       {
         "label": "Timing Template",
+        "labelI18n": { "zh": "速率模板" },
         "flag": "-T",
         "type": "select",
         "description": "0=paranoid, 5=insane",
+        "descriptionI18n": { "zh": "0=极度隐蔽,5=极速" },
         "default": "3",
         "options": [
-          { "value": "0", "label": "T0 - paranoid" },
-          { "value": "1", "label": "T1 - sneaky" },
-          { "value": "2", "label": "T2 - polite" },
-          { "value": "3", "label": "T3 - normal" },
-          { "value": "4", "label": "T4 - aggressive" },
-          { "value": "5", "label": "T5 - insane" }
+          { "value": "0", "label": "T0 - paranoid", "labelI18n": { "zh": "T0 - 极度隐蔽" } },
+          { "value": "1", "label": "T1 - sneaky", "labelI18n": { "zh": "T1 - 鬼祟" } },
+          { "value": "2", "label": "T2 - polite", "labelI18n": { "zh": "T2 - 礼貌" } },
+          { "value": "3", "label": "T3 - normal", "labelI18n": { "zh": "T3 - 常规" } },
+          { "value": "4", "label": "T4 - aggressive", "labelI18n": { "zh": "T4 - 激进" } },
+          { "value": "5", "label": "T5 - insane", "labelI18n": { "zh": "T5 - 极速" } }
         ]
       },
       {
         "label": "OS Detection",
+        "labelI18n": { "zh": "操作系统识别" },
         "flag": "-O",
         "type": "boolean",
-        "description": "Enable OS fingerprinting (requires root)"
+        "description": "Enable OS fingerprinting (requires root)",
+        "descriptionI18n": { "zh": "启用操作系统指纹识别(需要 root 权限)" }
       },
       {
         "label": "Aggressive",
+        "labelI18n": { "zh": "激进扫描" },
         "flag": "-A",
         "type": "boolean",
-        "description": "Enable OS detection, version, script scanning, and traceroute"
+        "description": "Enable OS detection, version, script scanning, and traceroute",
+        "descriptionI18n": { "zh": "一次性启用 OS 识别、版本探测、脚本扫描与 traceroute" }
       },
       {
         "label": "Default Scripts",
+        "labelI18n": { "zh": "默认脚本" },
         "flag": "-sC",
         "type": "boolean",
-        "description": "Run default NSE scripts"
+        "description": "Run default NSE scripts",
+        "descriptionI18n": { "zh": "运行 NSE 默认脚本集" }
       },
       {
         "label": "Script",
+        "labelI18n": { "zh": "NSE 脚本" },
         "flag": "--script",
         "type": "string",
         "description": "Specific NSE script(s) to run (e.g. vuln, http-enum)",
+        "descriptionI18n": { "zh": "指定要运行的 NSE 脚本（如 vuln、http-enum）" },
         "placeholder": "vuln"
       },
       {
         "label": "Output File",
+        "labelI18n": { "zh": "输出文件" },
         "flag": "-oA",
         "type": "string",
         "description": "Output basename (creates .nmap, .gnmap, .xml)",
+        "descriptionI18n": { "zh": "输出文件名前缀（生成 .nmap / .gnmap / .xml 三种格式）" },
         "placeholder": "scan_result"
       },
       {
         "label": "Verbose",
+        "labelI18n": { "zh": "详细输出" },
         "flag": "-v",
         "type": "boolean",
-        "description": "Increase verbosity"
+        "description": "Increase verbosity",
+        "descriptionI18n": { "zh": "提升日志详细程度" }
       }
     ],
     "skills": [
       {
         "id": "quick-scan",
         "name": "Quick Top-100 Scan",
+        "nameI18n": { "zh": "快速扫描(Top 100 端口)" },
         "description": "Fast scan of top 100 ports",
+        "descriptionI18n": { "zh": "快速扫描使用最广泛的前 100 个端口" },
         "args": "{{target}} --top-ports 100 -T4",
-        "tags": ["recon", "fast"]
+        "tags": ["recon", "fast"],
+        "tagsI18n": { "zh": ["侦察", "快速"] }
       },
       {
         "id": "full-tcp",
         "name": "Full TCP Scan",
+        "nameI18n": { "zh": "全 TCP 端口扫描" },
         "description": "Scan all 65535 TCP ports with service detection",
+        "descriptionI18n": { "zh": "扫描全部 65535 个 TCP 端口并探测服务" },
         "args": "-sS -sV -p- -T4 {{target}}",
-        "tags": ["thorough", "slow"]
+        "tags": ["thorough", "slow"],
+        "tagsI18n": { "zh": ["全面", "耗时长"] }
       },
       {
         "id": "stealth-syn",
         "name": "Stealth SYN Scan",
+        "nameI18n": { "zh": "隐蔽 SYN 扫描" },
         "description": "TCP SYN scan with timing T2",
+        "descriptionI18n": { "zh": "使用 T2 速率的 TCP SYN 扫描，降低被检测概率" },
         "args": "-sS -T2 -p 1-1000 {{target}}",
-        "tags": ["stealth"]
+        "tags": ["stealth"],
+        "tagsI18n": { "zh": ["隐蔽"] }
       },
       {
         "id": "vuln-scripts",
         "name": "Run Vuln NSE Scripts",
+        "nameI18n": { "zh": "运行漏洞类 NSE 脚本" },
         "description": "Run vulnerability NSE scripts on common ports",
+        "descriptionI18n": { "zh": "对常用端口运行漏洞类 NSE 脚本" },
         "args": "-sV --script vuln {{target}}",
-        "tags": ["vuln-scan"]
+        "tags": ["vuln-scan"],
+        "tagsI18n": { "zh": ["漏洞扫描"] }
       },
       {
         "id": "discover-hosts",
         "name": "Host Discovery (Ping Sweep)",
+        "nameI18n": { "zh": "主机发现(Ping 扫描)" },
         "description": "Find live hosts in CIDR without port scanning",
+        "descriptionI18n": { "zh": "在 CIDR 网段中发现存活主机，不进行端口扫描" },
         "args": "-sn {{target}}",
-        "tags": ["discovery"]
+        "tags": ["discovery"],
+        "tagsI18n": { "zh": ["主机发现"] }
       },
       {
         "id": "aggressive-all",
         "name": "Aggressive Full Recon",
+        "nameI18n": { "zh": "激进全量侦察" },
         "description": "OS, version, scripts, traceroute - one command",
+        "descriptionI18n": { "zh": "一条命令完成 OS 识别、版本探测、脚本扫描与 traceroute" },
         "args": "-A -T4 {{target}}",
-        "tags": ["thorough"]
+        "tags": ["thorough"],
+        "tagsI18n": { "zh": ["全面"] }
       }
     ],
     "output": {

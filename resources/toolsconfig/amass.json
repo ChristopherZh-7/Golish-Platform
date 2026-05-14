@@ -3,6 +3,7 @@
     "id": "amass",
     "name": "amass",
     "description": "OWASP Amass - in-depth attack surface mapping and asset discovery (passive + active subdomain enum, ASN, ports)",
+    "descriptionI18n": { "zh": "OWASP Amass —— 深度攻击面测绘与资产发现工具（被动 + 主动子域枚举、ASN、端口）" },
     "executable": "amass",
     "runtime": "native",
     "launchMode": "cli",
@@ -10,6 +11,7 @@
     "subcategory": "subdomain",
     "tier": "recommended",
     "tags": ["recon", "subdomain", "osint", "asn"],
+    "tagsI18n": { "zh": ["侦察", "子域名", "OSINT", "ASN"] },
     "install": {
       "method": "homebrew",
       "source": "amass",
@@ -19,168 +21,221 @@
     "params": [
       {
         "label": "Mode",
+        "labelI18n": { "zh": "模式" },
         "flag": "",
         "type": "select",
         "required": true,
         "description": "Sub-command",
+        "descriptionI18n": { "zh": "Amass 子命令" },
         "options": [
-          { "value": "enum", "label": "enum - subdomain enumeration" },
-          { "value": "intel", "label": "intel - org/ASN/whois recon" },
-          { "value": "track", "label": "track - delta between scans" },
-          { "value": "viz", "label": "viz - generate graph viz" },
-          { "value": "db", "label": "db - manage DB" }
+          { "value": "enum", "label": "enum - subdomain enumeration", "labelI18n": { "zh": "enum - 子域名枚举" } },
+          { "value": "intel", "label": "intel - org/ASN/whois recon", "labelI18n": { "zh": "intel - 组织/ASN/Whois 情报" } },
+          { "value": "track", "label": "track - delta between scans", "labelI18n": { "zh": "track - 扫描结果差异比对" } },
+          { "value": "viz", "label": "viz - generate graph viz", "labelI18n": { "zh": "viz - 生成关系图可视化" } },
+          { "value": "db", "label": "db - manage DB", "labelI18n": { "zh": "db - 管理本地数据库" } }
         ]
       },
       {
         "label": "Domain",
+        "labelI18n": { "zh": "域名" },
         "flag": "-d",
         "type": "string",
         "description": "Target domain (enum mode)",
+        "descriptionI18n": { "zh": "目标域名(enum 模式)" },
         "placeholder": "target.com"
       },
       {
         "label": "Domain List",
+        "labelI18n": { "zh": "域名列表" },
         "flag": "-df",
         "type": "string",
         "description": "File with domains",
+        "descriptionI18n": { "zh": "包含多个域名的文件" },
         "placeholder": "domains.txt"
       },
       {
         "label": "Active",
+        "labelI18n": { "zh": "主动模式" },
         "flag": "-active",
         "type": "boolean",
-        "description": "Enable active recon (DNS brute, cert grab) - noisier"
+        "description": "Enable active recon (DNS brute, cert grab) - noisier",
+        "descriptionI18n": { "zh": "启用主动侦察(DNS 爆破、证书抓取)——动静较大" }
       },
       {
         "label": "Passive",
+        "labelI18n": { "zh": "被动模式" },
         "flag": "-passive",
         "type": "boolean",
-        "description": "Passive only (no DNS resolution)"
+        "description": "Passive only (no DNS resolution)",
+        "descriptionI18n": { "zh": "仅被动收集(不进行 DNS 解析)" }
       },
       {
         "label": "Brute",
+        "labelI18n": { "zh": "爆破" },
         "flag": "-brute",
         "type": "boolean",
-        "description": "Enable subdomain brute force"
+        "description": "Enable subdomain brute force",
+        "descriptionI18n": { "zh": "启用子域名爆破" }
       },
       {
         "label": "Wordlist",
+        "labelI18n": { "zh": "字典" },
         "flag": "-w",
         "type": "string",
         "description": "Brute wordlist",
+        "descriptionI18n": { "zh": "用于爆破的字典文件" },
         "placeholder": "subdomains.txt"
       },
       {
         "label": "Resolvers",
+        "labelI18n": { "zh": "DNS 解析器" },
         "flag": "-r",
         "type": "string",
         "description": "Custom DNS resolvers (comma list)",
+        "descriptionI18n": { "zh": "自定义 DNS 解析器(逗号分隔)" },
         "placeholder": "1.1.1.1,8.8.8.8"
       },
       {
         "label": "ASN",
+        "labelI18n": { "zh": "ASN" },
         "flag": "-asn",
         "type": "string",
         "description": "ASN to query (intel mode)",
+        "descriptionI18n": { "zh": "要查询的 ASN(intel 模式)" },
         "placeholder": "13335"
       },
       {
         "label": "CIDR",
+        "labelI18n": { "zh": "CIDR 网段" },
         "flag": "-cidr",
         "type": "string",
         "description": "CIDR to enumerate (intel mode)",
+        "descriptionI18n": { "zh": "要枚举的 CIDR 网段(intel 模式)" },
         "placeholder": "10.0.0.0/16"
       },
       {
         "label": "Whois",
+        "labelI18n": { "zh": "反向 Whois" },
         "flag": "-whois",
         "type": "boolean",
-        "description": "(intel) include reverse whois"
+        "description": "(intel) include reverse whois",
+        "descriptionI18n": { "zh": "(intel) 同时执行反向 Whois 查询" }
       },
       {
         "label": "Org",
+        "labelI18n": { "zh": "组织名" },
         "flag": "-org",
         "type": "string",
         "description": "(intel) organization name to whois",
+        "descriptionI18n": { "zh": "(intel) 用于 Whois 查询的组织名" },
         "placeholder": "Cloudflare"
       },
       {
         "label": "Output JSON",
+        "labelI18n": { "zh": "JSON 输出" },
         "flag": "-json",
         "type": "string",
         "description": "Output JSONL file",
+        "descriptionI18n": { "zh": "输出 JSONL 文件" },
         "placeholder": "amass.jsonl"
       },
       {
         "label": "Output File",
+        "labelI18n": { "zh": "输出文件" },
         "flag": "-o",
         "type": "string",
         "description": "Plain output file",
+        "descriptionI18n": { "zh": "普通文本输出文件" },
         "placeholder": "subs.txt"
       },
       {
         "label": "Config",
+        "labelI18n": { "zh": "配置文件" },
         "flag": "-config",
         "type": "string",
         "description": "Config YAML (API keys, sources)",
+        "descriptionI18n": { "zh": "YAML 配置文件(包含 API key、数据源等)" },
         "placeholder": "~/.config/amass/config.yaml"
       },
       {
         "label": "Quiet",
+        "labelI18n": { "zh": "静默" },
         "flag": "-silent",
         "type": "boolean",
-        "description": "Show only result (silent)"
+        "description": "Show only result (silent)",
+        "descriptionI18n": { "zh": "静默模式，仅输出结果" }
       }
     ],
     "skills": [
       {
         "id": "passive-enum",
         "name": "Passive subdomain enum",
+        "nameI18n": { "zh": "被动子域枚举" },
         "description": "Use only public sources, no DNS resolve",
+        "descriptionI18n": { "zh": "仅使用公开数据源，不做 DNS 解析" },
         "args": "enum -d {{domain}} -passive -silent",
-        "tags": ["passive"]
+        "tags": ["passive"],
+        "tagsI18n": { "zh": ["被动"] }
       },
       {
         "id": "active-enum",
         "name": "Active subdomain enum",
+        "nameI18n": { "zh": "主动子域枚举" },
         "description": "Active mode (cert grab, DNS attacks)",
+        "descriptionI18n": { "zh": "主动模式(证书抓取、DNS 探测攻击)" },
         "args": "enum -d {{domain}} -active -silent",
-        "tags": ["active"]
+        "tags": ["active"],
+        "tagsI18n": { "zh": ["主动"] }
       },
       {
         "id": "brute-enum",
         "name": "Brute force subdomains",
+        "nameI18n": { "zh": "子域字典爆破" },
         "description": "Add wordlist brute on top of OSINT",
+        "descriptionI18n": { "zh": "在 OSINT 之上叠加字典爆破" },
         "args": "enum -d {{domain}} -brute -w {{wordlist}} -silent",
-        "tags": ["brute"]
+        "tags": ["brute"],
+        "tagsI18n": { "zh": ["爆破"] }
       },
       {
         "id": "intel-org",
         "name": "Intel by organization",
+        "nameI18n": { "zh": "按组织名查情报" },
         "description": "Reverse whois on org name",
+        "descriptionI18n": { "zh": "基于组织名进行反向 Whois" },
         "args": "intel -org \"{{org}}\" -whois",
-        "tags": ["intel", "osint"]
+        "tags": ["intel", "osint"],
+        "tagsI18n": { "zh": ["情报", "OSINT"] }
       },
       {
         "id": "intel-asn",
         "name": "Intel by ASN",
+        "nameI18n": { "zh": "按 ASN 查情报" },
         "description": "Find domains hosted on ASN",
+        "descriptionI18n": { "zh": "查找指定 ASN 上托管的域名" },
         "args": "intel -asn {{asn}}",
-        "tags": ["intel", "asn"]
+        "tags": ["intel", "asn"],
+        "tagsI18n": { "zh": ["情报", "ASN"] }
       },
       {
         "id": "json-pipeline",
         "name": "JSONL for pipeline",
+        "nameI18n": { "zh": "Pipeline 用 JSONL 输出" },
         "description": "Full JSONL with sources / IPs",
+        "descriptionI18n": { "zh": "完整 JSONL 输出，包含来源和 IP" },
         "args": "enum -d {{domain}} -json amass.jsonl",
-        "tags": ["pipeline"]
+        "tags": ["pipeline"],
+        "tagsI18n": { "zh": ["Pipeline"] }
       },
       {
         "id": "to-httpx",
         "name": "Pipe to httpx",
+        "nameI18n": { "zh": "管道到 httpx" },
         "description": "Direct subfinder-style pipeline",
+        "descriptionI18n": { "zh": "类似 subfinder 的直接管道方式" },
         "args": "enum -d {{domain}} -passive -silent | httpx -silent",
-        "tags": ["pipeline"]
+        "tags": ["pipeline"],
+        "tagsI18n": { "zh": ["Pipeline"] }
       }
     ],
     "output": {

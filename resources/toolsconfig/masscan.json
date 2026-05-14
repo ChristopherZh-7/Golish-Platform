@@ -3,6 +3,7 @@
     "id": "masscan",
     "name": "masscan",
     "description": "Mass IP port scanner - capable of scanning the entire Internet in under 6 minutes",
+    "descriptionI18n": { "zh": "大规模 IP 端口扫描器，号称可在 6 分钟内扫完整个互联网" },
     "executable": "masscan",
     "runtime": "native",
     "launchMode": "cli",
@@ -10,6 +11,7 @@
     "subcategory": "port-scan",
     "tier": "optional",
     "tags": ["recon", "port-scan", "network", "speed"],
+    "tagsI18n": { "zh": ["侦察", "端口扫描", "网络", "高速"] },
     "install": {
       "method": "homebrew",
       "source": "masscan",
@@ -19,109 +21,139 @@
     "params": [
       {
         "label": "Targets",
+        "labelI18n": { "zh": "目标" },
         "flag": "",
         "type": "string",
         "required": true,
         "description": "IPs, CIDR, or ranges (comma-separated)",
+        "descriptionI18n": { "zh": "IP、CIDR 网段或区间，多个用英文逗号分隔" },
         "placeholder": "10.0.0.0/8,192.168.0.0/16"
       },
       {
         "label": "Ports",
+        "labelI18n": { "zh": "端口" },
         "flag": "-p",
         "type": "string",
         "required": true,
         "description": "Port spec (single, list, range, or - for all)",
+        "descriptionI18n": { "zh": "端口规则（单个、列表、区间，或用 - 表示全部）" },
         "placeholder": "80,443,8080-8090"
       },
       {
         "label": "Rate",
+        "labelI18n": { "zh": "发包速率" },
         "flag": "--rate",
         "type": "string",
         "description": "Packets per second (default 100, can go to millions)",
+        "descriptionI18n": { "zh": "每秒发包数（默认 100，可设到百万级）" },
         "default": "1000",
         "placeholder": "10000"
       },
       {
         "label": "Source IP",
+        "labelI18n": { "zh": "源 IP" },
         "flag": "--source-ip",
         "type": "string",
         "description": "Spoof source IP",
+        "descriptionI18n": { "zh": "伪造源 IP" },
         "placeholder": "192.168.1.100"
       },
       {
         "label": "Source Port",
+        "labelI18n": { "zh": "源端口" },
         "flag": "--source-port",
         "type": "string",
         "description": "Spoof source port",
+        "descriptionI18n": { "zh": "伪造源端口" },
         "placeholder": "53"
       },
       {
         "label": "Banners",
+        "labelI18n": { "zh": "抓取 Banner" },
         "flag": "--banners",
         "type": "boolean",
-        "description": "Grab service banners (slower, requires sudo)"
+        "description": "Grab service banners (slower, requires sudo)",
+        "descriptionI18n": { "zh": "抓取服务 Banner（速度更慢，需 sudo）" }
       },
       {
         "label": "UDP Scan",
+        "labelI18n": { "zh": "UDP 扫描" },
         "flag": "-pU:",
         "type": "string",
         "description": "UDP ports (write as -pU:53,123)",
+        "descriptionI18n": { "zh": "UDP 端口（格式如 -pU:53,123）" },
         "placeholder": "53,123,161"
       },
       {
         "label": "Excludes",
+        "labelI18n": { "zh": "排除列表" },
         "flag": "--excludefile",
         "type": "string",
         "description": "File with IPs/CIDRs to skip (RFC1918, etc.)",
+        "descriptionI18n": { "zh": "需要跳过的 IP/CIDR 列表文件（如 RFC1918 内网段）" },
         "placeholder": "exclude.conf"
       },
       {
         "label": "Output File",
+        "labelI18n": { "zh": "输出列表文件" },
         "flag": "-oL",
         "type": "string",
         "description": "Output to list file (machine-readable)",
+        "descriptionI18n": { "zh": "输出到列表文件（机器可读格式）" },
         "placeholder": "scan.list"
       },
       {
         "label": "Output Format",
+        "labelI18n": { "zh": "Grepable 输出" },
         "flag": "-oG",
         "type": "string",
         "description": "Output to grepable file (alternative)",
+        "descriptionI18n": { "zh": "输出到 grepable 文件（备选格式）" },
         "placeholder": "scan.gnmap"
       },
       {
         "label": "JSON Output",
+        "labelI18n": { "zh": "JSON 输出" },
         "flag": "-oJ",
         "type": "string",
         "description": "Output as JSON",
+        "descriptionI18n": { "zh": "以 JSON 格式输出" },
         "placeholder": "scan.json"
       },
       {
         "label": "XML Output",
+        "labelI18n": { "zh": "XML 输出" },
         "flag": "-oX",
         "type": "string",
         "description": "Output as XML",
+        "descriptionI18n": { "zh": "以 XML 格式输出" },
         "placeholder": "scan.xml"
       },
       {
         "label": "Wait",
+        "labelI18n": { "zh": "等待时长(秒)" },
         "flag": "--wait",
         "type": "string",
         "description": "Seconds to wait for last responses (default 10)",
+        "descriptionI18n": { "zh": "等待最后一批响应的秒数（默认 10）" },
         "default": "10"
       },
       {
         "label": "Interface",
+        "labelI18n": { "zh": "网卡" },
         "flag": "-e",
         "type": "string",
         "description": "Network interface to use",
+        "descriptionI18n": { "zh": "指定使用的网卡" },
         "placeholder": "eth0"
       },
       {
         "label": "Resume File",
+        "labelI18n": { "zh": "断点续传文件" },
         "flag": "--resume",
         "type": "string",
         "description": "Resume from saved paused.conf",
+        "descriptionI18n": { "zh": "从保存的 paused.conf 恢复扫描" },
         "placeholder": "paused.conf"
       }
     ],
@@ -129,44 +161,62 @@
       {
         "id": "common-ports",
         "name": "Common ports sweep",
+        "nameI18n": { "zh": "常用端口快速扫描" },
         "description": "Top web ports across CIDR at safe rate",
+        "descriptionI18n": { "zh": "以安全速率扫描 CIDR 内的常见 Web 端口" },
         "args": "{{cidr}} -p 80,443,8080,8443,22,3389 --rate 1000 -oL masscan.list",
-        "tags": ["recon"]
+        "tags": ["recon"],
+        "tagsI18n": { "zh": ["侦察"] }
       },
       {
         "id": "all-tcp",
         "name": "All TCP ports (single host)",
+        "nameI18n": { "zh": "单机全 TCP 端口扫描" },
         "description": "Full 65535 TCP scan for one host",
+        "descriptionI18n": { "zh": "对单台主机扫描全部 65535 个 TCP 端口" },
         "args": "{{target}} -p1-65535 --rate 5000",
-        "tags": ["thorough"]
+        "tags": ["thorough"],
+        "tagsI18n": { "zh": ["全面"] }
       },
       {
         "id": "internet-web",
         "name": "Internet-scale web sweep",
+        "nameI18n": { "zh": "互联网级 Web 扫描" },
         "description": "Web ports at high rate, exclude reserved",
+        "descriptionI18n": { "zh": "高速扫描互联网公网 Web 端口，排除保留段" },
         "args": "0.0.0.0/0 -p 80,443 --rate 100000 --excludefile exclude.conf -oL web.list",
-        "tags": ["internet"]
+        "tags": ["internet"],
+        "tagsI18n": { "zh": ["互联网级"] }
       },
       {
         "id": "with-banners",
         "name": "Scan + banner grab",
+        "nameI18n": { "zh": "扫描 + 抓取 Banner" },
         "description": "Slower but pulls service banners",
+        "descriptionI18n": { "zh": "速度较慢但能抓取服务 Banner 用于指纹识别" },
         "args": "{{cidr}} -p 80,443,21,22,25 --banners --rate 500 -oL banners.list",
-        "tags": ["fingerprint"]
+        "tags": ["fingerprint"],
+        "tagsI18n": { "zh": ["指纹识别"] }
       },
       {
         "id": "json-pipeline",
         "name": "JSON output for pipeline",
+        "nameI18n": { "zh": "Pipeline 用 JSON 输出" },
         "description": "JSON output for ingestion",
+        "descriptionI18n": { "zh": "JSON 格式输出，方便后续 pipeline 消费" },
         "args": "{{cidr}} -p 80,443 --rate 5000 -oJ masscan.json",
-        "tags": ["pipeline"]
+        "tags": ["pipeline"],
+        "tagsI18n": { "zh": ["Pipeline"] }
       },
       {
         "id": "feed-nmap",
         "name": "Discover then nmap deep",
+        "nameI18n": { "zh": "发现后再交给 nmap 深扫" },
         "description": "Two-stage: masscan discovery → nmap version detect",
+        "descriptionI18n": { "zh": "两阶段：masscan 快速发现 → 再交给 nmap 做版本探测" },
         "args": "{{cidr}} -p 1-65535 --rate 10000 -oG masscan.gnmap",
-        "tags": ["pipeline"]
+        "tags": ["pipeline"],
+        "tagsI18n": { "zh": ["Pipeline"] }
       }
     ],
     "output": {

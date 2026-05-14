@@ -3,6 +3,7 @@
     "id": "httpx",
     "name": "httpx",
     "description": "Fast multi-purpose HTTP toolkit (probe, status, title, tech, screenshots)",
+    "descriptionI18n": { "zh": "多用途高速 HTTP 工具包(探活、状态码、标题、技术指纹、截图)" },
     "executable": "httpx",
     "runtime": "native",
     "launchMode": "cli",
@@ -10,6 +11,7 @@
     "subcategory": "http",
     "tier": "recommended",
     "tags": ["recon", "http", "probe", "fingerprint"],
+    "tagsI18n": { "zh": ["侦察", "HTTP", "探活", "指纹"] },
     "install": {
       "method": "homebrew",
       "source": "httpx",
@@ -19,163 +21,216 @@
     "params": [
       {
         "label": "URL",
+        "labelI18n": { "zh": "URL" },
         "flag": "-u",
         "type": "string",
         "description": "Single target URL or host",
+        "descriptionI18n": { "zh": "单个目标 URL 或主机" },
         "placeholder": "https://target.com"
       },
       {
         "label": "Targets List",
+        "labelI18n": { "zh": "目标列表" },
         "flag": "-l",
         "type": "string",
         "description": "File with hosts (one per line)",
+        "descriptionI18n": { "zh": "主机列表文件(每行一个)" },
         "placeholder": "hosts.txt"
       },
       {
         "label": "Ports",
+        "labelI18n": { "zh": "端口" },
         "flag": "-ports",
         "type": "string",
         "description": "Ports to probe (comma list or range)",
+        "descriptionI18n": { "zh": "要探测的端口(逗号分隔或范围)" },
         "placeholder": "80,443,8080,8443"
       },
       {
         "label": "Status Code",
+        "labelI18n": { "zh": "状态码" },
         "flag": "-sc",
         "type": "boolean",
-        "description": "Show HTTP status code"
+        "description": "Show HTTP status code",
+        "descriptionI18n": { "zh": "显示 HTTP 状态码" }
       },
       {
         "label": "Title",
+        "labelI18n": { "zh": "页面标题" },
         "flag": "-title",
         "type": "boolean",
-        "description": "Show page title"
+        "description": "Show page title",
+        "descriptionI18n": { "zh": "显示页面标题" }
       },
       {
         "label": "Tech Detect",
+        "labelI18n": { "zh": "技术识别" },
         "flag": "-td",
         "type": "boolean",
-        "description": "Detect technologies (Wappalyzer-like)"
+        "description": "Detect technologies (Wappalyzer-like)",
+        "descriptionI18n": { "zh": "技术指纹识别(类似 Wappalyzer)" }
       },
       {
         "label": "Web Server",
+        "labelI18n": { "zh": "Web 服务器" },
         "flag": "-server",
         "type": "boolean",
-        "description": "Show Server header"
+        "description": "Show Server header",
+        "descriptionI18n": { "zh": "显示 Server 响应头" }
       },
       {
         "label": "Content Length",
+        "labelI18n": { "zh": "内容长度" },
         "flag": "-cl",
         "type": "boolean",
-        "description": "Show response content length"
+        "description": "Show response content length",
+        "descriptionI18n": { "zh": "显示响应体长度" }
       },
       {
         "label": "Match Status",
+        "labelI18n": { "zh": "匹配状态码" },
         "flag": "-mc",
         "type": "string",
         "description": "Show only these status codes (e.g. 200,301)",
+        "descriptionI18n": { "zh": "仅显示这些状态码(如 200,301)" },
         "placeholder": "200,301"
       },
       {
         "label": "Filter Status",
+        "labelI18n": { "zh": "过滤状态码" },
         "flag": "-fc",
         "type": "string",
         "description": "Hide these status codes",
+        "descriptionI18n": { "zh": "隐藏这些状态码" },
         "placeholder": "404,500"
       },
       {
         "label": "Threads",
+        "labelI18n": { "zh": "线程数" },
         "flag": "-t",
         "type": "string",
         "description": "Concurrent threads",
+        "descriptionI18n": { "zh": "并发线程数" },
         "default": "50"
       },
       {
         "label": "Rate Limit",
+        "labelI18n": { "zh": "限速(req/s)" },
         "flag": "-rl",
         "type": "string",
         "description": "Max requests per second",
+        "descriptionI18n": { "zh": "每秒最大请求数" },
         "placeholder": "150"
       },
       {
         "label": "Timeout",
+        "labelI18n": { "zh": "超时(秒)" },
         "flag": "-timeout",
         "type": "string",
         "description": "Request timeout in seconds",
+        "descriptionI18n": { "zh": "请求超时(秒)" },
         "default": "10"
       },
       {
         "label": "Follow Redirects",
+        "labelI18n": { "zh": "跟随跳转" },
         "flag": "-fr",
         "type": "boolean",
-        "description": "Follow HTTP 3xx redirects"
+        "description": "Follow HTTP 3xx redirects",
+        "descriptionI18n": { "zh": "跟随 HTTP 3xx 跳转" }
       },
       {
         "label": "Probe All IPs",
+        "labelI18n": { "zh": "探测所有 IP" },
         "flag": "-probe",
         "type": "boolean",
-        "description": "Probe all returned IPs (resolve)"
+        "description": "Probe all returned IPs (resolve)",
+        "descriptionI18n": { "zh": "探测所有解析到的 IP" }
       },
       {
         "label": "Screenshot",
+        "labelI18n": { "zh": "截图" },
         "flag": "-ss",
         "type": "boolean",
-        "description": "Save screenshots (requires headless browser)"
+        "description": "Save screenshots (requires headless browser)",
+        "descriptionI18n": { "zh": "保存截图(需要 headless 浏览器)" }
       },
       {
         "label": "Output File",
+        "labelI18n": { "zh": "输出文件" },
         "flag": "-o",
         "type": "string",
         "description": "Save results to file",
+        "descriptionI18n": { "zh": "把结果保存到文件" },
         "placeholder": "live.txt"
       },
       {
         "label": "JSONL Output",
+        "labelI18n": { "zh": "JSONL 输出" },
         "flag": "-json",
         "type": "boolean",
-        "description": "Output JSONL with rich metadata"
+        "description": "Output JSONL with rich metadata",
+        "descriptionI18n": { "zh": "输出 JSONL，包含丰富元数据" }
       },
       {
         "label": "Silent",
+        "labelI18n": { "zh": "静默" },
         "flag": "-silent",
         "type": "boolean",
-        "description": "Show only URLs"
+        "description": "Show only URLs",
+        "descriptionI18n": { "zh": "仅显示 URL" }
       }
     ],
     "skills": [
       {
         "id": "alive-only",
         "name": "Alive URLs only",
+        "nameI18n": { "zh": "仅存活 URL" },
         "description": "Probe and output only live URLs",
+        "descriptionI18n": { "zh": "探活并仅输出存活的 URL" },
         "args": "-l {{hosts}} -silent -o live.txt",
-        "tags": ["probe", "fast"]
+        "tags": ["probe", "fast"],
+        "tagsI18n": { "zh": ["探活", "快速"] }
       },
       {
         "id": "rich-info",
         "name": "Status + title + tech",
+        "nameI18n": { "zh": "状态码 + 标题 + 技术指纹" },
         "description": "Live URL with status, title, tech, server",
+        "descriptionI18n": { "zh": "存活 URL 加上状态码、标题、技术指纹、Server" },
         "args": "-l {{hosts}} -sc -title -td -server",
-        "tags": ["recon"]
+        "tags": ["recon"],
+        "tagsI18n": { "zh": ["侦察"] }
       },
       {
         "id": "json-pipeline",
         "name": "JSONL for pipeline",
+        "nameI18n": { "zh": "Pipeline 用 JSONL" },
         "description": "Probe and output JSONL with full metadata",
+        "descriptionI18n": { "zh": "探活并输出含完整元数据的 JSONL" },
         "args": "-l {{hosts}} -json -o httpx.jsonl",
-        "tags": ["pipeline"]
+        "tags": ["pipeline"],
+        "tagsI18n": { "zh": ["Pipeline"] }
       },
       {
         "id": "screenshots",
         "name": "Screenshots all live hosts",
+        "nameI18n": { "zh": "批量截图存活主机" },
         "description": "Probe + take screenshots into output/ dir",
+        "descriptionI18n": { "zh": "探活并把截图保存到 output/ 目录" },
         "args": "-l {{hosts}} -ss -silent",
-        "tags": ["recon", "visual"]
+        "tags": ["recon", "visual"],
+        "tagsI18n": { "zh": ["侦察", "可视化"] }
       },
       {
         "id": "common-ports",
         "name": "Common web ports probe",
+        "nameI18n": { "zh": "常见 Web 端口探活" },
         "description": "Probe alternate web ports beyond 80/443",
+        "descriptionI18n": { "zh": "在 80/443 以外探活更多常用 Web 端口" },
         "args": "-l {{hosts}} -ports 80,443,8080,8443,8000,8888,9000",
-        "tags": ["ports"]
+        "tags": ["ports"],
+        "tagsI18n": { "zh": ["端口"] }
       }
     ],
     "output": {

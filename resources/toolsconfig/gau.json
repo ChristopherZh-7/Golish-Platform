@@ -3,6 +3,7 @@
     "id": "gau",
     "name": "gau",
     "description": "Get All URLs - fetch known URLs from Wayback / OTX / Common Crawl / URLScan for a domain (passive, no requests to target)",
+    "descriptionI18n": { "zh": "Get All URLs —— 从 Wayback / OTX / Common Crawl / URLScan 拉取域名历史 URL(完全被动，不向目标发请求)" },
     "executable": "gau",
     "runtime": "native",
     "launchMode": "cli",
@@ -10,6 +11,7 @@
     "subcategory": "url-history",
     "tier": "recommended",
     "tags": ["recon", "wayback", "url", "passive"],
+    "tagsI18n": { "zh": ["侦察", "Wayback", "URL", "被动"] },
     "install": {
       "method": "homebrew",
       "source": "gau",
@@ -19,143 +21,190 @@
     "params": [
       {
         "label": "Domains",
+        "labelI18n": { "zh": "域名" },
         "flag": "",
         "type": "string",
         "description": "Domain(s) - one per line via stdin or arg",
+        "descriptionI18n": { "zh": "域名(可通过 stdin 每行一个或直接传参)" },
         "placeholder": "target.com"
       },
       {
         "label": "Providers",
+        "labelI18n": { "zh": "数据源" },
         "flag": "--providers",
         "type": "string",
         "description": "Comma list of providers",
+        "descriptionI18n": { "zh": "逗号分隔的数据源列表" },
         "default": "wayback,otx,commoncrawl,urlscan",
         "placeholder": "wayback,otx"
       },
       {
         "label": "Threads",
+        "labelI18n": { "zh": "线程数" },
         "flag": "--threads",
         "type": "string",
         "description": "Concurrent provider fetches",
+        "descriptionI18n": { "zh": "并发拉取数据源的线程数" },
         "default": "5"
       },
       {
         "label": "Subdomains",
+        "labelI18n": { "zh": "包含子域名" },
         "flag": "--subs",
         "type": "boolean",
-        "description": "Include subdomain URLs"
+        "description": "Include subdomain URLs",
+        "descriptionI18n": { "zh": "包含子域名 URL" }
       },
       {
         "label": "From Date",
+        "labelI18n": { "zh": "起始日期" },
         "flag": "--from",
         "type": "string",
         "description": "Start date (YYYYMM)",
+        "descriptionI18n": { "zh": "起始日期(YYYYMM 格式)" },
         "placeholder": "202301"
       },
       {
         "label": "To Date",
+        "labelI18n": { "zh": "结束日期" },
         "flag": "--to",
         "type": "string",
         "description": "End date (YYYYMM)",
+        "descriptionI18n": { "zh": "结束日期(YYYYMM 格式)" },
         "placeholder": "202412"
       },
       {
         "label": "Match Pattern",
+        "labelI18n": { "zh": "匹配状态码" },
         "flag": "--mc",
         "type": "string",
         "description": "Match status code (comma list)",
+        "descriptionI18n": { "zh": "匹配的状态码(逗号分隔)" },
         "placeholder": "200,301"
       },
       {
         "label": "Filter Pattern",
+        "labelI18n": { "zh": "过滤状态码" },
         "flag": "--fc",
         "type": "string",
         "description": "Filter out status (comma list)",
+        "descriptionI18n": { "zh": "要过滤掉的状态码(逗号分隔)" },
         "placeholder": "404,500"
       },
       {
         "label": "Match Extension",
+        "labelI18n": { "zh": "匹配扩展名" },
         "flag": "--me",
         "type": "string",
         "description": "Match file extensions (comma list)",
+        "descriptionI18n": { "zh": "匹配的扩展名(逗号分隔)" },
         "placeholder": "php,asp,aspx,jsp"
       },
       {
         "label": "Filter Extension",
+        "labelI18n": { "zh": "过滤扩展名" },
         "flag": "--fe",
         "type": "string",
         "description": "Filter out extensions",
+        "descriptionI18n": { "zh": "要过滤掉的扩展名" },
         "placeholder": "css,js,jpg,png,svg"
       },
       {
         "label": "Output File",
+        "labelI18n": { "zh": "输出文件" },
         "flag": "-o",
         "type": "string",
         "description": "Save URLs to file",
+        "descriptionI18n": { "zh": "把 URL 保存到文件" },
         "placeholder": "urls.txt"
       },
       {
         "label": "JSON",
+        "labelI18n": { "zh": "JSON" },
         "flag": "--json",
         "type": "boolean",
-        "description": "Output JSON"
+        "description": "Output JSON",
+        "descriptionI18n": { "zh": "以 JSON 格式输出" }
       },
       {
         "label": "Verbose",
+        "labelI18n": { "zh": "详细输出" },
         "flag": "--verbose",
         "type": "boolean",
-        "description": "Verbose"
+        "description": "Verbose",
+        "descriptionI18n": { "zh": "详细输出" }
       }
     ],
     "skills": [
       {
         "id": "default",
         "name": "Default URL fetch",
+        "nameI18n": { "zh": "默认拉取 URL" },
         "description": "All providers, root domain only",
+        "descriptionI18n": { "zh": "全部数据源，仅根域名" },
         "args": "{{domain}}",
-        "tags": ["passive"]
+        "tags": ["passive"],
+        "tagsI18n": { "zh": ["被动"] }
       },
       {
         "id": "with-subs",
         "name": "Include subdomains",
+        "nameI18n": { "zh": "包含子域名" },
         "description": "Wayback URLs across all subdomains",
+        "descriptionI18n": { "zh": "拉取所有子域名的历史 URL" },
         "args": "{{domain}} --subs -o urls.txt",
-        "tags": ["thorough"]
+        "tags": ["thorough"],
+        "tagsI18n": { "zh": ["全面"] }
       },
       {
         "id": "skip-static",
         "name": "Skip static assets",
+        "nameI18n": { "zh": "跳过静态资源" },
         "description": "Filter out CSS/JS/images for cleaner endpoint list",
+        "descriptionI18n": { "zh": "过滤掉 CSS/JS/图片，得到更干净的接口列表" },
         "args": "{{domain}} --subs --fe \"css,js,jpg,png,svg,gif,woff,woff2,ttf,ico\" -o urls.txt",
-        "tags": ["clean"]
+        "tags": ["clean"],
+        "tagsI18n": { "zh": ["精简"] }
       },
       {
         "id": "match-php",
         "name": "Only PHP / dynamic",
+        "nameI18n": { "zh": "仅动态页面" },
         "description": "Match common dynamic extensions",
+        "descriptionI18n": { "zh": "仅匹配常见的动态后端扩展名" },
         "args": "{{domain}} --me \"php,asp,aspx,jsp,do,action\" -o dyn.txt",
-        "tags": ["dynamic"]
+        "tags": ["dynamic"],
+        "tagsI18n": { "zh": ["动态"] }
       },
       {
         "id": "to-dalfox",
         "name": "Pipe to dalfox",
+        "nameI18n": { "zh": "管道到 dalfox" },
         "description": "Pull historic URLs and XSS-scan them",
+        "descriptionI18n": { "zh": "拉取历史 URL 并直接进行 XSS 扫描" },
         "args": "{{domain}} --subs | dalfox pipe --silence",
-        "tags": ["pipeline", "xss"]
+        "tags": ["pipeline", "xss"],
+        "tagsI18n": { "zh": ["Pipeline", "XSS"] }
       },
       {
         "id": "to-nuclei",
         "name": "Pipe to nuclei",
+        "nameI18n": { "zh": "管道到 nuclei" },
         "description": "Wayback URLs straight into nuclei",
+        "descriptionI18n": { "zh": "Wayback URL 直接送入 nuclei 扫描" },
         "args": "{{domain}} --subs | nuclei -tags exposure,config",
-        "tags": ["pipeline", "vuln"]
+        "tags": ["pipeline", "vuln"],
+        "tagsI18n": { "zh": ["Pipeline", "漏洞"] }
       },
       {
         "id": "recent-only",
         "name": "Recent URLs only (last year)",
+        "nameI18n": { "zh": "仅近期 URL(近一年)" },
         "description": "Fetch only from given date range",
+        "descriptionI18n": { "zh": "仅拉取给定日期范围内的 URL" },
         "args": "{{domain}} --from 202401 --subs -o recent.txt",
-        "tags": ["filter"]
+        "tags": ["filter"],
+        "tagsI18n": { "zh": ["过滤"] }
       }
     ],
     "output": {

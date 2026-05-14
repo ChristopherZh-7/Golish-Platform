@@ -3,6 +3,7 @@
     "id": "ffuf",
     "name": "ffuf",
     "description": "Fast web fuzzer written in Go - directories, parameters, vhosts, and more",
+    "descriptionI18n": { "zh": "Go 编写的高速 Web 模糊测试工具——目录、参数、vhost 等场景全覆盖" },
     "executable": "ffuf",
     "runtime": "native",
     "launchMode": "cli",
@@ -10,6 +11,7 @@
     "subcategory": "fuzzer",
     "tier": "essential",
     "tags": ["web", "fuzzer", "directory-brute", "parameter-discovery"],
+    "tagsI18n": { "zh": ["Web", "模糊测试", "目录爆破", "参数发现"] },
     "install": {
       "method": "homebrew",
       "source": "ffuf",
@@ -19,190 +21,243 @@
     "params": [
       {
         "label": "URL",
+        "labelI18n": { "zh": "URL" },
         "flag": "-u",
         "type": "string",
         "required": true,
         "description": "Target URL with FUZZ keyword (e.g. https://target.com/FUZZ)",
+        "descriptionI18n": { "zh": "含 FUZZ 关键字的目标 URL(如 https://target.com/FUZZ)" },
         "placeholder": "https://target.com/FUZZ"
       },
       {
         "label": "Wordlist",
+        "labelI18n": { "zh": "字典" },
         "flag": "-w",
         "type": "string",
         "required": true,
         "description": "Wordlist path (use :KEYWORD for multiple)",
+        "descriptionI18n": { "zh": "字典路径(多字典时用 :KEYWORD 区分)" },
         "placeholder": "/usr/share/wordlists/dirb/common.txt"
       },
       {
         "label": "Method",
+        "labelI18n": { "zh": "HTTP 方法" },
         "flag": "-X",
         "type": "select",
         "description": "HTTP method",
+        "descriptionI18n": { "zh": "HTTP 请求方法" },
         "default": "GET",
         "options": [
-          { "value": "GET", "label": "GET" },
-          { "value": "POST", "label": "POST" },
-          { "value": "PUT", "label": "PUT" },
-          { "value": "DELETE", "label": "DELETE" },
-          { "value": "HEAD", "label": "HEAD" }
+          { "value": "GET", "label": "GET", "labelI18n": { "zh": "GET" } },
+          { "value": "POST", "label": "POST", "labelI18n": { "zh": "POST" } },
+          { "value": "PUT", "label": "PUT", "labelI18n": { "zh": "PUT" } },
+          { "value": "DELETE", "label": "DELETE", "labelI18n": { "zh": "DELETE" } },
+          { "value": "HEAD", "label": "HEAD", "labelI18n": { "zh": "HEAD" } }
         ]
       },
       {
         "label": "POST Data",
+        "labelI18n": { "zh": "POST 请求体" },
         "flag": "-d",
         "type": "string",
         "description": "POST request body (use FUZZ keyword)",
+        "descriptionI18n": { "zh": "POST 请求体(可用 FUZZ 关键字)" },
         "placeholder": "username=FUZZ&password=test"
       },
       {
         "label": "Headers",
+        "labelI18n": { "zh": "自定义头" },
         "flag": "-H",
         "type": "string",
         "description": "Custom header (repeat for multiple, e.g. -H 'Cookie: x=1')",
+        "descriptionI18n": { "zh": "自定义请求头(可多次，如 -H 'Cookie: x=1')" },
         "placeholder": "Cookie: session=abcd"
       },
       {
         "label": "Match HTTP Codes",
+        "labelI18n": { "zh": "匹配状态码" },
         "flag": "-mc",
         "type": "string",
         "description": "Comma-separated status codes to match",
+        "descriptionI18n": { "zh": "要保留的状态码(逗号分隔)" },
         "default": "200,204,301,302,307,401,403,405,500",
         "placeholder": "200,301"
       },
       {
         "label": "Filter HTTP Codes",
+        "labelI18n": { "zh": "过滤状态码" },
         "flag": "-fc",
         "type": "string",
         "description": "Status codes to filter out",
+        "descriptionI18n": { "zh": "要过滤掉的状态码" },
         "placeholder": "404"
       },
       {
         "label": "Filter Size",
+        "labelI18n": { "zh": "过滤响应大小" },
         "flag": "-fs",
         "type": "string",
         "description": "Filter responses by size (e.g. 0 to skip empty)",
+        "descriptionI18n": { "zh": "按响应大小过滤(如 0 表示跳过空响应)" },
         "placeholder": "0"
       },
       {
         "label": "Filter Words",
+        "labelI18n": { "zh": "过滤词数" },
         "flag": "-fw",
         "type": "string",
         "description": "Filter responses by word count",
+        "descriptionI18n": { "zh": "按响应词数过滤" },
         "placeholder": "0"
       },
       {
         "label": "Filter Lines",
+        "labelI18n": { "zh": "过滤行数" },
         "flag": "-fl",
         "type": "string",
         "description": "Filter responses by line count",
+        "descriptionI18n": { "zh": "按响应行数过滤" },
         "placeholder": "0"
       },
       {
         "label": "Threads",
+        "labelI18n": { "zh": "线程数" },
         "flag": "-t",
         "type": "string",
         "description": "Number of concurrent threads (default 40)",
+        "descriptionI18n": { "zh": "并发线程数(默认 40)" },
         "default": "40",
         "placeholder": "40"
       },
       {
         "label": "Rate Limit",
+        "labelI18n": { "zh": "限速(req/s)" },
         "flag": "-rate",
         "type": "string",
         "description": "Requests per second (0 = unlimited)",
+        "descriptionI18n": { "zh": "每秒请求数(0 = 不限制)" },
         "placeholder": "100"
       },
       {
         "label": "Timeout",
+        "labelI18n": { "zh": "超时(秒)" },
         "flag": "-timeout",
         "type": "string",
         "description": "HTTP request timeout in seconds",
+        "descriptionI18n": { "zh": "HTTP 请求超时(秒)" },
         "default": "10",
         "placeholder": "10"
       },
       {
         "label": "Recursion",
+        "labelI18n": { "zh": "递归扫描" },
         "flag": "-recursion",
         "type": "boolean",
-        "description": "Recursively scan discovered directories"
+        "description": "Recursively scan discovered directories",
+        "descriptionI18n": { "zh": "对发现的目录进行递归扫描" }
       },
       {
         "label": "Recursion Depth",
+        "labelI18n": { "zh": "递归深度" },
         "flag": "-recursion-depth",
         "type": "string",
         "description": "Max recursion depth",
+        "descriptionI18n": { "zh": "最大递归深度" },
         "placeholder": "2"
       },
       {
         "label": "Extensions",
+        "labelI18n": { "zh": "扩展名" },
         "flag": "-e",
         "type": "string",
         "description": "Comma-separated extensions to append (e.g. .php,.bak,.txt)",
+        "descriptionI18n": { "zh": "要追加的扩展名(逗号分隔，如 .php,.bak,.txt)" },
         "placeholder": ".php,.bak,.txt"
       },
       {
         "label": "Output File",
+        "labelI18n": { "zh": "输出文件" },
         "flag": "-o",
         "type": "string",
         "description": "Save results to file",
+        "descriptionI18n": { "zh": "把结果保存到文件" },
         "placeholder": "ffuf_result.json"
       },
       {
         "label": "Output Format",
+        "labelI18n": { "zh": "输出格式" },
         "flag": "-of",
         "type": "select",
         "description": "Output format",
+        "descriptionI18n": { "zh": "输出格式" },
         "options": [
-          { "value": "json", "label": "JSON" },
-          { "value": "csv", "label": "CSV" },
-          { "value": "ejson", "label": "Extended JSON" },
-          { "value": "html", "label": "HTML" },
-          { "value": "md", "label": "Markdown" },
-          { "value": "all", "label": "All formats" }
+          { "value": "json", "label": "JSON", "labelI18n": { "zh": "JSON" } },
+          { "value": "csv", "label": "CSV", "labelI18n": { "zh": "CSV" } },
+          { "value": "ejson", "label": "Extended JSON", "labelI18n": { "zh": "扩展 JSON" } },
+          { "value": "html", "label": "HTML", "labelI18n": { "zh": "HTML" } },
+          { "value": "md", "label": "Markdown", "labelI18n": { "zh": "Markdown" } },
+          { "value": "all", "label": "All formats", "labelI18n": { "zh": "全部格式" } }
         ]
       },
       {
         "label": "Silent",
+        "labelI18n": { "zh": "静默" },
         "flag": "-s",
         "type": "boolean",
-        "description": "Silent mode (no banner / progress, only results)"
+        "description": "Silent mode (no banner / progress, only results)",
+        "descriptionI18n": { "zh": "静默模式(不打印 Banner / 进度，仅显示结果)" }
       }
     ],
     "skills": [
       {
         "id": "dir-brute",
         "name": "Directory Brute Force",
+        "nameI18n": { "zh": "目录爆破" },
         "description": "Common directory enumeration",
+        "descriptionI18n": { "zh": "常用目录枚举" },
         "args": "-u {{target}}/FUZZ -w /usr/share/wordlists/dirb/common.txt -mc 200,301,302,403",
-        "tags": ["dir-brute"]
+        "tags": ["dir-brute"],
+        "tagsI18n": { "zh": ["目录爆破"] }
       },
       {
         "id": "ext-fuzz",
         "name": "File Extension Fuzzing",
+        "nameI18n": { "zh": "文件扩展名 Fuzz" },
         "description": "Brute paths with multiple extensions",
+        "descriptionI18n": { "zh": "针对多种扩展名爆破路径" },
         "args": "-u {{target}}/FUZZ -w /usr/share/wordlists/dirb/common.txt -e .php,.bak,.txt,.html",
-        "tags": ["files"]
+        "tags": ["files"],
+        "tagsI18n": { "zh": ["文件"] }
       },
       {
         "id": "vhost",
         "name": "Virtual Host Discovery",
+        "nameI18n": { "zh": "虚拟主机发现" },
         "description": "Discover vhosts via Host header fuzzing",
+        "descriptionI18n": { "zh": "通过 Host 头模糊测试发现虚拟主机" },
         "args": "-u https://{{target}} -H 'Host: FUZZ.{{target}}' -w /usr/share/wordlists/dns/subdomains.txt -fs 0",
-        "tags": ["vhost"]
+        "tags": ["vhost"],
+        "tagsI18n": { "zh": ["vhost"] }
       },
       {
         "id": "param-discover",
         "name": "GET Parameter Discovery",
+        "nameI18n": { "zh": "GET 参数发现" },
         "description": "Discover hidden GET parameters",
+        "descriptionI18n": { "zh": "发现隐藏的 GET 参数" },
         "args": "-u {{target}}?FUZZ=test -w /usr/share/wordlists/params.txt -fs 0",
-        "tags": ["params"]
+        "tags": ["params"],
+        "tagsI18n": { "zh": ["参数"] }
       },
       {
         "id": "post-login",
         "name": "POST Login Brute",
+        "nameI18n": { "zh": "POST 登录爆破" },
         "description": "Brute force username on POST login form",
+        "descriptionI18n": { "zh": "对 POST 登录表单的用户名进行爆破" },
         "args": "-u {{target}}/login -X POST -d 'username=FUZZ&password=test' -w /usr/share/wordlists/users.txt -fc 401",
-        "tags": ["login"]
+        "tags": ["login"],
+        "tagsI18n": { "zh": ["登录"] }
       }
     ],
     "output": {
