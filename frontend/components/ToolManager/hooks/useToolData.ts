@@ -7,6 +7,7 @@ import {
   scanTools,
 } from "@/lib/pentest/api";
 import { effectiveInstallMethod } from "@/lib/pentest/installPlatform";
+import { localized, localizedList } from "@/lib/pentest/localized";
 import type { ToolCategory, ToolConfig } from "@/lib/pentest/types";
 import type { SortKey, ToolWithMeta } from "../OutputParserEditor";
 
@@ -18,7 +19,7 @@ const VIA_NO_CHMOD: Array<NonNullable<ToolConfig["installedVia"]>> = [
 ];
 
 export function useToolData() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [tools, setTools] = useState<ToolWithMeta[]>([]);
   const [categories, setCategories] = useState<ToolCategory[]>([]);
   const [loading, setLoading] = useState(true);
@@ -133,9 +134,18 @@ export function useToolData() {
       if (selectedTier && (tool.tier || "optional") !== selectedTier) return false;
       if (!search.trim()) return true;
       const q = search.trim().toLowerCase();
+      // Search both the canonical English description/tags and the active
+      // locale's translation so users searching in Chinese or English get
+      // hits regardless of which language the tool config was edited in.
+      const desc = localized(tool.description, tool.descriptionI18n, i18n.language).toLowerCase();
+      const tags = localizedList(tool.tags || [], tool.tagsI18n, i18n.language)
+        .join(" ")
+        .toLowerCase();
       return (
         tool.name.toLowerCase().includes(q) ||
         tool.description.toLowerCase().includes(q) ||
+        desc.includes(q) ||
+        tags.includes(q) ||
         tool.id.toLowerCase().includes(q)
       );
     })

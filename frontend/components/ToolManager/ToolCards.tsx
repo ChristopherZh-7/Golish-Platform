@@ -1,6 +1,7 @@
 import { Check, Download, Loader2, Trash2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { effectiveInstallMethod } from "@/lib/pentest/installPlatform";
+import { localized } from "@/lib/pentest/localized";
 import { cn } from "@/lib/utils";
 import type { ToolWithMeta } from "./OutputParserEditor";
 
@@ -230,7 +231,8 @@ interface ToolCardProps {
 }
 
 export function GridCard({ tool, onOpen, onContextMenu, actionCtx }: ToolCardProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const description = localized(tool.description, tool.descriptionI18n, i18n.language);
   return (
     <div
       onClick={() => onOpen(tool)}
@@ -274,7 +276,7 @@ export function GridCard({ tool, onOpen, onContextMenu, actionCtx }: ToolCardPro
               tool.installed ? "text-muted-foreground/60" : "text-muted-foreground/50"
             )}
           >
-            {tool.description}
+            {description}
           </p>
         </div>
         <ActionButton tool={tool} {...actionCtx} />
@@ -287,7 +289,8 @@ export function GridCard({ tool, onOpen, onContextMenu, actionCtx }: ToolCardPro
 }
 
 export function ListRow({ tool, onOpen, onContextMenu, actionCtx }: ToolCardProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const description = localized(tool.description, tool.descriptionI18n, i18n.language);
   return (
     <div
       onClick={() => onOpen(tool)}
@@ -324,7 +327,7 @@ export function ListRow({ tool, onOpen, onContextMenu, actionCtx }: ToolCardProp
         )}
       </div>
       <p className="flex-1 min-w-0 text-[11px] text-muted-foreground/60 truncate px-4">
-        {tool.description}
+        {description}
       </p>
       <div className="flex-shrink-0 mr-3">
         <TagBadges tool={tool} compact />

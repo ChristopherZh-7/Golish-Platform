@@ -1,6 +1,7 @@
 import { Download, Play, Terminal } from "lucide-react";
 import { memo, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { localized } from "@/lib/pentest/localized";
 import type { ToolConfig } from "@/lib/pentest/types";
 import { cn } from "@/lib/utils";
 
@@ -22,11 +23,12 @@ const ToolSearchItem = memo(function ToolSearchItem({
   isSelected: boolean;
   onSelect: (tool: ToolConfig) => void;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const notInstalled = !tool.installed;
   const noEnv = tool.installed && !tool.envReady;
   const disabled = notInstalled || noEnv;
   const reason = notInstalled ? t("toolSearch.notInstalled") : noEnv ? t("toolSearch.noEnv") : null;
+  const description = localized(tool.description, tool.descriptionI18n, i18n.language);
 
   return (
     <div
@@ -64,8 +66,8 @@ const ToolSearchItem = memo(function ToolSearchItem({
             </span>
           )}
         </div>
-        {tool.description && (
-          <p className="text-xs text-muted-foreground truncate mt-0.5">{tool.description}</p>
+        {description && (
+          <p className="text-xs text-muted-foreground truncate mt-0.5">{description}</p>
         )}
       </div>
       <div className="flex-shrink-0">
