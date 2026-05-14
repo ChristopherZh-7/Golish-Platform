@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { ensureJavaInstalled, isJavaMissingError } from "@/lib/pentest/javaInstaller";
 import type { ZapStatusInfo } from "@/lib/pentest/types";
 import { zapDetectPath, zapStart, zapStatus, zapStop } from "@/lib/pentest/zap-api";
 import { cn } from "@/lib/utils";
@@ -180,12 +181,43 @@ export function SecurityView({
       setZapState(result);
       setGlobalZapRunning(result.status === "running");
     } catch (e) {
+      const missingMajor = isJavaMissingError(e);
+      if (missingMajor) {
+        const consent = window.confirm(
+          t("security.javaMissingPrompt", { ver: missingMajor })
+        );
+        if (consent) {
+          try {
+            setError(t("security.javaInstalling", { ver: missingMajor, id: "..." }));
+            await ensureJavaInstalled(missingMajor, {
+              onProgress: (id) =>
+                setError(t("security.javaInstalling", { ver: missingMajor, id })),
+            });
+            setError(null);
+            const result = await zapStart(undefined, undefined, currentProjectPath);
+            setZapState(result);
+            setGlobalZapRunning(result.status === "running");
+            return;
+          } catch (installErr) {
+            const errMsg = String(installErr);
+            const message = errMsg.startsWith("NO_JAVA_CANDIDATE:")
+              ? t("security.javaNoCandidate", { ver: missingMajor })
+              : t("security.javaInstallFailed", {
+                  ver: missingMajor,
+                  error: errMsg,
+                });
+            setError(message);
+            setZapState((s) => ({ ...s, status: "error", error: message }));
+            return;
+          }
+        }
+      }
       setError(String(e));
       setZapState((s) => ({ ...s, status: "error", error: String(e) }));
     } finally {
       setLoading(false);
     }
-  }, [currentProjectPath, setGlobalZapRunning]);
+  }, [currentProjectPath, setGlobalZapRunning, t]);
 
   const handleStop = useCallback(async () => {
     setLoading(true);

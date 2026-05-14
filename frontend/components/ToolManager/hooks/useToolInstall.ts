@@ -15,12 +15,9 @@ import {
   getConfig,
   gitCloneTool,
   installDepFile,
-  installJavaVersion,
   installRequirements,
   installRuntime,
-  listAvailableJava,
   listDepFiles,
-  listInstalledJava,
   listPythonEnvs,
   listToolDirFiles,
   pipInstall,
@@ -32,6 +29,7 @@ import {
   uninstallToolFiles,
   updateToolExecutable,
 } from "@/lib/pentest/api";
+import { ensureJavaInstalled } from "@/lib/pentest/javaInstaller";
 import {
   effectiveInstallMethod,
   effectiveInstallSource,
@@ -45,30 +43,6 @@ const AUTO_INSTALL_METHODS = new Set(["github", "homebrew", "homebrew-cask", "ge
 
 export function isAutoInstallMethod(method?: string | null) {
   return !!method && AUTO_INSTALL_METHODS.has(method);
-}
-
-/**
- * Extract the Java major version from any of the version strings the
- * backend may surface, so the auto-install flow can match a tool's
- * `runtimeVersion` regardless of which catalog produced it.
- *
- * Cross-platform formats observed:
- *   - SDKMAN (macOS/Linux):     `8.0.402-tem`, `17.0.4-tem`, `21.0.1-tem`
- *   - winget Temurin (Windows): `EclipseAdoptium.Temurin.8.JDK`
- *   - winget Corretto (Windows):`Amazon.Corretto.8.JDK`
- *   - winget Microsoft (Win):   `Microsoft.OpenJDK.11`  (no `.JDK` suffix)
- *   - bare major (UI input):    `8`
- *
- * Returns the bare major (`"8"`) or `""` if the format isn't recognised.
- */
-function parseJavaMajor(version: string): string {
-  if (!version) return "";
-  if (/^\d+$/.test(version)) return version;
-  const winget = version.match(/\.(\d+)(?:\.JDK)?$/);
-  if (winget) return winget[1];
-  const sdkman = version.match(/^(\d+)\./);
-  if (sdkman) return sdkman[1];
-  return "";
 }
 
 export { detectInstallPlatform, resolveInstallForPlatform } from "@/lib/pentest/installPlatform";
@@ -207,76 +181,39 @@ export function useToolInstall(
         }
       }
 
-      // Java setup
+      // Java setup — delegates to the shared `ensureJavaInstalled` helper
+      // (also used by the ZAP launch path) so distribution-priority and
+      // candidate matching stay consistent across all entry points.
       if (tool.runtime === "java") {
         const requiredMajor = tool.runtimeVersion || "17";
-        let javaReady = false;
+        setError(null);
+        setBusy(tool.id);
+        setInstallProgress((p) => ({
+          ...p,
+          [tool.id]: t("install.missingJava", { ver: requiredMajor }),
+        }));
         try {
-          const r = await listInstalledJava();
-          if (r.success && r.versions.length > 0)
-            javaReady = r.versions.some((v) => parseJavaMajor(v.version) === requiredMajor);
-        } catch {}
-        if (!javaReady) {
-          setError(null);
-          setBusy(tool.id);
-          setInstallProgress((p) => ({
-            ...p,
-            [tool.id]: t("install.missingJava", { ver: requiredMajor }),
-          }));
-          try {
-            let identifier = "";
-            const available = await listAvailableJava();
-            if (available.success) {
-              const majorMatches = available.versions.filter(
-                (v) => parseJavaMajor(v.version) === requiredMajor
-              );
-              const match =
-                majorMatches.find((v) => v.version.includes("-fx")) ||
-                majorMatches.find((v) => v.version.endsWith("-tem")) ||
-                majorMatches.find((v) => v.version.startsWith("EclipseAdoptium.Temurin.")) ||
-                majorMatches.find((v) => v.version.startsWith("Amazon.Corretto.")) ||
-                majorMatches.find((v) => v.version.startsWith("Microsoft.OpenJDK.")) ||
-                majorMatches[0];
-              if (match) identifier = match.version;
-            }
-            if (!identifier) {
-              const error = t("install.javaNotFound", { ver: requiredMajor });
-              if (reportError) setError(error);
-              setBusy(null);
-              setInstallProgress((p) => {
-                const n = { ...p };
-                delete n[tool.id];
-                return n;
-              });
-              return { success: false, error };
-            }
-            setInstallProgress((p) => ({
-              ...p,
-              [tool.id]: t("install.installingJava", { id: identifier }),
-            }));
-            const r = await installJavaVersion(identifier, proxyUrl);
-            if (!r.success) {
-              const error = t("install.javaFailed", { ver: requiredMajor, error: r.message });
-              if (reportError) setError(error);
-              setBusy(null);
-              setInstallProgress((p) => {
-                const n = { ...p };
-                delete n[tool.id];
-                return n;
-              });
-              return { success: false, error };
-            }
-          } catch (e) {
-            const error = t("install.javaFailed", { ver: requiredMajor, error: e });
-            if (reportError) setError(error);
-            setBusy(null);
-            setInstallProgress((p) => {
-              const n = { ...p };
-              delete n[tool.id];
-              return n;
-            });
-            return { success: false, error };
-          }
+          await ensureJavaInstalled(requiredMajor, {
+            proxyUrl,
+            onProgress: (id) =>
+              setInstallProgress((p) => ({
+                ...p,
+                [tool.id]: t("install.installingJava", { id }),
+              })),
+          });
+        } catch (e) {
+          const raw = e instanceof Error ? e.message : String(e);
+          const error = raw.startsWith("NO_JAVA_CANDIDATE:")
+            ? t("install.javaNotFound", { ver: requiredMajor })
+            : t("install.javaFailed", { ver: requiredMajor, error: raw });
+          if (reportError) setError(error);
+          setBusy(null);
+          setInstallProgress((p) => {
+            const n = { ...p };
+            delete n[tool.id];
+            return n;
+          });
+          return { success: false, error };
         }
       }
 
