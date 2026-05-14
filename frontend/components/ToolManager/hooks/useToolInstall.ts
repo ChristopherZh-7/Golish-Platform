@@ -522,7 +522,7 @@ export function useToolInstall(
           const ver = (tool.runtimeVersion || "").replace(/\+$/, "");
           const envName = ver ? `python${ver}_env` : "base";
           setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.pipInstalling", { pkg }) }));
-          const r = await pipInstall(envName, pkg);
+          const r = await pipInstall(envName, pkg, proxyUrl);
           if (!r.success) throw new Error(r.message || `pip install ${pkg} failed`);
         }
 
@@ -535,7 +535,7 @@ export function useToolInstall(
                 ...p,
                 [tool.id]: t("toolManager.installingPythonDeps"),
               }));
-              await installRequirements(toolDir, tool.runtimeVersion || null);
+              await installRequirements(toolDir, tool.runtimeVersion || null, proxyUrl);
             }
           } catch {}
         }
@@ -633,8 +633,8 @@ export function useToolInstall(
       }));
       setError(null);
       try {
-        await getProxy();
-        await installDepFile(toolDir, fileName);
+        const proxyUrl = await getProxy();
+        await installDepFile(toolDir, fileName, proxyUrl);
         setInstallProgress((p) => ({ ...p, [tool.id]: t("toolManager.depInstallDone") }));
         await new Promise((r) => setTimeout(r, 1500));
       } catch (e) {
