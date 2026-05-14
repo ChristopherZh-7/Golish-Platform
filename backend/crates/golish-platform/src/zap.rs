@@ -27,10 +27,26 @@ pub fn zap_installation_candidates() -> Vec<PathBuf> {
             }
             candidates
         }
-        PlatformKind::Windows => vec![
-            PathBuf::from(r"C:\Program Files\ZAP\zap.bat"),
-            PathBuf::from(r"C:\Program Files\OWASP ZAP\zap.bat"),
-        ],
+        PlatformKind::Windows => {
+            // Well-known paths from the official NSIS installer.
+            // The default install dir is `C:\Program Files\ZAP\Zed Attack Proxy\`;
+            // older / custom installs may land in `C:\Program Files\ZAP\`,
+            // `C:\Program Files\OWASP ZAP\`, or the WOW64 (x86) variants.
+            let mut candidates = vec![
+                PathBuf::from(r"C:\Program Files\ZAP\Zed Attack Proxy\zap.bat"),
+                PathBuf::from(r"C:\Program Files\ZAP\zap.bat"),
+                PathBuf::from(r"C:\Program Files\OWASP ZAP\zap.bat"),
+                PathBuf::from(r"C:\Program Files (x86)\ZAP\Zed Attack Proxy\zap.bat"),
+                PathBuf::from(r"C:\Program Files (x86)\ZAP\zap.bat"),
+                PathBuf::from(r"C:\Program Files (x86)\OWASP ZAP\zap.bat"),
+            ];
+            // Also cover ZAP unpacked into our managed tools directory
+            // (Crossplatform.zip extracted by the in-app installer).
+            if let Some(base) = paths::app_data_base("golish-platform") {
+                candidates.push(base.join("tools").join("ZAP").join("zap.bat"));
+            }
+            candidates
+        }
         _ => {
             let mut candidates = vec![
                 PathBuf::from("/usr/share/zaproxy/zap.sh"),
@@ -131,5 +147,24 @@ mod tests {
         assert!(candidates
             .iter()
             .any(|path| path.to_string_lossy().ends_with(launcher)));
+    }
+
+    #[test]
+    fn zap_installation_candidates_include_managed_tools_dir() {
+        // On every platform the in-app installer extracts ZAP into
+        // `<app_data_base>/tools/ZAP/`, so the detector must include
+        // that path (using the platform-appropriate launcher).
+        let candidates = zap_installation_candidates();
+        let launcher = zap_launcher_name();
+        let has_managed = candidates.iter().any(|path| {
+            let s = path.to_string_lossy();
+            // Use forward-slash check that also matches Windows back-slashes.
+            s.replace('\\', "/").contains("/tools/ZAP/") && s.ends_with(launcher)
+        });
+        assert!(
+            has_managed,
+            "candidates should include managed tools dir: {:?}",
+            candidates
+        );
     }
 }

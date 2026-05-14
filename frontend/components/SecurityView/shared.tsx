@@ -106,24 +106,90 @@ export function StatusBadge({ status }: { status: ZapStatusInfo }) {
 export function ZapNotInstalled({ onRetry }: { onRetry: () => void }) {
   const { t } = useTranslation();
   const [installing, setInstalling] = useState(false);
+  const [installProgress, setInstallProgress] = useState<string | null>(null);
   const [installError, setInstallError] = useState<string | null>(null);
+  const [platform, setPlatform] = useState<"windows" | "macos" | "linux">("linux");
 
-  const handleBrewInstall = useCallback(async () => {
+  useEffect(() => {
+    import("@/lib/pentest/installPlatform").then(({ detectInstallPlatform }) => {
+      setPlatform(detectInstallPlatform());
+    });
+  }, []);
+
+  const handleInstall = useCallback(async () => {
     setInstalling(true);
     setInstallError(null);
+    setInstallProgress(null);
     try {
-      const { securityApi } = await import("@/lib/security");
       const { getSettings } = await import("@/lib/settings");
       const settings = await getSettings().catch(() => null);
       const proxyUrl = settings?.network?.proxy_url || null;
-      await securityApi.installRuntime("brew-cask:zap", proxyUrl ?? undefined);
+
+      if (platform === "macos") {
+        const { securityApi } = await import("@/lib/security");
+        setInstallProgress(t("security.zapInstallProgressBrew"));
+        await securityApi.installRuntime("brew-cask:zap", proxyUrl ?? undefined);
+        onRetry();
+        return;
+      }
+
+      // Windows / Linux: install ZAP from the official GitHub release.
+      // We deliberately pick `Crossplatform.zip` (contains both `zap.bat` and
+      // `zap.sh`) rather than the NSIS `*.exe` installer because we need a
+      // silent, unpack-only flow — the .exe is interactive.
+      const { fetchGitHubRelease, downloadAndExtract, renameToolDir } = await import(
+        "@/lib/pentest/api"
+      );
+      setInstallProgress(t("security.zapInstallProgressFetchRelease"));
+      const release = await fetchGitHubRelease("zaproxy", "zaproxy");
+      const asset = release.assets.find(
+        (a) =>
+          /crossplatform/i.test(a.name) &&
+          a.name.toLowerCase().endsWith(".zip") &&
+          !/\.(sha256|sha512|asc|sig)$/i.test(a.name)
+      );
+      if (!asset) {
+        throw new Error(t("security.zapInstallNoCrossplatformAsset"));
+      }
+      setInstallProgress(t("security.zapInstallProgressDownload"));
+      const result = await downloadAndExtract({
+        url: asset.browser_download_url,
+        fileName: asset.name,
+        useProxy: !!proxyUrl,
+      });
+      if (!result.success) {
+        throw new Error(result.error || t("install.downloadFailed"));
+      }
+      // Normalize directory name to `ZAP` so the backend's path detector
+      // (`zap_installation_candidates`) finds `<tools_dir>/ZAP/zap.{bat,sh}`.
+      if (result.extract_path) {
+        const actualDir = result.extract_path.split(/[/\\]/).pop() || "";
+        if (actualDir && actualDir !== "ZAP") {
+          try {
+            await renameToolDir(result.extract_path, "ZAP");
+          } catch {
+            // Best-effort: directory may already match, or rename may fail on
+            // permissions — detection has multiple candidate paths anyway.
+          }
+        }
+      }
       onRetry();
     } catch (e) {
       setInstallError(String(e));
     } finally {
       setInstalling(false);
+      setInstallProgress(null);
     }
-  }, [onRetry]);
+  }, [platform, onRetry, t]);
+
+  const installLabel =
+    platform === "macos" ? t("security.installViaBrew") : t("security.installViaGithub");
+  const manualHint =
+    platform === "macos"
+      ? t("security.manualInstallHint")
+      : t("security.manualInstallHintDownload");
+  const manualCommand =
+    platform === "macos" ? "brew install --cask zap" : "https://www.zaproxy.org/download/";
 
   return (
     <div className="h-full flex flex-col items-center justify-center gap-5">
@@ -137,14 +203,21 @@ export function ZapNotInstalled({ onRetry }: { onRetry: () => void }) {
         </p>
       </div>
 
+      {installProgress && (
+        <p className="text-[11px] text-muted-foreground/60 max-w-sm text-center">
+          {installProgress}
+        </p>
+      )}
       {installError && (
-        <p className="text-[11px] text-destructive max-w-sm text-center">{installError}</p>
+        <p className="text-[11px] text-destructive max-w-sm text-center break-all">
+          {installError}
+        </p>
       )}
 
       <div className="flex items-center gap-3">
         <button
           type="button"
-          onClick={handleBrewInstall}
+          onClick={handleInstall}
           disabled={installing}
           className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-[13px] font-semibold bg-accent text-accent-foreground hover:bg-accent/90 transition-colors disabled:opacity-50 shadow-sm"
         >
@@ -153,7 +226,7 @@ export function ZapNotInstalled({ onRetry }: { onRetry: () => void }) {
           ) : (
             <Download className="w-4 h-4" />
           )}
-          {t("security.installViaBrew")}
+          {installLabel}
         </button>
         <button
           type="button"
@@ -166,9 +239,9 @@ export function ZapNotInstalled({ onRetry }: { onRetry: () => void }) {
       </div>
 
       <div className="max-w-md mt-2 text-center">
-        <p className="text-[11px] text-muted-foreground/40">{t("security.manualInstallHint")}</p>
-        <code className="text-[12px] text-foreground/60 bg-muted/30 px-3 py-1 rounded mt-1.5 inline-block font-mono">
-          brew install --cask zap
+        <p className="text-[11px] text-muted-foreground/40">{manualHint}</p>
+        <code className="text-[12px] text-foreground/60 bg-muted/30 px-3 py-1 rounded mt-1.5 inline-block font-mono break-all">
+          {manualCommand}
         </code>
       </div>
     </div>
