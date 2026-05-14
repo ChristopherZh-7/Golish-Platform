@@ -29,12 +29,16 @@ import {
   uninstallToolFiles,
   updateToolExecutable,
 } from "@/lib/pentest/api";
-import { ensureJavaInstalled } from "@/lib/pentest/javaInstaller";
 import {
   effectiveInstallMethod,
   effectiveInstallSource,
   resolveInstallForPlatform,
 } from "@/lib/pentest/installPlatform";
+import {
+  ensureJavaInstalled,
+  mapJavaInstallError,
+  mapJavaProgressStage,
+} from "@/lib/pentest/javaInstaller";
 import { getSettings } from "@/lib/settings";
 import type { ExecPickerState, ToolUpdateInfo } from "../Dialogs";
 import type { ToolWithMeta } from "../OutputParserEditor";
@@ -195,17 +199,15 @@ export function useToolInstall(
         try {
           await ensureJavaInstalled(requiredMajor, {
             proxyUrl,
-            onProgress: (id) =>
+            onProgress: (stage) =>
               setInstallProgress((p) => ({
                 ...p,
-                [tool.id]: t("install.installingJava", { id }),
+                [tool.id]: mapJavaProgressStage(stage, t),
               })),
           });
         } catch (e) {
           const raw = e instanceof Error ? e.message : String(e);
-          const error = raw.startsWith("NO_JAVA_CANDIDATE:")
-            ? t("install.javaNotFound", { ver: requiredMajor })
-            : t("install.javaFailed", { ver: requiredMajor, error: raw });
+          const error = mapJavaInstallError(raw, requiredMajor, t);
           if (reportError) setError(error);
           setBusy(null);
           setInstallProgress((p) => {

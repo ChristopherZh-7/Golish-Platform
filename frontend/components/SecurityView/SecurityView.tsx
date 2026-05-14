@@ -186,23 +186,24 @@ export function SecurityView({
       if (missingMajor) {
         const versionManagerLabel = isWindows() ? "winget" : "SDKMAN";
         try {
-          setError(
-            t("security.javaBootstrapping", { ver: missingMajor })
-          );
+          setError(t("security.javaBootstrapping", { ver: missingMajor }));
           await ensureJavaInstalled(missingMajor, {
             onProgress: (stage) => {
               if (stage === "bootstrap-runtime") {
-                setError(
-                  t("security.javaManagerBootstrap", { manager: versionManagerLabel })
-                );
+                setError(t("security.javaManagerBootstrap", { manager: versionManagerLabel }));
               } else if (stage === "runtime-bootstrapped") {
-                setError(
-                  t("security.javaManagerDone", { manager: versionManagerLabel })
-                );
+                setError(t("security.javaManagerDone", { manager: versionManagerLabel }));
+              } else if (stage === "direct-install-microsoft-msi") {
+                // Direct-MSI bypass: winget GitHub path unreachable.
+                // Show the localized "downloading Microsoft JDK via PowerShell"
+                // message that also calls out the upcoming UAC prompt.
+                setError(t("install.javaDirectInstall"));
+              } else if (stage.startsWith("fallback-after-network-failure-")) {
+                const from = stage.replace("fallback-after-network-failure-", "");
+                const to = from === "temurin" ? "Microsoft" : "direct-MSI";
+                setError(t("install.javaFallbackVendor", { from, to }));
               } else {
-                setError(
-                  t("security.javaInstalling", { ver: missingMajor, id: stage })
-                );
+                setError(t("security.javaInstalling", { ver: missingMajor, id: stage }));
               }
             },
           });
@@ -213,16 +214,24 @@ export function SecurityView({
           setError(null);
           return;
         } catch (installErr) {
-          const errMsg =
-            installErr instanceof Error
-              ? installErr.message
-              : String(installErr);
-          const message = errMsg.startsWith("NO_JAVA_CANDIDATE:")
-            ? t("security.javaNoCandidate", { ver: missingMajor })
-            : t("security.javaInstallFailed", {
-                ver: missingMajor,
-                error: errMsg,
-              });
+          const errMsg = installErr instanceof Error ? installErr.message : String(installErr);
+          let message: string;
+          if (errMsg.startsWith("NO_JAVA_CANDIDATE:")) {
+            message = t("security.javaNoCandidate", { ver: missingMajor });
+          } else if (errMsg.includes("NETWORK_DOWNLOAD_FAILED:")) {
+            // winget + direct-MSI both bombed on transport errors. Use the
+            // network-specific hint that explains GitHub blocking + proxy
+            // suggestion instead of dumping the raw winget output.
+            message = t("install.javaNetworkBlocked", {
+              ver: missingMajor,
+              error: errMsg,
+            });
+          } else {
+            message = t("security.javaInstallFailed", {
+              ver: missingMajor,
+              error: errMsg,
+            });
+          }
           setError(message);
           setZapState((s) => ({ ...s, status: "error", error: message }));
           return;
@@ -275,8 +284,7 @@ export function SecurityView({
   // ZAP-dependent tabs are filtered out of `visibleTabs` when ZAP isn't
   // running. Suppressed during the initial detect to avoid an overlay flash
   // before the path check resolves.
-  const showInstallOverlay =
-    !checkingInstall && zapInstalled === false && effectiveTab !== "vault";
+  const showInstallOverlay = !checkingInstall && zapInstalled === false && effectiveTab !== "vault";
 
   const tabs: { id: SecurityTab; label: string; icon: React.ElementType }[] = [
     { id: "history", label: t("security.history"), icon: History },
@@ -490,11 +498,7 @@ export function SecurityView({
                 type="button"
                 onClick={handleStart}
                 disabled={loading || zapInstalled === false}
-                title={
-                  zapInstalled === false
-                    ? t("security.zapNotInstalled")
-                    : undefined
-                }
+                title={zapInstalled === false ? t("security.zapNotInstalled") : undefined}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-accent text-accent-foreground hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
               >
                 {loading ? (
