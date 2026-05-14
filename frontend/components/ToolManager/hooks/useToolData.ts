@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { sendCustomEvent } from "@/lib/events";
 import {
   checkToolExecutablePermission,
   checkToolsExecutablePermissions,
   getCategories,
   scanTools,
 } from "@/lib/pentest/api";
+import { PENTEST_TOOLS_UPDATED_EVENT } from "@/lib/pentest/events";
 import { effectiveInstallMethod } from "@/lib/pentest/installPlatform";
 import { localized, localizedList } from "@/lib/pentest/localized";
 import type { ToolCategory, ToolConfig } from "@/lib/pentest/types";
@@ -113,6 +115,16 @@ export function useToolData() {
           return { ...tool, executableReady: true, executableError: undefined };
         });
         setTools(withPermissionState);
+
+        // Broadcast for cross-component consumers (e.g. Terminal `/t` mode
+        // popup via `useToolSearch`). Only emit on `silent` reloads,
+        // i.e. reloads triggered by a mutation (install / uninstall /
+        // delete / editor save). The initial non-silent load on mount
+        // does NOT mean tools changed, so we skip it to avoid spurious
+        // `scanTools()` re-fetches in every other open consumer.
+        if (silent) {
+          sendCustomEvent(PENTEST_TOOLS_UPDATED_EVENT).catch(() => {});
+        }
       } catch (e) {
         setError(t("toolManager.loadFailed", { error: e }));
       } finally {
