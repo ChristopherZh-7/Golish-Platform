@@ -200,7 +200,35 @@ export function SecurityView({
     }
   }, [zapState.port, setGlobalZapRunning]);
 
+  // Re-run path detection after the user clicks "Recheck" / finishes an
+  // in-app install flow. Promoted from an inline closure in `renderContent`
+  // so the same handler can be reused by the top-level `ZapNotInstalled`
+  // override below (which fires for any non-vault tab when ZAP isn't found).
+  const handleRecheckInstall = useCallback(() => {
+    setCheckingInstall(true);
+    zapDetectPath()
+      .then((p) => {
+        setZapInstalled(p !== null);
+        setCheckingInstall(false);
+      })
+      .catch(() => {
+        setZapInstalled(false);
+        setCheckingInstall(false);
+      });
+  }, []);
+
   const isRunning = zapState.status === "running";
+
+  // Top-level overlay: when ZAP isn't installed, surface the install prompt
+  // on every tab except `vault` (credential vault doesn't depend on ZAP),
+  // including the normally ZAP-independent `scantools` / `sensitive` /
+  // `timeline` tabs. Without this, a fresh Windows install lands on
+  // `scantools` by default and never sees the install guidance because the
+  // ZAP-dependent tabs are filtered out of `visibleTabs` when ZAP isn't
+  // running. Suppressed during the initial detect to avoid an overlay flash
+  // before the path check resolves.
+  const showInstallOverlay =
+    !checkingInstall && zapInstalled === false && effectiveTab !== "vault";
 
   const tabs: { id: SecurityTab; label: string; icon: React.ElementType }[] = [
     { id: "history", label: t("security.history"), icon: History },
@@ -322,23 +350,14 @@ export function SecurityView({
         </div>
       );
     }
+    // NOTE: `zapInstalled === false` is also handled at the top-level render
+    // (see the `showInstallOverlay` branch below) so that ZAP-independent tabs
+    // such as `scantools` / `sensitive` / `timeline` — which short-circuit
+    // out of this function above — still surface the install prompt. The
+    // branch here is kept as a defensive fallback for any future tab that
+    // forgets to opt into the overlay logic.
     if (zapInstalled === false) {
-      return (
-        <ZapNotInstalled
-          onRetry={() => {
-            setCheckingInstall(true);
-            zapDetectPath()
-              .then((p) => {
-                setZapInstalled(p !== null);
-                setCheckingInstall(false);
-              })
-              .catch(() => {
-                setZapInstalled(false);
-                setCheckingInstall(false);
-              });
-          }}
-        />
-      );
+      return <ZapNotInstalled onRetry={handleRecheckInstall} />;
     }
     if (!isRunning) {
       return <ZapNotRunning onStart={handleStart} loading={loading} error={error} />;
@@ -422,8 +441,13 @@ export function SecurityView({
               <button
                 type="button"
                 onClick={handleStart}
-                disabled={loading}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-accent text-accent-foreground hover:bg-accent/90 transition-colors disabled:opacity-50 shadow-sm"
+                disabled={loading || zapInstalled === false}
+                title={
+                  zapInstalled === false
+                    ? t("security.zapNotInstalled")
+                    : undefined
+                }
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-accent text-accent-foreground hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
               >
                 {loading ? (
                   <Loader2 className="w-3 h-3 animate-spin" />
@@ -460,67 +484,73 @@ export function SecurityView({
       )}
 
       <div className="flex-1 overflow-hidden relative">
-        {renderContent(effectiveTab)}
-        {visitedRepeater && (
-          <div
-            className={cn(
-              "absolute inset-0",
-              effectiveTab === "repeater" && isRunning ? "" : "invisible pointer-events-none"
+        {showInstallOverlay ? (
+          <ZapNotInstalled onRetry={handleRecheckInstall} />
+        ) : (
+          <>
+            {renderContent(effectiveTab)}
+            {visitedRepeater && (
+              <div
+                className={cn(
+                  "absolute inset-0",
+                  effectiveTab === "repeater" && isRunning ? "" : "invisible pointer-events-none"
+                )}
+              >
+                <Suspense fallback={null}>
+                  <RepeaterPanel
+                    injectedRequest={repeaterRequest}
+                    onInjectedConsumed={() => setRepeaterRequest(null)}
+                  />
+                </Suspense>
+              </div>
             )}
-          >
-            <Suspense fallback={null}>
-              <RepeaterPanel
-                injectedRequest={repeaterRequest}
-                onInjectedConsumed={() => setRepeaterRequest(null)}
-              />
-            </Suspense>
-          </div>
-        )}
-        {visitedIntruder && (
-          <div
-            className={cn(
-              "absolute inset-0",
-              effectiveTab === "intruder" && isRunning ? "" : "invisible pointer-events-none"
+            {visitedIntruder && (
+              <div
+                className={cn(
+                  "absolute inset-0",
+                  effectiveTab === "intruder" && isRunning ? "" : "invisible pointer-events-none"
+                )}
+              >
+                <Suspense fallback={null}>
+                  <IntruderPanel
+                    injectedRequest={intruderRequest}
+                    onInjectedConsumed={() => setIntruderRequest(null)}
+                  />
+                </Suspense>
+              </div>
             )}
-          >
-            <Suspense fallback={null}>
-              <IntruderPanel
-                injectedRequest={intruderRequest}
-                onInjectedConsumed={() => setIntruderRequest(null)}
-              />
-            </Suspense>
-          </div>
-        )}
-        {visitedScanTools && (
-          <div
-            className={cn(
-              "absolute inset-0",
-              effectiveTab === "scantools" ? "" : "invisible pointer-events-none"
+            {visitedScanTools && (
+              <div
+                className={cn(
+                  "absolute inset-0",
+                  effectiveTab === "scantools" ? "" : "invisible pointer-events-none"
+                )}
+              >
+                <Suspense fallback={null}>
+                  <ScanToolsPanel initialTarget={initialScanTarget} />
+                </Suspense>
+              </div>
             )}
-          >
-            <Suspense fallback={null}>
-              <ScanToolsPanel initialTarget={initialScanTarget} />
-            </Suspense>
-          </div>
-        )}
-        {visitedScanner && (
-          <div
-            className={cn(
-              "absolute inset-0",
-              effectiveTab === "scanner" && isRunning ? "" : "invisible pointer-events-none"
+            {visitedScanner && (
+              <div
+                className={cn(
+                  "absolute inset-0",
+                  effectiveTab === "scanner" && isRunning ? "" : "invisible pointer-events-none"
+                )}
+              >
+                <Suspense fallback={null}>
+                  <ScannerPanel
+                    initialUrl={pendingScanUrl}
+                    initialBatchUrls={pendingScanUrls}
+                    onUrlConsumed={() => {
+                      setPendingScanUrl(null);
+                      setPendingScanUrls([]);
+                    }}
+                  />
+                </Suspense>
+              </div>
             )}
-          >
-            <Suspense fallback={null}>
-              <ScannerPanel
-                initialUrl={pendingScanUrl}
-                initialBatchUrls={pendingScanUrls}
-                onUrlConsumed={() => {
-                  setPendingScanUrl(null);
-                  setPendingScanUrls([]);
-                }}
-              />
-            </Suspense>
-          </div>
+          </>
         )}
       </div>
     </div>
