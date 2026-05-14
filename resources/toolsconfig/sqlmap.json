@@ -3,6 +3,7 @@
     "id": "sqlmap",
     "name": "sqlmap",
     "description": "Automatic SQL injection and database takeover tool",
+    "descriptionI18n": { "zh": "自动化 SQL 注入与数据库接管工具" },
     "executable": "sqlmap/sqlmap.py",
     "runtime": "python",
     "runtimeVersion": "3.11",
@@ -11,6 +12,7 @@
     "subcategory": "injection",
     "tier": "essential",
     "tags": ["sql-injection", "database", "exploitation", "web"],
+    "tagsI18n": { "zh": ["SQL 注入", "数据库", "漏洞利用", "Web"] },
     "install": {
       "method": "github",
       "source": "sqlmapproject/sqlmap"
@@ -18,113 +20,141 @@
     "params": [
       {
         "label": "Target URL",
+        "labelI18n": { "zh": "目标 URL" },
         "flag": "-u",
         "type": "string",
         "required": true,
         "description": "Target URL with injectable parameter (e.g. http://target.com/page?id=1)",
+        "descriptionI18n": { "zh": "含可注入参数的目标 URL(如 http://target.com/page?id=1)" },
         "placeholder": "http://target.com/page?id=1"
       },
       {
         "label": "Request Data",
+        "labelI18n": { "zh": "POST 数据" },
         "flag": "--data",
         "type": "string",
         "description": "POST data string to test",
+        "descriptionI18n": { "zh": "要测试的 POST 数据" },
         "placeholder": "username=admin&password=pass"
       },
       {
         "label": "Cookie",
+        "labelI18n": { "zh": "Cookie" },
         "flag": "--cookie",
         "type": "string",
-        "description": "HTTP Cookie header value"
+        "description": "HTTP Cookie header value",
+        "descriptionI18n": { "zh": "HTTP Cookie 头取值" }
       },
       {
         "label": "Level",
+        "labelI18n": { "zh": "测试等级" },
         "flag": "--level",
         "type": "select",
         "description": "Test thoroughness (1-5, higher = more tests)",
+        "descriptionI18n": { "zh": "测试深度(1-5，越大测试越多)" },
         "default": "1",
         "options": [
-          { "value": "1", "label": "1 - Default" },
-          { "value": "2", "label": "2 - Cookie testing" },
-          { "value": "3", "label": "3 - User-Agent/Referer" },
-          { "value": "4", "label": "4 - Extended" },
-          { "value": "5", "label": "5 - All payloads" }
+          { "value": "1", "label": "1 - Default", "labelI18n": { "zh": "1 - 默认" } },
+          { "value": "2", "label": "2 - Cookie testing", "labelI18n": { "zh": "2 - 含 Cookie 测试" } },
+          { "value": "3", "label": "3 - User-Agent/Referer", "labelI18n": { "zh": "3 - 含 UA / Referer" } },
+          { "value": "4", "label": "4 - Extended", "labelI18n": { "zh": "4 - 扩展" } },
+          { "value": "5", "label": "5 - All payloads", "labelI18n": { "zh": "5 - 全部 payload" } }
         ]
       },
       {
         "label": "Risk",
+        "labelI18n": { "zh": "风险等级" },
         "flag": "--risk",
         "type": "select",
         "description": "Risk of tests (1-3, higher = more risky)",
+        "descriptionI18n": { "zh": "测试风险(1-3，越大越激进)" },
         "default": "1",
         "options": [
-          { "value": "1", "label": "1 - Default" },
-          { "value": "2", "label": "2 - Heavy time-based" },
-          { "value": "3", "label": "3 - OR-based (dangerous)" }
+          { "value": "1", "label": "1 - Default", "labelI18n": { "zh": "1 - 默认" } },
+          { "value": "2", "label": "2 - Heavy time-based", "labelI18n": { "zh": "2 - 重度时间盲注" } },
+          { "value": "3", "label": "3 - OR-based (dangerous)", "labelI18n": { "zh": "3 - OR 注入(危险)" } }
         ]
       },
       {
         "label": "Technique",
+        "labelI18n": { "zh": "注入技术" },
         "flag": "--technique",
         "type": "string",
         "description": "SQL injection techniques to use (B=Boolean, E=Error, U=Union, S=Stacked, T=Time, Q=Inline)",
+        "descriptionI18n": { "zh": "注入技术组合(B=布尔, E=报错, U=Union, S=堆叠, T=时间, Q=内联)" },
         "placeholder": "BEUSTQ"
       },
       {
         "label": "DBMS",
+        "labelI18n": { "zh": "强制 DBMS" },
         "flag": "--dbms",
         "type": "select",
         "description": "Force target DBMS type",
+        "descriptionI18n": { "zh": "强制指定目标 DBMS 类型" },
         "options": [
-          { "value": "mysql", "label": "MySQL" },
-          { "value": "postgresql", "label": "PostgreSQL" },
-          { "value": "mssql", "label": "Microsoft SQL Server" },
-          { "value": "oracle", "label": "Oracle" },
-          { "value": "sqlite", "label": "SQLite" }
+          { "value": "mysql", "label": "MySQL", "labelI18n": { "zh": "MySQL" } },
+          { "value": "postgresql", "label": "PostgreSQL", "labelI18n": { "zh": "PostgreSQL" } },
+          { "value": "mssql", "label": "Microsoft SQL Server", "labelI18n": { "zh": "Microsoft SQL Server" } },
+          { "value": "oracle", "label": "Oracle", "labelI18n": { "zh": "Oracle" } },
+          { "value": "sqlite", "label": "SQLite", "labelI18n": { "zh": "SQLite" } }
         ]
       },
       {
         "label": "Dump Data",
+        "labelI18n": { "zh": "Dump 数据" },
         "flag": "--dump",
         "type": "boolean",
-        "description": "Dump database table entries"
+        "description": "Dump database table entries",
+        "descriptionI18n": { "zh": "Dump 数据库表内容" }
       },
       {
         "label": "List Databases",
+        "labelI18n": { "zh": "列出库" },
         "flag": "--dbs",
         "type": "boolean",
-        "description": "Enumerate DBMS databases"
+        "description": "Enumerate DBMS databases",
+        "descriptionI18n": { "zh": "枚举 DBMS 上的所有数据库" }
       },
       {
         "label": "List Tables",
+        "labelI18n": { "zh": "列出表" },
         "flag": "--tables",
         "type": "boolean",
-        "description": "Enumerate DBMS database tables"
+        "description": "Enumerate DBMS database tables",
+        "descriptionI18n": { "zh": "枚举数据库中的表" }
       },
       {
         "label": "Batch Mode",
+        "labelI18n": { "zh": "批处理模式" },
         "flag": "--batch",
         "type": "boolean",
-        "description": "Never ask for user input, use default behavior"
+        "description": "Never ask for user input, use default behavior",
+        "descriptionI18n": { "zh": "不交互，使用默认选项" }
       },
       {
         "label": "Random Agent",
+        "labelI18n": { "zh": "随机 UA" },
         "flag": "--random-agent",
         "type": "boolean",
-        "description": "Use randomly selected HTTP User-Agent header"
+        "description": "Use randomly selected HTTP User-Agent header",
+        "descriptionI18n": { "zh": "随机使用 User-Agent" }
       },
       {
         "label": "Proxy",
+        "labelI18n": { "zh": "代理" },
         "flag": "--proxy",
         "type": "string",
         "description": "Use a proxy to connect (e.g. http://127.0.0.1:8080)",
+        "descriptionI18n": { "zh": "使用代理连接(如 http://127.0.0.1:8080)" },
         "placeholder": "http://127.0.0.1:8080"
       },
       {
         "label": "Threads",
+        "labelI18n": { "zh": "线程数" },
         "flag": "--threads",
         "type": "string",
         "description": "Max number of concurrent HTTP requests (default 1)",
+        "descriptionI18n": { "zh": "最大并发 HTTP 请求数(默认 1)" },
         "default": "1",
         "placeholder": "5"
       }
@@ -133,37 +163,52 @@
       {
         "id": "quick-test",
         "name": "Quick Injection Test",
+        "nameI18n": { "zh": "快速注入测试" },
         "description": "Basic SQL injection test with batch mode and random user-agent",
+        "descriptionI18n": { "zh": "基础 SQL 注入测试(批处理 + 随机 UA)" },
         "args": "-u {{target}} --batch --random-agent",
-        "tags": ["recon", "fast"]
+        "tags": ["recon", "fast"],
+        "tagsI18n": { "zh": ["侦察", "快速"] }
       },
       {
         "id": "deep-scan",
         "name": "Deep Injection Scan",
+        "nameI18n": { "zh": "深度注入扫描" },
         "description": "Thorough scan with level 5, risk 3, and all techniques",
+        "descriptionI18n": { "zh": "level 5 + risk 3 + 全部注入技术的彻底扫描" },
         "args": "-u {{target}} --batch --random-agent --level=5 --risk=3 --technique=BEUSTQ",
-        "tags": ["thorough", "slow"]
+        "tags": ["thorough", "slow"],
+        "tagsI18n": { "zh": ["全面", "耗时长"] }
       },
       {
         "id": "enum-dbs",
         "name": "Enumerate Databases",
+        "nameI18n": { "zh": "枚举数据库" },
         "description": "Discover and list all databases",
+        "descriptionI18n": { "zh": "发现并列出所有数据库" },
         "args": "-u {{target}} --batch --random-agent --dbs",
-        "tags": ["enumeration"]
+        "tags": ["enumeration"],
+        "tagsI18n": { "zh": ["枚举"] }
       },
       {
         "id": "dump-all",
         "name": "Dump All Data",
+        "nameI18n": { "zh": "Dump 全部数据" },
         "description": "Dump all tables from current database",
+        "descriptionI18n": { "zh": "Dump 当前数据库的所有表" },
         "args": "-u {{target}} --batch --random-agent --dump",
-        "tags": ["extraction"]
+        "tags": ["extraction"],
+        "tagsI18n": { "zh": ["数据导出"] }
       },
       {
         "id": "post-injection",
         "name": "POST Data Injection",
+        "nameI18n": { "zh": "POST 数据注入" },
         "description": "Test POST parameters for injection",
+        "descriptionI18n": { "zh": "测试 POST 参数的注入点" },
         "args": "-u {{target}} --data=\"{{post_data}}\" --batch --random-agent",
-        "tags": ["post", "forms"]
+        "tags": ["post", "forms"],
+        "tagsI18n": { "zh": ["POST", "表单"] }
       }
     ],
     "output": {

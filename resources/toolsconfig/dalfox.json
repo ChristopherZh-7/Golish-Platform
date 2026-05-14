@@ -3,6 +3,7 @@
     "id": "dalfox",
     "name": "dalfox",
     "description": "Powerful XSS scanner and parameter analysis tool with DOM/blind/stored detection",
+    "descriptionI18n": { "zh": "强大的 XSS 扫描器与参数分析工具，支持 DOM / Blind / Stored XSS 检测" },
     "executable": "dalfox",
     "runtime": "native",
     "launchMode": "cli",
@@ -10,6 +11,7 @@
     "subcategory": "scanner",
     "tier": "recommended",
     "tags": ["web", "xss", "scanner", "fuzzer"],
+    "tagsI18n": { "zh": ["Web", "XSS", "扫描器", "Fuzzer"] },
     "install": {
       "method": "homebrew",
       "source": "dalfox",
@@ -19,192 +21,248 @@
     "params": [
       {
         "label": "Mode",
+        "labelI18n": { "zh": "模式" },
         "flag": "",
         "type": "select",
         "required": true,
         "description": "Sub-command (placed first)",
+        "descriptionI18n": { "zh": "dalfox 子命令(放在最前)" },
         "options": [
-          { "value": "url", "label": "url - single URL" },
-          { "value": "file", "label": "file - URL list" },
-          { "value": "pipe", "label": "pipe - read from stdin" },
-          { "value": "sxss", "label": "sxss - stored XSS check" },
-          { "value": "server", "label": "server - daemon mode" }
+          { "value": "url", "label": "url - single URL", "labelI18n": { "zh": "url - 单个 URL" } },
+          { "value": "file", "label": "file - URL list", "labelI18n": { "zh": "file - URL 列表" } },
+          { "value": "pipe", "label": "pipe - read from stdin", "labelI18n": { "zh": "pipe - 从 stdin 读取" } },
+          { "value": "sxss", "label": "sxss - stored XSS check", "labelI18n": { "zh": "sxss - Stored XSS 检测" } },
+          { "value": "server", "label": "server - daemon mode", "labelI18n": { "zh": "server - 守护进程模式" } }
         ]
       },
       {
         "label": "Target",
+        "labelI18n": { "zh": "目标" },
         "flag": "",
         "type": "string",
         "required": true,
         "description": "Target URL or file path",
+        "descriptionI18n": { "zh": "目标 URL 或文件路径" },
         "placeholder": "https://target.com/?id=1"
       },
       {
         "label": "Method",
+        "labelI18n": { "zh": "HTTP 方法" },
         "flag": "-X",
         "type": "select",
         "description": "HTTP method",
+        "descriptionI18n": { "zh": "HTTP 请求方法" },
         "options": [
-          { "value": "GET", "label": "GET" },
-          { "value": "POST", "label": "POST" },
-          { "value": "PUT", "label": "PUT" }
+          { "value": "GET", "label": "GET", "labelI18n": { "zh": "GET" } },
+          { "value": "POST", "label": "POST", "labelI18n": { "zh": "POST" } },
+          { "value": "PUT", "label": "PUT", "labelI18n": { "zh": "PUT" } }
         ]
       },
       {
         "label": "Data",
+        "labelI18n": { "zh": "POST 数据" },
         "flag": "-d",
         "type": "string",
         "description": "POST data",
+        "descriptionI18n": { "zh": "POST 请求体" },
         "placeholder": "name=test&id=1"
       },
       {
         "label": "Cookie",
+        "labelI18n": { "zh": "Cookie" },
         "flag": "-C",
         "type": "string",
         "description": "Cookie header",
+        "descriptionI18n": { "zh": "Cookie 头" },
         "placeholder": "session=abcd"
       },
       {
         "label": "Headers",
+        "labelI18n": { "zh": "自定义头" },
         "flag": "-H",
         "type": "string",
         "description": "Custom header (repeatable)",
+        "descriptionI18n": { "zh": "自定义请求头(可多次)" },
         "placeholder": "X-Token: foo"
       },
       {
         "label": "Custom Payload",
+        "labelI18n": { "zh": "自定义 Payload" },
         "flag": "--custom-payload",
         "type": "string",
         "description": "File with custom XSS payloads",
+        "descriptionI18n": { "zh": "自定义 XSS payload 文件" },
         "placeholder": "payloads.txt"
       },
       {
         "label": "Blind XSS Server",
+        "labelI18n": { "zh": "Blind XSS 回连地址" },
         "flag": "-b",
         "type": "string",
         "description": "Callback URL for blind XSS",
+        "descriptionI18n": { "zh": "Blind XSS 的回连 URL" },
         "placeholder": "https://xss.report/c/yourid"
       },
       {
         "label": "Worker",
+        "labelI18n": { "zh": "并发数" },
         "flag": "-w",
         "type": "string",
         "description": "Concurrent workers (default 100)",
+        "descriptionI18n": { "zh": "并发 worker 数(默认 100)" },
         "default": "100"
       },
       {
         "label": "Delay",
+        "labelI18n": { "zh": "延迟(毫秒)" },
         "flag": "--delay",
         "type": "string",
         "description": "Delay between requests in ms",
+        "descriptionI18n": { "zh": "请求之间的延迟(毫秒)" },
         "placeholder": "100"
       },
       {
         "label": "Timeout",
+        "labelI18n": { "zh": "超时(秒)" },
         "flag": "--timeout",
         "type": "string",
         "description": "Request timeout (seconds)",
+        "descriptionI18n": { "zh": "请求超时(秒)" },
         "default": "10"
       },
       {
         "label": "User-Agent",
+        "labelI18n": { "zh": "User-Agent" },
         "flag": "--user-agent",
         "type": "string",
         "description": "Custom UA",
+        "descriptionI18n": { "zh": "自定义 User-Agent" },
         "placeholder": "Mozilla/5.0"
       },
       {
         "label": "Skip Headless",
+        "labelI18n": { "zh": "跳过 Headless 验证" },
         "flag": "--skip-headless",
         "type": "boolean",
-        "description": "Disable headless browser DOM verification (faster, less accurate)"
+        "description": "Disable headless browser DOM verification (faster, less accurate)",
+        "descriptionI18n": { "zh": "跳过 headless 浏览器 DOM 验证(更快但更易误报)" }
       },
       {
         "label": "Mining Dom",
+        "labelI18n": { "zh": "DOM 参数挖掘" },
         "flag": "--mining-dom",
         "type": "boolean",
-        "description": "Mining DOM-based parameters from page"
+        "description": "Mining DOM-based parameters from page",
+        "descriptionI18n": { "zh": "从页面中挖掘 DOM 参数" }
       },
       {
         "label": "Mining Dict",
+        "labelI18n": { "zh": "字典挖掘" },
         "flag": "--mining-dict",
         "type": "boolean",
-        "description": "Mining parameters from dictionary"
+        "description": "Mining parameters from dictionary",
+        "descriptionI18n": { "zh": "从字典中挖掘参数" }
       },
       {
         "label": "Found Action",
+        "labelI18n": { "zh": "命中执行" },
         "flag": "--found-action",
         "type": "string",
         "description": "Shell command on each finding (e.g. send to Slack)",
+        "descriptionI18n": { "zh": "每次命中执行的 Shell 命令(如推 Slack)" },
         "placeholder": "curl -X POST ..."
       },
       {
         "label": "Output File",
+        "labelI18n": { "zh": "输出文件" },
         "flag": "-o",
         "type": "string",
         "description": "Output file path",
+        "descriptionI18n": { "zh": "输出文件路径" },
         "placeholder": "dalfox.txt"
       },
       {
         "label": "Format",
+        "labelI18n": { "zh": "输出格式" },
         "flag": "--format",
         "type": "select",
         "description": "Output format",
+        "descriptionI18n": { "zh": "输出格式" },
         "options": [
-          { "value": "plain", "label": "plain" },
-          { "value": "json", "label": "json" },
-          { "value": "jsonl", "label": "jsonl" }
+          { "value": "plain", "label": "plain", "labelI18n": { "zh": "纯文本" } },
+          { "value": "json", "label": "json", "labelI18n": { "zh": "JSON" } },
+          { "value": "jsonl", "label": "jsonl", "labelI18n": { "zh": "JSONL" } }
         ]
       },
       {
         "label": "Silence",
+        "labelI18n": { "zh": "静默" },
         "flag": "--silence",
         "type": "boolean",
-        "description": "Show only PoC results"
+        "description": "Show only PoC results",
+        "descriptionI18n": { "zh": "仅显示 PoC 结果" }
       }
     ],
     "skills": [
       {
         "id": "single-url",
         "name": "Quick single-URL scan",
+        "nameI18n": { "zh": "单 URL 快速扫描" },
         "description": "Scan a single URL for reflected XSS",
+        "descriptionI18n": { "zh": "对单个 URL 扫描反射 XSS" },
         "args": "url {{target}} --silence",
-        "tags": ["xss", "fast"]
+        "tags": ["xss", "fast"],
+        "tagsI18n": { "zh": ["XSS", "快速"] }
       },
       {
         "id": "url-list",
         "name": "Bulk scan from file",
+        "nameI18n": { "zh": "批量(文件)扫描" },
         "description": "Scan a list of URLs",
+        "descriptionI18n": { "zh": "扫描一批 URL" },
         "args": "file {{url_list}} --silence -o dalfox.txt",
-        "tags": ["bulk"]
+        "tags": ["bulk"],
+        "tagsI18n": { "zh": ["批量"] }
       },
       {
         "id": "pipe-mode",
         "name": "Pipe mode (from waybackurls / gau)",
+        "nameI18n": { "zh": "Pipe 模式(承接 wayback / gau)" },
         "description": "Read URLs from stdin",
+        "descriptionI18n": { "zh": "从 stdin 读取 URL" },
         "args": "pipe --silence",
-        "tags": ["pipeline"]
+        "tags": ["pipeline"],
+        "tagsI18n": { "zh": ["Pipeline"] }
       },
       {
         "id": "blind-xss",
         "name": "Blind XSS with callback",
+        "nameI18n": { "zh": "Blind XSS(带回连)" },
         "description": "Inject blind XSS payload to callback server",
+        "descriptionI18n": { "zh": "注入 Blind XSS payload 并触发到回连服务" },
         "args": "url {{target}} -b {{callback}} --silence",
-        "tags": ["blind", "xss"]
+        "tags": ["blind", "xss"],
+        "tagsI18n": { "zh": ["Blind", "XSS"] }
       },
       {
         "id": "post-form",
         "name": "POST data XSS",
+        "nameI18n": { "zh": "POST 数据 XSS" },
         "description": "Test POST parameters",
+        "descriptionI18n": { "zh": "测试 POST 参数" },
         "args": "url {{target}} -X POST -d 'name=test&id=1' --silence",
-        "tags": ["post", "xss"]
+        "tags": ["post", "xss"],
+        "tagsI18n": { "zh": ["POST", "XSS"] }
       },
       {
         "id": "json-pipeline",
         "name": "JSONL pipeline output",
+        "nameI18n": { "zh": "JSONL Pipeline 输出" },
         "description": "Output JSONL for downstream tools",
+        "descriptionI18n": { "zh": "输出 JSONL 供下游工具消费" },
         "args": "file {{url_list}} --format jsonl -o dalfox.jsonl",
-        "tags": ["pipeline"]
+        "tags": ["pipeline"],
+        "tagsI18n": { "zh": ["Pipeline"] }
       }
     ],
     "output": {

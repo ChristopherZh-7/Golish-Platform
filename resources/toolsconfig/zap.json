@@ -3,6 +3,7 @@
     "id": "zap",
     "name": "ZAP",
     "description": "OWASP ZAP - free, open-source Web application security scanner with intercepting proxy, active/passive scan, fuzzer and spider; the de-facto open-source replacement for Burp Suite",
+    "descriptionI18n": { "zh": "OWASP ZAP —— 免费开源 Web 应用安全扫描器，内置拦截代理、主/被动扫描、Fuzzer 和爬虫，是 Burp Suite 的开源替代" },
     "executable": "ZAP/zap.sh",
     "runtime": "java",
     "runtimeVersion": "17",
@@ -11,6 +12,7 @@
     "subcategory": "proxy",
     "tier": "essential",
     "tags": ["web", "proxy", "scanner", "fuzzer", "spider", "intercept"],
+    "tagsI18n": { "zh": ["Web", "代理", "扫描器", "Fuzzer", "爬虫", "拦截"] },
     "install": {
       "method": "github",
       "source": "zaproxy/zaproxy",
@@ -21,107 +23,141 @@
     "params": [
       {
         "label": "Daemon (headless)",
+        "labelI18n": { "zh": "Daemon(无界面)" },
         "flag": "-daemon",
         "type": "boolean",
-        "description": "Run ZAP as a headless daemon (for API / CLI usage)"
+        "description": "Run ZAP as a headless daemon (for API / CLI usage)",
+        "descriptionI18n": { "zh": "以 headless daemon 方式运行(供 API / CLI 使用)" }
       },
       {
         "label": "API Port",
+        "labelI18n": { "zh": "API 端口" },
         "flag": "-port",
         "type": "string",
         "description": "ZAP API listen port",
+        "descriptionI18n": { "zh": "ZAP API 监听端口" },
         "placeholder": "8080"
       },
       {
         "label": "Host",
+        "labelI18n": { "zh": "监听地址" },
         "flag": "-host",
         "type": "string",
         "description": "ZAP API bind host",
+        "descriptionI18n": { "zh": "ZAP API 绑定的主机地址" },
         "placeholder": "127.0.0.1"
       },
       {
         "label": "ZAP Home",
+        "labelI18n": { "zh": "ZAP 主目录" },
         "flag": "-dir",
         "type": "string",
         "description": "ZAP home directory (sessions, configs, add-ons)",
+        "descriptionI18n": { "zh": "ZAP 主目录(会话 / 配置 / 插件)" },
         "placeholder": "~/.ZAP"
       },
       {
         "label": "New Session",
+        "labelI18n": { "zh": "新建会话" },
         "flag": "-newsession",
         "type": "string",
         "description": "Create and open a new session file",
+        "descriptionI18n": { "zh": "创建并打开一个新的会话文件" },
         "placeholder": "engagement"
       },
       {
         "label": "Session",
+        "labelI18n": { "zh": "会话" },
         "flag": "-session",
         "type": "string",
         "description": "Load an existing session",
+        "descriptionI18n": { "zh": "加载一个已有会话" },
         "placeholder": "engagement.session"
       },
       {
         "label": "Quick URL",
+        "labelI18n": { "zh": "快速 URL" },
         "flag": "-quickurl",
         "type": "string",
         "description": "Quick-scan a single URL (spider + passive baseline)",
+        "descriptionI18n": { "zh": "对单个 URL 做快速扫描(爬虫 + 被动基线)" },
         "placeholder": "https://target.com"
       },
       {
         "label": "Quick Out",
+        "labelI18n": { "zh": "快速输出" },
         "flag": "-quickout",
         "type": "string",
         "description": "Output file for quickurl results (.html / .json / .md / .xml)",
+        "descriptionI18n": { "zh": "quickurl 的输出文件(.html / .json / .md / .xml)" },
         "placeholder": "report.html"
       },
       {
         "label": "Quick Progress",
+        "labelI18n": { "zh": "显示进度" },
         "flag": "-quickprogress",
         "type": "boolean",
-        "description": "Print scan progress to stdout"
+        "description": "Print scan progress to stdout",
+        "descriptionI18n": { "zh": "把扫描进度打印到 stdout" }
       },
       {
         "label": "Config",
+        "labelI18n": { "zh": "配置覆盖" },
         "flag": "-config",
         "type": "string",
         "description": "Override a single ZAP config key (repeatable, e.g. api.key=changeme)",
+        "descriptionI18n": { "zh": "覆盖单个 ZAP 配置项(可多次，如 api.key=changeme)" },
         "placeholder": "api.disablekey=true"
       },
       {
         "label": "Silent",
+        "labelI18n": { "zh": "静默" },
         "flag": "-silent",
         "type": "boolean",
-        "description": "Suppress check-for-updates and telemetry"
+        "description": "Suppress check-for-updates and telemetry",
+        "descriptionI18n": { "zh": "禁用版本检查与遥测" }
       }
     ],
     "skills": [
       {
         "id": "gui-launch",
         "name": "Launch GUI",
+        "nameI18n": { "zh": "启动 GUI" },
         "description": "Start ZAP in interactive GUI mode (default)",
+        "descriptionI18n": { "zh": "以交互 GUI 模式启动 ZAP(默认)" },
         "args": "",
-        "tags": ["interactive"]
+        "tags": ["interactive"],
+        "tagsI18n": { "zh": ["交互"] }
       },
       {
         "id": "daemon",
         "name": "Headless daemon @ 8080",
+        "nameI18n": { "zh": "Headless daemon @ 8080" },
         "description": "Run ZAP as a headless API daemon on 127.0.0.1:8080 with API key disabled (dev only)",
+        "descriptionI18n": { "zh": "以 headless API daemon 模式监听 127.0.0.1:8080，并禁用 API key(仅开发环境)" },
         "args": "-daemon -host 127.0.0.1 -port 8080 -config api.disablekey=true",
-        "tags": ["api", "automation"]
+        "tags": ["api", "automation"],
+        "tagsI18n": { "zh": ["API", "自动化"] }
       },
       {
         "id": "quick-baseline",
         "name": "Quick baseline scan",
+        "nameI18n": { "zh": "快速基线扫描" },
         "description": "Spider + passive baseline scan of a target URL, output HTML report",
+        "descriptionI18n": { "zh": "对目标 URL 进行爬虫 + 被动基线扫描，并输出 HTML 报告" },
         "args": "-cmd -quickurl {{url}} -quickout {{report}} -quickprogress",
-        "tags": ["scan", "report"]
+        "tags": ["scan", "report"],
+        "tagsI18n": { "zh": ["扫描", "报告"] }
       },
       {
         "id": "resume-session",
         "name": "Resume engagement session",
+        "nameI18n": { "zh": "恢复项目会话" },
         "description": "Re-open an existing engagement session file in GUI",
+        "descriptionI18n": { "zh": "在 GUI 中重新打开一个已有的项目会话文件" },
         "args": "-session {{session_file}}",
-        "tags": ["project"]
+        "tags": ["project"],
+        "tagsI18n": { "zh": ["项目"] }
       }
     ],
     "output": {

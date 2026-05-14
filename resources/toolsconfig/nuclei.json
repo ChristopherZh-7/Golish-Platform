@@ -3,6 +3,7 @@
     "id": "nuclei",
     "name": "nuclei",
     "description": "Template-based vulnerability scanner with thousands of community templates",
+    "descriptionI18n": { "zh": "基于模板的漏洞扫描器，社区数千份模板可直接使用" },
     "executable": "nuclei",
     "runtime": "native",
     "launchMode": "cli",
@@ -10,6 +11,7 @@
     "subcategory": "scanner",
     "tier": "essential",
     "tags": ["web", "scanner", "vulnerability", "templates"],
+    "tagsI18n": { "zh": ["Web", "扫描器", "漏洞", "模板"] },
     "install": {
       "method": "homebrew",
       "source": "nuclei",
@@ -19,178 +21,231 @@
     "params": [
       {
         "label": "Target URL",
+        "labelI18n": { "zh": "目标 URL" },
         "flag": "-u",
         "type": "string",
         "description": "Single target URL",
+        "descriptionI18n": { "zh": "单个目标 URL" },
         "placeholder": "https://target.com"
       },
       {
         "label": "Targets List",
+        "labelI18n": { "zh": "目标列表" },
         "flag": "-l",
         "type": "string",
         "description": "File with one target per line",
+        "descriptionI18n": { "zh": "每行一个目标的列表文件" },
         "placeholder": "targets.txt"
       },
       {
         "label": "Templates",
+        "labelI18n": { "zh": "模板路径" },
         "flag": "-t",
         "type": "string",
         "description": "Specific template path (file or directory)",
+        "descriptionI18n": { "zh": "指定模板文件或目录" },
         "placeholder": "cves/"
       },
       {
         "label": "Tags",
+        "labelI18n": { "zh": "包含标签" },
         "flag": "-tags",
         "type": "string",
         "description": "Comma-separated tags to include",
+        "descriptionI18n": { "zh": "要包含的标签(逗号分隔)" },
         "placeholder": "cve,rce,xss"
       },
       {
         "label": "Exclude Tags",
+        "labelI18n": { "zh": "排除标签" },
         "flag": "-etags",
         "type": "string",
         "description": "Comma-separated tags to exclude",
+        "descriptionI18n": { "zh": "要排除的标签(逗号分隔)" },
         "placeholder": "dos,intrusive"
       },
       {
         "label": "Severity",
+        "labelI18n": { "zh": "严重等级" },
         "flag": "-severity",
         "type": "select",
         "description": "Filter by severity",
+        "descriptionI18n": { "zh": "按严重等级过滤" },
         "options": [
-          { "value": "info", "label": "info" },
-          { "value": "low", "label": "low" },
-          { "value": "medium", "label": "medium" },
-          { "value": "high", "label": "high" },
-          { "value": "critical", "label": "critical" },
-          { "value": "high,critical", "label": "high + critical" },
-          { "value": "medium,high,critical", "label": "medium and above" }
+          { "value": "info", "label": "info", "labelI18n": { "zh": "信息" } },
+          { "value": "low", "label": "low", "labelI18n": { "zh": "低危" } },
+          { "value": "medium", "label": "medium", "labelI18n": { "zh": "中危" } },
+          { "value": "high", "label": "high", "labelI18n": { "zh": "高危" } },
+          { "value": "critical", "label": "critical", "labelI18n": { "zh": "严重" } },
+          { "value": "high,critical", "label": "high + critical", "labelI18n": { "zh": "高危 + 严重" } },
+          { "value": "medium,high,critical", "label": "medium and above", "labelI18n": { "zh": "中危及以上" } }
         ]
       },
       {
         "label": "Author",
+        "labelI18n": { "zh": "模板作者" },
         "flag": "-author",
         "type": "string",
         "description": "Filter templates by author",
+        "descriptionI18n": { "zh": "按模板作者过滤" },
         "placeholder": "pdteam"
       },
       {
         "label": "Concurrency",
+        "labelI18n": { "zh": "并发(模板)" },
         "flag": "-c",
         "type": "string",
         "description": "Templates concurrency (default 25)",
+        "descriptionI18n": { "zh": "模板并发数(默认 25)" },
         "default": "25",
         "placeholder": "25"
       },
       {
         "label": "Bulk Size",
+        "labelI18n": { "zh": "批量大小" },
         "flag": "-bs",
         "type": "string",
         "description": "Targets per template (default 25)",
+        "descriptionI18n": { "zh": "每个模板处理的目标数(默认 25)" },
         "default": "25"
       },
       {
         "label": "Rate Limit",
+        "labelI18n": { "zh": "限速(req/s)" },
         "flag": "-rl",
         "type": "string",
         "description": "Max requests per second",
+        "descriptionI18n": { "zh": "每秒最大请求数" },
         "placeholder": "150"
       },
       {
         "label": "Timeout",
+        "labelI18n": { "zh": "超时(秒)" },
         "flag": "-timeout",
         "type": "string",
         "description": "Per-request timeout (seconds)",
+        "descriptionI18n": { "zh": "单请求超时(秒)" },
         "default": "10"
       },
       {
         "label": "Headers",
+        "labelI18n": { "zh": "自定义头" },
         "flag": "-H",
         "type": "string",
         "description": "Custom header (repeatable)",
+        "descriptionI18n": { "zh": "自定义请求头(可多次)" },
         "placeholder": "Cookie: session=abcd"
       },
       {
         "label": "Proxy",
+        "labelI18n": { "zh": "HTTP 代理" },
         "flag": "-proxy",
         "type": "string",
         "description": "HTTP proxy URL",
+        "descriptionI18n": { "zh": "HTTP 代理地址" },
         "placeholder": "http://127.0.0.1:8080"
       },
       {
         "label": "Output File",
+        "labelI18n": { "zh": "输出文件" },
         "flag": "-o",
         "type": "string",
         "description": "Save results to file",
+        "descriptionI18n": { "zh": "把结果保存到文件" },
         "placeholder": "nuclei.txt"
       },
       {
         "label": "JSONL Output",
+        "labelI18n": { "zh": "JSONL 输出" },
         "flag": "-jsonl",
         "type": "boolean",
-        "description": "Write findings as JSONL"
+        "description": "Write findings as JSONL",
+        "descriptionI18n": { "zh": "以 JSONL 写入发现项" }
       },
       {
         "label": "Markdown Export",
+        "labelI18n": { "zh": "Markdown 导出" },
         "flag": "-me",
         "type": "string",
         "description": "Export findings to a markdown directory",
+        "descriptionI18n": { "zh": "把发现项导出到指定的 Markdown 目录" },
         "placeholder": "report-md/"
       },
       {
         "label": "Update Templates",
+        "labelI18n": { "zh": "更新模板" },
         "flag": "-ut",
         "type": "boolean",
-        "description": "Update nuclei-templates before scan"
+        "description": "Update nuclei-templates before scan",
+        "descriptionI18n": { "zh": "扫描前更新 nuclei-templates" }
       },
       {
         "label": "Silent",
+        "labelI18n": { "zh": "静默" },
         "flag": "-silent",
         "type": "boolean",
-        "description": "Show only results"
+        "description": "Show only results",
+        "descriptionI18n": { "zh": "仅显示结果" }
       },
       {
         "label": "Stats",
+        "labelI18n": { "zh": "进度统计" },
         "flag": "-stats",
         "type": "boolean",
-        "description": "Display live progress stats"
+        "description": "Display live progress stats",
+        "descriptionI18n": { "zh": "实时显示扫描进度统计" }
       }
     ],
     "skills": [
       {
         "id": "quick-cve",
         "name": "Quick CVE Scan",
+        "nameI18n": { "zh": "快速 CVE 扫描" },
         "description": "Run CVE-tagged templates with high+critical severity",
+        "descriptionI18n": { "zh": "仅运行 cve 标签 + 高/严重等级的模板" },
         "args": "-u {{target}} -tags cve -severity high,critical -silent",
-        "tags": ["cve", "fast"]
+        "tags": ["cve", "fast"],
+        "tagsI18n": { "zh": ["CVE", "快速"] }
       },
       {
         "id": "full-scan",
         "name": "Full Template Scan",
+        "nameI18n": { "zh": "全量模板扫描" },
         "description": "Run all loaded templates",
+        "descriptionI18n": { "zh": "运行所有已加载的模板" },
         "args": "-u {{target}} -stats",
-        "tags": ["thorough", "slow"]
+        "tags": ["thorough", "slow"],
+        "tagsI18n": { "zh": ["全面", "耗时长"] }
       },
       {
         "id": "exposures",
         "name": "Sensitive Exposures",
+        "nameI18n": { "zh": "敏感信息暴露" },
         "description": "Detect exposed configs, panels, files",
+        "descriptionI18n": { "zh": "探测暴露的配置文件、管理面板、敏感文件" },
         "args": "-u {{target}} -tags exposure,config,panel -silent",
-        "tags": ["recon"]
+        "tags": ["recon"],
+        "tagsI18n": { "zh": ["侦察"] }
       },
       {
         "id": "tech-detect",
         "name": "Technology Fingerprint",
+        "nameI18n": { "zh": "技术指纹" },
         "description": "Identify the tech stack of the target",
+        "descriptionI18n": { "zh": "识别目标的技术栈" },
         "args": "-u {{target}} -tags tech -silent",
-        "tags": ["recon"]
+        "tags": ["recon"],
+        "tagsI18n": { "zh": ["侦察"] }
       },
       {
         "id": "list-jsonl",
         "name": "Bulk Targets to JSONL",
+        "nameI18n": { "zh": "批量目标导出 JSONL" },
         "description": "Scan a list of targets and write JSONL output",
+        "descriptionI18n": { "zh": "扫描目标列表并输出 JSONL" },
         "args": "-l {{targets_file}} -severity medium,high,critical -jsonl -o nuclei.jsonl",
-        "tags": ["bulk", "report"]
+        "tags": ["bulk", "report"],
+        "tagsI18n": { "zh": ["批量", "报告"] }
       }
     ],
     "output": {

@@ -3,6 +3,7 @@
     "id": "wpscan",
     "name": "wpscan",
     "description": "WordPress vulnerability scanner - users, plugins, themes, and known CVEs",
+    "descriptionI18n": { "zh": "WordPress 漏洞扫描器——用户、插件、主题与已知 CVE 一站检测" },
     "executable": "wpscan",
     "runtime": "ruby",
     "runtimeVersion": "3.2",
@@ -11,6 +12,7 @@
     "subcategory": "cms",
     "tier": "recommended",
     "tags": ["web", "wordpress", "cms", "vulnerability"],
+    "tagsI18n": { "zh": ["Web", "WordPress", "CMS", "漏洞"] },
     "install": {
       "method": "gem",
       "source": "wpscan"
@@ -18,139 +20,171 @@
     "params": [
       {
         "label": "URL",
+        "labelI18n": { "zh": "URL" },
         "flag": "--url",
         "type": "string",
         "required": true,
         "description": "WordPress site URL",
+        "descriptionI18n": { "zh": "WordPress 站点 URL" },
         "placeholder": "https://target.com"
       },
       {
         "label": "Enumerate",
+        "labelI18n": { "zh": "枚举对象" },
         "flag": "-e",
         "type": "select",
         "description": "What to enumerate",
+        "descriptionI18n": { "zh": "枚举的对象类型" },
         "options": [
-          { "value": "vp", "label": "vp - vulnerable plugins" },
-          { "value": "ap", "label": "ap - all plugins" },
-          { "value": "p", "label": "p - popular plugins" },
-          { "value": "vt", "label": "vt - vulnerable themes" },
-          { "value": "at", "label": "at - all themes" },
-          { "value": "t", "label": "t - popular themes" },
-          { "value": "tt", "label": "tt - timthumbs" },
-          { "value": "cb", "label": "cb - config backups" },
-          { "value": "dbe", "label": "dbe - db exports" },
-          { "value": "u", "label": "u - users" },
-          { "value": "m", "label": "m - media IDs" },
-          { "value": "vp,vt,u", "label": "common: vp+vt+u" }
+          { "value": "vp", "label": "vp - vulnerable plugins", "labelI18n": { "zh": "vp - 漏洞插件" } },
+          { "value": "ap", "label": "ap - all plugins", "labelI18n": { "zh": "ap - 所有插件" } },
+          { "value": "p", "label": "p - popular plugins", "labelI18n": { "zh": "p - 热门插件" } },
+          { "value": "vt", "label": "vt - vulnerable themes", "labelI18n": { "zh": "vt - 漏洞主题" } },
+          { "value": "at", "label": "at - all themes", "labelI18n": { "zh": "at - 所有主题" } },
+          { "value": "t", "label": "t - popular themes", "labelI18n": { "zh": "t - 热门主题" } },
+          { "value": "tt", "label": "tt - timthumbs", "labelI18n": { "zh": "tt - timthumbs" } },
+          { "value": "cb", "label": "cb - config backups", "labelI18n": { "zh": "cb - 配置备份" } },
+          { "value": "dbe", "label": "dbe - db exports", "labelI18n": { "zh": "dbe - 数据库导出" } },
+          { "value": "u", "label": "u - users", "labelI18n": { "zh": "u - 用户" } },
+          { "value": "m", "label": "m - media IDs", "labelI18n": { "zh": "m - 媒体 ID" } },
+          { "value": "vp,vt,u", "label": "common: vp+vt+u", "labelI18n": { "zh": "常用组合：vp + vt + u" } }
         ]
       },
       {
         "label": "API Token",
+        "labelI18n": { "zh": "API Token" },
         "flag": "--api-token",
         "type": "string",
         "description": "wpscan.com API token (free tier 25/day)",
+        "descriptionI18n": { "zh": "wpscan.com 的 API token(免费版每天 25 次)" },
         "placeholder": "YOUR_TOKEN"
       },
       {
         "label": "Detection Mode",
+        "labelI18n": { "zh": "检测模式" },
         "flag": "--detection-mode",
         "type": "select",
         "description": "How aggressively to fingerprint",
+        "descriptionI18n": { "zh": "指纹识别的激进程度" },
         "default": "mixed",
         "options": [
-          { "value": "passive", "label": "passive" },
-          { "value": "aggressive", "label": "aggressive" },
-          { "value": "mixed", "label": "mixed" }
+          { "value": "passive", "label": "passive", "labelI18n": { "zh": "被动" } },
+          { "value": "aggressive", "label": "aggressive", "labelI18n": { "zh": "主动" } },
+          { "value": "mixed", "label": "mixed", "labelI18n": { "zh": "混合" } }
         ]
       },
       {
         "label": "Plugins Detection",
+        "labelI18n": { "zh": "插件检测模式" },
         "flag": "--plugins-detection",
         "type": "select",
         "description": "Plugin enumeration detection mode",
+        "descriptionI18n": { "zh": "插件枚举的检测模式" },
         "options": [
-          { "value": "passive", "label": "passive" },
-          { "value": "aggressive", "label": "aggressive" },
-          { "value": "mixed", "label": "mixed" }
+          { "value": "passive", "label": "passive", "labelI18n": { "zh": "被动" } },
+          { "value": "aggressive", "label": "aggressive", "labelI18n": { "zh": "主动" } },
+          { "value": "mixed", "label": "mixed", "labelI18n": { "zh": "混合" } }
         ]
       },
       {
         "label": "User Agent",
+        "labelI18n": { "zh": "User-Agent" },
         "flag": "--user-agent",
         "type": "string",
         "description": "Custom User-Agent",
+        "descriptionI18n": { "zh": "自定义 User-Agent" },
         "placeholder": "Mozilla/5.0"
       },
       {
         "label": "Random User Agent",
+        "labelI18n": { "zh": "随机 User-Agent" },
         "flag": "--random-user-agent",
         "type": "boolean",
-        "description": "Use random User-Agent each request"
+        "description": "Use random User-Agent each request",
+        "descriptionI18n": { "zh": "每次请求使用随机 User-Agent" }
       },
       {
         "label": "Cookie",
+        "labelI18n": { "zh": "Cookie" },
         "flag": "--cookie-string",
         "type": "string",
         "description": "Cookie string sent with each request",
+        "descriptionI18n": { "zh": "每个请求携带的 Cookie 字符串" },
         "placeholder": "wp_session=abcd"
       },
       {
         "label": "HTTP Auth",
+        "labelI18n": { "zh": "HTTP Basic 认证" },
         "flag": "--http-auth",
         "type": "string",
         "description": "Basic auth user:pass",
+        "descriptionI18n": { "zh": "Basic 认证 user:pass" },
         "placeholder": "admin:admin"
       },
       {
         "label": "Threads",
+        "labelI18n": { "zh": "线程数" },
         "flag": "--max-threads",
         "type": "string",
         "description": "Max threads (default 5)",
+        "descriptionI18n": { "zh": "最大线程数(默认 5)" },
         "default": "5"
       },
       {
         "label": "Throttle",
+        "labelI18n": { "zh": "请求间隔(毫秒)" },
         "flag": "--throttle",
         "type": "string",
         "description": "Wait N ms between requests",
+        "descriptionI18n": { "zh": "每个请求之间等待的毫秒数" },
         "placeholder": "200"
       },
       {
         "label": "Disable TLS Check",
+        "labelI18n": { "zh": "禁用 TLS 校验" },
         "flag": "--disable-tls-checks",
         "type": "boolean",
-        "description": "Skip SSL/TLS validation"
+        "description": "Skip SSL/TLS validation",
+        "descriptionI18n": { "zh": "跳过 SSL / TLS 证书校验" }
       },
       {
         "label": "Username Wordlist",
+        "labelI18n": { "zh": "用户名字典" },
         "flag": "-U",
         "type": "string",
         "description": "Username list for password attack",
+        "descriptionI18n": { "zh": "用于密码爆破的用户名列表" },
         "placeholder": "admin"
       },
       {
         "label": "Password Wordlist",
+        "labelI18n": { "zh": "密码字典" },
         "flag": "-P",
         "type": "string",
         "description": "Password list for /wp-login.php attack",
+        "descriptionI18n": { "zh": "针对 /wp-login.php 的密码字典" },
         "placeholder": "rockyou.txt"
       },
       {
         "label": "Output File",
+        "labelI18n": { "zh": "输出文件" },
         "flag": "-o",
         "type": "string",
         "description": "Output file path",
+        "descriptionI18n": { "zh": "输出文件路径" },
         "placeholder": "wpscan.json"
       },
       {
         "label": "Format",
+        "labelI18n": { "zh": "输出格式" },
         "flag": "-f",
         "type": "select",
         "description": "Output format",
+        "descriptionI18n": { "zh": "输出格式" },
         "options": [
-          { "value": "cli", "label": "cli" },
-          { "value": "cli-no-color", "label": "cli-no-color" },
-          { "value": "json", "label": "json" }
+          { "value": "cli", "label": "cli", "labelI18n": { "zh": "CLI" } },
+          { "value": "cli-no-color", "label": "cli-no-color", "labelI18n": { "zh": "CLI(无颜色)" } },
+          { "value": "json", "label": "json", "labelI18n": { "zh": "JSON" } }
         ]
       }
     ],
@@ -158,44 +192,62 @@
       {
         "id": "vuln-enum",
         "name": "Vulnerable plugin/theme/user enum",
+        "nameI18n": { "zh": "漏洞插件/主题/用户枚举" },
         "description": "Standard WordPress recon (no API token = limited CVE info)",
+        "descriptionI18n": { "zh": "标准 WordPress 侦察(无 API token 时 CVE 信息受限)" },
         "args": "--url {{target}} -e vp,vt,u --random-user-agent",
-        "tags": ["recon"]
+        "tags": ["recon"],
+        "tagsI18n": { "zh": ["侦察"] }
       },
       {
         "id": "with-api",
         "name": "Full enum with API token",
+        "nameI18n": { "zh": "带 API token 的完整枚举" },
         "description": "Use wpscan API for detailed CVE info",
+        "descriptionI18n": { "zh": "使用 wpscan API 获取详细 CVE 信息" },
         "args": "--url {{target}} -e vp,vt,u --api-token {{token}} --random-user-agent",
-        "tags": ["api", "thorough"]
+        "tags": ["api", "thorough"],
+        "tagsI18n": { "zh": ["API", "全面"] }
       },
       {
         "id": "user-enum",
         "name": "User enumeration only",
+        "nameI18n": { "zh": "仅用户枚举" },
         "description": "Discover author IDs / usernames",
+        "descriptionI18n": { "zh": "发现作者 ID / 用户名" },
         "args": "--url {{target}} -e u --random-user-agent",
-        "tags": ["users"]
+        "tags": ["users"],
+        "tagsI18n": { "zh": ["用户"] }
       },
       {
         "id": "passive",
         "name": "Passive scan only",
+        "nameI18n": { "zh": "仅被动扫描" },
         "description": "Most stealthy mode",
+        "descriptionI18n": { "zh": "最隐蔽的模式" },
         "args": "--url {{target}} --detection-mode passive --random-user-agent",
-        "tags": ["stealth"]
+        "tags": ["stealth"],
+        "tagsI18n": { "zh": ["隐蔽"] }
       },
       {
         "id": "login-brute",
         "name": "wp-login.php password attack",
+        "nameI18n": { "zh": "wp-login.php 密码爆破" },
         "description": "Brute force login (slow, throttled)",
+        "descriptionI18n": { "zh": "登录爆破(慢速、节流)" },
         "args": "--url {{target}} -U {{user}} -P {{passes}} --max-threads 2 --throttle 500",
-        "tags": ["brute"]
+        "tags": ["brute"],
+        "tagsI18n": { "zh": ["爆破"] }
       },
       {
         "id": "json-report",
         "name": "JSON report",
+        "nameI18n": { "zh": "JSON 报告" },
         "description": "Save full scan as JSON",
+        "descriptionI18n": { "zh": "把完整扫描结果保存为 JSON" },
         "args": "--url {{target}} -e vp,vt,u -f json -o wpscan.json",
-        "tags": ["report"]
+        "tags": ["report"],
+        "tagsI18n": { "zh": ["报告"] }
       }
     ],
     "output": {

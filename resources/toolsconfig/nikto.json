@@ -3,6 +3,7 @@
     "id": "nikto",
     "name": "nikto",
     "description": "Web server scanner that tests for dangerous files, outdated versions, and configuration issues",
+    "descriptionI18n": { "zh": "Web 服务器扫描器，检测危险文件、过时版本与配置错误" },
     "executable": "nikto",
     "runtime": "native",
     "launchMode": "cli",
@@ -10,6 +11,7 @@
     "subcategory": "scanner",
     "tier": "essential",
     "tags": ["web", "scanner", "vulnerability", "fingerprint"],
+    "tagsI18n": { "zh": ["Web", "扫描器", "漏洞", "指纹"] },
     "install": {
       "method": "homebrew",
       "source": "nikto",
@@ -19,147 +21,186 @@
     "params": [
       {
         "label": "Target Host",
+        "labelI18n": { "zh": "目标主机" },
         "flag": "-h",
         "type": "string",
         "required": true,
         "description": "Target host (URL, IP, or hostname)",
+        "descriptionI18n": { "zh": "目标主机(URL / IP / 域名)" },
         "placeholder": "https://target.com"
       },
       {
         "label": "Port",
+        "labelI18n": { "zh": "端口" },
         "flag": "-p",
         "type": "string",
         "description": "Port (default 80, supports comma list e.g. 80,443,8080)",
+        "descriptionI18n": { "zh": "端口(默认 80，可逗号分隔如 80,443,8080)" },
         "placeholder": "443"
       },
       {
         "label": "SSL",
+        "labelI18n": { "zh": "SSL" },
         "flag": "-ssl",
         "type": "boolean",
-        "description": "Force SSL/TLS"
+        "description": "Force SSL/TLS",
+        "descriptionI18n": { "zh": "强制启用 SSL/TLS" }
       },
       {
         "label": "Tuning",
+        "labelI18n": { "zh": "检测类别" },
         "flag": "-Tuning",
         "type": "select",
         "description": "Restrict to a category of checks",
+        "descriptionI18n": { "zh": "仅运行指定类别的检测" },
         "options": [
-          { "value": "1", "label": "1 - Interesting File / Seen in logs" },
-          { "value": "2", "label": "2 - Misconfiguration / Default File" },
-          { "value": "3", "label": "3 - Information Disclosure" },
-          { "value": "4", "label": "4 - Injection (XSS/Script/HTML)" },
-          { "value": "5", "label": "5 - Remote File Retrieval" },
-          { "value": "6", "label": "6 - Denial of Service" },
-          { "value": "7", "label": "7 - Remote File Retrieval (server)" },
-          { "value": "8", "label": "8 - Command Execution / Shell" },
-          { "value": "9", "label": "9 - SQL Injection" },
-          { "value": "x", "label": "x - Reverse tuning (exclude)" }
+          { "value": "1", "label": "1 - Interesting File / Seen in logs", "labelI18n": { "zh": "1 - 有趣文件 / 日志中曾出现" } },
+          { "value": "2", "label": "2 - Misconfiguration / Default File", "labelI18n": { "zh": "2 - 配置错误 / 默认文件" } },
+          { "value": "3", "label": "3 - Information Disclosure", "labelI18n": { "zh": "3 - 信息泄露" } },
+          { "value": "4", "label": "4 - Injection (XSS/Script/HTML)", "labelI18n": { "zh": "4 - 注入(XSS / 脚本 / HTML)" } },
+          { "value": "5", "label": "5 - Remote File Retrieval", "labelI18n": { "zh": "5 - 远程文件获取" } },
+          { "value": "6", "label": "6 - Denial of Service", "labelI18n": { "zh": "6 - 拒绝服务" } },
+          { "value": "7", "label": "7 - Remote File Retrieval (server)", "labelI18n": { "zh": "7 - 远程文件获取(服务端)" } },
+          { "value": "8", "label": "8 - Command Execution / Shell", "labelI18n": { "zh": "8 - 命令执行 / Shell" } },
+          { "value": "9", "label": "9 - SQL Injection", "labelI18n": { "zh": "9 - SQL 注入" } },
+          { "value": "x", "label": "x - Reverse tuning (exclude)", "labelI18n": { "zh": "x - 反向选择(排除)" } }
         ]
       },
       {
         "label": "User-Agent",
+        "labelI18n": { "zh": "User-Agent" },
         "flag": "-useragent",
         "type": "string",
         "description": "Custom User-Agent header",
+        "descriptionI18n": { "zh": "自定义 User-Agent" },
         "placeholder": "Mozilla/5.0 ..."
       },
       {
         "label": "Auth",
+        "labelI18n": { "zh": "Basic 认证" },
         "flag": "-id",
         "type": "string",
         "description": "Basic auth as user:pass",
+        "descriptionI18n": { "zh": "Basic 认证(格式 user:pass)" },
         "placeholder": "admin:admin"
       },
       {
         "label": "Cookies",
+        "labelI18n": { "zh": "Cookie" },
         "flag": "-Cookies",
         "type": "string",
         "description": "Use these cookies",
+        "descriptionI18n": { "zh": "使用指定的 Cookie" },
         "placeholder": "session=abcd"
       },
       {
         "label": "Output File",
+        "labelI18n": { "zh": "输出文件" },
         "flag": "-output",
         "type": "string",
         "description": "Save results (extension determines format)",
+        "descriptionI18n": { "zh": "保存结果(后缀名决定格式)" },
         "placeholder": "nikto_report.html"
       },
       {
         "label": "Format",
+        "labelI18n": { "zh": "输出格式" },
         "flag": "-Format",
         "type": "select",
         "description": "Output format",
+        "descriptionI18n": { "zh": "输出格式" },
         "options": [
-          { "value": "txt", "label": "Plain text" },
-          { "value": "csv", "label": "CSV" },
-          { "value": "htm", "label": "HTML" },
-          { "value": "json", "label": "JSON" },
-          { "value": "xml", "label": "XML" }
+          { "value": "txt", "label": "Plain text", "labelI18n": { "zh": "纯文本" } },
+          { "value": "csv", "label": "CSV", "labelI18n": { "zh": "CSV" } },
+          { "value": "htm", "label": "HTML", "labelI18n": { "zh": "HTML" } },
+          { "value": "json", "label": "JSON", "labelI18n": { "zh": "JSON" } },
+          { "value": "xml", "label": "XML", "labelI18n": { "zh": "XML" } }
         ]
       },
       {
         "label": "Display Mode",
+        "labelI18n": { "zh": "显示模式" },
         "flag": "-Display",
         "type": "select",
         "description": "Verbosity (V=verbose, P=progress, E=errors)",
+        "descriptionI18n": { "zh": "显示模式(V 详细 / P 进度 / E 错误)" },
         "options": [
-          { "value": "V", "label": "V - Verbose" },
-          { "value": "P", "label": "P - Progress" },
-          { "value": "E", "label": "E - Errors" },
-          { "value": "1", "label": "1 - 1xx info" },
-          { "value": "2", "label": "2 - 2xx ok" },
-          { "value": "3", "label": "3 - 3xx redirect" },
-          { "value": "4", "label": "4 - 4xx error" }
+          { "value": "V", "label": "V - Verbose", "labelI18n": { "zh": "V - 详细" } },
+          { "value": "P", "label": "P - Progress", "labelI18n": { "zh": "P - 进度" } },
+          { "value": "E", "label": "E - Errors", "labelI18n": { "zh": "E - 错误" } },
+          { "value": "1", "label": "1 - 1xx info", "labelI18n": { "zh": "1 - 1xx 信息" } },
+          { "value": "2", "label": "2 - 2xx ok", "labelI18n": { "zh": "2 - 2xx 成功" } },
+          { "value": "3", "label": "3 - 3xx redirect", "labelI18n": { "zh": "3 - 3xx 跳转" } },
+          { "value": "4", "label": "4 - 4xx error", "labelI18n": { "zh": "4 - 4xx 错误" } }
         ]
       },
       {
         "label": "No Lookup",
+        "labelI18n": { "zh": "禁用 DNS 解析" },
         "flag": "-nolookup",
         "type": "boolean",
-        "description": "Disable DNS lookups"
+        "description": "Disable DNS lookups",
+        "descriptionI18n": { "zh": "禁用 DNS 解析" }
       },
       {
         "label": "Update DB",
+        "labelI18n": { "zh": "更新规则库" },
         "flag": "-update",
         "type": "boolean",
-        "description": "Update Nikto plugin and database"
+        "description": "Update Nikto plugin and database",
+        "descriptionI18n": { "zh": "更新 Nikto 插件和规则库" }
       }
     ],
     "skills": [
       {
         "id": "quick-scan",
         "name": "Quick HTTP Scan",
+        "nameI18n": { "zh": "HTTP 快速扫描" },
         "description": "Default scan of HTTP target",
+        "descriptionI18n": { "zh": "对 HTTP 目标的默认扫描" },
         "args": "-h {{target}}",
-        "tags": ["recon", "fast"]
+        "tags": ["recon", "fast"],
+        "tagsI18n": { "zh": ["侦察", "快速"] }
       },
       {
         "id": "https-scan",
         "name": "HTTPS Scan",
+        "nameI18n": { "zh": "HTTPS 扫描" },
         "description": "Full HTTPS scan with SSL",
+        "descriptionI18n": { "zh": "带 SSL 的完整 HTTPS 扫描" },
         "args": "-h {{target}} -p 443 -ssl",
-        "tags": ["https"]
+        "tags": ["https"],
+        "tagsI18n": { "zh": ["HTTPS"] }
       },
       {
         "id": "json-report",
         "name": "Save JSON Report",
+        "nameI18n": { "zh": "导出 JSON 报告" },
         "description": "Scan and save results as JSON",
+        "descriptionI18n": { "zh": "扫描并以 JSON 保存结果" },
         "args": "-h {{target}} -Format json -output nikto.json",
-        "tags": ["report"]
+        "tags": ["report"],
+        "tagsI18n": { "zh": ["报告"] }
       },
       {
         "id": "injection-only",
         "name": "Injection Checks Only",
+        "nameI18n": { "zh": "仅注入类检测" },
         "description": "Only run XSS / script / SQLi tuning categories",
+        "descriptionI18n": { "zh": "仅运行 XSS / 脚本 / SQLi 类别" },
         "args": "-h {{target}} -Tuning 49",
-        "tags": ["injection"]
+        "tags": ["injection"],
+        "tagsI18n": { "zh": ["注入"] }
       },
       {
         "id": "auth-scan",
         "name": "Authenticated Scan",
+        "nameI18n": { "zh": "认证扫描" },
         "description": "Scan with basic auth credentials",
+        "descriptionI18n": { "zh": "使用 Basic 凭据扫描" },
         "args": "-h {{target}} -id {{user}}:{{pass}}",
-        "tags": ["auth"]
+        "tags": ["auth"],
+        "tagsI18n": { "zh": ["认证"] }
       }
     ],
     "output": {
