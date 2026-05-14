@@ -3,6 +3,7 @@
     "id": "bloodhound-python",
     "name": "bloodhound-python",
     "description": "Python-based AD ingestor for BloodHound (CE) - collects users/groups/computers/sessions/ACLs from Linux",
+    "descriptionI18n": { "zh": "Python 版 BloodHound(CE) 采集器 —— 在 Linux 上采集 AD 域的用户/组/计算机/会话/ACL" },
     "executable": "bloodhound-python",
     "runtime": "python",
     "runtimeVersion": "3.11",
@@ -11,6 +12,7 @@
     "subcategory": "ad-tools",
     "tier": "recommended",
     "tags": ["ad", "bloodhound", "graph", "enumeration"],
+    "tagsI18n": { "zh": ["AD 域", "BloodHound", "关系图", "枚举"] },
     "install": {
       "method": "pip",
       "source": "bloodhound"
@@ -18,122 +20,154 @@
     "params": [
       {
         "label": "Username",
+        "labelI18n": { "zh": "用户名" },
         "flag": "-u",
         "type": "string",
         "required": true,
         "description": "Domain user",
+        "descriptionI18n": { "zh": "域用户名" },
         "placeholder": "lowpriv"
       },
       {
         "label": "Password",
+        "labelI18n": { "zh": "密码" },
         "flag": "-p",
         "type": "string",
         "description": "User password (omit for hash auth)",
+        "descriptionI18n": { "zh": "用户密码(使用哈希认证时留空)" },
         "placeholder": "Pass123"
       },
       {
         "label": "NTLM Hash",
+        "labelI18n": { "zh": "NTLM 哈希" },
         "flag": "--hashes",
         "type": "string",
         "description": "Pass-the-Hash LM:NT format",
+        "descriptionI18n": { "zh": "Pass-the-Hash 格式 LM:NT" },
         "placeholder": "aad3...:8846..."
       },
       {
         "label": "Domain",
+        "labelI18n": { "zh": "域名" },
         "flag": "-d",
         "type": "string",
         "required": true,
         "description": "Active Directory domain",
+        "descriptionI18n": { "zh": "AD 域名" },
         "placeholder": "lab.local"
       },
       {
         "label": "Domain Controller",
+        "labelI18n": { "zh": "域控 FQDN" },
         "flag": "-dc",
         "type": "string",
         "description": "DC FQDN",
+        "descriptionI18n": { "zh": "DC 的 FQDN" },
         "placeholder": "dc01.lab.local"
       },
       {
         "label": "Name Server",
+        "labelI18n": { "zh": "DNS 服务器" },
         "flag": "-ns",
         "type": "string",
         "description": "Custom DNS resolver IP",
+        "descriptionI18n": { "zh": "自定义 DNS 解析器 IP" },
         "placeholder": "10.0.0.10"
       },
       {
         "label": "Collection Methods",
+        "labelI18n": { "zh": "采集方法" },
         "flag": "-c",
         "type": "select",
         "description": "What to collect (comma list possible)",
+        "descriptionI18n": { "zh": "采集内容(可逗号组合)" },
         "options": [
-          { "value": "Default", "label": "Default - Group, LocalAdmin, Session, Trusts" },
-          { "value": "All", "label": "All - everything (slow)" },
-          { "value": "DCOnly", "label": "DCOnly - just DC info" },
-          { "value": "Group", "label": "Group" },
-          { "value": "LocalAdmin", "label": "LocalAdmin" },
-          { "value": "RDP", "label": "RDP" },
-          { "value": "DCOM", "label": "DCOM" },
-          { "value": "PSRemote", "label": "PSRemote" },
-          { "value": "Session", "label": "Session" },
-          { "value": "Trusts", "label": "Trusts" },
-          { "value": "ACL", "label": "ACL" },
-          { "value": "Container", "label": "Container" },
-          { "value": "ObjectProps", "label": "ObjectProps" },
-          { "value": "LoggedOn", "label": "LoggedOn" }
+          { "value": "Default", "label": "Default - Group, LocalAdmin, Session, Trusts", "labelI18n": { "zh": "Default - 组 / 本地管理员 / 会话 / 信任" } },
+          { "value": "All", "label": "All - everything (slow)", "labelI18n": { "zh": "All - 全部(慢)" } },
+          { "value": "DCOnly", "label": "DCOnly - just DC info", "labelI18n": { "zh": "DCOnly - 仅 DC 信息" } },
+          { "value": "Group", "label": "Group", "labelI18n": { "zh": "Group(组)" } },
+          { "value": "LocalAdmin", "label": "LocalAdmin", "labelI18n": { "zh": "LocalAdmin(本地管理员)" } },
+          { "value": "RDP", "label": "RDP", "labelI18n": { "zh": "RDP" } },
+          { "value": "DCOM", "label": "DCOM", "labelI18n": { "zh": "DCOM" } },
+          { "value": "PSRemote", "label": "PSRemote", "labelI18n": { "zh": "PSRemote" } },
+          { "value": "Session", "label": "Session", "labelI18n": { "zh": "Session(会话)" } },
+          { "value": "Trusts", "label": "Trusts", "labelI18n": { "zh": "Trusts(信任关系)" } },
+          { "value": "ACL", "label": "ACL", "labelI18n": { "zh": "ACL" } },
+          { "value": "Container", "label": "Container", "labelI18n": { "zh": "Container(容器)" } },
+          { "value": "ObjectProps", "label": "ObjectProps", "labelI18n": { "zh": "ObjectProps(对象属性)" } },
+          { "value": "LoggedOn", "label": "LoggedOn", "labelI18n": { "zh": "LoggedOn(已登录会话)" } }
         ]
       },
       {
         "label": "Output Prefix",
+        "labelI18n": { "zh": "压缩输出" },
         "flag": "--zip",
         "type": "boolean",
-        "description": "Zip output JSONs (drop into BloodHound GUI directly)"
+        "description": "Zip output JSONs (drop into BloodHound GUI directly)",
+        "descriptionI18n": { "zh": "输出 JSON 打包成 zip(可直接拖入 BloodHound GUI)" }
       },
       {
         "label": "Auth Method",
+        "labelI18n": { "zh": "认证方式" },
         "flag": "--auth-method",
         "type": "select",
         "description": "Auth method",
+        "descriptionI18n": { "zh": "认证方式" },
         "options": [
-          { "value": "auto", "label": "auto" },
-          { "value": "ntlm", "label": "ntlm" },
-          { "value": "kerberos", "label": "kerberos" }
+          { "value": "auto", "label": "auto", "labelI18n": { "zh": "自动" } },
+          { "value": "ntlm", "label": "ntlm", "labelI18n": { "zh": "NTLM" } },
+          { "value": "kerberos", "label": "kerberos", "labelI18n": { "zh": "Kerberos" } }
         ]
       },
       {
         "label": "Use SSL",
+        "labelI18n": { "zh": "LDAP 通道绑定" },
         "flag": "--ldap-channel-binding",
         "type": "boolean",
-        "description": "LDAP channel binding (required if LDAP signing on)"
+        "description": "LDAP channel binding (required if LDAP signing on)",
+        "descriptionI18n": { "zh": "LDAP 通道绑定(开启 LDAP 签名时必需)" }
       }
     ],
     "skills": [
       {
         "id": "default-collect",
         "name": "Default collection",
+        "nameI18n": { "zh": "默认采集" },
         "description": "Standard BloodHound ingest",
+        "descriptionI18n": { "zh": "标准 BloodHound 采集" },
         "args": "-u {{user}} -p {{pass}} -d {{domain}} -c Default --zip",
-        "tags": ["ad", "default"]
+        "tags": ["ad", "default"],
+        "tagsI18n": { "zh": ["AD 域", "默认"] }
       },
       {
         "id": "all-collect",
         "name": "Full collection (slow)",
+        "nameI18n": { "zh": "全量采集(慢)" },
         "description": "Collect everything (ACL/Container/etc.)",
+        "descriptionI18n": { "zh": "采集全部内容(ACL / Container 等)" },
         "args": "-u {{user}} -p {{pass}} -d {{domain}} -dc {{dc}} -ns {{ns}} -c All --zip",
-        "tags": ["thorough"]
+        "tags": ["thorough"],
+        "tagsI18n": { "zh": ["全面"] }
       },
       {
         "id": "dc-only",
         "name": "DC-only (fast preview)",
+        "nameI18n": { "zh": "仅 DC(快速预览)" },
         "description": "Quick DC enumeration",
+        "descriptionI18n": { "zh": "快速枚举 DC" },
         "args": "-u {{user}} -p {{pass}} -d {{domain}} -c DCOnly --zip",
-        "tags": ["fast"]
+        "tags": ["fast"],
+        "tagsI18n": { "zh": ["快速"] }
       },
       {
         "id": "pth-collect",
         "name": "Pass-the-Hash collection",
+        "nameI18n": { "zh": "Pass-the-Hash 采集" },
         "description": "Collect using NTLM hash",
+        "descriptionI18n": { "zh": "使用 NTLM 哈希进行采集" },
         "args": "-u {{user}} --hashes {{hash}} -d {{domain}} -c Default --zip",
-        "tags": ["pth"]
+        "tags": ["pth"],
+        "tagsI18n": { "zh": ["PtH"] }
       }
     ],
     "output": {

@@ -3,6 +3,7 @@
     "id": "netexec",
     "name": "netexec",
     "description": "Network service exploitation tool (successor to crackmapexec) - SMB, WinRM, RDP, SSH, FTP, MSSQL, LDAP, VNC bulk auth + post-exploit",
+    "descriptionI18n": { "zh": "网络服务利用工具(crackmapexec 继任者) —— SMB / WinRM / RDP / SSH / FTP / MSSQL / LDAP / VNC 批量认证 + 后渗透" },
     "executable": "nxc",
     "runtime": "python",
     "runtimeVersion": "3.11",
@@ -11,6 +12,7 @@
     "subcategory": "lateral-movement",
     "tier": "essential",
     "tags": ["ad", "lateral", "smb", "winrm", "post-exploit"],
+    "tagsI18n": { "zh": ["AD 域", "横向移动", "SMB", "WinRM", "后渗透"] },
     "install": {
       "method": "pip",
       "source": "netexec"
@@ -18,197 +20,258 @@
     "params": [
       {
         "label": "Protocol",
+        "labelI18n": { "zh": "协议" },
         "flag": "",
         "type": "select",
         "required": true,
         "description": "Service protocol (placed first)",
+        "descriptionI18n": { "zh": "服务协议(放在最前)" },
         "options": [
-          { "value": "smb", "label": "smb" },
-          { "value": "winrm", "label": "winrm" },
-          { "value": "rdp", "label": "rdp" },
-          { "value": "ssh", "label": "ssh" },
-          { "value": "ftp", "label": "ftp" },
-          { "value": "mssql", "label": "mssql" },
-          { "value": "ldap", "label": "ldap" },
-          { "value": "vnc", "label": "vnc" },
-          { "value": "wmi", "label": "wmi" },
-          { "value": "nfs", "label": "nfs" }
+          { "value": "smb", "label": "smb", "labelI18n": { "zh": "SMB" } },
+          { "value": "winrm", "label": "winrm", "labelI18n": { "zh": "WinRM" } },
+          { "value": "rdp", "label": "rdp", "labelI18n": { "zh": "RDP" } },
+          { "value": "ssh", "label": "ssh", "labelI18n": { "zh": "SSH" } },
+          { "value": "ftp", "label": "ftp", "labelI18n": { "zh": "FTP" } },
+          { "value": "mssql", "label": "mssql", "labelI18n": { "zh": "MSSQL" } },
+          { "value": "ldap", "label": "ldap", "labelI18n": { "zh": "LDAP" } },
+          { "value": "vnc", "label": "vnc", "labelI18n": { "zh": "VNC" } },
+          { "value": "wmi", "label": "wmi", "labelI18n": { "zh": "WMI" } },
+          { "value": "nfs", "label": "nfs", "labelI18n": { "zh": "NFS" } }
         ]
       },
       {
         "label": "Targets",
+        "labelI18n": { "zh": "目标" },
         "flag": "",
         "type": "string",
         "required": true,
         "description": "IP, CIDR, hostname, or file (positional)",
+        "descriptionI18n": { "zh": "IP / CIDR / 主机名 / 文件(位置参数)" },
         "placeholder": "192.168.1.0/24"
       },
       {
         "label": "Username",
+        "labelI18n": { "zh": "用户名" },
         "flag": "-u",
         "type": "string",
         "description": "Single username or path to user list",
+        "descriptionI18n": { "zh": "单个用户名或用户列表文件路径" },
         "placeholder": "administrator"
       },
       {
         "label": "Password",
+        "labelI18n": { "zh": "密码" },
         "flag": "-p",
         "type": "string",
         "description": "Single password or path to password list",
+        "descriptionI18n": { "zh": "单个密码或密码列表文件路径" },
         "placeholder": "Pass123"
       },
       {
         "label": "NTLM Hash",
+        "labelI18n": { "zh": "NTLM 哈希" },
         "flag": "-H",
         "type": "string",
         "description": "Pass-the-Hash with NTLM hash",
+        "descriptionI18n": { "zh": "使用 NTLM 哈希进行 Pass-the-Hash" },
         "placeholder": "aad3b435b51404eeaad3b435b51404ee:..."
       },
       {
         "label": "Domain",
+        "labelI18n": { "zh": "AD 域" },
         "flag": "-d",
         "type": "string",
         "description": "AD domain (or use --local-auth for local)",
+        "descriptionI18n": { "zh": "AD 域名(本地账号请用 --local-auth)" },
         "placeholder": "lab.local"
       },
       {
         "label": "Local Auth",
+        "labelI18n": { "zh": "本地认证" },
         "flag": "--local-auth",
         "type": "boolean",
-        "description": "Authenticate against local SAM (not domain)"
+        "description": "Authenticate against local SAM (not domain)",
+        "descriptionI18n": { "zh": "用本地 SAM 认证(而非 AD 域)" }
       },
       {
         "label": "Kerberos",
+        "labelI18n": { "zh": "Kerberos" },
         "flag": "-k",
         "type": "boolean",
-        "description": "Use Kerberos auth"
+        "description": "Use Kerberos auth",
+        "descriptionI18n": { "zh": "使用 Kerberos 认证" }
       },
       {
         "label": "Use Cache",
+        "labelI18n": { "zh": "使用 KCache" },
         "flag": "--use-kcache",
         "type": "boolean",
-        "description": "Use Kerberos credential cache"
+        "description": "Use Kerberos credential cache",
+        "descriptionI18n": { "zh": "使用 Kerberos 凭据缓存" }
       },
       {
         "label": "Module",
+        "labelI18n": { "zh": "模块" },
         "flag": "-M",
         "type": "string",
         "description": "Run a built-in module (e.g. spider_plus, lsassy, mimikatz)",
+        "descriptionI18n": { "zh": "运行内置模块(如 spider_plus / lsassy / mimikatz)" },
         "placeholder": "spider_plus"
       },
       {
         "label": "Module Options",
+        "labelI18n": { "zh": "模块选项" },
         "flag": "-o",
         "type": "string",
         "description": "Module options (KEY=VALUE space-separated)",
+        "descriptionI18n": { "zh": "模块选项(KEY=VALUE，空格分隔)" },
         "placeholder": "EXFILE=secrets.txt"
       },
       {
         "label": "Shares",
+        "labelI18n": { "zh": "枚举共享" },
         "flag": "--shares",
         "type": "boolean",
-        "description": "Enumerate shares + permissions"
+        "description": "Enumerate shares + permissions",
+        "descriptionI18n": { "zh": "枚举共享 + 权限" }
       },
       {
         "label": "Sessions",
+        "labelI18n": { "zh": "枚举会话" },
         "flag": "--sessions",
         "type": "boolean",
-        "description": "Enumerate logged-on sessions"
+        "description": "Enumerate logged-on sessions",
+        "descriptionI18n": { "zh": "枚举已登录会话" }
       },
       {
         "label": "Loggedon Users",
+        "labelI18n": { "zh": "在线用户" },
         "flag": "--loggedon-users",
         "type": "boolean",
-        "description": "Enumerate currently logged-on users"
+        "description": "Enumerate currently logged-on users",
+        "descriptionI18n": { "zh": "枚举当前已登录的用户" }
       },
       {
         "label": "Users",
+        "labelI18n": { "zh": "域用户" },
         "flag": "--users",
         "type": "boolean",
-        "description": "Enumerate domain users"
+        "description": "Enumerate domain users",
+        "descriptionI18n": { "zh": "枚举域用户" }
       },
       {
         "label": "Groups",
+        "labelI18n": { "zh": "域组" },
         "flag": "--groups",
         "type": "boolean",
-        "description": "Enumerate domain groups"
+        "description": "Enumerate domain groups",
+        "descriptionI18n": { "zh": "枚举域组" }
       },
       {
         "label": "Pass Pol",
+        "labelI18n": { "zh": "密码策略" },
         "flag": "--pass-pol",
         "type": "boolean",
-        "description": "Dump password policy"
+        "description": "Dump password policy",
+        "descriptionI18n": { "zh": "导出密码策略" }
       },
       {
         "label": "Execute",
+        "labelI18n": { "zh": "执行命令" },
         "flag": "-x",
         "type": "string",
         "description": "Execute command on target",
+        "descriptionI18n": { "zh": "在目标上执行命令" },
         "placeholder": "whoami"
       },
       {
         "label": "Threads",
+        "labelI18n": { "zh": "并发数" },
         "flag": "--threads",
         "type": "string",
         "description": "Concurrent targets",
+        "descriptionI18n": { "zh": "并发目标数" },
         "default": "100"
       },
       {
         "label": "Continue on Success",
+        "labelI18n": { "zh": "成功后继续" },
         "flag": "--continue-on-success",
         "type": "boolean",
-        "description": "Don't stop on first valid login per target"
+        "description": "Don't stop on first valid login per target",
+        "descriptionI18n": { "zh": "找到一组有效凭据后不要停" }
       }
     ],
     "skills": [
       {
         "id": "smb-spray",
         "name": "SMB password spray (one user, many hosts)",
+        "nameI18n": { "zh": "SMB 密码喷洒(单用户多主机)" },
         "description": "Spray a single password across CIDR",
+        "descriptionI18n": { "zh": "用同一个密码喷洒整个 CIDR" },
         "args": "smb {{cidr}} -u {{user}} -p {{pass}} --continue-on-success",
-        "tags": ["spray", "smb"]
+        "tags": ["spray", "smb"],
+        "tagsI18n": { "zh": ["喷洒", "SMB"] }
       },
       {
         "id": "smb-pth",
         "name": "Pass-the-Hash via SMB",
+        "nameI18n": { "zh": "通过 SMB 进行 PtH" },
         "description": "Use NTLM hash to auth across hosts",
+        "descriptionI18n": { "zh": "用 NTLM 哈希在多台主机间认证" },
         "args": "smb {{cidr}} -u {{user}} -H {{hash}} --local-auth",
-        "tags": ["pth", "smb"]
+        "tags": ["pth", "smb"],
+        "tagsI18n": { "zh": ["PtH", "SMB"] }
       },
       {
         "id": "winrm-exec",
         "name": "WinRM remote command",
+        "nameI18n": { "zh": "WinRM 远程命令" },
         "description": "Run command on each WinRM-enabled host",
+        "descriptionI18n": { "zh": "在每台启用 WinRM 的主机上运行命令" },
         "args": "winrm {{cidr}} -u {{user}} -p {{pass}} -x \"whoami\"",
-        "tags": ["winrm", "exec"]
+        "tags": ["winrm", "exec"],
+        "tagsI18n": { "zh": ["WinRM", "执行"] }
       },
       {
         "id": "smb-shares",
         "name": "Enumerate shares",
+        "nameI18n": { "zh": "枚举共享" },
         "description": "List shares + ACL with given creds",
+        "descriptionI18n": { "zh": "用给定凭据列出共享 + ACL" },
         "args": "smb {{cidr}} -u {{user}} -p {{pass}} --shares",
-        "tags": ["recon"]
+        "tags": ["recon"],
+        "tagsI18n": { "zh": ["侦察"] }
       },
       {
         "id": "lsassy-dump",
         "name": "Lsassy LSASS dump",
+        "nameI18n": { "zh": "Lsassy 抓 LSASS" },
         "description": "Use lsassy module to dump LSASS via SMB",
+        "descriptionI18n": { "zh": "通过 lsassy 模块从 SMB dump LSASS" },
         "args": "smb {{cidr}} -u {{user}} -p {{pass}} -M lsassy",
-        "tags": ["dump", "credentials"]
+        "tags": ["dump", "credentials"],
+        "tagsI18n": { "zh": ["Dump", "凭据"] }
       },
       {
         "id": "ldap-users",
         "name": "LDAP user enum (no creds)",
+        "nameI18n": { "zh": "LDAP 用户枚举(免凭据)" },
         "description": "Anonymous LDAP enumeration",
+        "descriptionI18n": { "zh": "匿名 LDAP 枚举" },
         "args": "ldap {{target}} -u '' -p '' --users",
-        "tags": ["ad", "ldap"]
+        "tags": ["ad", "ldap"],
+        "tagsI18n": { "zh": ["AD 域", "LDAP"] }
       },
       {
         "id": "ssh-spray",
         "name": "SSH spray",
+        "nameI18n": { "zh": "SSH 喷洒" },
         "description": "SSH credential spraying",
+        "descriptionI18n": { "zh": "SSH 凭据喷洒" },
         "args": "ssh {{cidr}} -u {{users}} -p {{passes}} --continue-on-success",
-        "tags": ["ssh", "spray"]
+        "tags": ["ssh", "spray"],
+        "tagsI18n": { "zh": ["SSH", "喷洒"] }
       }
     ],
     "output": {

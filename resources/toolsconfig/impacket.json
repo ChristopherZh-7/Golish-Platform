@@ -3,6 +3,7 @@
     "id": "impacket",
     "name": "impacket",
     "description": "Collection of Python classes for working with network protocols - psexec, secretsdump, GetNPUsers, mimikatz over SMB, and more",
+    "descriptionI18n": { "zh": "Python 网络协议类库集合 —— psexec / secretsdump / GetNPUsers / SMB 上的 mimikatz 等" },
     "executable": "impacket-secretsdump",
     "runtime": "python",
     "runtimeVersion": "3.11",
@@ -11,6 +12,7 @@
     "subcategory": "ad-tools",
     "tier": "essential",
     "tags": ["ad", "smb", "kerberos", "post-exploit", "credentials"],
+    "tagsI18n": { "zh": ["AD 域", "SMB", "Kerberos", "后渗透", "凭据"] },
     "install": {
       "method": "pip",
       "source": "impacket"
@@ -18,91 +20,113 @@
     "params": [
       {
         "label": "Tool Name",
+        "labelI18n": { "zh": "子工具" },
         "flag": "",
         "type": "select",
         "required": true,
         "description": "Which impacket sub-tool to invoke (run separately)",
+        "descriptionI18n": { "zh": "要调用的 impacket 子工具(各自单独运行)" },
         "options": [
-          { "value": "secretsdump", "label": "secretsdump - dump SAM/LSA/NTDS" },
-          { "value": "psexec", "label": "psexec - admin SMB shell" },
-          { "value": "wmiexec", "label": "wmiexec - WMI shell" },
-          { "value": "smbexec", "label": "smbexec - SMB pipe shell" },
-          { "value": "atexec", "label": "atexec - schtasks shell" },
-          { "value": "GetNPUsers", "label": "GetNPUsers - AS-REP roasting" },
-          { "value": "GetUserSPNs", "label": "GetUserSPNs - Kerberoasting" },
-          { "value": "ticketer", "label": "ticketer - golden/silver ticket" },
-          { "value": "addcomputer", "label": "addcomputer - add machine acct" },
-          { "value": "rpcdump", "label": "rpcdump - RPC enumeration" },
-          { "value": "smbclient", "label": "smbclient - SMB browse" },
-          { "value": "lookupsid", "label": "lookupsid - SID enumeration" },
-          { "value": "ntlmrelayx", "label": "ntlmrelayx - NTLM relay" }
+          { "value": "secretsdump", "label": "secretsdump - dump SAM/LSA/NTDS", "labelI18n": { "zh": "secretsdump - 抓取 SAM / LSA / NTDS" } },
+          { "value": "psexec", "label": "psexec - admin SMB shell", "labelI18n": { "zh": "psexec - 管理员 SMB Shell" } },
+          { "value": "wmiexec", "label": "wmiexec - WMI shell", "labelI18n": { "zh": "wmiexec - WMI Shell" } },
+          { "value": "smbexec", "label": "smbexec - SMB pipe shell", "labelI18n": { "zh": "smbexec - SMB 管道 Shell" } },
+          { "value": "atexec", "label": "atexec - schtasks shell", "labelI18n": { "zh": "atexec - 计划任务 Shell" } },
+          { "value": "GetNPUsers", "label": "GetNPUsers - AS-REP roasting", "labelI18n": { "zh": "GetNPUsers - AS-REP Roasting" } },
+          { "value": "GetUserSPNs", "label": "GetUserSPNs - Kerberoasting", "labelI18n": { "zh": "GetUserSPNs - Kerberoasting" } },
+          { "value": "ticketer", "label": "ticketer - golden/silver ticket", "labelI18n": { "zh": "ticketer - 黄金 / 白银票据" } },
+          { "value": "addcomputer", "label": "addcomputer - add machine acct", "labelI18n": { "zh": "addcomputer - 添加机器账号" } },
+          { "value": "rpcdump", "label": "rpcdump - RPC enumeration", "labelI18n": { "zh": "rpcdump - RPC 枚举" } },
+          { "value": "smbclient", "label": "smbclient - SMB browse", "labelI18n": { "zh": "smbclient - 浏览 SMB" } },
+          { "value": "lookupsid", "label": "lookupsid - SID enumeration", "labelI18n": { "zh": "lookupsid - SID 枚举" } },
+          { "value": "ntlmrelayx", "label": "ntlmrelayx - NTLM relay", "labelI18n": { "zh": "ntlmrelayx - NTLM 中继" } }
         ]
       },
       {
         "label": "Target",
+        "labelI18n": { "zh": "目标" },
         "flag": "",
         "type": "string",
         "required": true,
         "description": "Target spec, varies per sub-tool (e.g. user@host, host)",
+        "descriptionI18n": { "zh": "目标规格(随子工具而异，如 user@host、host)" },
         "placeholder": "lab.local/admin:Pass@10.0.0.5"
       },
       {
         "label": "NTLM Hash",
+        "labelI18n": { "zh": "NTLM 哈希" },
         "flag": "-hashes",
         "type": "string",
         "description": "Pass-the-Hash format LM:NT",
+        "descriptionI18n": { "zh": "Pass-the-Hash 格式 LM:NT" },
         "placeholder": "aad3b...:8846f..."
       },
       {
         "label": "Just DCSync",
+        "labelI18n": { "zh": "仅 DCSync" },
         "flag": "-just-dc",
         "type": "boolean",
-        "description": "(secretsdump) only DCSync NTDS"
+        "description": "(secretsdump) only DCSync NTDS",
+        "descriptionI18n": { "zh": "(secretsdump) 仅 DCSync 抓 NTDS" }
       },
       {
         "label": "Just DC NTLM",
+        "labelI18n": { "zh": "仅 NTLM 哈希" },
         "flag": "-just-dc-ntlm",
         "type": "boolean",
-        "description": "(secretsdump) only NTLM hashes"
+        "description": "(secretsdump) only NTLM hashes",
+        "descriptionI18n": { "zh": "(secretsdump) 仅抓 NTLM 哈希" }
       },
       {
         "label": "User File",
+        "labelI18n": { "zh": "用户文件" },
         "flag": "-usersfile",
         "type": "string",
         "description": "(GetNPUsers) file with usernames",
+        "descriptionI18n": { "zh": "(GetNPUsers) 用户名列表文件" },
         "placeholder": "users.txt"
       },
       {
         "label": "No Pass",
+        "labelI18n": { "zh": "免密" },
         "flag": "-no-pass",
         "type": "boolean",
-        "description": "Don't ask for password"
+        "description": "Don't ask for password",
+        "descriptionI18n": { "zh": "不询问密码" }
       },
       {
         "label": "Domain Controller",
+        "labelI18n": { "zh": "DC IP" },
         "flag": "-dc-ip",
         "type": "string",
         "description": "DC IP to query",
+        "descriptionI18n": { "zh": "要查询的 DC IP" },
         "placeholder": "10.0.0.10"
       },
       {
         "label": "Kerberos",
+        "labelI18n": { "zh": "Kerberos" },
         "flag": "-k",
         "type": "boolean",
-        "description": "Use Kerberos auth (with ccache)"
+        "description": "Use Kerberos auth (with ccache)",
+        "descriptionI18n": { "zh": "使用 Kerberos 认证(配合 ccache)" }
       },
       {
         "label": "AES Key",
+        "labelI18n": { "zh": "AES Key" },
         "flag": "-aesKey",
         "type": "string",
         "description": "AES key for Kerberos",
+        "descriptionI18n": { "zh": "Kerberos 用的 AES Key" },
         "placeholder": "abc123..."
       },
       {
         "label": "Output File",
+        "labelI18n": { "zh": "输出文件" },
         "flag": "-outputfile",
         "type": "string",
         "description": "Save dump to file",
+        "descriptionI18n": { "zh": "把 dump 保存到文件" },
         "placeholder": "ntds.dump"
       }
     ],
@@ -110,51 +134,72 @@
       {
         "id": "secretsdump-dcsync",
         "name": "DCSync NTDS dump",
+        "nameI18n": { "zh": "DCSync 抓 NTDS" },
         "description": "Pull all hashes from DC via DCSync",
+        "descriptionI18n": { "zh": "通过 DCSync 从 DC 抓取所有哈希" },
         "args": "secretsdump -just-dc {{domain}}/{{user}}:{{pass}}@{{dc_ip}}",
-        "tags": ["dcsync", "ad"]
+        "tags": ["dcsync", "ad"],
+        "tagsI18n": { "zh": ["DCSync", "AD 域"] }
       },
       {
         "id": "secretsdump-local",
         "name": "Local SAM/LSA dump (SMB admin)",
+        "nameI18n": { "zh": "本地 SAM / LSA Dump(SMB Admin)" },
         "description": "Dump local hashes from a host via SMB",
+        "descriptionI18n": { "zh": "通过 SMB 从主机 dump 本地哈希" },
         "args": "secretsdump {{user}}:{{pass}}@{{target}}",
-        "tags": ["local", "sam"]
+        "tags": ["local", "sam"],
+        "tagsI18n": { "zh": ["本地", "SAM"] }
       },
       {
         "id": "psexec-shell",
         "name": "PsExec admin shell",
+        "nameI18n": { "zh": "PsExec 管理员 Shell" },
         "description": "Spawn SYSTEM shell via SMB (admin needed)",
+        "descriptionI18n": { "zh": "通过 SMB 拿到 SYSTEM Shell(需要管理员)" },
         "args": "psexec {{user}}:{{pass}}@{{target}}",
-        "tags": ["shell", "admin"]
+        "tags": ["shell", "admin"],
+        "tagsI18n": { "zh": ["Shell", "管理员"] }
       },
       {
         "id": "wmiexec-shell",
         "name": "WMIExec shell (no SMB writeback)",
+        "nameI18n": { "zh": "WMIExec Shell(无 SMB 回写)" },
         "description": "Stealthier than psexec",
+        "descriptionI18n": { "zh": "比 psexec 更隐蔽" },
         "args": "wmiexec {{user}}:{{pass}}@{{target}}",
-        "tags": ["shell", "stealth"]
+        "tags": ["shell", "stealth"],
+        "tagsI18n": { "zh": ["Shell", "隐蔽"] }
       },
       {
         "id": "asrep-roast",
         "name": "AS-REP roasting",
+        "nameI18n": { "zh": "AS-REP Roasting" },
         "description": "Find users without preauth + dump TGTs",
+        "descriptionI18n": { "zh": "找出关闭预认证的用户并 dump TGT" },
         "args": "GetNPUsers {{domain}}/ -no-pass -usersfile {{users}} -dc-ip {{dc_ip}}",
-        "tags": ["asrep", "ad"]
+        "tags": ["asrep", "ad"],
+        "tagsI18n": { "zh": ["AS-REP", "AD 域"] }
       },
       {
         "id": "kerberoast",
         "name": "Kerberoast SPNs",
+        "nameI18n": { "zh": "Kerberoast SPN" },
         "description": "Request TGS for all SPNs",
+        "descriptionI18n": { "zh": "为所有 SPN 申请 TGS" },
         "args": "GetUserSPNs -request {{domain}}/{{user}}:{{pass}} -dc-ip {{dc_ip}}",
-        "tags": ["kerberos", "ad"]
+        "tags": ["kerberos", "ad"],
+        "tagsI18n": { "zh": ["Kerberos", "AD 域"] }
       },
       {
         "id": "ntlmrelay",
         "name": "NTLM relay (responder mate)",
+        "nameI18n": { "zh": "NTLM 中继(配合 Responder)" },
         "description": "Relay captured auth to SMB target list",
+        "descriptionI18n": { "zh": "把抓到的认证中继到 SMB 目标列表" },
         "args": "ntlmrelayx -tf targets.txt -smb2support",
-        "tags": ["relay"]
+        "tags": ["relay"],
+        "tagsI18n": { "zh": ["Relay"] }
       }
     ],
     "output": {

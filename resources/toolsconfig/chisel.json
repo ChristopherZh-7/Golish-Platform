@@ -3,6 +3,7 @@
     "id": "chisel",
     "name": "chisel",
     "description": "Fast TCP/UDP tunnel over HTTP secured via SSH - reverse / forward port-forwarding through firewalls",
+    "descriptionI18n": { "zh": "通过 HTTP + SSH 加密的高速 TCP/UDP 隧道工具，可在防火墙后做正向/反向端口转发" },
     "executable": "chisel",
     "runtime": "native",
     "launchMode": "cli",
@@ -10,6 +11,7 @@
     "subcategory": "tunnel",
     "tier": "essential",
     "tags": ["tunnel", "pivot", "reverse-proxy", "post-exploit"],
+    "tagsI18n": { "zh": ["隧道", "横向移动", "反向代理", "后渗透"] },
     "install": {
       "method": "homebrew",
       "source": "chisel",
@@ -19,139 +21,183 @@
     "params": [
       {
         "label": "Mode",
+        "labelI18n": { "zh": "模式" },
         "flag": "",
         "type": "select",
         "required": true,
         "description": "Sub-command: server or client",
+        "descriptionI18n": { "zh": "子命令：server 或 client" },
         "options": [
-          { "value": "server", "label": "server (run on attacker)" },
-          { "value": "client", "label": "client (run on victim)" }
+          { "value": "server", "label": "server (run on attacker)", "labelI18n": { "zh": "server(攻击机运行)" } },
+          { "value": "client", "label": "client (run on victim)", "labelI18n": { "zh": "client(受害机运行)" } }
         ]
       },
       {
         "label": "Host:Port",
+        "labelI18n": { "zh": "服务端地址" },
         "flag": "",
         "type": "string",
         "description": "client mode: server URL (e.g. http://1.2.3.4:8080)",
+        "descriptionI18n": { "zh": "client 模式：服务端 URL(如 http://1.2.3.4:8080)" },
         "placeholder": "http://1.2.3.4:8080"
       },
       {
         "label": "Tunnels",
+        "labelI18n": { "zh": "隧道规则" },
         "flag": "",
         "type": "string",
         "description": "client tunnels (e.g. R:8000:127.0.0.1:80, 1080:socks)",
+        "descriptionI18n": { "zh": "client 端隧道规则(如 R:8000:127.0.0.1:80、1080:socks)" },
         "placeholder": "R:1080:socks"
       },
       {
         "label": "Listen Host",
+        "labelI18n": { "zh": "监听地址" },
         "flag": "--host",
         "type": "string",
         "description": "server: bind host",
+        "descriptionI18n": { "zh": "server：绑定主机" },
         "default": "0.0.0.0"
       },
       {
         "label": "Listen Port",
+        "labelI18n": { "zh": "监听端口" },
         "flag": "--port",
         "type": "string",
         "description": "server: bind port",
+        "descriptionI18n": { "zh": "server：绑定端口" },
         "default": "8080",
         "placeholder": "8080"
       },
       {
         "label": "Reverse",
+        "labelI18n": { "zh": "反向隧道" },
         "flag": "--reverse",
         "type": "boolean",
-        "description": "server: allow clients to request reverse tunnels"
+        "description": "server: allow clients to request reverse tunnels",
+        "descriptionI18n": { "zh": "server：允许 client 申请反向隧道" }
       },
       {
         "label": "Auth",
+        "labelI18n": { "zh": "认证" },
         "flag": "--auth",
         "type": "string",
         "description": "user:password (server side); --auth user:pass also on client",
+        "descriptionI18n": { "zh": "user:password(server 侧)；client 也需要传同样的 --auth user:pass" },
         "placeholder": "user:secret"
       },
       {
         "label": "Keepalive",
+        "labelI18n": { "zh": "心跳间隔" },
         "flag": "--keepalive",
         "type": "string",
         "description": "Keepalive interval (e.g. 25s)",
+        "descriptionI18n": { "zh": "心跳间隔(如 25s)" },
         "default": "25s"
       },
       {
         "label": "TLS Cert",
+        "labelI18n": { "zh": "TLS 证书" },
         "flag": "--tls-cert",
         "type": "string",
         "description": "server: TLS cert path",
+        "descriptionI18n": { "zh": "server：TLS 证书路径" },
         "placeholder": "cert.pem"
       },
       {
         "label": "TLS Key",
+        "labelI18n": { "zh": "TLS 私钥" },
         "flag": "--tls-key",
         "type": "string",
         "description": "server: TLS key path",
+        "descriptionI18n": { "zh": "server：TLS 私钥路径" },
         "placeholder": "key.pem"
       },
       {
         "label": "Skip TLS Verify",
+        "labelI18n": { "zh": "跳过 TLS 验证" },
         "flag": "--tls-skip-verify",
         "type": "boolean",
-        "description": "client: skip TLS cert verify (self-signed)"
+        "description": "client: skip TLS cert verify (self-signed)",
+        "descriptionI18n": { "zh": "client：跳过 TLS 证书校验(适合自签名)" }
       },
       {
         "label": "SOCKS5",
+        "labelI18n": { "zh": "SOCKS5" },
         "flag": "--socks5",
         "type": "boolean",
-        "description": "server: enable SOCKS5 backend"
+        "description": "server: enable SOCKS5 backend",
+        "descriptionI18n": { "zh": "server：启用 SOCKS5 后端" }
       },
       {
         "label": "Verbose",
+        "labelI18n": { "zh": "详细输出" },
         "flag": "-v",
         "type": "boolean",
-        "description": "Verbose output"
+        "description": "Verbose output",
+        "descriptionI18n": { "zh": "详细输出" }
       }
     ],
     "skills": [
       {
         "id": "server-listen",
         "name": "Server (attacker) - allow reverse",
+        "nameI18n": { "zh": "Server(攻击机)——允许反向" },
         "description": "Listen on 8080, allow reverse tunnels & SOCKS",
+        "descriptionI18n": { "zh": "监听 8080，允许反向隧道与 SOCKS" },
         "args": "server --port 8080 --reverse --socks5",
-        "tags": ["server"]
+        "tags": ["server"],
+        "tagsI18n": { "zh": ["服务端"] }
       },
       {
         "id": "server-auth",
         "name": "Server with auth + reverse",
+        "nameI18n": { "zh": "Server——带认证 + 反向" },
         "description": "Auth-protected listener",
+        "descriptionI18n": { "zh": "带认证保护的监听" },
         "args": "server --port 8080 --reverse --auth user:secret",
-        "tags": ["server", "auth"]
+        "tags": ["server", "auth"],
+        "tagsI18n": { "zh": ["服务端", "认证"] }
       },
       {
         "id": "client-reverse-port",
         "name": "Client - reverse forward (victim → attacker)",
+        "nameI18n": { "zh": "Client——反向端口(受害 → 攻击机)" },
         "description": "Expose victim's :80 on attacker:8000",
+        "descriptionI18n": { "zh": "把受害机的 :80 暴露到攻击机的 :8000" },
         "args": "client http://{{server_ip}}:8080 R:8000:127.0.0.1:80",
-        "tags": ["client", "reverse"]
+        "tags": ["client", "reverse"],
+        "tagsI18n": { "zh": ["客户端", "反向"] }
       },
       {
         "id": "client-reverse-socks",
         "name": "Client - reverse SOCKS5",
+        "nameI18n": { "zh": "Client——反向 SOCKS5" },
         "description": "Open SOCKS5 proxy on attacker:1080 routing through victim",
+        "descriptionI18n": { "zh": "在攻击机 :1080 开 SOCKS5 代理，流量经受害机出口" },
         "args": "client http://{{server_ip}}:8080 R:1080:socks",
-        "tags": ["client", "socks"]
+        "tags": ["client", "socks"],
+        "tagsI18n": { "zh": ["客户端", "SOCKS"] }
       },
       {
         "id": "client-forward",
         "name": "Client - local forward",
+        "nameI18n": { "zh": "Client——本地转发" },
         "description": "Forward local 9000 → server's 192.168.1.10:80",
+        "descriptionI18n": { "zh": "本地 9000 转发到服务端可达的 192.168.1.10:80" },
         "args": "client http://{{server_ip}}:8080 9000:192.168.1.10:80",
-        "tags": ["client", "forward"]
+        "tags": ["client", "forward"],
+        "tagsI18n": { "zh": ["客户端", "正向"] }
       },
       {
         "id": "client-auth-tls",
         "name": "Client - TLS + auth",
+        "nameI18n": { "zh": "Client——TLS + 认证" },
         "description": "Connect via HTTPS with auth",
+        "descriptionI18n": { "zh": "通过 HTTPS + 认证连接" },
         "args": "client --auth user:secret https://{{server_ip}}:8443 R:1080:socks",
-        "tags": ["client", "auth", "tls"]
+        "tags": ["client", "auth", "tls"],
+        "tagsI18n": { "zh": ["客户端", "认证", "TLS"] }
       }
     ],
     "output": {

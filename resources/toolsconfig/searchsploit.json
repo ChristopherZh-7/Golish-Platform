@@ -3,6 +3,7 @@
     "id": "searchsploit",
     "name": "searchsploit",
     "description": "Offline command-line search of the Exploit-DB archive (CVE / vendor / product / nmap-XML)",
+    "descriptionI18n": { "zh": "本地命令行检索 Exploit-DB 漏洞库(支持 CVE / 厂商 / 产品 / nmap-XML)" },
     "executable": "searchsploit",
     "runtime": "native",
     "launchMode": "cli",
@@ -10,6 +11,7 @@
     "subcategory": "edb",
     "tier": "essential",
     "tags": ["exploit", "edb", "cve", "search"],
+    "tagsI18n": { "zh": ["漏洞利用", "Exploit-DB", "CVE", "检索"] },
     "install": {
       "method": "github",
       "source": "offensive-security/exploitdb"
@@ -17,82 +19,106 @@
     "params": [
       {
         "label": "Search Term",
+        "labelI18n": { "zh": "搜索词" },
         "flag": "",
         "type": "string",
         "required": true,
         "description": "Free-form search (vendor + product + version, or CVE)",
+        "descriptionI18n": { "zh": "自由搜索(厂商 + 产品 + 版本，或 CVE 号)" },
         "placeholder": "windows smb 2017"
       },
       {
         "label": "CVE",
+        "labelI18n": { "zh": "CVE" },
         "flag": "--cve",
         "type": "string",
         "description": "Search by CVE number",
+        "descriptionI18n": { "zh": "按 CVE 编号搜索" },
         "placeholder": "2017-0144"
       },
       {
         "label": "Title Only",
+        "labelI18n": { "zh": "仅标题" },
         "flag": "-t",
         "type": "boolean",
-        "description": "Match in title only (faster, less noise)"
+        "description": "Match in title only (faster, less noise)",
+        "descriptionI18n": { "zh": "只在标题中匹配(更快、噪音更少)" }
       },
       {
         "label": "Strict Match",
+        "labelI18n": { "zh": "严格匹配" },
         "flag": "-s",
         "type": "boolean",
-        "description": "Strict match (don't tokenize)"
+        "description": "Strict match (don't tokenize)",
+        "descriptionI18n": { "zh": "严格匹配(不分词)" }
       },
       {
         "label": "Exclude",
+        "labelI18n": { "zh": "排除" },
         "flag": "--exclude",
         "type": "string",
         "description": "Pipe-separated terms to exclude",
+        "descriptionI18n": { "zh": "要排除的词(竖线分隔)" },
         "placeholder": "PoC|/dos/"
       },
       {
         "label": "Path",
+        "labelI18n": { "zh": "EDB-ID 路径" },
         "flag": "-p",
         "type": "string",
         "description": "Show full path of an EDB-ID",
+        "descriptionI18n": { "zh": "显示某个 EDB-ID 的完整路径" },
         "placeholder": "42315"
       },
       {
         "label": "Mirror",
+        "labelI18n": { "zh": "复制到当前目录" },
         "flag": "-m",
         "type": "string",
         "description": "Copy exploit file to current dir by EDB-ID",
+        "descriptionI18n": { "zh": "按 EDB-ID 把利用脚本复制到当前目录" },
         "placeholder": "42315"
       },
       {
         "label": "Examine",
+        "labelI18n": { "zh": "查看" },
         "flag": "-x",
         "type": "string",
         "description": "Open exploit file in $PAGER by EDB-ID",
+        "descriptionI18n": { "zh": "用 $PAGER 打开指定 EDB-ID 的利用脚本" },
         "placeholder": "42315"
       },
       {
         "label": "Web Link",
+        "labelI18n": { "zh": "Web 链接" },
         "flag": "-w",
         "type": "boolean",
-        "description": "Print exploit-db.com URL"
+        "description": "Print exploit-db.com URL",
+        "descriptionI18n": { "zh": "打印 exploit-db.com 上的链接" }
       },
       {
         "label": "JSON Output",
+        "labelI18n": { "zh": "JSON 输出" },
         "flag": "-j",
         "type": "boolean",
-        "description": "Output JSON"
+        "description": "Output JSON",
+        "descriptionI18n": { "zh": "以 JSON 格式输出" }
       },
       {
         "label": "Update",
+        "labelI18n": { "zh": "更新库" },
         "flag": "-u",
         "type": "boolean",
-        "description": "Update local exploit-db database"
+        "description": "Update local exploit-db database",
+        "descriptionI18n": { "zh": "更新本地 exploit-db 数据库" }
       },
       {
         "label": "Nmap XML",
+        "labelI18n": { "zh": "Nmap XML" },
         "flag": "--nmap",
         "type": "string",
         "description": "Read nmap XML, search exploits per host/service",
+        "descriptionI18n": { "zh": "读取 nmap XML，按主机/服务匹配利用" },
         "placeholder": "scan.xml"
       }
     ],
@@ -100,51 +126,72 @@
       {
         "id": "search-product",
         "name": "Search by product / version",
+        "nameI18n": { "zh": "按产品 / 版本搜索" },
         "description": "Free-form search title only",
+        "descriptionI18n": { "zh": "在标题中自由搜索" },
         "args": "-t {{product}} {{version}}",
-        "tags": ["search"]
+        "tags": ["search"],
+        "tagsI18n": { "zh": ["搜索"] }
       },
       {
         "id": "search-cve",
         "name": "Search by CVE",
+        "nameI18n": { "zh": "按 CVE 搜索" },
         "description": "Find exploits for a specific CVE",
+        "descriptionI18n": { "zh": "查找指定 CVE 的利用脚本" },
         "args": "--cve {{cve}}",
-        "tags": ["cve"]
+        "tags": ["cve"],
+        "tagsI18n": { "zh": ["CVE"] }
       },
       {
         "id": "exclude-noise",
         "name": "Search excluding DoS/PoC",
+        "nameI18n": { "zh": "排除 DoS / PoC 噪音" },
         "description": "Skip noisy categories",
+        "descriptionI18n": { "zh": "跳过噪音较多的分类" },
         "args": "-t {{term}} --exclude=\"/dos/|/poc/\"",
-        "tags": ["search"]
+        "tags": ["search"],
+        "tagsI18n": { "zh": ["搜索"] }
       },
       {
         "id": "fetch-exploit",
         "name": "Mirror exploit by EDB-ID",
+        "nameI18n": { "zh": "按 EDB-ID 拉脚本" },
         "description": "Copy exploit code to current dir",
+        "descriptionI18n": { "zh": "把利用代码复制到当前目录" },
         "args": "-m {{edb_id}}",
-        "tags": ["fetch"]
+        "tags": ["fetch"],
+        "tagsI18n": { "zh": ["下载"] }
       },
       {
         "id": "examine",
         "name": "Read exploit by EDB-ID",
+        "nameI18n": { "zh": "按 EDB-ID 查看" },
         "description": "Open in pager",
+        "descriptionI18n": { "zh": "用分页器打开" },
         "args": "-x {{edb_id}}",
-        "tags": ["read"]
+        "tags": ["read"],
+        "tagsI18n": { "zh": ["查看"] }
       },
       {
         "id": "nmap-xml",
         "name": "Search exploits from nmap XML",
+        "nameI18n": { "zh": "从 nmap XML 匹配利用" },
         "description": "Match nmap XML services to known exploits",
+        "descriptionI18n": { "zh": "把 nmap XML 中的服务匹配到已知利用" },
         "args": "--nmap {{nmap_xml}}",
-        "tags": ["pipeline"]
+        "tags": ["pipeline"],
+        "tagsI18n": { "zh": ["Pipeline"] }
       },
       {
         "id": "update",
         "name": "Update DB",
+        "nameI18n": { "zh": "更新数据库" },
         "description": "Pull latest exploit-db files",
+        "descriptionI18n": { "zh": "拉取最新的 exploit-db 文件" },
         "args": "-u",
-        "tags": ["maintenance"]
+        "tags": ["maintenance"],
+        "tagsI18n": { "zh": ["维护"] }
       }
     ],
     "output": {

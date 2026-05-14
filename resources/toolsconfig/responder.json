@@ -3,6 +3,7 @@
     "id": "responder",
     "name": "responder",
     "description": "LLMNR / NBT-NS / mDNS poisoner with rogue authentication servers (capture NetNTLMv2 hashes)",
+    "descriptionI18n": { "zh": "LLMNR / NBT-NS / mDNS 投毒工具，内置伪造认证服务器(可抓取 NetNTLMv2 哈希)" },
     "executable": "responder",
     "runtime": "python",
     "runtimeVersion": "3.11",
@@ -11,6 +12,7 @@
     "subcategory": "mitm",
     "tier": "essential",
     "tags": ["mitm", "ad", "credentials", "smb", "llmnr"],
+    "tagsI18n": { "zh": ["MITM", "AD 域", "凭据", "SMB", "LLMNR"] },
     "install": {
       "method": "github",
       "source": "lgandx/Responder"
@@ -18,72 +20,94 @@
     "params": [
       {
         "label": "Interface",
+        "labelI18n": { "zh": "网卡" },
         "flag": "-I",
         "type": "string",
         "required": true,
         "description": "Network interface to bind to",
+        "descriptionI18n": { "zh": "要绑定的网络接口" },
         "placeholder": "eth0"
       },
       {
         "label": "Analyze Mode",
+        "labelI18n": { "zh": "分析模式" },
         "flag": "-A",
         "type": "boolean",
-        "description": "Passive analysis - only listen, never poison"
+        "description": "Passive analysis - only listen, never poison",
+        "descriptionI18n": { "zh": "被动分析——只监听不投毒" }
       },
       {
         "label": "WPAD",
+        "labelI18n": { "zh": "WPAD" },
         "flag": "-w",
         "type": "boolean",
-        "description": "Start the WPAD rogue proxy server (high impact)"
+        "description": "Start the WPAD rogue proxy server (high impact)",
+        "descriptionI18n": { "zh": "启动 WPAD 恶意代理服务(影响范围大)" }
       },
       {
         "label": "Force WPAD Auth",
+        "labelI18n": { "zh": "强制 WPAD 认证" },
         "flag": "-F",
         "type": "boolean",
-        "description": "Force NTLM auth on WPAD"
+        "description": "Force NTLM auth on WPAD",
+        "descriptionI18n": { "zh": "在 WPAD 上强制要求 NTLM 认证" }
       },
       {
         "label": "Basic Auth",
+        "labelI18n": { "zh": "Basic 认证" },
         "flag": "-b",
         "type": "boolean",
-        "description": "Return basic auth instead of NTLM"
+        "description": "Return basic auth instead of NTLM",
+        "descriptionI18n": { "zh": "返回 Basic 认证代替 NTLM" }
       },
       {
         "label": "Force LM",
+        "labelI18n": { "zh": "强制 LM" },
         "flag": "--lm",
         "type": "boolean",
-        "description": "Force LM hashing downgrade (legacy systems)"
+        "description": "Force LM hashing downgrade (legacy systems)",
+        "descriptionI18n": { "zh": "强制 LM 哈希降级(用于老旧系统)" }
       },
       {
         "label": "Disable ESS",
+        "labelI18n": { "zh": "禁用 ESS" },
         "flag": "--disable-ess",
         "type": "boolean",
-        "description": "Force NetNTLMv1 by disabling ESS"
+        "description": "Force NetNTLMv1 by disabling ESS",
+        "descriptionI18n": { "zh": "禁用 ESS 以强制走 NetNTLMv1" }
       },
       {
         "label": "External IP",
+        "labelI18n": { "zh": "应答 IP" },
         "flag": "-e",
         "type": "string",
         "description": "Spoof poisoning answer with this IP",
+        "descriptionI18n": { "zh": "投毒应答中使用的伪造 IP" },
         "placeholder": "10.0.0.5"
       },
       {
         "label": "Verbose",
+        "labelI18n": { "zh": "详细输出" },
         "flag": "-v",
         "type": "boolean",
-        "description": "Verbose output"
+        "description": "Verbose output",
+        "descriptionI18n": { "zh": "详细输出" }
       },
       {
         "label": "Quiet",
+        "labelI18n": { "zh": "安静模式" },
         "flag": "-q",
         "type": "boolean",
-        "description": "Quiet mode (no banner)"
+        "description": "Quiet mode (no banner)",
+        "descriptionI18n": { "zh": "安静模式(不打 Banner)" }
       },
       {
         "label": "Domain",
+        "labelI18n": { "zh": "DNS 域" },
         "flag": "-d",
         "type": "string",
         "description": "Spoof DNS for this domain (full DNS poisoning)",
+        "descriptionI18n": { "zh": "对该域进行 DNS 投毒(完整 DNS 欺骗)" },
         "placeholder": "lab.local"
       }
     ],
@@ -91,37 +115,52 @@
       {
         "id": "passive-analyze",
         "name": "Passive analyze (no poison)",
+        "nameI18n": { "zh": "被动分析(不投毒)" },
         "description": "Listen only - safe in most networks",
+        "descriptionI18n": { "zh": "仅监听，多数生产网络可安全运行" },
         "args": "-I {{iface}} -A",
-        "tags": ["passive", "stealth"]
+        "tags": ["passive", "stealth"],
+        "tagsI18n": { "zh": ["被动", "隐蔽"] }
       },
       {
         "id": "default-poison",
         "name": "Default poisoning (LLMNR/NBT-NS)",
+        "nameI18n": { "zh": "默认投毒(LLMNR / NBT-NS)" },
         "description": "Standard responder run",
+        "descriptionI18n": { "zh": "Responder 的标准运行模式" },
         "args": "-I {{iface}} -wF",
-        "tags": ["mitm", "active"]
+        "tags": ["mitm", "active"],
+        "tagsI18n": { "zh": ["MITM", "主动"] }
       },
       {
         "id": "wpad-proxy",
         "name": "WPAD rogue proxy",
+        "nameI18n": { "zh": "WPAD 恶意代理" },
         "description": "Captures HTTP auth via WPAD",
+        "descriptionI18n": { "zh": "通过 WPAD 抓取 HTTP 认证" },
         "args": "-I {{iface}} -wF -v",
-        "tags": ["wpad"]
+        "tags": ["wpad"],
+        "tagsI18n": { "zh": ["WPAD"] }
       },
       {
         "id": "ntlmv1-downgrade",
         "name": "Force NTLMv1 downgrade",
+        "nameI18n": { "zh": "强制降级 NTLMv1" },
         "description": "Capture NTLMv1 (faster to crack)",
+        "descriptionI18n": { "zh": "抓取 NTLMv1(更易破解)" },
         "args": "-I {{iface}} -wF --disable-ess --lm",
-        "tags": ["downgrade"]
+        "tags": ["downgrade"],
+        "tagsI18n": { "zh": ["降级"] }
       },
       {
         "id": "no-smb-relay",
         "name": "Disable SMB/HTTP for ntlmrelayx",
+        "nameI18n": { "zh": "腾出 SMB / HTTP 给 ntlmrelayx" },
         "description": "Free up SMB/HTTP so ntlmrelayx can listen",
+        "descriptionI18n": { "zh": "释放 SMB / HTTP 端口让 ntlmrelayx 能监听" },
         "args": "-I {{iface}} -wF",
-        "tags": ["relay"]
+        "tags": ["relay"],
+        "tagsI18n": { "zh": ["Relay"] }
       }
     ],
     "output": {
