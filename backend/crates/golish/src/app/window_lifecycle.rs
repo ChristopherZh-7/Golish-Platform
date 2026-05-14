@@ -201,6 +201,11 @@ pub(crate) fn handle_window_event(window: &tauri::Window, event: &tauri::WindowE
             if CLOSING.swap(true, Ordering::SeqCst) {
                 return;
             }
+            tracing::info!(
+                window_label = %window.label(),
+                "[PG-DIAG][AppClose] CloseRequested fired — entering shutdown sequence \
+                 (NB: embedded PG is NOT stopped here, see app/bootstrap.rs mem::forget)"
+            );
             api.prevent_close();
             let w = window.clone();
             let app_handle = window.app_handle().clone();
@@ -212,6 +217,7 @@ pub(crate) fn handle_window_event(window: &tauri::Window, event: &tauri::WindowE
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(800)).await;
                 persist_window_state_from_window(&w).await;
+                tracing::info!("[PG-DIAG][AppClose] About to destroy window — PG will be force-killed");
                 w.destroy().ok();
             });
         }
@@ -230,10 +236,15 @@ pub(crate) fn handle_run_event(app_handle: &tauri::AppHandle, event: tauri::RunE
             return;
         }
 
+        tracing::info!(
+            "[PG-DIAG][AppExit] ExitRequested fired — persisting window state then exiting \
+             (NB: embedded PG is NOT stopped here, see app/bootstrap.rs mem::forget)"
+        );
         api.prevent_exit();
         let handle = app_handle.clone();
         tauri::async_runtime::spawn(async move {
             persist_window_state_on_exit(&handle).await;
+            tracing::info!("[PG-DIAG][AppExit] About to call handle.exit(0) — PG will be force-killed by Tauri runtime");
             handle.exit(0);
         });
     }

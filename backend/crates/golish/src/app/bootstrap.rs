@@ -160,19 +160,30 @@ pub(crate) fn init_telemetry_and_app_state() -> (Option<TelemetryGuard>, AppStat
 /// backing process alive for the lifetime of the app.
 pub(crate) fn spawn_embedded_pg(db_ready: golish_db::DbReadyGate) {
     async_runtime::spawn(async move {
-        tracing::info!("Starting embedded PostgreSQL database (background)...");
+        tracing::info!("[PG-DIAG] spawn_embedded_pg: kicking off background PG startup");
         match golish_db::GolishDb::start(golish_db::DbConfig::default()).await {
             Ok(_db) => {
                 tracing::info!(
                     has_pgvector = _db.has_pgvector,
-                    "Embedded PostgreSQL is fully ready"
+                    "[PG-DIAG] Embedded PostgreSQL is fully ready"
                 );
                 db_ready.set_pgvector_available(_db.has_pgvector);
                 db_ready.mark_ready();
+                // NB: intentional leak so the embedded PG keeps running for the
+                // whole app lifetime. Side effect: `EmbeddedPg::stop()` is
+                // NEVER called on exit, so PG is killed via TerminateProcess
+                // on Windows → leaves stale `postmaster.pid`. See
+                // golish-db/src/embedded/mod.rs::purge_corrupted_state for the
+                // downstream blast radius.
+                tracing::warn!(
+                    "[PG-DIAG] mem::forget(GolishDb) — PG will be force-killed on app exit \
+                     (no graceful stop_db). If pgdata gets wiped on next launch, search \
+                     logs for '[PURGE] About to DELETE pgdata'."
+                );
                 std::mem::forget(_db);
             }
             Err(e) => {
-                tracing::error!(error = %e, "Failed to start embedded PostgreSQL");
+                tracing::error!(error = ?e, "[PG-DIAG] Failed to start embedded PostgreSQL");
                 db_ready.mark_failed();
             }
         }

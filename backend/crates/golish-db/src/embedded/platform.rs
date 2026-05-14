@@ -104,7 +104,11 @@ pub(super) fn copy_binary(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 impl Drop for EmbeddedPg {
     fn drop(&mut self) {
-        // pg_embed handles cleanup on drop, but we log it
-        tracing::debug!("EmbeddedPg instance dropped");
+        // [PG-DIAG] Bumped from debug→info so it surfaces in Windows release
+        // builds. NB: golish bootstrap currently `std::mem::forget`s the
+        // GolishDb wrapper (see `app/bootstrap.rs::spawn_embedded_pg`), so
+        // in the GUI path this log line should NEVER fire — its presence
+        // would itself be a smoking gun.
+        tracing::info!("[PG-DIAG] EmbeddedPg instance dropped (graceful shutdown path)");
     }
 }

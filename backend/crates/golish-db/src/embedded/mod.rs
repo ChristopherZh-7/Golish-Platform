@@ -71,6 +71,7 @@ impl EmbeddedPg {
         info!(
             port = config.port,
             data_dir = %config.pg_data_dir.display(),
+            cache_dir = %config.pg_bin_cache_dir.display(),
             "Starting embedded PostgreSQL"
         );
 
@@ -79,29 +80,51 @@ impl EmbeddedPg {
         std::fs::create_dir_all(&config.pg_bin_cache_dir)
             .context("Failed to create PG binary cache directory")?;
 
+        // [DIAG] Snapshot pgdata + port state BEFORE we touch anything. Helps
+        // distinguish "fresh install" vs "stale postmaster.pid from a crashed
+        // previous run" vs "another PG holding the port" — the three root
+        // causes we keep guessing at on Windows.
+        Self::log_pg_data_state("pre-setup", &config);
+
         match Self::try_setup_and_start(config.clone()).await {
             Ok(this) => Ok(this),
             Err(first_err) => {
-                if !Self::is_recoverable_setup_error(&first_err) {
+                let recoverable_reason = Self::is_recoverable_setup_error(&first_err);
+                if recoverable_reason.is_none() {
+                    error!(
+                        error = ?first_err,
+                        data_dir = %config.pg_data_dir.display(),
+                        "PG startup failed with a NON-recoverable error; \
+                         not touching pgdata"
+                    );
                     return Err(first_err);
                 }
 
+                let reason = recoverable_reason.unwrap_or("unknown");
                 warn!(
-                    error = %first_err,
-                    "PG startup failed with a recoverable error; \
-                     purging corrupted state and retrying once"
+                    error = ?first_err,
+                    matched_pattern = reason,
+                    data_dir = %config.pg_data_dir.display(),
+                    "PG startup failed with a RECOVERABLE error pattern; \
+                     about to purge state and retry once"
                 );
+                Self::log_pg_data_state("pre-purge", &config);
                 Self::purge_corrupted_state(&config);
+                Self::log_pg_data_state("post-purge", &config);
 
                 match Self::try_setup_and_start(config.clone()).await {
                     Ok(this) => {
-                        info!("Embedded PostgreSQL recovered after self-heal retry");
+                        info!(
+                            matched_pattern = reason,
+                            "Embedded PostgreSQL recovered after self-heal retry"
+                        );
                         Ok(this)
                     }
                     Err(retry_err) => {
                         error!(
-                            first_error = %first_err,
-                            retry_error = %retry_err,
+                            first_error = ?first_err,
+                            retry_error = ?retry_err,
+                            matched_pattern = reason,
                             "PG startup failed even after self-heal retry"
                         );
                         Err(anyhow::anyhow!(
@@ -157,7 +180,13 @@ impl EmbeddedPg {
 
         info!("Running pg-embed setup (download/extract/initdb)...");
         if let Err(e) = pg.setup().await {
-            tracing::error!(error = ?e, "pg-embed setup failed");
+            tracing::error!(
+                error = ?e,
+                data_dir = %config.pg_data_dir.display(),
+                cache_dir = %Self::cache_dir().display(),
+                "[PG-DIAG] pg-embed setup failed"
+            );
+            Self::log_pg_data_state("setup-failed", &config);
             return Err(anyhow::anyhow!("PostgreSQL setup failed: {e:?}"));
         }
 
@@ -165,7 +194,18 @@ impl EmbeddedPg {
 
         info!("Starting PostgreSQL server on port {}...", config.port);
         if let Err(e) = pg.start_db().await {
-            warn!(error = ?e, "pg-embed start_db failed, attempting manual pg_ctl start");
+            warn!(
+                error = ?e,
+                "[PG-DIAG] pg-embed start_db failed, attempting manual pg_ctl start"
+            );
+            Self::log_pg_data_state("start_db-failed", &config);
+            // Show what postgres wrote to its log just before bailing, if any.
+            if let Some(tail) = Self::tail_server_log(&config, 20) {
+                warn!(
+                    server_log_tail = %tail,
+                    "[PG-DIAG] last lines of pgdata/server.log after start_db failure"
+                );
+            }
 
             match Self::manual_pg_ctl_start(&config).await {
                 Ok(()) => {
@@ -175,8 +215,15 @@ impl EmbeddedPg {
                     error!(
                         pg_embed_error = ?e,
                         manual_error = %manual_err,
-                        "Both pg-embed and manual pg_ctl start failed"
+                        "[PG-DIAG] Both pg-embed and manual pg_ctl start failed"
                     );
+                    Self::log_pg_data_state("manual_pg_ctl-failed", &config);
+                    if let Some(tail) = Self::tail_server_log(&config, 20) {
+                        warn!(
+                            server_log_tail = %tail,
+                            "[PG-DIAG] last lines of pgdata/server.log after manual pg_ctl failure"
+                        );
+                    }
                     return Err(anyhow::anyhow!(
                         "Failed to start PostgreSQL: pg-embed={e:?}, manual={manual_err}"
                     ));
@@ -200,14 +247,21 @@ impl EmbeddedPg {
     /// likely caused by corrupted on-disk state (in which case purging the
     /// cache + data dir and retrying makes sense) rather than a permanent
     /// configuration problem (port conflict, missing runtime, etc.).
-    fn is_recoverable_setup_error(err: &anyhow::Error) -> bool {
+    ///
+    /// Returns `Some(pattern)` with the substring that matched (so the caller
+    /// can log *why* we decided to purge) or `None` if the error looks
+    /// unrelated to on-disk corruption.
+    fn is_recoverable_setup_error(err: &anyhow::Error) -> Option<&'static str> {
         let msg = format!("{err:?}");
-        msg.contains("UnpackFailure")
-            || msg.contains("PgInitFailure")
-            || msg.contains("PgPurgeFailure")
-            || msg.contains("PgStartFailure")
-            // pg-embed wraps zip errors here when the cached download is partial.
-            || msg.contains("invalid zip archive")
+        // pg-embed wraps zip errors here when the cached download is partial.
+        const PATTERNS: &[&str] = &[
+            "UnpackFailure",
+            "PgInitFailure",
+            "PgPurgeFailure",
+            "PgStartFailure",
+            "invalid zip archive",
+        ];
+        PATTERNS.iter().copied().find(|p| msg.contains(p))
     }
 
     /// Delete the pg-embed binary cache and the pgdata directory so the
@@ -219,9 +273,12 @@ impl EmbeddedPg {
     fn purge_corrupted_state(config: &DbConfig) {
         let cache_dir = Self::cache_dir();
         if cache_dir.exists() {
+            let (cache_entries, cache_total_bytes) = Self::dir_summary(&cache_dir);
             warn!(
                 cache_dir = %cache_dir.display(),
-                "Purging pg-embed binary cache"
+                entries = cache_entries,
+                total_bytes = cache_total_bytes,
+                "[PURGE] Purging pg-embed binary cache (safe — only contains downloaded PG binaries)"
             );
             if let Err(e) = std::fs::remove_dir_all(&cache_dir) {
                 warn!(error = %e, "Failed to fully purge pg-embed cache directory");
@@ -229,9 +286,23 @@ impl EmbeddedPg {
         }
 
         if config.pg_data_dir.exists() {
+            let (data_entries, data_total_bytes) = Self::dir_summary(&config.pg_data_dir);
+            let top_level_names: Vec<String> = std::fs::read_dir(&config.pg_data_dir)
+                .ok()
+                .map(|rd| {
+                    rd.filter_map(|e| e.ok())
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
             warn!(
                 data_dir = %config.pg_data_dir.display(),
-                "Purging pgdata directory"
+                entries = data_entries,
+                total_bytes = data_total_bytes,
+                top_level = ?top_level_names,
+                "[PURGE] About to DELETE pgdata directory — this will destroy any user data \
+                 written in previous sessions. Search for this log line if your data \
+                 mysteriously disappeared between app restarts."
             );
             if let Err(e) = std::fs::remove_dir_all(&config.pg_data_dir) {
                 warn!(error = %e, "Failed to fully purge pgdata directory");
@@ -240,6 +311,91 @@ impl EmbeddedPg {
                 warn!(error = %e, "Failed to recreate pgdata directory after purge");
             }
         }
+    }
+
+    /// Read the last `n_lines` of `pgdata/server.log` for diagnostic
+    /// logging. Returns `None` if the file doesn't exist or can't be read.
+    fn tail_server_log(config: &DbConfig, n_lines: usize) -> Option<String> {
+        let log_file = config.pg_data_dir.join("server.log");
+        let content = std::fs::read_to_string(&log_file).ok()?;
+        let lines: Vec<&str> = content.lines().collect();
+        let start = lines.len().saturating_sub(n_lines);
+        Some(lines[start..].join("\n"))
+    }
+
+    /// Best-effort `(entry_count, total_bytes)` snapshot of a directory.
+    /// Used only for diagnostic logging — silently returns `(0, 0)` on
+    /// any IO error.
+    fn dir_summary(root: &std::path::Path) -> (usize, u64) {
+        fn walk(p: &std::path::Path, entries: &mut usize, bytes: &mut u64) {
+            let Ok(rd) = std::fs::read_dir(p) else { return };
+            for entry in rd.flatten() {
+                *entries += 1;
+                if let Ok(meta) = entry.metadata() {
+                    if meta.is_file() {
+                        *bytes += meta.len();
+                    } else if meta.is_dir() {
+                        walk(&entry.path(), entries, bytes);
+                    }
+                }
+            }
+        }
+        let (mut entries, mut bytes) = (0_usize, 0_u64);
+        walk(root, &mut entries, &mut bytes);
+        (entries, bytes)
+    }
+
+    /// Diagnostic snapshot of the embedded PG data directory.
+    ///
+    /// Logs at INFO level the things that most often explain "data
+    /// disappeared between restarts" on Windows:
+    /// - whether `PG_VERSION` exists (i.e. pgdata was previously initdb'd),
+    /// - whether `postmaster.pid` is present and its first line (the PID),
+    /// - whether that PID is currently running,
+    /// - whether port `config.port` is being held by some other process,
+    /// - top-level entry count under pgdata.
+    ///
+    /// `phase` is a short tag like `"pre-setup"` / `"pre-purge"` /
+    /// `"post-purge"` so callers can correlate snapshots across the
+    /// startup pipeline.
+    fn log_pg_data_state(phase: &str, config: &DbConfig) {
+        let data_dir = &config.pg_data_dir;
+        let pg_version = data_dir.join("PG_VERSION");
+        let postmaster_pid = data_dir.join("postmaster.pid");
+
+        let pg_version_exists = pg_version.is_file();
+        let pg_version_text = std::fs::read_to_string(&pg_version)
+            .map(|s| s.trim().to_string())
+            .ok();
+
+        let postmaster_first_line = std::fs::read_to_string(&postmaster_pid)
+            .ok()
+            .and_then(|s| s.lines().next().map(|l| l.trim().to_string()));
+        let recorded_pid = postmaster_first_line.as_ref().and_then(|s| s.parse::<u32>().ok());
+        let recorded_pid_alive = recorded_pid.map(golish_platform::process::is_pid_running);
+
+        let port_holders = golish_platform::process::pids_listening_on_port(config.port);
+        let (entries, total_bytes) = if data_dir.exists() {
+            Self::dir_summary(data_dir)
+        } else {
+            (0, 0)
+        };
+
+        info!(
+            phase = phase,
+            data_dir = %data_dir.display(),
+            data_dir_exists = data_dir.exists(),
+            pg_version_exists,
+            pg_version = ?pg_version_text,
+            postmaster_pid_exists = postmaster_pid.is_file(),
+            postmaster_recorded_pid = ?recorded_pid,
+            postmaster_recorded_pid_alive = ?recorded_pid_alive,
+            port = config.port,
+            port_holders = ?port_holders,
+            data_dir_entries = entries,
+            data_dir_bytes = total_bytes,
+            "[PG-DIAG] Embedded PG state snapshot"
+        );
     }
 
     /// Locate the pg-embed binary cache zip and extract binaries into the
@@ -512,9 +668,11 @@ impl EmbeddedPg {
 
     /// Gracefully stop the embedded PostgreSQL server.
     pub async fn stop(&mut self) {
-        info!("Stopping embedded PostgreSQL");
+        info!("[PG-DIAG] EmbeddedPg::stop() entered — running pg_ctl stop");
         if let Err(e) = self.pg.stop_db().await {
-            warn!(error = %e, "Error stopping embedded PostgreSQL");
+            warn!(error = %e, "[PG-DIAG] Error stopping embedded PostgreSQL");
+        } else {
+            info!("[PG-DIAG] EmbeddedPg::stop() finished — pg_ctl stop returned OK");
         }
     }
 }
