@@ -24,14 +24,6 @@ vi.mock("../lib/api/pty", () => ({
 }));
 
 vi.mock("../lib/terminal", () => ({
-  liveTerminalManager: {
-    serializeAndDispose: vi.fn().mockResolvedValue(""),
-    dispose: vi.fn(),
-    detach: vi.fn(),
-    getOrCreate: vi.fn(),
-    scrollToBottom: vi.fn(),
-    write: vi.fn(),
-  },
   virtualTerminalManager: {
     dispose: vi.fn(),
     create: vi.fn(),

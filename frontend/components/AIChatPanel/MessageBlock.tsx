@@ -217,12 +217,10 @@ export const MessageBlock = memo(function MessageBlock({
         } else {
           // Suppress the "..." placeholder while ThinkingBlock owns the
           // streaming spinner — otherwise the user sees a second loader.
-          const showStreamingPlaceholder =
-            message.isStreaming && !message.thinking;
+          const showStreamingPlaceholder = message.isStreaming && !message.thinking;
           segments.push({
             kind: "text",
-            content:
-              message.content || (showStreamingPlaceholder ? "..." : ""),
+            content: message.content || (showStreamingPlaceholder ? "..." : ""),
           });
         }
 
@@ -269,8 +267,7 @@ export const MessageBlock = memo(function MessageBlock({
                 // Same suppression rule as above: don't print the
                 // "..." placeholder while ThinkingBlock is the active
                 // streaming indicator.
-                const placeholder =
-                  message.isStreaming && !message.thinking ? "..." : "";
+                const placeholder = message.isStreaming && !message.thinking ? "..." : "";
                 return (
                   <div key={`seg-${idx}`} className="text-[12px] text-foreground leading-[1.55]">
                     <Markdown content={displayContent || placeholder} />
@@ -354,11 +351,7 @@ export const MessageBlock = memo(function MessageBlock({
               try {
                 const args = JSON.parse(lastPendingTool.args || "{}");
                 const cmd = args.command as string | undefined;
-                detail = cmd
-                  ? cmd.length > 40
-                    ? `${cmd.slice(0, 40)}…`
-                    : cmd
-                  : "command";
+                detail = cmd ? (cmd.length > 40 ? `${cmd.slice(0, 40)}…` : cmd) : "command";
               } catch {
                 detail = "command";
               }

@@ -3,7 +3,9 @@
     "id": "netexec",
     "name": "netexec",
     "description": "Network service exploitation tool (successor to crackmapexec) - SMB, WinRM, RDP, SSH, FTP, MSSQL, LDAP, VNC bulk auth + post-exploit",
-    "descriptionI18n": { "zh": "网络服务利用工具(crackmapexec 继任者) —— SMB / WinRM / RDP / SSH / FTP / MSSQL / LDAP / VNC 批量认证 + 后渗透" },
+    "descriptionI18n": {
+      "zh": "网络服务利用工具(crackmapexec 继任者) —— SMB / WinRM / RDP / SSH / FTP / MSSQL / LDAP / VNC 批量认证 + 后渗透"
+    },
     "executable": "nxc",
     "runtime": "python",
     "runtimeVersion": "3.11",

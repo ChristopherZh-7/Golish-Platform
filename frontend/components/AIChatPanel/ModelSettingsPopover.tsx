@@ -1,27 +1,16 @@
 import { Check, RotateCcw, Settings2 } from "lucide-react";
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
 import { shutdownAiSession } from "@/lib/ai";
 import { notifyModelOverrideChanged } from "@/lib/ai/model-overrides";
-import { getSettingsCached, updateSettings } from "@/lib/settings";
 import type { ModelOverride } from "@/lib/settings";
+import { getSettingsCached, updateSettings } from "@/lib/settings";
+import { cn } from "@/lib/utils";
 import { setStreamDebugEnabled } from "@/services/ai-events";
 import { useStore } from "@/store";
-import { cn } from "@/lib/utils";
 
 import { modelOverrideKey } from "./providerConfig";
 
@@ -39,17 +28,10 @@ const DEFAULT_EFFORT_OPTIONS = [
   { id: "max", label: "Max" },
 ];
 
-function detectUiCapabilities(
-  provider: string,
-  model: string
-): ModelUiCapabilities {
+function detectUiCapabilities(provider: string, model: string): ModelUiCapabilities {
   const modelLower = model.toLowerCase();
 
-  if (
-    provider === "anthropic" ||
-    provider === "vertex_ai" ||
-    modelLower.startsWith("claude")
-  ) {
+  if (provider === "anthropic" || provider === "vertex_ai" || modelLower.startsWith("claude")) {
     return {
       supportsThinkingToggle: true,
       supportsReasoningEffort: false,
@@ -60,9 +42,7 @@ function detectUiCapabilities(
 
   const isReasoningModel =
     provider === "openai" &&
-    (modelLower.startsWith("o") ||
-      modelLower.startsWith("gpt-5") ||
-      modelLower.includes("codex"));
+    (modelLower.startsWith("o") || modelLower.startsWith("gpt-5") || modelLower.includes("codex"));
   if (isReasoningModel) {
     return {
       supportsThinkingToggle: false,
@@ -72,11 +52,7 @@ function detectUiCapabilities(
     };
   }
 
-  if (
-    provider === "nvidia" ||
-    provider === "openrouter" ||
-    provider === "zai_sdk"
-  ) {
+  if (provider === "nvidia" || provider === "openrouter" || provider === "zai_sdk") {
     const isHybrid =
       modelLower.includes("qwen3") ||
       modelLower.includes("qwen-3") ||
@@ -130,14 +106,8 @@ export const ModelSettingsPopover = memo(function ModelSettingsPopover({
   onApplied,
 }: ModelSettingsPopoverProps) {
   const { t } = useTranslation();
-  const overrideKey = useMemo(
-    () => modelOverrideKey(provider, model),
-    [provider, model]
-  );
-  const caps = useMemo(
-    () => detectUiCapabilities(provider, model),
-    [provider, model]
-  );
+  const overrideKey = useMemo(() => modelOverrideKey(provider, model), [provider, model]);
+  const caps = useMemo(() => detectUiCapabilities(provider, model), [provider, model]);
 
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<ModelOverride>({});
@@ -169,8 +139,7 @@ export const ModelSettingsPopover = memo(function ModelSettingsPopover({
         const nextOverrides = { ...(settings.ai.model_overrides ?? {}) };
         const cleaned: ModelOverride = {};
         if (next.thinking !== undefined) cleaned.thinking = next.thinking;
-        if (next.reasoning_effort)
-          cleaned.reasoning_effort = next.reasoning_effort;
+        if (next.reasoning_effort) cleaned.reasoning_effort = next.reasoning_effort;
         if (next.max_tokens) cleaned.max_tokens = next.max_tokens;
         if (next.context_window) cleaned.context_window = next.context_window;
         if (next.stream_debug) cleaned.stream_debug = next.stream_debug;
@@ -192,15 +161,9 @@ export const ModelSettingsPopover = memo(function ModelSettingsPopover({
 
         const store = useStore.getState();
         const activeConvId = store.activeConversationId;
-        const activeConv = activeConvId
-          ? store.conversations[activeConvId]
-          : undefined;
+        const activeConv = activeConvId ? store.conversations[activeConvId] : undefined;
         const activeSel = store.selectedAiModel;
-        if (
-          activeConv &&
-          activeSel?.provider === provider &&
-          activeSel?.model === model
-        ) {
+        if (activeConv && activeSel?.provider === provider && activeSel?.model === model) {
           try {
             if (activeConv.aiSessionId) {
               await shutdownAiSession(activeConv.aiSessionId);
@@ -213,10 +176,7 @@ export const ModelSettingsPopover = memo(function ModelSettingsPopover({
 
         notifyModelOverrideChanged(overrideKey);
 
-        onApplied?.(
-          overrideKey,
-          Object.keys(cleaned).length === 0 ? null : cleaned
-        );
+        onApplied?.(overrideKey, Object.keys(cleaned).length === 0 ? null : cleaned);
       } catch (err) {
         console.error("[ModelSettings] Failed to persist override", err);
       }
@@ -263,9 +223,7 @@ export const ModelSettingsPopover = memo(function ModelSettingsPopover({
         className="w-[260px] p-3 space-y-3 bg-card border-[var(--border-medium)]"
       >
         <header className="flex items-center justify-between">
-          <div className="text-[11px] font-medium text-foreground truncate">
-            {modelLabel}
-          </div>
+          <div className="text-[11px] font-medium text-foreground truncate">{modelLabel}</div>
           <button
             type="button"
             onClick={handleReset}
@@ -284,31 +242,21 @@ export const ModelSettingsPopover = memo(function ModelSettingsPopover({
           {caps.supportsThinkingToggle && (
             <Row
               label={t("ai.thinking", "Thinking")}
-              hint={t(
-                "ai.thinkingHint",
-                "Disable to suppress chain-of-thought (hybrid models)"
-              )}
+              hint={t("ai.thinkingHint", "Disable to suppress chain-of-thought (hybrid models)")}
             >
               <Switch
                 checked={draft.thinking ?? true}
-                onCheckedChange={(checked) =>
-                  updateField({ thinking: checked })
-                }
+                onCheckedChange={(checked) => updateField({ thinking: checked })}
               />
             </Row>
           )}
           <Row
             label={t("ai.streamDebug", "Stream Debug")}
-            hint={t(
-              "ai.streamDebugHint",
-              "Print per-chunk reasoning/text counts to the console"
-            )}
+            hint={t("ai.streamDebugHint", "Print per-chunk reasoning/text counts to the console")}
           >
             <Switch
               checked={draft.stream_debug ?? false}
-              onCheckedChange={(checked) =>
-                updateField({ stream_debug: checked })
-              }
+              onCheckedChange={(checked) => updateField({ stream_debug: checked })}
             />
           </Row>
         </section>
@@ -325,9 +273,7 @@ export const ModelSettingsPopover = memo(function ModelSettingsPopover({
                   <button
                     key={opt.id}
                     type="button"
-                    onClick={() =>
-                      updateField({ reasoning_effort: opt.id })
-                    }
+                    onClick={() => updateField({ reasoning_effort: opt.id })}
                     className={cn(
                       "text-[11px] px-2 py-1.5 rounded-md border transition-colors flex items-center justify-between",
                       selected
@@ -390,9 +336,7 @@ function Row({
       <div className="min-w-0">
         <div className="text-[11px] text-foreground truncate">{label}</div>
         {hint && (
-          <div className="text-[10px] text-muted-foreground/60 leading-tight mt-0.5">
-            {hint}
-          </div>
+          <div className="text-[10px] text-muted-foreground/60 leading-tight mt-0.5">{hint}</div>
         )}
       </div>
       <div className="flex-shrink-0">{children}</div>

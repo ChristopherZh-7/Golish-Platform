@@ -28,13 +28,41 @@
         "description": "Sub-command mode (placed first)",
         "descriptionI18n": { "zh": "gobuster 子命令(放在最前)" },
         "options": [
-          { "value": "dir", "label": "dir - directory/file brute", "labelI18n": { "zh": "dir - 目录/文件爆破" } },
-          { "value": "dns", "label": "dns - subdomain brute", "labelI18n": { "zh": "dns - 子域名爆破" } },
-          { "value": "vhost", "label": "vhost - virtual host brute", "labelI18n": { "zh": "vhost - 虚拟主机爆破" } },
-          { "value": "fuzz", "label": "fuzz - HTTP fuzzer", "labelI18n": { "zh": "fuzz - HTTP 模糊测试" } },
-          { "value": "s3", "label": "s3 - AWS S3 bucket brute", "labelI18n": { "zh": "s3 - AWS S3 桶爆破" } },
-          { "value": "gcs", "label": "gcs - GCP storage brute", "labelI18n": { "zh": "gcs - GCP 存储桶爆破" } },
-          { "value": "tftp", "label": "tftp - TFTP file brute", "labelI18n": { "zh": "tftp - TFTP 文件爆破" } }
+          {
+            "value": "dir",
+            "label": "dir - directory/file brute",
+            "labelI18n": { "zh": "dir - 目录/文件爆破" }
+          },
+          {
+            "value": "dns",
+            "label": "dns - subdomain brute",
+            "labelI18n": { "zh": "dns - 子域名爆破" }
+          },
+          {
+            "value": "vhost",
+            "label": "vhost - virtual host brute",
+            "labelI18n": { "zh": "vhost - 虚拟主机爆破" }
+          },
+          {
+            "value": "fuzz",
+            "label": "fuzz - HTTP fuzzer",
+            "labelI18n": { "zh": "fuzz - HTTP 模糊测试" }
+          },
+          {
+            "value": "s3",
+            "label": "s3 - AWS S3 bucket brute",
+            "labelI18n": { "zh": "s3 - AWS S3 桶爆破" }
+          },
+          {
+            "value": "gcs",
+            "label": "gcs - GCP storage brute",
+            "labelI18n": { "zh": "gcs - GCP 存储桶爆破" }
+          },
+          {
+            "value": "tftp",
+            "label": "tftp - TFTP file brute",
+            "labelI18n": { "zh": "tftp - TFTP 文件爆破" }
+          }
         ]
       },
       {

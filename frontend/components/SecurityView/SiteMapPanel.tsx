@@ -442,8 +442,7 @@ export function SiteMapPanel({
           </button>
         )}
         <span className="text-[10px] text-muted-foreground/50">
-          {hostCount} {t("security.hosts")} · {endpointCount}{" "}
-          {t("security.endpoints")}
+          {hostCount} {t("security.hosts")} · {endpointCount} {t("security.endpoints")}
           {capturedCount > 0 && (
             <>
               {" "}
@@ -568,9 +567,7 @@ export function SiteMapPanel({
             <div className="flex-1 flex items-center justify-center text-muted-foreground/40">
               <div className="flex flex-col items-center gap-2">
                 <Search className="w-8 h-8" />
-                <p className="text-[12px]">
-                  {t("security.selectEndpoint")}
-                </p>
+                <p className="text-[12px]">{t("security.selectEndpoint")}</p>
               </div>
             </div>
           )}

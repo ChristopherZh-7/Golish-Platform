@@ -2,6 +2,67 @@
 
 ## Unreleased
 
+### Features — Terminal Rendering (Phase A + B · 2026-05-15)
+
+- **`feat(terminal)` — Warp-style interactive input** (Phase A,
+  `docs/design/2026-05-15-warp-style-interaction.md`): the bottom
+  `UnifiedInput` now repurposes itself into a stdin pipe whenever a
+  running command blocks on input. Detection lives in the new
+  `golish_pty::manager::stdin_wait_detector` (5 heuristics: `Y/N`,
+  password, PowerShell choice, "Continue?", generic prompt; 300 ms
+  idle threshold). The `LiveTerminalBlock` mini-xterm + 1 200 lines
+  of supporting code are removed; live output streams through the new
+  `RunningCommandCard` component instead, which uses `ansi-to-react`
+  rather than xterm.js.
+- **`feat(terminal)` — GridTerminal renderer** (Phase B,
+  `docs/design/2026-05-15-grid-terminal-phase-b.md`): alt-screen TUI
+  apps (vim, htop, less, …) now render through a Rust
+  `alacritty_terminal` 0.26 virtual terminal + a React grid component,
+  bypassing xterm.js entirely. Backend ships `terminal_grid_update`
+  events (60 ms coalesce window) plus `pty_request_grid_snapshot` /
+  `pty_resize_grid` Tauri commands. Fixes the long-standing Windows
+  WebView2 black-screen bug.
+
+### ⚠ BREAKING CHANGES — Terminal (Phase B · D6.4b, 2026-05-15)
+
+- **xterm.js renderer fully removed.** `@xterm/xterm`,
+  `@xterm/addon-fit`, `@xterm/addon-webgl`, `@xterm/addon-web-links`
+  are no longer installed (saved ≈530 KB gzipped). The dedicated
+  `xterm` Rollup chunk in `vite.config.ts` is gone. `@xterm/headless`
+  and `@xterm/addon-serialize` remain — they back the
+  `VirtualTerminal` ANSI-text preprocessor used by static command
+  blocks, which never touches the DOM.
+- **`settings.terminal.use_grid_renderer` default flipped to `true`.**
+  The setting remains so a future fallback renderer can be reintroduced
+  without churning user `settings.toml`. Disabling it leaves
+  alt-screen sessions with no renderer until that fallback ships.
+- **Removed components / hooks**:
+  `frontend/components/Terminal/{Terminal,TerminalLayer,RecordingsPanel,TerminalRecordingControls,index}.{tsx,ts}`,
+  `frontend/components/CommandBlock/StaticTerminalOutput.tsx`
+  (unused dead code), `frontend/hooks/useTerminalPortal.tsx`,
+  `frontend/lib/terminal/{TerminalInstanceManager,SyncOutputBuffer}.ts`,
+  `frontend/styles/xterm-overrides.css`. `TerminalPortalProvider` no
+  longer wraps `AppShell` — `GridTerminal` is mounted directly inside
+  its owning `PaneLeaf` and `DetachedView` (lazy-loaded).
+- **`ThemeManager.applyToTerminal` removed.** GridTerminal styles
+  itself from CSS variables (`frontend/styles/grid-terminal.css`); no
+  JS-side per-frame theme injection is needed.
+- **Terminal Recordings UI retired.** `RecordingsPanelView`,
+  `TerminalRecordingControls`, `dialog.recordingsPanelOpen`, and the
+  Command Palette "Terminal Recordings" item are gone. They were
+  inseparable from xterm.js's `SerializeAddon` + scrollback API. A
+  future GridReplayer can re-attach at the same UI slots.
+- **Scrollback persistence dropped.**
+  `TerminalInstanceManager.serialize` / `setPendingScrollback` no
+  longer exist; `conversation-db-sync` writes an empty `scrollback`
+  string and `useCreateTerminalTab` ignores the `scrollback`
+  parameter. Timeline blocks (command history) still rehydrate; only
+  raw alt-screen ANSI bytes are no longer round-trippable.
+- `settings.terminal.fullterm_commands` is still present on the schema
+  as `Option<Vec<String>>` for backwards-compatible deserialisation
+  but is fully ignored at runtime (Phase A retired the auto-trigger).
+  Slated for full removal in the next release.
+
 ### ⚠ BREAKING CHANGES — Architecture
 
 - **agent stack layout** (A1–A3, 2026-05-02):

@@ -18,7 +18,6 @@ import {
 } from "@/lib/conversation-db";
 import { onCustomEvent } from "@/lib/events";
 import { logger } from "@/lib/logger";
-import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import type { Session, UnifiedBlock } from "@/store";
 import type { ChatConversation, ChatMessage, ChatToolCall } from "@/store/slices/conversation";
 
@@ -523,10 +522,14 @@ async function saveConversationsToDb(
 
       const dbId = sess.logicalTerminalId ?? tid;
 
-      let scrollback = TerminalInstanceManager.serialize(tid);
-      if (scrollback.length > MAX_SCROLLBACK) {
-        scrollback = scrollback.slice(-MAX_SCROLLBACK);
-      }
+      // D6.4b: xterm.js-driven scrollback serialisation was retired
+      // alongside `TerminalInstanceManager`. GridTerminal sessions
+      // can't round-trip their ANSI history (alacritty's grid state
+      // is opaque to the frontend), so we persist an empty scrollback
+      // and let the user re-run commands on restore. The static
+      // timeline blocks themselves are preserved separately below.
+      const scrollback = "";
+      void MAX_SCROLLBACK;
 
       terminalStates.push({
         sessionId: dbId,

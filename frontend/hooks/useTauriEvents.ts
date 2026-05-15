@@ -9,10 +9,10 @@ import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
 import { runTauriUnlistenFn } from "@/lib/run-tauri-unlisten";
 import { getSettings } from "@/lib/settings";
-import { liveTerminalManager, virtualTerminalManager } from "@/lib/terminal";
+import { virtualTerminalManager } from "@/lib/terminal";
 import { _drainOutputBufferSize, useStore } from "@/store";
 import {
-  BUILTIN_FULLTERM_COMMANDS,
+  ALT_SCREEN_TUI_PROCESSES,
   extractProcessName,
   GIT_STATUS_POLL_INTERVAL_MS,
   isFastCommand,
@@ -20,6 +20,21 @@ import {
   SHELL_PROCESSES,
   shouldRefreshGitInfo,
 } from "./tauri-event-types";
+
+const STDIN_WAIT_DETECTORS = [
+  "yn_choice",
+  "password",
+  "powershell_choice",
+  "continue",
+  "generic_prompt",
+] as const;
+type StdinWaitDetectorChannel = (typeof STDIN_WAIT_DETECTORS)[number];
+
+function normaliseStdinWaitDetector(value: unknown): StdinWaitDetectorChannel {
+  return STDIN_WAIT_DETECTORS.includes(value as StdinWaitDetectorChannel)
+    ? (value as StdinWaitDetectorChannel)
+    : "generic_prompt";
+}
 
 let activeGeneration = 0;
 
@@ -67,15 +82,30 @@ export function useTauriEvents() {
       );
     }
 
-    let fulltermCommands = new Set(BUILTIN_FULLTERM_COMMANDS);
-
+    // The legacy `terminal.fullterm_commands` setting (a hand-curated
+    // allowlist of commands that should jump straight to a full xterm
+    // surface) was retired with the Warp-style interactive input mode
+    // — we now decide fullterm purely from `alternate_screen` events +
+    // the small TUI process name set in `ALT_SCREEN_TUI_PROCESSES`.
+    //
+    // Settings consumers may still write the old field to disk; we
+    // surface a one-shot info log if they do so it's clear the setting
+    // is no longer honoured, then otherwise ignore it. The matching
+    // schema field will be cleaned up in a follow-up settings PR so we
+    // don't drop user data behind their backs in this change.
     getSettings()
       .then((settings) => {
-        const userCommands = settings.terminal.fullterm_commands ?? [];
-        fulltermCommands = new Set([...BUILTIN_FULLTERM_COMMANDS, ...userCommands]);
+        const legacy = settings.terminal.fullterm_commands ?? [];
+        if (legacy.length > 0) {
+          logger.info(
+            "[useTauriEvents] terminal.fullterm_commands is no longer honoured" +
+              " (interactive input + TUI process detection replaces it):",
+            legacy
+          );
+        }
       })
       .catch((err) => {
-        logger.debug("Failed to load settings for fullterm commands:", err);
+        logger.debug("Failed to read legacy fullterm_commands setting:", err);
       });
 
     function refreshGitInfo(sessionId: string, cwd: string) {
@@ -136,7 +166,6 @@ export function useTauriEvents() {
             if (deferred) {
               clearTimeout(deferred.fallbackTimer);
               deferredExitCodes.delete(session_id);
-              liveTerminalManager.scrollToBottom(session_id);
               lastPromptStartConsumedAt.set(session_id, Date.now());
 
               void (async () => {
@@ -151,7 +180,6 @@ export function useTauriEvents() {
                   bufferSize: _drainOutputBufferSize(session_id),
                 });
                 virtualTerminalManager.dispose(session_id);
-                liveTerminalManager.dispose(session_id);
                 store.getState().handleCommandEnd(session_id, deferred.exitCode, deferred.endTime);
                 store.getState().handlePromptStart(session_id);
               })();
@@ -183,14 +211,10 @@ export function useTauriEvents() {
                   pendingCommand,
                 });
                 virtualTerminalManager.dispose(session_id);
-                liveTerminalManager.scrollToBottom(session_id);
-                liveTerminalManager.dispose(session_id);
                 store.getState().discardPendingCommand(session_id);
               } else {
                 trace("prompt_start.handle", session_id, { pendingCommand });
                 virtualTerminalManager.dispose(session_id);
-                liveTerminalManager.scrollToBottom(session_id);
-                liveTerminalManager.dispose(session_id);
                 state.handlePromptStart(session_id);
               }
             }
@@ -220,15 +244,14 @@ export function useTauriEvents() {
             usedAlternateScreen.set(session_id, false);
             virtualTerminalManager.create(session_id);
 
+            // Per-command fullterm activation (the old
+            // `fulltermCommands` allowlist for `claude` / `codex` /
+            // etc.) is intentionally not done here any more. Fullterm
+            // is now driven exclusively by the `alternate_screen`
+            // handler below, gated on `ALT_SCREEN_TUI_PROCESSES`, so
+            // command-name guesses can't false-trigger a full xterm
+            // takeover.
             const processName = extractProcessName(command);
-            if (processName && fulltermCommands.has(processName)) {
-              logger.debug("[fullterm] Switching to fullterm mode for", {
-                session_id,
-                processName,
-              });
-              state.setRenderMode(session_id, "fullterm");
-              usedAlternateScreen.set(session_id, true);
-            }
 
             if (isFastCommand(command)) break;
 
@@ -260,10 +283,20 @@ export function useTauriEvents() {
             // prompt_start events.
             seenCommandEnd.add(session_id);
 
+            // History persistence priority: prefer the value that already
+            // went through `handleCommandStart`'s
+            // `lastSentCommand`-preferring resolution (see Bug-1 fix in
+            // `session-terminal.ts`). The raw `lastStartedCommand` cache
+            // only holds the bash `BASH_COMMAND` payload, which collapses
+            // multi-line compounds (`select X; do\n echo $y\n break\n
+            // done` → `select X; doecho $ybreakdone`) and used to poison
+            // the persisted history feeding `useCommandHistory` — a
+            // pressed-Up arrow would then re-execute the mangled string
+            // forever.
             const commandText =
+              state.pendingCommand[session_id]?.command ??
               command ??
               lastStartedCommand.get(session_id) ??
-              state.pendingCommand[session_id]?.command ??
               null;
 
             if (exit_code !== null) {
@@ -271,7 +304,6 @@ export function useTauriEvents() {
               usedAlternateScreen.delete(session_id);
 
               if (wasFulltermApp) {
-                liveTerminalManager.dispose(session_id);
                 state.setPendingOutput(session_id, "");
                 state.handleCommandEnd(session_id, exit_code);
               } else {
@@ -281,7 +313,6 @@ export function useTauriEvents() {
                 const fallbackTimer = setTimeout(() => {
                   deferredExitCodes.delete(session_id);
                   virtualTerminalManager.dispose(session_id);
-                  liveTerminalManager.dispose(session_id);
                   store.getState().handleCommandEnd(session_id, exit_code, endTime);
                 }, 2000);
                 deferredExitCodes.set(session_id, { exitCode: exit_code, endTime, fallbackTimer });
@@ -306,6 +337,11 @@ export function useTauriEvents() {
 
             clearProcessDetectionTimer(session_id);
             state.setProcessName(session_id, null);
+            // Command is over — leave Warp-style interactive input mode
+            // so the bottom box goes back to "type a new command"
+            // behaviour. Safe to call when the session was never in
+            // interactive mode (the setter no-ops on null→null).
+            state.setInteractiveMode(session_id, null);
             break;
           }
         }
@@ -354,7 +390,6 @@ export function useTauriEvents() {
           // the trace is best-effort, never let it break output handling.
         }
         virtualTerminalManager.write(session_id, data);
-        liveTerminalManager.write(session_id, data);
         store.getState().appendOutput(session_id, data);
       })
     );
@@ -407,8 +442,69 @@ export function useTauriEvents() {
       onEvent("alternate_screen", (payload) => {
         if (isStale()) return;
         const { session_id, enabled } = payload;
-        store.getState().setRenderMode(session_id, enabled ? "fullterm" : "timeline");
-        if (enabled) usedAlternateScreen.set(session_id, true);
+        const state = store.getState();
+
+        // Disable side: always honour — even non-TUI processes will
+        // toggle the alt-screen flag off when they exit, and we want
+        // to be back in Block UI by the time they do.
+        if (!enabled) {
+          state.setRenderMode(session_id, "timeline");
+          return;
+        }
+
+        // Enable side: only flip into fullterm when the foreground
+        // process is a known TUI (vim / htop / less / nano / …). Any
+        // other alt-screen toggle (a misbehaving pager, an incidental
+        // cursor-visibility flip during a Y/N prompt) is treated as
+        // noise and kept in Block UI so the Warp-style interactive
+        // input keeps working.
+        const session = state.sessions[session_id];
+        const processName = session?.processName ?? null;
+        if (processName && ALT_SCREEN_TUI_PROCESSES.has(processName)) {
+          state.setRenderMode(session_id, "fullterm");
+          usedAlternateScreen.set(session_id, true);
+        } else {
+          logger.debug("[fullterm] alt-screen ignored (non-TUI foreground)", {
+            session_id,
+            processName,
+          });
+        }
+      })
+    );
+
+    unlisteners.push(
+      onEvent("stdin_wait", (payload) => {
+        if (isStale()) return;
+        const { session_id, detector } = payload;
+        const state = store.getState();
+        const session = state.sessions[session_id];
+        if (!session) return;
+
+        // Don't override fullterm mode — vim/htop sessions handle
+        // their own keystrokes directly, the bottom Warp input box
+        // is hidden anyway.
+        if (session.renderMode === "fullterm") return;
+
+        // Resolve the command label shown in the Warp-style cell.
+        // We prefer OSC 133;C's `command` field, fall back to the
+        // most recent `command_start` event, and finally to whatever
+        // the user last submitted from the input box. The last
+        // fallback matters in zsh / sh integrations that emit OSC
+        // 133;C without a trailing `;<command>`: previously the cell
+        // showed a generic "the running command" placeholder, which
+        // is useless when several commands are queued back-to-back.
+        const command =
+          state.pendingCommand[session_id]?.command ??
+          lastStartedCommand.get(session_id) ??
+          state.lastSentCommand[session_id] ??
+          null;
+
+        state.setInteractiveMode(session_id, {
+          active: true,
+          command,
+          detector: normaliseStdinWaitDetector(detector),
+          enteredAt: Date.now(),
+        });
       })
     );
 

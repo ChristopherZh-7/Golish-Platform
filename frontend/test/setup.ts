@@ -6,22 +6,11 @@ import { afterEach, vi } from "vitest";
 // Enable Immer MapSet plugin for Set/Map support in store
 enableMapSet();
 
-// Mock terminal managers for tests
+// Mock terminal managers for tests. The legacy `liveTerminalManager`
+// was retired in Phase A of the Warp-style interaction refactor (see
+// `docs/design/2026-05-15-warp-style-interaction.md`); we keep only
+// the virtual terminal mock that survives.
 vi.mock("@/lib/terminal", () => ({
-  liveTerminalManager: {
-    create: vi.fn(),
-    getOrCreate: vi.fn(),
-    attachToContainer: vi.fn(),
-    detach: vi.fn(),
-    write: vi.fn(),
-    dispose: vi.fn(),
-    scrollToBottom: vi.fn(),
-    serializeAndDispose: vi.fn().mockResolvedValue(""),
-    enableInput: vi.fn(),
-    disableInput: vi.fn(),
-    fit: vi.fn(),
-    focus: vi.fn(),
-  },
   virtualTerminalManager: {
     create: vi.fn(),
     write: vi.fn(),

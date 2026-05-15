@@ -3,7 +3,9 @@
     "id": "searchsploit",
     "name": "searchsploit",
     "description": "Offline command-line search of the Exploit-DB archive (CVE / vendor / product / nmap-XML)",
-    "descriptionI18n": { "zh": "本地命令行检索 Exploit-DB 漏洞库(支持 CVE / 厂商 / 产品 / nmap-XML)" },
+    "descriptionI18n": {
+      "zh": "本地命令行检索 Exploit-DB 漏洞库(支持 CVE / 厂商 / 产品 / nmap-XML)"
+    },
     "executable": "searchsploit",
     "runtime": "native",
     "launchMode": "cli",

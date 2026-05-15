@@ -3,17 +3,22 @@
  * Copyright 2025 Google LLC
  * SPDX-License-Identifier: Apache-2.0
  */
-import { MarkdownIssueDescription, Marked, Common, I18n, } from '../node_modules/chrome-devtools-frontend/mcp/mcp.js';
-import { ISSUE_UTILS } from './issue-descriptions.js';
-import { logger } from './logger.js';
+import {
+  Common,
+  I18n,
+  MarkdownIssueDescription,
+  Marked,
+} from "../node_modules/chrome-devtools-frontend/mcp/mcp.js";
+import { ISSUE_UTILS } from "./issue-descriptions.js";
+import { logger } from "./logger.js";
 export function extractUrlLikeFromDevToolsTitle(title) {
-    const match = title.match(new RegExp(`DevTools - (.*)`));
-    return match?.[1] ?? undefined;
+  const match = title.match(/DevTools - (.*)/);
+  return match?.[1] ?? undefined;
 }
 export function urlsEqual(url1, url2) {
-    const normalizedUrl1 = normalizeUrl(url1);
-    const normalizedUrl2 = normalizeUrl(url2);
-    return normalizedUrl1 === normalizedUrl2;
+  const normalizedUrl1 = normalizeUrl(url1);
+  const normalizedUrl2 = normalizeUrl(url2);
+  return normalizedUrl1 === normalizedUrl2;
 }
 /**
  * For the sake of the MCP server, when we determine if two URLs are equal we
@@ -28,84 +33,82 @@ export function urlsEqual(url1, url2) {
  * match a tab in the connected Chrome instance that is showing "www.foo.com/"
  */
 function normalizeUrl(url) {
-    let result = url.trim();
-    // Remove protocols
-    if (result.startsWith('https://')) {
-        result = result.slice(8);
-    }
-    else if (result.startsWith('http://')) {
-        result = result.slice(7);
-    }
-    // Remove 'www.'. This ensures that we find the right URL regardless of if the user adds `www` or not.
-    if (result.startsWith('www.')) {
-        result = result.slice(4);
-    }
-    // We use target URLs to locate DevTools but those often do
-    // no include hash.
-    const hashIdx = result.lastIndexOf('#');
-    if (hashIdx !== -1) {
-        result = result.slice(0, hashIdx);
-    }
-    // Remove trailing slash
-    if (result.endsWith('/')) {
-        result = result.slice(0, -1);
-    }
-    return result;
+  let result = url.trim();
+  // Remove protocols
+  if (result.startsWith("https://")) {
+    result = result.slice(8);
+  } else if (result.startsWith("http://")) {
+    result = result.slice(7);
+  }
+  // Remove 'www.'. This ensures that we find the right URL regardless of if the user adds `www` or not.
+  if (result.startsWith("www.")) {
+    result = result.slice(4);
+  }
+  // We use target URLs to locate DevTools but those often do
+  // no include hash.
+  const hashIdx = result.lastIndexOf("#");
+  if (hashIdx !== -1) {
+    result = result.slice(0, hashIdx);
+  }
+  // Remove trailing slash
+  if (result.endsWith("/")) {
+    result = result.slice(0, -1);
+  }
+  return result;
 }
 /**
  * A mock implementation of an issues manager that only implements the methods
  * that are actually used by the IssuesAggregator
  */
-export class FakeIssuesManager extends Common.ObjectWrapper
-    .ObjectWrapper {
-    issues() {
-        return [];
-    }
+export class FakeIssuesManager extends Common.ObjectWrapper.ObjectWrapper {
+  issues() {
+    return [];
+  }
 }
 export function mapIssueToMessageObject(issue) {
-    const count = issue.getAggregatedIssuesCount();
-    const markdownDescription = issue.getDescription();
-    const filename = markdownDescription?.file;
-    if (!markdownDescription) {
-        logger(`no description found for issue:` + issue.code);
-        return null;
-    }
-    const rawMarkdown = filename
-        ? ISSUE_UTILS.getIssueDescription(filename)
-        : null;
-    if (!rawMarkdown) {
-        logger(`no markdown ${filename} found for issue:` + issue.code);
-        return null;
-    }
-    let processedMarkdown;
-    let title;
-    try {
-        processedMarkdown = MarkdownIssueDescription.substitutePlaceholders(rawMarkdown, markdownDescription.substitutions);
-        const markdownAst = Marked.Marked.lexer(processedMarkdown);
-        title = MarkdownIssueDescription.findTitleFromMarkdownAst(markdownAst);
-    }
-    catch {
-        logger('error parsing markdown for issue ' + issue.code());
-        return null;
-    }
-    if (!title) {
-        logger('cannot read issue title from ' + filename);
-        return null;
-    }
-    return {
-        type: 'issue',
-        item: issue,
-        message: title,
-        count,
-        description: processedMarkdown,
-    };
+  const count = issue.getAggregatedIssuesCount();
+  const markdownDescription = issue.getDescription();
+  const filename = markdownDescription?.file;
+  if (!markdownDescription) {
+    logger(`no description found for issue:` + issue.code);
+    return null;
+  }
+  const rawMarkdown = filename ? ISSUE_UTILS.getIssueDescription(filename) : null;
+  if (!rawMarkdown) {
+    logger(`no markdown ${filename} found for issue:` + issue.code);
+    return null;
+  }
+  let processedMarkdown;
+  let title;
+  try {
+    processedMarkdown = MarkdownIssueDescription.substitutePlaceholders(
+      rawMarkdown,
+      markdownDescription.substitutions
+    );
+    const markdownAst = Marked.Marked.lexer(processedMarkdown);
+    title = MarkdownIssueDescription.findTitleFromMarkdownAst(markdownAst);
+  } catch {
+    logger("error parsing markdown for issue " + issue.code());
+    return null;
+  }
+  if (!title) {
+    logger("cannot read issue title from " + filename);
+    return null;
+  }
+  return {
+    type: "issue",
+    item: issue,
+    message: title,
+    count,
+    description: processedMarkdown,
+  };
 }
 I18n.DevToolsLocale.DevToolsLocale.instance({
-    create: true,
-    data: {
-        navigatorLanguage: 'en-US',
-        settingLanguage: 'en-US',
-        lookupClosestDevToolsLocale: l => l,
-    },
+  create: true,
+  data: {
+    navigatorLanguage: "en-US",
+    settingLanguage: "en-US",
+    lookupClosestDevToolsLocale: (l) => l,
+  },
 });
-I18n.i18n.registerLocaleDataForTest('en-US', {});
+I18n.i18n.registerLocaleDataForTest("en-US", {});

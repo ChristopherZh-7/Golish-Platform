@@ -1,3 +1,4 @@
+import type { TerminalGridUpdatePayload } from "@/lib/events/payloads";
 import { invoke } from "./client";
 
 export interface PtySession {
@@ -50,4 +51,27 @@ export async function ptyGetForegroundProcess(sessionId: string): Promise<string
 
 export async function setActiveTerminalSession(sessionId: string): Promise<void> {
   return invoke("set_active_terminal_session", { sessionId });
+}
+
+/**
+ * Phase B · GridTerminal: ask the backend for a full snapshot of the
+ * virtual terminal grid. Used on first subscribe and as a recovery
+ * mechanism when the frontend notices a missed `rev` in the
+ * `terminal_grid_update` stream. Returns `null` when the session is not
+ * currently on alt-screen (i.e. no grid is allocated).
+ */
+export async function ptyRequestGridSnapshot(
+  sessionId: string
+): Promise<TerminalGridUpdatePayload | null> {
+  return invoke<TerminalGridUpdatePayload | null>("pty_request_grid_snapshot", { sessionId });
+}
+
+/**
+ * Phase B · GridTerminal: resize the virtual terminal grid for the
+ * given session. Targets the GridTerminal layer specifically — the
+ * underlying PTY keeps its own dimensions, set via [`ptyResize`].
+ * No-ops when the session has no grid allocated.
+ */
+export async function ptyResizeGrid(sessionId: string, cols: number, rows: number): Promise<void> {
+  return invoke("pty_resize_grid", { sessionId, cols, rows });
 }

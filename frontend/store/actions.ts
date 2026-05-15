@@ -39,16 +39,16 @@ export async function closeTabAndCleanup(
       const sessionIds = useStore.getState().getTabSessionIds(tabId);
       const idsToCleanup = sessionIds.length > 0 ? sessionIds : [tabId];
 
-      const [
-        { shutdownAiSession },
-        { ptyDestroy },
-        { TerminalInstanceManager, liveTerminalManager },
-      ] = await Promise.all([
+      const [{ shutdownAiSession }, { ptyDestroy }] = await Promise.all([
         import("@/lib/ai"),
         import("@/lib/api/pty"),
-        import("@/lib/terminal"),
       ]);
 
+      // GridTerminal cleanup happens server-side: `pty_destroy` →
+      // `PtyManager::destroy` drops the `ActiveSession`, which in turn
+      // drops the per-session `GridTerminal` (the `GridManager` only
+      // holds an `Arc<Mutex<>>` so the alacritty term is GC'd when no
+      // one else references it). No frontend disposal needed.
       await Promise.all(
         idsToCleanup.map(async (sessionId) => {
           try {
@@ -61,8 +61,6 @@ export async function closeTabAndCleanup(
           } catch (err) {
             logger.error(`Failed to destroy PTY ${sessionId}:`, err);
           }
-          TerminalInstanceManager.dispose(sessionId);
-          liveTerminalManager.dispose(sessionId);
         })
       );
     } catch (err) {

@@ -26,7 +26,9 @@
         "type": "string",
         "required": true,
         "description": "Target host, CIDR, or hostname (e.g. 192.168.1.0/24, scanme.nmap.org)",
-        "descriptionI18n": { "zh": "目标主机、CIDR 网段或域名（如 192.168.1.0/24、scanme.nmap.org）" },
+        "descriptionI18n": {
+          "zh": "目标主机、CIDR 网段或域名（如 192.168.1.0/24、scanme.nmap.org）"
+        },
         "placeholder": "scanme.nmap.org"
       },
       {
@@ -37,11 +39,23 @@
         "description": "Choose scan technique",
         "descriptionI18n": { "zh": "选择扫描技术" },
         "options": [
-          { "value": "-sS", "label": "TCP SYN (stealth)", "labelI18n": { "zh": "TCP SYN(隐蔽扫描)" } },
+          {
+            "value": "-sS",
+            "label": "TCP SYN (stealth)",
+            "labelI18n": { "zh": "TCP SYN(隐蔽扫描)" }
+          },
           { "value": "-sT", "label": "TCP Connect", "labelI18n": { "zh": "TCP 全连接" } },
           { "value": "-sU", "label": "UDP Scan", "labelI18n": { "zh": "UDP 扫描" } },
-          { "value": "-sn", "label": "Ping sweep (no port scan)", "labelI18n": { "zh": "Ping 扫描(不扫端口)" } },
-          { "value": "-sV", "label": "Service/version detection", "labelI18n": { "zh": "服务/版本探测" } }
+          {
+            "value": "-sn",
+            "label": "Ping sweep (no port scan)",
+            "labelI18n": { "zh": "Ping 扫描(不扫端口)" }
+          },
+          {
+            "value": "-sV",
+            "label": "Service/version detection",
+            "labelI18n": { "zh": "服务/版本探测" }
+          }
         ]
       },
       {

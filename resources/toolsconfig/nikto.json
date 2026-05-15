@@ -54,16 +54,48 @@
         "description": "Restrict to a category of checks",
         "descriptionI18n": { "zh": "仅运行指定类别的检测" },
         "options": [
-          { "value": "1", "label": "1 - Interesting File / Seen in logs", "labelI18n": { "zh": "1 - 有趣文件 / 日志中曾出现" } },
-          { "value": "2", "label": "2 - Misconfiguration / Default File", "labelI18n": { "zh": "2 - 配置错误 / 默认文件" } },
-          { "value": "3", "label": "3 - Information Disclosure", "labelI18n": { "zh": "3 - 信息泄露" } },
-          { "value": "4", "label": "4 - Injection (XSS/Script/HTML)", "labelI18n": { "zh": "4 - 注入(XSS / 脚本 / HTML)" } },
-          { "value": "5", "label": "5 - Remote File Retrieval", "labelI18n": { "zh": "5 - 远程文件获取" } },
+          {
+            "value": "1",
+            "label": "1 - Interesting File / Seen in logs",
+            "labelI18n": { "zh": "1 - 有趣文件 / 日志中曾出现" }
+          },
+          {
+            "value": "2",
+            "label": "2 - Misconfiguration / Default File",
+            "labelI18n": { "zh": "2 - 配置错误 / 默认文件" }
+          },
+          {
+            "value": "3",
+            "label": "3 - Information Disclosure",
+            "labelI18n": { "zh": "3 - 信息泄露" }
+          },
+          {
+            "value": "4",
+            "label": "4 - Injection (XSS/Script/HTML)",
+            "labelI18n": { "zh": "4 - 注入(XSS / 脚本 / HTML)" }
+          },
+          {
+            "value": "5",
+            "label": "5 - Remote File Retrieval",
+            "labelI18n": { "zh": "5 - 远程文件获取" }
+          },
           { "value": "6", "label": "6 - Denial of Service", "labelI18n": { "zh": "6 - 拒绝服务" } },
-          { "value": "7", "label": "7 - Remote File Retrieval (server)", "labelI18n": { "zh": "7 - 远程文件获取(服务端)" } },
-          { "value": "8", "label": "8 - Command Execution / Shell", "labelI18n": { "zh": "8 - 命令执行 / Shell" } },
+          {
+            "value": "7",
+            "label": "7 - Remote File Retrieval (server)",
+            "labelI18n": { "zh": "7 - 远程文件获取(服务端)" }
+          },
+          {
+            "value": "8",
+            "label": "8 - Command Execution / Shell",
+            "labelI18n": { "zh": "8 - 命令执行 / Shell" }
+          },
           { "value": "9", "label": "9 - SQL Injection", "labelI18n": { "zh": "9 - SQL 注入" } },
-          { "value": "x", "label": "x - Reverse tuning (exclude)", "labelI18n": { "zh": "x - 反向选择(排除)" } }
+          {
+            "value": "x",
+            "label": "x - Reverse tuning (exclude)",
+            "labelI18n": { "zh": "x - 反向选择(排除)" }
+          }
         ]
       },
       {

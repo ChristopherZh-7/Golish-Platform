@@ -606,9 +606,7 @@ export function DetailTabs({ detail }: { detail: HttpMessageDetail }) {
               tab === id ? "text-accent" : "text-muted-foreground/40 hover:text-foreground"
             )}
           >
-            {id === "request"
-              ? t("security.request")
-              : t("security.response")}
+            {id === "request" ? t("security.request") : t("security.response")}
             {tab === id && (
               <div className="absolute bottom-0 left-1 right-1 h-[1.5px] bg-accent rounded-full" />
             )}

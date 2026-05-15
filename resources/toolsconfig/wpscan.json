@@ -36,18 +36,34 @@
         "description": "What to enumerate",
         "descriptionI18n": { "zh": "枚举的对象类型" },
         "options": [
-          { "value": "vp", "label": "vp - vulnerable plugins", "labelI18n": { "zh": "vp - 漏洞插件" } },
+          {
+            "value": "vp",
+            "label": "vp - vulnerable plugins",
+            "labelI18n": { "zh": "vp - 漏洞插件" }
+          },
           { "value": "ap", "label": "ap - all plugins", "labelI18n": { "zh": "ap - 所有插件" } },
           { "value": "p", "label": "p - popular plugins", "labelI18n": { "zh": "p - 热门插件" } },
-          { "value": "vt", "label": "vt - vulnerable themes", "labelI18n": { "zh": "vt - 漏洞主题" } },
+          {
+            "value": "vt",
+            "label": "vt - vulnerable themes",
+            "labelI18n": { "zh": "vt - 漏洞主题" }
+          },
           { "value": "at", "label": "at - all themes", "labelI18n": { "zh": "at - 所有主题" } },
           { "value": "t", "label": "t - popular themes", "labelI18n": { "zh": "t - 热门主题" } },
           { "value": "tt", "label": "tt - timthumbs", "labelI18n": { "zh": "tt - timthumbs" } },
           { "value": "cb", "label": "cb - config backups", "labelI18n": { "zh": "cb - 配置备份" } },
-          { "value": "dbe", "label": "dbe - db exports", "labelI18n": { "zh": "dbe - 数据库导出" } },
+          {
+            "value": "dbe",
+            "label": "dbe - db exports",
+            "labelI18n": { "zh": "dbe - 数据库导出" }
+          },
           { "value": "u", "label": "u - users", "labelI18n": { "zh": "u - 用户" } },
           { "value": "m", "label": "m - media IDs", "labelI18n": { "zh": "m - 媒体 ID" } },
-          { "value": "vp,vt,u", "label": "common: vp+vt+u", "labelI18n": { "zh": "常用组合：vp + vt + u" } }
+          {
+            "value": "vp,vt,u",
+            "label": "common: vp+vt+u",
+            "labelI18n": { "zh": "常用组合：vp + vt + u" }
+          }
         ]
       },
       {
@@ -183,7 +199,11 @@
         "descriptionI18n": { "zh": "输出格式" },
         "options": [
           { "value": "cli", "label": "cli", "labelI18n": { "zh": "CLI" } },
-          { "value": "cli-no-color", "label": "cli-no-color", "labelI18n": { "zh": "CLI(无颜色)" } },
+          {
+            "value": "cli-no-color",
+            "label": "cli-no-color",
+            "labelI18n": { "zh": "CLI(无颜色)" }
+          },
           { "value": "json", "label": "json", "labelI18n": { "zh": "JSON" } }
         ]
       }

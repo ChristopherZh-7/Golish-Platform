@@ -8,13 +8,7 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": [
-      "**/*.ts",
-      "**/*.tsx",
-      "**/*.js",
-      "**/*.jsx",
-      "**/*.json"
-    ]
+    "includes": ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx", "**/*.json"]
   },
   "formatter": {
     "enabled": true,
@@ -73,11 +67,7 @@
   },
   "overrides": [
     {
-      "includes": [
-        "frontend/lib/**",
-        "frontend/**/*.test.ts",
-        "frontend/**/*.test.tsx"
-      ],
+      "includes": ["frontend/lib/**", "frontend/**/*.test.ts", "frontend/**/*.test.tsx"],
       "linter": {
         "rules": {
           "style": {

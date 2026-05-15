@@ -121,16 +121,26 @@ export function CommandBlock({
       data-testid="command-block"
     >
       {/* Header */}
-      <div className="relative flex items-center">
+      <div className="relative flex items-start">
         <CollapsibleTrigger
           className={cn(
-            "flex items-center gap-2 px-5 py-3 w-full text-left select-none",
+            "flex items-start gap-2 px-5 py-3 w-full text-left select-none",
             hasOutput && "cursor-pointer"
           )}
           disabled={!hasOutput}
         >
-          {/* Command */}
-          <code className="flex-1 truncate text-foreground" style={codeStyle}>
+          {/* Command — Warp-style multi-line header: keep the user's
+              original line breaks and indentation so a multi-line
+              compound (`select … do … done`, heredocs, `for … done`)
+              reads naturally. `block` + `whitespace-pre-wrap` on a
+              `<code>` honours both `\n` and consecutive spaces while
+              preserving the ARIA "code" role tests rely on. Long
+              commands cap at ~200 px height with an inline scroll bar
+              so they don't push the output / metadata off-screen. */}
+          <code
+            className="block m-0 flex-1 whitespace-pre-wrap break-words text-foreground max-h-[200px] overflow-auto"
+            style={codeStyle}
+          >
             {source === "pipeline" && (
               <span className="inline-flex items-center text-[8px] px-1 py-px rounded bg-blue-500/15 text-blue-400 font-sans font-medium mr-1.5 align-middle leading-none">
                 AUTO

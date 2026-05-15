@@ -85,7 +85,10 @@ export const DEFAULT_SETTINGS: GolishSettings = {
     font_family: "SF Mono",
     font_size: 14,
     scrollback: 10000,
-    fullterm_commands: [],
+    // `fullterm_commands` deliberately omitted — Phase A retired the
+    // auto-trigger and the field is now `?: string[]` on the type for
+    // backwards-compatible deserialisation of older settings files.
+    use_grid_renderer: true,
     caret: {
       style: "default",
       width: 1.0,

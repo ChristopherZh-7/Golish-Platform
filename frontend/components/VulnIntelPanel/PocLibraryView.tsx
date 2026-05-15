@@ -265,9 +265,7 @@ export const PocLibraryView = memo(function PocLibraryView({
         {filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground/20">
             <Code className="w-12 h-12" />
-            <p className="text-[13px] font-medium">
-              {t("vulnKb.noPocTemplates")}
-            </p>
+            <p className="text-[13px] font-medium">{t("vulnKb.noPocTemplates")}</p>
             <p className="text-[11px] text-muted-foreground/15 max-w-sm text-center">
               {t(
                 "vulnKb.pocLibraryHint",

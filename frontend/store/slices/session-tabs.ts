@@ -5,7 +5,6 @@
 
 import { logger } from "@/lib/logger";
 import { countLeafPanes, getAllLeafPanes } from "@/lib/pane-utils";
-import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import type { SessionStoreDraft } from "./session-draft-types";
 import { markTabNewActivityInDraft, purgeSessionStateInDraft } from "./session-helpers";
 import type { ImmerSet, StateGet } from "./types";
@@ -184,9 +183,11 @@ export function createSessionTabActions(
         }
       }
 
-      for (const sessionId of sessionIdsToClean) {
-        TerminalInstanceManager.dispose(sessionId);
-      }
+      // Phase B (D6.4b): xterm.js was retired and TerminalInstanceManager
+      // along with it. GridTerminal instances are owned by the Rust
+      // `GridManager`, which the matching `pty_destroy` call drops as
+      // part of the session-creation tab close path. Nothing to do
+      // here on the frontend.
 
       import("@/hooks/useAiEvents").then(({ resetSessionSequence }) => {
         for (const sessionId of sessionIdsToClean) {

@@ -190,8 +190,9 @@ test.describe("Input Mode Focus", () => {
       return page.evaluate(() => {
         const activeElement = document.activeElement;
         if (!activeElement || activeElement.tagName !== "TEXTAREA") return false;
-        // Check it's not the xterm helper textarea
-        return !activeElement.classList.contains("xterm-helper-textarea");
+        // D6.4b: the xterm.js helper textarea (`.xterm-helper-textarea`)
+        // is gone; UnifiedInput is now the sole textarea in the pane.
+        return true;
       });
     }
 
@@ -210,7 +211,8 @@ test.describe("Input Mode Focus", () => {
       () => {
         const activeElement = document.activeElement;
         if (!activeElement || activeElement.tagName !== "TEXTAREA") return false;
-        return !activeElement.classList.contains("xterm-helper-textarea");
+        // D6.4b: legacy xterm-helper-textarea sentinel removed.
+        return true;
       },
       { timeout: 3000 }
     );

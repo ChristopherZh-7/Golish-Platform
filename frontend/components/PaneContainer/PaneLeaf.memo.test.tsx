@@ -1,7 +1,6 @@
 import { render } from "@testing-library/react";
 import type React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { TerminalPortalProvider } from "../../hooks/useTerminalPortal";
 import { useStore } from "../../store";
 import { clearAllSessionCaches } from "../../store/selectors/session";
 
@@ -16,48 +15,16 @@ vi.mock("@/lib/api/files", () => ({
 vi.mock("@/lib/api/pty", () => ({
   ptyWrite: vi.fn().mockResolvedValue(undefined),
   ptyResize: vi.fn().mockResolvedValue(undefined),
+  ptyResizeGrid: vi.fn().mockResolvedValue(undefined),
+  ptyRequestGridSnapshot: vi.fn().mockResolvedValue(null),
 }));
 vi.mock("@/lib/api/git", () => ({
   getGitBranch: vi.fn().mockResolvedValue("main"),
   getGitStatus: vi.fn().mockResolvedValue({ changes: [] }),
 }));
 
-// Mock xterm.js and addons - they don't work in jsdom
-vi.mock("@xterm/xterm", () => ({
-  Terminal: class MockTerminal {
-    options = { theme: {} };
-    rows = 24;
-    cols = 80;
-    loadAddon = vi.fn();
-    open = vi.fn();
-    write = vi.fn();
-    clear = vi.fn();
-    dispose = vi.fn();
-    scrollToBottom = vi.fn();
-    resize = vi.fn();
-    element = document.createElement("div");
-    registerLinkProvider = vi.fn(() => ({ dispose: vi.fn() }));
-    buffer = {
-      active: {
-        getLine: vi.fn(() => ({
-          translateToString: vi.fn(() => ""),
-        })),
-      },
-    };
-  },
-}));
-
-vi.mock("@xterm/addon-fit", () => ({
-  FitAddon: class MockFitAddon {
-    fit = vi.fn();
-  },
-}));
-
-vi.mock("@xterm/addon-serialize", () => ({
-  SerializeAddon: class MockSerializeAddon {
-    serialize = vi.fn(() => "");
-  },
-}));
+// D6.4b: xterm.js mocks and the TerminalPortalProvider were retired
+// alongside the renderer; PaneLeaf now mounts GridTerminal directly.
 
 // Helper to reset store
 const resetStore = () => {
@@ -106,10 +73,9 @@ const createSession = (sessionId: string) => {
   });
 };
 
-// Wrapper that provides required context
-const TestWrapper = ({ children }: { children: React.ReactNode }) => (
-  <TerminalPortalProvider>{children}</TerminalPortalProvider>
-);
+// Wrapper kept for parity with the older test contract (used to nest
+// `TerminalPortalProvider`); now a pass-through.
+const TestWrapper = ({ children }: { children: React.ReactNode }) => <>{children}</>;
 
 describe("PaneLeaf Memo Optimization Tests", () => {
   beforeEach(() => {

@@ -341,8 +341,7 @@ export function ScannerPanel({
           <div className="overflow-y-auto flex-1">
             {scannerRules.length === 0 ? (
               <div className="flex items-center justify-center py-6 text-muted-foreground/20 text-[11px]">
-                <Loader2 className="w-4 h-4 animate-spin mr-2" />{" "}
-                {t("security.loadingPlugins")}
+                <Loader2 className="w-4 h-4 animate-spin mr-2" /> {t("security.loadingPlugins")}
               </div>
             ) : (
               <div className="divide-y divide-border/5">
@@ -394,9 +393,7 @@ export function ScannerPanel({
             {endpoints.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground/20">
                 <Zap className="w-10 h-10" />
-                <p className="text-[12px] font-medium">
-                  {t("security.noScanTargets")}
-                </p>
+                <p className="text-[12px] font-medium">{t("security.noScanTargets")}</p>
                 <p className="text-[10px] text-muted-foreground/15 max-w-[220px] text-center">
                   {t("security.addTargetsHint")}
                 </p>
@@ -594,9 +591,7 @@ export function ScannerPanel({
             <div className="h-full flex flex-col items-center justify-center gap-3 text-muted-foreground/20">
               <ShieldCheck className="w-12 h-12" />
               <p className="text-[13px] font-medium">
-                {endpoints.length > 0
-                  ? t("security.selectEndpoint")
-                  : t("security.scanHint")}
+                {endpoints.length > 0 ? t("security.selectEndpoint") : t("security.scanHint")}
               </p>
             </div>
           )}

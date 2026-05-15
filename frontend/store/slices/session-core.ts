@@ -3,12 +3,12 @@
  */
 
 import { logger } from "@/lib/logger";
-import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import type {
   AgentMode,
   DetailViewMode,
   ExecutionMode,
   InputMode,
+  InteractiveModeState,
   RenderMode,
   Session,
   SessionMode,
@@ -119,7 +119,7 @@ export function createSessionCoreActions(
       }),
 
     removeSession: (sessionId: string) => {
-      TerminalInstanceManager.dispose(sessionId);
+      // D6.4b: GridTerminal teardown happens server-side via `pty_destroy`.
       deleteOutputBuffer(sessionId);
 
       import("@/hooks/useAiEvents").then(({ resetSessionSequence }) => {
@@ -274,6 +274,26 @@ export function createSessionCoreActions(
         if (state.sessions[sessionId]) {
           state.sessions[sessionId].toolDetailRequestIds = requestIds;
         }
+      }),
+
+    setInteractiveMode: (sessionId: string, mode: InteractiveModeState | null) =>
+      set((state) => {
+        const session = state.sessions[sessionId];
+        if (!session) return;
+        const prev = session.interactiveMode ?? null;
+        // Idempotent transition: avoid bumping object identity when
+        // nothing meaningful changed, so memoised selectors don't churn.
+        if (prev === null && mode === null) return;
+        if (
+          prev &&
+          mode &&
+          prev.active === mode.active &&
+          prev.command === mode.command &&
+          prev.detector === mode.detector
+        ) {
+          return;
+        }
+        session.interactiveMode = mode;
       }),
   };
 }

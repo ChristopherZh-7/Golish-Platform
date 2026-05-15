@@ -29,6 +29,7 @@ const baseTerminalSettings: TerminalSettingsType = {
   font_size: 14,
   scrollback: 10000,
   fullterm_commands: [],
+  use_grid_renderer: true,
   caret: { ...DEFAULT_CARET_SETTINGS },
 };
 

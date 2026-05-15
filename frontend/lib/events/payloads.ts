@@ -40,6 +40,91 @@ export interface AlternateScreenPayload {
 }
 
 /**
+ * Backend emits this when the PTY has been idle long enough for the
+ * `stdin_wait_detector` heuristic (300 ms, see
+ * `STDIN_WAIT_IDLE_THRESHOLD_MS`) and the trailing output matches a
+ * known prompt pattern (Y/N, password, "Continue?", PowerShell choice,
+ * etc.). The frontend uses this to switch `UnifiedInput` into
+ * interactive mode so the user's keystrokes go to the running command's
+ * stdin instead of starting a new command.
+ *
+ * `detector` mirrors `StdinWaitKind::as_event_str` in the Rust crate
+ * — see `frontend/store/types/session.ts::StdinWaitDetector` for the
+ * matching frontend enum.
+ */
+export interface StdinWaitPayload {
+  session_id: string;
+  detector: string;
+}
+
+// ---------------------------------------------------------------------------
+// GridTerminal (Phase B · `docs/design/2026-05-15-grid-terminal-phase-b.md`).
+//
+// Backend ships a `terminal_grid_update` event whenever the virtual
+// terminal grid changes (16 fps coalesce window, alt-screen sessions
+// only). Field shapes mirror the Rust structs in
+// `backend/crates/golish-pty/src/grid/{cell,snapshot}.rs`; keep them in
+// sync.
+// ---------------------------------------------------------------------------
+
+/** Cell colour. Mirrors the Rust `Color` enum (struct-variant tag). */
+export type GridColor =
+  | { kind: "default" }
+  | { kind: "indexed"; value: number }
+  | { kind: "rgb"; value: number };
+
+/** Cursor presentation style. Mirrors the Rust `CursorStyle` enum. */
+export type GridCursorStyle = "block" | "underline" | "bar";
+
+/** Cursor position + style for the current grid frame. */
+export interface GridCursorPayload {
+  x: number;
+  y: number;
+  visible: boolean;
+  style: GridCursorStyle;
+}
+
+/** Single cell on the grid. `ch === "\0"` marks the spacer slot of a
+ *  CJK wide character — frontend skips those when rendering. `attrs`
+ *  is a bitmask (BOLD=1, ITALIC=2, UNDERLINE=4, INVERSE=8,
+ *  STRIKETHROUGH=16, DIM=32, HIDDEN=64, BLINK=128). */
+export interface GridCellPayload {
+  ch: string;
+  fg: GridColor;
+  bg: GridColor;
+  attrs: number;
+}
+
+/** Cells of a single row, indexed by `y` (viewport top = 0). */
+export interface GridRowPayload {
+  y: number;
+  cells: GridCellPayload[];
+}
+
+/**
+ * Grid frame delivered to the frontend. `full = true` means
+ * `dirty_rows` covers the whole viewport (used on first subscribe,
+ * after resize, or after a missed `rev`). `full = false` means the
+ * frontend should merge `dirty_rows` onto its cached grid. `rev` is a
+ * monotonic counter — non-contiguous deliveries trigger a
+ * `pty_request_grid_snapshot` call to recover.
+ */
+export interface TerminalGridUpdatePayload {
+  session_id: string;
+  rev: number;
+  cols: number;
+  rows: number;
+  full: boolean;
+  dirty_rows: GridRowPayload[];
+  cursor: GridCursorPayload;
+  alt_screen: boolean;
+  /** Whether the terminal is in DEC `APP_CURSOR` mode (mode 1). The
+   *  frontend keymap uses this to pick between `ESC [ X` (normal) and
+   *  `ESC O X` (application) arrow-key encodings. */
+  app_cursor_mode: boolean;
+}
+
+/**
  * File watcher event emitted when a watched workspace file changes on disk.
  * Mirrors Rust `golish::commands::fs::file_watcher::FileChangedEvent`
  * (with `#[serde(rename_all = "camelCase")]`, so `modified_at` ↔ `modifiedAt`).
@@ -141,6 +226,8 @@ export interface EventPayloadMap {
   virtual_env_changed: VirtualEnvChangedPayload;
   session_ended: SessionEndedPayload;
   alternate_screen: AlternateScreenPayload;
+  stdin_wait: StdinWaitPayload;
+  terminal_grid_update: TerminalGridUpdatePayload;
   "sidecar-event": SidecarEventPayload;
   "file-changed": FileChangedPayload;
   "mcp-event": McpEventPayload;

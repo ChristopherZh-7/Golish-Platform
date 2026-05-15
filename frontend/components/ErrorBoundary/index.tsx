@@ -91,13 +91,9 @@ export function setupGlobalErrorHandlers(): void {
   // Handle uncaught errors
   window.onerror = (message, source, lineno, colno, error) => {
     const msg = String(message);
-    const src = typeof source === "string" ? source : "";
-
-    // xterm.js renderer race condition during WebGL swap — harmless, downgrade to debug
-    if (src.includes("@xterm") && msg.includes("_renderer")) {
-      logger.debug("[Terminal] Renderer initialization race (harmless):", msg);
-      return true;
-    }
+    // D6.4b: the xterm.js WebGL renderer was retired, so the
+    // `@xterm/_renderer` race-condition handler that lived here is no
+    // longer needed.
 
     // ResizeObserver loop completed with undelivered notifications — benign
     // Chromium warning emitted whenever a ResizeObserver callback dirties the

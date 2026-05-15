@@ -102,8 +102,7 @@ export async function setLanguagePreference(pref: LanguagePreference): Promise<v
   // useSuspense:false, explicit I18nextProvider at the root) the
   // `languageChanged` event reaches every `useTranslation` subscriber and
   // they re-render synchronously — no reload needed.
-  const next: SupportedLanguage =
-    pref === "zh-CN" || pref === "en" ? pref : resolveLanguage();
+  const next: SupportedLanguage = pref === "zh-CN" || pref === "en" ? pref : resolveLanguage();
   if (i18n.language !== next) {
     await i18n.changeLanguage(next);
   }

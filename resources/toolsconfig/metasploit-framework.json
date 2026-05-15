@@ -3,7 +3,9 @@
     "id": "metasploit-framework",
     "name": "metasploit-framework",
     "description": "World's most used penetration testing framework - exploits, payloads, post modules",
-    "descriptionI18n": { "zh": "全球使用最广的渗透测试框架 —— 集成 exploit / payload / 后渗透模块" },
+    "descriptionI18n": {
+      "zh": "全球使用最广的渗透测试框架 —— 集成 exploit / payload / 后渗透模块"
+    },
     "executable": "msfconsole",
     "runtime": "ruby",
     "runtimeVersion": "3.2",

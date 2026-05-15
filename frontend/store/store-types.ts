@@ -23,6 +23,7 @@ export type {
   ExecutionMode,
   FinalizedStreamingBlock,
   InputMode,
+  InteractiveModeState,
   PendingCommand,
   PipelineExecution,
   PipelineStepExecution,

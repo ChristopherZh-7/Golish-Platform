@@ -5,10 +5,10 @@
  */
 let issuesEnabled = false;
 export const features = {
-    get issues() {
-        return issuesEnabled;
-    },
+  get issues() {
+    return issuesEnabled;
+  },
 };
 export function setIssuesEnabled(value) {
-    issuesEnabled = value;
+  issuesEnabled = value;
 }

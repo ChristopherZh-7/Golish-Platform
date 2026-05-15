@@ -1,7 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { LiveTerminalBlock } from "@/components/LiveTerminalBlock";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
+import { useStore } from "@/store";
 import { useSessionState } from "@/store/selectors/session";
+import { RunningCommandCard } from "./RunningCommandCard";
 import { VirtualizedTimeline } from "./VirtualizedTimeline";
 
 interface UnifiedTimelineProps {
@@ -12,8 +13,17 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
   // Use combined selector - replaces 10+ individual useStore calls with one
   const sessionState = useSessionState(sessionId);
 
-  // Destructure for convenience (these are already stable references from the memoized selector)
+  // Destructure for convenience (these are already stable references from the memoised selector)
   const { timeline, pendingCommand, workingDirectory } = sessionState;
+
+  // When the Warp-style interactive cell is active, PaneLeaf renders
+  // its own self-contained card (`InteractiveCell`) at the bottom that
+  // already shows the live output. Suppress this timeline-side
+  // `RunningCommandCard` so the user doesn't see the same output
+  // duplicated in two places.
+  const isInteractiveInputActive = useStore(
+    (s) => s.sessions[sessionId]?.interactiveMode?.active === true
+  );
 
   // Terminal-only: just use timeline blocks directly (command blocks)
   const sortedTimeline = timeline;
@@ -121,53 +131,24 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
     }, 50);
   }, []);
 
-  // Force-scroll to bottom when command state changes (start or end).
-  // When a command finishes, the LiveTerminalBlock unmounts and a static
-  // CommandBlock renders. We delay the scroll slightly to let the new block
-  // layout with its estimated min-height, preventing a "jump" effect.
+  // Track command lifecycle so we can keep the timeline anchored to
+  // the bottom when a command starts / ends. The old `LiveTerminalBlock`
+  // overlay was removed alongside Phase A (the running command's output
+  // now streams straight into the regular `CommandBlock` and Y/N-style
+  // interaction happens in the bottom `UnifiedInput`), so this effect
+  // only handles scroll bookkeeping.
   const hasPendingCommand = !!pendingCommand?.command;
   const prevHadPendingRef = useRef(hasPendingCommand);
-  const [showLiveBlock, setShowLiveBlock] = useState(hasPendingCommand);
-  const [liveBlockFading, setLiveBlockFading] = useState(false);
-  const liveBlockShowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const wasRunning = prevHadPendingRef.current;
     prevHadPendingRef.current = hasPendingCommand;
 
     if (wasRunning !== hasPendingCommand) {
-      if (wasRunning && !hasPendingCommand) {
-        // Command just finished — cancel any pending show, then fade out
-        if (liveBlockShowTimerRef.current) {
-          clearTimeout(liveBlockShowTimerRef.current);
-          liveBlockShowTimerRef.current = null;
-        }
-        if (showLiveBlock) {
-          setLiveBlockFading(true);
-          setTimeout(() => {
-            setShowLiveBlock(false);
-            setLiveBlockFading(false);
-            setIsAtBottom(true);
-            scrollToBottom();
-          }, 200);
-        } else {
-          // LiveTerminalBlock was never shown (fast command) — just scroll
-          setIsAtBottom(true);
-          requestAnimationFrame(() => scrollToBottom());
-        }
-      } else {
-        // Command starting — debounce to avoid flash for fast commands.
-        // Only show LiveTerminalBlock if the command runs longer than 250ms.
-        setIsAtBottom(true);
-        liveBlockShowTimerRef.current = setTimeout(() => {
-          liveBlockShowTimerRef.current = null;
-          setShowLiveBlock(true);
-          setLiveBlockFading(false);
-          requestAnimationFrame(() => scrollToBottom());
-        }, 250);
-      }
+      setIsAtBottom(true);
+      requestAnimationFrame(() => scrollToBottom());
     }
-  }, [hasPendingCommand, scrollToBottom, showLiveBlock]);
+  }, [hasPendingCommand, scrollToBottom]);
 
   // Auto-scroll only when NEW blocks appear (not on content height changes from expand/collapse)
   const prevTimelineLengthRef = useRef(timeline.length);
@@ -179,7 +160,7 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
     }
   }, [scrollToBottom, isAtBottom, timeline.length, hasPendingCommand]);
 
-  // Cleanup pending scroll and live block timer on unmount
+  // Cleanup pending scroll timer on unmount
   useEffect(() => {
     return () => {
       if (pendingScrollRef.current !== null) {
@@ -187,9 +168,6 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
       }
       if (scrollDebounceRef.current !== null) {
         clearTimeout(scrollDebounceRef.current);
-      }
-      if (liveBlockShowTimerRef.current !== null) {
-        clearTimeout(liveBlockShowTimerRef.current);
       }
     };
   }, []);
@@ -232,17 +210,8 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
               workingDirectory={workingDirectory}
             />
 
-            {showLiveBlock && pendingCommand && (
-              <div
-                className="transition-opacity duration-200"
-                style={{ opacity: liveBlockFading ? 0 : 1 }}
-              >
-                <LiveTerminalBlock
-                  sessionId={sessionId}
-                  command={pendingCommand?.command || null}
-                  interactive
-                />
-              </div>
+            {hasPendingCommand && pendingCommand && !isInteractiveInputActive && (
+              <RunningCommandCard sessionId={sessionId} command={pendingCommand.command ?? null} />
             )}
           </>
         )}

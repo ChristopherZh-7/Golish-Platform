@@ -118,7 +118,21 @@ export function useInputState({
   const { isSessionDead } = useStoreInputState(sessionId);
   const inputMode = "terminal" as const;
   const pendingCommand = usePendingCommand(sessionId);
-  const isProcessRunning = !!pendingCommand;
+
+  // Warp-style interactive input mode: when the backend `stdin_wait`
+  // detector fires for the running command, the textarea repurposes
+  // itself to write directly to the PTY (Enter sends `input + \n` via
+  // `ptyWrite` without creating a new command block). The bottom panel
+  // also stays visible (see PaneLeaf) instead of being hidden by the
+  // pending-command animation.
+  const interactiveMode = useStore((state) => state.sessions[sessionId]?.interactiveMode) ?? null;
+  const isInteractive = !!interactiveMode?.active;
+
+  // `isProcessRunning` controls focus/blur for the textarea — when a
+  // command is running we normally drop focus so keystrokes don't pile
+  // up uselessly. Interactive mode is the explicit exception: a
+  // command IS running, but those keystrokes are the whole point.
+  const isProcessRunning = !!pendingCommand && !isInteractive;
 
   useEffect(() => {
     getSettings().then((s) => setCaretSettings(s.terminal.caret ?? DEFAULT_CARET_SETTINGS));
@@ -323,6 +337,20 @@ export function useInputState({
 
   const handleSubmit = useCallback(() => {
     const { input: currentInput } = stateRef.current;
+    // Interactive-mode handler: we pipe whatever the user typed (even
+    // empty, since hitting Enter on a `[Y/n]` prompt with no input is a
+    // valid "accept default" gesture) straight to the running command's
+    // stdin via `ptyWrite`. No history entry, no command tracking, no
+    // tool-mode handling — those concerns belong to the
+    // start-a-new-command path only.
+    if (isInteractive) {
+      setInput("");
+      ptyWrite(sessionId, `${currentInput}\n`).catch((err) =>
+        console.error("[UnifiedInput] interactive ptyWrite failed:", err)
+      );
+      return;
+    }
+
     if (!currentInput.trim()) return;
 
     const value = currentInput.trim();
@@ -360,7 +388,7 @@ export function useInputState({
     ptyWrite(sessionId, `${fullCmd}\n`).catch((err) =>
       console.error("[UnifiedInput] ptyWrite failed:", err)
     );
-  }, [sessionId, addToHistory, resetHistory, setLastSentCommand, clearToolMode]);
+  }, [sessionId, addToHistory, resetHistory, setLastSentCommand, clearToolMode, isInteractive]);
 
   const handleSlashSelect = useCallback(async (command: SlashCommand, _args?: string) => {
     if (command.type === "builtin" && command.name === "t") {
@@ -602,6 +630,8 @@ export function useInputState({
     isSessionDead,
     inputMode,
     isProcessRunning,
+    interactiveMode,
+    isInteractive,
     isBlockCaret,
     isInputDisabled,
     isToolSearchMode,

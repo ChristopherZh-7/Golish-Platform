@@ -15,15 +15,7 @@ import { clearAllSessionCaches } from "../../store/selectors/session";
  * 2. Pass workingDirectory as prop instead of subscribing
  */
 
-// Mock dependencies
-vi.mock("@xterm/xterm", () => ({
-  Terminal: class MockTerminal {
-    options = { theme: {} };
-    loadAddon = vi.fn();
-    open = vi.fn();
-    dispose = vi.fn();
-  },
-}));
+// D6.4b: xterm.js mock dropped with the renderer.
 
 // Helper to reset store
 const resetStore = () => {

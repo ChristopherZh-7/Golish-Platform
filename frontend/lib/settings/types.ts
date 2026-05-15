@@ -230,8 +230,24 @@ export interface TerminalSettings {
   font_family: string;
   font_size: number;
   scrollback: number;
-  fullterm_commands: string[];
+  /**
+   * Legacy: list of command names that historically forced fullterm
+   * xterm rendering. Phase A removed the auto-trigger; the field is
+   * kept optional so existing `settings.toml` files don't break
+   * deserialisation. Will be removed entirely once D6 cleanup lands.
+   *
+   * @deprecated since 2026-05 (Phase A) — no runtime effect.
+   */
+  fullterm_commands?: string[];
   caret: CaretSettings;
+  /**
+   * Phase B GridTerminal opt-in (see
+   * `docs/design/2026-05-15-grid-terminal-phase-b.md`). When `true`,
+   * alt-screen TUI sessions render through the Rust grid + React
+   * pipeline instead of xterm.js. Defaults to `false` until D6
+   * verification completes.
+   */
+  use_grid_renderer: boolean;
 }
 
 export interface AgentSettings {

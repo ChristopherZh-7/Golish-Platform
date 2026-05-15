@@ -165,7 +165,10 @@ test.describe("Diagnostic Tests", () => {
         // Get the store and subscribe to changes
         const store = (
           window as unknown as {
-            __GOLISH_STORE__?: { subscribe: (fn: () => void) => () => void; getState: () => unknown };
+            __GOLISH_STORE__?: {
+              subscribe: (fn: () => void) => () => void;
+              getState: () => unknown;
+            };
           }
         ).__GOLISH_STORE__;
         if (!store) {

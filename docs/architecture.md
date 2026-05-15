@@ -15,7 +15,7 @@
 | State mgmt | Zustand + Immer (14 slices) |
 | UI kit | Radix primitives + Tailwind 4 |
 | Editor | CodeMirror 6 · `@uiw/react-codemirror` |
-| Terminal | xterm.js |
+| Terminal | GridTerminal (Rust `alacritty_terminal` 0.26 + React grid; Phase B default since 2026-05-15 · D6.4b retired the xterm.js renderer entirely; `@xterm/headless` + `@xterm/addon-serialize` remain for static-output ANSI preprocessing) |
 | LLM orchestration | `rig-core` 0.36 + 4 in-tree provider forks |
 | Persistence | Postgres (embedded via `pg-embed`) + sqlx |
 | Observability | OpenTelemetry + Langfuse (GenAI semantic conventions) |

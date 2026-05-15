@@ -3,7 +3,6 @@ import { shutdownAiSession } from "@/lib/ai";
 import { convDelete } from "@/lib/conversation-db";
 import { logger } from "@/lib/logger";
 import { getAllLeafPanes } from "@/lib/pane-utils";
-import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import { useStore } from "@/store";
 import { createNewConversation } from "@/store/slices/conversation";
 
@@ -43,7 +42,9 @@ export function useChatConversationOps(createTerminalTab: CreateTerminalFn) {
     import("@/lib/api/pty").then(({ ptyDestroy }) => {
       for (const sid of allSessionIds) ptyDestroy(sid).catch(() => {});
     });
-    for (const sid of allSessionIds) TerminalInstanceManager.dispose(sid);
+    // D6.4b: GridTerminal teardown happens server-side as part of
+    // `pty_destroy` (drops the per-session `GridTerminal` Arc). No
+    // frontend manager left to dispose.
     import("@/hooks/useAiEvents").then(({ resetSessionSequence }) => {
       for (const sid of allSessionIds) resetSessionSequence(sid);
     });

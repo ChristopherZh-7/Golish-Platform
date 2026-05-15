@@ -3,7 +3,9 @@
     "id": "hydra",
     "name": "hydra",
     "description": "Fast network logon brute-forcer for many protocols (SSH, FTP, HTTP, SMB, RDP, etc.)",
-    "descriptionI18n": { "zh": "高速网络登录爆破工具，支持 SSH / FTP / HTTP / SMB / RDP 等多种协议" },
+    "descriptionI18n": {
+      "zh": "高速网络登录爆破工具，支持 SSH / FTP / HTTP / SMB / RDP 等多种协议"
+    },
     "executable": "hydra",
     "runtime": "native",
     "launchMode": "cli",
@@ -53,9 +55,17 @@
           { "value": "pop3", "label": "pop3", "labelI18n": { "zh": "POP3" } },
           { "value": "smtp", "label": "smtp", "labelI18n": { "zh": "SMTP" } },
           { "value": "http-get", "label": "http-get", "labelI18n": { "zh": "HTTP GET" } },
-          { "value": "http-post-form", "label": "http-post-form", "labelI18n": { "zh": "HTTP POST 表单" } },
+          {
+            "value": "http-post-form",
+            "label": "http-post-form",
+            "labelI18n": { "zh": "HTTP POST 表单" }
+          },
           { "value": "https-get", "label": "https-get", "labelI18n": { "zh": "HTTPS GET" } },
-          { "value": "https-post-form", "label": "https-post-form", "labelI18n": { "zh": "HTTPS POST 表单" } }
+          {
+            "value": "https-post-form",
+            "label": "https-post-form",
+            "labelI18n": { "zh": "HTTPS POST 表单" }
+          }
         ]
       },
       {
@@ -164,9 +174,21 @@
         "descriptionI18n": { "zh": "追加常见弱口令策略" },
         "options": [
           { "value": "n", "label": "n - empty password", "labelI18n": { "zh": "n - 空密码" } },
-          { "value": "s", "label": "s - login as password", "labelI18n": { "zh": "s - 用户名当密码" } },
-          { "value": "r", "label": "r - reverse login", "labelI18n": { "zh": "r - 用户名反转当密码" } },
-          { "value": "ns", "label": "ns - empty + same", "labelI18n": { "zh": "ns - 空 + 同用户名" } },
+          {
+            "value": "s",
+            "label": "s - login as password",
+            "labelI18n": { "zh": "s - 用户名当密码" }
+          },
+          {
+            "value": "r",
+            "label": "r - reverse login",
+            "labelI18n": { "zh": "r - 用户名反转当密码" }
+          },
+          {
+            "value": "ns",
+            "label": "ns - empty + same",
+            "labelI18n": { "zh": "ns - 空 + 同用户名" }
+          },
           { "value": "nsr", "label": "nsr - all three", "labelI18n": { "zh": "nsr - 三个全开" } }
         ]
       }

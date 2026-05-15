@@ -3,7 +3,9 @@
     "id": "amass",
     "name": "amass",
     "description": "OWASP Amass - in-depth attack surface mapping and asset discovery (passive + active subdomain enum, ASN, ports)",
-    "descriptionI18n": { "zh": "OWASP Amass —— 深度攻击面测绘与资产发现工具（被动 + 主动子域枚举、ASN、端口）" },
+    "descriptionI18n": {
+      "zh": "OWASP Amass —— 深度攻击面测绘与资产发现工具（被动 + 主动子域枚举、ASN、端口）"
+    },
     "executable": "amass",
     "runtime": "native",
     "launchMode": "cli",
@@ -28,10 +30,26 @@
         "description": "Sub-command",
         "descriptionI18n": { "zh": "Amass 子命令" },
         "options": [
-          { "value": "enum", "label": "enum - subdomain enumeration", "labelI18n": { "zh": "enum - 子域名枚举" } },
-          { "value": "intel", "label": "intel - org/ASN/whois recon", "labelI18n": { "zh": "intel - 组织/ASN/Whois 情报" } },
-          { "value": "track", "label": "track - delta between scans", "labelI18n": { "zh": "track - 扫描结果差异比对" } },
-          { "value": "viz", "label": "viz - generate graph viz", "labelI18n": { "zh": "viz - 生成关系图可视化" } },
+          {
+            "value": "enum",
+            "label": "enum - subdomain enumeration",
+            "labelI18n": { "zh": "enum - 子域名枚举" }
+          },
+          {
+            "value": "intel",
+            "label": "intel - org/ASN/whois recon",
+            "labelI18n": { "zh": "intel - 组织/ASN/Whois 情报" }
+          },
+          {
+            "value": "track",
+            "label": "track - delta between scans",
+            "labelI18n": { "zh": "track - 扫描结果差异比对" }
+          },
+          {
+            "value": "viz",
+            "label": "viz - generate graph viz",
+            "labelI18n": { "zh": "viz - 生成关系图可视化" }
+          },
           { "value": "db", "label": "db - manage DB", "labelI18n": { "zh": "db - 管理本地数据库" } }
         ]
       },

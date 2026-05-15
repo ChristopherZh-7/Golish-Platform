@@ -71,14 +71,14 @@ describe("Bundle Optimization", () => {
       // Note: This test assumes vite.config.ts is readable as a module
       // In practice, we verify this by checking the build output
 
-      // For now, we'll just verify our expectations about chunk names
-      const expectedChunks = ["react-vendor", "state", "xterm", "markdown", "radix", "codemirror"];
+      // For now, we'll just verify our expectations about chunk names.
+      // D6.4b: the dedicated `xterm` chunk was retired alongside the
+      // xterm.js renderer; the remaining `@xterm/headless` is small
+      // enough to live in the default vendor chunk.
+      const expectedChunks = ["react-vendor", "state", "markdown", "radix", "codemirror"];
 
-      // This is a documentation test - it specifies what chunks SHOULD exist
-      // after running `pnpm build`
       expect(expectedChunks).toContain("react-vendor");
       expect(expectedChunks).toContain("state");
-      expect(expectedChunks).toContain("xterm");
       expect(expectedChunks).toContain("markdown");
       expect(expectedChunks).toContain("radix");
       expect(expectedChunks).toContain("codemirror");

@@ -3,7 +3,9 @@
     "id": "dalfox",
     "name": "dalfox",
     "description": "Powerful XSS scanner and parameter analysis tool with DOM/blind/stored detection",
-    "descriptionI18n": { "zh": "强大的 XSS 扫描器与参数分析工具，支持 DOM / Blind / Stored XSS 检测" },
+    "descriptionI18n": {
+      "zh": "强大的 XSS 扫描器与参数分析工具，支持 DOM / Blind / Stored XSS 检测"
+    },
     "executable": "dalfox",
     "runtime": "native",
     "launchMode": "cli",
@@ -30,9 +32,21 @@
         "options": [
           { "value": "url", "label": "url - single URL", "labelI18n": { "zh": "url - 单个 URL" } },
           { "value": "file", "label": "file - URL list", "labelI18n": { "zh": "file - URL 列表" } },
-          { "value": "pipe", "label": "pipe - read from stdin", "labelI18n": { "zh": "pipe - 从 stdin 读取" } },
-          { "value": "sxss", "label": "sxss - stored XSS check", "labelI18n": { "zh": "sxss - Stored XSS 检测" } },
-          { "value": "server", "label": "server - daemon mode", "labelI18n": { "zh": "server - 守护进程模式" } }
+          {
+            "value": "pipe",
+            "label": "pipe - read from stdin",
+            "labelI18n": { "zh": "pipe - 从 stdin 读取" }
+          },
+          {
+            "value": "sxss",
+            "label": "sxss - stored XSS check",
+            "labelI18n": { "zh": "sxss - Stored XSS 检测" }
+          },
+          {
+            "value": "server",
+            "label": "server - daemon mode",
+            "labelI18n": { "zh": "server - 守护进程模式" }
+          }
         ]
       },
       {

@@ -115,12 +115,7 @@ export function useChatSend(opts: UseChatSendOptions) {
 
     const initialized = await initializeSession(conv);
     if (!initialized) {
-      useStore
-        .getState()
-        .setMessageError(
-          conv.id,
-          t("ai.noModelSelected")
-        );
+      useStore.getState().setMessageError(conv.id, t("ai.noModelSelected"));
       return;
     }
 

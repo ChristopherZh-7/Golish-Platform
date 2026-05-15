@@ -55,8 +55,16 @@
         "default": "1",
         "options": [
           { "value": "1", "label": "1 - Default", "labelI18n": { "zh": "1 - 默认" } },
-          { "value": "2", "label": "2 - Cookie testing", "labelI18n": { "zh": "2 - 含 Cookie 测试" } },
-          { "value": "3", "label": "3 - User-Agent/Referer", "labelI18n": { "zh": "3 - 含 UA / Referer" } },
+          {
+            "value": "2",
+            "label": "2 - Cookie testing",
+            "labelI18n": { "zh": "2 - 含 Cookie 测试" }
+          },
+          {
+            "value": "3",
+            "label": "3 - User-Agent/Referer",
+            "labelI18n": { "zh": "3 - 含 UA / Referer" }
+          },
           { "value": "4", "label": "4 - Extended", "labelI18n": { "zh": "4 - 扩展" } },
           { "value": "5", "label": "5 - All payloads", "labelI18n": { "zh": "5 - 全部 payload" } }
         ]
@@ -71,8 +79,16 @@
         "default": "1",
         "options": [
           { "value": "1", "label": "1 - Default", "labelI18n": { "zh": "1 - 默认" } },
-          { "value": "2", "label": "2 - Heavy time-based", "labelI18n": { "zh": "2 - 重度时间盲注" } },
-          { "value": "3", "label": "3 - OR-based (dangerous)", "labelI18n": { "zh": "3 - OR 注入(危险)" } }
+          {
+            "value": "2",
+            "label": "2 - Heavy time-based",
+            "labelI18n": { "zh": "2 - 重度时间盲注" }
+          },
+          {
+            "value": "3",
+            "label": "3 - OR-based (dangerous)",
+            "labelI18n": { "zh": "3 - OR 注入(危险)" }
+          }
         ]
       },
       {
@@ -81,7 +97,9 @@
         "flag": "--technique",
         "type": "string",
         "description": "SQL injection techniques to use (B=Boolean, E=Error, U=Union, S=Stacked, T=Time, Q=Inline)",
-        "descriptionI18n": { "zh": "注入技术组合(B=布尔, E=报错, U=Union, S=堆叠, T=时间, Q=内联)" },
+        "descriptionI18n": {
+          "zh": "注入技术组合(B=布尔, E=报错, U=Union, S=堆叠, T=时间, Q=内联)"
+        },
         "placeholder": "BEUSTQ"
       },
       {
@@ -94,7 +112,11 @@
         "options": [
           { "value": "mysql", "label": "MySQL", "labelI18n": { "zh": "MySQL" } },
           { "value": "postgresql", "label": "PostgreSQL", "labelI18n": { "zh": "PostgreSQL" } },
-          { "value": "mssql", "label": "Microsoft SQL Server", "labelI18n": { "zh": "Microsoft SQL Server" } },
+          {
+            "value": "mssql",
+            "label": "Microsoft SQL Server",
+            "labelI18n": { "zh": "Microsoft SQL Server" }
+          },
           { "value": "oracle", "label": "Oracle", "labelI18n": { "zh": "Oracle" } },
           { "value": "sqlite", "label": "SQLite", "labelI18n": { "zh": "SQLite" } }
         ]

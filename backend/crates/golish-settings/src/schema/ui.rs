@@ -129,15 +129,31 @@ pub struct TerminalSettings {
     /// Scrollback buffer lines.
     pub scrollback: u32,
 
-    /// Additional commands that trigger fullterm mode.
-    /// These are merged with the built-in defaults (claude, cc, codex, etc.).
-    /// Most TUI apps are auto-detected via ANSI sequences; this is for edge cases.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fullterm_commands: Vec<String>,
+    /// Legacy: list of command names that historically forced
+    /// fullterm xterm rendering (claude, cc, codex, …). Phase A
+    /// removed the auto-trigger; the field is now ignored at runtime
+    /// but kept on the schema as `Option<Vec<String>>` so settings
+    /// files in the wild continue to deserialise without error. Will
+    /// be removed entirely once D6 cleanup lands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fullterm_commands: Option<Vec<String>>,
 
     /// Input caret customization.
     #[serde(default)]
     pub caret: CaretSettings,
+
+    /// Render alt-screen TUI applications (vim, htop, less, …) through
+    /// the Phase B GridTerminal stack (Rust `alacritty_terminal` +
+    /// React grid). Default `true` since 2026-05 — the legacy
+    /// xterm.js renderer was removed in D6.4b. The setting is kept
+    /// (instead of deleted) so a future fallback renderer can be
+    /// reintroduced without churning settings.toml on user disks.
+    #[serde(default = "default_use_grid_renderer")]
+    pub use_grid_renderer: bool,
+}
+
+fn default_use_grid_renderer() -> bool {
+    true
 }
 
 impl Default for TerminalSettings {
@@ -147,8 +163,9 @@ impl Default for TerminalSettings {
             font_family: "SF Mono".to_string(),
             font_size: 14,
             scrollback: 10000,
-            fullterm_commands: Vec::new(),
+            fullterm_commands: None,
             caret: CaretSettings::default(),
+            use_grid_renderer: true,
         }
     }
 }

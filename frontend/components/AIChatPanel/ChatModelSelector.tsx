@@ -8,10 +8,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  modelOverrideKey,
-  subscribeToModelOverrideChanges,
-} from "@/lib/ai/model-overrides";
+import { modelOverrideKey, subscribeToModelOverrideChanges } from "@/lib/ai/model-overrides";
 import { PROVIDER_GROUPS } from "@/lib/models";
 import { getSettingsCached } from "@/lib/settings";
 import { cn } from "@/lib/utils";
@@ -36,9 +33,7 @@ function modelIsThinkingByDefault(provider: string, model: string): boolean {
   const m = model.toLowerCase();
   if (provider === "anthropic" || provider === "vertex_ai") return true;
   if (provider === "openai") {
-    return (
-      m.startsWith("o") || m.startsWith("gpt-5") || m.includes("codex")
-    );
+    return m.startsWith("o") || m.startsWith("gpt-5") || m.includes("codex");
   }
   if (provider === "nvidia" || provider === "openrouter" || provider === "zai_sdk") {
     return (
@@ -55,13 +50,8 @@ function modelIsThinkingByDefault(provider: string, model: string): boolean {
   return false;
 }
 
-function useEffectiveThinkingEnabled(
-  provider: string,
-  model: string
-): boolean {
-  const [enabled, setEnabled] = useState(() =>
-    modelIsThinkingByDefault(provider, model)
-  );
+function useEffectiveThinkingEnabled(provider: string, model: string): boolean {
+  const [enabled, setEnabled] = useState(() => modelIsThinkingByDefault(provider, model));
 
   useEffect(() => {
     if (!provider || !model) return undefined;
@@ -106,10 +96,7 @@ export const ChatModelSelector = memo(function ChatModelSelector({
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const filtered = PROVIDER_GROUPS.filter((g) => configuredProviders.has(g.provider));
-  const thinkingEnabled = useEffectiveThinkingEnabled(
-    currentProvider,
-    currentModel
-  );
+  const thinkingEnabled = useEffectiveThinkingEnabled(currentProvider, currentModel);
 
   return (
     <div className="flex items-center gap-1">
@@ -136,9 +123,7 @@ export const ChatModelSelector = memo(function ChatModelSelector({
         >
           {filtered.length === 0 ? (
             <div className="px-3 py-4 text-center">
-              <p className="text-xs text-muted-foreground">
-                {t("ai.noProviders")}
-              </p>
+              <p className="text-xs text-muted-foreground">{t("ai.noProviders")}</p>
               <p className="text-[10px] text-muted-foreground/60 mt-1">
                 {t("ai.configureInSettings")}
               </p>

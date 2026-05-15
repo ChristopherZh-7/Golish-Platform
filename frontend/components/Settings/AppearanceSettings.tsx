@@ -12,11 +12,7 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
-import {
-  getLanguagePreference,
-  type LanguagePreference,
-  setLanguagePreference,
-} from "@/lib/i18n";
+import { getLanguagePreference, type LanguagePreference, setLanguagePreference } from "@/lib/i18n";
 import {
   type CaretSettings,
   DEFAULT_CARET_SETTINGS,

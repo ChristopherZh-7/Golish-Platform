@@ -3,7 +3,6 @@ import { getGitBranch, gitStatus } from "@/lib/api/git";
 import { ptyCreate } from "@/lib/api/pty";
 import { logger } from "@/lib/logger";
 import { notify } from "@/lib/notify";
-import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import { useStore } from "@/store";
 
 /**
@@ -31,10 +30,14 @@ export function useCreateTerminalTab() {
       try {
         const session = await ptyCreate(workingDirectory);
 
-        // Queue scrollback BEFORE addSession triggers React rendering
-        if (scrollback) {
-          TerminalInstanceManager.setPendingScrollback(session.id, scrollback);
-        }
+        // D6.4b: scrollback restoration was an xterm.js-only feature
+        // (TerminalInstanceManager seeded the saved bytes into a fresh
+        // Terminal instance). GridTerminal can't replay raw ANSI back
+        // into alacritty without re-running the producing commands —
+        // and most TUI alt-screen output isn't meaningful to restore
+        // anyway (vim re-renders when reopened). Drop the parameter
+        // silently so callers (conversation restore) still compile.
+        void scrollback;
 
         addSession({
           id: session.id,

@@ -131,11 +131,7 @@ export function SetupPopover({ isRunning, onStart, loading, error }: SetupPopove
                 type="button"
                 onClick={handleDownloadCert}
                 disabled={certDisabled}
-                title={
-                  !isRunning
-                    ? t("security.setupNeedZapRunning")
-                    : undefined
-                }
+                title={!isRunning ? t("security.setupNeedZapRunning") : undefined}
                 className={cn(
                   "flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-medium transition-colors",
                   certDisabled
@@ -154,11 +150,7 @@ export function SetupPopover({ isRunning, onStart, loading, error }: SetupPopove
                 type="button"
                 onClick={handleInstallCert}
                 disabled={certDisabled}
-                title={
-                  !isRunning
-                    ? t("security.setupNeedZapRunning")
-                    : undefined
-                }
+                title={!isRunning ? t("security.setupNeedZapRunning") : undefined}
                 className={cn(
                   "flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-medium transition-colors",
                   certDisabled

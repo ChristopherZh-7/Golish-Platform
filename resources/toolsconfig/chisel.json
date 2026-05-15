@@ -3,7 +3,9 @@
     "id": "chisel",
     "name": "chisel",
     "description": "Fast TCP/UDP tunnel over HTTP secured via SSH - reverse / forward port-forwarding through firewalls",
-    "descriptionI18n": { "zh": "通过 HTTP + SSH 加密的高速 TCP/UDP 隧道工具，可在防火墙后做正向/反向端口转发" },
+    "descriptionI18n": {
+      "zh": "通过 HTTP + SSH 加密的高速 TCP/UDP 隧道工具，可在防火墙后做正向/反向端口转发"
+    },
     "executable": "chisel",
     "runtime": "native",
     "launchMode": "cli",
@@ -28,8 +30,16 @@
         "description": "Sub-command: server or client",
         "descriptionI18n": { "zh": "子命令：server 或 client" },
         "options": [
-          { "value": "server", "label": "server (run on attacker)", "labelI18n": { "zh": "server(攻击机运行)" } },
-          { "value": "client", "label": "client (run on victim)", "labelI18n": { "zh": "client(受害机运行)" } }
+          {
+            "value": "server",
+            "label": "server (run on attacker)",
+            "labelI18n": { "zh": "server(攻击机运行)" }
+          },
+          {
+            "value": "client",
+            "label": "client (run on victim)",
+            "labelI18n": { "zh": "client(受害机运行)" }
+          }
         ]
       },
       {
@@ -83,7 +93,9 @@
         "flag": "--auth",
         "type": "string",
         "description": "user:password (server side); --auth user:pass also on client",
-        "descriptionI18n": { "zh": "user:password(server 侧)；client 也需要传同样的 --auth user:pass" },
+        "descriptionI18n": {
+          "zh": "user:password(server 侧)；client 也需要传同样的 --auth user:pass"
+        },
         "placeholder": "user:secret"
       },
       {

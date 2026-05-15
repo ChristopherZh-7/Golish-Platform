@@ -9,9 +9,16 @@
 ///
 /// The reader thread sends raw output bytes through this channel so the
 /// emitter thread can coalesce bursts of small reads into batched IPC
-/// events.
+/// events. `prompt_visible` carries the same bytes plus PS1/PS2/PS3
+/// prompts that the OSC 133 region filter excluded from `output`; the
+/// Warp-style `stdin_wait` detector reads from this side so it can see
+/// `select> ` and `#? ` style prompts that would otherwise be invisible
+/// to it.
 pub(super) enum OutputMessage {
-    Data(Vec<u8>),
+    Data {
+        output: Vec<u8>,
+        prompt_visible: Vec<u8>,
+    },
     Eof,
 }
 

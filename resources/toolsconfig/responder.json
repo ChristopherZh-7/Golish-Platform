@@ -3,7 +3,9 @@
     "id": "responder",
     "name": "responder",
     "description": "LLMNR / NBT-NS / mDNS poisoner with rogue authentication servers (capture NetNTLMv2 hashes)",
-    "descriptionI18n": { "zh": "LLMNR / NBT-NS / mDNS 投毒工具，内置伪造认证服务器(可抓取 NetNTLMv2 哈希)" },
+    "descriptionI18n": {
+      "zh": "LLMNR / NBT-NS / mDNS 投毒工具，内置伪造认证服务器(可抓取 NetNTLMv2 哈希)"
+    },
     "executable": "responder",
     "runtime": "python",
     "runtimeVersion": "3.11",

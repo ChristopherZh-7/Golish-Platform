@@ -44,16 +44,48 @@
           { "value": "1700", "label": "1700 - SHA512", "labelI18n": { "zh": "1700 - SHA512" } },
           { "value": "1000", "label": "1000 - NTLM", "labelI18n": { "zh": "1000 - NTLM" } },
           { "value": "3000", "label": "3000 - LM", "labelI18n": { "zh": "3000 - LM" } },
-          { "value": "5500", "label": "5500 - NetNTLMv1", "labelI18n": { "zh": "5500 - NetNTLMv1" } },
-          { "value": "5600", "label": "5600 - NetNTLMv2", "labelI18n": { "zh": "5600 - NetNTLMv2" } },
-          { "value": "13100", "label": "13100 - Kerberos 5 TGS-REP (Kerberoast)", "labelI18n": { "zh": "13100 - Kerberos 5 TGS-REP(Kerberoast)" } },
-          { "value": "18200", "label": "18200 - Kerberos 5 AS-REP (AS-REP roast)", "labelI18n": { "zh": "18200 - Kerberos 5 AS-REP(AS-REP Roast)" } },
+          {
+            "value": "5500",
+            "label": "5500 - NetNTLMv1",
+            "labelI18n": { "zh": "5500 - NetNTLMv1" }
+          },
+          {
+            "value": "5600",
+            "label": "5600 - NetNTLMv2",
+            "labelI18n": { "zh": "5600 - NetNTLMv2" }
+          },
+          {
+            "value": "13100",
+            "label": "13100 - Kerberos 5 TGS-REP (Kerberoast)",
+            "labelI18n": { "zh": "13100 - Kerberos 5 TGS-REP(Kerberoast)" }
+          },
+          {
+            "value": "18200",
+            "label": "18200 - Kerberos 5 AS-REP (AS-REP roast)",
+            "labelI18n": { "zh": "18200 - Kerberos 5 AS-REP(AS-REP Roast)" }
+          },
           { "value": "500", "label": "500 - md5crypt", "labelI18n": { "zh": "500 - md5crypt" } },
-          { "value": "1800", "label": "1800 - sha512crypt", "labelI18n": { "zh": "1800 - sha512crypt" } },
+          {
+            "value": "1800",
+            "label": "1800 - sha512crypt",
+            "labelI18n": { "zh": "1800 - sha512crypt" }
+          },
           { "value": "3200", "label": "3200 - bcrypt", "labelI18n": { "zh": "3200 - bcrypt" } },
-          { "value": "22000", "label": "22000 - WPA-PBKDF2-PMKID+EAPOL", "labelI18n": { "zh": "22000 - WPA-PBKDF2-PMKID+EAPOL" } },
-          { "value": "13400", "label": "13400 - KeePass 1/2", "labelI18n": { "zh": "13400 - KeePass 1/2" } },
-          { "value": "9600", "label": "9600 - MS Office 2013", "labelI18n": { "zh": "9600 - MS Office 2013" } },
+          {
+            "value": "22000",
+            "label": "22000 - WPA-PBKDF2-PMKID+EAPOL",
+            "labelI18n": { "zh": "22000 - WPA-PBKDF2-PMKID+EAPOL" }
+          },
+          {
+            "value": "13400",
+            "label": "13400 - KeePass 1/2",
+            "labelI18n": { "zh": "13400 - KeePass 1/2" }
+          },
+          {
+            "value": "9600",
+            "label": "9600 - MS Office 2013",
+            "labelI18n": { "zh": "9600 - MS Office 2013" }
+          },
           { "value": "17200", "label": "17200 - PKZIP", "labelI18n": { "zh": "17200 - PKZIP" } }
         ]
       },
@@ -67,11 +99,27 @@
         "descriptionI18n": { "zh": "攻击模式" },
         "default": "0",
         "options": [
-          { "value": "0", "label": "0 - Straight (dict)", "labelI18n": { "zh": "0 - 直接字典攻击" } },
-          { "value": "1", "label": "1 - Combination (2 dicts)", "labelI18n": { "zh": "1 - 字典组合(双字典)" } },
+          {
+            "value": "0",
+            "label": "0 - Straight (dict)",
+            "labelI18n": { "zh": "0 - 直接字典攻击" }
+          },
+          {
+            "value": "1",
+            "label": "1 - Combination (2 dicts)",
+            "labelI18n": { "zh": "1 - 字典组合(双字典)" }
+          },
           { "value": "3", "label": "3 - Brute / Mask", "labelI18n": { "zh": "3 - 暴力/掩码" } },
-          { "value": "6", "label": "6 - Hybrid Wordlist + Mask", "labelI18n": { "zh": "6 - 字典 + 掩码" } },
-          { "value": "7", "label": "7 - Hybrid Mask + Wordlist", "labelI18n": { "zh": "7 - 掩码 + 字典" } },
+          {
+            "value": "6",
+            "label": "6 - Hybrid Wordlist + Mask",
+            "labelI18n": { "zh": "6 - 字典 + 掩码" }
+          },
+          {
+            "value": "7",
+            "label": "7 - Hybrid Mask + Wordlist",
+            "labelI18n": { "zh": "7 - 掩码 + 字典" }
+          },
           { "value": "9", "label": "9 - Association", "labelI18n": { "zh": "9 - 关联攻击" } }
         ]
       },
@@ -114,7 +162,11 @@
           { "value": "1", "label": "1 - Low (idle)", "labelI18n": { "zh": "1 - 低(空闲态)" } },
           { "value": "2", "label": "2 - Default", "labelI18n": { "zh": "2 - 默认" } },
           { "value": "3", "label": "3 - High", "labelI18n": { "zh": "3 - 高" } },
-          { "value": "4", "label": "4 - Insane (full GPU)", "labelI18n": { "zh": "4 - 极速(GPU 全速)" } }
+          {
+            "value": "4",
+            "label": "4 - Insane (full GPU)",
+            "labelI18n": { "zh": "4 - 极速(GPU 全速)" }
+          }
         ]
       },
       {

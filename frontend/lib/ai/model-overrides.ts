@@ -45,13 +45,10 @@ export function toProviderOverride(
   if (!override) return undefined;
   const out: ProviderModelOverride = {};
   if (override.thinking !== undefined) out.thinking = override.thinking;
-  if (override.reasoning_effort !== undefined)
-    out.reasoning_effort = override.reasoning_effort;
+  if (override.reasoning_effort !== undefined) out.reasoning_effort = override.reasoning_effort;
   if (override.max_tokens !== undefined) out.max_tokens = override.max_tokens;
-  if (override.context_window !== undefined)
-    out.context_window = override.context_window;
-  if (override.stream_debug !== undefined)
-    out.stream_debug = override.stream_debug;
+  if (override.context_window !== undefined) out.context_window = override.context_window;
+  if (override.stream_debug !== undefined) out.stream_debug = override.stream_debug;
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
@@ -85,9 +82,7 @@ type OverrideChangeListener = (key: string) => void;
 
 const overrideChangeListeners = new Set<OverrideChangeListener>();
 
-export function subscribeToModelOverrideChanges(
-  listener: OverrideChangeListener
-): () => void {
+export function subscribeToModelOverrideChanges(listener: OverrideChangeListener): () => void {
   overrideChangeListeners.add(listener);
   return () => {
     overrideChangeListeners.delete(listener);

@@ -3,7 +3,9 @@
     "id": "gau",
     "name": "gau",
     "description": "Get All URLs - fetch known URLs from Wayback / OTX / Common Crawl / URLScan for a domain (passive, no requests to target)",
-    "descriptionI18n": { "zh": "Get All URLs —— 从 Wayback / OTX / Common Crawl / URLScan 拉取域名历史 URL(完全被动，不向目标发请求)" },
+    "descriptionI18n": {
+      "zh": "Get All URLs —— 从 Wayback / OTX / Common Crawl / URLScan 拉取域名历史 URL(完全被动，不向目标发请求)"
+    },
     "executable": "gau",
     "runtime": "native",
     "launchMode": "cli",

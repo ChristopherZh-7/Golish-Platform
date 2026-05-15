@@ -39,7 +39,13 @@ export function WindowControls() {
         onClick={handleMaximize}
         aria-label="Maximize"
       >
-        <svg width="10" height="10" viewBox="0 0 10 10" className="stroke-current text-foreground/80" fill="none">
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 10 10"
+          className="stroke-current text-foreground/80"
+          fill="none"
+        >
           <rect x="0.5" y="0.5" width="9" height="9" strokeWidth="1" />
         </svg>
       </button>
@@ -50,7 +56,12 @@ export function WindowControls() {
         onClick={handleClose}
         aria-label="Close"
       >
-        <svg width="10" height="10" viewBox="0 0 10 10" className="stroke-current text-foreground/80">
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 10 10"
+          className="stroke-current text-foreground/80"
+        >
           <line x1="0" y1="0" x2="10" y2="10" strokeWidth="1.2" />
           <line x1="10" y1="0" x2="0" y2="10" strokeWidth="1.2" />
         </svg>

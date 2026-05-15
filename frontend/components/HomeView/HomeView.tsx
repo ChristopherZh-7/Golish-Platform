@@ -179,9 +179,7 @@ export const HomeView = memo(function HomeView() {
 
   const handleDeleteWorktree = useCallback(async () => {
     if (worktreeContextMenu) {
-      if (
-        confirm(t("home.deleteWorktreeConfirm", { branch: worktreeContextMenu.branchName }))
-      ) {
+      if (confirm(t("home.deleteWorktreeConfirm", { branch: worktreeContextMenu.branchName }))) {
         try {
           await deleteWorktree(
             worktreeContextMenu.projectPath,

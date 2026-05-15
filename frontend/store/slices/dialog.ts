@@ -14,7 +14,6 @@ export interface DialogState {
   settingsDialogOpen: boolean;
   settingsSection: string;
   shortcutsHelpOpen: boolean;
-  recordingsPanelOpen: boolean;
   bottomTerminalOpen: boolean;
 }
 
@@ -24,7 +23,6 @@ export interface DialogActions {
   setSettingsDialogOpen: (open: boolean) => void;
   setSettingsSection: (section: string) => void;
   setShortcutsHelpOpen: (open: boolean) => void;
-  setRecordingsPanelOpen: (open: boolean) => void;
   setBottomTerminalOpen: (open: boolean) => void;
   toggleBottomTerminal: () => void;
 }
@@ -37,7 +35,6 @@ export const initialDialogState: DialogState = {
   settingsDialogOpen: false,
   settingsSection: "environment",
   shortcutsHelpOpen: false,
-  recordingsPanelOpen: false,
   bottomTerminalOpen: true,
 };
 
@@ -63,10 +60,6 @@ export const createDialogSlice: SliceCreator<DialogSlice> = (set) => ({
   setShortcutsHelpOpen: (open) =>
     set((state) => {
       state.shortcutsHelpOpen = open;
-    }),
-  setRecordingsPanelOpen: (open) =>
-    set((state) => {
-      state.recordingsPanelOpen = open;
     }),
   setBottomTerminalOpen: (open) =>
     set((state) => {

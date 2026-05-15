@@ -434,10 +434,14 @@ export function CommandPalette({
             <Upload className="mr-2 size-icon-command-palette" />
             <span>Import Project Data</span>
           </CommandItem>
-          <CommandItem onSelect={() => runCommand(() => onOpenRecordings?.())}>
-            <Terminal className="mr-2 size-icon-command-palette" />
-            <span>Terminal Recordings</span>
-          </CommandItem>
+          {/* Terminal Recordings entry retired in D6.4b (xterm.js
+              removal). Re-add when a GridReplayer ships. */}
+          {onOpenRecordings ? (
+            <CommandItem onSelect={() => runCommand(() => onOpenRecordings())}>
+              <Terminal className="mr-2 size-icon-command-palette" />
+              <span>Terminal Recordings</span>
+            </CommandItem>
+          ) : null}
         </CommandGroup>
 
         <CommandSeparator />

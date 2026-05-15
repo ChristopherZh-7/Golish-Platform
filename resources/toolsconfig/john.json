@@ -3,7 +3,9 @@
     "id": "john",
     "name": "john",
     "description": "John the Ripper - offline password hash cracker for many formats (NTLM, MD5, SHA, bcrypt, etc.)",
-    "descriptionI18n": { "zh": "John the Ripper —— 离线密码哈希破解工具，支持 NTLM / MD5 / SHA / bcrypt 等众多格式" },
+    "descriptionI18n": {
+      "zh": "John the Ripper —— 离线密码哈希破解工具，支持 NTLM / MD5 / SHA / bcrypt 等众多格式"
+    },
     "executable": "john",
     "runtime": "native",
     "launchMode": "cli",
@@ -41,13 +43,25 @@
           { "value": "raw-sha1", "label": "raw-sha1", "labelI18n": { "zh": "raw-sha1" } },
           { "value": "raw-sha256", "label": "raw-sha256", "labelI18n": { "zh": "raw-sha256" } },
           { "value": "raw-sha512", "label": "raw-sha512", "labelI18n": { "zh": "raw-sha512" } },
-          { "value": "md5crypt", "label": "md5crypt ($1$)", "labelI18n": { "zh": "md5crypt ($1$)" } },
-          { "value": "sha512crypt", "label": "sha512crypt ($6$)", "labelI18n": { "zh": "sha512crypt ($6$)" } },
+          {
+            "value": "md5crypt",
+            "label": "md5crypt ($1$)",
+            "labelI18n": { "zh": "md5crypt ($1$)" }
+          },
+          {
+            "value": "sha512crypt",
+            "label": "sha512crypt ($6$)",
+            "labelI18n": { "zh": "sha512crypt ($6$)" }
+          },
           { "value": "bcrypt", "label": "bcrypt ($2$)", "labelI18n": { "zh": "bcrypt ($2$)" } },
           { "value": "nt", "label": "nt (NTLM)", "labelI18n": { "zh": "nt (NTLM)" } },
           { "value": "lm", "label": "lm (LanMan)", "labelI18n": { "zh": "lm (LanMan)" } },
           { "value": "netntlmv2", "label": "netntlmv2", "labelI18n": { "zh": "netntlmv2" } },
-          { "value": "krb5tgs", "label": "krb5tgs (Kerberoasting)", "labelI18n": { "zh": "krb5tgs(Kerberoasting)" } },
+          {
+            "value": "krb5tgs",
+            "label": "krb5tgs (Kerberoasting)",
+            "labelI18n": { "zh": "krb5tgs(Kerberoasting)" }
+          },
           { "value": "ZIP", "label": "ZIP archive", "labelI18n": { "zh": "ZIP 压缩包" } },
           { "value": "rar", "label": "RAR archive", "labelI18n": { "zh": "RAR 压缩包" } },
           { "value": "pdf", "label": "PDF", "labelI18n": { "zh": "PDF" } },

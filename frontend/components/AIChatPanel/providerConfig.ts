@@ -5,10 +5,10 @@ import type { GolishSettings } from "@/lib/settings";
 // Re-export the canonical helpers so existing imports of this module keep
 // working; new code should import directly from `@/lib/ai/model-overrides`.
 export {
-  modelOverrideKey,
   getModelOverride,
-  toProviderOverride,
+  modelOverrideKey,
   subscribeToModelOverrideChanges,
+  toProviderOverride,
 } from "@/lib/ai/model-overrides";
 
 /**

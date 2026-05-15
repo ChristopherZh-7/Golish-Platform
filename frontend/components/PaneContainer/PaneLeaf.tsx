@@ -14,19 +14,25 @@
  * preventing re-renders when unrelated session or layout properties change.
  */
 
-import React, { lazy, Suspense, useCallback } from "react";
+import React, { lazy, Suspense, useCallback, useEffect } from "react";
 import { SubAgentDetailView } from "@/components/SubAgentDetailView";
 import { ToolCallDetailView } from "@/components/ToolCallDetailView/ToolCallDetailView";
 import { UnifiedInput } from "@/components/UnifiedInput";
 import { UnifiedTimeline } from "@/components/UnifiedTimeline";
+import { InteractiveCell } from "@/components/UnifiedTimeline/InteractiveCell";
 import { ContextMenuTrigger } from "@/components/ui/context-menu";
-import { useTerminalPortalTarget } from "@/hooks/useTerminalPortal";
 import { countLeafPanes } from "@/lib/pane-utils";
 import type { PaneId } from "@/store";
 import { usePendingCommand, useStore } from "@/store";
 import { usePaneLeafState } from "@/store/selectors/pane-leaf";
 import { PaneContextMenu } from "./PaneContextMenu";
 import { PaneMoveOverlay } from "./PaneMoveOverlay";
+
+// Phase B GridTerminal is lazy-loaded so non-fullterm sessions don't
+// pay for the React + CSS bundle until they actually need it.
+const GridTerminal = lazy(() =>
+  import("@/components/GridTerminal").then((m) => ({ default: m.GridTerminal }))
+);
 
 // Lazy-load tab-specific components to reduce initial bundle size
 // HomeView (~50KB) and SettingsTabContent (~80KB) are only needed when
@@ -83,10 +89,16 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
   // Get pane count - subscribe to a primitive number instead of the full tree object
   const paneCount = useStore((state) => countLeafPanes(state.tabLayouts[tabId]?.root));
 
-  // Register portal target for this pane's Terminal
-  const terminalPortalRef = useTerminalPortalTarget(sessionId);
   const pendingCommand = usePendingCommand(sessionId);
-  const isCommandRunning = !!pendingCommand?.command;
+  // The bottom input box normally collapses out of view while a command
+  // is running, since the command owns the on-screen action. Warp-style
+  // interactive mode is the explicit exception: a `stdin_wait` event
+  // turned the input box into a stdin pipe for the running command, so
+  // we need to keep it visible (and on-screen so the user can type a
+  // response, see `frontend/components/UnifiedInput`).
+  const interactiveMode = useStore((s) => s.sessions[sessionId]?.interactiveMode ?? null);
+  const isInteractiveInputActive = interactiveMode?.active === true;
+  const isCommandRunning = !!pendingCommand?.command && !isInteractiveInputActive;
 
   const isFocused = focusedPaneId === paneId;
   const showFocusIndicator = isFocused && paneCount > 1;
@@ -96,6 +108,42 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
       focusPane(tabId, paneId);
     }
   }, [tabId, paneId, isFocused, focusPane]);
+
+  // Window-level Esc fallback. The textarea-scoped Esc handler in
+  // `useInputKeyboard.ts` only fires when the textarea is focused —
+  // which is exactly the state the running-command branch above used
+  // to blur away (see PaneLeaf's `isCommandRunning` opacity branch and
+  // `useUnifiedInputState`'s `isProcessRunning` blur effect). Without
+  // this fallback, a `stdin_wait` miss leaves the user with no way to
+  // recover the input box short of clicking it and pressing Esc. We
+  // scope the listener to the focused pane (so multi-pane layouts
+  // don't compete) and skip when the textarea is the active element
+  // (the React handler is sharper there — it knows about popups, tool
+  // mode, etc.).
+  useEffect(() => {
+    if (!isFocused) return;
+    const hasPendingCommand = !!pendingCommand;
+    if (!hasPendingCommand && !isInteractiveInputActive) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const active = document.activeElement;
+      if (active && active.tagName === "TEXTAREA") return;
+      const store = useStore.getState();
+      if (isInteractiveInputActive) {
+        e.preventDefault();
+        store.setInteractiveMode(sessionId, null);
+        return;
+      }
+      if (hasPendingCommand) {
+        e.preventDefault();
+        store.handlePromptStart(sessionId);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isFocused, pendingCommand, isInteractiveInputActive, sessionId]);
 
   // Don't render if session doesn't exist
   if (!sessionExists) {
@@ -134,14 +182,20 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
             <SecurityView />
           </Suspense>
         );
-      default:
+      default: {
+        const fullterm = renderMode === "fullterm";
         return (
           <>
-            <div
-              ref={terminalPortalRef}
-              className={renderMode === "fullterm" ? "flex-1 min-h-0 p-1" : "hidden"}
-              onMouseDownCapture={handleFocus}
-            />
+            {/* Phase B GridTerminal — sole TUI renderer since D6.4b.
+                Lazy-loaded so non-fullterm panes don't pay for the
+                React + CSS bundle until they enter alt-screen. */}
+            {fullterm && (
+              <div className="flex-1 min-h-0 p-1" onMouseDownCapture={handleFocus}>
+                <Suspense fallback={<TabLoadingFallback />}>
+                  <GridTerminal sessionId={sessionId} />
+                </Suspense>
+              </div>
+            )}
             {renderMode !== "fullterm" && (
               <>
                 <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden">
@@ -160,21 +214,45 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
                     <UnifiedTimeline sessionId={sessionId} />
                   )}
                 </div>
-                {detailViewMode !== "sub-agent-detail" && detailViewMode !== "tool-detail" && (
-                  <div
-                    className={`pane-bottom-terminal origin-bottom transition-[transform,opacity] duration-200 ease-in-out ${
-                      isCommandRunning
-                        ? "translate-y-full opacity-0 scale-y-0 h-0 pointer-events-none"
-                        : "translate-y-0 opacity-100 scale-y-100"
-                    }`}
-                  >
-                    <UnifiedInput sessionId={sessionId} />
-                  </div>
-                )}
+                {detailViewMode !== "sub-agent-detail" &&
+                  detailViewMode !== "tool-detail" &&
+                  (isInteractiveInputActive && interactiveMode ? (
+                    // Warp-style interactive cell: command head +
+                    // live output + input caret in a single visual
+                    // unit. Replaces both the `RunningCommandCard`
+                    // (rendered inside `UnifiedTimeline` above) and
+                    // the regular bottom `UnifiedInput`. The
+                    // timeline-side card is gated on
+                    // `!isInteractiveInputActive`, so the live
+                    // output isn't duplicated.
+                    <div className="px-2 pb-2 pt-1">
+                      <InteractiveCell
+                        sessionId={sessionId}
+                        mode={interactiveMode}
+                        command={pendingCommand?.command ?? interactiveMode.command ?? null}
+                      />
+                    </div>
+                  ) : (
+                    <div
+                      className={`pane-bottom-terminal origin-bottom transition-opacity duration-200 ease-in-out ${
+                        isCommandRunning ? "opacity-70" : "opacity-100"
+                      }`}
+                      // Non-interactive branches keep the input visible
+                      // (even half-opacity while a command runs) so the
+                      // user can always Esc / Ctrl-C out — the
+                      // previous `h-0 + opacity-0 + pointer-events-none`
+                      // collapse stranded users when `stdin_wait`
+                      // missed bash `#?` / zsh `select> ` prompts.
+                      data-input-state={isCommandRunning ? "running" : "idle"}
+                    >
+                      <UnifiedInput sessionId={sessionId} />
+                    </div>
+                  ))}
               </>
             )}
           </>
         );
+      }
     }
   };
 

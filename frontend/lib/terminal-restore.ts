@@ -11,7 +11,6 @@
  */
 
 import { getAllLeafPanes } from "@/lib/pane-utils";
-import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import type { PersistedTerminalData, PersistedTimelineBlock } from "@/lib/workspace-storage";
 import { useStore } from "@/store";
 import type { ActiveSubAgent } from "@/store/store-types";
@@ -175,12 +174,13 @@ export async function restoreTerminalForConv(
         if (sess) sess.logicalTerminalId = termInfo.logicalTerminalId!;
       });
     }
-    if (termInfo.scrollback && TerminalInstanceManager.has(existingTermId)) {
-      const inst = TerminalInstanceManager.get(existingTermId);
-      if (inst) inst.terminal.write(termInfo.scrollback);
-    } else if (termInfo.scrollback) {
-      TerminalInstanceManager.setPendingScrollback(existingTermId, termInfo.scrollback);
-    }
+    // D6.4b: live scrollback restoration was an xterm.js-only capability
+    // (TerminalInstanceManager either re-seeded the buffer of a live
+    // Terminal or queued the bytes for the next attach). GridTerminal
+    // does not consume raw ANSI — its state lives in the Rust
+    // `alacritty_terminal` grid — so we ignore `termInfo.scrollback`
+    // on restore. Timeline blocks below still rehydrate.
+    void termInfo.scrollback;
     if (termInfo.customName)
       useStore.getState().setCustomTabName(existingTermId, termInfo.customName);
     if (termInfo.planJson) {
@@ -299,7 +299,7 @@ export async function disposeAllRuntimeTerminals(): Promise<void> {
 
   for (const sid of allSessionIds) {
     ptyDestroy(sid).catch(() => {});
-    TerminalInstanceManager.dispose(sid);
+    // GridTerminal teardown happens server-side as part of `pty_destroy`.
   }
 
   useStore.setState((s) => {

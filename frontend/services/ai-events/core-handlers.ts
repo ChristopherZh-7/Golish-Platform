@@ -161,10 +161,7 @@ const debugCounters = new Map<string, StreamDebugCounters>();
 
 function isStreamDebugEnabled(): boolean {
   if (typeof globalThis === "undefined") return false;
-  return (
-    (globalThis as { __GOLISH_STREAM_DEBUG__?: boolean })
-      .__GOLISH_STREAM_DEBUG__ === true
-  );
+  return (globalThis as { __GOLISH_STREAM_DEBUG__?: boolean }).__GOLISH_STREAM_DEBUG__ === true;
 }
 
 /**
@@ -175,9 +172,7 @@ function isStreamDebugEnabled(): boolean {
  */
 export function setStreamDebugEnabled(enabled: boolean) {
   if (typeof globalThis === "undefined") return;
-  (
-    globalThis as { __GOLISH_STREAM_DEBUG__?: boolean }
-  ).__GOLISH_STREAM_DEBUG__ = enabled;
+  (globalThis as { __GOLISH_STREAM_DEBUG__?: boolean }).__GOLISH_STREAM_DEBUG__ = enabled;
   // eslint-disable-next-line no-console
   console.info(`[StreamDebug] ${enabled ? "enabled" : "disabled"}`);
 }

@@ -1,4 +1,3 @@
-import type { Terminal as XTerm } from "@xterm/xterm";
 import { logger } from "@/lib/logger";
 import { getThemeAssetPath } from "./api";
 // Import builtin theme assets directly (use ?url to get the asset path)
@@ -160,56 +159,10 @@ class ThemeManagerImpl {
     }
   }
 
-  applyToTerminal(term: XTerm) {
-    if (!this.currentTheme) return;
-    const t = this.currentTheme;
-    const ansi = t.colors.ansi;
-    const hasBgImage = !!t.background?.image;
-
-    // Build all options at once for batched update
-    const options: Partial<import("@xterm/xterm").ITerminalOptions> = {
-      theme: {
-        background: hasBgImage ? "rgba(0,0,0,0)" : t.colors.ui.background,
-        foreground: ansi.defaultFg ?? t.colors.ui.foreground,
-        cursor: ansi.defaultFg ?? t.colors.ui.foreground,
-        cursorAccent: t.colors.ui.background,
-        selectionBackground: t.terminal?.selectionBackground ?? ansi.blue,
-        black: ansi.black,
-        red: ansi.red,
-        green: ansi.green,
-        yellow: ansi.yellow,
-        blue: ansi.blue,
-        magenta: ansi.magenta,
-        cyan: ansi.cyan,
-        white: ansi.white,
-        brightBlack: ansi.brightBlack,
-        brightRed: ansi.brightRed,
-        brightGreen: ansi.brightGreen,
-        brightYellow: ansi.brightYellow,
-        brightBlue: ansi.brightBlue,
-        brightMagenta: ansi.brightMagenta,
-        brightCyan: ansi.brightCyan,
-        brightWhite: ansi.brightWhite,
-      },
-    };
-
-    // Add optional properties only if defined
-    if (t.typography?.terminal?.fontFamily) {
-      options.fontFamily = t.typography.terminal.fontFamily;
-    }
-    if (t.typography?.terminal?.fontSize) {
-      options.fontSize = t.typography.terminal.fontSize;
-    }
-    if (t.terminal?.cursorBlink !== undefined) {
-      options.cursorBlink = t.terminal.cursorBlink;
-    }
-    if (t.terminal?.cursorStyle) {
-      options.cursorStyle = t.terminal.cursorStyle;
-    }
-
-    // Single batched assignment - one re-render instead of 5
-    Object.assign(term.options, options);
-  }
+  // `applyToTerminal` was removed in D6.4b alongside the xterm.js
+  // renderer. GridTerminal styles itself from CSS variables exposed
+  // by the active theme (see `frontend/styles/grid-terminal.css`) so
+  // there's no JS-side surface that needs per-frame theme injection.
 
   /**
    * Inject theme styles using a style element for better performance

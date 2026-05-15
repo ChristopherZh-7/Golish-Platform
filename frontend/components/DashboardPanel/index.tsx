@@ -251,9 +251,7 @@ export function DashboardPanel() {
               {currentProjectName || t("dashboard.title")}
             </div>
             {currentProjectName && (
-              <div className="text-[10px] text-muted-foreground/40">
-                {t("dashboard.title")}
-              </div>
+              <div className="text-[10px] text-muted-foreground/40">{t("dashboard.title")}</div>
             )}
           </div>
         </div>
@@ -265,9 +263,7 @@ export function DashboardPanel() {
             <div className="p-4 rounded-2xl bg-muted/10 border border-border/10">
               <Layers className="w-8 h-8 text-muted-foreground/15" />
             </div>
-            <p className="text-sm text-muted-foreground/40 font-medium">
-              {t("dashboard.empty")}
-            </p>
+            <p className="text-sm text-muted-foreground/40 font-medium">{t("dashboard.empty")}</p>
             <p className="text-[11px] text-muted-foreground/25 max-w-[280px]">
               {t("dashboard.emptyHint")}
             </p>

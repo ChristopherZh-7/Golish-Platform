@@ -3,7 +3,9 @@
     "id": "gowitness",
     "name": "gowitness",
     "description": "Web screenshot utility using Chrome Headless - bulk capture, indexed DB, HTML report",
-    "descriptionI18n": { "zh": "基于 Chrome Headless 的 Web 截图工具，支持批量抓取、本地索引库与 HTML 报告" },
+    "descriptionI18n": {
+      "zh": "基于 Chrome Headless 的 Web 截图工具，支持批量抓取、本地索引库与 HTML 报告"
+    },
     "executable": "gowitness",
     "runtime": "native",
     "launchMode": "cli",
@@ -28,11 +30,31 @@
         "description": "Sub-command",
         "descriptionI18n": { "zh": "gowitness 子命令" },
         "options": [
-          { "value": "single", "label": "single - one URL", "labelI18n": { "zh": "single - 单个 URL" } },
-          { "value": "file", "label": "file - URL list file", "labelI18n": { "zh": "file - URL 列表文件" } },
-          { "value": "scan", "label": "scan - CIDR scan + screenshot", "labelI18n": { "zh": "scan - 网段扫描并截图" } },
-          { "value": "report", "label": "report - serve HTML report", "labelI18n": { "zh": "report - 启动 HTML 报告服务" } },
-          { "value": "server", "label": "server - REST API server", "labelI18n": { "zh": "server - REST API 服务" } }
+          {
+            "value": "single",
+            "label": "single - one URL",
+            "labelI18n": { "zh": "single - 单个 URL" }
+          },
+          {
+            "value": "file",
+            "label": "file - URL list file",
+            "labelI18n": { "zh": "file - URL 列表文件" }
+          },
+          {
+            "value": "scan",
+            "label": "scan - CIDR scan + screenshot",
+            "labelI18n": { "zh": "scan - 网段扫描并截图" }
+          },
+          {
+            "value": "report",
+            "label": "report - serve HTML report",
+            "labelI18n": { "zh": "report - 启动 HTML 报告服务" }
+          },
+          {
+            "value": "server",
+            "label": "server - REST API server",
+            "labelI18n": { "zh": "server - REST API 服务" }
+          }
         ]
       },
       {

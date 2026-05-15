@@ -5,42 +5,9 @@ import { getOutputBuffer } from "@/store/slices/session-helpers";
 import { useStore } from "../../store";
 import { UnifiedTimeline } from "./UnifiedTimeline";
 
-// Mock xterm.js and addons - they don't work in jsdom
-vi.mock("@xterm/xterm", () => ({
-  Terminal: class MockTerminal {
-    options = { theme: {} };
-    rows = 24;
-    cols = 80;
-    loadAddon = vi.fn();
-    open = vi.fn();
-    write = vi.fn();
-    clear = vi.fn();
-    dispose = vi.fn();
-    scrollToBottom = vi.fn();
-    resize = vi.fn();
-    element = document.createElement("div");
-    registerLinkProvider = vi.fn(() => ({ dispose: vi.fn() }));
-    buffer = {
-      active: {
-        getLine: vi.fn(() => ({
-          translateToString: vi.fn(() => ""),
-        })),
-      },
-    };
-  },
-}));
-
-vi.mock("@xterm/addon-fit", () => ({
-  FitAddon: class MockFitAddon {
-    fit = vi.fn();
-  },
-}));
-
-vi.mock("@xterm/addon-serialize", () => ({
-  SerializeAddon: class MockSerializeAddon {
-    serialize = vi.fn(() => "");
-  },
-}));
+// D6.4b: xterm.js mocks were removed alongside the renderer. The
+// `@xterm/headless` package used by `VirtualTerminal` runs cleanly
+// under jsdom so no replacement mock is needed.
 
 describe("UnifiedTimeline", () => {
   beforeEach(() => {

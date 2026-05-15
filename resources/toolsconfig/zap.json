@@ -3,7 +3,9 @@
     "id": "zap",
     "name": "ZAP",
     "description": "OWASP ZAP - free, open-source Web application security scanner with intercepting proxy, active/passive scan, fuzzer and spider; the de-facto open-source replacement for Burp Suite",
-    "descriptionI18n": { "zh": "OWASP ZAP —— 免费开源 Web 应用安全扫描器，内置拦截代理、主/被动扫描、Fuzzer 和爬虫，是 Burp Suite 的开源替代" },
+    "descriptionI18n": {
+      "zh": "OWASP ZAP —— 免费开源 Web 应用安全扫描器，内置拦截代理、主/被动扫描、Fuzzer 和爬虫，是 Burp Suite 的开源替代"
+    },
     "executable": "ZAP/zap.sh",
     "runtime": "java",
     "runtimeVersion": "17",
@@ -134,7 +136,9 @@
         "name": "Headless daemon @ 8080",
         "nameI18n": { "zh": "Headless daemon @ 8080" },
         "description": "Run ZAP as a headless API daemon on 127.0.0.1:8080 with API key disabled (dev only)",
-        "descriptionI18n": { "zh": "以 headless API daemon 模式监听 127.0.0.1:8080，并禁用 API key(仅开发环境)" },
+        "descriptionI18n": {
+          "zh": "以 headless API daemon 模式监听 127.0.0.1:8080，并禁用 API key(仅开发环境)"
+        },
         "args": "-daemon -host 127.0.0.1 -port 8080 -config api.disablekey=true",
         "tags": ["api", "automation"],
         "tagsI18n": { "zh": ["API", "自动化"] }

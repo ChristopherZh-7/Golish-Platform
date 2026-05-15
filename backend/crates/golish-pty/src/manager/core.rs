@@ -22,11 +22,13 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use golish_core::runtime::GolishRuntime;
 
 use super::emitter::{CommandBlockEvent, PtyEventEmitter, RuntimeEmitter};
+use crate::grid::{GridDims, GridManager, GridTerminal};
 
 /// Public-facing description of a PTY session.
 #[allow(dead_code)] // Used by Tauri feature.
@@ -58,6 +60,11 @@ pub(super) struct ActiveSession {
     /// Event emitter shared with the reader thread. Used by writes to
     /// dispatch synthesized command-block events.
     pub(super) emitter: Arc<dyn PtyEventEmitter>,
+    /// `true` while the underlying terminal is on its alternate screen
+    /// buffer (vim, htop, …). Flipped by the reader thread's
+    /// `dispatch_parsed_events` and read by the emitter thread to
+    /// decide whether to feed bytes into the Phase B GridTerminal.
+    pub(super) alt_screen: Arc<AtomicBool>,
 }
 
 /// Manager for PTY sessions.
@@ -68,11 +75,33 @@ pub(super) struct ActiveSession {
 #[derive(Default)]
 pub struct PtyManager {
     pub(super) sessions: Mutex<HashMap<String, Arc<ActiveSession>>>,
+    /// Shared owner of per-session virtual terminal grids (Phase B).
+    /// Lazy: a `GridTerminal` is only created the first time a session
+    /// enters alt-screen mode, then disposed when it leaves.
+    pub(super) grid_manager: Arc<GridManager>,
 }
 
 impl PtyManager {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Look up the GridTerminal for a session, if it currently has one.
+    /// Returns `None` for sessions that have never entered alt-screen
+    /// mode (or that have since left it).
+    ///
+    /// Used by Tauri commands like `pty_request_grid_snapshot` and
+    /// `pty_resize_grid` to interact with the grid from the frontend.
+    pub fn grid_terminal(&self, session_id: &str) -> Option<Arc<Mutex<GridTerminal>>> {
+        self.grid_manager.get(session_id)
+    }
+
+    /// Frontend-driven grid resize. No-ops when no grid exists for the
+    /// session (i.e. session is not currently on alt-screen).
+    pub fn resize_grid(&self, session_id: &str, cols: u16, rows: u16) {
+        if let Some(grid) = self.grid_manager.get(session_id) {
+            grid.lock().resize(GridDims { cols, rows });
+        }
     }
 
     // ──────────────────────────────────────────────────────────────────

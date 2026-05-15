@@ -183,9 +183,7 @@ export function VaultSettings() {
         <span className="text-[11px] text-muted-foreground/40">
           {entries.length} {t("vault.credentials")}
         </span>
-        <span className="text-[10px] text-muted-foreground/20 ml-1">
-          {t("vault.refHint")}
-        </span>
+        <span className="text-[10px] text-muted-foreground/20 ml-1">{t("vault.refHint")}</span>
         <div className="flex-1" />
         <button
           type="button"

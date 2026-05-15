@@ -3,7 +3,9 @@
     "id": "katana",
     "name": "katana",
     "description": "Next-gen web crawler from ProjectDiscovery (headless + JS endpoint extraction + sitemap / robots / wayback / form parsing)",
-    "descriptionI18n": { "zh": "ProjectDiscovery 出品的新一代 Web 爬虫(支持 headless + JS 接口提取 + sitemap / robots / wayback / 表单解析)" },
+    "descriptionI18n": {
+      "zh": "ProjectDiscovery 出品的新一代 Web 爬虫(支持 headless + JS 接口提取 + sitemap / robots / wayback / 表单解析)"
+    },
     "executable": "katana",
     "runtime": "native",
     "launchMode": "cli",
@@ -89,16 +91,40 @@
         "descriptionI18n": { "zh": "输出字段类型" },
         "options": [
           { "value": "url", "label": "url - URLs only", "labelI18n": { "zh": "url - 仅 URL" } },
-          { "value": "qurl", "label": "qurl - URLs with query", "labelI18n": { "zh": "qurl - 带 query 的 URL" } },
+          {
+            "value": "qurl",
+            "label": "qurl - URLs with query",
+            "labelI18n": { "zh": "qurl - 带 query 的 URL" }
+          },
           { "value": "path", "label": "path - paths only", "labelI18n": { "zh": "path - 仅路径" } },
-          { "value": "fqdn", "label": "fqdn - domains only", "labelI18n": { "zh": "fqdn - 仅域名" } },
+          {
+            "value": "fqdn",
+            "label": "fqdn - domains only",
+            "labelI18n": { "zh": "fqdn - 仅域名" }
+          },
           { "value": "rdn", "label": "rdn - root domain", "labelI18n": { "zh": "rdn - 根域名" } },
           { "value": "rurl", "label": "rurl - root URL", "labelI18n": { "zh": "rurl - 根 URL" } },
-          { "value": "ufile", "label": "ufile - URL with file", "labelI18n": { "zh": "ufile - 含文件名的 URL" } },
+          {
+            "value": "ufile",
+            "label": "ufile - URL with file",
+            "labelI18n": { "zh": "ufile - 含文件名的 URL" }
+          },
           { "value": "key", "label": "key - param keys", "labelI18n": { "zh": "key - 参数名" } },
-          { "value": "value", "label": "value - param values", "labelI18n": { "zh": "value - 参数值" } },
-          { "value": "kv", "label": "kv - key=value pairs", "labelI18n": { "zh": "kv - key=value 对" } },
-          { "value": "dir", "label": "dir - directory paths", "labelI18n": { "zh": "dir - 目录路径" } }
+          {
+            "value": "value",
+            "label": "value - param values",
+            "labelI18n": { "zh": "value - 参数值" }
+          },
+          {
+            "value": "kv",
+            "label": "kv - key=value pairs",
+            "labelI18n": { "zh": "kv - key=value 对" }
+          },
+          {
+            "value": "dir",
+            "label": "dir - directory paths",
+            "labelI18n": { "zh": "dir - 目录路径" }
+          }
         ]
       },
       {

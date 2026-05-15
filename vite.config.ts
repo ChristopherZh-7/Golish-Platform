@@ -1,8 +1,8 @@
 import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react-swc";
-import { defineConfig } from "vite";
 import type { PluginOption } from "vite";
+import { defineConfig } from "vite";
 
 // @ts-expect-error process is a nodejs global
 // Use 127.0.0.1 explicitly to avoid IPv6 localhost issues in Node 18+
@@ -18,20 +18,13 @@ const reactDevToolsPlugin = (): PluginOption => ({
   apply: "serve",
   transformIndexHtml(html) {
     if (!enableDevTools) return html;
-    return html.replace(
-      "<head>",
-      '<head><script src="http://localhost:8097"></script>',
-    );
+    return html.replace("<head>", '<head><script src="http://localhost:8097"></script>');
   },
 });
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-  plugins: [
-    react(),
-    tailwindcss(),
-    reactDevToolsPlugin(),
-  ],
+  plugins: [react(), tailwindcss(), reactDevToolsPlugin()],
 
   resolve: {
     alias: {
@@ -40,13 +33,7 @@ export default defineConfig(async () => ({
       "@codemirror/view": path.resolve(__dirname, "node_modules/@codemirror/view"),
       "@codemirror/language": path.resolve(__dirname, "node_modules/@codemirror/language"),
     },
-    dedupe: [
-      "react",
-      "react-dom",
-      "@codemirror/state",
-      "@codemirror/view",
-      "@codemirror/language",
-    ],
+    dedupe: ["react", "react-dom", "@codemirror/state", "@codemirror/view", "@codemirror/language"],
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
@@ -78,16 +65,25 @@ export default defineConfig(async () => ({
       output: {
         manualChunks(id: string) {
           if (id.includes("node_modules")) {
-            if (id.includes("react-dom") || id.includes("react/jsx-runtime") || id.match(/\/react\//)) {
+            if (
+              id.includes("react-dom") ||
+              id.includes("react/jsx-runtime") ||
+              id.match(/\/react\//)
+            ) {
               return "react-vendor";
             }
             if (id.includes("zustand") || id.includes("immer")) {
               return "state";
             }
-            if (id.includes("@xterm/")) {
-              return "xterm";
-            }
-            if (id.includes("react-markdown") || id.includes("react-syntax-highlighter") || id.includes("remark-gfm")) {
+            // Phase B D6.4b: @xterm/xterm + addons retired. Only
+            // @xterm/headless + @xterm/addon-serialize remain (used
+            // by `VirtualTerminal` for static ANSI preprocessing) —
+            // small enough to roll into the default vendor chunk.
+            if (
+              id.includes("react-markdown") ||
+              id.includes("react-syntax-highlighter") ||
+              id.includes("remark-gfm")
+            ) {
               return "markdown";
             }
             if (id.includes("@radix-ui/")) {

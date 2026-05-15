@@ -3,7 +3,9 @@
     "id": "bloodhound-python",
     "name": "bloodhound-python",
     "description": "Python-based AD ingestor for BloodHound (CE) - collects users/groups/computers/sessions/ACLs from Linux",
-    "descriptionI18n": { "zh": "Python 版 BloodHound(CE) 采集器 —— 在 Linux 上采集 AD 域的用户/组/计算机/会话/ACL" },
+    "descriptionI18n": {
+      "zh": "Python 版 BloodHound(CE) 采集器 —— 在 Linux 上采集 AD 域的用户/组/计算机/会话/ACL"
+    },
     "executable": "bloodhound-python",
     "runtime": "python",
     "runtimeVersion": "3.11",
@@ -82,11 +84,27 @@
         "description": "What to collect (comma list possible)",
         "descriptionI18n": { "zh": "采集内容(可逗号组合)" },
         "options": [
-          { "value": "Default", "label": "Default - Group, LocalAdmin, Session, Trusts", "labelI18n": { "zh": "Default - 组 / 本地管理员 / 会话 / 信任" } },
-          { "value": "All", "label": "All - everything (slow)", "labelI18n": { "zh": "All - 全部(慢)" } },
-          { "value": "DCOnly", "label": "DCOnly - just DC info", "labelI18n": { "zh": "DCOnly - 仅 DC 信息" } },
+          {
+            "value": "Default",
+            "label": "Default - Group, LocalAdmin, Session, Trusts",
+            "labelI18n": { "zh": "Default - 组 / 本地管理员 / 会话 / 信任" }
+          },
+          {
+            "value": "All",
+            "label": "All - everything (slow)",
+            "labelI18n": { "zh": "All - 全部(慢)" }
+          },
+          {
+            "value": "DCOnly",
+            "label": "DCOnly - just DC info",
+            "labelI18n": { "zh": "DCOnly - 仅 DC 信息" }
+          },
           { "value": "Group", "label": "Group", "labelI18n": { "zh": "Group(组)" } },
-          { "value": "LocalAdmin", "label": "LocalAdmin", "labelI18n": { "zh": "LocalAdmin(本地管理员)" } },
+          {
+            "value": "LocalAdmin",
+            "label": "LocalAdmin",
+            "labelI18n": { "zh": "LocalAdmin(本地管理员)" }
+          },
           { "value": "RDP", "label": "RDP", "labelI18n": { "zh": "RDP" } },
           { "value": "DCOM", "label": "DCOM", "labelI18n": { "zh": "DCOM" } },
           { "value": "PSRemote", "label": "PSRemote", "labelI18n": { "zh": "PSRemote" } },
@@ -94,8 +112,16 @@
           { "value": "Trusts", "label": "Trusts", "labelI18n": { "zh": "Trusts(信任关系)" } },
           { "value": "ACL", "label": "ACL", "labelI18n": { "zh": "ACL" } },
           { "value": "Container", "label": "Container", "labelI18n": { "zh": "Container(容器)" } },
-          { "value": "ObjectProps", "label": "ObjectProps", "labelI18n": { "zh": "ObjectProps(对象属性)" } },
-          { "value": "LoggedOn", "label": "LoggedOn", "labelI18n": { "zh": "LoggedOn(已登录会话)" } }
+          {
+            "value": "ObjectProps",
+            "label": "ObjectProps",
+            "labelI18n": { "zh": "ObjectProps(对象属性)" }
+          },
+          {
+            "value": "LoggedOn",
+            "label": "LoggedOn",
+            "labelI18n": { "zh": "LoggedOn(已登录会话)" }
+          }
         ]
       },
       {

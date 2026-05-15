@@ -66,6 +66,9 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
     inputContainerRef,
     isSessionDead,
     inputMode,
+    interactiveMode,
+    isInteractive,
+    isProcessRunning,
     isBlockCaret,
     isInputDisabled,
     isToolSearchMode,
@@ -91,8 +94,51 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
     setInput,
   } = state;
 
+  const interactivePlaceholder = useMemo(() => {
+    if (!isInteractive || !interactiveMode) return null;
+    const cmd = interactiveMode.command?.trim() ?? "";
+    const target = cmd ? `\`${cmd}\`` : "the running command";
+    switch (interactiveMode.detector) {
+      case "yn_choice":
+        return `回复 ${target} (Y/N)…`;
+      case "password":
+        return `输入密码发给 ${target}…`;
+      case "powershell_choice":
+        return `选择选项发给 ${target}…`;
+      case "continue":
+        return `回车继续 ${target}…`;
+      default:
+        return `回复 ${target}…`;
+    }
+  }, [isInteractive, interactiveMode]);
+
+  const interactiveBannerLabel = useMemo(() => {
+    if (!isInteractive || !interactiveMode) return null;
+    const cmd = interactiveMode.command?.trim();
+    return cmd ? `正在与 ${cmd} 交互` : "正在向运行中的命令发送输入";
+  }, [isInteractive, interactiveMode]);
+
+  // When a command is running but no `stdin_wait` has fired yet (so we
+  // aren't in interactive mode), still surface a banner that hints at
+  // the Esc-to-cancel escape hatch. Without it, users whose detector
+  // missed the prompt (e.g. bash `select` PS3 / PS2 continuation —
+  // see `stdin_wait_detector.rs`) were stranded with a non-interactive
+  // input box and no obvious way to recover. Hiding the banner once we
+  // enter interactive mode avoids stacking two competing banners.
+  const runningBannerLabel = useMemo(() => {
+    if (isInteractive) return null;
+    if (!isProcessRunning) return null;
+    return "命令运行中 · 按 Esc 取消";
+  }, [isInteractive, isProcessRunning]);
+
   return (
-    <div className="border-t border-[var(--border-subtle)]">
+    <div
+      className={cn(
+        "border-t border-[var(--border-subtle)]",
+        isInteractive && "ring-1 ring-amber-500/40"
+      )}
+      data-interactive={isInteractive ? "true" : "false"}
+    >
       <div
         role="separator"
         aria-orientation="horizontal"
@@ -102,6 +148,36 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
         onPointerDown={handlePointerDown}
         onDoubleClick={resetToDefault}
       />
+
+      {isInteractive && interactiveBannerLabel && (
+        <div
+          className="flex items-center justify-between gap-2 px-3 py-1.5 bg-amber-500/10 border-b border-amber-500/30 text-[12px] text-amber-200"
+          role="status"
+          aria-live="polite"
+          data-testid="interactive-mode-banner"
+        >
+          <span className="flex items-center gap-1.5 min-w-0 truncate">
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+            {interactiveBannerLabel}
+          </span>
+          <span className="text-amber-300/70 shrink-0">Esc 退出交互</span>
+        </div>
+      )}
+
+      {!isInteractive && runningBannerLabel && (
+        <div
+          className="flex items-center justify-between gap-2 px-3 py-1.5 bg-sky-500/10 border-b border-sky-500/30 text-[12px] text-sky-200"
+          role="status"
+          aria-live="polite"
+          data-testid="running-mode-banner"
+        >
+          <span className="flex items-center gap-1.5 min-w-0 truncate">
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
+            {runningBannerLabel}
+          </span>
+          <span className="text-sky-300/70 shrink-0">点击此处 → Esc 强制结束</span>
+        </div>
+      )}
 
       <ContextBar sessionId={sessionId} />
 
@@ -141,16 +217,18 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
                   ? ""
                   : isSessionDead
                     ? "Session limit exceeded. Please start a new session."
-                    : activeTool
-                      ? (() => {
-                          const req = toolParams.find((p) => p.required);
-                          return req
-                            ? `${req.flag} ${req.placeholder || req.label}...`
-                            : t("input.enterParamsHint");
-                        })()
-                      : isToolSearchMode
-                        ? t("input.searchToolName")
-                        : t("input.enterCommand")
+                    : isInteractive && interactivePlaceholder
+                      ? interactivePlaceholder
+                      : activeTool
+                        ? (() => {
+                            const req = toolParams.find((p) => p.required);
+                            return req
+                              ? `${req.flag} ${req.placeholder || req.label}...`
+                              : t("input.enterParamsHint");
+                          })()
+                        : isToolSearchMode
+                          ? t("input.searchToolName")
+                          : t("input.enterCommand")
               }
               rows={1}
               className={cn(
@@ -213,7 +291,10 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
             />
           </div>
 
-          <SendButton onSubmit={handleSubmit} disabled={!input.trim() || isInputDisabled} />
+          <SendButton
+            onSubmit={handleSubmit}
+            disabled={(!isInteractive && !input.trim()) || isInputDisabled}
+          />
         </div>
       </div>
     </div>

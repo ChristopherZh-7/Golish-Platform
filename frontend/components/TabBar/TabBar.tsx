@@ -2,7 +2,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Bot, Globe, Home, Plus, Settings, Shield, Terminal } from "lucide-react";
 import React from "react";
 import { createPortal } from "react-dom";
-import { TerminalRecordingControls } from "@/components/Terminal/TerminalRecordingControls";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -414,12 +413,9 @@ export const TabBar = React.memo(function TabBar({
             </TooltipContent>
           </Tooltip>
 
-          {(() => {
-            const at = tabs.find((t) => t.id === activeSessionId);
-            return at?.tabType === "terminal" ? (
-              <TerminalRecordingControls sessionId={at.id} cols={80} rows={24} />
-            ) : null;
-          })()}
+          {/* `TerminalRecordingControls` was retired in D6.4b (xterm.js
+              removal). The slot is kept here so a future GridReplayer
+              UI can drop straight in. */}
 
           {activeConvTitle && (
             <div

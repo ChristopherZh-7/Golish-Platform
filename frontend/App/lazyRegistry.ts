@@ -91,11 +91,9 @@ export const VulnIntelPanelView = lazy(() =>
   }))
 );
 
-export const RecordingsPanelView = lazy(() =>
-  import("../components/Terminal/RecordingsPanel").then((m) => ({
-    default: m.RecordingsPanel,
-  }))
-);
+// `RecordingsPanelView` was retired in D6.4b together with the xterm.js
+// renderer it depended on. Future replay UI would need a GridReplayer
+// component (TODO: see Phase C handoff).
 
 export const ContextPanel = lazy(() =>
   import("../components/Sidecar/ContextPanel").then((m) => ({

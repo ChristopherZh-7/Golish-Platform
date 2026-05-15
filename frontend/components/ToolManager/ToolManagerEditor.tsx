@@ -241,9 +241,7 @@ function SkillsPane({ skills }: { skills: ToolManagerEditorProps["skills"] }) {
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center gap-3">
             <BookOpen className="w-8 h-8 text-muted-foreground/30" />
-            <p className="text-[12px] text-muted-foreground/50">
-              {t("toolManager.selectSkill")}
-            </p>
+            <p className="text-[12px] text-muted-foreground/50">{t("toolManager.selectSkill")}</p>
           </div>
         )}
       </div>

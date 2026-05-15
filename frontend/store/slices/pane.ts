@@ -21,7 +21,6 @@ import {
   type TabLayout,
   updatePaneRatio,
 } from "@/lib/pane-utils";
-import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager";
 import type { Session } from "../store-types";
 import type { SliceCreator } from "./types";
 
@@ -161,7 +160,8 @@ export const createPaneSlice: SliceCreator<PaneSlice, PaneStoreDraft> = (set, ge
 
     const sessionIdToRemove = paneNode.sessionId;
 
-    TerminalInstanceManager.dispose(sessionIdToRemove);
+    // D6.4b: GridTerminal teardown happens server-side as part of the
+    // `pty_destroy` initiated by the pane-removal handler downstream.
 
     import("@/hooks/useAiEvents").then(({ resetSessionSequence }) => {
       resetSessionSequence(sessionIdToRemove);

@@ -83,6 +83,27 @@ export function TerminalSettings({ settings, onChange }: TerminalSettingsProps) 
           Number of lines to keep in scrollback buffer
         </p>
       </div>
+
+      {/* GridTerminal renderer (Phase B · default since 2026-05) */}
+      <div className="space-y-2 rounded-md border border-border/60 p-3">
+        <label className="flex items-start gap-2 text-sm font-medium text-foreground">
+          <input
+            type="checkbox"
+            checked={settings.use_grid_renderer !== false}
+            onChange={(e) => updateField("use_grid_renderer", e.target.checked)}
+            className="mt-0.5 h-4 w-4 cursor-pointer accent-current"
+          />
+          <span className="flex flex-col gap-1">
+            <span>Use GridTerminal renderer for TUI apps</span>
+            <span className="text-xs font-normal text-muted-foreground">
+              Renders vim / htop / less through a Rust virtual terminal + React grid. Default since
+              2026-05 — disabling it leaves alt-screen sessions in a no-renderer state (legacy
+              xterm.js was removed in the same release), so toggling off is mostly a switch for
+              future fallback renderers. Applies on next session creation.
+            </span>
+          </span>
+        </label>
+      </div>
     </div>
   );
 }

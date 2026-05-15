@@ -3,7 +3,9 @@
     "id": "impacket",
     "name": "impacket",
     "description": "Collection of Python classes for working with network protocols - psexec, secretsdump, GetNPUsers, mimikatz over SMB, and more",
-    "descriptionI18n": { "zh": "Python 网络协议类库集合 —— psexec / secretsdump / GetNPUsers / SMB 上的 mimikatz 等" },
+    "descriptionI18n": {
+      "zh": "Python 网络协议类库集合 —— psexec / secretsdump / GetNPUsers / SMB 上的 mimikatz 等"
+    },
     "executable": "impacket-secretsdump",
     "runtime": "python",
     "runtimeVersion": "3.11",
@@ -27,19 +29,71 @@
         "description": "Which impacket sub-tool to invoke (run separately)",
         "descriptionI18n": { "zh": "要调用的 impacket 子工具(各自单独运行)" },
         "options": [
-          { "value": "secretsdump", "label": "secretsdump - dump SAM/LSA/NTDS", "labelI18n": { "zh": "secretsdump - 抓取 SAM / LSA / NTDS" } },
-          { "value": "psexec", "label": "psexec - admin SMB shell", "labelI18n": { "zh": "psexec - 管理员 SMB Shell" } },
-          { "value": "wmiexec", "label": "wmiexec - WMI shell", "labelI18n": { "zh": "wmiexec - WMI Shell" } },
-          { "value": "smbexec", "label": "smbexec - SMB pipe shell", "labelI18n": { "zh": "smbexec - SMB 管道 Shell" } },
-          { "value": "atexec", "label": "atexec - schtasks shell", "labelI18n": { "zh": "atexec - 计划任务 Shell" } },
-          { "value": "GetNPUsers", "label": "GetNPUsers - AS-REP roasting", "labelI18n": { "zh": "GetNPUsers - AS-REP Roasting" } },
-          { "value": "GetUserSPNs", "label": "GetUserSPNs - Kerberoasting", "labelI18n": { "zh": "GetUserSPNs - Kerberoasting" } },
-          { "value": "ticketer", "label": "ticketer - golden/silver ticket", "labelI18n": { "zh": "ticketer - 黄金 / 白银票据" } },
-          { "value": "addcomputer", "label": "addcomputer - add machine acct", "labelI18n": { "zh": "addcomputer - 添加机器账号" } },
-          { "value": "rpcdump", "label": "rpcdump - RPC enumeration", "labelI18n": { "zh": "rpcdump - RPC 枚举" } },
-          { "value": "smbclient", "label": "smbclient - SMB browse", "labelI18n": { "zh": "smbclient - 浏览 SMB" } },
-          { "value": "lookupsid", "label": "lookupsid - SID enumeration", "labelI18n": { "zh": "lookupsid - SID 枚举" } },
-          { "value": "ntlmrelayx", "label": "ntlmrelayx - NTLM relay", "labelI18n": { "zh": "ntlmrelayx - NTLM 中继" } }
+          {
+            "value": "secretsdump",
+            "label": "secretsdump - dump SAM/LSA/NTDS",
+            "labelI18n": { "zh": "secretsdump - 抓取 SAM / LSA / NTDS" }
+          },
+          {
+            "value": "psexec",
+            "label": "psexec - admin SMB shell",
+            "labelI18n": { "zh": "psexec - 管理员 SMB Shell" }
+          },
+          {
+            "value": "wmiexec",
+            "label": "wmiexec - WMI shell",
+            "labelI18n": { "zh": "wmiexec - WMI Shell" }
+          },
+          {
+            "value": "smbexec",
+            "label": "smbexec - SMB pipe shell",
+            "labelI18n": { "zh": "smbexec - SMB 管道 Shell" }
+          },
+          {
+            "value": "atexec",
+            "label": "atexec - schtasks shell",
+            "labelI18n": { "zh": "atexec - 计划任务 Shell" }
+          },
+          {
+            "value": "GetNPUsers",
+            "label": "GetNPUsers - AS-REP roasting",
+            "labelI18n": { "zh": "GetNPUsers - AS-REP Roasting" }
+          },
+          {
+            "value": "GetUserSPNs",
+            "label": "GetUserSPNs - Kerberoasting",
+            "labelI18n": { "zh": "GetUserSPNs - Kerberoasting" }
+          },
+          {
+            "value": "ticketer",
+            "label": "ticketer - golden/silver ticket",
+            "labelI18n": { "zh": "ticketer - 黄金 / 白银票据" }
+          },
+          {
+            "value": "addcomputer",
+            "label": "addcomputer - add machine acct",
+            "labelI18n": { "zh": "addcomputer - 添加机器账号" }
+          },
+          {
+            "value": "rpcdump",
+            "label": "rpcdump - RPC enumeration",
+            "labelI18n": { "zh": "rpcdump - RPC 枚举" }
+          },
+          {
+            "value": "smbclient",
+            "label": "smbclient - SMB browse",
+            "labelI18n": { "zh": "smbclient - 浏览 SMB" }
+          },
+          {
+            "value": "lookupsid",
+            "label": "lookupsid - SID enumeration",
+            "labelI18n": { "zh": "lookupsid - SID 枚举" }
+          },
+          {
+            "value": "ntlmrelayx",
+            "label": "ntlmrelayx - NTLM relay",
+            "labelI18n": { "zh": "ntlmrelayx - NTLM 中继" }
+          }
         ]
       },
       {

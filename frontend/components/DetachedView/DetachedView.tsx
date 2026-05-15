@@ -1,12 +1,18 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { SecurityTab } from "@/components/SecurityView/SecurityView";
-import { Terminal } from "@/components/Terminal/Terminal";
 import { closeDetached } from "@/lib/api/window";
 import { onCustomEvent, sendEvent } from "@/lib/events";
 import { runTauriUnlistenFn, runTauriUnlistenFromPromise } from "@/lib/run-tauri-unlisten";
 import { ThemeManager } from "@/lib/theme";
-import "@xterm/xterm/css/xterm.css";
+
+// Phase B D6.4b: detached terminal windows now render through the
+// `GridTerminal` React component instead of xterm.js. Lazy-loaded so
+// the security / browser detached variants don't pay for the grid
+// renderer's CSS unless we land on the terminal flavour.
+const GridTerminal = lazy(() =>
+  import("@/components/GridTerminal").then((m) => ({ default: m.GridTerminal }))
+);
 
 const SecurityView = lazy(() =>
   import("@/components/SecurityView/SecurityView").then((m) => ({ default: m.SecurityView }))
@@ -181,7 +187,15 @@ function DetachedTerminal({ sessionId, title }: { sessionId: string; title: stri
         </div>
       </div>
       <div className="flex-1 min-h-0 p-1">
-        <Terminal sessionId={sessionId} />
+        <Suspense
+          fallback={
+            <div className="h-full w-full flex items-center justify-center text-muted-foreground/60 text-sm">
+              Loading terminal…
+            </div>
+          }
+        >
+          <GridTerminal sessionId={sessionId} />
+        </Suspense>
       </div>
     </div>
   );

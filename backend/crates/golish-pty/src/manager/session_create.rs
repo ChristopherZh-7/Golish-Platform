@@ -11,6 +11,7 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::fmt::Write as _;
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 
@@ -27,12 +28,21 @@ fn hex_encode(bytes: &[u8]) -> String {
 use uuid::Uuid;
 
 use crate::error::{PtyError, Result};
+use crate::grid::{GridDims, GridManager};
 use crate::parser::{OscEvent, TerminalParser};
 use crate::shell::{detect_shell, ShellIntegration};
 
 use super::core::{ActiveSession, PtyManager, PtySession};
 use super::emitter::PtyEventEmitter;
+use super::stdin_wait_detector::{
+    append_to_tail, detect_stdin_wait, STDIN_WAIT_IDLE_THRESHOLD,
+};
 use super::utf8::{process_utf8_with_buffer, OutputMessage, Utf8IncompleteBuffer};
+
+/// Cap how often the emitter thread ships a `terminal_grid_update`
+/// event to the frontend. 60 ms ≈ 16 fps which is enough for vim /
+/// htop to feel snappy without saturating the IPC bridge.
+const GRID_EMIT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(60);
 
 /// Dispatch a batch of OSC events through the supplied emitter, applying
 /// the session-local side effects (e.g. updating
@@ -44,6 +54,7 @@ pub(super) fn dispatch_parsed_events(
     session_id: &str,
     session: &Arc<ActiveSession>,
     emitter: &Arc<dyn PtyEventEmitter>,
+    grid_manager: &Arc<GridManager>,
 ) {
     for event in events {
         match &event {
@@ -66,9 +77,20 @@ pub(super) fn dispatch_parsed_events(
                 emitter.emit_virtual_env_changed(session_id, name.as_deref());
             }
             OscEvent::AlternateScreenEnabled => {
+                session.alt_screen.store(true, Ordering::Release);
+                // Eagerly create the GridTerminal at the current PTY
+                // dimensions so the emitter thread doesn't see a stale
+                // smaller grid when the first frame lands. Subsequent
+                // resize events from the frontend re-shape it through
+                // `PtyManager::resize_grid`.
+                let cols = *session.cols.lock();
+                let rows = *session.rows.lock();
+                let _ = grid_manager.get_or_create(session_id, GridDims { cols, rows });
                 emitter.emit_alternate_screen(session_id, true);
             }
             OscEvent::AlternateScreenDisabled => {
+                session.alt_screen.store(false, Ordering::Release);
+                grid_manager.dispose(session_id);
                 emitter.emit_alternate_screen(session_id, false);
             }
             OscEvent::SynchronizedOutputEnabled => {
@@ -256,6 +278,8 @@ impl PtyManager {
         // racing the reader thread's view of the parser state.
         let parser = Arc::new(Mutex::new(TerminalParser::new()));
 
+        let alt_screen = Arc::new(AtomicBool::new(false));
+
         let session = Arc::new(ActiveSession {
             child: Mutex::new(child),
             master: master.clone(),
@@ -266,6 +290,7 @@ impl PtyManager {
             shell_type: shell_info.shell_type(),
             parser: parser.clone(),
             emitter: emitter.clone(),
+            alt_screen: alt_screen.clone(),
         });
 
         // Store session.
@@ -279,6 +304,7 @@ impl PtyManager {
         let reader_session = session.clone();
         let reader_emitter = emitter.clone();
         let reader_parser = parser.clone();
+        let reader_grid_manager = self.grid_manager.clone();
 
         // Get a reader from the master.
         let mut reader = {
@@ -297,6 +323,8 @@ impl PtyManager {
         // original).
         let emitter_for_output = emitter.clone();
         let output_session_id = session_id.clone();
+        let emitter_grid_manager = self.grid_manager.clone();
+        let emitter_alt_screen = alt_screen.clone();
 
         // Spawn reader thread.
         let reader_session_id_for_log = reader_session_id.clone();
@@ -404,13 +432,23 @@ impl PtyManager {
                             &reader_session_id,
                             &reader_session,
                             &reader_emitter,
+                            &reader_grid_manager,
                         );
 
                         // Send raw output bytes to the emitter thread
                         // for coalescing. UTF-8 boundary handling
-                        // happens in the emitter thread.
-                        if !parse_result.output.is_empty() {
-                            let _ = output_tx.send(OutputMessage::Data(parse_result.output));
+                        // happens in the emitter thread. We forward
+                        // `prompt_visible` alongside `output` so the
+                        // `stdin_wait` detector can probe PS1/PS2/PS3
+                        // prompts that are intentionally absent from
+                        // the region-filtered `output`.
+                        if !parse_result.output.is_empty()
+                            || !parse_result.prompt_visible.is_empty()
+                        {
+                            let _ = output_tx.send(OutputMessage::Data {
+                                output: parse_result.output,
+                                prompt_visible: parse_result.prompt_visible,
+                            });
                         }
                     }
                     Err(e) => {
@@ -457,18 +495,54 @@ impl PtyManager {
                 .map(|v| v != "0")
                 .unwrap_or(true);
 
+            // State for the Warp-style `stdin_wait` heuristic. We keep
+            // the most recent ~256 bytes of emitted output plus a
+            // timestamp of the last emit so the Timeout branch can probe
+            // for prompt patterns once the PTY has gone quiet for at
+            // least `STDIN_WAIT_IDLE_THRESHOLD`. Tracking happens here
+            // (rather than in the reader thread) because (a) the tail
+            // buffer must reflect what the frontend actually sees after
+            // coalescing, and (b) the existing Timeout branch already
+            // wakes up every 16 ms, so we get the idle scheduling for
+            // free.
+            let mut stdin_wait_tail: Vec<u8> = Vec::with_capacity(256);
+            let mut stdin_wait_last_emit_at = std::time::Instant::now();
+            let mut stdin_wait_emitted_for_idle_window: bool = false;
+
+            // State for the Phase B GridTerminal stream. When the
+            // session is on alt-screen, bytes flowing through here are
+            // also fed to the per-session `GridTerminal`; the resulting
+            // grid diff is shipped to the frontend at most once per
+            // [`GRID_EMIT_INTERVAL`] to keep IPC load reasonable. We
+            // also fire an immediate diff right after `alt_screen`
+            // flips on so the frontend gets a baseline frame
+            // immediately instead of waiting for the next coalesce
+            // tick.
+            let mut grid_last_emit_at = std::time::Instant::now();
+            let mut grid_pending_emit = false;
+            let mut last_seen_alt_screen = false;
+
+            // Parallel coalesce buffer for prompt-visible bytes (PS1 /
+            // PS2 / PS3 / interactive prompt text). Separate from
+            // `coalesce_buf` because we may have prompt bytes without
+            // user-visible Output region bytes (zsh `select> ` is the
+            // archetypal case) and vice versa during pure stdout.
+            let mut prompt_visible_buf: Vec<u8> = Vec::with_capacity(16 * 1024);
+
             loop {
                 match output_rx.recv_timeout(timeout) {
-                    Ok(OutputMessage::Data(bytes)) => {
-                        coalesce_buf.extend_from_slice(&bytes);
+                    Ok(OutputMessage::Data { output, prompt_visible }) => {
+                        coalesce_buf.extend_from_slice(&output);
+                        prompt_visible_buf.extend_from_slice(&prompt_visible);
 
                         // Drain all immediately-queued messages without
                         // blocking, coalescing them into a single emit
                         // call.
                         loop {
                             match output_rx.try_recv() {
-                                Ok(OutputMessage::Data(more)) => {
-                                    coalesce_buf.extend_from_slice(&more);
+                                Ok(OutputMessage::Data { output, prompt_visible }) => {
+                                    coalesce_buf.extend_from_slice(&output);
+                                    prompt_visible_buf.extend_from_slice(&prompt_visible);
                                 }
                                 Ok(OutputMessage::Eof) => {
                                     // Flush coalesced bytes, then emit
@@ -494,6 +568,17 @@ impl PtyManager {
                             }
                         }
 
+                        // Refresh the stdin_wait tail from `prompt_visible`
+                        // first — it's a superset of `output` plus PS1/
+                        // PS2/PS3 prompts. We do this even when `output`
+                        // is empty (zsh PS2 `select> ` lives only in the
+                        // Input region and never makes it to `output`).
+                        if !prompt_visible_buf.is_empty() {
+                            append_to_tail(&mut stdin_wait_tail, &prompt_visible_buf);
+                            stdin_wait_last_emit_at = std::time::Instant::now();
+                            stdin_wait_emitted_for_idle_window = false;
+                        }
+
                         // Emit the coalesced batch.
                         let output = process_utf8_with_buffer(&mut utf8_buffer, &coalesce_buf);
                         if !output.is_empty() {
@@ -514,8 +599,25 @@ impl PtyManager {
                                 );
                             }
                             emitter_for_output.emit_output(&output_session_id, &output);
+
+                            // Phase B · GridTerminal: when the session
+                            // is on alt-screen, feed the coalesced
+                            // bytes into the per-session GridTerminal.
+                            // The actual `terminal_grid_update` emit
+                            // happens below (either as part of this
+                            // tick if the 60 ms quota has elapsed, or
+                            // on the next Timeout poll).
+                            if emitter_alt_screen.load(Ordering::Acquire) {
+                                if let Some(grid) =
+                                    emitter_grid_manager.get(&output_session_id)
+                                {
+                                    grid.lock().write(output.as_bytes());
+                                    grid_pending_emit = true;
+                                }
+                            }
                         }
                         coalesce_buf.clear();
+                        prompt_visible_buf.clear();
                     }
                     Ok(OutputMessage::Eof) => {
                         // Flush any incomplete UTF-8 sequence, then
@@ -531,7 +633,61 @@ impl PtyManager {
                         return;
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        // Idle — nothing to flush.
+                        // Idle — nothing to flush. Probe for a stdin
+                        // prompt at the tail of recently emitted bytes
+                        // so the frontend can switch its bottom input
+                        // box into "respond to the running command"
+                        // mode. We only fire once per idle window: a
+                        // subsequent burst of output resets
+                        // `stdin_wait_emitted_for_idle_window` back to
+                        // false, so the next quiet period can fire
+                        // again.
+                        if !stdin_wait_emitted_for_idle_window
+                            && stdin_wait_last_emit_at.elapsed() >= STDIN_WAIT_IDLE_THRESHOLD
+                            && !stdin_wait_tail.is_empty()
+                        {
+                            if let Some(kind) = detect_stdin_wait(&stdin_wait_tail) {
+                                emitter_for_output.emit_stdin_wait(
+                                    &output_session_id,
+                                    kind.as_event_str(),
+                                );
+                                stdin_wait_emitted_for_idle_window = true;
+                            }
+                        }
+
+                        // Phase B · GridTerminal: on the rising edge of
+                        // `alt_screen` (false → true) ship a full
+                        // baseline frame immediately so the frontend
+                        // doesn't render an empty grid while waiting
+                        // for the first coalesced tick.
+                        let alt_now = emitter_alt_screen.load(Ordering::Acquire);
+                        if alt_now && !last_seen_alt_screen {
+                            if let Some(grid) = emitter_grid_manager.get(&output_session_id) {
+                                let snapshot = grid.lock().snapshot_full();
+                                emitter_for_output
+                                    .emit_grid_update(&output_session_id, &snapshot);
+                                grid_last_emit_at = std::time::Instant::now();
+                                grid_pending_emit = false;
+                            }
+                        }
+                        last_seen_alt_screen = alt_now;
+
+                        // Coalesced grid diff: fire at most once per
+                        // GRID_EMIT_INTERVAL while bytes are arriving.
+                        if alt_now
+                            && grid_pending_emit
+                            && grid_last_emit_at.elapsed() >= GRID_EMIT_INTERVAL
+                        {
+                            if let Some(grid) = emitter_grid_manager.get(&output_session_id) {
+                                let snapshot = grid.lock().snapshot_diff();
+                                if !snapshot.is_noop() {
+                                    emitter_for_output
+                                        .emit_grid_update(&output_session_id, &snapshot);
+                                }
+                                grid_last_emit_at = std::time::Instant::now();
+                                grid_pending_emit = false;
+                            }
+                        }
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                         // Reader thread exited without sending an

@@ -433,8 +433,9 @@
  * Notes:
  * - macOS WKWebView ignores `::-webkit-scrollbar` pseudo-elements and
  *   continues to paint the system overlay; these rules don't degrade it.
- * - Component-specific scrollbar rules (`.ansi-output`, `.xterm-viewport`)
- *   keep higher specificity and win where defined.
+ * - Component-specific scrollbar rules (`.ansi-output`,
+ *   `.grid-terminal__scroll`) keep higher specificity and win where
+ *   defined.
  * - `.scrollbar-none` utility (below) still overrides this globally.
  * ============================================================ */
 *::-webkit-scrollbar {

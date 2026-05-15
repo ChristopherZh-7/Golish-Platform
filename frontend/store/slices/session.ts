@@ -21,6 +21,7 @@ import type {
   DetailViewMode,
   ExecutionMode,
   InputMode,
+  InteractiveModeState,
   PendingCommand,
   RenderMode,
   Session,
@@ -90,6 +91,18 @@ export interface SessionActions {
   setRenderMode: (sessionId: string, mode: RenderMode) => void;
   setDetailViewMode: (sessionId: string, mode: DetailViewMode) => void;
   setToolDetailRequestIds: (sessionId: string, requestIds: string[] | null) => void;
+  /**
+   * Toggle Warp-style interactive input mode for a session. Pass `null`
+   * to leave interactive mode (the bottom input box returns to "type a
+   * new command" behaviour). Pass a populated `InteractiveModeState` to
+   * enter it.
+   *
+   * Callers:
+   *  - `useTauriEvents.ts` on `stdin_wait` → enter
+   *  - `useTauriEvents.ts` on `command_end` → leave
+   *  - `useInputKeyboard` on Esc → leave
+   */
+  setInteractiveMode: (sessionId: string, mode: InteractiveModeState | null) => void;
 
   // Terminal lifecycle
   handlePromptStart: (sessionId: string) => void;

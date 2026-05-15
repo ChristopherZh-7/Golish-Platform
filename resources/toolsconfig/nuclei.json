@@ -77,8 +77,16 @@
           { "value": "medium", "label": "medium", "labelI18n": { "zh": "中危" } },
           { "value": "high", "label": "high", "labelI18n": { "zh": "高危" } },
           { "value": "critical", "label": "critical", "labelI18n": { "zh": "严重" } },
-          { "value": "high,critical", "label": "high + critical", "labelI18n": { "zh": "高危 + 严重" } },
-          { "value": "medium,high,critical", "label": "medium and above", "labelI18n": { "zh": "中危及以上" } }
+          {
+            "value": "high,critical",
+            "label": "high + critical",
+            "labelI18n": { "zh": "高危 + 严重" }
+          },
+          {
+            "value": "medium,high,critical",
+            "label": "medium and above",
+            "labelI18n": { "zh": "中危及以上" }
+          }
         ]
       },
       {

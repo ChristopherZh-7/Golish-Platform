@@ -32,12 +32,7 @@ function formatThinkingDuration(ms: number | null): string {
  * - Settled, collapsed: shows "Thought for 3.4s" (or "0.7s", "1m 12s").
  * - Expanded: reveals the raw reasoning text with a hairline left rail.
  */
-export function ThinkingBlock({
-  content,
-  isActive,
-  startedAt,
-  endedAt,
-}: ThinkingBlockProps) {
+export function ThinkingBlock({ content, isActive, startedAt, endedAt }: ThinkingBlockProps) {
   // Auto-open while the model is actively thinking so the user can watch the
   // chain-of-thought stream in real time; auto-collapse once thinking ends.
   // Track whether the user has manually overridden this default so we don't
@@ -59,8 +54,7 @@ export function ThinkingBlock({
     setExpanded((v) => !v);
   };
 
-  const durationMs =
-    startedAt && endedAt && endedAt >= startedAt ? endedAt - startedAt : null;
+  const durationMs = startedAt && endedAt && endedAt >= startedAt ? endedAt - startedAt : null;
   const collapsedLabel = isActive
     ? "Thinking"
     : durationMs != null
@@ -82,10 +76,7 @@ export function ThinkingBlock({
           <Loader2 className="w-3 h-3 animate-spin" />
         ) : (
           <ChevronDown
-            className={cn(
-              "w-3 h-3 transition-transform",
-              expanded ? "rotate-0" : "-rotate-90"
-            )}
+            className={cn("w-3 h-3 transition-transform", expanded ? "rotate-0" : "-rotate-90")}
           />
         )}
         <span>{collapsedLabel}</span>

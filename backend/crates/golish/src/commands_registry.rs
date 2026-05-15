@@ -33,6 +33,7 @@ fn install_handlers(
         // ── git_pty (PTY / shell / git / themes / IME) ───────────
         pty_create, pty_write, pty_resize, pty_destroy, pty_get_session,
         pty_get_foreground_process, set_active_terminal_session,
+        pty_request_grid_snapshot, pty_resize_grid,
         list_path_completions, classify_input,
         shell_integration_status, shell_integration_install, shell_integration_uninstall,
         get_git_branch, git_status, git_diff, git_diff_staged,
