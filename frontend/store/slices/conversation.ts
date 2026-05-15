@@ -33,6 +33,10 @@ export interface ChatMessage {
   error?: string;
   toolCalls?: ChatToolCall[];
   thinking?: string;
+  /** Epoch ms when the first thinking chunk arrived (set lazily by the streaming sync layer). */
+  thinkingStartedAt?: number;
+  /** Epoch ms when the last thinking chunk arrived. */
+  thinkingEndedAt?: number;
   /** Content offset when the first tool call was added (for interleaved rendering) */
   toolCallsContentOffset?: number;
   /** Content offset at which each toolCalls[i] was inserted (for per-call interleaving) */
@@ -225,7 +229,10 @@ export const createConversationSlice: SliceCreator<ConversationSlice, Conversati
       if (!conv) return;
       const last = conv.messages[conv.messages.length - 1];
       if (last?.role === "assistant" && last.isStreaming) {
+        const now = Date.now();
         last.thinking = (last.thinking || "") + content;
+        if (!last.thinkingStartedAt) last.thinkingStartedAt = now;
+        last.thinkingEndedAt = now;
       }
     }),
 

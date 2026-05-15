@@ -147,6 +147,60 @@ export const handleSystemHooksInjected: EventHandler<{
 };
 
 /**
+ * Per-session counters for debug stream tracing. Lazily allocated when
+ * `stream_debug` is enabled for the active model so we can show running
+ * char totals in the console as chunks arrive.
+ */
+interface StreamDebugCounters {
+  textChunks: number;
+  textChars: number;
+  reasoningChunks: number;
+  reasoningChars: number;
+}
+const debugCounters = new Map<string, StreamDebugCounters>();
+
+function isStreamDebugEnabled(): boolean {
+  if (typeof globalThis === "undefined") return false;
+  return (
+    (globalThis as { __GOLISH_STREAM_DEBUG__?: boolean })
+      .__GOLISH_STREAM_DEBUG__ === true
+  );
+}
+
+/**
+ * Programmatic toggle for verbose stream debug logging. Wired to the
+ * `stream_debug` flag in {@link ModelOverride} via the model settings
+ * popover, and re-evaluated each time the user switches active models so
+ * the console only logs for models the user opted into.
+ */
+export function setStreamDebugEnabled(enabled: boolean) {
+  if (typeof globalThis === "undefined") return;
+  (
+    globalThis as { __GOLISH_STREAM_DEBUG__?: boolean }
+  ).__GOLISH_STREAM_DEBUG__ = enabled;
+  // eslint-disable-next-line no-console
+  console.info(`[StreamDebug] ${enabled ? "enabled" : "disabled"}`);
+}
+
+function resetDebugCounters(sessionId: string) {
+  debugCounters.delete(sessionId);
+}
+
+function ensureDebugCounters(sessionId: string): StreamDebugCounters {
+  let counters = debugCounters.get(sessionId);
+  if (!counters) {
+    counters = {
+      textChunks: 0,
+      textChars: 0,
+      reasoningChunks: 0,
+      reasoningChars: 0,
+    };
+    debugCounters.set(sessionId, counters);
+  }
+  return counters;
+}
+
+/**
  * Handle text delta event.
  * Batches text deltas for throttled updates (~60fps).
  */
@@ -158,6 +212,16 @@ export const handleTextDelta: EventHandler<{
   seq?: number;
 }> = (event, ctx) => {
   ctx.getState().setAgentThinking(ctx.sessionId, false);
+  if (isStreamDebugEnabled()) {
+    const counters = ensureDebugCounters(ctx.sessionId);
+    counters.textChunks += 1;
+    counters.textChars += event.delta.length;
+    // eslint-disable-next-line no-console
+    console.debug(
+      `[StreamDebug:${ctx.sessionId}] text #${counters.textChunks} +${event.delta.length} (total ${counters.textChars})`,
+      event.delta.slice(0, 80)
+    );
+  }
   // Batch deltas and flush at ~60fps
   ctx.batchTextDelta(ctx.sessionId, event.delta);
 };
@@ -172,6 +236,16 @@ export const handleReasoning: EventHandler<{
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
+  if (isStreamDebugEnabled()) {
+    const counters = ensureDebugCounters(ctx.sessionId);
+    counters.reasoningChunks += 1;
+    counters.reasoningChars += event.content.length;
+    // eslint-disable-next-line no-console
+    console.debug(
+      `[StreamDebug:${ctx.sessionId}] reasoning #${counters.reasoningChunks} +${event.content.length} (total ${counters.reasoningChars})`,
+      event.content.slice(0, 80)
+    );
+  }
   ctx.getState().appendThinkingContent(ctx.sessionId, event.content);
 };
 
@@ -183,6 +257,16 @@ export const handleCompleted: EventHandler<Extract<AiEvent, { type: "completed" 
   event,
   ctx
 ) => {
+  if (isStreamDebugEnabled()) {
+    const counters = debugCounters.get(ctx.sessionId);
+    if (counters) {
+      // eslint-disable-next-line no-console
+      console.debug(
+        `[StreamDebug:${ctx.sessionId}] completed | text=${counters.textChunks} chunks/${counters.textChars} chars | reasoning=${counters.reasoningChunks} chunks/${counters.reasoningChars} chars`
+      );
+    }
+    resetDebugCounters(ctx.sessionId);
+  }
   logger.info("AI turn completed:", {
     sessionId: ctx.sessionId,
     inputTokens: event.input_tokens,

@@ -15,6 +15,49 @@ use super::llm::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Per-model user override sourced from the model settings popover in the UI.
+///
+/// The key in the parent `HashMap` is `"<provider>::<model_id>"`
+/// (e.g. `"nvidia::qwen/qwen3.5-122b-a10b"`). `None`/`false` fields mean
+/// "use the provider-default behavior" — they don't override anything.
+///
+/// Stored verbatim in `settings.toml` and forwarded to the LLM provider
+/// layer via [`ProviderConfig::model_override`][super::super::provider_config]
+/// where it influences:
+///
+/// - `quirks.reasoning_handling` (Standard / AlwaysContent)
+/// - request-time `chat_template_kwargs.enable_thinking`
+/// - request-time `reasoning.effort` / `max_tokens`
+/// - per-stream debug verbosity
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelOverride {
+    /// `Some(true)` enables the model's thinking mode; `Some(false)` disables
+    /// it; `None` defers to the provider default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<bool>,
+
+    /// Reasoning effort: `"low" | "medium" | "high" | "max"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+
+    /// Max output tokens override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+
+    /// Context window override (for models with multiple context-window sizes).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<usize>,
+
+    /// When `true`, emit verbose per-chunk debug events to the frontend so
+    /// the user can see how reasoning / text chunks are being routed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub stream_debug: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 /// Per-sub-agent model configuration.
 ///
 /// Allows overriding the model and LLM parameters for specific sub-agents
@@ -70,6 +113,22 @@ pub struct AiSettings {
     /// ```
     #[serde(default)]
     pub sub_agent_models: HashMap<String, SubAgentModelConfig>,
+
+    /// Per-model user overrides keyed by `"<provider>::<model_id>"`.
+    ///
+    /// Sourced from the model settings popover in the chat panel. Forwarded
+    /// to the LLM provider layer to control thinking, reasoning effort,
+    /// max_tokens, etc. See [`ModelOverride`] for the field list.
+    ///
+    /// Example in `settings.toml`:
+    /// ```toml
+    /// [ai.model_overrides."nvidia::qwen/qwen3.5-122b-a10b"]
+    /// thinking = false
+    /// reasoning_effort = "medium"
+    /// max_tokens = 8192
+    /// ```
+    #[serde(default)]
+    pub model_overrides: HashMap<String, ModelOverride>,
 
     /// Model to use for the summarizer agent.
     /// If not specified, uses the session's current model.
@@ -127,6 +186,7 @@ impl Default for AiSettings {
             default_model: "claude-opus-4-5@20251101".to_string(),
             default_reasoning_effort: None,
             sub_agent_models: HashMap::new(),
+            model_overrides: HashMap::new(),
             summarizer_model: None,
             research_provider: None,
             research_model: None,

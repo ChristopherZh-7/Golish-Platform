@@ -325,6 +325,45 @@
   animation: bar-loader-short 3.5s cubic-bezier(0.165, 0.84, 0.44, 1) 1.9s infinite;
 }
 
+/* ---------------------------------------------------------------------------
+ * Agent status indicator (terminal cursor style)
+ * ------------------------------------------------------------------------- */
+@keyframes agent-status-caret-blink {
+  0%,
+  60% {
+    opacity: 1;
+  }
+  61%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes agent-status-text-cycle {
+  0% {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  10%,
+  90% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+}
+
+.agent-status-caret {
+  animation: agent-status-caret-blink 1.05s steps(1, end) infinite;
+  border-radius: 1px;
+}
+
+.agent-status-text {
+  animation: agent-status-text-cycle 2200ms ease-in-out infinite;
+}
+
 /* Toast close button - force visibility */
 [data-sonner-toast] [data-close-button] {
   position: absolute !important;

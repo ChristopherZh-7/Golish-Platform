@@ -80,6 +80,10 @@ pub struct LoopLlmRefs<'a> {
     pub openai_reasoning_effort: Option<&'a str>,
     pub openrouter_provider_preferences: Option<&'a serde_json::Value>,
     pub model_factory: Option<&'a Arc<golish_agent_kit::llm_client::LlmClientFactory>>,
+    /// User-supplied per-model override (thinking on/off, effort, max_tokens, …).
+    /// Forwarded into `resolve_stream_quirks` to customize stream parsing and
+    /// into request builders to inject `enable_thinking=false` etc.
+    pub model_override: Option<&'a golish_settings::schema::ModelOverride>,
 }
 
 /// Tool access control: policy engine, HITL approval, agent mode, loop detection.

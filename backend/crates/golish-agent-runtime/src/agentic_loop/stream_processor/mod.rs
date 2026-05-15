@@ -28,6 +28,7 @@ use rig::streaming::{StreamedAssistantContent, StreamingCompletionResponse};
 use golish_context::token_budget::TokenUsage;
 use golish_core::events::AiEvent;
 use golish_core::utils::truncate_str;
+use golish_llm_providers::{ProviderStreamQuirks, ReasoningHandling};
 
 use super::context::{emit_event, is_cancelled, AgenticLoopContext};
 use super::stream_retry::classify_stream_start_error;
@@ -64,6 +65,7 @@ pub(crate) enum StreamOutcome {
 ///
 /// Mutates the supplied accumulators (`accumulated_response`, `accumulated_thinking`,
 /// `total_usage`) so they keep growing across iterations of the outer agent loop.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn process_stream<M>(
     mut stream: StreamingCompletionResponse<M::StreamingResponse>,
     ctx: &AgenticLoopContext<'_>,
@@ -71,6 +73,7 @@ pub(crate) async fn process_stream<M>(
     llm_span: &tracing::Span,
     iteration: usize,
     supports_thinking: bool,
+    quirks: &ProviderStreamQuirks,
     accumulated_response: &mut String,
     accumulated_thinking: &mut String,
     total_usage: &mut TokenUsage,
@@ -78,7 +81,10 @@ pub(crate) async fn process_stream<M>(
 where
     M: rig::completion::CompletionModel + Sync,
 {
-    tracing::debug!("[Unified] Stream started - listening for content");
+    tracing::debug!(
+        "[Unified] Stream started - listening for content (reasoning_handling={:?})",
+        quirks.reasoning_handling
+    );
 
     let mut has_tool_calls = false;
     let mut tool_calls_to_execute: Vec<ToolCall> = vec![];
@@ -223,45 +229,88 @@ where
                             None
                         }
                     });
-                    if supports_thinking {
-                        tracing::trace!(
-                            "[Unified] Received native reasoning chunk #{}: {} chars, has_signature: {}",
-                            chunk_count,
-                            reasoning_text.len(),
-                            chunk_signature.is_some()
-                        );
-                        thinking_content.push_str(&reasoning_text);
-                        accumulated_thinking.push_str(&reasoning_text);
-                        // Capture the signature (needed for Anthropic API when sending back history)
-                        if chunk_signature.is_some() {
-                            thinking_signature = chunk_signature;
+
+                    match quirks.reasoning_handling {
+                        ReasoningHandling::AlwaysContent => {
+                            if !reasoning_text.is_empty() {
+                                tracing::trace!(
+                                    "[Unified] quirks=AlwaysContent: routing reasoning chunk #{} ({} chars) to text channel",
+                                    chunk_count,
+                                    reasoning_text.len()
+                                );
+                                text_content.push_str(&reasoning_text);
+                                accumulated_response.push_str(&reasoning_text);
+                                let _ = ctx.events.event_tx.send(AiEvent::TextDelta {
+                                    delta: reasoning_text,
+                                    accumulated: accumulated_response.clone(),
+                                });
+                            }
                         }
-                        // Capture the ID (needed for OpenAI Responses API rs_... IDs)
-                        if reasoning.id.is_some() {
-                            thinking_id = reasoning.id.clone();
+                        ReasoningHandling::Standard | ReasoningHandling::FallbackToContent => {
+                            tracing::trace!(
+                                "[Unified] Received native reasoning chunk #{}: {} chars, has_signature: {}",
+                                chunk_count,
+                                reasoning_text.len(),
+                                chunk_signature.is_some()
+                            );
+                            // Always accumulate into the thinking buffer when
+                            // quirks route reasoning to the thinking channel.
+                            // `supports_thinking` only controls whether we
+                            // *persist* the reasoning in chat history (downstream
+                            // assistant_push phase); it must not gate runtime
+                            // display.
+                            thinking_content.push_str(&reasoning_text);
+                            if supports_thinking {
+                                accumulated_thinking.push_str(&reasoning_text);
+                                if chunk_signature.is_some() {
+                                    thinking_signature = chunk_signature;
+                                }
+                                if reasoning.id.is_some() {
+                                    thinking_id = reasoning.id.clone();
+                                }
+                            }
+                            emit_event(
+                                ctx,
+                                AiEvent::Reasoning {
+                                    content: reasoning_text,
+                                },
+                            );
                         }
                     }
-                    emit_event(
-                        ctx,
-                        AiEvent::Reasoning {
-                            content: reasoning_text,
-                        },
-                    );
                 }
                 StreamedAssistantContent::ReasoningDelta { id, reasoning } => {
-                    if supports_thinking {
-                        tracing::trace!(
-                            "[Unified] Received reasoning delta chunk #{}: {} chars",
-                            chunk_count,
-                            reasoning.len()
-                        );
-                        thinking_content.push_str(&reasoning);
-                        accumulated_thinking.push_str(&reasoning);
-                        if id.is_some() && thinking_id.is_none() {
-                            thinking_id = id;
+                    match quirks.reasoning_handling {
+                        ReasoningHandling::AlwaysContent => {
+                            if !reasoning.is_empty() {
+                                tracing::trace!(
+                                    "[Unified] quirks=AlwaysContent: routing reasoning delta chunk #{} ({} chars) to text channel",
+                                    chunk_count,
+                                    reasoning.len()
+                                );
+                                text_content.push_str(&reasoning);
+                                accumulated_response.push_str(&reasoning);
+                                let _ = ctx.events.event_tx.send(AiEvent::TextDelta {
+                                    delta: reasoning,
+                                    accumulated: accumulated_response.clone(),
+                                });
+                            }
+                        }
+                        ReasoningHandling::Standard | ReasoningHandling::FallbackToContent => {
+                            tracing::trace!(
+                                "[Unified] Received reasoning delta chunk #{}: {} chars",
+                                chunk_count,
+                                reasoning.len()
+                            );
+                            thinking_content.push_str(&reasoning);
+                            if supports_thinking {
+                                accumulated_thinking.push_str(&reasoning);
+                                if id.is_some() && thinking_id.is_none() {
+                                    thinking_id = id;
+                                }
+                            }
+                            emit_event(ctx, AiEvent::Reasoning { content: reasoning });
                         }
                     }
-                    emit_event(ctx, AiEvent::Reasoning { content: reasoning });
                 }
                 StreamedAssistantContent::ToolCall { tool_call, .. } => {
                     // Server tool (web_search/web_fetch executed by provider)

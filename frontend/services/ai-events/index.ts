@@ -6,5 +6,6 @@
  * combined into a single registry for dispatch.
  */
 
+export { setStreamDebugEnabled } from "./core-handlers";
 export { dispatchEvent, eventHandlerRegistry } from "./registry";
 export type { EventHandler, EventHandlerContext, EventHandlerRegistry } from "./types";

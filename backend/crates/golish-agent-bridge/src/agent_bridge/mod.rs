@@ -124,6 +124,9 @@ pub(crate) struct BridgeLlmConfig {
     pub(crate) openai_web_search_config: Option<golish_llm_providers::OpenAiWebSearchConfig>,
     pub(crate) openai_reasoning_effort: Option<String>,
     pub(crate) openrouter_provider_preferences: Option<serde_json::Value>,
+    /// Per-(provider, model) user override sourced from settings / the chat
+    /// model settings popover. Owns the value here; `LoopLlmRefs` borrows.
+    pub(crate) model_override: Option<golish_settings::schema::ModelOverride>,
 }
 
 /// Optional external service handles wired in after construction.

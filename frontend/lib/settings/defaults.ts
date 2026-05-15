@@ -7,6 +7,7 @@ export const DEFAULT_SETTINGS: GolishSettings = {
     default_model: "claude-opus-4-5@20251101",
     default_reasoning_effort: undefined,
     sub_agent_models: {},
+    model_overrides: {},
     vertex_ai: {
       credentials_path: null,
       project_id: null,

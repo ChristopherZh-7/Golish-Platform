@@ -19,6 +19,7 @@ use rig::completion::Message;
 use tracing::Span;
 
 use golish_context::token_budget::TokenUsage;
+use golish_llm_providers::resolve_stream_quirks;
 
 use super::super::super::config::AgenticLoopConfig;
 use super::super::super::context::AgenticLoopContext;
@@ -109,6 +110,20 @@ where
     )
     .await?;
 
+    let quirks = resolve_stream_quirks(
+        ctx.llm.provider_name,
+        ctx.llm.model_name,
+        ctx.llm.model_override,
+    );
+    tracing::debug!(
+        "[Quirks] provider={} model={} reasoning_handling={:?} force_disable_thinking={} user_override={}",
+        ctx.llm.provider_name,
+        ctx.llm.model_name,
+        quirks.reasoning_handling,
+        quirks.force_disable_thinking_kwargs,
+        ctx.llm.model_override.is_some(),
+    );
+
     match process_stream::<M>(
         stream,
         ctx,
@@ -116,6 +131,7 @@ where
         &llm_span,
         iteration,
         supports_thinking,
+        &quirks,
         accumulated_response,
         accumulated_thinking,
         total_usage,

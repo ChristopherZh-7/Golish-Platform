@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/store";
 import type { ChatToolCall } from "@/store/slices/conversation";
 
+import { AgentStatusIndicator, type AgentStatusPhase } from "./AgentStatusIndicator";
 import {
   CollapsibleToolCall,
   type TaskPlanViewModel,
@@ -68,6 +69,8 @@ export const MessageBlock = memo(function MessageBlock({
         <ThinkingBlock
           content={message.thinking}
           isActive={!!message.isStreaming && !message.content}
+          startedAt={message.thinkingStartedAt}
+          endedAt={message.thinkingEndedAt}
         />
       )}
 
@@ -212,9 +215,14 @@ export const MessageBlock = memo(function MessageBlock({
             segments.push({ kind: "text", content: message.content.slice(tcOffset) });
           }
         } else {
+          // Suppress the "..." placeholder while ThinkingBlock owns the
+          // streaming spinner — otherwise the user sees a second loader.
+          const showStreamingPlaceholder =
+            message.isStreaming && !message.thinking;
           segments.push({
             kind: "text",
-            content: message.content || (message.isStreaming ? "..." : ""),
+            content:
+              message.content || (showStreamingPlaceholder ? "..." : ""),
           });
         }
 
@@ -258,9 +266,14 @@ export const MessageBlock = memo(function MessageBlock({
                   );
                 }
 
+                // Same suppression rule as above: don't print the
+                // "..." placeholder while ThinkingBlock is the active
+                // streaming indicator.
+                const placeholder =
+                  message.isStreaming && !message.thinking ? "..." : "";
                 return (
                   <div key={`seg-${idx}`} className="text-[12px] text-foreground leading-[1.55]">
-                    <Markdown content={displayContent || (message.isStreaming ? "..." : "")} />
+                    <Markdown content={displayContent || placeholder} />
                   </div>
                 );
               }
@@ -319,67 +332,64 @@ export const MessageBlock = memo(function MessageBlock({
             ?.slice()
             .reverse()
             .find((tc) => tc.success === undefined);
-          let statusLabel = "Thinking";
+
+          // While ThinkingBlock owns the active spinner for the
+          // reasoning-only state, suppress the footer to avoid duplicates.
+          if (!lastPendingTool && message.thinking && !message.content) {
+            return null;
+          }
+
+          let phase: AgentStatusPhase;
+          let detail: string | undefined;
+
           if (lastPendingTool) {
             const name = lastPendingTool.name;
             if (name.startsWith("sub_agent_")) {
-              const agentName = name.replace("sub_agent_", "");
-              statusLabel = `Delegating to ${agentName}`;
+              phase = "delegating";
+              detail = name.replace("sub_agent_", "");
             } else if (name === "update_plan") {
-              statusLabel = "Planning";
+              phase = "planning";
             } else if (name === "run_pty_cmd" || name === "run_command") {
+              phase = "tool";
               try {
                 const args = JSON.parse(lastPendingTool.args || "{}");
                 const cmd = args.command as string | undefined;
-                statusLabel = cmd
-                  ? `Running ${cmd.length > 40 ? `${cmd.slice(0, 40)}…` : cmd}`
-                  : "Running command";
+                detail = cmd
+                  ? cmd.length > 40
+                    ? `${cmd.slice(0, 40)}…`
+                    : cmd
+                  : "command";
               } catch {
-                statusLabel = "Running command";
+                detail = "command";
               }
             } else if (name === "pentest_run") {
+              phase = "tool";
               try {
                 const args = JSON.parse(lastPendingTool.args || "{}");
-                statusLabel = args.tool_name ? `Running ${args.tool_name}` : "Running pentest tool";
+                detail = (args.tool_name as string) || "pentest tool";
               } catch {
-                statusLabel = "Running pentest tool";
+                detail = "pentest tool";
               }
-            } else if (name === "run_pipeline") {
-              statusLabel = "Running pipeline";
             } else if (name === "read_file") {
+              phase = "tool";
               try {
                 const args = JSON.parse(lastPendingTool.args || "{}");
-                const path = (args.path as string) || "";
-                const filename = path.split("/").pop() || path;
-                statusLabel = `Reading ${filename}`;
+                const path = (args.path as string) || "file";
+                detail = path.split("/").pop() || path;
               } catch {
-                statusLabel = "Reading file";
+                detail = "file";
               }
-            } else if (name === "write_file" || name === "create_file" || name === "edit_file") {
-              statusLabel = "Writing file";
-            } else if (name === "search_memories") {
-              statusLabel = "Searching memories";
-            } else if (name === "manage_targets") {
-              statusLabel = "Managing targets";
-            } else if (name === "web_search" || name.startsWith("tavily_")) {
-              statusLabel = "Searching web";
             } else {
-              statusLabel = `Running ${name.replace(/_/g, " ")}`;
+              phase = "tool";
+              detail = name.replace(/_/g, " ");
             }
-          } else if (message.thinking && !message.content) {
-            statusLabel = "Reasoning";
-          } else if (!message.content) {
-            statusLabel = "Thinking";
+          } else if (message.content) {
+            phase = "writing";
           } else {
-            statusLabel = "Writing";
+            phase = "starting";
           }
 
-          return (
-            <div className="flex items-center gap-2 mt-2 agent-loading-shimmer rounded py-1">
-              <Loader2 className="w-3 h-3 animate-spin text-accent flex-shrink-0" />
-              <span className="text-[11px] text-muted-foreground/70 truncate">{statusLabel}</span>
-            </div>
-          );
+          return <AgentStatusIndicator phase={phase} detail={detail} />;
         })()}
     </div>
   );

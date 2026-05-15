@@ -37,11 +37,38 @@ export interface SubAgentModelConfig {
   top_p?: number;
 }
 
+/**
+ * Per-(provider, model) user override sourced from the model settings popover.
+ *
+ * Mirror of `backend/crates/golish-settings/src/schema/ai.rs::ModelOverride`.
+ * Keyed by `"<provider>::<model_id>"` in {@link AiSettings.model_overrides}.
+ *
+ * Fields default to `undefined` / `false` meaning "use provider default" — only
+ * explicitly-set fields override the backend's quirks/capability heuristics.
+ */
+export interface ModelOverride {
+  /** `true` = force thinking on, `false` = force thinking off. */
+  thinking?: boolean;
+  /** Reasoning effort hint forwarded to providers that support it. */
+  reasoning_effort?: string;
+  /** Override max output tokens for this model. */
+  max_tokens?: number;
+  /** Override context window (for models with multiple sizes). */
+  context_window?: number;
+  /** Emit verbose per-chunk debug events for this model's streams. */
+  stream_debug?: boolean;
+}
+
 export interface AiSettings {
   default_provider: AiProvider;
   default_model: string;
   default_reasoning_effort?: ReasoningEffort;
   sub_agent_models: Record<string, SubAgentModelConfig>;
+  /**
+   * Per-(provider, model) overrides keyed by `"<provider>::<model_id>"`.
+   * Empty record means "no model has user overrides".
+   */
+  model_overrides: Record<string, ModelOverride>;
   research_provider?: AiProvider;
   research_model?: string;
   vertex_ai: VertexAiSettings;

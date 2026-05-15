@@ -14,6 +14,7 @@ use rig::streaming::StreamedAssistantContent;
 
 use crate::executor_helpers::epoch_secs;
 use golish_core::events::AiEvent;
+use golish_llm_providers::{ProviderStreamQuirks, ReasoningHandling};
 
 /// Accumulated result from processing an LLM streaming response.
 pub(super) struct StreamResult {
@@ -34,6 +35,7 @@ pub(super) struct StreamResult {
 /// content from OpenAI Responses API, and pending tool call finalization.
 ///
 /// Records reasoning content on `llm_span` before returning.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn process_llm_stream<S, R, E>(
     stream: &mut S,
     agent_id: &str,
@@ -42,6 +44,7 @@ pub(super) async fn process_llm_stream<S, R, E>(
     last_activity: &Arc<AtomicU64>,
     idle_timeout: Option<Duration>,
     llm_span: &tracing::Span,
+    quirks: &ProviderStreamQuirks,
 ) -> StreamResult
 where
     S: futures::Stream<Item = Result<StreamedAssistantContent<R>, E>> + Unpin,
@@ -103,27 +106,83 @@ where
                     });
                 }
                 StreamedAssistantContent::Reasoning(reasoning) => {
-                    for item in &reasoning.content {
-                        if let rig::message::ReasoningContent::Text { text, signature } = item {
-                            if !text.is_empty() {
-                                tracing::debug!("[sub-agent] Thinking: {} chars", text.len());
-                                thinking_text.push_str(text);
+                    let reasoning_collected = reasoning
+                        .content
+                        .iter()
+                        .filter_map(|item| {
+                            if let rig::message::ReasoningContent::Text { text, .. } = item {
+                                Some(text.as_str())
+                            } else {
+                                None
                             }
-                            if signature.is_some() && thinking_signature.is_none() {
-                                thinking_signature = signature.clone();
+                        })
+                        .collect::<Vec<_>>()
+                        .join("");
+
+                    match quirks.reasoning_handling {
+                        ReasoningHandling::AlwaysContent => {
+                            if !reasoning_collected.is_empty() {
+                                tracing::debug!(
+                                    "[sub-agent] quirks=AlwaysContent: rerouting reasoning ({} chars) to text",
+                                    reasoning_collected.len()
+                                );
+                                text_content.push_str(&reasoning_collected);
+                                let _ = event_tx.send(AiEvent::SubAgentTextDelta {
+                                    agent_id: agent_id.to_string(),
+                                    delta: reasoning_collected,
+                                    accumulated: text_content.clone(),
+                                    parent_request_id: parent_request_id.to_string(),
+                                });
+                            }
+                        }
+                        ReasoningHandling::Standard | ReasoningHandling::FallbackToContent => {
+                            for item in &reasoning.content {
+                                if let rig::message::ReasoningContent::Text { text, signature } =
+                                    item
+                                {
+                                    if !text.is_empty() {
+                                        tracing::debug!(
+                                            "[sub-agent] Thinking: {} chars",
+                                            text.len()
+                                        );
+                                        thinking_text.push_str(text);
+                                    }
+                                    if signature.is_some() && thinking_signature.is_none() {
+                                        thinking_signature = signature.clone();
+                                    }
+                                }
+                            }
+                            if reasoning.id.is_some() && thinking_id.is_none() {
+                                thinking_id = reasoning.id.clone();
                             }
                         }
                     }
-                    if reasoning.id.is_some() && thinking_id.is_none() {
-                        thinking_id = reasoning.id.clone();
-                    }
                 }
                 StreamedAssistantContent::ReasoningDelta { id, reasoning } => {
-                    if !reasoning.is_empty() {
-                        thinking_text.push_str(&reasoning);
-                    }
-                    if id.is_some() && thinking_id.is_none() {
-                        thinking_id = id;
+                    match quirks.reasoning_handling {
+                        ReasoningHandling::AlwaysContent => {
+                            if !reasoning.is_empty() {
+                                tracing::debug!(
+                                    "[sub-agent] quirks=AlwaysContent: rerouting reasoning delta ({} chars) to text",
+                                    reasoning.len()
+                                );
+                                text_content.push_str(&reasoning);
+                                let _ = event_tx.send(AiEvent::SubAgentTextDelta {
+                                    agent_id: agent_id.to_string(),
+                                    delta: reasoning,
+                                    accumulated: text_content.clone(),
+                                    parent_request_id: parent_request_id.to_string(),
+                                });
+                            }
+                        }
+                        ReasoningHandling::Standard | ReasoningHandling::FallbackToContent => {
+                            if !reasoning.is_empty() {
+                                thinking_text.push_str(&reasoning);
+                            }
+                            if id.is_some() && thinking_id.is_none() {
+                                thinking_id = id;
+                            }
+                        }
                     }
                 }
                 StreamedAssistantContent::ToolCall { tool_call, .. } => {

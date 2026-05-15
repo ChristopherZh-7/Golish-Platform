@@ -1,5 +1,15 @@
 import type { ProviderConfig } from "@/lib/ai";
+import { resolveProviderOverride } from "@/lib/ai/model-overrides";
 import type { GolishSettings } from "@/lib/settings";
+
+// Re-export the canonical helpers so existing imports of this module keep
+// working; new code should import directly from `@/lib/ai/model-overrides`.
+export {
+  modelOverrideKey,
+  getModelOverride,
+  toProviderOverride,
+  subscribeToModelOverrideChanges,
+} from "@/lib/ai/model-overrides";
 
 /**
  * Build a [`ProviderConfig`] from the user's saved settings for a given
@@ -15,6 +25,8 @@ export function buildProviderConfig(
   workspace: string,
   settings: GolishSettings
 ): ProviderConfig | null {
+  const model_override = resolveProviderOverride(settings, provider, model);
+
   switch (provider) {
     case "anthropic":
       return {
@@ -22,6 +34,7 @@ export function buildProviderConfig(
         workspace,
         model,
         api_key: settings.ai.anthropic?.api_key || "",
+        model_override,
       };
     case "openai":
       return {
@@ -29,6 +42,7 @@ export function buildProviderConfig(
         workspace,
         model,
         api_key: settings.ai.openai?.api_key || "",
+        model_override,
       };
     case "openrouter":
       return {
@@ -36,6 +50,7 @@ export function buildProviderConfig(
         workspace,
         model,
         api_key: settings.ai.openrouter?.api_key || "",
+        model_override,
       };
     case "gemini":
       return {
@@ -43,6 +58,7 @@ export function buildProviderConfig(
         workspace,
         model,
         api_key: settings.ai.gemini?.api_key || "",
+        model_override,
       };
     case "groq":
       return {
@@ -50,6 +66,7 @@ export function buildProviderConfig(
         workspace,
         model,
         api_key: settings.ai.groq?.api_key || "",
+        model_override,
       };
     case "xai":
       return {
@@ -57,6 +74,7 @@ export function buildProviderConfig(
         workspace,
         model,
         api_key: settings.ai.xai?.api_key || "",
+        model_override,
       };
     case "zai_sdk":
       return {
@@ -64,6 +82,7 @@ export function buildProviderConfig(
         workspace,
         model,
         api_key: settings.ai.zai_sdk?.api_key || "",
+        model_override,
       };
     case "nvidia":
       return {
@@ -71,6 +90,7 @@ export function buildProviderConfig(
         workspace,
         model,
         api_key: settings.ai.nvidia?.api_key || "",
+        model_override,
       };
     case "vertex_ai":
       return {
@@ -80,6 +100,7 @@ export function buildProviderConfig(
         credentials_path: settings.ai.vertex_ai?.credentials_path ?? "",
         project_id: settings.ai.vertex_ai?.project_id ?? "",
         location: settings.ai.vertex_ai?.location ?? "us-east5",
+        model_override,
       };
     case "vertex_gemini":
       return {
@@ -89,9 +110,10 @@ export function buildProviderConfig(
         credentials_path: settings.ai.vertex_gemini?.credentials_path ?? "",
         project_id: settings.ai.vertex_gemini?.project_id ?? "",
         location: settings.ai.vertex_gemini?.location ?? "us-east5",
+        model_override,
       };
     case "ollama":
-      return { provider: "ollama", workspace, model };
+      return { provider: "ollama", workspace, model, model_override };
     default:
       return null;
   }
