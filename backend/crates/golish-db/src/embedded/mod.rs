@@ -178,16 +178,33 @@ impl EmbeddedPg {
             .await
             .context("Failed to create PgEmbed instance")?;
 
-        info!("Running pg-embed setup (download/extract/initdb)...");
-        if let Err(e) = pg.setup().await {
-            tracing::error!(
-                error = ?e,
-                data_dir = %config.pg_data_dir.display(),
-                cache_dir = %Self::cache_dir().display(),
-                "[PG-DIAG] pg-embed setup failed"
+        // [PG-DIAG] Fast-path: if pgdata is already healthy from a previous
+        // run, skip pg-embed's setup() entirely and go straight to start_db.
+        // pg-embed 1.0.0's setup() reports false-positive PgInitFailure on
+        // Windows when pgdata exists but PG isn't running (it shells out to
+        // `pg_ctl status` which exits non-zero with "PID file does not
+        // exist"). Previously that failure cascaded into purge_corrupted_state
+        // wiping the entire pgdata — silent data loss for the user. By
+        // detecting the healthy-pgdata case here we sidestep the broken
+        // pg-embed check entirely.
+        let pgdata_already_healthy = Self::is_pgdata_healthy(&config);
+        if pgdata_already_healthy {
+            info!(
+                "[PG-DIAG] pgdata is already initialized + healthy, skipping pg-embed setup() \
+                 to avoid the Windows false-positive PgInitFailure path"
             );
-            Self::log_pg_data_state("setup-failed", &config);
-            return Err(anyhow::anyhow!("PostgreSQL setup failed: {e:?}"));
+        } else {
+            info!("Running pg-embed setup (download/extract/initdb)...");
+            if let Err(e) = pg.setup().await {
+                tracing::error!(
+                    error = ?e,
+                    data_dir = %config.pg_data_dir.display(),
+                    cache_dir = %Self::cache_dir().display(),
+                    "[PG-DIAG] pg-embed setup failed"
+                );
+                Self::log_pg_data_state("setup-failed", &config);
+                return Err(anyhow::anyhow!("PostgreSQL setup failed: {e:?}"));
+            }
         }
 
         Self::try_install_pgvector(&pg).await;
@@ -251,24 +268,83 @@ impl EmbeddedPg {
     /// Returns `Some(pattern)` with the substring that matched (so the caller
     /// can log *why* we decided to purge) or `None` if the error looks
     /// unrelated to on-disk corruption.
+    ///
+    /// **History (data-loss bug fix)**: previously this list included
+    /// `PgInitFailure` and `PgStartFailure`. On Windows that produced a
+    /// false-positive: pg-embed 1.0.0's `setup()` calls `pg_ctl status`
+    /// against an already-initdb'd-but-not-yet-running pgdata, sees
+    /// "PID file does not exist / Is server running?", and returns
+    /// `PgInitFailure`. We previously interpreted that as "data corrupted"
+    /// and **wiped the entire pgdata directory**, destroying user
+    /// conversations + timelines silently. Those two variants are now
+    /// excluded — only download/unpack-level corruption qualifies for
+    /// the destructive recovery path. See `is_pgdata_healthy` and
+    /// `try_setup_and_start`'s fast-path for the new safe flow.
     fn is_recoverable_setup_error(err: &anyhow::Error) -> Option<&'static str> {
         let msg = format!("{err:?}");
-        // pg-embed wraps zip errors here when the cached download is partial.
         const PATTERNS: &[&str] = &[
             "UnpackFailure",
-            "PgInitFailure",
             "PgPurgeFailure",
-            "PgStartFailure",
             "invalid zip archive",
         ];
         PATTERNS.iter().copied().find(|p| msg.contains(p))
     }
 
-    /// Delete the pg-embed binary cache and the pgdata directory so the
-    /// next [`Self::try_setup_and_start`] starts from a known-clean slate.
+    /// Heuristic check: is the pgdata directory a real, previously-working
+    /// PostgreSQL data directory that we should *not* delete?
     ///
-    /// We intentionally swallow IO errors here — if a delete fails because
-    /// a stale `postgres.exe` is still locking files, the next setup will
+    /// Returns `true` when **all** of the following hold:
+    /// - `PG_VERSION` exists and contains a non-empty version string,
+    /// - the directory contains the canonical PG sub-directories
+    ///   (`base`, `global`, `pg_wal`, `pg_xact`) — these are created by
+    ///   `initdb` and present in any healthy cluster,
+    /// - total on-disk size is ≥ 1 MiB (a freshly-initdb'd cluster is
+    ///   ~30-40 MiB; anything smaller is almost certainly a half-written
+    ///   data directory from a failed init).
+    ///
+    /// Used by `try_setup_and_start` to decide whether to skip pg-embed's
+    /// `setup()` (which fails false-positive on Windows) and go straight
+    /// to `start_db`, and by `purge_corrupted_state` as a final guard
+    /// against destructive cleanup of healthy data.
+    fn is_pgdata_healthy(config: &DbConfig) -> bool {
+        let data_dir = &config.pg_data_dir;
+        if !data_dir.is_dir() {
+            return false;
+        }
+        let pg_version = data_dir.join("PG_VERSION");
+        let version_text = std::fs::read_to_string(&pg_version)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if version_text.is_empty() {
+            return false;
+        }
+        let required_subdirs = ["base", "global", "pg_wal", "pg_xact"];
+        for sub in required_subdirs {
+            if !data_dir.join(sub).is_dir() {
+                return false;
+            }
+        }
+        let (_entries, total_bytes) = Self::dir_summary(data_dir);
+        // Freshly-initdb'd clusters are ~30 MiB; gate at 1 MiB to be safe.
+        total_bytes >= 1024 * 1024
+    }
+
+    /// Recover from a corrupted on-disk state.
+    ///
+    /// - The pg-embed binary cache is always safe to delete (it just contains
+    ///   downloaded PG binaries that will be re-fetched on next setup).
+    /// - The pgdata directory is **renamed** to `pgdata.bak.<unix-ts>` rather
+    ///   than deleted — this preserves the user's previous conversations,
+    ///   timelines, and chat history so a misfired recovery is recoverable
+    ///   (the user can manually move the .bak directory back into place if
+    ///   needed). The new empty pgdata is recreated for the upcoming initdb.
+    /// - If the pgdata looks healthy (`is_pgdata_healthy` returns true) we
+    ///   **refuse to touch it** and only purge the binary cache. That covers
+    ///   the historical bug where a false-positive `PgInitFailure` would
+    ///   delete several gigabytes of real user data.
+    ///
+    /// We intentionally swallow IO errors here — if rename fails because a
+    /// stale `postgres.exe` is still locking files, the next setup will
     /// surface a clearer error than what we could synthesise.
     fn purge_corrupted_state(config: &DbConfig) {
         let cache_dir = Self::cache_dir();
@@ -285,31 +361,85 @@ impl EmbeddedPg {
             }
         }
 
-        if config.pg_data_dir.exists() {
-            let (data_entries, data_total_bytes) = Self::dir_summary(&config.pg_data_dir);
-            let top_level_names: Vec<String> = std::fs::read_dir(&config.pg_data_dir)
-                .ok()
-                .map(|rd| {
-                    rd.filter_map(|e| e.ok())
-                        .map(|e| e.file_name().to_string_lossy().into_owned())
-                        .collect()
-                })
-                .unwrap_or_default();
+        if !config.pg_data_dir.exists() {
+            return;
+        }
+
+        // Sanity guard: never destroy a healthy pgdata, even if some caller
+        // upstream mis-classified the error as recoverable.
+        if Self::is_pgdata_healthy(config) {
             warn!(
                 data_dir = %config.pg_data_dir.display(),
-                entries = data_entries,
-                total_bytes = data_total_bytes,
-                top_level = ?top_level_names,
-                "[PURGE] About to DELETE pgdata directory — this will destroy any user data \
-                 written in previous sessions. Search for this log line if your data \
-                 mysteriously disappeared between app restarts."
+                "[PURGE-GUARD] Refusing to touch pgdata: it looks like a healthy, \
+                 previously-initialized cluster (PG_VERSION present, canonical \
+                 sub-directories present, size > 1 MiB). Purging only the binary cache. \
+                 If startup still fails the next launch will surface the original error."
             );
-            if let Err(e) = std::fs::remove_dir_all(&config.pg_data_dir) {
-                warn!(error = %e, "Failed to fully purge pgdata directory");
+            return;
+        }
+
+        let (data_entries, data_total_bytes) = Self::dir_summary(&config.pg_data_dir);
+        let top_level_names: Vec<String> = std::fs::read_dir(&config.pg_data_dir)
+            .ok()
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let backup_name = format!(
+            "{}.bak.{}",
+            config
+                .pg_data_dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("pgdata"),
+            timestamp
+        );
+        let backup_path = config
+            .pg_data_dir
+            .parent()
+            .map(|p| p.join(&backup_name))
+            .unwrap_or_else(|| std::path::PathBuf::from(&backup_name));
+
+        warn!(
+            data_dir = %config.pg_data_dir.display(),
+            backup_dir = %backup_path.display(),
+            entries = data_entries,
+            total_bytes = data_total_bytes,
+            top_level = ?top_level_names,
+            "[PURGE] About to MOVE pgdata to a .bak directory (non-destructive). \
+             Original data is preserved at the backup path above and can be manually \
+             restored if needed. Search for this log line if your data mysteriously \
+             disappeared between app restarts."
+        );
+
+        match std::fs::rename(&config.pg_data_dir, &backup_path) {
+            Ok(()) => {
+                info!(
+                    backup_dir = %backup_path.display(),
+                    "[PURGE] pgdata renamed to backup successfully"
+                );
             }
-            if let Err(e) = std::fs::create_dir_all(&config.pg_data_dir) {
-                warn!(error = %e, "Failed to recreate pgdata directory after purge");
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    data_dir = %config.pg_data_dir.display(),
+                    backup_dir = %backup_path.display(),
+                    "[PURGE] Failed to rename pgdata to backup; leaving original \
+                     in place and bailing — the next start will surface the real error"
+                );
+                return;
             }
+        }
+
+        if let Err(e) = std::fs::create_dir_all(&config.pg_data_dir) {
+            warn!(error = %e, "Failed to recreate pgdata directory after rename");
         }
     }
 
