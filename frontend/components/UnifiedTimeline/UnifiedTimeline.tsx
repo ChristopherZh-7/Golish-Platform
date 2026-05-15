@@ -22,6 +22,11 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
 
   // Track if user is scrolled to bottom (for auto-scroll behavior)
   const [isAtBottom, setIsAtBottom] = useState(true);
+  // Mirror of `isAtBottom` for use inside synchronous ResizeObserver callbacks
+  // (which run outside React's render cycle and therefore can't see the
+  // latest state directly).
+  const isAtBottomRef = useRef(true);
+  isAtBottomRef.current = isAtBottom;
 
   // Track programmatic scrolls to prevent content growth from flipping isAtBottom to false
   const programmaticScrollRef = useRef(false);
@@ -42,6 +47,44 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
 
     container.addEventListener("scroll", handleScroll, { passive: true });
     return () => container.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  // Defensive fix for "timeline jumps up one row when typing in the input
+  // box below" — when a sibling flex item (the input panel) resizes, the
+  // browser may clamp our scrollTop, producing a visible jump. If the user
+  // was anchored to the bottom, snap them back to the bottom as soon as
+  // the resize lands so the jump is invisible.
+  //
+  // This is a defence-in-depth measure: the primary fix lives in
+  // `useUnifiedInputState.ts::adjustTextareaHeight`, which avoids the
+  // unnecessary `height='auto'` reflow that was the trigger. This observer
+  // additionally covers any future cause of container resize (toolbar
+  // expand, model selector growth, etc.).
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    if (typeof ResizeObserver === "undefined") return;
+
+    let lastHeight = container.clientHeight;
+    const ro = new ResizeObserver(() => {
+      const newHeight = container.clientHeight;
+      if (newHeight === lastHeight) return;
+      lastHeight = newHeight;
+      if (!isAtBottomRef.current) return;
+      // Use a synchronous assignment (not scrollTo with smooth) so the
+      // correction lands inside the same frame as the resize — otherwise
+      // the user perceives a brief flicker before we re-anchor.
+      programmaticScrollRef.current = true;
+      container.scrollTop = container.scrollHeight;
+      // Release the programmatic flag on the next frame; long enough for
+      // the scroll event from our own scrollTop write to fire and be
+      // skipped, short enough not to swallow a legitimate user scroll.
+      requestAnimationFrame(() => {
+        programmaticScrollRef.current = false;
+      });
+    });
+    ro.observe(container);
+    return () => ro.disconnect();
   }, []);
 
   // Reference for pending scroll animation frame

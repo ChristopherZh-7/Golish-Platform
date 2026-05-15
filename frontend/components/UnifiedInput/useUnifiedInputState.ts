@@ -236,17 +236,51 @@ export function useInputState({
     const textarea = textareaRef.current;
     if (!textarea) return;
     requestAnimationFrame(() => {
+      const desired = desiredHeightRef.current;
+
+      if (desired > 0) {
+        // User has dragged the input panel to a fixed minimum height.
+        // Set the textarea to that height FIRST, then check whether the
+        // content actually needs more. This avoids the previous
+        //   height='auto' → measure scrollHeight → restore
+        // cycle that briefly shrunk the textarea down to one line (~26px)
+        // before snapping it back to `desired` (~80px). That brief shrink
+        // propagated up the parent flex column and caused the browser to
+        // clamp `scrollTop` on the timeline above us, producing the
+        // visible "jump up one row" glitch every time the user typed into
+        // an otherwise single-line input. (Bug: 主页 timeline 输入时跳一格)
+        const desiredStr = `${desired}px`;
+        if (textarea.style.height !== desiredStr) {
+          textarea.style.height = desiredStr;
+        }
+        const scrollHeight = textarea.scrollHeight;
+        if (scrollHeight > desired) {
+          const newHeight = Math.min(scrollHeight, 800);
+          const newStr = `${newHeight}px`;
+          if (textarea.style.height !== newStr) {
+            textarea.style.height = newStr;
+          }
+          lastTextareaHeightRef.current = newHeight;
+        } else {
+          lastTextareaHeightRef.current = desired;
+        }
+        return;
+      }
+
+      // Legacy auto-grow path (user has never dragged the resize handle).
+      // We must use height='auto' here so the textarea can SHRINK back when
+      // content is deleted — without it the textarea would only ever grow.
+      // The jump-glitch is much less noticeable on this path because the
+      // delta is small (single-line ≈26px ↔ cap 200px) and there is no
+      // fixed "minimum" the textarea snaps back to.
       textarea.style.height = "auto";
       const scrollHeight = textarea.scrollHeight;
-      const desired = desiredHeightRef.current;
-      const newHeight =
-        desired > 0
-          ? Math.min(Math.max(scrollHeight, desired), 800)
-          : Math.min(scrollHeight, 200);
-      if (newHeight !== lastTextareaHeightRef.current) {
-        lastTextareaHeightRef.current = newHeight;
+      const newHeight = Math.min(scrollHeight, 200);
+      const newStr = `${newHeight}px`;
+      if (textarea.style.height !== newStr) {
+        textarea.style.height = newStr;
       }
-      textarea.style.height = `${newHeight}px`;
+      lastTextareaHeightRef.current = newHeight;
     });
   }, []);
 
