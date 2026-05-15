@@ -121,6 +121,15 @@
   --file-tag-bg: rgba(96, 165, 250, 0.1);
   --file-tag-text: #93c5fd;
   --file-tag-border: rgba(96, 165, 250, 0.2);
+
+  /* Global scrollbar thumb colors (macOS-overlay-like).
+   * Plain rgba — NOT computed with color-mix() — because lightningcss
+   * "optimises" color-mix(var(--x) N%, transparent) into a fallback
+   * that drops the alpha component, leaving an opaque thumb. Themes
+   * may override these three variables to retint per palette. */
+  --scrollbar-thumb: rgba(128, 128, 128, 0.35);
+  --scrollbar-thumb-hover: rgba(128, 128, 128, 0.6);
+  --scrollbar-thumb-active: rgba(128, 128, 128, 0.75);
 }
 
 @layer base {
@@ -364,7 +373,65 @@
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.04);
 }
 
-/* Hide scrollbar */
+/* ============================================================
+ * Global custom scrollbars (macOS-like)
+ *
+ * Why: Tauri runs on three different webviews — WKWebView (macOS),
+ * WebView2/Chromium (Windows), and WebKitGTK (Linux). WKWebView paints
+ * the system overlay scrollbar (thin, translucent, no track, no buttons),
+ * which is the look we want everywhere. Chromium on Windows defaults to
+ * a legacy block-style scrollbar with arrow buttons and an opaque track;
+ * this CSS replaces it with the same minimalist aesthetic.
+ *
+ * Notes:
+ * - macOS WKWebView ignores `::-webkit-scrollbar` pseudo-elements and
+ *   continues to use the system overlay — these rules don't degrade it.
+ * - Component-specific scrollbar rules (`.ansi-output`, `.xterm-viewport`)
+ *   keep higher specificity and win where defined.
+ * - `.scrollbar-none` utility (below) still overrides this globally.
+ * ============================================================ */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 0.18s ease;
+  min-height: 30px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background-color: var(--scrollbar-thumb-active);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Hide the Windows-style up/down arrow buttons (no equivalent on macOS). */
+*::-webkit-scrollbar-button {
+  display: none;
+}
+
+/* Firefox: matches the WebKit visuals as closely as the spec allows. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+/* Hide scrollbar utility */
 .scrollbar-none::-webkit-scrollbar {
   display: none;
 }
