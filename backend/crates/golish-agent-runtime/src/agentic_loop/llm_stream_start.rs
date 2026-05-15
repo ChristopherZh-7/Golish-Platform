@@ -23,6 +23,7 @@ use serde_json::json;
 use tracing::Instrument;
 
 use golish_core::events::AiEvent;
+use golish_llm_providers::{resolve_stream_quirks, ThinkingDisableField};
 
 use super::config::AgenticLoopConfig;
 use super::context::{is_cancelled, AgenticLoopContext, TerminalErrorEmitted};
@@ -256,6 +257,65 @@ fn build_additional_params(ctx: &AgenticLoopContext<'_>) -> Option<serde_json::V
         for (key, value) in prefs_map {
             tracing::info!("Adding OpenRouter provider preference: {}={}", key, value);
             additional_params_json.insert(key.clone(), value.clone());
+        }
+    }
+
+    let quirks = resolve_stream_quirks(
+        ctx.llm.provider_name,
+        ctx.llm.model_name,
+        ctx.llm.model_override,
+    );
+    if let Some(thinking_value) = quirks.thinking_kwargs_value {
+        match quirks.disable_thinking_field {
+            ThinkingDisableField::ChatTemplateKwargs => {
+                tracing::info!(
+                    "[Quirks] Injecting chat_template_kwargs.enable_thinking={} for {} / {}",
+                    thinking_value,
+                    ctx.llm.provider_name,
+                    ctx.llm.model_name
+                );
+                let existing = additional_params_json
+                    .entry("chat_template_kwargs".to_string())
+                    .or_insert_with(|| json!({}));
+                if let Some(obj) = existing.as_object_mut() {
+                    obj.insert("enable_thinking".to_string(), json!(thinking_value));
+                }
+            }
+            ThinkingDisableField::TopLevelEnableThinking => {
+                tracing::info!(
+                    "[Quirks] Injecting top-level enable_thinking={} for {} / {}",
+                    thinking_value,
+                    ctx.llm.provider_name,
+                    ctx.llm.model_name
+                );
+                additional_params_json
+                    .insert("enable_thinking".to_string(), json!(thinking_value));
+            }
+            ThinkingDisableField::OpenRouterReasoningExclude => {
+                // OpenRouter inverts the convention: `reasoning.exclude=true`
+                // means *don't* return reasoning; we map our positive value
+                // accordingly.
+                let exclude = !thinking_value;
+                tracing::info!(
+                    "[Quirks] Injecting reasoning.exclude={} for {} / {}",
+                    exclude,
+                    ctx.llm.provider_name,
+                    ctx.llm.model_name
+                );
+                let existing = additional_params_json
+                    .entry("reasoning".to_string())
+                    .or_insert_with(|| json!({}));
+                if let Some(obj) = existing.as_object_mut() {
+                    obj.insert("exclude".to_string(), json!(exclude));
+                }
+            }
+            ThinkingDisableField::None => {
+                tracing::warn!(
+                    "[Quirks] thinking_kwargs_value set but no disable field configured for {} / {}",
+                    ctx.llm.provider_name,
+                    ctx.llm.model_name
+                );
+            }
         }
     }
 

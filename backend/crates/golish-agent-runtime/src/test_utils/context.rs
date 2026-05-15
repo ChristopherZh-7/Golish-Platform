@@ -287,6 +287,7 @@ impl TestContext {
                 openai_reasoning_effort: None,
                 openrouter_provider_preferences: None,
                 model_factory: None,
+                model_override: None,
             },
             access: LoopAccessControl {
                 approval_recorder: &self.approval_recorder,

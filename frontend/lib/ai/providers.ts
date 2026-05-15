@@ -1,5 +1,6 @@
 import { invoke } from "@/lib/api/client";
 import type { GolishSettings, OpenRouterProviderPreferences } from "../settings";
+import { resolveProviderOverride } from "./model-overrides";
 import type { AiProvider, ProviderConfig, VertexAiEnvConfig } from "./types";
 
 export async function getVertexAiConfig(): Promise<VertexAiEnvConfig> {
@@ -68,6 +69,11 @@ export async function buildProviderConfig(
 ): Promise<ProviderConfig> {
   const default_provider = overrides?.provider ?? settings.ai.default_provider;
   const default_model = overrides?.model ?? settings.ai.default_model;
+  const model_override = resolveProviderOverride(
+    settings,
+    default_provider,
+    default_model
+  );
 
   switch (default_provider) {
     case "vertex_ai": {
@@ -82,6 +88,7 @@ export async function buildProviderConfig(
         project_id: vertex_ai.project_id,
         location: vertex_ai.location || "us-east5",
         model: default_model,
+        model_override,
       };
     }
 
@@ -97,19 +104,32 @@ export async function buildProviderConfig(
         project_id: vertex_gemini.project_id,
         location: vertex_gemini.location || "us-central1",
         model: default_model,
+        model_override,
       };
     }
 
     case "anthropic": {
       const apiKey = settings.ai.anthropic.api_key || (await getAnthropicApiKey());
       if (!apiKey) throw new Error("Anthropic API key not configured");
-      return { provider: "anthropic", workspace, model: default_model, api_key: apiKey };
+      return {
+        provider: "anthropic",
+        workspace,
+        model: default_model,
+        api_key: apiKey,
+        model_override,
+      };
     }
 
     case "openai": {
       const apiKey = settings.ai.openai.api_key || (await getOpenAiApiKey());
       if (!apiKey) throw new Error("OpenAI API key not configured");
-      return { provider: "openai", workspace, model: default_model, api_key: apiKey };
+      return {
+        provider: "openai",
+        workspace,
+        model: default_model,
+        api_key: apiKey,
+        model_override,
+      };
     }
 
     case "openrouter": {
@@ -124,30 +144,55 @@ export async function buildProviderConfig(
         model: default_model,
         api_key: apiKey,
         ...(providerPreferences && { provider_preferences: providerPreferences }),
+        model_override,
       };
     }
 
     case "ollama": {
       const baseUrl = settings.ai.ollama.base_url;
-      return { provider: "ollama", workspace, model: default_model, base_url: baseUrl };
+      return {
+        provider: "ollama",
+        workspace,
+        model: default_model,
+        base_url: baseUrl,
+        model_override,
+      };
     }
 
     case "gemini": {
       const apiKey = settings.ai.gemini.api_key;
       if (!apiKey) throw new Error("Gemini API key not configured");
-      return { provider: "gemini", workspace, model: default_model, api_key: apiKey };
+      return {
+        provider: "gemini",
+        workspace,
+        model: default_model,
+        api_key: apiKey,
+        model_override,
+      };
     }
 
     case "groq": {
       const apiKey = settings.ai.groq.api_key;
       if (!apiKey) throw new Error("Groq API key not configured");
-      return { provider: "groq", workspace, model: default_model, api_key: apiKey };
+      return {
+        provider: "groq",
+        workspace,
+        model: default_model,
+        api_key: apiKey,
+        model_override,
+      };
     }
 
     case "xai": {
       const apiKey = settings.ai.xai.api_key;
       if (!apiKey) throw new Error("xAI API key not configured");
-      return { provider: "xai", workspace, model: default_model, api_key: apiKey };
+      return {
+        provider: "xai",
+        workspace,
+        model: default_model,
+        api_key: apiKey,
+        model_override,
+      };
     }
 
     case "zai_sdk": {
@@ -159,6 +204,7 @@ export async function buildProviderConfig(
         model: default_model,
         api_key: apiKey,
         base_url: settings.ai.zai_sdk?.base_url || undefined,
+        model_override,
       };
     }
 
@@ -171,6 +217,7 @@ export async function buildProviderConfig(
         model: default_model,
         api_key: apiKey,
         base_url: settings.ai.nvidia?.base_url || undefined,
+        model_override,
       };
     }
 

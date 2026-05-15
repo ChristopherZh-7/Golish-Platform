@@ -17,6 +17,7 @@ golish-core = { workspace = true }
 golish-context = { workspace = true }
 golish-events = { path = "../golish-events" }
 golish-llm-providers = { workspace = true }
+golish-settings = { workspace = true }
 golish-tools = { workspace = true }
 golish-sub-agents = { workspace = true }
 golish-prompts = { workspace = true }

@@ -67,8 +67,12 @@ impl AgentBridge {
         event_session_id: &str,
     ) -> Result<Self> {
         let workspace_path: PathBuf = config.workspace().into();
+        // Extract the per-model user override before consuming `config` in the
+        // match below. Forwarded into the constructed bridge so stream parsing
+        // (quirks) and request building (chat_template_kwargs) can honor it.
+        let model_override = config.model_override().cloned();
 
-        match config {
+        let mut bridge = match config {
             ProviderConfig::VertexAi {
                 model,
                 credentials_path,
@@ -255,7 +259,10 @@ impl AgentBridge {
                 )
                 .await
             }
-        }
+        }?;
+
+        bridge.llm.model_override = model_override;
+        Ok(bridge)
     }
 
     /// Core constructor: builds an AgentBridge from pre-built components.
@@ -307,6 +314,7 @@ impl AgentBridge {
                 openai_web_search_config,
                 openai_reasoning_effort,
                 openrouter_provider_preferences,
+                model_override: None,
             },
             services: BridgeServices {
                 db_tracker: None,

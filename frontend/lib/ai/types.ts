@@ -53,89 +53,115 @@ export interface AiConfig {
   apiKey: string;
 }
 
-export type ProviderConfig =
-  | {
-      provider: "vertex_ai";
-      workspace: string;
-      model: string;
-      credentials_path: string | null;
-      project_id: string;
-      location: string;
-    }
-  | {
-      provider: "vertex_gemini";
-      workspace: string;
-      model: string;
-      credentials_path: string | null;
-      project_id: string;
-      location: string;
-    }
-  | {
-      provider: "openrouter";
-      workspace: string;
-      model: string;
-      api_key: string;
-      provider_preferences?: Record<string, unknown>;
-    }
-  | {
-      provider: "openai";
-      workspace: string;
-      model: string;
-      api_key: string;
-      base_url?: string;
-      reasoning_effort?: string;
-    }
-  | {
-      provider: "anthropic";
-      workspace: string;
-      model: string;
-      api_key: string;
-    }
-  | {
-      provider: "ollama";
-      workspace: string;
-      model: string;
-      base_url?: string;
-    }
-  | {
-      provider: "gemini";
-      workspace: string;
-      model: string;
-      api_key: string;
-    }
-  | {
-      provider: "groq";
-      workspace: string;
-      model: string;
-      api_key: string;
-    }
-  | {
-      provider: "xai";
-      workspace: string;
-      model: string;
-      api_key: string;
-    }
-  | {
-      provider: "zai_sdk";
-      workspace: string;
-      model: string;
-      api_key: string;
-      base_url?: string;
-    }
-  | {
-      provider: "nvidia";
-      workspace: string;
-      model: string;
-      api_key: string;
-      base_url?: string;
-    }
-  | {
-      provider: "deepseek";
-      workspace: string;
-      model: string;
-      api_key: string;
-      base_url?: string;
-    };
+/**
+ * User-supplied per-(provider, model) override forwarded to the backend.
+ *
+ * Mirror of `backend/crates/golish-settings/src/schema/ai.rs::ModelOverride`
+ * and the frontend's {@link ModelOverride} in `lib/settings/types.ts`.
+ *
+ * The backend uses this to:
+ * - Toggle `quirks.reasoning_handling` between `Standard` and `AlwaysContent`
+ * - Inject `chat_template_kwargs.enable_thinking=false` on the outgoing request
+ * - Apply `reasoning.effort` / `max_tokens` overrides where supported
+ */
+export interface ProviderModelOverride {
+  thinking?: boolean;
+  reasoning_effort?: string;
+  max_tokens?: number;
+  context_window?: number;
+  stream_debug?: boolean;
+}
+
+interface ProviderConfigBase {
+  /** Optional per-model override applied alongside provider defaults. */
+  model_override?: ProviderModelOverride;
+}
+
+export type ProviderConfig = ProviderConfigBase &
+  (
+    | {
+        provider: "vertex_ai";
+        workspace: string;
+        model: string;
+        credentials_path: string | null;
+        project_id: string;
+        location: string;
+      }
+    | {
+        provider: "vertex_gemini";
+        workspace: string;
+        model: string;
+        credentials_path: string | null;
+        project_id: string;
+        location: string;
+      }
+    | {
+        provider: "openrouter";
+        workspace: string;
+        model: string;
+        api_key: string;
+        provider_preferences?: Record<string, unknown>;
+      }
+    | {
+        provider: "openai";
+        workspace: string;
+        model: string;
+        api_key: string;
+        base_url?: string;
+        reasoning_effort?: string;
+      }
+    | {
+        provider: "anthropic";
+        workspace: string;
+        model: string;
+        api_key: string;
+      }
+    | {
+        provider: "ollama";
+        workspace: string;
+        model: string;
+        base_url?: string;
+      }
+    | {
+        provider: "gemini";
+        workspace: string;
+        model: string;
+        api_key: string;
+      }
+    | {
+        provider: "groq";
+        workspace: string;
+        model: string;
+        api_key: string;
+      }
+    | {
+        provider: "xai";
+        workspace: string;
+        model: string;
+        api_key: string;
+      }
+    | {
+        provider: "zai_sdk";
+        workspace: string;
+        model: string;
+        api_key: string;
+        base_url?: string;
+      }
+    | {
+        provider: "nvidia";
+        workspace: string;
+        model: string;
+        api_key: string;
+        base_url?: string;
+      }
+    | {
+        provider: "deepseek";
+        workspace: string;
+        model: string;
+        api_key: string;
+        base_url?: string;
+      }
+  );
 
 import type { JsonValue } from "@/lib/serde_json/JsonValue";
 import type { PlanStep, PlanSummary } from "@/store/types/plan";

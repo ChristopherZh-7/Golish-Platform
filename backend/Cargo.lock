@@ -2674,6 +2674,7 @@ dependencies = [
  "golish-json-repair",
  "golish-llm-providers",
  "golish-prompts",
+ "golish-settings",
  "golish-sub-agents",
  "golish-tools",
  "parking_lot",

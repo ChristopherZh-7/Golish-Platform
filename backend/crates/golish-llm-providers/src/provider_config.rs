@@ -3,6 +3,8 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
+use golish_settings::schema::ModelOverride;
+
 /// Configuration for creating an AgentBridge with OpenRouter
 pub struct OpenRouterClientConfig<'a> {
     pub workspace: PathBuf,
@@ -136,6 +138,8 @@ pub enum ProviderConfig {
         credentials_path: Option<String>,
         project_id: String,
         location: String,
+        #[serde(default)]
+        model_override: Option<ModelOverride>,
     },
     VertexGemini {
         workspace: String,
@@ -146,6 +150,8 @@ pub enum ProviderConfig {
         location: String,
         #[serde(default = "default_include_thoughts")]
         include_thoughts: bool,
+        #[serde(default)]
+        model_override: Option<ModelOverride>,
     },
     Openrouter {
         workspace: String,
@@ -153,6 +159,8 @@ pub enum ProviderConfig {
         api_key: String,
         #[serde(default)]
         provider_preferences: Option<serde_json::Value>,
+        #[serde(default)]
+        model_override: Option<ModelOverride>,
     },
     Openai {
         workspace: String,
@@ -166,17 +174,23 @@ pub enum ProviderConfig {
         enable_web_search: bool,
         #[serde(default = "default_web_search_context_size")]
         web_search_context_size: String,
+        #[serde(default)]
+        model_override: Option<ModelOverride>,
     },
     Anthropic {
         workspace: String,
         model: String,
         api_key: String,
+        #[serde(default)]
+        model_override: Option<ModelOverride>,
     },
     Ollama {
         workspace: String,
         model: String,
         #[serde(default)]
         base_url: Option<String>,
+        #[serde(default)]
+        model_override: Option<ModelOverride>,
     },
     Gemini {
         workspace: String,
@@ -184,16 +198,22 @@ pub enum ProviderConfig {
         api_key: String,
         #[serde(default = "default_include_thoughts")]
         include_thoughts: bool,
+        #[serde(default)]
+        model_override: Option<ModelOverride>,
     },
     Groq {
         workspace: String,
         model: String,
         api_key: String,
+        #[serde(default)]
+        model_override: Option<ModelOverride>,
     },
     Xai {
         workspace: String,
         model: String,
         api_key: String,
+        #[serde(default)]
+        model_override: Option<ModelOverride>,
     },
     ZaiSdk {
         workspace: String,
@@ -203,6 +223,8 @@ pub enum ProviderConfig {
         base_url: Option<String>,
         #[serde(default)]
         source_channel: Option<String>,
+        #[serde(default)]
+        model_override: Option<ModelOverride>,
     },
     Nvidia {
         workspace: String,
@@ -210,6 +232,8 @@ pub enum ProviderConfig {
         api_key: String,
         #[serde(default)]
         base_url: Option<String>,
+        #[serde(default)]
+        model_override: Option<ModelOverride>,
     },
     Deepseek {
         workspace: String,
@@ -270,6 +294,23 @@ impl ProviderConfig {
             Self::ZaiSdk { .. } => "zai_sdk",
             Self::Nvidia { .. } => "nvidia",
             Self::Deepseek { .. } => "deepseek",
+        }
+    }
+
+    /// Extract the user-supplied per-model override, if any.
+    pub fn model_override(&self) -> Option<&ModelOverride> {
+        match self {
+            Self::VertexAi { model_override, .. }
+            | Self::VertexGemini { model_override, .. }
+            | Self::Openrouter { model_override, .. }
+            | Self::Openai { model_override, .. }
+            | Self::Anthropic { model_override, .. }
+            | Self::Ollama { model_override, .. }
+            | Self::Gemini { model_override, .. }
+            | Self::Groq { model_override, .. }
+            | Self::Xai { model_override, .. }
+            | Self::ZaiSdk { model_override, .. }
+            | Self::Nvidia { model_override, .. } => model_override.as_ref(),
         }
     }
 }

@@ -264,6 +264,7 @@ impl AgentBridge {
                 openai_reasoning_effort: self.llm.openai_reasoning_effort.as_deref(),
                 openrouter_provider_preferences: self.llm.openrouter_provider_preferences.as_ref(),
                 model_factory: self.llm.model_factory.as_ref(),
+                model_override: self.llm.model_override.as_ref(),
             },
             access: LoopAccessControl {
                 approval_recorder: &self.access.approval_recorder,
