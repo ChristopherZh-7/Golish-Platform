@@ -2,8 +2,11 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { I18nextProvider } from "react-i18next";
 import "./index.css";
-import i18n from "./lib/i18n";
 import { isTauri } from "@/lib/env";
+import i18n from "./lib/i18n";
+import { installScrollbarAutoHide } from "./lib/scrollbar-autohide";
+
+installScrollbarAutoHide();
 
 function getDetachedParams(): { sessionId: string; tabType: string } | null {
   const params = new URLSearchParams(window.location.search);

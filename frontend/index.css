@@ -374,18 +374,26 @@
 }
 
 /* ============================================================
- * Global custom scrollbars (macOS-like)
+ * Global custom scrollbars (macOS-overlay-like, with auto-hide)
  *
  * Why: Tauri runs on three different webviews — WKWebView (macOS),
  * WebView2/Chromium (Windows), and WebKitGTK (Linux). WKWebView paints
- * the system overlay scrollbar (thin, translucent, no track, no buttons),
- * which is the look we want everywhere. Chromium on Windows defaults to
- * a legacy block-style scrollbar with arrow buttons and an opaque track;
- * this CSS replaces it with the same minimalist aesthetic.
+ * the system overlay scrollbar (thin, translucent, no track, no buttons,
+ * fades out when idle). Chromium on Windows defaults to a legacy
+ * block-style scrollbar with arrow buttons and an opaque track that's
+ * always visible; this rule set + the small JS helper in
+ * `frontend/lib/scrollbar-autohide.ts` reproduces the macOS overlay look:
+ *
+ *   - 10px capsule thumb, transparent track, no arrow buttons
+ *   - Thumb is INVISIBLE by default (background-color: transparent)
+ *   - Becomes visible when:
+ *       (a) the pointer hovers any ancestor of the scroll container, OR
+ *       (b) the user has just scrolled — JS toggles `data-scrolling` on
+ *           `<html>` for ~800ms after each scroll/wheel event
  *
  * Notes:
  * - macOS WKWebView ignores `::-webkit-scrollbar` pseudo-elements and
- *   continues to use the system overlay — these rules don't degrade it.
+ *   continues to paint the system overlay; these rules don't degrade it.
  * - Component-specific scrollbar rules (`.ansi-output`, `.xterm-viewport`)
  *   keep higher specificity and win where defined.
  * - `.scrollbar-none` utility (below) still overrides this globally.
@@ -400,12 +408,26 @@
 }
 
 *::-webkit-scrollbar-thumb {
-  background-color: var(--scrollbar-thumb);
+  /* Invisible at rest — the rules below reveal it on hover / during scroll. */
+  background-color: transparent;
   border-radius: 999px;
   border: 2px solid transparent;
   background-clip: padding-box;
-  transition: background-color 0.18s ease;
+  transition: background-color 0.35s ease-out;
   min-height: 30px;
+}
+
+/* Reveal when the pointer is over the scroll container (or any of its
+ * ancestors, since :hover bubbles). Matches macOS "hover shows thumb". */
+*:hover::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+}
+
+/* Reveal during/just-after scrolling, even without a hovering pointer.
+ * The `data-scrolling` attribute is toggled by `scrollbar-autohide.ts`. */
+html[data-scrolling] *::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  transition: background-color 0.1s ease-in;
 }
 
 *::-webkit-scrollbar-thumb:hover {
@@ -425,7 +447,8 @@
   display: none;
 }
 
-/* Firefox: matches the WebKit visuals as closely as the spec allows. */
+/* Firefox: cannot replicate auto-hide via pseudo-elements (no support).
+ * We at least keep the thumb thin and translucent. */
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) transparent;
