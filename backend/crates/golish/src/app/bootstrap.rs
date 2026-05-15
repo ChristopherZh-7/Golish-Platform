@@ -10,12 +10,12 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 use tauri::{async_runtime, Emitter, Manager};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex as AsyncMutex, RwLock};
 
 use crate::app::workspace::expand_tilde;
 use crate::history::{HistoryConfig, HistoryManager};
 use crate::settings::SettingsManager;
-use crate::state::AppState;
+use crate::state::{AppState, EmbeddedDbHandle};
 use crate::telemetry::{self, TelemetryGuard, TelemetryStats};
 use golish_db::DbReadyGate;
 
@@ -136,6 +136,7 @@ pub(crate) fn init_telemetry_and_app_state() -> (Option<TelemetryGuard>, AppStat
             init_telemetry(langfuse_config, &log_level);
 
         let (db_pool, db_ready) = create_lazy_db_pool();
+        let embedded_db: EmbeddedDbHandle = Arc::new(AsyncMutex::new(None));
 
         let app_state = AppState::new(
             settings_manager,
@@ -143,6 +144,7 @@ pub(crate) fn init_telemetry_and_app_state() -> (Option<TelemetryGuard>, AppStat
             telemetry_stats,
             db_pool,
             db_ready,
+            embedded_db,
         )
         .await;
 
@@ -155,32 +157,41 @@ pub(crate) fn init_telemetry_and_app_state() -> (Option<TelemetryGuard>, AppStat
     })
 }
 
-/// Spawn the embedded PostgreSQL startup task. When the DB becomes ready, the
-/// ready-gate is flipped and a dummy `GolishDb` handle is leaked to keep the
-/// backing process alive for the lifetime of the app.
-pub(crate) fn spawn_embedded_pg(db_ready: golish_db::DbReadyGate) {
+/// Spawn the embedded PostgreSQL startup task.
+///
+/// On success the resulting [`golish_db::GolishDb`] handle is stored in the
+/// shared `embedded_db` slot so the Tauri exit hooks can `.stop().await` it
+/// gracefully before the process is torn down. Storing rather than
+/// `mem::forget`-leaking is what gives PostgreSQL the chance to flush WAL
+/// and remove its `postmaster.pid` on shutdown — see
+/// `app/window_lifecycle::shutdown_embedded_pg` for the consumer side and
+/// `golish-db/src/embedded/mod.rs::purge_corrupted_state` for the blast
+/// radius the previous force-kill path used to cause.
+pub(crate) fn spawn_embedded_pg(
+    db_ready: golish_db::DbReadyGate,
+    embedded_db: EmbeddedDbHandle,
+) {
     async_runtime::spawn(async move {
         tracing::info!("[PG-DIAG] spawn_embedded_pg: kicking off background PG startup");
         match golish_db::GolishDb::start(golish_db::DbConfig::default()).await {
-            Ok(_db) => {
+            Ok(db) => {
                 tracing::info!(
-                    has_pgvector = _db.has_pgvector,
+                    has_pgvector = db.has_pgvector,
                     "[PG-DIAG] Embedded PostgreSQL is fully ready"
                 );
-                db_ready.set_pgvector_available(_db.has_pgvector);
+                db_ready.set_pgvector_available(db.has_pgvector);
                 db_ready.mark_ready();
-                // NB: intentional leak so the embedded PG keeps running for the
-                // whole app lifetime. Side effect: `EmbeddedPg::stop()` is
-                // NEVER called on exit, so PG is killed via TerminateProcess
-                // on Windows → leaves stale `postmaster.pid`. See
-                // golish-db/src/embedded/mod.rs::purge_corrupted_state for the
-                // downstream blast radius.
-                tracing::warn!(
-                    "[PG-DIAG] mem::forget(GolishDb) — PG will be force-killed on app exit \
-                     (no graceful stop_db). If pgdata gets wiped on next launch, search \
-                     logs for '[PURGE] About to DELETE pgdata'."
+                // Hand the live handle over to AppState so the graceful-exit
+                // hook in window_lifecycle can call db.stop().await before
+                // the OS reaps the process. No more mem::forget, no more
+                // stale postmaster.pid on Windows, no more bogus
+                // recovery-path data wipes.
+                let mut slot = embedded_db.lock().await;
+                *slot = Some(db);
+                tracing::info!(
+                    "[PG-DIAG] GolishDb stored in AppState.embedded_db slot — \
+                     graceful stop will run on app exit"
                 );
-                std::mem::forget(_db);
             }
             Err(e) => {
                 tracing::error!(error = ?e, "[PG-DIAG] Failed to start embedded PostgreSQL");

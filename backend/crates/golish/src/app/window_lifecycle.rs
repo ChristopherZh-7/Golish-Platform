@@ -5,12 +5,66 @@
 //! Tauri builder only has to call them.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 
 use tauri::{Emitter, Manager};
 
 use crate::state::AppState;
 use crate::tools;
 use crate::window_state;
+
+/// Maximum time to wait for the embedded PostgreSQL to flush and stop
+/// gracefully on app exit. After this elapses we proceed with process
+/// teardown anyway — leaving a half-stopped PG is still strictly better
+/// than the historical "no stop_db at all" behaviour, because the
+/// pg_ctl stop signal has already been delivered.
+const PG_GRACEFUL_STOP_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Drain and stop the embedded PostgreSQL handle owned by `AppState`.
+///
+/// Idempotent: only the first call holding `Some(db)` actually runs
+/// `db.stop().await`; subsequent calls see `None` and short-circuit.
+/// Bounded by [`PG_GRACEFUL_STOP_TIMEOUT`] so a stuck PG can never
+/// block the Tauri exit flow indefinitely.
+pub(crate) async fn shutdown_embedded_pg(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<AppState>() else {
+        tracing::warn!(
+            "[PG-DIAG][shutdown] AppState not available — skipping graceful PG stop"
+        );
+        return;
+    };
+
+    let mut slot = state.embedded_db.lock().await;
+    let Some(mut db) = slot.take() else {
+        tracing::debug!(
+            "[PG-DIAG][shutdown] embedded_db slot empty — graceful stop already ran or PG \
+             never finished starting"
+        );
+        return;
+    };
+    drop(slot);
+
+    tracing::info!(
+        "[PG-DIAG][shutdown] Starting graceful PostgreSQL stop (timeout {:?})",
+        PG_GRACEFUL_STOP_TIMEOUT
+    );
+    match tokio::time::timeout(PG_GRACEFUL_STOP_TIMEOUT, db.stop()).await {
+        Ok(()) => {
+            tracing::info!(
+                "[PG-DIAG][shutdown] Embedded PostgreSQL stopped gracefully — \
+                 postmaster.pid removed, WAL flushed"
+            );
+        }
+        Err(_) => {
+            tracing::warn!(
+                "[PG-DIAG][shutdown] db.stop() exceeded {:?} — proceeding with app exit. \
+                 PG may still be cleaning up; next launch's healthy-pgdata fast-path will \
+                 cover it.",
+                PG_GRACEFUL_STOP_TIMEOUT
+            );
+        }
+    }
+}
 
 pub(crate) async fn persist_window_state_from_window(window: &tauri::Window) {
     let scale_factor = window.scale_factor().unwrap_or(1.0);
@@ -203,8 +257,8 @@ pub(crate) fn handle_window_event(window: &tauri::Window, event: &tauri::WindowE
             }
             tracing::info!(
                 window_label = %window.label(),
-                "[PG-DIAG][AppClose] CloseRequested fired — entering shutdown sequence \
-                 (NB: embedded PG is NOT stopped here, see app/bootstrap.rs mem::forget)"
+                "[PG-DIAG][AppClose] CloseRequested fired — entering graceful shutdown sequence \
+                 (flush frontend, stop ZAP, stop embedded PG, persist window state, destroy window)"
             );
             api.prevent_close();
             let w = window.clone();
@@ -215,9 +269,12 @@ pub(crate) fn handle_window_event(window: &tauri::Window, event: &tauri::WindowE
                     tracing::info!("[AppClose] Stopping ZAP before exit");
                     let _ = pentest.zap_manager.stop().await;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                // Give the webview ~800ms to flush its debounced DB-saver
+                // before we tear PG down underneath it.
+                tokio::time::sleep(Duration::from_millis(800)).await;
+                shutdown_embedded_pg(&app_handle).await;
                 persist_window_state_from_window(&w).await;
-                tracing::info!("[PG-DIAG][AppClose] About to destroy window — PG will be force-killed");
+                tracing::info!("[PG-DIAG][AppClose] About to destroy window — graceful sequence complete");
                 w.destroy().ok();
             });
         }
@@ -237,14 +294,17 @@ pub(crate) fn handle_run_event(app_handle: &tauri::AppHandle, event: tauri::RunE
         }
 
         tracing::info!(
-            "[PG-DIAG][AppExit] ExitRequested fired — persisting window state then exiting \
-             (NB: embedded PG is NOT stopped here, see app/bootstrap.rs mem::forget)"
+            "[PG-DIAG][AppExit] ExitRequested fired — persisting window state and \
+             gracefully stopping embedded PG before exiting"
         );
         api.prevent_exit();
         let handle = app_handle.clone();
         tauri::async_runtime::spawn(async move {
             persist_window_state_on_exit(&handle).await;
-            tracing::info!("[PG-DIAG][AppExit] About to call handle.exit(0) — PG will be force-killed by Tauri runtime");
+            shutdown_embedded_pg(&handle).await;
+            tracing::info!(
+                "[PG-DIAG][AppExit] About to call handle.exit(0) — graceful sequence complete"
+            );
             handle.exit(0);
         });
     }

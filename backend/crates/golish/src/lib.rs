@@ -63,7 +63,7 @@ pub fn run_gui() {
 
     let (_telemetry_guard, app_state) = app::bootstrap::init_telemetry_and_app_state();
 
-    app::bootstrap::spawn_embedded_pg(app_state.db_ready.clone());
+    app::bootstrap::spawn_embedded_pg(app_state.db_ready.clone(), app_state.embedded_db.clone());
     app::bootstrap::seed_default_agent_files();
 
     let history_manager = app::bootstrap::init_history_manager_background();

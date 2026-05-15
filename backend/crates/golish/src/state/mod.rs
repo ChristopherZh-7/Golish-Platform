@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use sqlx::PgPool;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex as AsyncMutex, RwLock};
 
 use crate::ai::AiState;
 use crate::commands::CommandIndex;
@@ -30,7 +30,16 @@ use crate::settings::SettingsManager;
 use crate::sidecar::{SidecarConfig, SidecarState};
 use crate::telemetry::TelemetryStats;
 use crate::tools::pty_interactive::PtyOutputTap;
-use golish_db::DbReadyGate;
+use golish_db::{DbReadyGate, GolishDb};
+
+/// Shared, mutually-exclusive handle to the embedded PostgreSQL server.
+///
+/// `Some(db)` while the background bootstrap has produced a live handle that
+/// can be `.stop().await`'d during graceful exit; `None` either before the
+/// bootstrap finishes or after exit has already drained it (so subsequent
+/// exit hooks become no-ops). The async mutex keeps `.stop()` safe to call
+/// across `.await` points from the Tauri shutdown handler.
+pub type EmbeddedDbHandle = Arc<AsyncMutex<Option<GolishDb>>>;
 
 /// Aggregate application state.
 ///
@@ -53,6 +62,14 @@ pub struct AppState {
     pub pentest_busy_sessions: Arc<Mutex<HashSet<String>>>,
     pub db_pool: Arc<PgPool>,
     pub db_ready: DbReadyGate,
+    /// Owned handle to the embedded PostgreSQL server. Populated by the
+    /// background `spawn_embedded_pg` task once startup succeeds. Taken
+    /// out and `.stop()`'d by the Tauri exit hooks so PG gets a chance
+    /// to flush WAL and remove its `postmaster.pid` before the process
+    /// is force-killed by the OS — without this the next launch would
+    /// see a stale PID file and (historically) trigger a destructive
+    /// recovery path.
+    pub embedded_db: EmbeddedDbHandle,
 }
 
 impl AppState {
@@ -62,6 +79,7 @@ impl AppState {
         telemetry_stats: Option<Arc<TelemetryStats>>,
         db_pool: Arc<PgPool>,
         db_ready: DbReadyGate,
+        embedded_db: EmbeddedDbHandle,
     ) -> Self {
         let settings = settings_manager.get().await;
         let sidecar_config = SidecarConfig::from_golish_settings(&settings.sidecar);
@@ -84,6 +102,7 @@ impl AppState {
             pentest_busy_sessions: Arc::new(Mutex::new(HashSet::new())),
             db_pool,
             db_ready,
+            embedded_db,
         }
     }
 
