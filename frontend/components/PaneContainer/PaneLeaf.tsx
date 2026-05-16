@@ -14,12 +14,11 @@
  * preventing re-renders when unrelated session or layout properties change.
  */
 
-import React, { lazy, Suspense, useCallback, useEffect } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { SubAgentDetailView } from "@/components/SubAgentDetailView";
 import { ToolCallDetailView } from "@/components/ToolCallDetailView/ToolCallDetailView";
 import { UnifiedInput } from "@/components/UnifiedInput";
 import { UnifiedTimeline } from "@/components/UnifiedTimeline";
-import { InteractiveCell } from "@/components/UnifiedTimeline/InteractiveCell";
 import { ContextMenuTrigger } from "@/components/ui/context-menu";
 import { countLeafPanes } from "@/lib/pane-utils";
 import type { PaneId } from "@/store";
@@ -90,15 +89,33 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
   const paneCount = useStore((state) => countLeafPanes(state.tabLayouts[tabId]?.root));
 
   const pendingCommand = usePendingCommand(sessionId);
-  // The bottom input box normally collapses out of view while a command
-  // is running, since the command owns the on-screen action. Warp-style
-  // interactive mode is the explicit exception: a `stdin_wait` event
-  // turned the input box into a stdin pipe for the running command, so
-  // we need to keep it visible (and on-screen so the user can type a
-  // response, see `frontend/components/UnifiedInput`).
+  // Warp-style architecture: while a command is running, the bottom
+  // `UnifiedInput` is fully unmounted and the `RunningCommandCard` in
+  // the timeline owns both output streaming AND stdin (keystroke
+  // routing to `ptyWrite`, IME composition, paste). When the command
+  // ends, the card converts to a `CommandBlock` and the bottom input
+  // re-appears in its place. `interactiveMode` (from the stdin_wait
+  // detector) is no longer used to keep the bottom input visible —
+  // it's now consumed by the card itself to auto-focus its hidden
+  // textarea so the user can just type `y` + Enter without a click.
   const interactiveMode = useStore((s) => s.sessions[sessionId]?.interactiveMode ?? null);
   const isInteractiveInputActive = interactiveMode?.active === true;
-  const isCommandRunning = !!pendingCommand?.command && !isInteractiveInputActive;
+  const isCommandRunning = !!pendingCommand?.command;
+
+  // Defer "command is running → hide UnifiedInput" by ~180 ms so short
+  // commands (`ls`, `pwd`, single-shot greps that finish in well under
+  // 200 ms) don't flash the bottom input out and back in. The instant
+  // command-end direction is *not* debounced — we always re-show the
+  // input the moment `pendingCommand` clears so the user can type the
+  // next command without waiting on a timer.
+  const [hideInputForCommand, setHideInputForCommand] = useState(false);
+  useEffect(() => {
+    if (isCommandRunning) {
+      const t = setTimeout(() => setHideInputForCommand(true), 180);
+      return () => clearTimeout(t);
+    }
+    setHideInputForCommand(false);
+  }, [isCommandRunning]);
 
   const isFocused = focusedPaneId === paneId;
   const showFocusIndicator = isFocused && paneCount > 1;
@@ -216,38 +233,23 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
                 </div>
                 {detailViewMode !== "sub-agent-detail" &&
                   detailViewMode !== "tool-detail" &&
-                  (isInteractiveInputActive && interactiveMode ? (
-                    // Warp-style interactive cell: command head +
-                    // live output + input caret in a single visual
-                    // unit. Replaces both the `RunningCommandCard`
-                    // (rendered inside `UnifiedTimeline` above) and
-                    // the regular bottom `UnifiedInput`. The
-                    // timeline-side card is gated on
-                    // `!isInteractiveInputActive`, so the live
-                    // output isn't duplicated.
-                    <div className="px-2 pb-2 pt-1">
-                      <InteractiveCell
-                        sessionId={sessionId}
-                        mode={interactiveMode}
-                        command={pendingCommand?.command ?? interactiveMode.command ?? null}
-                      />
-                    </div>
-                  ) : (
+                  !hideInputForCommand && (
+                    // Warp-style: the bottom input is only present
+                    // when no command is running. Once `pendingCommand`
+                    // exists the `RunningCommandCard` in the timeline
+                    // takes over both rendering output and accepting
+                    // stdin — there is no separate "input box" panel
+                    // to render. When the command ends and the card
+                    // converts to a `CommandBlock`, this input
+                    // re-appears in its place.
                     <div
-                      className={`pane-bottom-terminal origin-bottom transition-opacity duration-200 ease-in-out ${
-                        isCommandRunning ? "opacity-70" : "opacity-100"
-                      }`}
-                      // Non-interactive branches keep the input visible
-                      // (even half-opacity while a command runs) so the
-                      // user can always Esc / Ctrl-C out — the
-                      // previous `h-0 + opacity-0 + pointer-events-none`
-                      // collapse stranded users when `stdin_wait`
-                      // missed bash `#?` / zsh `select> ` prompts.
-                      data-input-state={isCommandRunning ? "running" : "idle"}
+                      className="pane-bottom-terminal origin-bottom"
+                      data-input-state="idle"
+                      data-interactive={isInteractiveInputActive ? "true" : "false"}
                     >
                       <UnifiedInput sessionId={sessionId} />
                     </div>
-                  ))}
+                  )}
               </>
             )}
           </>
