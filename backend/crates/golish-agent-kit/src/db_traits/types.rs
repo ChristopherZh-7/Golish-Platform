@@ -62,6 +62,30 @@ pub enum PlanStatus {
     Cancelled,
 }
 
+/// Lifecycle status of a sub-agent dispatch.
+///
+/// Mirrors the Postgres `sub_agent_dispatch_status` ENUM defined in the
+/// `20260517000001_sub_agent_dispatches` migration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DispatchStatus {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl DispatchStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MemoryType {
@@ -192,4 +216,17 @@ pub struct ExecutionPlanView {
 #[derive(Debug, Clone)]
 pub struct MessageChainView {
     pub id: Uuid,
+}
+
+/// Minimal view of a sub-agent dispatch row, exposed to higher layers
+/// (Tauri command + frontend) for the "resume after restart" feature.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubAgentDispatchView {
+    pub id: Uuid,
+    pub parent_dispatch_id: Option<Uuid>,
+    pub agent_id: String,
+    pub tool_call_id: Option<String>,
+    pub depth: i32,
+    pub args: serde_json::Value,
+    pub started_at: chrono::DateTime<chrono::Utc>,
 }

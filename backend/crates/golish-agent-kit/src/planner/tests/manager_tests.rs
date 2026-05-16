@@ -433,6 +433,34 @@ mod load_from_db_tests {
             unimplemented!("plan_create not used by load_from_db tests")
         }
 
+        // ── Sub-agent dispatch stubs (P0-4) ────────────────────────────
+        async fn dispatch_record_start(
+            &self,
+            _session_id: Uuid,
+            _parent_dispatch_id: Option<Uuid>,
+            _agent_id: &str,
+            _tool_call_id: Option<&str>,
+            _depth: i32,
+            _args: &serde_json::Value,
+        ) -> anyhow::Result<Uuid> {
+            unimplemented!()
+        }
+        async fn dispatch_record_finish(
+            &self,
+            _id: Uuid,
+            _status: crate::db_traits::DispatchStatus,
+            _result: Option<&serde_json::Value>,
+            _error_message: Option<&str>,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        async fn dispatch_list_running(
+            &self,
+            _session_id: Uuid,
+        ) -> anyhow::Result<Vec<crate::db_traits::SubAgentDispatchView>> {
+            unimplemented!()
+        }
+
         // ── Wiki KB stubs ───────────────────────────────────────────────
         async fn wiki_upsert_page(&self, _page: &NewWikiPage) -> anyhow::Result<()> {
             unimplemented!()

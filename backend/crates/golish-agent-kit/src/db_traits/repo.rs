@@ -190,4 +190,29 @@ pub trait DbRepoProvider: Send + Sync {
     ) -> anyhow::Result<()>;
 
     async fn plan_create(&self, plan: NewExecutionPlan) -> anyhow::Result<ExecutionPlanView>;
+
+    // ── Sub-agent Dispatch Tracking (P0-4) ──────────────────────────────
+
+    async fn dispatch_record_start(
+        &self,
+        session_id: Uuid,
+        parent_dispatch_id: Option<Uuid>,
+        agent_id: &str,
+        tool_call_id: Option<&str>,
+        depth: i32,
+        args: &serde_json::Value,
+    ) -> anyhow::Result<Uuid>;
+
+    async fn dispatch_record_finish(
+        &self,
+        id: Uuid,
+        status: DispatchStatus,
+        result: Option<&serde_json::Value>,
+        error_message: Option<&str>,
+    ) -> anyhow::Result<()>;
+
+    async fn dispatch_list_running(
+        &self,
+        session_id: Uuid,
+    ) -> anyhow::Result<Vec<SubAgentDispatchView>>;
 }
