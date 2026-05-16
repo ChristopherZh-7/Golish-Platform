@@ -139,6 +139,15 @@ pub enum PlanStatus {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "sub_agent_dispatch_status", rename_all = "snake_case")]
+pub enum SubAgentDispatchStatus {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
 // ============================================================================
 // Observability: msg_logs, screenshots, vector_store_logs
 // ============================================================================

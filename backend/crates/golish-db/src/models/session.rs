@@ -196,6 +196,24 @@ pub struct NewExecutionPlan {
     pub steps: serde_json::Value,
 }
 
+// ── Sub-agent Dispatches (P0-4) ─────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct SubAgentDispatch {
+    pub id: Uuid,
+    pub session_id: Option<Uuid>,
+    pub parent_dispatch_id: Option<Uuid>,
+    pub agent_id: String,
+    pub tool_call_id: Option<String>,
+    pub depth: i32,
+    pub status: SubAgentDispatchStatus,
+    pub args: serde_json::Value,
+    pub result: Option<serde_json::Value>,
+    pub error_message: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+}
+
 // ── Insert structs ──────────────────────────────────────────────────────
 
 #[derive(Debug)]

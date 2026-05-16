@@ -19,6 +19,7 @@ pub mod prompt_templates;
 pub mod screenshots;
 pub mod search_logs;
 pub mod sessions;
+pub mod sub_agent_dispatches;
 pub mod subtasks;
 pub mod target_assets;
 pub mod targets;
