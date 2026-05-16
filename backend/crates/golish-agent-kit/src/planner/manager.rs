@@ -305,87 +305,96 @@ impl PlanManager {
         let result = plan.clone();
         drop(plan);
 
-        // Persist to DB in the background (fire-and-forget)
-        if let Some(repo) = &self.db_repo {
-            let repo = repo.clone();
-            let db_plan_id = self.db_plan_id.clone();
-            let session_id = self.session_id;
-            let project_path = self.project_path.clone();
-            let explanation = result.explanation.clone().unwrap_or_default();
-            let db_steps: Vec<serde_json::Value> = result
-                .steps
-                .iter()
-                .map(|s| {
-                    serde_json::json!({
-                        "id": s.id.as_deref().unwrap_or("unknown"),
-                        "title": s.step,
-                        "description": "",
-                        "status": format!("{}", s.status),
-                    })
-                })
-                .collect();
-            let steps_json = serde_json::Value::Array(db_steps);
-            let current_step = result
-                .steps
-                .iter()
-                .position(|s| s.status == StepStatus::InProgress)
-                .unwrap_or(0) as i32;
-
-            let plan_status = if result.summary.completed == result.summary.total {
-                crate::db_traits::PlanStatus::Completed
-            } else if result.summary.in_progress > 0 {
-                crate::db_traits::PlanStatus::InProgress
-            } else {
-                crate::db_traits::PlanStatus::Planning
-            };
-
-            tokio::spawn(async move {
-                let existing_id = *db_plan_id.read().await;
-                if let Some(id) = existing_id {
-                    if let Err(e) = crate::db_shim::execution_plans::update_steps(
-                        repo.as_ref(),
-                        id,
-                        &steps_json,
-                        current_step,
-                        plan_status,
-                    )
-                    .await
-                    {
-                        tracing::warn!("Failed to update plan in DB: {}", e);
-                    }
-                } else {
-                    let title = explanation.chars().take(100).collect::<String>();
-                    let title = if title.is_empty() {
-                        "Untitled Plan".to_string()
-                    } else {
-                        title
-                    };
-                    match crate::db_shim::execution_plans::create(
-                        repo.as_ref(),
-                        crate::db_traits::NewExecutionPlan {
-                            session_id,
-                            project_path,
-                            title,
-                            description: explanation,
-                            steps: steps_json,
-                        },
-                    )
-                    .await
-                    {
-                        Ok(created) => {
-                            let mut db_id = db_plan_id.write().await;
-                            *db_id = Some(created.id);
-                            tracing::info!(plan_id = %created.id, "Created plan in DB");
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to create plan in DB: {}", e);
-                        }
-                    }
-                }
-            });
-        }
+        self.persist_async(&result);
 
         Ok(result)
+    }
+
+    /// Spawn a fire-and-forget DB persist task for the given plan
+    /// snapshot. Used by both `update_plan` and `apply_patch_ops`
+    /// so the patch tool's writes survive an app restart just like
+    /// rewrites do.
+    ///
+    /// No-op when no repo is wired (e.g. tests / headless eval).
+    fn persist_async(&self, snapshot: &TaskPlan) {
+        let Some(repo) = &self.db_repo else { return };
+        let repo = repo.clone();
+        let db_plan_id = self.db_plan_id.clone();
+        let session_id = self.session_id;
+        let project_path = self.project_path.clone();
+        let explanation = snapshot.explanation.clone().unwrap_or_default();
+        let db_steps: Vec<serde_json::Value> = snapshot
+            .steps
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "id": s.id.as_deref().unwrap_or("unknown"),
+                    "title": s.step,
+                    "description": "",
+                    "status": format!("{}", s.status),
+                    "failure_kind": s.failure_kind.as_ref().map(|fk| format!("{}", fk)),
+                })
+            })
+            .collect();
+        let steps_json = serde_json::Value::Array(db_steps);
+        let current_step = snapshot
+            .steps
+            .iter()
+            .position(|s| s.status == StepStatus::InProgress)
+            .unwrap_or(0) as i32;
+
+        let plan_status = if snapshot.summary.completed == snapshot.summary.total {
+            crate::db_traits::PlanStatus::Completed
+        } else if snapshot.summary.in_progress > 0 {
+            crate::db_traits::PlanStatus::InProgress
+        } else {
+            crate::db_traits::PlanStatus::Planning
+        };
+
+        tokio::spawn(async move {
+            let existing_id = *db_plan_id.read().await;
+            if let Some(id) = existing_id {
+                if let Err(e) = crate::db_shim::execution_plans::update_steps(
+                    repo.as_ref(),
+                    id,
+                    &steps_json,
+                    current_step,
+                    plan_status,
+                )
+                .await
+                {
+                    tracing::warn!("Failed to update plan in DB: {}", e);
+                }
+            } else {
+                let title = explanation.chars().take(100).collect::<String>();
+                let title = if title.is_empty() {
+                    "Untitled Plan".to_string()
+                } else {
+                    title
+                };
+                match crate::db_shim::execution_plans::create(
+                    repo.as_ref(),
+                    crate::db_traits::NewExecutionPlan {
+                        session_id,
+                        project_path,
+                        title,
+                        description: explanation,
+                        steps: steps_json,
+                    },
+                )
+                .await
+                {
+                    Ok(created) => {
+                        let mut db_id = db_plan_id.write().await;
+                        *db_id = Some(created.id);
+                        tracing::info!(plan_id = %created.id, "Created plan in DB");
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to create plan in DB: {}", e);
+                    }
+                }
+            }
+        });
     }
 
     /// Clear the plan.
@@ -510,6 +519,11 @@ impl PlanManager {
             "Plan updated via patch ops"
         );
 
-        Ok(plan.clone())
+        let result = plan.clone();
+        drop(plan);
+
+        self.persist_async(&result);
+
+        Ok(result)
     }
 }
