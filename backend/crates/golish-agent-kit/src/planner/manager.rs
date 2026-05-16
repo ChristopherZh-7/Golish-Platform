@@ -394,4 +394,122 @@ impl PlanManager {
         *plan = TaskPlan::default();
         tracing::info!("Plan cleared");
     }
+
+    /// Apply a sequence of patch operations to the current plan
+    /// (P0-2 stage 2). Each op lands in order; positions are computed
+    /// against the **mutating** in-memory list so dependent ops
+    /// (`Add` followed by `Modify` on the new id) work the way an LLM
+    /// would expect.
+    ///
+    /// Currently does **not** emit `PlanUpdated` nor persist to DB —
+    /// those side-effects come once the wrapper tool lands; until then
+    /// callers are responsible for whatever publishing they need
+    /// (typically: none, since this is exercised by tests only).
+    pub async fn apply_patch_ops(
+        &self,
+        ops: Vec<super::PlanPatchOp>,
+    ) -> Result<TaskPlan, super::PlanError> {
+        let mut plan = self.plan.write().await;
+        let mut steps = plan.steps.clone();
+
+        for op in ops {
+            match op {
+                super::PlanPatchOp::Add {
+                    after_id,
+                    title,
+                    status,
+                } => {
+                    let trimmed = title.trim();
+                    if trimmed.is_empty() {
+                        // Treat empty inserts as a no-op rather than fail,
+                        // mirroring update_plan's "no whitespace-only steps"
+                        // intent without aborting the whole batch.
+                        continue;
+                    }
+                    let new_step = PlanStep {
+                        id: Some(uuid::Uuid::new_v4().to_string()),
+                        step: trimmed.to_string(),
+                        status: status.unwrap_or(StepStatus::Pending),
+                        failure_kind: None,
+                    };
+                    let pos = match after_id.as_deref() {
+                        Some(aid) => steps
+                            .iter()
+                            .position(|s| s.id.as_deref() == Some(aid))
+                            .map(|i| i + 1)
+                            .unwrap_or_else(|| steps.len()),
+                        None => 0,
+                    };
+                    steps.insert(pos.min(steps.len()), new_step);
+                }
+                super::PlanPatchOp::Remove { id } => {
+                    steps.retain(|s| s.id.as_deref() != Some(id.as_str()));
+                }
+                super::PlanPatchOp::Modify {
+                    id,
+                    title,
+                    status,
+                    failure_kind,
+                } => {
+                    if let Some(step) =
+                        steps.iter_mut().find(|s| s.id.as_deref() == Some(id.as_str()))
+                    {
+                        if let Some(t) = title {
+                            let trimmed = t.trim();
+                            if !trimmed.is_empty() {
+                                step.step = trimmed.to_string();
+                            }
+                        }
+                        if let Some(s) = status {
+                            step.status = s;
+                        }
+                        if failure_kind.is_some() {
+                            step.failure_kind = failure_kind;
+                        }
+                    }
+                }
+                super::PlanPatchOp::Reorder { id, after_id } => {
+                    if let Some(idx) =
+                        steps.iter().position(|s| s.id.as_deref() == Some(id.as_str()))
+                    {
+                        let step = steps.remove(idx);
+                        let new_pos = match after_id.as_deref() {
+                            Some(aid) => steps
+                                .iter()
+                                .position(|s| s.id.as_deref() == Some(aid))
+                                .map(|i| i + 1)
+                                .unwrap_or_else(|| steps.len()),
+                            None => 0,
+                        };
+                        steps.insert(new_pos.min(steps.len()), step);
+                    }
+                }
+            }
+        }
+
+        // Validation: same caps as update_plan.
+        if steps.len() > MAX_PLAN_STEPS {
+            return Err(super::PlanError::InvalidStepCount(steps.len()));
+        }
+        let in_progress = steps
+            .iter()
+            .filter(|s| s.status == StepStatus::InProgress)
+            .count();
+        if in_progress > 1 {
+            return Err(super::PlanError::MultipleInProgress(in_progress));
+        }
+
+        plan.steps = steps;
+        plan.summary = PlanSummary::from_steps(&plan.steps);
+        plan.version += 1;
+        plan.updated_at = Utc::now();
+
+        tracing::info!(
+            version = plan.version,
+            total = plan.summary.total,
+            "Plan updated via patch ops"
+        );
+
+        Ok(plan.clone())
+    }
 }

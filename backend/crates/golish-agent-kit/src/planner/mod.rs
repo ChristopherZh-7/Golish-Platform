@@ -12,11 +12,11 @@
 //! Core plan types ([`PlanStep`], [`StepStatus`], etc.) live in
 //! `golish-core::plan` and are re-exported here for convenience.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 // Re-export core plan types from golish-core.
 pub use golish_core::plan::{
-    PlanStep, PlanSummary, StepStatus, TaskPlan, MAX_PLAN_STEPS, MIN_PLAN_STEPS,
+    FailureKind, PlanStep, PlanSummary, StepStatus, TaskPlan, MAX_PLAN_STEPS, MIN_PLAN_STEPS,
 };
 
 mod manager;
@@ -80,4 +80,43 @@ pub enum PlanError {
 
     #[error("Only one step can be in_progress at a time, found {0}")]
     MultipleInProgress(usize),
+}
+
+/// Patch operation applied to the current plan by `apply_patch_ops`.
+///
+/// Mirrors the PentAGI refiner `subtask_patch_tool` shape but kept
+/// internal for now — no LLM tool consumes this directly yet (P0-2
+/// stage 2 implementation; tool exposure deferred to P1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum PlanPatchOp {
+    /// Insert a new step. `after_id` = None means insert at the head.
+    /// If `after_id` doesn't match any existing step the new step lands
+    /// at the **end** to preserve the LLM's intent.
+    Add {
+        #[serde(default)]
+        after_id: Option<String>,
+        title: String,
+        #[serde(default)]
+        status: Option<StepStatus>,
+    },
+    /// Remove a step by stable id. Missing id is a no-op.
+    Remove { id: String },
+    /// Modify a step in place. Each optional field overrides only if
+    /// present. Missing id is a no-op.
+    Modify {
+        id: String,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        status: Option<StepStatus>,
+        #[serde(default)]
+        failure_kind: Option<FailureKind>,
+    },
+    /// Move a step to a new position. `after_id` = None means the head.
+    Reorder {
+        id: String,
+        #[serde(default)]
+        after_id: Option<String>,
+    },
 }
