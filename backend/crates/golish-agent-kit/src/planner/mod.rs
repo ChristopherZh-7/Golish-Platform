@@ -26,6 +26,30 @@ mod tests;
 
 pub use manager::PlanManager;
 
+use std::sync::Arc;
+
+/// Trait for broadcasting plan changes from [`PlanManager`].
+///
+/// The planner crate intentionally does not depend on `golish-events` or
+/// `golish-core::events`; higher layers wrap a concrete event channel into
+/// this trait and inject it via [`PlanManager::set_event_emitter`].
+///
+/// Currently used to broadcast `PlanUpdated` events when a plan is restored
+/// from the database on session start so the frontend sees the restored
+/// plan without waiting for the next LLM-driven `update_plan` call.
+pub trait PlanEventEmitter: Send + Sync + 'static {
+    fn emit_plan_updated(
+        &self,
+        version: u32,
+        summary: PlanSummary,
+        steps: Vec<PlanStep>,
+        explanation: Option<String>,
+    );
+}
+
+/// Shared alias for `Arc<dyn PlanEventEmitter>` to keep call sites concise.
+pub type SharedPlanEventEmitter = Arc<dyn PlanEventEmitter>;
+
 /// Arguments for the update_plan tool.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdatePlanArgs {
