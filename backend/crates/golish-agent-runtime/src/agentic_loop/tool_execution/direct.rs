@@ -204,6 +204,38 @@ where
                         hook(command, stdout, Some(pp)).await;
                     });
                 }
+
+                // P-KG: regex-scan stdout for IP/CVE/URL hints and
+                // upsert them into the graph in the background. The
+                // sub-agent path does the same on its response text;
+                // this catches facts that surface during raw shell
+                // execution before any agent summarisation.
+                if let Some(graph) = ctx.graph_backend.clone() {
+                    if let Some(stdout) = v.get("stdout").and_then(|s| s.as_str()) {
+                        if !stdout.is_empty() {
+                            let stdout_owned = stdout.to_string();
+                            let ws = ctx.workspace.read().await;
+                            let pp = ws.to_string_lossy().to_string();
+                            drop(ws);
+                            let pid_opt =
+                                if pp == "." || pp.is_empty() { None } else { Some(pp) };
+                            tokio::spawn(async move {
+                                let inserted = extract_and_upsert_entities(
+                                    graph.as_ref(),
+                                    &stdout_owned,
+                                    pid_opt.as_deref(),
+                                )
+                                .await;
+                                if inserted > 0 {
+                                    tracing::info!(
+                                        inserted,
+                                        "[kg-extract] auto-upserted entities from run_pty_cmd stdout"
+                                    );
+                                }
+                            });
+                        }
+                    }
+                }
             }
 
             Ok(ToolExecutionResult {
