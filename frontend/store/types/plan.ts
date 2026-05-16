@@ -15,6 +15,13 @@
 export type StepStatus = "pending" | "in_progress" | "completed" | "cancelled" | "failed";
 
 /**
+ * Why a step failed — borrowed from the PentAGI refiner taxonomy.
+ * Mirrors the Rust `golish_core::plan::FailureKind` enum.
+ * See docs/design/2026-05-17-refiner-patch-protocol.md.
+ */
+export type FailureKind = "technical" | "environmental" | "conceptual" | "external";
+
+/**
  * A single step in the plan.
  */
 export interface PlanStep {
@@ -31,6 +38,11 @@ export interface PlanStep {
    * Current status of this step.
    */
   status: StepStatus;
+  /**
+   * Optional failure category when `status === "failed"`.
+   * Omitted on the wire when None on the backend.
+   */
+  failure_kind?: FailureKind | null;
 }
 
 /**

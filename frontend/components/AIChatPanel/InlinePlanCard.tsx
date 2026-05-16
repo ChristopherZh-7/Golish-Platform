@@ -32,7 +32,48 @@ function StepIcon({ status, index }: { status: string; index: number }) {
   }
 }
 
-function StepRow({ step, index }: { step: { step: string; status: string }; index: number }) {
+/** Compact badge that surfaces the refiner failure category (P0-2). */
+function FailureKindBadge({
+  kind,
+}: {
+  kind: "technical" | "environmental" | "conceptual" | "external";
+}) {
+  const tone: Record<typeof kind, string> = {
+    technical: "bg-amber-500/15 text-amber-500/90 border-amber-500/30",
+    environmental: "bg-purple-500/15 text-purple-500/90 border-purple-500/30",
+    conceptual: "bg-rose-500/15 text-rose-500/90 border-rose-500/30",
+    external: "bg-sky-500/15 text-sky-500/90 border-sky-500/30",
+  };
+  const label: Record<typeof kind, string> = {
+    technical: "tech",
+    environmental: "env",
+    conceptual: "concept",
+    external: "external",
+  };
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center px-1.5 py-px rounded text-[9.5px] font-medium border tabular-nums",
+        tone[kind]
+      )}
+      title={`Failure category: ${kind}`}
+    >
+      {label[kind]}
+    </span>
+  );
+}
+
+function StepRow({
+  step,
+  index,
+}: {
+  step: {
+    step: string;
+    status: string;
+    failure_kind?: "technical" | "environmental" | "conceptual" | "external" | null;
+  };
+  index: number;
+}) {
   const isCompleted = step.status === "completed";
   const isInProgress = step.status === "in_progress";
   const isFailed = step.status === "failed" || step.status === "cancelled";
@@ -56,6 +97,7 @@ function StepRow({ step, index }: { step: { step: string; status: string }; inde
       >
         {step.step}
       </span>
+      {isFailed && step.failure_kind && <FailureKindBadge kind={step.failure_kind} />}
     </div>
   );
 }

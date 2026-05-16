@@ -9,6 +9,7 @@ export interface TaskPlanViewModel {
   steps: Array<{
     step: string;
     status: "pending" | "in_progress" | "completed" | "cancelled" | "failed";
+    failure_kind?: "technical" | "environmental" | "conceptual" | "external" | null;
   }>;
   summary: { total: number; completed: number; in_progress: number; pending: number };
   retiredAt?: string;
