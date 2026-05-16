@@ -45,13 +45,20 @@ pub async fn list_running_sub_agent_dispatches(
     session_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<RunningSubAgentDispatch>, GolishError> {
+    // Frontend session ids come in several shapes:
+    // 1. UUID (e.g. "11111111-2222-...")          → query DB directly
+    // 2. business-prefixed (e.g. "pentest-chat-...") → not a real
+    //    sub_agent_dispatches.session_id (that column is UUID typed),
+    //    so this session can't have rows here. Return empty rather
+    //    than error so the panel just shows "0 in-flight".
     let sid = match Uuid::parse_str(&session_id) {
         Ok(id) => id,
-        Err(e) => {
-            return Err(GolishError::Internal(format!(
-                "invalid session_id '{}': {}",
-                session_id, e
-            )))
+        Err(_) => {
+            tracing::debug!(
+                session_id = %session_id,
+                "list_running_sub_agent_dispatches: non-UUID session id, returning empty",
+            );
+            return Ok(vec![]);
         }
     };
 
