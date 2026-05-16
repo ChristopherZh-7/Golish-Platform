@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { CustomSelect } from "@/components/ui/custom-select";
 import { Switch } from "@/components/ui/switch";
 import type { AdvancedSettings as AdvancedSettingsType, PrivacySettings } from "@/lib/settings";
+import { KnowledgeGraphSection } from "./KnowledgeGraphSection";
 
 interface AdvancedSettingsProps {
   settings: AdvancedSettingsType;
@@ -152,6 +153,11 @@ export function AdvancedSettings({
             onCheckedChange={(checked) => onPrivacyChange({ ...privacy, log_prompts: checked })}
           />
         </div>
+      </div>
+
+      {/* Knowledge Graph snapshot */}
+      <div className="pt-4 border-t border-[var(--border-medium)]">
+        <KnowledgeGraphSection />
       </div>
 
       {/* Version */}
