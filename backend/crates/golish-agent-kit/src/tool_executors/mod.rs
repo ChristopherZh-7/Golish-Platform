@@ -30,7 +30,7 @@ pub use common::{error_result, extract_string_param, ToolResult};
 pub use graph::{execute_graph_tool, extract_and_upsert_entities, extract_kg_candidates};
 pub use knowledge_base::execute_knowledge_base_tool;
 pub use memory::execute_memory_tool;
-pub use plan::execute_plan_tool;
+pub use plan::{execute_plan_patch_tool, execute_plan_tool};
 pub use security::execute_security_analysis_tool;
 pub use shell::normalize_run_pty_cmd_args;
 pub use web::execute_web_fetch_tool;

@@ -5,7 +5,7 @@ pub fn plan_declarations() -> Vec<FunctionDeclaration> {
     vec![
         FunctionDeclaration {
             name: "update_plan".to_string(),
-            description: "Create or update the task plan. Use this to track progress on multi-step tasks. Each step should have a description and status (pending, in_progress, or completed). Only one step can be in_progress at a time.".to_string(),
+            description: "Create or update the task plan. Use this to track progress on multi-step tasks. Each step should have a description and status (pending, in_progress, or completed). Only one step can be in_progress at a time. Prefer `update_plan_patch` for small refinements once a plan already exists.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -34,6 +34,84 @@ pub fn plan_declarations() -> Vec<FunctionDeclaration> {
                     }
                 },
                 "required": ["plan"]
+            }),
+        },
+        FunctionDeclaration {
+            name: "update_plan_patch".to_string(),
+            description: "Incrementally refine an existing task plan via a sequence of patch operations. Prefer this over `update_plan` once a plan exists, since it avoids rewriting completed steps and keeps stable step ids. Supports four op types: `add` (insert a new step after a given id), `remove` (delete a step by id), `modify` (change title / status / failure_kind of a step by id), and `reorder` (move a step after another id). At most one step may be in_progress at a time and the total step count may not exceed 12.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "explanation": {
+                        "type": "string",
+                        "description": "Optional one-sentence rationale for this refinement (purely informational; does not overwrite the plan-level explanation)."
+                    },
+                    "ops": {
+                        "type": "array",
+                        "description": "Ordered list of patch operations to apply on top of the current plan (1-12 ops).",
+                        "items": {
+                            "oneOf": [
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "op": { "type": "string", "enum": ["add"] },
+                                        "after_id": {
+                                            "type": ["string", "null"],
+                                            "description": "Insert after this step id. Null means insert at the head; unknown id appends to the end."
+                                        },
+                                        "title": { "type": "string", "description": "Description of the new step." },
+                                        "status": {
+                                            "type": "string",
+                                            "enum": ["pending", "in_progress", "completed"],
+                                            "description": "Initial status (defaults to pending)."
+                                        }
+                                    },
+                                    "required": ["op", "title"]
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "op": { "type": "string", "enum": ["remove"] },
+                                        "id": { "type": "string", "description": "Step id to remove (no-op when missing)." }
+                                    },
+                                    "required": ["op", "id"]
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "op": { "type": "string", "enum": ["modify"] },
+                                        "id": { "type": "string", "description": "Step id to modify." },
+                                        "title": { "type": "string", "description": "New title (omit to keep current)." },
+                                        "status": {
+                                            "type": "string",
+                                            "enum": ["pending", "in_progress", "completed", "cancelled", "failed"],
+                                            "description": "New status (omit to keep current)."
+                                        },
+                                        "failure_kind": {
+                                            "type": "string",
+                                            "enum": ["technical", "environmental", "conceptual", "external"],
+                                            "description": "When status is `failed`, categorise why so the refiner can pivot strategy on repeated similar failures."
+                                        }
+                                    },
+                                    "required": ["op", "id"]
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "op": { "type": "string", "enum": ["reorder"] },
+                                        "id": { "type": "string", "description": "Step id to move." },
+                                        "after_id": {
+                                            "type": ["string", "null"],
+                                            "description": "Move after this step id. Null means move to the head."
+                                        }
+                                    },
+                                    "required": ["op", "id"]
+                                }
+                            ]
+                        }
+                    }
+                },
+                "required": ["ops"]
             }),
         },
     ]

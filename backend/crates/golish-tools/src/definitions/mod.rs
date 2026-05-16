@@ -59,7 +59,7 @@ mod tests {
     fn test_build_function_declarations_returns_all_tools() {
         let declarations = build_function_declarations();
 
-        assert_eq!(declarations.len(), 39);
+        assert_eq!(declarations.len(), 40);
 
         let names: Vec<&str> = declarations.iter().map(|d| d.name.as_str()).collect();
 
@@ -79,6 +79,7 @@ mod tests {
         assert!(names.contains(&"run_pty_cmd"));
 
         assert!(names.contains(&"update_plan"));
+        assert!(names.contains(&"update_plan_patch"));
 
         assert!(names.contains(&"search_memories"));
         assert!(names.contains(&"store_memory"));
