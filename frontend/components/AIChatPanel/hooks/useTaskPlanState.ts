@@ -1,4 +1,5 @@
-import { type MutableRefObject, useCallback, useMemo } from "react";
+import { type MutableRefObject, useCallback, useEffect, useMemo } from "react";
+import { getPlan } from "@/lib/ai";
 import { type ChatMessage, useStore } from "@/store";
 import type { TaskPlanViewModel } from "../TaskPlan";
 
@@ -33,6 +34,43 @@ export function useTaskPlanState(
         : null,
     [storePlan]
   );
+
+  // P0-1 fallback fetch: when a conversation activates with an
+  // `aiSessionId` but the store has no plan for it (e.g. fresh app start
+  // and the `PlanUpdated` broadcast was missed), pull the latest plan
+  // snapshot from the backend so the restored plan still shows up.
+  //
+  // Re-checks the store after the request returns to avoid clobbering a
+  // newer plan that arrived via the `plan_updated` event in flight.
+  useEffect(() => {
+    if (!activeAiSessionId) return;
+    if (storePlan && storePlan.steps && storePlan.steps.length > 0) return;
+
+    let cancelled = false;
+    const sid = activeAiSessionId;
+    getPlan(sid)
+      .then((plan) => {
+        if (cancelled) return;
+        if (!plan || plan.version === 0 || !plan.steps || plan.steps.length === 0) {
+          return;
+        }
+        const current = useStore.getState().sessions[sid]?.plan;
+        if (current && current.steps && current.steps.length > 0) {
+          // Event handler already populated it; honour the newer copy.
+          return;
+        }
+        useStore.getState().setPlan(sid, plan);
+      })
+      .catch((err) => {
+        // Non-fatal: backend may have no plan, or this is a brand-new session.
+        // eslint-disable-next-line no-console
+        console.warn("[useTaskPlanState] getPlan fallback failed", err);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeAiSessionId, storePlan]);
 
   const storePlanMessageId = useStore((s) => {
     if (!s.activeConversationId) return null;
