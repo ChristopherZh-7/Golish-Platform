@@ -150,8 +150,11 @@ export function CommandBlock({
             {block.command || "(empty command)"}
           </code>
 
-          {/* Metadata */}
-          <div className="flex items-center gap-3 text-xs text-muted-foreground flex-shrink-0">
+          {/* Metadata. `pr-9` on hover slides the duration / exit / chevron
+              cluster 36 px to the left so the absolute-positioned Copy
+              button (which floats in from the right on hover) lands in
+              its own column instead of overlapping the chevron. */}
+          <div className="flex items-center gap-3 text-xs text-muted-foreground flex-shrink-0 transition-[padding] duration-150 group-hover:pr-9">
             {block.durationMs !== null && (
               <span className="flex items-center gap-1">
                 <Clock className="w-3 h-3" />
@@ -173,10 +176,13 @@ export function CommandBlock({
             )}
           </div>
         </CollapsibleTrigger>
-        {/* Copy button */}
+        {/* Copy button — parks at the very right edge so it never
+            overlaps the metadata's clock / exit-code / chevron when
+            it fades in on hover. Pair with `group-hover:pr-9` above
+            to give it a dedicated column. */}
         <CopyButton
           content={copyContent}
-          className="absolute right-9 opacity-0 group-hover:opacity-100 transition-opacity"
+          className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity"
           data-testid="command-block-copy-button"
         />
       </div>
