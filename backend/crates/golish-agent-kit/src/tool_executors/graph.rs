@@ -15,6 +15,195 @@ use uuid::Uuid;
 use super::common::{error_result, extract_string_param, ToolResult};
 use super::graph_trait::{GraphEntityView, GraphKnowledgeBase};
 
+/// Light-weight regex extractor used by `extract_and_upsert_entities` to
+/// scan arbitrary text for things the knowledge graph cares about. The
+/// regexes are intentionally conservative — they should produce zero
+/// false-positives on prose. Anything more semantic (e.g. "this command
+/// found endpoint /admin/login") is the LLM's job via the `graph_*`
+/// tools.
+///
+/// Returns deduplicated `(entity_type, name)` pairs in discovery order.
+pub fn extract_kg_candidates(text: &str) -> Vec<(String, String)> {
+    use std::collections::HashSet;
+    use std::sync::OnceLock;
+
+    static IPV4_RE: OnceLock<regex::Regex> = OnceLock::new();
+    static CVE_RE: OnceLock<regex::Regex> = OnceLock::new();
+    static URL_RE: OnceLock<regex::Regex> = OnceLock::new();
+
+    let ipv4 = IPV4_RE.get_or_init(|| {
+        regex::Regex::new(
+            r"\b(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}\b",
+        )
+        .expect("static ipv4 regex compiles")
+    });
+    let cve = CVE_RE
+        .get_or_init(|| regex::Regex::new(r"(?i)\bCVE-\d{4}-\d{4,7}\b").expect("cve regex"));
+    let url = URL_RE.get_or_init(|| {
+        regex::Regex::new(r#"https?://[^\s<>\\"']+[^\s<>\\"'.,;:!?]"#).expect("url regex")
+    });
+
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+
+    for m in ipv4.find_iter(text).take(20) {
+        let name = m.as_str().to_string();
+        if name == "0.0.0.0" || name == "255.255.255.255" {
+            continue;
+        }
+        let key = ("host".to_string(), name);
+        if seen.insert(key.clone()) {
+            out.push(key);
+        }
+    }
+
+    for m in cve.find_iter(text).take(20) {
+        let name = m.as_str().to_uppercase();
+        let key = ("vulnerability".to_string(), name);
+        if seen.insert(key.clone()) {
+            out.push(key);
+        }
+    }
+
+    for m in url.find_iter(text).take(20) {
+        let key = ("endpoint".to_string(), m.as_str().to_string());
+        if seen.insert(key.clone()) {
+            out.push(key);
+        }
+    }
+
+    out
+}
+
+#[cfg(test)]
+mod extract_tests {
+    use super::extract_kg_candidates;
+
+    #[test]
+    fn extracts_ipv4_addresses() {
+        let txt = "Found host 10.0.0.5 and gateway 192.168.1.1.";
+        let out = extract_kg_candidates(txt);
+        let hosts: Vec<&str> = out
+            .iter()
+            .filter(|(t, _)| t == "host")
+            .map(|(_, n)| n.as_str())
+            .collect();
+        assert!(hosts.contains(&"10.0.0.5"));
+        assert!(hosts.contains(&"192.168.1.1"));
+    }
+
+    #[test]
+    fn skips_placeholder_addresses() {
+        let txt = "0.0.0.0:80 listener and broadcast 255.255.255.255";
+        let out = extract_kg_candidates(txt);
+        let hosts: Vec<&str> = out
+            .iter()
+            .filter(|(t, _)| t == "host")
+            .map(|(_, n)| n.as_str())
+            .collect();
+        assert!(!hosts.contains(&"0.0.0.0"));
+        assert!(!hosts.contains(&"255.255.255.255"));
+    }
+
+    #[test]
+    fn rejects_invalid_octet_ranges() {
+        // 999.x.x.x is not a valid IPv4 — must not appear
+        let txt = "version 999.1.2.3 in changelog and host 10.0.0.5";
+        let out = extract_kg_candidates(txt);
+        let hosts: Vec<&str> = out
+            .iter()
+            .filter(|(t, _)| t == "host")
+            .map(|(_, n)| n.as_str())
+            .collect();
+        assert!(hosts.contains(&"10.0.0.5"));
+        assert!(!hosts.iter().any(|h| h.starts_with("999.")));
+    }
+
+    #[test]
+    fn extracts_cve_identifiers_uppercase() {
+        let txt = "vulnerable to cve-2024-1234 and CVE-2023-99999";
+        let out = extract_kg_candidates(txt);
+        let cves: Vec<&str> = out
+            .iter()
+            .filter(|(t, _)| t == "vulnerability")
+            .map(|(_, n)| n.as_str())
+            .collect();
+        assert!(cves.contains(&"CVE-2024-1234"));
+        assert!(cves.contains(&"CVE-2023-99999"));
+    }
+
+    #[test]
+    fn extracts_https_url_without_trailing_punctuation() {
+        let txt = "see https://example.com/admin/login. The endpoint matters.";
+        let out = extract_kg_candidates(txt);
+        let urls: Vec<&str> = out
+            .iter()
+            .filter(|(t, _)| t == "endpoint")
+            .map(|(_, n)| n.as_str())
+            .collect();
+        assert!(urls.contains(&"https://example.com/admin/login"));
+    }
+
+    #[test]
+    fn deduplicates_within_one_pass() {
+        let txt = "host 10.0.0.5 then 10.0.0.5 again";
+        let out = extract_kg_candidates(txt);
+        let hosts: Vec<&str> = out
+            .iter()
+            .filter(|(t, _)| t == "host")
+            .map(|(_, n)| n.as_str())
+            .collect();
+        assert_eq!(hosts.iter().filter(|h| **h == "10.0.0.5").count(), 1);
+    }
+
+    #[test]
+    fn returns_empty_for_pure_prose() {
+        let out = extract_kg_candidates("This is a sentence with no IPs CVEs or URLs.");
+        assert!(out.is_empty());
+    }
+}
+
+/// Fire-and-forget upsert of regex-extracted entities into the graph.
+/// Caller decides when this runs (typically: post-sub-agent dispatch
+/// with the response payload) and pre-stringifies whatever text it
+/// wants to scan. Failures log a warn and never propagate.
+pub async fn extract_and_upsert_entities(
+    graph: &dyn GraphKnowledgeBase,
+    text: &str,
+    project_id: Option<&str>,
+) -> usize {
+    let candidates = extract_kg_candidates(text);
+    if candidates.is_empty() {
+        return 0;
+    }
+    let mut inserted = 0usize;
+    for (entity_type, name) in candidates {
+        let project_uuid = project_id.and_then(|p| Uuid::parse_str(p).ok());
+        let props = json!({
+            "source": "regex-extracted",
+            "auto": true,
+            "project_hint": project_id,
+        });
+        match graph
+            .upsert_entity(&entity_type, &name, props, project_uuid)
+            .await
+        {
+            Ok(_) => {
+                inserted += 1;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    entity_type = entity_type,
+                    name = %name,
+                    error = %e,
+                    "[kg-extract] upsert failed",
+                );
+            }
+        }
+    }
+    inserted
+}
+
 /// Execute graph tool calls (graph_add_entity, graph_add_relation,
 /// graph_search, graph_neighbors, graph_attack_paths).
 ///
