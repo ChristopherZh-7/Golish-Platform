@@ -494,6 +494,44 @@ html[data-scrolling] *::-webkit-scrollbar-thumb {
   scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
+/* ============================================================
+ * Timeline custom scrollbar (transform-based viewport)
+ *
+ * The UnifiedTimeline draws its own thin track + thumb because the
+ * underlying viewport uses `overflow: hidden` (see the component header
+ * for the WKWebView trackpad-momentum rationale). The native
+ * `::-webkit-scrollbar-*` rules above can't reach a hand-rolled <div>,
+ * so we re-implement the same macOS-overlay aesthetic here:
+ *
+ *   - Invisible at rest (`background-color: transparent`)
+ *   - Reveals on three signals matching the global behaviour:
+ *       1. Pointer hovers the timeline pane (macOS "hover shows thumb")
+ *       2. `<html data-scrolling>` toggled by `scrollbar-autohide.ts`
+ *          for ~800ms after every wheel/scroll gesture
+ *       3. Pointer hovers the thumb itself — picks up the hover tint
+ *   - Same colour tokens (`--scrollbar-thumb*`) and same transition
+ *     curves (0.35s ease-out fade-out, 0.1s ease-in fade-in) as the
+ *     native overlay rules.
+ * ============================================================ */
+[data-testid="timeline-scrollbar-thumb"] {
+  background-color: transparent;
+  transition: background-color 0.35s ease-out;
+}
+
+[data-timeline-pane]:hover [data-testid="timeline-scrollbar-thumb"],
+html[data-scrolling] [data-testid="timeline-scrollbar-thumb"] {
+  background-color: var(--scrollbar-thumb);
+  transition: background-color 0.1s ease-in;
+}
+
+[data-testid="timeline-scrollbar-thumb"]:hover {
+  background-color: var(--scrollbar-thumb-hover);
+}
+
+[data-testid="timeline-scrollbar-thumb"]:active {
+  background-color: var(--scrollbar-thumb-active);
+}
+
 /* Hide scrollbar utility */
 .scrollbar-none::-webkit-scrollbar {
   display: none;
