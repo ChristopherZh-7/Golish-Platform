@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { CustomSelect } from "@/components/ui/custom-select";
 import { Switch } from "@/components/ui/switch";
 import type { AdvancedSettings as AdvancedSettingsType, PrivacySettings } from "@/lib/settings";
+import { DispatchInflightSection } from "./DispatchInflightSection";
 import { KnowledgeGraphSection } from "./KnowledgeGraphSection";
 
 interface AdvancedSettingsProps {
@@ -158,6 +159,11 @@ export function AdvancedSettings({
       {/* Knowledge Graph snapshot */}
       <div className="pt-4 border-t border-[var(--border-medium)]">
         <KnowledgeGraphSection />
+      </div>
+
+      {/* Sub-agent dispatch monitor */}
+      <div className="pt-4 border-t border-[var(--border-medium)]">
+        <DispatchInflightSection />
       </div>
 
       {/* Version */}
