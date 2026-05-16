@@ -1,6 +1,7 @@
 export * from "./approval";
 export * from "./execution-mode";
 export * from "./generation-suppress";
+export * from "./kg";
 export * from "./models";
 export * from "./persistence";
 export * from "./providers";
