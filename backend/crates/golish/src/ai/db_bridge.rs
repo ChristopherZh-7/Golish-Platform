@@ -583,6 +583,73 @@ impl DbRepoProvider for GolishDbRepoProvider {
             current_step: created.current_step,
         })
     }
+
+    // -- Sub-agent Dispatch Tracking (P0-4) --
+    async fn dispatch_record_start(
+        &self,
+        session_id: Uuid,
+        parent_dispatch_id: Option<Uuid>,
+        agent_id: &str,
+        tool_call_id: Option<&str>,
+        depth: i32,
+        args: &serde_json::Value,
+    ) -> anyhow::Result<Uuid> {
+        golish_db::repo::sub_agent_dispatches::record_start(
+            &self.pool,
+            session_id,
+            parent_dispatch_id,
+            agent_id,
+            tool_call_id,
+            depth,
+            args,
+        )
+        .await
+    }
+
+    async fn dispatch_record_finish(
+        &self,
+        id: Uuid,
+        status: DispatchStatus,
+        result: Option<&serde_json::Value>,
+        error_message: Option<&str>,
+    ) -> anyhow::Result<()> {
+        golish_db::repo::sub_agent_dispatches::record_finish(
+            &self.pool,
+            id,
+            convert_dispatch_status_back(status),
+            result,
+            error_message,
+        )
+        .await
+    }
+
+    async fn dispatch_list_running(
+        &self,
+        session_id: Uuid,
+    ) -> anyhow::Result<Vec<SubAgentDispatchView>> {
+        let rows = golish_db::repo::sub_agent_dispatches::list_running(&self.pool, session_id).await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| SubAgentDispatchView {
+                id: r.id,
+                parent_dispatch_id: r.parent_dispatch_id,
+                agent_id: r.agent_id,
+                tool_call_id: r.tool_call_id,
+                depth: r.depth,
+                args: r.args,
+                started_at: r.started_at,
+            })
+            .collect())
+    }
+}
+
+fn convert_dispatch_status_back(s: DispatchStatus) -> golish_db::models::SubAgentDispatchStatus {
+    match s {
+        DispatchStatus::Running => golish_db::models::SubAgentDispatchStatus::Running,
+        DispatchStatus::Completed => golish_db::models::SubAgentDispatchStatus::Completed,
+        DispatchStatus::Failed => golish_db::models::SubAgentDispatchStatus::Failed,
+        DispatchStatus::Cancelled => golish_db::models::SubAgentDispatchStatus::Cancelled,
+    }
 }
 
 fn convert_task_status(s: golish_db::models::TaskStatus) -> TaskStatus {
