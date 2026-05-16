@@ -33,6 +33,7 @@ fn install_handlers(
         // ── git_pty (PTY / shell / git / themes / IME) ───────────
         pty_create, pty_write, pty_resize, pty_destroy, pty_get_session,
         pty_get_foreground_process, set_active_terminal_session,
+        pty_request_grid_snapshot, pty_resize_grid,
         list_path_completions, classify_input,
         shell_integration_status, shell_integration_install, shell_integration_uninstall,
         get_git_branch, git_status, git_diff, git_diff_staged,
@@ -66,7 +67,7 @@ fn install_handlers(
         get_agent_mode, set_agent_mode, save_project_agent_mode,
         set_execution_mode, get_execution_mode,
         list_execution_modes,
-        get_api_request_stats, get_plan,
+        get_api_request_stats, get_plan, list_running_sub_agent_dispatches,
         kg_list_entities, kg_search_entities, kg_get_neighbors,
         get_context_summary,
         get_token_usage_stats, get_token_alert_level, get_context_utilization,

@@ -59,6 +59,7 @@ pub use commands::{
     get_loop_protection_config, get_memory_count, get_openai_api_key, get_openrouter_api_key,
     get_plan, get_project_settings, get_remaining_tokens, get_session_ai_config,
     kg_get_neighbors, kg_list_entities, kg_search_entities,
+    list_running_sub_agent_dispatches,
     get_sub_agent_model, get_token_alert_level, get_token_usage_stats, get_tool_approval_pattern,
     get_tool_call_stats, get_tool_policy, get_tool_policy_config, get_usage_by_agent,
     get_vertex_ai_config, get_vision_capabilities, init_ai_agent, init_ai_session,
