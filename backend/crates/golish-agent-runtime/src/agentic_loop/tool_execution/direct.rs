@@ -17,7 +17,7 @@ use golish_sub_agents::{execute_sub_agent, SubAgentContext, SubAgentExecutorCont
 use super::super::sub_agent_dispatch::{build_sub_agent_briefing, execute_sub_agent_with_client};
 use super::super::{AgenticLoopContext, ToolExecutionResult};
 use golish_agent_kit::tool_executors::{
-    execute_ask_human_tool, execute_plan_tool, execute_web_fetch_tool,
+    execute_ask_human_tool, execute_plan_patch_tool, execute_plan_tool, execute_web_fetch_tool,
     extract_and_upsert_entities,
 };
 use golish_agent_kit::tool_provider_impl::DefaultToolProvider;
@@ -56,6 +56,12 @@ where
     if tool_name == "update_plan" {
         let (value, success) =
             execute_plan_tool(ctx.plan_manager, ctx.events.event_tx, tool_args).await;
+        return Ok(ToolExecutionResult { value, success });
+    }
+
+    if tool_name == "update_plan_patch" {
+        let (value, success) =
+            execute_plan_patch_tool(ctx.plan_manager, ctx.events.event_tx, tool_args).await;
         return Ok(ToolExecutionResult { value, success });
     }
 
