@@ -303,6 +303,40 @@ where
     )
     .await;
 
+    // P0-4: persist dispatch lifecycle so the next session can list
+    // mid-flight invocations after a crash/restart. Best-effort —
+    // missing tracker / repo / DB error leaves dispatch_id = None and
+    // the lifecycle becomes a no-op.
+    let dispatch_id: Option<uuid::Uuid> = if let Some(tracker) = ctx.events.db_tracker {
+        if let Some(repo) = tracker.repo() {
+            match golish_agent_kit::db_shim::sub_agent_dispatches::record_start(
+                repo,
+                tracker.session_uuid(),
+                None, // parent_dispatch_id: tree-tracking deferred (P1)
+                agent_id,
+                Some(tool_id),
+                0, // depth: tracking deferred (P1)
+                tool_args,
+            )
+            .await
+            {
+                Ok(id) => Some(id),
+                Err(e) => {
+                    tracing::warn!(
+                        agent_id = agent_id,
+                        error = %e,
+                        "[dispatch-track] record_start failed; proceeding without persistence",
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let result = if let Some((override_provider, override_model)) = &agent_def.model_override {
         let override_client = if let Some(factory) = ctx.llm.model_factory {
             match factory
@@ -433,6 +467,46 @@ where
         )
         .await
     };
+
+    // P0-4: complement record_start above with record_finish so the
+    // dispatch row gets `completed/failed` + result/error before we
+    // hand control back to the caller. Best-effort like record_start.
+    if let (Some(id), Some(tracker)) = (dispatch_id, ctx.events.db_tracker) {
+        if let Some(repo) = tracker.repo() {
+            let (status, result_json, err_msg) = match &result {
+                Ok(r) => (
+                    golish_agent_kit::db_traits::DispatchStatus::Completed,
+                    Some(serde_json::json!({
+                        "agent_id": r.agent_id,
+                        "response": truncate_str(&r.response, 1000),
+                        "success": r.success,
+                        "duration_ms": r.duration_ms,
+                    })),
+                    None,
+                ),
+                Err(e) => (
+                    golish_agent_kit::db_traits::DispatchStatus::Failed,
+                    None,
+                    Some(e.to_string()),
+                ),
+            };
+            if let Err(e) = golish_agent_kit::db_shim::sub_agent_dispatches::record_finish(
+                repo,
+                id,
+                status,
+                result_json.as_ref(),
+                err_msg.as_deref(),
+            )
+            .await
+            {
+                tracing::warn!(
+                    dispatch_id = %id,
+                    error = %e,
+                    "[dispatch-track] record_finish failed",
+                );
+            }
+        }
+    }
 
     match result {
         Ok(result) => {
