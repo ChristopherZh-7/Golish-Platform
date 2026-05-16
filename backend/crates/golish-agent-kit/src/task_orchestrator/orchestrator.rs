@@ -203,6 +203,7 @@ impl TaskOrchestrator {
                     id: Some(format!("task-step-{}", i + 1)),
                     step: s.title.clone(),
                     status,
+                    failure_kind: None,
                 }
             })
             .collect();

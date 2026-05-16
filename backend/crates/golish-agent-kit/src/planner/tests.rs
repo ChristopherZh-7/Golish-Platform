@@ -80,26 +80,31 @@ fn test_plan_summary_from_mixed_steps() {
             id: None,
             step: "Step 1".to_string(),
             status: StepStatus::Completed,
+            failure_kind: None,
         },
         PlanStep {
             id: None,
             step: "Step 2".to_string(),
             status: StepStatus::Completed,
+            failure_kind: None,
         },
         PlanStep {
             id: None,
             step: "Step 3".to_string(),
             status: StepStatus::InProgress,
+            failure_kind: None,
         },
         PlanStep {
             id: None,
             step: "Step 4".to_string(),
             status: StepStatus::Pending,
+            failure_kind: None,
         },
         PlanStep {
             id: None,
             step: "Step 5".to_string(),
             status: StepStatus::Pending,
+            failure_kind: None,
         },
     ];
 
@@ -117,11 +122,13 @@ fn test_plan_summary_all_completed() {
             id: None,
             step: "Done 1".to_string(),
             status: StepStatus::Completed,
+            failure_kind: None,
         },
         PlanStep {
             id: None,
             step: "Done 2".to_string(),
             status: StepStatus::Completed,
+            failure_kind: None,
         },
     ];
 
@@ -154,6 +161,7 @@ fn test_task_plan_is_empty() {
         id: None,
         step: "Test".to_string(),
         status: StepStatus::Pending,
+        failure_kind: None,
     });
     assert!(!plan.is_empty());
 }
@@ -168,6 +176,7 @@ fn test_plan_step_serialization() {
         id: Some("abc-123".into()),
         step: "Read the file".to_string(),
         status: StepStatus::InProgress,
+        failure_kind: None,
     };
 
     let json = serde_json::to_string(&step).unwrap();

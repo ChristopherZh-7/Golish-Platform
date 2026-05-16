@@ -36,6 +36,7 @@ proptest! {
                 id: None,
                 step: input.step,
                 status: input.status,
+                failure_kind: None,
             })
             .collect();
 
@@ -57,6 +58,7 @@ proptest! {
                 id: None,
                 step: input.step,
                 status: input.status,
+                failure_kind: None,
             })
             .collect();
 
@@ -87,6 +89,7 @@ proptest! {
             id: None,
             step: description,
             status,
+            failure_kind: None,
         };
 
         let json = serde_json::to_string(&step).unwrap();

@@ -222,6 +222,7 @@ impl TaskOrchestrator {
                 id: Some(format!("task-step-{}", i + 1)),
                 step: s.title.clone(),
                 status: StepStatus::Completed,
+                failure_kind: None,
             })
             .collect();
         let final_summary = PlanSummary::from_steps(&final_steps);
