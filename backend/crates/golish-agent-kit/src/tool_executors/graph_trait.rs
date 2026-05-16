@@ -41,6 +41,22 @@ pub trait GraphKnowledgeBase: Send + Sync {
         from_id: Uuid,
         max_depth: i32,
     ) -> anyhow::Result<Vec<Vec<GraphEntityView>>>;
+
+    /// Most-recently-updated entities, optionally filtered by
+    /// `project_id` (e.g. the workspace path) and/or `entity_type`.
+    /// Used by the sub-agent briefing builder and the frontend KG
+    /// viewer. Default impl wraps `search_entities("", ...)` so legacy
+    /// backends keep working without explicit overrides.
+    async fn list_entities(
+        &self,
+        project_id: Option<&str>,
+        entity_type: Option<&str>,
+        limit: i64,
+    ) -> anyhow::Result<Vec<GraphEntityView>> {
+        let _ = project_id;
+        // Default: fall back to a permissive name-search.
+        self.search_entities("", entity_type, limit).await
+    }
 }
 
 /// Lightweight view of a graph entity (no dependency on golish-graphiti types).

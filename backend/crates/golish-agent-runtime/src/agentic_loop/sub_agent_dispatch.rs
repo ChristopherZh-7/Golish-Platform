@@ -198,13 +198,18 @@ pub async fn execute_sub_agent_with_client(
     }
 }
 
-/// Build an orchestrator briefing for a sub-agent by querying shared memories
-/// and active execution plans from the database.
+/// Build an orchestrator briefing for a sub-agent by querying shared memories,
+/// active execution plans, **and the security knowledge graph** for the
+/// current project.
 ///
 /// Returns `None` if no relevant context is found or DB is not available,
 /// avoiding unnecessary prompt inflation.
 pub(crate) async fn build_sub_agent_briefing(
     db_tracker: Option<&golish_agent_kit::db_tracking::DbTracker>,
+    graph_backend: Option<
+        &dyn golish_agent_kit::tool_executors::graph_trait::GraphKnowledgeBase,
+    >,
+    project_id: Option<&str>,
     agent_id: &str,
     task_description: &str,
 ) -> Option<String> {
@@ -220,15 +225,24 @@ pub(crate) async fn build_sub_agent_briefing(
         return None;
     }
 
-    let (memories, plans) = tokio::join!(
+    let kg_entities_fut = async {
+        match (graph_backend, project_id) {
+            (Some(g), pid) => g.list_entities(pid, None, 8).await.unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    };
+
+    let (memories, plans, kg_entities) = tokio::join!(
         tracker.fetch_memories_for_briefing(&keywords, 5),
         tracker.fetch_active_plans(),
+        kg_entities_fut,
     );
 
     let has_memories = !memories.is_empty();
     let has_plans = !plans.is_empty();
+    let has_kg = !kg_entities.is_empty();
 
-    if !has_memories && !has_plans {
+    if !has_memories && !has_plans && !has_kg {
         return None;
     }
 
@@ -286,15 +300,61 @@ pub(crate) async fn build_sub_agent_briefing(
         }
     }
 
+    if has_kg {
+        briefing.push_str(
+            "\n### Known Entities in Knowledge Graph (avoid re-discovering)\n",
+        );
+        for ent in &kg_entities {
+            let props_hint = if ent.properties.is_object()
+                && !ent.properties.as_object().map(|o| o.is_empty()).unwrap_or(true)
+            {
+                let preview: String = ent
+                    .properties
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .take(3)
+                    .map(|(k, v)| format!("{}={}", k, truncated_value(v)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(" ({})", preview)
+            } else {
+                String::new()
+            };
+            briefing.push_str(&format!(
+                "- **{}** `{}`{}\n",
+                ent.entity_type, ent.name, props_hint
+            ));
+        }
+        briefing.push_str(
+            "\n_Tip_: prefer `graph_search` / `graph_neighbors` on these before scanning again.\n",
+        );
+    }
+
     tracing::info!(
-        "[briefing] Built briefing for sub-agent '{}': {} memories, {} plans, {} chars",
+        "[briefing] Built briefing for sub-agent '{}': {} memories, {} plans, {} kg-entities, {} chars",
         agent_id,
         memories.len(),
         plans.len(),
+        kg_entities.len(),
         briefing.len()
     );
 
     Some(briefing)
+}
+
+fn truncated_value(v: &serde_json::Value) -> String {
+    let raw = match v {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    if raw.len() > 30 {
+        let mut t: String = raw.chars().take(30).collect();
+        t.push('…');
+        t
+    } else {
+        raw
+    }
 }
 
 /// Check if a tool call is a sub-agent invocation.
