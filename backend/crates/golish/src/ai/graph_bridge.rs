@@ -155,4 +155,29 @@ impl GraphKnowledgeBase for GraphClientBackend {
             })
             .collect())
     }
+
+    async fn list_entities(
+        &self,
+        project_id: Option<&str>,
+        entity_type: Option<&str>,
+        limit: i64,
+    ) -> anyhow::Result<Vec<GraphEntityView>> {
+        let entities = self
+            .client
+            .list_entities(project_id, entity_type, limit)
+            .await?;
+        Ok(entities
+            .into_iter()
+            .map(|e| GraphEntityView {
+                id: e.id,
+                entity_type: e.entity_type,
+                name: e.name,
+                properties: e.properties,
+                session_id: e.session_id,
+                project_id: e.project_id.and_then(|s| Uuid::parse_str(&s).ok()),
+                created_at: e.created_at,
+                updated_at: e.updated_at,
+            })
+            .collect())
+    }
 }

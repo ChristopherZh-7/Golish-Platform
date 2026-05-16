@@ -246,7 +246,23 @@ where
     let tool_provider = DefaultToolProvider::with_db_tracker(ctx.events.db_tracker);
 
     let task_desc = tool_args.get("task").and_then(|v| v.as_str()).unwrap_or("");
-    let briefing = build_sub_agent_briefing(ctx.events.db_tracker, agent_id, task_desc).await;
+    let project_id = {
+        let ws = ctx.workspace.read().await;
+        ws.to_string_lossy().to_string()
+    };
+    let project_id_opt = if project_id == "." || project_id.is_empty() {
+        None
+    } else {
+        Some(project_id)
+    };
+    let briefing = build_sub_agent_briefing(
+        ctx.events.db_tracker,
+        ctx.graph_backend.as_deref(),
+        project_id_opt.as_deref(),
+        agent_id,
+        task_desc,
+    )
+    .await;
 
     let result = if let Some((override_provider, override_model)) = &agent_def.model_override {
         let override_client = if let Some(factory) = ctx.llm.model_factory {
