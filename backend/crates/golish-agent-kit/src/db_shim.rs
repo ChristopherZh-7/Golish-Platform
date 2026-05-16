@@ -177,6 +177,53 @@ pub mod execution_plans {
     }
 }
 
+/// P0-4: sub-agent dispatch lifecycle helpers.
+///
+/// Thin pass-through wrappers around the corresponding `DbRepoProvider`
+/// methods so the agent runtime can record dispatch lifecycle without
+/// pulling the trait import surface into every call site.
+pub mod sub_agent_dispatches {
+    use super::*;
+
+    pub async fn record_start(
+        repo: &dyn DbRepoProvider,
+        session_id: Uuid,
+        parent_dispatch_id: Option<Uuid>,
+        agent_id: &str,
+        tool_call_id: Option<&str>,
+        depth: i32,
+        args: &serde_json::Value,
+    ) -> anyhow::Result<Uuid> {
+        repo.dispatch_record_start(
+            session_id,
+            parent_dispatch_id,
+            agent_id,
+            tool_call_id,
+            depth,
+            args,
+        )
+        .await
+    }
+
+    pub async fn record_finish(
+        repo: &dyn DbRepoProvider,
+        id: Uuid,
+        status: DispatchStatus,
+        result: Option<&serde_json::Value>,
+        error_message: Option<&str>,
+    ) -> anyhow::Result<()> {
+        repo.dispatch_record_finish(id, status, result, error_message)
+            .await
+    }
+
+    pub async fn list_running(
+        repo: &dyn DbRepoProvider,
+        session_id: Uuid,
+    ) -> anyhow::Result<Vec<SubAgentDispatchView>> {
+        repo.dispatch_list_running(session_id).await
+    }
+}
+
 pub mod wiki_kb {
     use super::*;
 
