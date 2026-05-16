@@ -120,11 +120,13 @@ export function useInputState({
   const pendingCommand = usePendingCommand(sessionId);
 
   // Warp-style interactive input mode: when the backend `stdin_wait`
-  // detector fires for the running command, the textarea repurposes
-  // itself to write directly to the PTY (Enter sends `input + \n` via
-  // `ptyWrite` without creating a new command block). The bottom panel
-  // also stays visible (see PaneLeaf) instead of being hidden by the
-  // pending-command animation.
+  // detector fires for the running command, the textarea can route
+  // keystrokes straight to the PTY (Enter sends `input + \n` via
+  // `ptyWrite` without creating a new command block) as a fallback
+  // stdin sink. `RunningCommandCard` is the primary sink (its own
+  // offscreen capture textarea takes focus), but `UnifiedInput` keeps
+  // the UI affordance (orange ring / banner) and offers a secondary
+  // path for keystrokes when the card hasn't focused yet.
   const interactiveMode = useStore((state) => state.sessions[sessionId]?.interactiveMode) ?? null;
   const isInteractive = !!interactiveMode?.active;
 
@@ -337,12 +339,14 @@ export function useInputState({
 
   const handleSubmit = useCallback(() => {
     const { input: currentInput } = stateRef.current;
-    // Interactive-mode handler: we pipe whatever the user typed (even
-    // empty, since hitting Enter on a `[Y/n]` prompt with no input is a
-    // valid "accept default" gesture) straight to the running command's
-    // stdin via `ptyWrite`. No history entry, no command tracking, no
-    // tool-mode handling — those concerns belong to the
-    // start-a-new-command path only.
+
+    // Interactive-mode handler: pipe whatever the user typed (even
+    // empty — hitting Enter on `[Y/n]` with no input is a valid
+    // "accept default") straight to the running command's stdin via
+    // `ptyWrite`. No history entry, no command tracking — those
+    // concerns belong to the start-a-new-command path only.
+    // `RunningCommandCard` is the primary stdin sink, this is a
+    // fallback for keystrokes that reach `UnifiedInput` first.
     if (isInteractive) {
       setInput("");
       ptyWrite(sessionId, `${currentInput}\n`).catch((err) =>
@@ -350,6 +354,14 @@ export function useInputState({
       );
       return;
     }
+
+    // Non-interactive: while a command is running suppress submit so
+    // the user's freshly-typed text doesn't accidentally pipe into the
+    // PTY as half-stdin / half-shell-command. The buffered text stays
+    // in the textarea so the user can submit it as the next command
+    // the moment the current one ends.
+    const storeState = useStore.getState();
+    if (storeState.pendingCommand[sessionId]?.command) return;
 
     if (!currentInput.trim()) return;
 
@@ -507,6 +519,13 @@ export function useInputState({
       const curIsToolSearchMode = /^\/t\s/i.test(currentInput);
 
       let value = e.target.value;
+      // Strip ASCII control bytes that some IMEs / Ctrl key chords
+      // inject into the textarea value (e.g. Ctrl-H produces U+0008
+      // BACKSPACE on macOS / Linux). They render as `⬛` boxes in
+      // monospace fonts and would poison any command we eventually
+      // ship to the shell. Keep `\n` (Shift+Enter / multi-line
+      // commands) and `\t` (tab) — both are legitimate.
+      value = value.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
       if (curIsToolSearchMode && !value.toLowerCase().startsWith("/t")) {
         value = `/t ${value}`;
       }

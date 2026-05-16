@@ -102,21 +102,6 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
   const isInteractiveInputActive = interactiveMode?.active === true;
   const isCommandRunning = !!pendingCommand?.command;
 
-  // Defer "command is running → hide UnifiedInput" by ~180 ms so short
-  // commands (`ls`, `pwd`, single-shot greps that finish in well under
-  // 200 ms) don't flash the bottom input out and back in. The instant
-  // command-end direction is *not* debounced — we always re-show the
-  // input the moment `pendingCommand` clears so the user can type the
-  // next command without waiting on a timer.
-  const [hideInputForCommand, setHideInputForCommand] = useState(false);
-  useEffect(() => {
-    if (isCommandRunning) {
-      const t = setTimeout(() => setHideInputForCommand(true), 180);
-      return () => clearTimeout(t);
-    }
-    setHideInputForCommand(false);
-  }, [isCommandRunning]);
-
   const isFocused = focusedPaneId === paneId;
   const showFocusIndicator = isFocused && paneCount > 1;
 
@@ -232,16 +217,22 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
                   )}
                 </div>
                 {detailViewMode !== "sub-agent-detail" &&
-                  detailViewMode !== "tool-detail" &&
-                  !hideInputForCommand && (
-                    // Warp-style: the bottom input is only present
-                    // when no command is running. Once `pendingCommand`
-                    // exists the `RunningCommandCard` in the timeline
-                    // takes over both rendering output and accepting
-                    // stdin — there is no separate "input box" panel
-                    // to render. When the command ends and the card
-                    // converts to a `CommandBlock`, this input
-                    // re-appears in its place.
+                  detailViewMode !== "tool-detail" && (
+                    // Bottom input is always mounted so short commands
+                    // (`ls`, `pwd`, …) don't flash it out and back in.
+                    // While a command is running:
+                    //   - The textarea's focus is taken over by the
+                    //     `RunningCommandCard` in the timeline (only
+                    //     when `interactiveMode` actually trips), which
+                    //     is the stdin sink for prompts like sqlmap's
+                    //     `[Y/n]`.
+                    //   - `useUnifiedInputState.handleSubmit` early-
+                    //     returns when `isProcessRunning`, so an
+                    //     accidental Enter press here does NOT ship the
+                    //     buffered text to the PTY as half-stdin /
+                    //     half-command. The text stays in the buffer
+                    //     until the command ends, then the user can
+                    //     submit it as the next command.
                     <div
                       className="pane-bottom-terminal origin-bottom"
                       data-input-state="idle"
