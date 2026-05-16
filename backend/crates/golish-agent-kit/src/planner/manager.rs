@@ -22,6 +22,7 @@ pub struct PlanManager {
     session_id: Option<uuid::Uuid>,
     project_path: Option<String>,
     db_plan_id: Arc<RwLock<Option<uuid::Uuid>>>,
+    event_emitter: Option<super::SharedPlanEventEmitter>,
 }
 
 impl Default for PlanManager {
@@ -39,6 +40,7 @@ impl PlanManager {
             session_id: None,
             project_path: None,
             db_plan_id: Arc::new(RwLock::new(None)),
+            event_emitter: None,
         }
     }
 
@@ -56,6 +58,13 @@ impl PlanManager {
     /// Set the DB repository provider.
     pub fn set_repo(&mut self, repo: Arc<dyn crate::db_traits::DbRepoProvider>) {
         self.db_repo = Some(repo);
+    }
+
+    /// Set the event emitter used to broadcast plan changes from background
+    /// load operations (e.g. `load_from_db`). The emitter is optional;
+    /// without it, the loaded plan is kept in memory only.
+    pub fn set_event_emitter(&mut self, emitter: super::SharedPlanEventEmitter) {
+        self.event_emitter = Some(emitter);
     }
 
     /// Load the most recent active plan from DB for the current project.
@@ -89,14 +98,26 @@ impl PlanManager {
 
                 let summary = PlanSummary::from_steps(&plan_steps);
 
-                let mut plan = self.plan.write().await;
-                plan.explanation = Some(db_plan.description.clone());
-                plan.steps = plan_steps;
-                plan.summary = summary;
-                plan.version = 1;
+                let snapshot_version: u32;
+                let snapshot_summary: PlanSummary;
+                let snapshot_steps: Vec<PlanStep>;
+                let snapshot_explanation: Option<String>;
+                {
+                    let mut plan = self.plan.write().await;
+                    plan.explanation = Some(db_plan.description.clone());
+                    plan.steps = plan_steps;
+                    plan.summary = summary;
+                    plan.version = 1;
+                    snapshot_version = plan.version;
+                    snapshot_summary = plan.summary.clone();
+                    snapshot_steps = plan.steps.clone();
+                    snapshot_explanation = plan.explanation.clone();
+                }
 
-                let mut db_id = self.db_plan_id.write().await;
-                *db_id = Some(db_plan.id);
+                {
+                    let mut db_id = self.db_plan_id.write().await;
+                    *db_id = Some(db_plan.id);
+                }
 
                 tracing::info!(
                     plan_id = %db_plan.id,
@@ -104,6 +125,19 @@ impl PlanManager {
                     steps = db_plan.steps.as_array().map(|a| a.len()).unwrap_or(0),
                     "Loaded active plan from DB"
                 );
+
+                if let Some(ref emitter) = self.event_emitter {
+                    emitter.emit_plan_updated(
+                        snapshot_version,
+                        snapshot_summary,
+                        snapshot_steps,
+                        snapshot_explanation,
+                    );
+                    tracing::debug!(
+                        "[PlanManager] Emitted PlanUpdated after load_from_db restore"
+                    );
+                }
+
                 true
             }
             _ => false,
