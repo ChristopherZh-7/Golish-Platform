@@ -138,6 +138,22 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
   const hasPendingCommand = !!pendingCommand?.command;
   const prevHadPendingRef = useRef(hasPendingCommand);
 
+  // Debounce the false→true edge by ~180 ms so a fast command (`ls`,
+  // `pwd`, etc.) that completes inside that window never flashes a
+  // `RunningCommandCard` placeholder — by the time the timer fires
+  // the command has already ended, `hasPendingCommand` flipped back
+  // to false, and `setTimeout` is cleared in the effect cleanup. The
+  // true→false edge fires immediately so the card disappears the
+  // instant the command actually ends.
+  const [showRunningCard, setShowRunningCard] = useState(false);
+  useEffect(() => {
+    if (hasPendingCommand) {
+      const t = setTimeout(() => setShowRunningCard(true), 180);
+      return () => clearTimeout(t);
+    }
+    setShowRunningCard(false);
+  }, [hasPendingCommand]);
+
   // -- Command lifecycle snap-to-bottom ---------------------------
   //
   // When a command starts or ends, force isAtBottom + jump to bottom
@@ -370,7 +386,7 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
                 workingDirectory={workingDirectory}
               />
 
-              {hasPendingCommand && pendingCommand && !isInteractiveInputActive && (
+              {showRunningCard && pendingCommand && !isInteractiveInputActive && (
                 <RunningCommandCard
                   sessionId={sessionId}
                   command={pendingCommand.command ?? null}
