@@ -35,6 +35,36 @@ pub enum StepStatus {
     Failed,
 }
 
+/// Categorisation of a step failure — borrowed from the PentAGI refiner
+/// taxonomy (see `docs/design/2026-05-17-refiner-patch-protocol.md`).
+///
+/// Useful as a hint to the refiner agent: when 2+ recent failures share
+/// the same `failure_kind`, the agent should pivot strategy rather than
+/// retry with minor parameter tweaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureKind {
+    /// Different command, tool, or parameter set would solve it.
+    Technical,
+    /// Missing dependency / wrong config / no permission.
+    Environmental,
+    /// Approach itself is wrong, needs replanning at a higher level.
+    Conceptual,
+    /// Out of system control: rate limit, target offline, EULA, …
+    External,
+}
+
+impl std::fmt::Display for FailureKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FailureKind::Technical => write!(f, "technical"),
+            FailureKind::Environmental => write!(f, "environmental"),
+            FailureKind::Conceptual => write!(f, "conceptual"),
+            FailureKind::External => write!(f, "external"),
+        }
+    }
+}
+
 impl std::fmt::Display for StepStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -58,6 +88,11 @@ pub struct PlanStep {
     pub step: String,
     /// Current status of this step.
     pub status: StepStatus,
+    /// Optional categorisation when `status == Failed`.
+    /// Backwards-compatible: omitted on serialisation when `None` and
+    /// defaulted to `None` on deserialisation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<FailureKind>,
 }
 
 /// Summary statistics for a plan.

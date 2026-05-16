@@ -93,6 +93,7 @@ impl PlanManager {
                             "in_progress" => StepStatus::InProgress,
                             _ => StepStatus::Pending,
                         },
+                        failure_kind: None,
                     })
                     .collect();
 
@@ -264,6 +265,7 @@ impl PlanManager {
                     id: Some(id),
                     step: trimmed,
                     status: input.status,
+                    failure_kind: None,
                 }
             })
             .collect();
