@@ -32,6 +32,14 @@ pub struct RunningSubAgentDispatch {
     pub started_at: String,
 }
 
+/// Cancel-after threshold (seconds): rows older than this stuck in
+/// `running` are reaped on the next list query.
+///
+/// 24 hours is generous enough that long real work isn't auto-cancelled
+/// (a single sub-agent rarely runs that long), yet short enough that a
+/// dead row from yesterday's crash gets cleaned up quickly.
+const STALE_RUNNING_CANCEL_AFTER_SECS: i64 = 60 * 60 * 24;
+
 #[tauri::command]
 pub async fn list_running_sub_agent_dispatches(
     session_id: String,
@@ -46,6 +54,32 @@ pub async fn list_running_sub_agent_dispatches(
             )))
         }
     };
+
+    // P0-4.c: before listing, reap dispatches that are still tagged
+    // `running` but started > STALE_RUNNING_CANCEL_AFTER_SECS ago. These
+    // are leftovers from a previous crash where record_finish never
+    // fired. Best-effort: failures here log a warn and don't block the
+    // list query.
+    match golish_db::repo::sub_agent_dispatches::mark_session_running_as_cancelled(
+        &state.db_pool,
+        sid,
+        STALE_RUNNING_CANCEL_AFTER_SECS,
+    )
+    .await
+    {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(
+            session_id = %session_id,
+            cancelled = n,
+            stale_after_secs = STALE_RUNNING_CANCEL_AFTER_SECS,
+            "[dispatch-track] reaped stale running dispatches"
+        ),
+        Err(e) => tracing::warn!(
+            session_id = %session_id,
+            error = %e,
+            "[dispatch-track] stale-cleanup failed (continuing with list)"
+        ),
+    }
 
     // Use the repo function directly to avoid an extra trait round-trip.
     let rows = match golish_db::repo::sub_agent_dispatches::list_running(&state.db_pool, sid).await
