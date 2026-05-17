@@ -48,6 +48,7 @@ pub async fn target_add(
     owner: Option<String>,
     time_window_start: Option<String>,
     time_window_end: Option<String>,
+    organization_id: Option<String>,
     project_path: Option<String>,
     source: Option<String>,
     parent_id: Option<String>,
@@ -67,10 +68,17 @@ pub async fn target_add(
     let tw_end = parse_iso8601(time_window_end.as_deref());
     let src = source.unwrap_or_else(|| "manual".to_string());
     let pid: Option<Uuid> = parent_id.and_then(|s| s.parse().ok());
+    let org_id: Option<Uuid> = organization_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse())
+        .transpose()
+        .map_err(|e: uuid::Error| e.to_string())?;
 
     let row = sqlx::query_as::<_, TargetRow>(
-        r#"INSERT INTO targets (name, target_type, value, tags, notes, scope, grp, owner, time_window_start, time_window_end, project_path, source, parent_id)
-           VALUES ($1, $2::target_type, $3, $4, $5, $6::scope_type, $7, $8, $9, $10, $11, $12, $13)
+        r#"INSERT INTO targets (name, target_type, value, tags, notes, scope, grp, owner, time_window_start, time_window_end, organization_id, project_path, source, parent_id)
+           VALUES ($1, $2::target_type, $3, $4, $5, $6::scope_type, $7, $8, $9, $10, $11, $12, $13, $14)
            RETURNING id, name, target_type::text, value, tags, notes, scope::text,
                      status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports,
                      real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
@@ -86,6 +94,7 @@ pub async fn target_add(
     .bind(&own)
     .bind(tw_start)
     .bind(tw_end)
+    .bind(org_id)
     .bind(project_path.as_deref())
     .bind(&src)
     .bind(pid)

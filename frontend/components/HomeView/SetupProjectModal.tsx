@@ -2,6 +2,7 @@ import { homeDir } from "@tauri-apps/api/path";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { FolderOpen, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import type { ProjectFormData } from "@/lib/projects";
 
@@ -13,11 +14,16 @@ interface SetupProjectModalProps {
   onSubmit: (projectData: ProjectFormData) => void;
 }
 
+interface FormState {
+  name: string;
+  rootPath: string;
+}
+
 export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectModalProps) {
-  const [formData, setFormData] = useState<ProjectFormData>({
+  const { t } = useTranslation();
+  const [formData, setFormData] = useState<FormState>({
     name: "",
     rootPath: "",
-    targets: [],
   });
   const [targetsText, setTargetsText] = useState("");
 
@@ -32,7 +38,7 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
     }
   }, [isOpen, formData.rootPath]);
 
-  const handleChange = useCallback((field: keyof ProjectFormData, value: string) => {
+  const handleChange = useCallback(<K extends keyof FormState>(field: K, value: FormState[K]) => {
     setFormData((prev) => ({
       ...prev,
       [field]: value,
@@ -65,7 +71,6 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
 
     if (selected) {
       handleChange("rootPath", selected);
-      // Auto-fill name from folder name if empty
       if (!formData.name.trim()) {
         const folderName = selected.split("/").pop() || selected.split("\\").pop() || "";
         if (folderName) {
@@ -81,10 +86,10 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
 
-      <div className="relative bg-card border border-border rounded-lg shadow-2xl w-full max-w-md overflow-hidden">
+      <div className="relative bg-card border border-border rounded-lg shadow-2xl w-full max-w-lg overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-border">
-          <h2 className="text-lg font-semibold text-foreground">New Project</h2>
+          <h2 className="text-lg font-semibold text-foreground">{t("projectSetup.title")}</h2>
           <button
             type="button"
             onClick={onClose}
@@ -95,10 +100,12 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
         </div>
 
         {/* Form */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-5">
-          {/* Parent directory - project will be created as a subdirectory */}
+        <form onSubmit={handleSubmit} className="p-6 space-y-5 max-h-[80vh] overflow-y-auto">
+          {/* Parent directory */}
           <div>
-            <span className="block text-xs text-muted-foreground mb-1.5">Parent Directory</span>
+            <span className="block text-xs text-muted-foreground mb-1.5">
+              {t("projectSetup.parentDirectory")}
+            </span>
             <div className="flex items-center space-x-2">
               <label className="flex-1">
                 <input
@@ -122,22 +129,27 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
           {/* Project Name */}
           <div>
             <label className="block">
-              <span className="block text-xs text-muted-foreground mb-1.5">Project Name</span>
+              <span className="block text-xs text-muted-foreground mb-1.5">
+                {t("projectSetup.projectName")}
+              </span>
               <input
                 type="text"
                 value={formData.name}
                 onChange={(e) => handleChange("name", e.target.value)}
-                placeholder="my-project"
+                placeholder={t("projectSetup.projectNamePlaceholder")}
                 className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm text-foreground/90 placeholder-muted-foreground/50 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
               />
             </label>
           </div>
 
-          {/* Targets (optional) */}
+          {/* Initial targets — always available under Schema E */}
           <div>
             <label className="block">
               <span className="block text-xs text-muted-foreground mb-1.5">
-                Targets <span className="text-muted-foreground/50">(optional)</span>
+                {t("projectSetup.initialTargets")}{" "}
+                <span className="text-muted-foreground/50">
+                  {t("projectSetup.initialTargetsOptional")}
+                </span>
               </span>
               <textarea
                 value={targetsText}
@@ -147,14 +159,15 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
                 className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm text-foreground/90 placeholder-muted-foreground/50 font-mono focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors resize-none"
               />
               <span className="block text-[11px] text-muted-foreground/60 mt-1">
-                One per line or comma-separated. AI will auto-start reconnaissance.
+                {t("projectSetup.initialTargetsHint")}
               </span>
             </label>
           </div>
 
           {formData.rootPath && formData.name.trim() && (
             <div className="text-xs text-muted-foreground font-mono bg-background rounded-md px-3 py-2 border border-secondary">
-              Project path: {formData.rootPath.replace(/\/$/, "")}/{formData.name.trim()}
+              {t("projectSetup.projectPath")}: {formData.rootPath.replace(/\/$/, "")}/
+              {formData.name.trim()}
             </div>
           )}
         </form>
@@ -166,7 +179,7 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
             onClick={onClose}
             className="px-4 py-2 text-sm font-medium text-foreground/80 bg-secondary border border-border rounded-md hover:bg-muted transition-colors"
           >
-            Cancel
+            {t("common.cancel")}
           </button>
           <button
             type="submit"
@@ -174,7 +187,7 @@ export function SetupProjectModal({ isOpen, onClose, onSubmit }: SetupProjectMod
             disabled={!formData.name.trim() || !formData.rootPath.trim()}
             className="px-4 py-2 text-sm font-medium text-primary-foreground bg-primary rounded-md hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Create Project
+            {t("projectSetup.create")}
           </button>
         </div>
       </div>

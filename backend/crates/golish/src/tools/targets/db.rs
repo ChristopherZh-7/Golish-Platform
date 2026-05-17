@@ -20,6 +20,10 @@ pub async fn db_target_add(
     value: &str,
     target_type: Option<&str>,
     grp: Option<&str>,
+    owner: Option<&str>,
+    time_window_start: Option<chrono::DateTime<chrono::Utc>>,
+    time_window_end: Option<chrono::DateTime<chrono::Utc>>,
+    organization_id: Option<Uuid>,
     project_path: Option<&str>,
     source: &str,
     parent_id: Option<Uuid>,
@@ -32,6 +36,7 @@ pub async fn db_target_add(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or("default");
+    let own = owner.map(str::trim).unwrap_or("");
 
     let existing = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
@@ -51,8 +56,8 @@ pub async fn db_target_add(
     }
 
     let row = sqlx::query_as::<_, TargetRow>(
-        r#"INSERT INTO targets (name, target_type, value, tags, notes, scope, grp, project_path, source, parent_id)
-           VALUES ($1, $2::target_type, $3, '[]', '', 'in'::scope_type, $4, $5, $6, $7)
+        r#"INSERT INTO targets (name, target_type, value, tags, notes, scope, grp, owner, time_window_start, time_window_end, organization_id, project_path, source, parent_id)
+           VALUES ($1, $2::target_type, $3, '[]', '', 'in'::scope_type, $4, $5, $6, $7, $8, $9, $10, $11)
            RETURNING id, name, target_type::text, value, tags, notes, scope::text,
                      status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports,
                      real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
@@ -62,6 +67,10 @@ pub async fn db_target_add(
     .bind(tt.as_str())
     .bind(value)
     .bind(g)
+    .bind(own)
+    .bind(time_window_start)
+    .bind(time_window_end)
+    .bind(organization_id)
     .bind(project_path)
     .bind(source)
     .bind(parent_id)

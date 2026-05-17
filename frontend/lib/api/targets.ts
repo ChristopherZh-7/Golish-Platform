@@ -15,6 +15,8 @@ export async function addTarget(params: {
   owner?: string;
   timeWindowStart?: string;
   timeWindowEnd?: string;
+  /** Required in redteam projects; must be `undefined` (or omitted) in pentest projects. */
+  organizationId?: string;
   projectPath: string | null;
 }): Promise<void> {
   await invoke("target_add", params);

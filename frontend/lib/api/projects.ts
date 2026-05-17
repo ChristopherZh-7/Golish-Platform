@@ -14,6 +14,14 @@ import { invoke } from "./client";
 // Types
 // ============================================================================
 
+/**
+ * Schema E (2026-05-17): the project-wide `mode` enum was retired. Every
+ * project is now anchored on the implicit-organization model. The
+ * "pentest-like vs redteam-like" distinction is derived from the org-tree
+ * shape at the UI layer (`orgs.length === 1 && root has no children` ⇒
+ * pentest-like UI), not from a persisted enum.
+ */
+
 export interface ProjectFormData {
   name: string;
   rootPath: string;

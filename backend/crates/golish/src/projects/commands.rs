@@ -13,6 +13,10 @@ use golish_projects::{
 };
 
 /// Project form data from the frontend.
+///
+/// Schema E (2026-05-17) removed the `mode` field — every project relies on
+/// the implicit-organization model and the "pentest vs redteam" distinction
+/// is derived from the org-tree shape at the UI layer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectFormData {
@@ -47,13 +51,79 @@ impl From<ProjectFormData> for ProjectConfig {
 }
 
 /// Save a new or updated project configuration.
+///
+/// Side-effect (Schema E): on a **first save** for a given project name we
+/// also seed an implicit root organization in the DB so that targets attached
+/// to this project always have a parent org to bind to. We name the implicit
+/// org after the project itself — the user can rename it later from the
+/// OrganizationsPanel. Subsequent saves are idempotent: if the project
+/// already has at least one root org, nothing extra happens.
 #[tauri::command]
-pub async fn save_project(form: ProjectFormData) -> Result<(), GolishError> {
+pub async fn save_project(
+    state: tauri::State<'_, DbState>,
+    form: ProjectFormData,
+) -> Result<(), GolishError> {
     let config: ProjectConfig = form.into();
+    let project_path = config.root_path.to_string_lossy().to_string();
+    let project_name = config.name.clone();
+
+    let already_existed = storage_load(&config.name)
+        .await
+        .map_err(|e| GolishError::Internal(format!("Failed to load project: {e}")))?
+        .is_some();
 
     storage_save(&config)
         .await
-        .map_err(|e| GolishError::Internal(format!("Failed to save project: {}", e)))
+        .map_err(|e| GolishError::Internal(format!("Failed to save project: {}", e)))?;
+
+    // Only seed the implicit root org on first creation — keeps subsequent
+    // saves cheap and avoids racing with whatever the OrganizationsPanel may
+    // have done already.
+    if !already_existed {
+        if let Err(e) = ensure_root_org(&state, &project_path, &project_name).await {
+            tracing::warn!(
+                "[save_project] Failed to seed implicit root org for {}: {}",
+                project_name,
+                e
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Insert a root organization for `project_path` named after the project,
+/// unless one already exists. Idempotent.
+async fn ensure_root_org(
+    state: &tauri::State<'_, DbState>,
+    project_path: &str,
+    project_name: &str,
+) -> Result<(), GolishError> {
+    let pool = state.pool_ready().await?;
+    let existing: Option<uuid::Uuid> = sqlx::query_scalar(
+        r#"SELECT id FROM organizations
+           WHERE project_path = $1 AND parent_id IS NULL
+           LIMIT 1"#,
+    )
+    .bind(project_path)
+    .fetch_optional(pool)
+    .await?;
+
+    if existing.is_some() {
+        return Ok(());
+    }
+
+    sqlx::query(
+        r#"INSERT INTO organizations (project_path, name, parent_id)
+           VALUES ($1, $2, NULL)
+           ON CONFLICT DO NOTHING"#,
+    )
+    .bind(project_path)
+    .bind(project_name)
+    .execute(pool)
+    .await?;
+
+    Ok(())
 }
 
 /// Delete a project configuration by name, including associated DB records.
