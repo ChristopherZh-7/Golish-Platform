@@ -13,6 +13,7 @@ interface AddForm {
   value: string;
   notes: string;
   tags: string;
+  grp: string;
 }
 
 export function useTargetData() {
@@ -70,6 +71,7 @@ export function useTargetData() {
         await targets.addTarget({
           name: addForm.name,
           value: addForm.value.trim(),
+          grp: addForm.grp.trim() || undefined,
           projectPath: getProjectPath(),
         });
         loadTargets();
@@ -89,12 +91,12 @@ export function useTargetData() {
   );
 
   const handleBatchAdd = useCallback(
-    async (batchInput: string) => {
+    async (batchInput: string, grp = "") => {
       if (!batchInput.trim()) return;
       try {
         const added = await targets.batchAddTargets({
           values: batchInput,
-          group: "",
+          grp,
           projectPath: getProjectPath(),
         });
         loadTargets();
@@ -169,6 +171,25 @@ export function useTargetData() {
     [loadTargets]
   );
 
+  const handleUpdateGrp = useCallback(
+    async (id: string, grp: string) => {
+      try {
+        await targets.updateTarget({ id, grp: grp.trim(), projectPath: getProjectPath() });
+        loadTargets();
+        logAudit({
+          action: "target_grp_changed",
+          category: "targets",
+          details: `${id} grp → ${grp}`,
+          entityType: "target",
+          entityId: id,
+        });
+      } catch (e) {
+        console.error("Failed to update grp:", e);
+      }
+    },
+    [loadTargets]
+  );
+
   const handleClearAll = useCallback(
     async (confirmMsg: string) => {
       if (!confirm(confirmMsg)) return;
@@ -201,6 +222,7 @@ export function useTargetData() {
     handleDelete,
     handleToggleScope,
     handleUpdateNotes,
+    handleUpdateGrp,
     handleClearAll,
   };
 }

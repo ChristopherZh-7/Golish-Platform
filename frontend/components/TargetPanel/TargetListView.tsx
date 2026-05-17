@@ -53,8 +53,9 @@ interface TargetListViewProps {
     value: string;
     notes: string;
     tags: string;
+    grp: string;
   }) => Promise<string | null>;
-  onBatchAdd: (input: string) => Promise<void>;
+  onBatchAdd: (input: string, grp?: string) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   onToggleScope: (target: Target) => Promise<void>;
   onUpdateNotes: (id: string, notes: string) => void;
@@ -79,7 +80,14 @@ export function TargetListView({
   const [showAdd, setShowAdd] = useState(false);
   const [showBatch, setShowBatch] = useState(false);
   const [batchInput, setBatchInput] = useState("");
-  const [addForm, setAddForm] = useState({ name: "", value: "", notes: "", tags: "" });
+  const [batchGrp, setBatchGrp] = useState("");
+  const [addForm, setAddForm] = useState({
+    name: "",
+    value: "",
+    notes: "",
+    tags: "",
+    grp: "",
+  });
   const [addError, setAddError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [expandedParents, setExpandedParents] = useState<Set<string>>(new Set());
@@ -139,17 +147,18 @@ export function TargetListView({
     if (err) {
       setAddError(err);
     } else {
-      setAddForm({ name: "", value: "", notes: "", tags: "" });
+      setAddForm({ name: "", value: "", notes: "", tags: "", grp: "" });
       setShowAdd(false);
     }
   }, [addForm, onAdd]);
 
   const handleBatchAdd = useCallback(async () => {
     if (!batchInput.trim()) return;
-    await onBatchAdd(batchInput);
+    await onBatchAdd(batchInput, batchGrp.trim());
     setBatchInput("");
+    setBatchGrp("");
     setShowBatch(false);
-  }, [batchInput, onBatchAdd]);
+  }, [batchInput, batchGrp, onBatchAdd]);
 
   return (
     <>
@@ -237,6 +246,15 @@ export function TargetListView({
           <div className="flex items-center gap-2">
             <input
               className="flex-1 text-xs bg-background border border-border/50 rounded px-2 py-1.5 outline-none focus:border-accent"
+              placeholder={t("targets.groupPlaceholder")}
+              title={t("targets.groupHint")}
+              value={addForm.grp}
+              onChange={(e) => setAddForm((f) => ({ ...f, grp: e.target.value }))}
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              className="flex-1 text-xs bg-background border border-border/50 rounded px-2 py-1.5 outline-none focus:border-accent"
               placeholder={`${t("targets.tags")} (comma separated)`}
               value={addForm.tags}
               onChange={(e) => setAddForm((f) => ({ ...f, tags: e.target.value }))}
@@ -274,6 +292,13 @@ export function TargetListView({
       {/* Batch import */}
       {showBatch && (
         <div className="px-4 py-3 border-b border-border/30 bg-muted/10 space-y-2">
+          <input
+            className="w-full text-xs bg-background border border-border/50 rounded px-2 py-1.5 outline-none focus:border-accent"
+            placeholder={t("targets.groupPlaceholder")}
+            title={t("targets.groupHint")}
+            value={batchGrp}
+            onChange={(e) => setBatchGrp(e.target.value)}
+          />
           <textarea
             className="w-full h-32 text-xs bg-background border border-border/50 rounded px-2 py-1.5 outline-none focus:border-accent resize-none font-mono"
             placeholder={t("targets.batchPlaceholder")}

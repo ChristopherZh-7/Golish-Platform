@@ -1,9 +1,10 @@
-import { Crosshair, GitFork, LayoutList, Loader2, Shield } from "lucide-react";
+import { Building2, Crosshair, GitFork, LayoutList, Loader2, Shield } from "lucide-react";
 import { lazy, Suspense, useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TargetGraphView } from "@/components/TargetPanel/TargetGraphView";
 import { cn } from "@/lib/utils";
 import { useTargetData } from "./hooks/useTargetData";
+import { TargetGroupedView } from "./TargetGroupedView";
 import { TargetListView } from "./TargetListView";
 
 const SecurityViewLazy = lazy(() =>
@@ -11,7 +12,7 @@ const SecurityViewLazy = lazy(() =>
 );
 
 type TargetTab = "targets" | "security";
-type TargetViewMode = "list" | "graph";
+type TargetViewMode = "list" | "tree" | "graph";
 
 export function TargetPanel() {
   const { t } = useTranslation();
@@ -89,6 +90,19 @@ export function TargetPanel() {
                   type="button"
                   className={cn(
                     "p-1.5 transition-colors",
+                    viewMode === "tree"
+                      ? "bg-accent/15 text-accent"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
+                  )}
+                  onClick={() => setViewMode("tree")}
+                  title={t("targets.treeView", "Org Tree View")}
+                >
+                  <Building2 className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  className={cn(
+                    "p-1.5 transition-colors",
                     viewMode === "graph"
                       ? "bg-accent/15 text-accent"
                       : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
@@ -107,6 +121,17 @@ export function TargetPanel() {
       {activeTab === "targets" && viewMode === "graph" ? (
         <div className="flex-1 min-h-0">
           <TargetGraphView targets={safeTargets} />
+        </div>
+      ) : activeTab === "targets" && viewMode === "tree" ? (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <TargetGroupedView
+            targets={safeTargets}
+            t={t}
+            onDelete={handleDelete}
+            onToggleScope={handleToggleScope}
+            onUpdateNotes={handleUpdateNotes}
+            onScan={openScanTools}
+          />
         </div>
       ) : activeTab === "security" ? (
         <div className="flex-1 min-h-0 overflow-hidden">

@@ -11,7 +11,7 @@ export async function listTargets(projectPath: string | null): Promise<TargetSto
 export async function addTarget(params: {
   name: string;
   value: string;
-  group?: string;
+  grp?: string;
   projectPath: string | null;
 }): Promise<void> {
   await invoke("target_add", params);
@@ -19,7 +19,7 @@ export async function addTarget(params: {
 
 export async function batchAddTargets(params: {
   values: string;
-  group: string;
+  grp: string;
   projectPath: string | null;
 }): Promise<Target[]> {
   return invoke<Target[]>("target_batch_add", params);
@@ -33,6 +33,7 @@ export async function updateTarget(params: {
   id: string;
   scope?: string;
   notes?: string;
+  grp?: string;
   projectPath: string | null;
 }): Promise<void> {
   await invoke("target_update", params);

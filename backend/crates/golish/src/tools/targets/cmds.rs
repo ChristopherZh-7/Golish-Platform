@@ -89,12 +89,12 @@ pub async fn target_add(
 pub async fn target_batch_add(
     state: tauri::State<'_, DbState>,
     values: String,
-    group: Option<String>,
+    grp: Option<String>,
     project_path: Option<String>,
 ) -> Result<Vec<Target>, GolishError> {
     let pool = state.pool_ready().await?;
 
-    let g = group
+    let g = grp
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "default".to_string());
