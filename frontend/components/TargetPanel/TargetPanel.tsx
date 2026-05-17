@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { TargetGraphView } from "@/components/TargetPanel/TargetGraphView";
 import { cn } from "@/lib/utils";
 import { useTargetData } from "./hooks/useTargetData";
+import { ProjectInfoPanel } from "./ProjectInfoPanel";
 import { TargetGroupedView } from "./TargetGroupedView";
 import { TargetListView } from "./TargetListView";
 
@@ -117,6 +118,8 @@ export function TargetPanel() {
           )}
         </div>
       </div>
+
+      {activeTab === "targets" && <ProjectInfoPanel />}
 
       {activeTab === "targets" && viewMode === "graph" ? (
         <div className="flex-1 min-h-0">

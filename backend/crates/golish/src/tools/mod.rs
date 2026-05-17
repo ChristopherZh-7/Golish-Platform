@@ -49,6 +49,9 @@ pub mod pipeline;
 // Quick notes
 pub mod notes;
 
+// Engagement metadata (HVV / red-team project info: name, team, time-window)
+pub mod engagements;
+
 // Audit log
 pub mod audit;
 

@@ -12,6 +12,9 @@ export async function addTarget(params: {
   name: string;
   value: string;
   grp?: string;
+  owner?: string;
+  timeWindowStart?: string;
+  timeWindowEnd?: string;
   projectPath: string | null;
 }): Promise<void> {
   await invoke("target_add", params);
@@ -34,6 +37,9 @@ export async function updateTarget(params: {
   scope?: string;
   notes?: string;
   grp?: string;
+  owner?: string;
+  timeWindowStart?: string;
+  timeWindowEnd?: string;
   projectPath: string | null;
 }): Promise<void> {
   await invoke("target_update", params);

@@ -35,7 +35,7 @@ pub async fn db_target_add(
 
     let existing = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
-                  status::text, grp, source, parent_id, ports,
+                  status::text, grp, owner, time_window_start, time_window_end, source, parent_id, ports,
                   real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                   created_at, updated_at
            FROM targets WHERE value=$1 AND ($2 IS NULL OR project_path = $2 OR project_path = '') LIMIT 1"#,
@@ -54,7 +54,7 @@ pub async fn db_target_add(
         r#"INSERT INTO targets (name, target_type, value, tags, notes, scope, grp, project_path, source, parent_id)
            VALUES ($1, $2::target_type, $3, '[]', '', 'in'::scope_type, $4, $5, $6, $7)
            RETURNING id, name, target_type::text, value, tags, notes, scope::text,
-                     status::text, grp, source, parent_id, ports,
+                     status::text, grp, owner, time_window_start, time_window_end, source, parent_id, ports,
                      real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                      created_at, updated_at"#,
     )
@@ -78,7 +78,7 @@ pub async fn db_target_list(
 ) -> Result<Vec<Target>, GolishError> {
     let rows = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
-                  status::text, grp, source, parent_id, ports,
+                  status::text, grp, owner, time_window_start, time_window_end, source, parent_id, ports,
                      real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                      created_at, updated_at
            FROM targets WHERE project_path = $1

@@ -20,6 +20,12 @@ pub struct Target {
     #[serde(default)]
     pub grp: String,
     #[serde(default)]
+    pub owner: String,
+    #[serde(default)]
+    pub time_window_start: Option<u64>,
+    #[serde(default)]
+    pub time_window_end: Option<u64>,
+    #[serde(default)]
     pub source: String,
     #[serde(default)]
     pub parent_id: Option<String>,
@@ -156,6 +162,19 @@ pub(super) fn ts_from_chrono(dt: chrono::DateTime<chrono::Utc>) -> u64 {
     dt.timestamp() as u64
 }
 
+/// Parse an ISO 8601 datetime string (with timezone) into UTC.
+/// Returns None for empty/whitespace/malformed inputs so callers can pass
+/// through to SQL as NULL.
+pub(super) fn parse_iso8601(s: Option<&str>) -> Option<chrono::DateTime<chrono::Utc>> {
+    let trimmed = s?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    chrono::DateTime::parse_from_rfc3339(trimmed)
+        .ok()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+}
+
 #[derive(sqlx::FromRow)]
 pub(super) struct TargetRow {
     id: Uuid,
@@ -167,6 +186,9 @@ pub(super) struct TargetRow {
     scope: String,
     status: String,
     grp: String,
+    owner: String,
+    time_window_start: Option<chrono::DateTime<chrono::Utc>>,
+    time_window_end: Option<chrono::DateTime<chrono::Utc>>,
     source: String,
     parent_id: Option<Uuid>,
     ports: serde_json::Value,
@@ -193,6 +215,9 @@ impl From<TargetRow> for Target {
             scope: Scope::from_str(&r.scope),
             status: TargetStatus::from_str(&r.status),
             grp: r.grp,
+            owner: r.owner,
+            time_window_start: r.time_window_start.map(ts_from_chrono),
+            time_window_end: r.time_window_end.map(ts_from_chrono),
             source: r.source,
             parent_id: r.parent_id.map(|u| u.to_string()),
             ports: serde_json::from_value(r.ports).unwrap_or_default(),

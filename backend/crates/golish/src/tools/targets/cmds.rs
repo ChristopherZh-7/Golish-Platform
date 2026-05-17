@@ -5,7 +5,9 @@ use uuid::Uuid;
 
 use crate::state::DbState;
 
-use super::types::{detect_type, Scope, Target, TargetRow, TargetStatus, TargetStore, TargetType};
+use super::types::{
+    detect_type, parse_iso8601, Scope, Target, TargetRow, TargetStatus, TargetStore, TargetType,
+};
 
 #[tauri::command]
 pub async fn target_list(
@@ -17,7 +19,7 @@ pub async fn target_list(
     let pp = project_path.as_deref().filter(|s| !s.is_empty());
     let rows = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
-                  status::text, grp, source, parent_id, ports,
+                  status::text, grp, owner, time_window_start, time_window_end, source, parent_id, ports,
                   real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                   created_at, updated_at
            FROM targets WHERE ($1 IS NULL OR project_path = $1 OR project_path = '')
@@ -43,6 +45,9 @@ pub async fn target_add(
     tags: Option<Vec<String>>,
     notes: Option<String>,
     grp: Option<String>,
+    owner: Option<String>,
+    time_window_start: Option<String>,
+    time_window_end: Option<String>,
     project_path: Option<String>,
     source: Option<String>,
     parent_id: Option<String>,
@@ -57,14 +62,17 @@ pub async fn target_add(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "default".to_string());
+    let own = owner.unwrap_or_default();
+    let tw_start = parse_iso8601(time_window_start.as_deref());
+    let tw_end = parse_iso8601(time_window_end.as_deref());
     let src = source.unwrap_or_else(|| "manual".to_string());
     let pid: Option<Uuid> = parent_id.and_then(|s| s.parse().ok());
 
     let row = sqlx::query_as::<_, TargetRow>(
-        r#"INSERT INTO targets (name, target_type, value, tags, notes, scope, grp, project_path, source, parent_id)
-           VALUES ($1, $2::target_type, $3, $4, $5, $6::scope_type, $7, $8, $9, $10)
+        r#"INSERT INTO targets (name, target_type, value, tags, notes, scope, grp, owner, time_window_start, time_window_end, project_path, source, parent_id)
+           VALUES ($1, $2::target_type, $3, $4, $5, $6::scope_type, $7, $8, $9, $10, $11, $12, $13)
            RETURNING id, name, target_type::text, value, tags, notes, scope::text,
-                     status::text, grp, source, parent_id, ports,
+                     status::text, grp, owner, time_window_start, time_window_end, source, parent_id, ports,
                      real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                      created_at, updated_at"#,
     )
@@ -75,6 +83,9 @@ pub async fn target_add(
     .bind(&nt)
     .bind(sc.as_str())
     .bind(&g)
+    .bind(&own)
+    .bind(tw_start)
+    .bind(tw_end)
     .bind(project_path.as_deref())
     .bind(&src)
     .bind(pid)
@@ -119,7 +130,7 @@ pub async fn target_batch_add(
             r#"INSERT INTO targets (name, target_type, value, tags, scope, grp, project_path)
                VALUES ($1, $2::target_type, $3, '[]', 'in'::scope_type, $4, $5)
                RETURNING id, name, target_type::text, value, tags, notes, scope::text,
-                         status::text, grp, source, parent_id, ports,
+                         status::text, grp, owner, time_window_start, time_window_end, source, parent_id, ports,
                      real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                      created_at, updated_at"#,
         )
@@ -147,6 +158,9 @@ pub async fn target_update(
     status: Option<TargetStatus>,
     ports: Option<Vec<serde_json::Value>>,
     grp: Option<String>,
+    owner: Option<String>,
+    time_window_start: Option<String>,
+    time_window_end: Option<String>,
     project_path: Option<String>,
 ) -> Result<Target, GolishError> {
     let pool = state.pool_ready().await?;
@@ -206,10 +220,29 @@ pub async fn target_update(
             .execute(pool)
             .await?;
     }
+    if let Some(o) = &owner {
+        sqlx::query("UPDATE targets SET owner=$1, updated_at=NOW() WHERE id=$2")
+            .bind(o.trim())
+            .bind(uid)
+            .execute(pool)
+            .await?;
+    }
+    if time_window_start.is_some() || time_window_end.is_some() {
+        let tw_start = parse_iso8601(time_window_start.as_deref());
+        let tw_end = parse_iso8601(time_window_end.as_deref());
+        sqlx::query(
+            "UPDATE targets SET time_window_start=$1, time_window_end=$2, updated_at=NOW() WHERE id=$3",
+        )
+        .bind(tw_start)
+        .bind(tw_end)
+        .bind(uid)
+        .execute(pool)
+        .await?;
+    }
 
     let row = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
-                  status::text, grp, source, parent_id, ports,
+                  status::text, grp, owner, time_window_start, time_window_end, source, parent_id, ports,
                      real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                      created_at, updated_at
            FROM targets WHERE id=$1"#,
@@ -269,7 +302,7 @@ pub async fn target_update_status(
 
     let row = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
-                  status::text, grp, source, parent_id, ports,
+                  status::text, grp, owner, time_window_start, time_window_end, source, parent_id, ports,
                      real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                      created_at, updated_at
            FROM targets WHERE id=$1"#,
