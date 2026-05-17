@@ -17,6 +17,8 @@ interface AddForm {
   owner: string;
   timeWindowStart: string;
   timeWindowEnd: string;
+  /** Required when the project is in `redteam` mode; pentest leaves it empty. */
+  organizationId?: string;
 }
 
 export function useTargetData() {
@@ -78,6 +80,7 @@ export function useTargetData() {
           owner: addForm.owner.trim() || undefined,
           timeWindowStart: addForm.timeWindowStart.trim() || undefined,
           timeWindowEnd: addForm.timeWindowEnd.trim() || undefined,
+          organizationId: addForm.organizationId?.trim() || undefined,
           projectPath: getProjectPath(),
         });
         loadTargets();

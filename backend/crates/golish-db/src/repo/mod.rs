@@ -2,7 +2,6 @@ pub mod agent_logs;
 pub mod api_endpoints;
 pub mod audit;
 pub mod endpoint_tests;
-pub mod engagements;
 pub mod execution_plans;
 pub mod findings;
 pub mod fingerprints;

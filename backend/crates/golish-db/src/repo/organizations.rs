@@ -1,8 +1,82 @@
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::models::Organization;
+
+/// Partial update payload for the profile (18 new fields added by the
+/// `_organizations_profile_fields` migration).
+///
+/// 调用方按需填字段；`None` = 不修改，`Some(value)` = 覆盖。这样允许
+/// 前端「只改 IP 段」「只改 domain」等 PATCH 行为，不会把别的 tab 的
+/// 内容清空。后端格式校验前置在 Tauri 层（参考
+/// `crate::tools::organizations::validate_profile_patch`）；repo 只做存储。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProfilePatch {
+    // basic
+    pub aliases: Option<Vec<String>>,
+    pub industry: Option<String>,
+    pub tier: Option<String>,
+    pub credit_code: Option<String>,
+    // domain / network
+    pub domains: Option<serde_json::Value>,
+    pub ip_ranges: Option<serde_json::Value>,
+    pub asns: Option<serde_json::Value>,
+    pub email_domains: Option<serde_json::Value>,
+    // scope
+    pub scope_rules: Option<serde_json::Value>,
+    // other
+    pub intel: Option<serde_json::Value>,
+    pub notes: Option<String>,
+    // phase 2 fields (schema-only for now; included so backend doesn't
+    // break if a future UI starts sending them).
+    pub certificates: Option<serde_json::Value>,
+    pub subsidiaries: Option<serde_json::Value>,
+    pub business_systems: Option<serde_json::Value>,
+    pub cloud_assets: Option<serde_json::Value>,
+    pub github_orgs: Option<serde_json::Value>,
+    pub social_accounts: Option<serde_json::Value>,
+    pub historical_vulns: Option<serde_json::Value>,
+    pub contacts: Option<serde_json::Value>,
+}
+
+impl ProfilePatch {
+    /// Returns `true` if at least one field is `Some(_)`. Repo callers
+    /// use this to short-circuit the no-op update path (still loads the
+    /// row to return it, but skips the UPDATE statement).
+    pub fn has_any(&self) -> bool {
+        self.aliases.is_some()
+            || self.industry.is_some()
+            || self.tier.is_some()
+            || self.credit_code.is_some()
+            || self.domains.is_some()
+            || self.ip_ranges.is_some()
+            || self.asns.is_some()
+            || self.email_domains.is_some()
+            || self.scope_rules.is_some()
+            || self.intel.is_some()
+            || self.notes.is_some()
+            || self.certificates.is_some()
+            || self.subsidiaries.is_some()
+            || self.business_systems.is_some()
+            || self.cloud_assets.is_some()
+            || self.github_orgs.is_some()
+            || self.social_accounts.is_some()
+            || self.historical_vulns.is_some()
+            || self.contacts.is_some()
+    }
+}
+
+/// Fetch a single organization by id. Returns `None` when the row no
+/// longer exists (e.g. parent got cascade-deleted between list and get).
+pub async fn get_one(pool: &PgPool, id: Uuid) -> Result<Option<Organization>> {
+    let row = sqlx::query_as::<_, Organization>("SELECT * FROM organizations WHERE id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row)
+}
 
 /// List all organizations for a project (flat, sorted by parent_id NULLs first
 /// then sort_order). Callers typically rebuild the tree client-side.
@@ -121,4 +195,81 @@ pub async fn delete(pool: &PgPool, id: Uuid) -> Result<()> {
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// PATCH-style profile update. Each `Some(value)` field is written;
+/// `None` is skipped so partial updates from individual UI tabs don't
+/// clobber unrelated fields.
+///
+/// Returns the freshly-loaded row even on no-op so callers always get
+/// a consistent shape back. Returns `Ok(None)` if the organization
+/// doesn't exist.
+pub async fn update_profile(
+    pool: &PgPool,
+    id: Uuid,
+    patch: &ProfilePatch,
+) -> Result<Option<Organization>> {
+    if !patch.has_any() {
+        return get_one(pool, id).await;
+    }
+
+    let mut tx = pool.begin().await?;
+
+    // Verify existence first so we can return Ok(None) on a missing row
+    // rather than swallowing the missing-row error inside individual
+    // statements. Cheap because we'd refetch at the end anyway.
+    let exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM organizations WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if exists.is_none() {
+        return Ok(None);
+    }
+
+    // Each field is written in its own statement to keep the SQL trivial
+    // and avoid building a dynamic column list. Negligible overhead for
+    // a workflow that typically writes 1–5 fields per call.
+    macro_rules! patch_field {
+        ($field:ident, $col:literal) => {
+            if let Some(ref v) = patch.$field {
+                sqlx::query(concat!(
+                    "UPDATE organizations SET ",
+                    $col,
+                    " = $1, updated_at = NOW() WHERE id = $2"
+                ))
+                .bind(v)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+            }
+        };
+    }
+
+    patch_field!(aliases, "aliases");
+    patch_field!(industry, "industry");
+    patch_field!(tier, "tier");
+    patch_field!(credit_code, "credit_code");
+    patch_field!(domains, "domains");
+    patch_field!(ip_ranges, "ip_ranges");
+    patch_field!(asns, "asns");
+    patch_field!(email_domains, "email_domains");
+    patch_field!(scope_rules, "scope_rules");
+    patch_field!(intel, "intel");
+    patch_field!(notes, "notes");
+    patch_field!(certificates, "certificates");
+    patch_field!(subsidiaries, "subsidiaries");
+    patch_field!(business_systems, "business_systems");
+    patch_field!(cloud_assets, "cloud_assets");
+    patch_field!(github_orgs, "github_orgs");
+    patch_field!(social_accounts, "social_accounts");
+    patch_field!(historical_vulns, "historical_vulns");
+    patch_field!(contacts, "contacts");
+
+    let row = sqlx::query_as::<_, Organization>("SELECT * FROM organizations WHERE id = $1")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+    Ok(Some(row))
 }

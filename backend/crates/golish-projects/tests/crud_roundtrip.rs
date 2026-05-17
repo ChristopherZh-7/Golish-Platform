@@ -152,3 +152,4 @@ async fn slugified_directory_is_used_on_disk() {
         .join("config.toml")
         .exists());
 }
+
