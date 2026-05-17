@@ -6,8 +6,6 @@ import {
   Bot,
   Brain,
   Bug,
-  CheckCircle2,
-  Circle,
   Clock,
   Cpu,
   DollarSign,
@@ -29,7 +27,6 @@ import {
   type AgentUsage,
   type AuditEntry,
   dashboardApi,
-  type ProjectMethodology,
   type TokenUsageStats,
   type ToolCallStat,
 } from "@/lib/dashboard";
@@ -42,14 +39,7 @@ import { formatRelativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
 import { ActivityDot, AgentUsageChart, eventLabel, ToolCallChart } from "./ActivityFeed";
-import {
-  fmtNum,
-  MethodologyRing,
-  MetricCard,
-  MiniTimeline,
-  SeverityBar,
-  SevIcon,
-} from "./StatCards";
+import { fmtNum, MetricCard, MiniTimeline, SeverityBar, SevIcon } from "./StatCards";
 
 interface AiStats {
   tokenUsage: TokenUsageStats | null;
@@ -60,7 +50,6 @@ interface AiStats {
 
 interface DashboardStats {
   targets: PentestTarget[];
-  methodProjects: ProjectMethodology[];
   vaultEntries: { type: string }[];
   findings: Finding[];
   recentActivity: AuditEntry[];
@@ -79,7 +68,6 @@ export function DashboardPanel() {
   const currentProjectName = useStore((s) => s.currentProjectName);
   const [stats, setStats] = useState<DashboardStats>({
     targets: [],
-    methodProjects: [],
     vaultEntries: [],
     findings: [],
     recentActivity: [],
@@ -118,7 +106,6 @@ export function DashboardPanel() {
 
     const results = await Promise.allSettled([
       dashboardApi.targetList(pp),
-      dashboardApi.methodListProjects(pp),
       dashboardApi.vaultList(pp),
       findingsApi.list(pp),
       dashboardApi.oplogList(pp, 15),
@@ -126,14 +113,12 @@ export function DashboardPanel() {
 
     const targetRaw = results[0].status === "fulfilled" ? results[0].value : null;
     const targets = targetRaw?.targets ?? [];
-    const methodRaw = results[1].status === "fulfilled" ? results[1].value : [];
-    const vaultRaw = results[2].status === "fulfilled" ? results[2].value : [];
-    const findingsRaw = results[3].status === "fulfilled" ? results[3].value : null;
-    const activityRaw = results[4].status === "fulfilled" ? results[4].value : [];
+    const vaultRaw = results[1].status === "fulfilled" ? results[1].value : [];
+    const findingsRaw = results[2].status === "fulfilled" ? results[2].value : null;
+    const activityRaw = results[3].status === "fulfilled" ? results[3].value : [];
 
     setStats({
       targets: Array.isArray(targets) ? targets : [],
-      methodProjects: Array.isArray(methodRaw) ? methodRaw : [],
       vaultEntries: Array.isArray(vaultRaw) ? vaultRaw : [],
       findings: findingsRaw?.findings ?? [],
       recentActivity: Array.isArray(activityRaw) ? activityRaw.slice(0, 10) : [],
@@ -213,8 +198,7 @@ export function DashboardPanel() {
   const isEmpty =
     stats.targets.length === 0 &&
     stats.findings.length === 0 &&
-    stats.vaultEntries.length === 0 &&
-    stats.methodProjects.length === 0;
+    stats.vaultEntries.length === 0;
 
   const hasAiData =
     (aiStats.tokenUsage != null &&
@@ -401,25 +385,8 @@ export function DashboardPanel() {
                   </div>
                 </div>
 
-                {/* Methodology + Timeline + Activity */}
-                <div className="grid grid-cols-3 gap-4">
-                  {/* Methodology */}
-                  <div className="rounded-xl bg-muted/8 border border-border/10 p-4 space-y-3">
-                    <div className="flex items-center gap-2">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-accent/60" />
-                      <span className="text-[11px] font-medium text-foreground/60">
-                        Methodology
-                      </span>
-                    </div>
-                    {stats.methodProjects.length > 0 ? (
-                      <MethodologyRing projects={stats.methodProjects} />
-                    ) : (
-                      <div className="flex items-center justify-center py-4 text-muted-foreground/20 text-[11px]">
-                        <Circle className="w-4 h-4 mr-1.5" /> No methodology started
-                      </div>
-                    )}
-                  </div>
-
+                {/* Timeline + Activity */}
+                <div className="grid grid-cols-2 gap-4">
                   {/* Findings Timeline */}
                   <div className="rounded-xl bg-muted/8 border border-border/10 p-4 space-y-3">
                     <div className="flex items-center gap-2">

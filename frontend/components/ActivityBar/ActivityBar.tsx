@@ -3,7 +3,6 @@ import {
   BookText,
   Bug,
   ChevronRight,
-  ClipboardList,
   Crosshair,
   FolderOpen,
   GitBranch,
@@ -27,7 +26,6 @@ export type ActivityView =
   | "dashboard"
   | "wiki"
   | "targets"
-  | "methodology"
   | "findings"
   | "pipelines"
   | "auditLog"
@@ -47,7 +45,6 @@ type BarItemId =
   | "vulnIntel"
   | "terminal"
   | "wiki"
-  | "methodology"
   | "toolManage";
 
 interface BarItem {
@@ -77,7 +74,6 @@ const LOWER_GROUPS: BarGroup[] = [
     label: "activity.knowledge",
     items: [
       { id: "vulnIntel", icon: AlertTriangle, label: "activity.vulnKb" },
-      { id: "methodology", icon: ClipboardList, label: "activity.methodology" },
       { id: "wordlists", icon: BookText, label: "activity.wordlists" },
     ],
   },
@@ -137,7 +133,6 @@ const VIEW_ITEMS: BarItemId[] = [
   "wordlists",
   "vulnIntel",
   "wiki",
-  "methodology",
   "toolManage",
 ];
 

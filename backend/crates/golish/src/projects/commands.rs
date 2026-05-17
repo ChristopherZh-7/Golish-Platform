@@ -78,7 +78,6 @@ pub async fn delete_project_config(
             "notes",
             "vault_entries",
             "sitemap_store",
-            "methodology_projects",
             "pipelines",
             "api_endpoints",
             "fingerprints",

@@ -33,7 +33,6 @@
     "database": "数据库",
     "wiki": "知识库",
     "targets": "目标管理",
-    "methodology": "方法论",
     "findings": "漏洞发现",
     "pipelines": "工具链",
     "auditLog": "操作日志",
@@ -842,15 +841,5 @@
     "targets": "目标",
     "findings": "漏洞发现",
     "credentials": "凭证"
-  },
-  "methodology": {
-    "title": "方法论",
-    "newProject": "新建",
-    "projects": "项目",
-    "templates": "模板",
-    "createProject": "新建方法论项目",
-    "projectName": "项目名称...",
-    "selectTemplate": "选择模板...",
-    "deleteConfirm": "确定删除此项目？"
   }
 }

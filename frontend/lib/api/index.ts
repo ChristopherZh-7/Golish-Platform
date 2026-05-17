@@ -24,7 +24,6 @@ import * as git from "./git";
 import * as history from "./history";
 import * as indexer from "./indexer";
 import * as mcp from "./mcp";
-import * as methodology from "./methodology";
 import * as modelRegistry from "./model-registry";
 import * as notes from "./notes";
 import * as outputParser from "./output-parser";
@@ -72,7 +71,6 @@ export {
   detachedWindow,
   wordlist,
   notes,
-  methodology,
   targets,
   vault,
   vulnLinks,
@@ -106,7 +104,6 @@ export const api = {
   detachedWindow,
   wordlist,
   notes,
-  methodology,
   targets,
   vault,
   vulnLinks,

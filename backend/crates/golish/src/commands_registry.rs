@@ -150,7 +150,6 @@ fn install_handlers(
         target_list, target_add, target_batch_add, target_update, target_update_status, target_delete, target_clear_all,
         vault_list, vault_add, vault_get_value, vault_update, vault_delete, vault_resolve, vault_validate, vault_update_status,
         project_export, project_import,
-        method_list_templates, method_start_project, method_list_projects, method_load_project, method_update_item, method_delete_project,
         recording_save, recording_load, recording_list, recording_delete,
         output_parse, output_detect_tool, output_parse_and_store,
         directory_entry_list,

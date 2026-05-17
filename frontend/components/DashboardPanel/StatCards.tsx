@@ -1,5 +1,4 @@
 import { type CheckCircle2, ShieldAlert, ShieldCheck, ShieldX } from "lucide-react";
-import type { ProjectMethodology } from "@/lib/dashboard";
 import { SEV_HEX as SEV_COLORS } from "@/lib/severity";
 import { cn } from "@/lib/utils";
 
@@ -94,89 +93,6 @@ export function MiniTimeline({ data }: { data: { date: string; count: number }[]
       <div className="flex justify-between text-[8px] text-muted-foreground/25 px-0.5">
         <span>{data[0].date}</span>
         <span>{data[data.length - 1].date}</span>
-      </div>
-    </div>
-  );
-}
-
-export function MethodologyRing({ projects }: { projects: ProjectMethodology[] }) {
-  let total = 0;
-  let checked = 0;
-  for (const p of projects) {
-    for (const phase of p.phases) {
-      total += phase.items.length;
-      checked += phase.items.filter((i) => i.checked).length;
-    }
-  }
-  if (total === 0) return null;
-  const pct = Math.round((checked / total) * 100);
-  const r = 32;
-  const strokeW = 5;
-  const circ = 2 * Math.PI * r;
-  const offset = circ - (pct / 100) * circ;
-
-  return (
-    <div className="flex items-center gap-4">
-      <div className="relative">
-        <svg aria-hidden="true" width={78} height={78}>
-          <circle
-            cx={39}
-            cy={39}
-            r={r}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={strokeW}
-            className="text-muted/20"
-          />
-          <circle
-            cx={39}
-            cy={39}
-            r={r}
-            fill="none"
-            strokeWidth={strokeW}
-            strokeDasharray={circ}
-            strokeDashoffset={offset}
-            strokeLinecap="round"
-            className={cn(
-              "transition-all duration-1000 ease-out",
-              pct === 100
-                ? "stroke-green-500/80"
-                : pct > 50
-                  ? "stroke-accent/70"
-                  : "stroke-amber-500/60"
-            )}
-            transform="rotate(-90 39 39)"
-          />
-        </svg>
-        <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-base font-bold leading-none">{pct}%</span>
-        </div>
-      </div>
-      <div className="space-y-1 min-w-0 flex-1">
-        {projects.map((p) => {
-          const pTotal = p.phases.reduce((a, ph) => a + ph.items.length, 0);
-          const pDone = p.phases.reduce((a, ph) => a + ph.items.filter((i) => i.checked).length, 0);
-          const pp = pTotal > 0 ? Math.round((pDone / pTotal) * 100) : 0;
-          return (
-            <div key={p.id} className="space-y-0.5">
-              <div className="flex items-center justify-between text-[10px]">
-                <span className="text-foreground/70 truncate">{p.project_name}</span>
-                <span className="text-muted-foreground/40 tabular-nums">
-                  {pDone}/{pTotal}
-                </span>
-              </div>
-              <div className="h-1 rounded-full bg-muted/15 overflow-hidden">
-                <div
-                  className={cn(
-                    "h-full rounded-full transition-all duration-700",
-                    pp === 100 ? "bg-green-500/70" : pp > 50 ? "bg-accent/50" : "bg-amber-500/50"
-                  )}
-                  style={{ width: `${pp}%` }}
-                />
-              </div>
-            </div>
-          );
-        })}
       </div>
     </div>
   );

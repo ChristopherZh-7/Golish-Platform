@@ -31,9 +31,6 @@ pub mod pentest_ai;
 // Interactive PTY tool (allows AI to control visible terminal sessions)
 pub mod pty_interactive;
 
-// Pentest methodology templates
-pub mod methodology;
-
 // Terminal session recordings
 pub mod recordings;
 

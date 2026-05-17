@@ -49,12 +49,6 @@ export const TargetPanelView = lazy(() =>
   }))
 );
 
-export const MethodologyPanelView = lazy(() =>
-  import("../components/MethodologyPanel/MethodologyPanel").then((m) => ({
-    default: m.MethodologyPanel,
-  }))
-);
-
 export const DashboardPanelView = lazy(() =>
   import("../components/DashboardPanel").then((m) => ({
     default: m.DashboardPanel,

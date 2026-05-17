@@ -30,7 +30,6 @@ pub struct ImportResult {
     pub has_targets: bool,
     pub has_vault: bool,
     pub has_skills: bool,
-    pub has_methodology: bool,
     pub has_topology: bool,
     pub has_findings: bool,
     pub has_recordings: bool,
@@ -131,15 +130,6 @@ pub async fn project_export(
 
     let topo = export_table_as_json(pool, "SELECT row_to_json(t) FROM sitemap_store t").await?;
     add_json_to_zip(&mut zip, "golish/db/sitemap_store.json", &topo, &mut count)?;
-
-    let meth =
-        export_table_as_json(pool, "SELECT row_to_json(t) FROM methodology_projects t").await?;
-    add_json_to_zip(
-        &mut zip,
-        "golish/db/methodology_projects.json",
-        &meth,
-        &mut count,
-    )?;
 
     let pipes = export_table_as_json(pool, "SELECT row_to_json(t) FROM pipelines t").await?;
     add_json_to_zip(&mut zip, "golish/db/pipelines.json", &pipes, &mut count)?;
@@ -281,7 +271,6 @@ pub async fn project_import(
         has_targets: false,
         has_vault: false,
         has_skills: false,
-        has_methodology: false,
         has_topology: false,
         has_findings: false,
         has_recordings: false,
@@ -294,10 +283,6 @@ pub async fn project_import(
         ("golish/db/notes.json", "notes"),
         ("golish/db/audit_log.json", "audit_log"),
         ("golish/db/sitemap_store.json", "sitemap_store"),
-        (
-            "golish/db/methodology_projects.json",
-            "methodology_projects",
-        ),
         ("golish/db/pipelines.json", "pipelines"),
         ("golish/db/recordings.json", "recordings"),
         ("golish/db/vuln_feeds.json", "vuln_feeds"),
@@ -323,7 +308,6 @@ pub async fn project_import(
                 "findings" => result.has_findings = true,
                 "vault_entries" => result.has_vault = true,
                 "sitemap_store" => result.has_topology = true,
-                "methodology_projects" => result.has_methodology = true,
                 "recordings" => result.has_recordings = true,
                 _ => {}
             }

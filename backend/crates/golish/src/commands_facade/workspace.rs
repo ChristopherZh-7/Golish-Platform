@@ -24,7 +24,6 @@
 //! - **Targets**: `target_{list,add,batch_add,update,update_status,
 //!   delete,clear_all}`, `directory_entry_list`
 //! - **Project I/O**: `project_export`, `project_import`
-//! - **Methodology**: `method_*`
 //! - **Recordings**: `recording_*`
 //! - **Output parser**: `output_*`
 //! - **Scan queue**: `scan_queue_*`
@@ -50,7 +49,6 @@ pub use crate::tools::conversation_store::batch::*;
 pub use crate::tools::conversation_store::*;
 pub use crate::tools::custom_rules::*;
 pub use crate::tools::execution_plans::*;
-pub use crate::tools::methodology::*;
 pub use crate::tools::notes::*;
 pub use crate::tools::output_parser::*;
 pub use crate::tools::project_io::*;

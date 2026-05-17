@@ -33,7 +33,6 @@
     "database": "Database",
     "wiki": "Wiki",
     "targets": "Targets",
-    "methodology": "Methodology",
     "findings": "Findings",
     "pipelines": "Pipelines",
     "auditLog": "Audit Log",
@@ -838,19 +837,9 @@
   "dashboard": {
     "title": "Project Dashboard",
     "empty": "No project data yet",
-    "emptyHint": "Add targets, run scans, or start a methodology to see stats here",
+    "emptyHint": "Add targets, run scans, or launch a pipeline to see stats here",
     "targets": "Targets",
     "findings": "Findings",
     "credentials": "Credentials"
-  },
-  "methodology": {
-    "title": "Methodology",
-    "newProject": "New",
-    "projects": "Projects",
-    "templates": "Templates",
-    "createProject": "Create Methodology Project",
-    "projectName": "Project name...",
-    "selectTemplate": "Select template...",
-    "deleteConfirm": "Delete this project?"
   }
 }

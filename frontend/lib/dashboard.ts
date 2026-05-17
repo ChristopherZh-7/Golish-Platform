@@ -26,15 +26,6 @@ export interface TargetStore {
   targets: PentestTarget[];
 }
 
-export interface ProjectMethodology {
-  id: string;
-  project_name: string;
-  template_id: string;
-  phases: Array<{ id: string; name: string; items: Array<{ id: string; checked: boolean }> }>;
-  created_at: string;
-  updated_at: string;
-}
-
 /**
  * Minimal vault projection used by the dashboard summary.
  *
@@ -70,8 +61,6 @@ export const dashboardApi = {
 
   // Project data
   targetList: (projectPath: string) => invoke<TargetStore>("target_list", { projectPath }),
-  methodListProjects: (projectPath: string) =>
-    invoke<ProjectMethodology[]>("method_list_projects", { projectPath }),
   vaultList: (projectPath: string) => invoke<VaultEntry[]>("vault_list", { projectPath }),
   oplogList: (projectPath: string, limit: number) =>
     invoke<AuditEntry[]>("oplog_list", { projectPath, limit }),

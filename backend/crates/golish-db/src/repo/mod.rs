@@ -9,7 +9,6 @@ pub mod js_analysis;
 pub mod kb_research;
 pub mod memories;
 pub mod message_chains;
-pub mod methodology;
 pub mod msg_logs;
 pub mod notes;
 pub mod passive_scans;
