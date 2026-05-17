@@ -217,7 +217,18 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
                 </div>
                 {detailViewMode !== "sub-agent-detail" &&
                   detailViewMode !== "tool-detail" &&
-                  !isInteractiveInputActive && (
+                  // Hide ONLY when both (a) a command is still running AND
+                  // (b) interactive mode is active — i.e. the user is
+                  // actively typing into the RunningCommandCard's capture
+                  // textarea. The moment `pendingCommand` clears (command
+                  // ended / user Ctrl-C'd / SIGINT) we MUST re-show the
+                  // bottom input, even if `interactiveMode` somehow lingers
+                  // (race condition between `command_end` and the
+                  // `setInteractiveMode(null)` it triggers). Without the
+                  // `pendingCommand` guard the user can end up staring at
+                  // a card-less, input-less pane after force-quitting a
+                  // command.
+                  !(isInteractiveInputActive && !!pendingCommand?.command) && (
                     // Bottom input is always mounted (except during
                     // interactive mode — see below) so short commands
                     // (`ls`, `pwd`, …) don't flash it out and back in.
