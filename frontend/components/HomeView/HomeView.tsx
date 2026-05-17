@@ -222,7 +222,7 @@ export const HomeView = memo(function HomeView() {
           try {
             await targetsApi.batchAddTargets({
               values: data.targets.join("\n"),
-              group: "default",
+              grp: "default",
               projectPath: data.rootPath,
             });
             await emit("targets-changed");
