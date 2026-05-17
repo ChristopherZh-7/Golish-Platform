@@ -1,0 +1,149 @@
+/*
+ * Phase B GridTerminal styling. Renders the per-cell <span> stream
+ * from `GridRow.tsx` as a fixed-pitch terminal grid without xterm.js
+ * or WebGL. See `docs/design/2026-05-15-grid-terminal-phase-b.md`.
+ *
+ * Palette: we lean on the existing terminal theme tokens (`--ansi-*`
+ * CSS variables exposed by `frontend/lib/theme`) so a single theme
+ * change applies to both the CommandBlock output renderer and the
+ * GridTerminal.
+ */
+
+.gt-root {
+  display: block;
+  /* Container drives the viewport, not the rendered row count.
+   * Without `height: 100%` the grid root's height collapses to the
+   * sum of `gt-row` heights — useGridResize then measures that as
+   * the viewport, pushes `ptyResizeGrid(cols, rows = N)` back to the
+   * backend, and a new full snapshot with fewer rows arrives, which
+   * makes the root even shorter. ResizeObserver fires, rows shrinks
+   * again, and the loop collapses the grid to MIN_ROWS within a few
+   * frames (vim ends up with 1×N viewport → black screen). Pinning
+   * to 100% of the flex parent breaks the feedback loop. */
+  height: 100%;
+  font-family: var(
+    --terminal-font-family,
+    "SF Mono",
+    Menlo,
+    Monaco,
+    Consolas,
+    "Liberation Mono",
+    monospace
+  );
+  font-size: 14px;
+  line-height: 1.2;
+  background: var(--terminal-background, transparent);
+  color: var(--terminal-foreground, currentColor);
+  /* Allow horizontal scroll when the grid is wider than the viewport
+   * (e.g. user resized the window narrower than the PTY's column count
+   * before the resize event makes it back to the backend). */
+  overflow-x: auto;
+  white-space: pre;
+  /* `tabular-nums` keeps numeric columns from drifting; ligatures off
+   * because a wrapped `=>` glyph would break the per-cell grid. */
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "liga" 0, "calt" 0;
+  user-select: text;
+  /* Container is `tabIndex=0` so keyboard events land on it. We
+   * suppress the native outline because focus is communicated via
+   * `data-focused` / a custom border instead. */
+  outline: none;
+}
+
+.gt-root[data-focused="true"] {
+  /* Subtle inner border to mirror what the user expects from a
+   * focused terminal pane (Alacritty / Warp both do this). */
+  box-shadow: inset 0 0 0 1px var(--accent, rgba(120, 162, 247, 0.4));
+}
+
+.gt-root.gt-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* `.gt-root` already pins to `height: 100%` of the flex parent —
+   * the old `min-height: 6em` collapsed the placeholder to ~84px
+   * on mount which made `useGridResize` measure a 4-row viewport
+   * and kick off the feedback loop above. */
+  color: var(--muted-foreground, #888);
+  font-style: italic;
+}
+
+.gt-empty-hint {
+  opacity: 0.6;
+}
+
+.gt-row {
+  display: block;
+  height: 1.2em;
+  white-space: pre;
+}
+
+.gt-row > span {
+  display: inline-block;
+  /* `1ch` keeps cells aligned with the active monospace font without
+   * us needing to measure glyph widths. */
+  min-width: 1ch;
+  vertical-align: top;
+}
+
+/* ---- Attribute decorations ------------------------------------- */
+
+.gt-bold {
+  font-weight: 700;
+}
+.gt-italic {
+  font-style: italic;
+}
+.gt-underline {
+  text-decoration: underline;
+}
+.gt-strikethrough {
+  text-decoration: line-through;
+}
+.gt-strikethrough.gt-underline {
+  /* When both flags are set we want both decorations. */
+  text-decoration: underline line-through;
+}
+.gt-dim {
+  opacity: 0.6;
+}
+.gt-hidden {
+  visibility: hidden;
+}
+.gt-blink {
+  /* Mild blink so accessibility-conscious settings can disable it; we
+   * deliberately avoid the harsh CSS animation Alacritty uses. */
+  animation: gt-blink 1.5s steps(2, end) infinite;
+}
+
+@keyframes gt-blink {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* Inverse swaps fg/bg via the existing `currentColor` machinery —
+ * cells that already specified a colour win, so this is a fallback. */
+.gt-inverse {
+  filter: invert(1);
+}
+
+/* ---- Cursor ----------------------------------------------------- */
+
+.gt-cursor {
+  /* Solid block cursor at the focused cell. The frontend hook also
+   * passes the cursor `style` (block / underline / bar) but we render
+   * "block" as the default here; D4 will branch on style once
+   * keyboard handling is wired. */
+  outline: 2px solid currentColor;
+  outline-offset: -1px;
+  border-radius: 1px;
+}
+
+/* ---- Reduce motion ---------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .gt-blink {
+    animation: none;
+  }
+}
