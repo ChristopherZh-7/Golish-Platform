@@ -91,6 +91,23 @@
     "treeView": "组织树视图",
     "graphView": "图谱视图"
   },
+  "organizations": {
+    "title": "组织管理",
+    "manage": "管理组织",
+    "create": "新建组织",
+    "namePlaceholder": "组织名称（如 中国平安）",
+    "ownerPlaceholder": "负责人（可选）",
+    "noParent": "根节点（无父）",
+    "add": "添加",
+    "edit": "编辑",
+    "delete": "删除",
+    "deleteConfirm": "确定删除组织「{{name}}」及其子组织吗？",
+    "empty": "暂无组织，先新建一个根组织",
+    "loading": "加载中...",
+    "ownedBy": "负责人：{{owner}}",
+    "loadFailed": "加载组织失败",
+    "moveTo": "移动到"
+  },
   "engagements": {
     "title": "项目元信息",
     "hvvName": "项目名称",

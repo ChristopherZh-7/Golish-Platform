@@ -28,6 +28,7 @@ import * as mcp from "./mcp";
 import * as methodology from "./methodology";
 import * as modelRegistry from "./model-registry";
 import * as notes from "./notes";
+import * as organizations from "./organizations";
 import * as outputParser from "./output-parser";
 import * as pentestBrowser from "./pentest-browser";
 import * as pipeline from "./pipeline";
@@ -74,6 +75,7 @@ export {
   detachedWindow,
   wordlist,
   notes,
+  organizations,
   methodology,
   targets,
   vault,
@@ -109,6 +111,7 @@ export const api = {
   detachedWindow,
   wordlist,
   notes,
+  organizations,
   methodology,
   targets,
   vault,

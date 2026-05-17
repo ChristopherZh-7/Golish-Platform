@@ -40,6 +40,7 @@ export async function updateTarget(params: {
   owner?: string;
   timeWindowStart?: string;
   timeWindowEnd?: string;
+  organizationId?: string;
   projectPath: string | null;
 }): Promise<void> {
   await invoke("target_update", params);
