@@ -13,11 +13,13 @@ use super::types::{detect_type, Target, TargetRow, TargetType};
 // Standalone DB functions for AI tool integration (no Tauri state needed)
 // ============================================================================
 
+#[allow(clippy::too_many_arguments)]
 pub async fn db_target_add(
     pool: &PgPool,
     name: &str,
     value: &str,
     target_type: Option<&str>,
+    grp: Option<&str>,
     project_path: Option<&str>,
     source: &str,
     parent_id: Option<Uuid>,
@@ -26,10 +28,14 @@ pub async fn db_target_add(
         .map(TargetType::from_str)
         .unwrap_or_else(|| detect_type(value));
     let n = if name.is_empty() { value } else { name };
+    let g = grp
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("default");
 
     let existing = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
-                  status::text, source, parent_id, ports,
+                  status::text, grp, source, parent_id, ports,
                   real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                   created_at, updated_at
            FROM targets WHERE value=$1 AND ($2 IS NULL OR project_path = $2 OR project_path = '') LIMIT 1"#,
@@ -46,15 +52,16 @@ pub async fn db_target_add(
 
     let row = sqlx::query_as::<_, TargetRow>(
         r#"INSERT INTO targets (name, target_type, value, tags, notes, scope, grp, project_path, source, parent_id)
-           VALUES ($1, $2::target_type, $3, '[]', '', 'in'::scope_type, 'default', $4, $5, $6)
+           VALUES ($1, $2::target_type, $3, '[]', '', 'in'::scope_type, $4, $5, $6, $7)
            RETURNING id, name, target_type::text, value, tags, notes, scope::text,
-                     status::text, source, parent_id, ports,
+                     status::text, grp, source, parent_id, ports,
                      real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                      created_at, updated_at"#,
     )
     .bind(n)
     .bind(tt.as_str())
     .bind(value)
+    .bind(g)
     .bind(project_path)
     .bind(source)
     .bind(parent_id)
@@ -71,7 +78,7 @@ pub async fn db_target_list(
 ) -> Result<Vec<Target>, GolishError> {
     let rows = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
-                  status::text, source, parent_id, ports,
+                  status::text, grp, source, parent_id, ports,
                      real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                      created_at, updated_at
            FROM targets WHERE project_path = $1
