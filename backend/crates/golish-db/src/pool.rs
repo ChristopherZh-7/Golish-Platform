@@ -191,6 +191,43 @@ async fn repair_migrations(
         }
     }
 
+    // Inverse repair: DELETE records for migrations that exist in the DB
+    // tracking table but NOT in the binary's resolved migrations. This
+    // happens when the user runs dev from a branch with newer migrations,
+    // then checks out an older branch missing those files — sqlx's
+    // `migrator.run()` rejects startup with "missing in the resolved
+    // migrations" because it (conservatively) refuses to proceed when the
+    // DB knows about a version the binary doesn't.
+    //
+    // Dev-friendly path: drop the orphan record so startup can proceed.
+    // The on-disk schema that the orphan migration created (tables /
+    // columns / enums) is left alone — it'll either coexist with the
+    // current binary's expectations (no-op) or surface as a real query-
+    // time error the developer can then handle. Either way it's better
+    // than refusing to boot.
+    let known_versions: std::collections::HashSet<i64> =
+        migrator.iter().map(|m| m.version).collect();
+    let extra_versions: Vec<i64> =
+        sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations")
+            .fetch_all(&mut *conn)
+            .await
+            .unwrap_or_default();
+    for v in extra_versions {
+        if known_versions.contains(&v) {
+            continue;
+        }
+        let deleted = sqlx::query("DELETE FROM _sqlx_migrations WHERE version = $1")
+            .bind(v)
+            .execute(&mut *conn)
+            .await?;
+        if deleted.rows_affected() > 0 {
+            warn!(
+                version = v,
+                "Deleted orphan migration record (not present in current binary)"
+            );
+        }
+    }
+
     Ok(())
 }
 
