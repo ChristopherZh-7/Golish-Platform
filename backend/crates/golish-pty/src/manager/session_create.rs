@@ -37,7 +37,7 @@ use super::emitter::PtyEventEmitter;
 use super::stdin_wait_detector::{
     append_to_tail, detect_stdin_wait, STDIN_WAIT_IDLE_THRESHOLD,
 };
-use super::utf8::{apply_backspaces, process_utf8_with_buffer, OutputMessage, Utf8IncompleteBuffer};
+use super::utf8::{process_utf8_with_buffer, OutputMessage, Utf8IncompleteBuffer};
 
 /// Cap how often the emitter thread ships a `terminal_grid_update`
 /// event to the frontend. 60 ms ≈ 16 fps which is enough for vim /
@@ -427,18 +427,6 @@ impl PtyManager {
                         // Delivery ordering of semantic vs. output
                         // events via Tauri IPC was never strictly
                         // guaranteed, so this is acceptable.
-                        //
-                        // Snapshot whether this batch contains a
-                        // `PromptStart` (OSC 133;A) *before* moving
-                        // `parse_result.events` into the dispatcher —
-                        // the emitter thread uses this flag to reset
-                        // its `input_echo_active` state machine when
-                        // the shell prints the next PS1 prompt.
-                        let contains_prompt_start = parse_result
-                            .events
-                            .iter()
-                            .any(|e| matches!(e, OscEvent::PromptStart));
-                        let input_echo = parse_result.input_echo;
                         dispatch_parsed_events(
                             parse_result.events,
                             &reader_session_id,
@@ -453,21 +441,13 @@ impl PtyManager {
                         // `prompt_visible` alongside `output` so the
                         // `stdin_wait` detector can probe PS1/PS2/PS3
                         // prompts that are intentionally absent from
-                        // the region-filtered `output`. `input_echo`
-                        // carries Input-region bytes (PS2/PS3 reprints,
-                        // `select` menu, kernel-termios echo of user
-                        // keystrokes) for splicing into the timeline
-                        // while interactive mode is active.
+                        // the region-filtered `output`.
                         if !parse_result.output.is_empty()
                             || !parse_result.prompt_visible.is_empty()
-                            || !input_echo.is_empty()
-                            || contains_prompt_start
                         {
                             let _ = output_tx.send(OutputMessage::Data {
                                 output: parse_result.output,
                                 prompt_visible: parse_result.prompt_visible,
-                                input_echo,
-                                contains_prompt_start,
                             });
                         }
                     }
@@ -529,23 +509,6 @@ impl PtyManager {
             let mut stdin_wait_last_emit_at = std::time::Instant::now();
             let mut stdin_wait_emitted_for_idle_window: bool = false;
 
-            // Warp-style interactive echo splicing. While `true`, the
-            // emitter folds the parser's `input_echo` bytes (Input-
-            // region content like `select` menu reprints, PS3 `?# `,
-            // `read -p` reprompts, and the kernel-termios echo of
-            // user keystrokes) into the timeline alongside the
-            // normal Output region. Toggles:
-            //   false → true  : when `stdin_wait` detector fires
-            //                    (we're now interacting with a
-            //                    running command).
-            //   true  → false : when a `PromptStart` (OSC 133;A)
-            //                    crosses the channel, signalling the
-            //                    shell is back at its next PS1.
-            // Without this gate, PS2/PS3 / kernel echo would either
-            // pollute every normal command's output (if always on)
-            // or never surface (if always off — the bug we're fixing).
-            let mut input_echo_active: bool = false;
-
             // State for the Phase B GridTerminal stream. When the
             // session is on alt-screen, bytes flowing through here are
             // also fed to the per-session `GridTerminal`; the resulting
@@ -565,72 +528,27 @@ impl PtyManager {
             // user-visible Output region bytes (zsh `select> ` is the
             // archetypal case) and vice versa during pure stdout.
             let mut prompt_visible_buf: Vec<u8> = Vec::with_capacity(16 * 1024);
-            // Coalesce buffer for `input_echo`. Drained into
-            // `coalesce_buf` only while `input_echo_active`, so PS2
-            // / PS3 / kernel echo never leaks into a non-interactive
-            // command's timeline. Carried across loop iterations so
-            // bytes that arrive *before* the detector flips
-            // `input_echo_active = true` (e.g. the initial PS3 print
-            // itself) are still flushed when interactive mode opens.
-            let mut input_echo_buf: Vec<u8> = Vec::with_capacity(4 * 1024);
 
             loop {
                 match output_rx.recv_timeout(timeout) {
-                    Ok(OutputMessage::Data {
-                        output,
-                        prompt_visible,
-                        input_echo,
-                        contains_prompt_start,
-                    }) => {
+                    Ok(OutputMessage::Data { output, prompt_visible }) => {
                         coalesce_buf.extend_from_slice(&output);
                         prompt_visible_buf.extend_from_slice(&prompt_visible);
-                        input_echo_buf.extend_from_slice(&input_echo);
-                        // A fresh PS1 (OSC 133;A) means the running
-                        // command exited (or never owned stdin) — flush
-                        // any leftover Input-region bytes if they were
-                        // meaningful, then close interactive mode so
-                        // the next command's output isn't polluted.
-                        let mut prompt_start_seen = contains_prompt_start;
 
                         // Drain all immediately-queued messages without
                         // blocking, coalescing them into a single emit
                         // call.
                         loop {
                             match output_rx.try_recv() {
-                                Ok(OutputMessage::Data {
-                                    output,
-                                    prompt_visible,
-                                    input_echo,
-                                    contains_prompt_start,
-                                }) => {
+                                Ok(OutputMessage::Data { output, prompt_visible }) => {
                                     coalesce_buf.extend_from_slice(&output);
                                     prompt_visible_buf.extend_from_slice(&prompt_visible);
-                                    input_echo_buf.extend_from_slice(&input_echo);
-                                    prompt_start_seen |= contains_prompt_start;
                                 }
                                 Ok(OutputMessage::Eof) => {
-                                    // Flush coalesced Output bytes
-                                    // through the shared utf8 buffer,
-                                    // then splice any pending
-                                    // interactive echo through its own
-                                    // buffer (same isolation rationale
-                                    // as the steady-state path).
-                                    let mut output =
+                                    // Flush coalesced bytes, then emit
+                                    // session_ended.
+                                    let output =
                                         process_utf8_with_buffer(&mut utf8_buffer, &coalesce_buf);
-                                    if input_echo_active && !input_echo_buf.is_empty() {
-                                        let mut echo_utf8 = Utf8IncompleteBuffer::new();
-                                        let echo_str = process_utf8_with_buffer(
-                                            &mut echo_utf8,
-                                            &input_echo_buf,
-                                        );
-                                        if !echo_str.is_empty() {
-                                            output.push_str(&echo_str);
-                                        }
-                                    }
-                                    input_echo_buf.clear();
-                                    if output.contains('\u{0008}') {
-                                        output = apply_backspaces(&output);
-                                    }
                                     if !output.is_empty() {
                                         emitter_for_output.emit_output(&output_session_id, &output);
                                     }
@@ -661,55 +579,8 @@ impl PtyManager {
                             stdin_wait_emitted_for_idle_window = false;
                         }
 
-                        // Emit the coalesced Output-region batch first
-                        // so any incomplete UTF-8 sequence carries over
-                        // in `utf8_buffer` for the *Output* stream
-                        // only. We deliberately decode `input_echo`
-                        // through a separate, per-tick buffer below
-                        // to keep the two streams' UTF-8 state
-                        // independent — otherwise an unfinished CJK
-                        // byte left in `utf8_buffer` from a previous
-                        // Output write would corrupt the next ASCII
-                        // echo character into U+FFFD (`⬛`), showing
-                        // up as a black box mid-word for the user.
-                        let mut output =
-                            process_utf8_with_buffer(&mut utf8_buffer, &coalesce_buf);
-
-                        // While interactive mode is active, splice the
-                        // accumulated Input-region bytes onto the end
-                        // of the emitted string. OSC 133 region
-                        // transitions happen on character boundaries
-                        // (shells don't emit OSC mid-character), so
-                        // each `input_echo_buf` is a self-contained
-                        // run of complete UTF-8 — a fresh buffer is
-                        // safe and avoids cross-region contamination.
-                        // Bytes accumulated while the window was
-                        // *inactive* are discarded (they belong to
-                        // PS2/PS3 of the user's previous editing line
-                        // and would just clutter the timeline).
-                        if input_echo_active && !input_echo_buf.is_empty() {
-                            let mut echo_utf8 = Utf8IncompleteBuffer::new();
-                            let echo_str =
-                                process_utf8_with_buffer(&mut echo_utf8, &input_echo_buf);
-                            if !echo_str.is_empty() {
-                                output.push_str(&echo_str);
-                            }
-                        }
-                        input_echo_buf.clear();
-
-                        // Bash readline (and a few other interactive
-                        // programs) echo PS3 / `read -p` keystrokes
-                        // by writing the first char, then `\b`, then
-                        // the full line. A real terminal handles `\b`
-                        // as a cursor-erase; our linear timeline
-                        // renderer doesn't, so the raw `\b` byte
-                        // would show up as `⬛`. Pre-process the
-                        // decoded string into its erase-applied form
-                        // before shipping it to the frontend.
-                        if output.contains('\u{0008}') {
-                            output = apply_backspaces(&output);
-                        }
-
+                        // Emit the coalesced batch.
+                        let output = process_utf8_with_buffer(&mut utf8_buffer, &coalesce_buf);
                         if !output.is_empty() {
                             if pty_dump_emit_enabled
                                 && pty_dump_emits_counter < pty_dump_emit_cap
@@ -717,7 +588,7 @@ impl PtyManager {
                                 pty_dump_emits_counter += 1;
                                 const MAX_DUMP: usize = 512;
                                 let preview = &output.as_bytes()
-                                    [..output.len().min(MAX_DUMP)];
+                                    [..output.as_bytes().len().min(MAX_DUMP)];
                                 tracing::info!(
                                     session_id = %output_session_id,
                                     emit_seq = pty_dump_emits_counter,
@@ -747,16 +618,6 @@ impl PtyManager {
                         }
                         coalesce_buf.clear();
                         prompt_visible_buf.clear();
-
-                        // Closing the interactive-echo window. A new
-                        // shell prompt (OSC 133;A) means the running
-                        // command has handed stdin back; subsequent
-                        // Input-region bytes belong to the user's
-                        // *next* command line and should NOT splice
-                        // into any timeline block.
-                        if prompt_start_seen {
-                            input_echo_active = false;
-                        }
                     }
                     Ok(OutputMessage::Eof) => {
                         // Flush any incomplete UTF-8 sequence, then
@@ -791,15 +652,6 @@ impl PtyManager {
                                     kind.as_event_str(),
                                 );
                                 stdin_wait_emitted_for_idle_window = true;
-                                // Open the interactive-echo window so
-                                // the next batch of Input-region bytes
-                                // (subsequent menu reprints, user
-                                // keystroke echo, follow-up prompts in
-                                // multi-step interactions like sqlmap)
-                                // is spliced into the timeline. Stays
-                                // open until the next OSC 133;A
-                                // PromptStart resets it.
-                                input_echo_active = true;
                             }
                         }
 
