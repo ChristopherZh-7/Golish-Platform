@@ -91,6 +91,23 @@
     "treeView": "Org Tree View",
     "graphView": "Graph View"
   },
+  "organizations": {
+    "title": "Organizations",
+    "manage": "Manage Orgs",
+    "create": "Create Organization",
+    "namePlaceholder": "Org name (e.g. Acme Corp)",
+    "ownerPlaceholder": "Owner (optional)",
+    "noParent": "Root (no parent)",
+    "add": "Add",
+    "edit": "Edit",
+    "delete": "Delete",
+    "deleteConfirm": "Delete organization '{{name}}' and all sub-organizations?",
+    "empty": "No organizations yet — create a root org to start.",
+    "loading": "Loading...",
+    "ownedBy": "Owner: {{owner}}",
+    "loadFailed": "Failed to load organizations",
+    "moveTo": "Move to"
+  },
   "engagements": {
     "title": "Project Metadata",
     "hvvName": "Project Name",

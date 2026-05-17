@@ -52,6 +52,9 @@ pub mod notes;
 // Engagement metadata (HVV / red-team project info: name, team, time-window)
 pub mod engagements;
 
+// Multi-level organization tree (HVV org hierarchy)
+pub mod organizations;
+
 // Audit log
 pub mod audit;
 

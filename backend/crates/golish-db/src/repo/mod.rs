@@ -13,6 +13,7 @@ pub mod message_chains;
 pub mod methodology;
 pub mod msg_logs;
 pub mod notes;
+pub mod organizations;
 pub mod passive_scans;
 pub mod pipelines;
 pub mod prompt_templates;

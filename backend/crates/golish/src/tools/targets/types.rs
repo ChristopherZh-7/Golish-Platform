@@ -26,6 +26,8 @@ pub struct Target {
     #[serde(default)]
     pub time_window_end: Option<u64>,
     #[serde(default)]
+    pub organization_id: Option<String>,
+    #[serde(default)]
     pub source: String,
     #[serde(default)]
     pub parent_id: Option<String>,
@@ -189,6 +191,7 @@ pub(super) struct TargetRow {
     owner: String,
     time_window_start: Option<chrono::DateTime<chrono::Utc>>,
     time_window_end: Option<chrono::DateTime<chrono::Utc>>,
+    organization_id: Option<Uuid>,
     source: String,
     parent_id: Option<Uuid>,
     ports: serde_json::Value,
@@ -218,6 +221,7 @@ impl From<TargetRow> for Target {
             owner: r.owner,
             time_window_start: r.time_window_start.map(ts_from_chrono),
             time_window_end: r.time_window_end.map(ts_from_chrono),
+            organization_id: r.organization_id.map(|u| u.to_string()),
             source: r.source,
             parent_id: r.parent_id.map(|u| u.to_string()),
             ports: serde_json::from_value(r.ports).unwrap_or_default(),

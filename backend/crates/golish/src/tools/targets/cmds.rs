@@ -19,7 +19,7 @@ pub async fn target_list(
     let pp = project_path.as_deref().filter(|s| !s.is_empty());
     let rows = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
-                  status::text, grp, owner, time_window_start, time_window_end, source, parent_id, ports,
+                  status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports,
                   real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                   created_at, updated_at
            FROM targets WHERE ($1 IS NULL OR project_path = $1 OR project_path = '')
@@ -72,7 +72,7 @@ pub async fn target_add(
         r#"INSERT INTO targets (name, target_type, value, tags, notes, scope, grp, owner, time_window_start, time_window_end, project_path, source, parent_id)
            VALUES ($1, $2::target_type, $3, $4, $5, $6::scope_type, $7, $8, $9, $10, $11, $12, $13)
            RETURNING id, name, target_type::text, value, tags, notes, scope::text,
-                     status::text, grp, owner, time_window_start, time_window_end, source, parent_id, ports,
+                     status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports,
                      real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                      created_at, updated_at"#,
     )
@@ -130,7 +130,7 @@ pub async fn target_batch_add(
             r#"INSERT INTO targets (name, target_type, value, tags, scope, grp, project_path)
                VALUES ($1, $2::target_type, $3, '[]', 'in'::scope_type, $4, $5)
                RETURNING id, name, target_type::text, value, tags, notes, scope::text,
-                         status::text, grp, owner, time_window_start, time_window_end, source, parent_id, ports,
+                         status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports,
                      real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                      created_at, updated_at"#,
         )
@@ -161,6 +161,7 @@ pub async fn target_update(
     owner: Option<String>,
     time_window_start: Option<String>,
     time_window_end: Option<String>,
+    organization_id: Option<String>,
     project_path: Option<String>,
 ) -> Result<Target, GolishError> {
     let pool = state.pool_ready().await?;
@@ -239,10 +240,26 @@ pub async fn target_update(
         .execute(pool)
         .await?;
     }
+    if let Some(org_id_str) = &organization_id {
+        let org_id: Option<Uuid> = if org_id_str.trim().is_empty() {
+            None
+        } else {
+            Some(
+                org_id_str
+                    .parse()
+                    .map_err(|e: uuid::Error| e.to_string())?,
+            )
+        };
+        sqlx::query("UPDATE targets SET organization_id=$1, updated_at=NOW() WHERE id=$2")
+            .bind(org_id)
+            .bind(uid)
+            .execute(pool)
+            .await?;
+    }
 
     let row = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
-                  status::text, grp, owner, time_window_start, time_window_end, source, parent_id, ports,
+                  status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports,
                      real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                      created_at, updated_at
            FROM targets WHERE id=$1"#,
@@ -302,7 +319,7 @@ pub async fn target_update_status(
 
     let row = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
-                  status::text, grp, owner, time_window_start, time_window_end, source, parent_id, ports,
+                  status::text, grp, owner, time_window_start, time_window_end, organization_id, source, parent_id, ports,
                      real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                      created_at, updated_at
            FROM targets WHERE id=$1"#,
