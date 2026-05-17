@@ -191,6 +191,37 @@ async fn repair_migrations(
         }
     }
 
+    // Phantom records: rows in _sqlx_migrations whose version no longer has
+    // a corresponding file in the codebase (typical when a developer's
+    // local-only experimental migration was applied then deleted, or when
+    // branches diverge). The sqlx migrator refuses to proceed with such
+    // records ("X was previously applied but is missing in the resolved
+    // migrations"), so drop them and let the migrator move on. The actual
+    // schema changes those phantom files made are kept as-is on the
+    // assumption they were ad-hoc dev work — anything important should have
+    // been re-encoded as a real, committed migration.
+    let known: std::collections::HashSet<i64> = migrator.iter().map(|m| m.version).collect();
+    let recorded_versions: Vec<i64> =
+        sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations")
+            .fetch_all(&mut *conn)
+            .await
+            .unwrap_or_default();
+    for version in recorded_versions {
+        if known.contains(&version) {
+            continue;
+        }
+        let deleted = sqlx::query("DELETE FROM _sqlx_migrations WHERE version = $1")
+            .bind(version)
+            .execute(&mut *conn)
+            .await?;
+        if deleted.rows_affected() > 0 {
+            warn!(
+                version,
+                "Removed phantom migration record (file no longer exists in codebase)"
+            );
+        }
+    }
+
     Ok(())
 }
 
