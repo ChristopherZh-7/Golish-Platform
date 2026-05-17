@@ -68,7 +68,6 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
     inputMode,
     interactiveMode,
     isInteractive,
-    isProcessRunning,
     isBlockCaret,
     isInputDisabled,
     isToolSearchMode,
@@ -112,25 +111,6 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
     }
   }, [isInteractive, interactiveMode]);
 
-  const interactiveBannerLabel = useMemo(() => {
-    if (!isInteractive || !interactiveMode) return null;
-    const cmd = interactiveMode.command?.trim();
-    return cmd ? `正在与 ${cmd} 交互` : "正在向运行中的命令发送输入";
-  }, [isInteractive, interactiveMode]);
-
-  // When a command is running but no `stdin_wait` has fired yet (so we
-  // aren't in interactive mode), still surface a banner that hints at
-  // the Esc-to-cancel escape hatch. Without it, users whose detector
-  // missed the prompt (e.g. bash `select` PS3 / PS2 continuation —
-  // see `stdin_wait_detector.rs`) were stranded with a non-interactive
-  // input box and no obvious way to recover. Hiding the banner once we
-  // enter interactive mode avoids stacking two competing banners.
-  const runningBannerLabel = useMemo(() => {
-    if (isInteractive) return null;
-    if (!isProcessRunning) return null;
-    return "命令运行中 · 按 Esc 取消";
-  }, [isInteractive, isProcessRunning]);
-
   return (
     <div
       className={cn(
@@ -148,36 +128,6 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
         onPointerDown={handlePointerDown}
         onDoubleClick={resetToDefault}
       />
-
-      {isInteractive && interactiveBannerLabel && (
-        <div
-          className="flex items-center justify-between gap-2 px-3 py-1.5 bg-amber-500/10 border-b border-amber-500/30 text-[12px] text-amber-200"
-          role="status"
-          aria-live="polite"
-          data-testid="interactive-mode-banner"
-        >
-          <span className="flex items-center gap-1.5 min-w-0 truncate">
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-            {interactiveBannerLabel}
-          </span>
-          <span className="text-amber-300/70 shrink-0">Esc 退出交互</span>
-        </div>
-      )}
-
-      {!isInteractive && runningBannerLabel && (
-        <div
-          className="flex items-center justify-between gap-2 px-3 py-1.5 bg-sky-500/10 border-b border-sky-500/30 text-[12px] text-sky-200"
-          role="status"
-          aria-live="polite"
-          data-testid="running-mode-banner"
-        >
-          <span className="flex items-center gap-1.5 min-w-0 truncate">
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
-            {runningBannerLabel}
-          </span>
-          <span className="text-sky-300/70 shrink-0">点击此处 → Esc 强制结束</span>
-        </div>
-      )}
 
       <ContextBar sessionId={sessionId} />
 
