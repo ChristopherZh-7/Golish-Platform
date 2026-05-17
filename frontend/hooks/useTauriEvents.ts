@@ -253,6 +253,25 @@ export function useTauriEvents() {
             // takeover.
             const processName = extractProcessName(command);
 
+            // Fast-path for known TUI apps (vim / htop / less / tmux / …).
+            // The `setTimeout(…, PROCESS_DETECTION_DELAY_MS)` below
+            // confirms the foreground process via
+            // `ptyGetForegroundProcess` before committing the name, but
+            // vim trips `\x1b[?1049h` (alt-screen enable) within a
+            // handful of milliseconds — far faster than the detection
+            // timer fires. Without this fast path the `alternate_screen`
+            // handler reads `session.processName === null`, misses the
+            // whitelist, leaves us in timeline mode, and vim's full-
+            // screen ANSI gets dumped into the scrollback as garbled
+            // `t;4;2m` / `▽` / `~` fragments. Whitelist-matched commands
+            // are safe to claim immediately — if the foreground process
+            // turns out to be something else (e.g. `vim` aliased to a
+            // wrapper that exec's `cat`), the `setRenderMode("timeline")`
+            // on the alt-screen-disable path will recover.
+            if (processName && ALT_SCREEN_TUI_PROCESSES.has(processName)) {
+              state.setProcessName(session_id, processName);
+            }
+
             if (isFastCommand(command)) break;
 
             clearProcessDetectionTimer(session_id);
