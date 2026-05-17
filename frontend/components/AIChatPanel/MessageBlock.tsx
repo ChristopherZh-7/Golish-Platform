@@ -339,7 +339,13 @@ export const MessageBlock = memo(function MessageBlock({
           let phase: AgentStatusPhase;
           let detail: string | undefined;
 
-          if (lastPendingTool) {
+          // Priority: if the answer text is already streaming, the *answer*
+          // is the indicator — the status row gets out of the way. Pending
+          // tool calls have their own <ToolCallSummary> cards, so we don't
+          // need to duplicate that signal in the footer.
+          if (message.content) {
+            phase = "writing";
+          } else if (lastPendingTool) {
             const name = lastPendingTool.name;
             if (name.startsWith("sub_agent_")) {
               phase = "delegating";
@@ -376,8 +382,6 @@ export const MessageBlock = memo(function MessageBlock({
               phase = "tool";
               detail = name.replace(/_/g, " ");
             }
-          } else if (message.content) {
-            phase = "writing";
           } else {
             phase = "starting";
           }

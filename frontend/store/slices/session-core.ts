@@ -283,13 +283,21 @@ export function createSessionCoreActions(
         const prev = session.interactiveMode ?? null;
         // Idempotent transition: avoid bumping object identity when
         // nothing meaningful changed, so memoised selectors don't churn.
+        // `enteredAt` is part of the equality check because consumers
+        // (e.g. `RunningCommandCard`'s local-echo backspace anchor)
+        // re-anchor on every detector fire — back-to-back prompts of
+        // the same kind (sqlmap's `[Y/n]` → fetch → another `[Y/n]`)
+        // need to look like distinct transitions so the anchor moves
+        // forward; otherwise a backspace at the second prompt would
+        // erase backwards through the first prompt's output.
         if (prev === null && mode === null) return;
         if (
           prev &&
           mode &&
           prev.active === mode.active &&
           prev.command === mode.command &&
-          prev.detector === mode.detector
+          prev.detector === mode.detector &&
+          prev.enteredAt === mode.enteredAt
         ) {
           return;
         }

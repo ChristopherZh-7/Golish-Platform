@@ -17,10 +17,69 @@ import { useTranslation } from "react-i18next";
 import { Markdown } from "@/components/Markdown";
 import { AnchorChip } from "@/components/ui/AnchorChip";
 import { Badge } from "@/components/ui/badge";
+import { stripAllAnsi, stripBareSgrArtifacts } from "@/lib/ansi";
 import { getToolColor, getToolLabel } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import type { AiToolExecution } from "@/store";
 import { useStore } from "@/store";
+
+/**
+ * Two-pass terminal output cleanup for display:
+ *   1. `stripAllAnsi`           — kills full ESC-prefixed sequences,
+ *                                 collapses `\r` overwrites, drops C0
+ *                                 control bytes, trims zsh `%`.
+ *   2. `stripBareSgrArtifacts`  — chews trailing `[Nm` / `%` / `\r`
+ *                                 fragments that lost their ESC byte
+ *                                 somewhere upstream (JSON, IPC).
+ *
+ * The pair runs idempotent so calling twice is safe.
+ */
+function cleanTerminalText(value: string): string {
+  return stripBareSgrArtifacts(stripAllAnsi(value));
+}
+
+/**
+ * Recursively clean every string leaf in a tool-call `result` payload so
+ * that `JSON.stringify(result, null, 2)` doesn't dump raw `\u001b[1m…`
+ * sequences and stray `\r\n` literals into the UI. Object identity is
+ * lost (we rebuild plain objects/arrays), but the caller only uses the
+ * cleaned tree for display.
+ */
+function deepCleanForDisplay(value: unknown): unknown {
+  if (typeof value === "string") return cleanTerminalText(value);
+  if (Array.isArray(value)) return value.map(deepCleanForDisplay);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = deepCleanForDisplay(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * Take the output of `JSON.stringify(_, null, 2)` and turn the escaped
+ * whitespace inside string values back into real characters, so that
+ * `stdout: "line1\nline2"` renders as two physical lines inside the
+ * `<pre>` (with `whitespace-pre-wrap`) instead of the ugly literal `\n`.
+ *
+ * Caveat: the resulting text is no longer valid JSON (string values
+ * span multiple lines). That's deliberate — this output is for human
+ * eyes only, never re-parsed.
+ *
+ * Global replace is safe because at this point the *only* place a `\n`
+ * literal can appear is inside a string value: JSON's structural
+ * separators (after `,`, after `{`, before `}`, etc.) are already real
+ * newlines emitted by `JSON.stringify`'s 2-space indent.
+ */
+function humanizeJsonWhitespace(jsonStr: string): string {
+  return jsonStr
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "")
+    .replace(/\\t/g, "  ");
+}
 
 interface ToolCallDetailViewProps {
   sessionId: string;
@@ -71,18 +130,28 @@ function ToolArgsTable({ args }: { args: Record<string, unknown> }) {
 function ToolResultDisplay({ result }: { result: unknown }) {
   if (result === null || result === undefined) return null;
 
-  const strResult = typeof result === "string" ? result : JSON.stringify(result, null, 2);
+  // Clean ANSI / control-byte / zsh-prompt noise out of every string leaf
+  // before deciding how to render. Tool results commonly look like
+  //   { stdout: "\u001b[1m…\r\n", exit_code: 0 }
+  // and dumping that raw via JSON.stringify produces the ugly
+  // "\u001b\\Usage…\r\n[1m%[0m" the user reported.
+  const cleaned = typeof result === "string" ? cleanTerminalText(result) : deepCleanForDisplay(result);
+
+  const strResult =
+    typeof cleaned === "string"
+      ? cleaned
+      : humanizeJsonWhitespace(JSON.stringify(cleaned, null, 2));
   const isMarkdownLike =
-    typeof result === "string" &&
-    (/^#{1,3}\s/m.test(result) ||
-      /\*\*/.test(result) ||
-      /^[-*]\s/m.test(result) ||
-      /```/.test(result));
+    typeof cleaned === "string" &&
+    (/^#{1,3}\s/m.test(cleaned) ||
+      /\*\*/.test(cleaned) ||
+      /^[-*]\s/m.test(cleaned) ||
+      /```/.test(cleaned));
 
   if (isMarkdownLike) {
     return (
       <div className="rounded-md bg-muted/40 border border-border/20 px-3 py-2.5 max-h-[480px] overflow-auto text-[12px] text-foreground leading-[1.65] [&_p]:mb-1.5 [&_p:last-child]:mb-0">
-        <Markdown content={result as string} />
+        <Markdown content={cleaned as string} />
       </div>
     );
   }
@@ -169,22 +238,28 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
   const isError = execution.status === "error";
   const errorMessage = (() => {
     if (!isError) return null;
-    if (typeof execution.result === "string") return execution.result;
-    if (typeof execution.result === "object" && execution.result !== null) {
-      const r = execution.result as Record<string, unknown>;
-      const e = r.error || r.message;
-      if (typeof e === "string") return e;
-    }
-    return null;
+    const raw = (() => {
+      if (typeof execution.result === "string") return execution.result;
+      if (typeof execution.result === "object" && execution.result !== null) {
+        const r = execution.result as Record<string, unknown>;
+        const e = r.error || r.message;
+        if (typeof e === "string") return e;
+      }
+      return null;
+    })();
+    return raw ? cleanTerminalText(raw) : null;
   })();
 
   const isShellCmd = execution.toolName === "run_pty_cmd" || execution.toolName === "run_command";
   const shellOutput = (() => {
     if (!isShellCmd) return null;
-    if (execution.streamingOutput) return execution.streamingOutput;
-    if (!execution.result || typeof execution.result !== "object") return null;
-    const r = execution.result as Record<string, unknown>;
-    return (r.stdout as string) || (r.output as string) || null;
+    const raw = (() => {
+      if (execution.streamingOutput) return execution.streamingOutput;
+      if (!execution.result || typeof execution.result !== "object") return null;
+      const r = execution.result as Record<string, unknown>;
+      return (r.stdout as string) || (r.output as string) || null;
+    })();
+    return raw ? cleanTerminalText(raw) : null;
   })();
 
   return (

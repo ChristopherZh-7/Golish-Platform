@@ -28,7 +28,15 @@ export function WindowControls() {
         onClick={handleMinimize}
         aria-label="Minimize"
       >
-        <svg width="10" height="1" viewBox="0 0 10 1" className="fill-current text-foreground/80">
+        <svg
+          width="10"
+          height="1"
+          viewBox="0 0 10 1"
+          className="fill-current text-foreground/80"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <title>Minimize</title>
           <rect width="10" height="1" />
         </svg>
       </button>
@@ -45,7 +53,10 @@ export function WindowControls() {
           viewBox="0 0 10 10"
           className="stroke-current text-foreground/80"
           fill="none"
+          aria-hidden="true"
+          focusable="false"
         >
+          <title>Maximize</title>
           <rect x="0.5" y="0.5" width="9" height="9" strokeWidth="1" />
         </svg>
       </button>
@@ -61,7 +72,10 @@ export function WindowControls() {
           height="10"
           viewBox="0 0 10 10"
           className="stroke-current text-foreground/80"
+          aria-hidden="true"
+          focusable="false"
         >
+          <title>Close</title>
           <line x1="0" y1="0" x2="10" y2="10" strokeWidth="1.2" />
           <line x1="10" y1="0" x2="0" y2="10" strokeWidth="1.2" />
         </svg>

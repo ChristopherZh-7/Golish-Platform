@@ -1,140 +1,84 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo } from "react";
 
 import { cn } from "@/lib/utils";
 
 /**
- * High-level phase the running agent turn is in. The component picks a
- * vocabulary that fits the phase and rotates through it while the phase
- * stays unchanged, so the user always sees motion + variety without us
- * relying on a generic spinner.
+ * High-level phase the running agent turn is in. Each phase maps to a single,
+ * truthful label — no fake vocabulary rotation. The phase is computed from
+ * the live message state (tool calls in flight, thinking stream, content
+ * stream) by the parent component, so what the user sees is what the agent
+ * is actually doing.
+ *
+ * `writing` is intentionally *not* rendered here: the moment the model
+ * starts streaming the answer text, the indicator vanishes — no exit
+ * animation, no height-collapse, just gone. The answer text itself is the
+ * "alive" signal from that point on.
  */
 export type AgentStatusPhase =
   | "starting" // brand-new turn, no chunks yet
   | "thinking" // reasoning content streaming
-  | "writing" // text content streaming
-  | "tool" // a tool call is in flight (detail = tool name)
-  | "delegating" // sub-agent dispatch (detail = agent name)
+  | "writing" // text content streaming → indicator hidden
+  | "tool" // a tool call is in flight (detail = tool / command)
+  | "delegating" // sub-agent dispatch (detail = sub-agent name)
   | "compacting" // context compaction in progress
   | "planning"; // update_plan tool call
 
 interface AgentStatusIndicatorProps {
   phase: AgentStatusPhase;
   /**
-   * Optional contextual detail substituted into vocabulary templates
-   * (e.g. tool name, file name, sub-agent name).
+   * Contextual detail substituted into the label (e.g. tool name, file
+   * name, sub-agent name, command preview).
    */
   detail?: string;
-  /**
-   * Override the rotation interval (ms). Defaults to 2200 — fast enough to
-   * feel alive, slow enough to read each line.
-   */
-  rotationMs?: number;
   className?: string;
 }
 
-const VOCABULARY: Record<AgentStatusPhase, string[]> = {
-  starting: [
-    "warming the rig",
-    "loading the toolkit",
-    "calibrating sensors",
-    "scoping the room",
-    "tuning the antenna",
-  ],
-  thinking: [
-    "tracing the lead",
-    "triangulating context",
-    "chasing the chain",
-    "running the playbook",
-    "cross-checking signals",
-    "decoding the intent",
-    "weighing the angles",
-  ],
-  writing: [
-    "drafting the report",
-    "compiling intel",
-    "patching the brief",
-    "composing answer",
-    "laying down rounds",
-  ],
-  tool: ["running {detail}", "executing {detail}", "deploying {detail}", "spawning {detail}"],
-  delegating: [
-    "relaying to {detail}",
-    "dispatching to {detail}",
-    "tasking {detail}",
-    "handing off to {detail}",
-  ],
-  compacting: [
-    "condensing memory",
-    "compressing scrolls",
-    "trimming the journal",
-    "summarising the run",
-  ],
-  planning: [
-    "drafting the plan",
-    "pinning the route",
-    "mapping the surface",
-    "staking the milestones",
-  ],
+type VisiblePhase = Exclude<AgentStatusPhase, "writing">;
+
+const LABELS: Record<VisiblePhase, (detail?: string) => string> = {
+  starting: () => "Starting…",
+  thinking: () => "Thinking…",
+  planning: () => "Planning the task…",
+  compacting: () => "Compacting context…",
+  tool: (detail) => (detail ? `Running ${detail}…` : "Running tool…"),
+  delegating: (detail) => (detail ? `Delegating to ${detail}…` : "Delegating…"),
 };
 
-function fill(template: string, detail: string | undefined): string {
-  if (!detail) return template.replace(/\s*{detail}\s*/g, "").trim();
-  return template.replace("{detail}", detail).trim();
-}
-
 /**
- * Cursor-style status line for the streaming agent. Visually:
- *   `> tracing the lead_`
+ * Windsurf-style status row for the streaming agent. Visually:
  *
- * - Monospace + emerald hue (Golish brand cyber-recon vibe)
- * - Trailing block cursor blinks via the `caret-blink` keyframe defined
- *   alongside the component
- * - Phrase rotates every `rotationMs` while the phase is unchanged, so the
- *   user always perceives forward motion without a spinner
+ *   `  Running nmap -sV 10.0.0.1…`   (theme-tinted, soft shimmer sweep)
+ *
+ * - One truthful line per phase, no rotation, no vocabulary lottery.
+ * - Soft horizontal shimmer (CSS `background-clip: text`) replaces the
+ *   spinner — perceptible motion without flicker.
+ * - On phase change the inner `<span>` is keyed on the label text, so the
+ *   new text plays a one-shot fade-in while the shimmer keeps sweeping.
+ * - On `phase === "writing"` we simply `return null`: the indicator
+ *   disappears instantly with zero exit animation, no height collapse.
  */
 export const AgentStatusIndicator = memo(function AgentStatusIndicator({
   phase,
   detail,
-  rotationMs = 2200,
   className,
 }: AgentStatusIndicatorProps) {
-  const phrases = useMemo(
-    () => VOCABULARY[phase].map((tpl) => fill(tpl, detail)).filter((p) => p.length > 0),
-    [phase, detail]
-  );
+  if (phase === "writing") return null;
 
-  const [index, setIndex] = useState(0);
-  const phaseRef = useRef(phase);
-  useEffect(() => {
-    if (phaseRef.current !== phase) {
-      phaseRef.current = phase;
-      setIndex(0);
-    }
-  }, [phase]);
-
-  useEffect(() => {
-    if (phrases.length <= 1) return undefined;
-    const id = setInterval(() => {
-      setIndex((i) => (i + 1) % phrases.length);
-    }, rotationMs);
-    return () => clearInterval(id);
-  }, [phrases, rotationMs]);
-
-  const text = phrases[index] ?? phrases[0] ?? "working";
+  const label = LABELS[phase as VisiblePhase](detail);
 
   return (
     <div
       className={cn(
         "agent-status-line flex items-center gap-1.5 mt-2 py-0.5 select-none",
-        "font-mono text-[11.5px] text-emerald-400/70",
+        "font-mono text-[11.5px]",
         className
       )}
       aria-live="polite"
       aria-busy
     >
-      <span className="text-emerald-400/60">&gt;</span>
-      <span className="agent-status-text truncate">{text}</span>
-      <span className="agent-status-caret inline-block w-1.5 h-3 bg-emerald-400/70 align-middle" />
+      <span key={label} className="agent-status-shimmer truncate">
+        {label}
+      </span>
     </div>
   );
 });

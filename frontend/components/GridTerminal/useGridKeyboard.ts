@@ -76,47 +76,6 @@ export function useGridKeyboard({
         } as unknown as React.KeyboardEvent,
         appCursorRef.current
       );
-      // eslint-disable-next-line no-console
-      console.info(
-        "[grid-debug][keydown]",
-        JSON.stringify({
-          key: event.key,
-          ctrl: event.ctrlKey,
-          alt: event.altKey,
-          meta: event.metaKey,
-          mapped: bytes === null ? null : bytes.length,
-          willSend: bytes !== null,
-        })
-      );
-      // #region agent log
-      fetch("http://127.0.0.1:7440/ingest/f9f2cacd-c1f1-479f-8225-b4a5be2ee53c", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "900b3a" },
-        body: JSON.stringify({
-          sessionId: "900b3a",
-          location: "useGridKeyboard.ts:handleKeyDown",
-          message: "grid-keydown",
-          data: {
-            ptySessionId: sessionIdRef.current,
-            key: event.key,
-            code: event.code,
-            ctrl: event.ctrlKey,
-            alt: event.altKey,
-            meta: event.metaKey,
-            mappedLen: bytes === null ? null : bytes.length,
-            mappedFirstByte: bytes && bytes.length > 0 ? bytes.charCodeAt(0) : null,
-            willSend: bytes !== null,
-            activeElementTag: (document.activeElement as HTMLElement | null)?.tagName ?? null,
-            activeIsGtRoot:
-              (document.activeElement as HTMLElement | null)?.classList?.contains("gt-root") ??
-              false,
-            target: (event.target as HTMLElement | null)?.tagName ?? null,
-          },
-          timestamp: Date.now(),
-          hypothesisId: "F1,F2,F3",
-        }),
-      }).catch(() => {});
-      // #endregion
       if (bytes === null) return;
       event.preventDefault();
       event.stopPropagation();

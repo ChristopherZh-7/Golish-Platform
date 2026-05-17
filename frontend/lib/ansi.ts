@@ -1,4 +1,29 @@
 /**
+ * Strip *bare* SGR/EL artifacts that have lost their leading ESC byte by
+ * the time they reach us — most commonly the `[1m[7m%[27m[1m[0m\r \r`
+ * trailer that zsh appends when a command's output doesn't end with a
+ * newline. Some upstream layers (JSON round-trips, ConPTY conversions,
+ * Tauri IPC) strip the actual 0x1B byte but leave the literal text
+ * payload behind, so `stripAllAnsi` alone won't catch them.
+ *
+ * Conservative on purpose: only chews trailing runs of `[N…m` / `[N…h` /
+ * `[K` / `%` / whitespace, so legitimate text containing `[1m]` as part
+ * of its body is left untouched.
+ */
+export function stripBareSgrArtifacts(str: string): string {
+  let result = str;
+  // Eat repeated trailing tokens: bare SGR-ish CSI `[N(;N)*X`, plus zsh
+  // PROMPT_SP `%`, plus stray `\r` and whitespace. Loop until idempotent
+  // so a chain like `[27m[1m[0m\r \r` collapses fully.
+  let prev: string;
+  do {
+    prev = result;
+    result = result.replace(/(?:\[[0-9;?]*[a-zA-Z]|%|\s|\r)+$/g, "");
+  } while (result !== prev && result.length > 0);
+  return result;
+}
+
+/**
  * Strip ALL ANSI escape sequences (both control and color codes) from terminal output.
  * Returns plain text suitable for sending to LLMs or rendering without terminal emulation.
  */

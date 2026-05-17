@@ -326,42 +326,90 @@
 }
 
 /* ---------------------------------------------------------------------------
- * Agent status indicator (terminal cursor style)
+ * Agent status indicator (Windsurf-style shimmer)
+ *
+ * One line, one truth, no rotation. Motion comes from a soft horizontal
+ * gradient sweep over the text (background-clip: text) — perceptible
+ * "alive" feedback without the spinner / flicker / fake-vocabulary tax.
+ * Whole row fades in on phase change so transitions feel smooth instead
+ * of popping.
  * ------------------------------------------------------------------------- */
-@keyframes agent-status-caret-blink {
-  0%,
-  60% {
-    opacity: 1;
+@keyframes agent-status-shimmer {
+  0% {
+    background-position: -120% 0;
   }
-  61%,
   100% {
-    opacity: 0;
+    background-position: 220% 0;
   }
 }
 
-@keyframes agent-status-text-cycle {
-  0% {
+@keyframes agent-status-fade-in {
+  from {
     opacity: 0;
-    transform: translateY(2px);
+    transform: translateY(1px);
   }
-  10%,
-  90% {
+  to {
     opacity: 1;
     transform: translateY(0);
   }
-  100% {
+}
+
+@keyframes agent-status-text-in {
+  from {
     opacity: 0;
-    transform: translateY(-2px);
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 
-.agent-status-caret {
-  animation: agent-status-caret-blink 1.05s steps(1, end) infinite;
-  border-radius: 1px;
+/* Row enters with a soft fade-in. No exit animation: when the agent starts
+ * streaming the answer text the row simply unmounts (React `return null`),
+ * which is what the user wanted — clean, instant, no height-collapse drama. */
+.agent-status-line {
+  animation: agent-status-fade-in 260ms ease-out;
 }
 
-.agent-status-text {
-  animation: agent-status-text-cycle 2200ms ease-in-out infinite;
+
+/* Theme-aware shimmer: the gradient is a *brightness* sweep between
+ * --muted-foreground (resting) and --foreground (highlight), so whatever
+ * palette the user picks the row always reads as a soft "currently busy"
+ * pulse — never a fixed hue (no green, no blue, no red).
+ * Two animations: the infinite shimmer sweep + a one-shot fade-in that
+ * fires every time the label text changes (the parent re-keys the span
+ * on label change, which remounts the element). */
+.agent-status-shimmer {
+  background-image: linear-gradient(
+    100deg,
+    var(--muted-foreground) 0%,
+    var(--muted-foreground) 35%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 65%,
+    var(--muted-foreground) 100%
+  );
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation:
+    agent-status-shimmer 2.8s linear infinite,
+    agent-status-text-in 240ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-status-line {
+    animation: none;
+  }
+  .agent-status-shimmer {
+    animation: none;
+    background: none;
+    color: var(--muted-foreground);
+    -webkit-text-fill-color: var(--muted-foreground);
+  }
 }
 
 /* Toast close button - force visibility */

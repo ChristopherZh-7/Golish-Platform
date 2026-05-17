@@ -187,50 +187,13 @@ export function useGridState(sessionId: string, enabled: boolean): GridSnapshot 
     }
 
     let cancelled = false;
-    let firstFrameLogged = false;
 
     const handle = async (payload: TerminalGridUpdatePayload) => {
       if (cancelled) return;
       if (payload.session_id !== sessionId) return;
       if (!firstFrameLogged) {
         firstFrameLogged = true;
-        // eslint-disable-next-line no-console
-        console.info(
-          "[grid-debug][grid-update] first frame received",
-          JSON.stringify({
-            sessionId,
-            full: payload.full,
-            rev: payload.rev,
-            cols: payload.cols,
-            rows: payload.rows,
-            dirtyRowCount: payload.dirty_rows.length,
-            appCursorMode: payload.app_cursor_mode,
-          })
-        );
       }
-
-      // #region agent log
-      fetch("http://127.0.0.1:7440/ingest/f9f2cacd-c1f1-479f-8225-b4a5be2ee53c", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "900b3a" },
-        body: JSON.stringify({
-          sessionId: "900b3a",
-          location: "useGridState.ts:handle",
-          message: "grid-update-received",
-          data: {
-            sessionId,
-            full: payload.full,
-            rev: payload.rev,
-            cols: payload.cols,
-            rows: payload.rows,
-            dirtyRowCount: payload.dirty_rows.length,
-            lastRevBefore: lastRevRef.current,
-          },
-          timestamp: Date.now(),
-          hypothesisId: "3",
-        }),
-      }).catch(() => {});
-      // #endregion
 
       // Detect a missed event: if we have a baseline and the new rev
       // isn't strictly greater than the last seen + 1 we may have
@@ -270,39 +233,6 @@ export function useGridState(sessionId: string, enabled: boolean): GridSnapshot 
       try {
         const baseline = await ptyRequestGridSnapshot(sessionId);
         if (cancelled) return;
-
-        // #region agent log
-        const applied = !!baseline && baseline.rev > lastRevRef.current;
-        const baselineDebug = {
-          sessionId,
-          hasBaseline: !!baseline,
-          baselineRev: baseline?.rev ?? null,
-          baselineCols: baseline?.cols ?? null,
-          baselineRows: baseline?.rows ?? null,
-          baselineDirtyRows: baseline?.dirty_rows.length ?? null,
-          lastRevAtFetch: lastRevRef.current,
-          appliedFull: applied,
-          reasonSkipped: !baseline
-            ? "no-baseline"
-            : applied
-              ? "applied"
-              : `baseline.rev=${baseline.rev} <= lastRev=${lastRevRef.current}`,
-        };
-        // eslint-disable-next-line no-console
-        console.info("[grid-debug][baseline-fetch]", JSON.stringify(baselineDebug));
-        fetch("http://127.0.0.1:7440/ingest/f9f2cacd-c1f1-479f-8225-b4a5be2ee53c", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "900b3a" },
-          body: JSON.stringify({
-            sessionId: "900b3a",
-            location: "useGridState.ts:initial-baseline",
-            message: "baseline-fetch-result",
-            data: baselineDebug,
-            timestamp: Date.now(),
-            hypothesisId: "3",
-          }),
-        }).catch(() => {});
-        // #endregion
 
         if (!baseline) return;
         // Only apply if no later frame has clobbered us already.

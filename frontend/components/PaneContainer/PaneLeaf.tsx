@@ -129,7 +129,7 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      const active = document.activeElement;
+      const active = document.activeElement as HTMLElement | null;
       if (active && active.tagName === "TEXTAREA") return;
       const store = useStore.getState();
       if (isInteractiveInputActive) {

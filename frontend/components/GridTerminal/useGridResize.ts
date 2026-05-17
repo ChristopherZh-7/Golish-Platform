@@ -90,34 +90,6 @@ export function useGridResize({
         Math.min(MAX_RESONABLE_ROWS, Math.floor(clientHeight / metrics.height))
       );
 
-      // #region agent log
-      const debugPayload = {
-        sessionId,
-        trigger,
-        containerClassName: target.className,
-        clientWidth,
-        clientHeight,
-        cellWidth: metrics.width,
-        cellHeight: metrics.height,
-        cols,
-        rows,
-      };
-      // eslint-disable-next-line no-console
-      console.info("[grid-debug][resize-flush]", JSON.stringify(debugPayload));
-      fetch("http://127.0.0.1:7440/ingest/f9f2cacd-c1f1-479f-8225-b4a5be2ee53c", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "900b3a" },
-        body: JSON.stringify({
-          sessionId: "900b3a",
-          location: "useGridResize.ts:flush",
-          message: "resize-flush",
-          data: debugPayload,
-          timestamp: Date.now(),
-          hypothesisId: "2",
-        }),
-      }).catch(() => {});
-      // #endregion
-
       const prev = lastDimsRef.current;
       if (prev && prev.cols === cols && prev.rows === rows) return;
       lastDimsRef.current = { cols, rows };

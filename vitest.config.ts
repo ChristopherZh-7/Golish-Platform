@@ -19,8 +19,16 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./frontend"),
-      // Mock Tauri APIs
-      "@tauri-apps/api/event": path.resolve(__dirname, "./frontend/test/mocks/tauri-event.ts"),
+      // Mock Tauri APIs. The alias for `@tauri-apps/api/event` swaps
+      // the real Tauri module for our in-memory helper so tests don't
+      // try to call the IPC bridge that doesn't exist in jsdom /
+      // happy-dom. The helper file must therefore expose every named
+      // export the production code imports from the original module
+      // (`listen`, `emit`, `once`, `TauriEvent`, …).
+      "@tauri-apps/api/event": path.resolve(
+        __dirname,
+        "./frontend/test/mocks/event-bus-helpers.ts"
+      ),
       "@tauri-apps/api/core": path.resolve(__dirname, "./frontend/test/mocks/tauri-core.ts"),
     },
   },

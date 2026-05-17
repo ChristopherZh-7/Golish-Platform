@@ -2,6 +2,16 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
 import { enableMapSet } from "immer";
 import { afterEach, vi } from "vitest";
+// Side-effect import: initialises `i18next` + `react-i18next` with
+// the bundled `en` / `zh-CN` resource bundles. Without this, every
+// component that uses `useTranslation()` renders the raw i18n key
+// (`home.recentProjects` instead of `"Recent projects"`), which
+// breaks any test that asserts on user-visible copy AND causes
+// indirect failures (the `length` access in HomeView crashes when
+// the locale falls back unexpectedly). The production app does
+// this in `App.tsx`, but tests that mount components directly
+// must do it themselves.
+import "@/lib/i18n";
 
 // Enable Immer MapSet plugin for Set/Map support in store
 enableMapSet();

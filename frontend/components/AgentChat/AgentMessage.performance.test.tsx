@@ -71,7 +71,12 @@ describe("AgentMessage Performance", () => {
   });
 
   describe("console.info removal", () => {
-    it("should not log to console.info during rendering", async () => {
+    // Bumped from the default 5 s because the dynamic `import("./AgentMessage")`
+    // pulls in a large AI-chat slice (model providers + markdown renderer +
+    // syntax highlighter); when the suite runs in parallel the cold transform
+    // round-trip can blow past 5 s and trip a spurious timeout. The assertion
+    // itself is cheap.
+    it("should not log to console.info during rendering", { timeout: 20000 }, async () => {
       createSession("session-1");
 
       const consoleSpy = vi.spyOn(console, "info").mockImplementation(() => {});

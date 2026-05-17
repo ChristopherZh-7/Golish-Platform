@@ -1,7 +1,11 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useStore } from "../store";
-import { clearMockListeners, emitMockEvent, getListenerCount } from "../test/mocks/tauri-event";
+import {
+  clearMockListeners,
+  emitMockEvent,
+  getListenerCount,
+} from "../test/mocks/event-bus-helpers";
 import {
   getSessionSequenceCount,
   resetAllSequences,

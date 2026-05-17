@@ -122,15 +122,9 @@ export function createSessionTerminalActions(
         // arrow-up history re-runs (no `lastSentCommand`) or shell-
         // initiated execution (`source ~/.bashrc`, completions, etc.)
         // still fall through to the OSC payload unchanged.
-        const skeleton = (s: string | null | undefined) =>
-          s?.replace(/\s+/g, "").trim() ?? "";
-        const useUserTyped =
-          !!userTyped &&
-          !!command &&
-          skeleton(userTyped) === skeleton(command);
-        const effectiveCommand = useUserTyped
-          ? userTyped
-          : (command || userTyped || null);
+        const skeleton = (s: string | null | undefined) => s?.replace(/\s+/g, "").trim() ?? "";
+        const useUserTyped = !!userTyped && !!command && skeleton(userTyped) === skeleton(command);
+        const effectiveCommand = useUserTyped ? userTyped : command || userTyped || null;
         state.pendingCommand[sessionId] = {
           command: effectiveCommand,
           output: "",

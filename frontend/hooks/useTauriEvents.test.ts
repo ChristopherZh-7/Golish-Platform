@@ -3,7 +3,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { selectCommandBlocksFromTimeline } from "@/lib/timeline/selectors";
 import { clearAllOutputBuffers, getOutputBuffer } from "@/store/slices/session-helpers";
 import { useStore } from "../store";
-import { clearMockListeners, emitMockEvent, getListenerCount } from "../test/mocks/tauri-event";
+import {
+  clearMockListeners,
+  emitMockEvent,
+  getListenerCount,
+} from "../test/mocks/event-bus-helpers";
 import { useTauriEvents } from "./useTauriEvents";
 
 describe("useTauriEvents", () => {
