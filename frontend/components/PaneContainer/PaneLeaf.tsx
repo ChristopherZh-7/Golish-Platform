@@ -19,7 +19,6 @@ import { SubAgentDetailView } from "@/components/SubAgentDetailView";
 import { ToolCallDetailView } from "@/components/ToolCallDetailView/ToolCallDetailView";
 import { UnifiedInput } from "@/components/UnifiedInput";
 import { UnifiedTimeline } from "@/components/UnifiedTimeline";
-import { InteractiveCell } from "@/components/UnifiedTimeline/InteractiveCell";
 import { ContextMenuTrigger } from "@/components/ui/context-menu";
 import { countLeafPanes } from "@/lib/pane-utils";
 import type { PaneId } from "@/store";
@@ -218,31 +217,28 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
                 </div>
                 {detailViewMode !== "sub-agent-detail" &&
                   detailViewMode !== "tool-detail" &&
-                  (isInteractiveInputActive && interactiveMode ? (
-                    // Warp-style interactive cell: command head +
-                    // live output + input caret in a single visual
-                    // unit. Replaces both the timeline-side
-                    // `RunningCommandCard` (gated on
-                    // `!isInteractiveInputActive` inside
-                    // `UnifiedTimeline`) and the regular bottom
-                    // `UnifiedInput` while a `stdin_wait` interactive
-                    // prompt is active.
-                    <div className="px-2 pb-2 pt-1">
-                      <InteractiveCell
-                        sessionId={sessionId}
-                        mode={interactiveMode}
-                        command={pendingCommand?.command ?? interactiveMode.command ?? null}
-                      />
-                    </div>
-                  ) : (
-                    // Bottom input is always mounted so short commands
+                  !isInteractiveInputActive && (
+                    // Bottom input is always mounted (except during
+                    // interactive mode — see below) so short commands
                     // (`ls`, `pwd`, …) don't flash it out and back in.
-                    // While a command is running, the textarea's
-                    // submit is suppressed inside `useUnifiedInputState`
-                    // so an accidental Enter press doesn't ship the
-                    // buffered text to the PTY as half-stdin / half-
-                    // command. The text stays in the buffer until the
-                    // current command ends.
+                    //
+                    // During Warp-style interactive mode
+                    // (`stdin_wait` detector fires while a command is
+                    // running) the bottom input is HIDDEN entirely and
+                    // `RunningCommandCard` in the timeline takes over
+                    // BOTH output streaming AND stdin via its zero-
+                    // size offscreen capture textarea — keystrokes
+                    // flow directly to the PTY and the user sees their
+                    // `y` appear right next to the running program's
+                    // `[Y/n]` prompt (just like Warp does). No
+                    // separate "回复 cmd" textarea, no duplicated
+                    // output rendering.
+                    //
+                    // Outside interactive mode but with a command
+                    // running, the bottom input stays mounted; its
+                    // submit handler early-returns inside
+                    // `useUnifiedInputState` so an accidental Enter
+                    // doesn't ship the buffered text into the PTY.
                     <div
                       className="pane-bottom-terminal origin-bottom"
                       data-input-state="idle"
@@ -250,7 +246,7 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
                     >
                       <UnifiedInput sessionId={sessionId} />
                     </div>
-                  ))}
+                  )}
               </>
             )}
           </>

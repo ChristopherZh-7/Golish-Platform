@@ -1,6 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
-import { useStore } from "@/store";
 import { useSessionState } from "@/store/selectors/session";
 import { RunningCommandCard } from "./RunningCommandCard";
 import { VirtualizedTimeline } from "./VirtualizedTimeline";
@@ -44,15 +43,6 @@ interface UnifiedTimelineProps {
 export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: UnifiedTimelineProps) {
   const sessionState = useSessionState(sessionId);
   const { timeline, pendingCommand, workingDirectory } = sessionState;
-
-  // When the Warp-style interactive cell is active, PaneLeaf renders
-  // its own self-contained card (`InteractiveCell`) at the bottom that
-  // already shows the live output. Suppress this timeline-side
-  // `RunningCommandCard` so the user doesn't see the same output
-  // duplicated in two places.
-  const isInteractiveInputActive = useStore(
-    (s) => s.sessions[sessionId]?.interactiveMode?.active === true
-  );
 
   const viewportRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
@@ -386,7 +376,16 @@ export const UnifiedTimeline = memo(function UnifiedTimeline({ sessionId }: Unif
                 workingDirectory={workingDirectory}
               />
 
-              {showRunningCard && pendingCommand && !isInteractiveInputActive && (
+              {showRunningCard && pendingCommand && (
+                // Always render while there's a pending command (debounced
+                // ~180ms so sub-180ms commands like `ls` don't flash).
+                // In interactive mode (`stdin_wait` fired) this card is
+                // ALSO the stdin sink — its zero-size capture textarea
+                // grabs focus and the user's keystrokes flow straight to
+                // the PTY, echoing inline at the cursor position next to
+                // the program's `[Y/n]` prompt. PaneLeaf hides the bottom
+                // `UnifiedInput` while interactive, so there's no double
+                // input UI.
                 <RunningCommandCard
                   sessionId={sessionId}
                   command={pendingCommand.command ?? null}
