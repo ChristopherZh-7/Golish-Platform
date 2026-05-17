@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS engagements (
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Note: partial index predicates must be IMMUTABLE; NOW() is STABLE and
+-- would error with "functions in index predicate must be marked IMMUTABLE".
+-- Plain (start_at, end_at) index covers active-engagement lookups fine.
 CREATE INDEX IF NOT EXISTS idx_engagements_active
-  ON engagements(start_at, end_at)
-  WHERE end_at IS NULL OR end_at > NOW();
+  ON engagements(start_at, end_at);
