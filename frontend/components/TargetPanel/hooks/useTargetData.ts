@@ -14,6 +14,9 @@ interface AddForm {
   notes: string;
   tags: string;
   grp: string;
+  owner: string;
+  timeWindowStart: string;
+  timeWindowEnd: string;
 }
 
 export function useTargetData() {
@@ -72,6 +75,9 @@ export function useTargetData() {
           name: addForm.name,
           value: addForm.value.trim(),
           grp: addForm.grp.trim() || undefined,
+          owner: addForm.owner.trim() || undefined,
+          timeWindowStart: addForm.timeWindowStart.trim() || undefined,
+          timeWindowEnd: addForm.timeWindowEnd.trim() || undefined,
           projectPath: getProjectPath(),
         });
         loadTargets();
@@ -190,6 +196,35 @@ export function useTargetData() {
     [loadTargets]
   );
 
+  const handleUpdateOwner = useCallback(
+    async (id: string, owner: string) => {
+      try {
+        await targets.updateTarget({ id, owner: owner.trim(), projectPath: getProjectPath() });
+        loadTargets();
+      } catch (e) {
+        console.error("Failed to update owner:", e);
+      }
+    },
+    [loadTargets]
+  );
+
+  const handleUpdateTimeWindow = useCallback(
+    async (id: string, timeWindowStart: string, timeWindowEnd: string) => {
+      try {
+        await targets.updateTarget({
+          id,
+          timeWindowStart,
+          timeWindowEnd,
+          projectPath: getProjectPath(),
+        });
+        loadTargets();
+      } catch (e) {
+        console.error("Failed to update time window:", e);
+      }
+    },
+    [loadTargets]
+  );
+
   const handleClearAll = useCallback(
     async (confirmMsg: string) => {
       if (!confirm(confirmMsg)) return;
@@ -223,6 +258,8 @@ export function useTargetData() {
     handleToggleScope,
     handleUpdateNotes,
     handleUpdateGrp,
+    handleUpdateOwner,
+    handleUpdateTimeWindow,
     handleClearAll,
   };
 }

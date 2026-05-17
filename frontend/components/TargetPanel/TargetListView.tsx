@@ -44,6 +44,14 @@ const STATUS_CONFIG: Record<TargetStatus, { label: string; color: string; bg: st
   tested: { label: "Tested", color: "text-green-400", bg: "bg-green-500/10" },
 };
 
+// HTML datetime-local input gives "YYYY-MM-DDTHH:mm" (no timezone). Convert
+// that to a UTC ISO 8601 string suitable for the backend `parse_iso8601`.
+function toIsoUtc(local: string): string {
+  if (!local) return "";
+  const d = new Date(local);
+  return Number.isNaN(d.getTime()) ? "" : d.toISOString();
+}
+
 interface TargetListViewProps {
   targets: Target[];
   stats: { total: number; inScope: number; outOfScope: number };
@@ -54,6 +62,9 @@ interface TargetListViewProps {
     notes: string;
     tags: string;
     grp: string;
+    owner: string;
+    timeWindowStart: string;
+    timeWindowEnd: string;
   }) => Promise<string | null>;
   onBatchAdd: (input: string, grp?: string) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
@@ -87,6 +98,9 @@ export function TargetListView({
     notes: "",
     tags: "",
     grp: "",
+    owner: "",
+    timeWindowStart: "",
+    timeWindowEnd: "",
   });
   const [addError, setAddError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -143,11 +157,24 @@ export function TargetListView({
   const handleAdd = useCallback(async () => {
     if (!addForm.value.trim()) return;
     setAddError(null);
-    const err = await onAdd(addForm);
+    const err = await onAdd({
+      ...addForm,
+      timeWindowStart: addForm.timeWindowStart ? toIsoUtc(addForm.timeWindowStart) : "",
+      timeWindowEnd: addForm.timeWindowEnd ? toIsoUtc(addForm.timeWindowEnd) : "",
+    });
     if (err) {
       setAddError(err);
     } else {
-      setAddForm({ name: "", value: "", notes: "", tags: "", grp: "" });
+      setAddForm({
+        name: "",
+        value: "",
+        notes: "",
+        tags: "",
+        grp: "",
+        owner: "",
+        timeWindowStart: "",
+        timeWindowEnd: "",
+      });
       setShowAdd(false);
     }
   }, [addForm, onAdd]);
@@ -250,6 +277,33 @@ export function TargetListView({
               title={t("targets.groupHint")}
               value={addForm.grp}
               onChange={(e) => setAddForm((f) => ({ ...f, grp: e.target.value }))}
+            />
+            <input
+              className="flex-1 text-xs bg-background border border-border/50 rounded px-2 py-1.5 outline-none focus:border-accent"
+              placeholder={t("targets.ownerPlaceholder")}
+              title={t("targets.ownerHint")}
+              value={addForm.owner}
+              onChange={(e) => setAddForm((f) => ({ ...f, owner: e.target.value }))}
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-[10px] text-muted-foreground w-14 text-right">
+              {t("targets.timeWindowStart")}
+            </label>
+            <input
+              type="datetime-local"
+              className="flex-1 text-xs bg-background border border-border/50 rounded px-2 py-1.5 outline-none focus:border-accent"
+              value={addForm.timeWindowStart}
+              onChange={(e) => setAddForm((f) => ({ ...f, timeWindowStart: e.target.value }))}
+            />
+            <label className="text-[10px] text-muted-foreground w-10 text-right">
+              {t("targets.timeWindowEnd")}
+            </label>
+            <input
+              type="datetime-local"
+              className="flex-1 text-xs bg-background border border-border/50 rounded px-2 py-1.5 outline-none focus:border-accent"
+              value={addForm.timeWindowEnd}
+              onChange={(e) => setAddForm((f) => ({ ...f, timeWindowEnd: e.target.value }))}
             />
           </div>
           <div className="flex items-center gap-2">
