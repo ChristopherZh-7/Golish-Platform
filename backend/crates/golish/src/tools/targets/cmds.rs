@@ -17,7 +17,7 @@ pub async fn target_list(
     let pp = project_path.as_deref().filter(|s| !s.is_empty());
     let rows = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
-                  status::text, source, parent_id, ports,
+                  status::text, grp, source, parent_id, ports,
                   real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                   created_at, updated_at
            FROM targets WHERE ($1 IS NULL OR project_path = $1 OR project_path = '')
@@ -33,6 +33,7 @@ pub async fn target_list(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn target_add(
     state: tauri::State<'_, DbState>,
     name: String,
@@ -41,6 +42,7 @@ pub async fn target_add(
     scope: Option<Scope>,
     tags: Option<Vec<String>>,
     notes: Option<String>,
+    grp: Option<String>,
     project_path: Option<String>,
     source: Option<String>,
     parent_id: Option<String>,
@@ -51,14 +53,18 @@ pub async fn target_add(
     let tags_json = serde_json::to_value(tags.unwrap_or_default()).unwrap_or_default();
     let n = if name.is_empty() { value.clone() } else { name };
     let nt = notes.unwrap_or_default();
+    let g = grp
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "default".to_string());
     let src = source.unwrap_or_else(|| "manual".to_string());
     let pid: Option<Uuid> = parent_id.and_then(|s| s.parse().ok());
 
     let row = sqlx::query_as::<_, TargetRow>(
         r#"INSERT INTO targets (name, target_type, value, tags, notes, scope, grp, project_path, source, parent_id)
-           VALUES ($1, $2::target_type, $3, $4, $5, $6::scope_type, 'default', $7, $8, $9)
+           VALUES ($1, $2::target_type, $3, $4, $5, $6::scope_type, $7, $8, $9, $10)
            RETURNING id, name, target_type::text, value, tags, notes, scope::text,
-                     status::text, source, parent_id, ports,
+                     status::text, grp, source, parent_id, ports,
                      real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                      created_at, updated_at"#,
     )
@@ -68,6 +74,7 @@ pub async fn target_add(
     .bind(&tags_json)
     .bind(&nt)
     .bind(sc.as_str())
+    .bind(&g)
     .bind(project_path.as_deref())
     .bind(&src)
     .bind(pid)
@@ -82,9 +89,15 @@ pub async fn target_add(
 pub async fn target_batch_add(
     state: tauri::State<'_, DbState>,
     values: String,
+    group: Option<String>,
     project_path: Option<String>,
 ) -> Result<Vec<Target>, GolishError> {
     let pool = state.pool_ready().await?;
+
+    let g = group
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "default".to_string());
 
     let existing: Vec<String> =
         sqlx::query_scalar("SELECT value FROM targets WHERE project_path = $1")
@@ -104,15 +117,16 @@ pub async fn target_batch_add(
         let tt = detect_type(v);
         let row = sqlx::query_as::<_, TargetRow>(
             r#"INSERT INTO targets (name, target_type, value, tags, scope, grp, project_path)
-               VALUES ($1, $2::target_type, $3, '[]', 'in'::scope_type, 'default', $4)
+               VALUES ($1, $2::target_type, $3, '[]', 'in'::scope_type, $4, $5)
                RETURNING id, name, target_type::text, value, tags, notes, scope::text,
-                         status::text, source, parent_id, ports,
+                         status::text, grp, source, parent_id, ports,
                      real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                      created_at, updated_at"#,
         )
         .bind(v)
         .bind(tt.as_str())
         .bind(v)
+        .bind(&g)
         .bind(project_path.as_deref())
         .fetch_one(pool)
         .await?;
@@ -122,6 +136,7 @@ pub async fn target_batch_add(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn target_update(
     state: tauri::State<'_, DbState>,
     id: String,
@@ -131,6 +146,7 @@ pub async fn target_update(
     notes: Option<String>,
     status: Option<TargetStatus>,
     ports: Option<Vec<serde_json::Value>>,
+    grp: Option<String>,
     project_path: Option<String>,
 ) -> Result<Target, GolishError> {
     let pool = state.pool_ready().await?;
@@ -181,10 +197,19 @@ pub async fn target_update(
             .execute(pool)
             .await?;
     }
+    if let Some(g) = &grp {
+        let trimmed = g.trim();
+        let val = if trimmed.is_empty() { "default" } else { trimmed };
+        sqlx::query("UPDATE targets SET grp=$1, updated_at=NOW() WHERE id=$2")
+            .bind(val)
+            .bind(uid)
+            .execute(pool)
+            .await?;
+    }
 
     let row = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
-                  status::text, source, parent_id, ports,
+                  status::text, grp, source, parent_id, ports,
                      real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                      created_at, updated_at
            FROM targets WHERE id=$1"#,
@@ -244,7 +269,7 @@ pub async fn target_update_status(
 
     let row = sqlx::query_as::<_, TargetRow>(
         r#"SELECT id, name, target_type::text, value, tags, notes, scope::text,
-                  status::text, source, parent_id, ports,
+                  status::text, grp, source, parent_id, ports,
                      real_ip, cdn_waf, http_title, http_status, webserver, os_info, content_type,
                      created_at, updated_at
            FROM targets WHERE id=$1"#,

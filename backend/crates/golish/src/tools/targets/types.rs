@@ -18,6 +18,8 @@ pub struct Target {
     pub scope: Scope,
     pub status: TargetStatus,
     #[serde(default)]
+    pub grp: String,
+    #[serde(default)]
     pub source: String,
     #[serde(default)]
     pub parent_id: Option<String>,
@@ -164,6 +166,7 @@ pub(super) struct TargetRow {
     notes: String,
     scope: String,
     status: String,
+    grp: String,
     source: String,
     parent_id: Option<Uuid>,
     ports: serde_json::Value,
@@ -189,6 +192,7 @@ impl From<TargetRow> for Target {
             notes: r.notes,
             scope: Scope::from_str(&r.scope),
             status: TargetStatus::from_str(&r.status),
+            grp: r.grp,
             source: r.source,
             parent_id: r.parent_id.map(|u| u.to_string()),
             ports: serde_json::from_value(r.ports).unwrap_or_default(),
