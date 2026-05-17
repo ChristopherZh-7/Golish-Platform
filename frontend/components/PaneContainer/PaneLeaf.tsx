@@ -19,6 +19,7 @@ import { SubAgentDetailView } from "@/components/SubAgentDetailView";
 import { ToolCallDetailView } from "@/components/ToolCallDetailView/ToolCallDetailView";
 import { UnifiedInput } from "@/components/UnifiedInput";
 import { UnifiedTimeline } from "@/components/UnifiedTimeline";
+import { InteractiveCell } from "@/components/UnifiedTimeline/InteractiveCell";
 import { ContextMenuTrigger } from "@/components/ui/context-menu";
 import { countLeafPanes } from "@/lib/pane-utils";
 import type { PaneId } from "@/store";
@@ -216,30 +217,40 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
                   )}
                 </div>
                 {detailViewMode !== "sub-agent-detail" &&
-                  detailViewMode !== "tool-detail" && (
+                  detailViewMode !== "tool-detail" &&
+                  (isInteractiveInputActive && interactiveMode ? (
+                    // Warp-style interactive cell: command head +
+                    // live output + input caret in a single visual
+                    // unit. Replaces both the timeline-side
+                    // `RunningCommandCard` (gated on
+                    // `!isInteractiveInputActive` inside
+                    // `UnifiedTimeline`) and the regular bottom
+                    // `UnifiedInput` while a `stdin_wait` interactive
+                    // prompt is active.
+                    <div className="px-2 pb-2 pt-1">
+                      <InteractiveCell
+                        sessionId={sessionId}
+                        mode={interactiveMode}
+                        command={pendingCommand?.command ?? interactiveMode.command ?? null}
+                      />
+                    </div>
+                  ) : (
                     // Bottom input is always mounted so short commands
                     // (`ls`, `pwd`, …) don't flash it out and back in.
-                    // While a command is running:
-                    //   - The textarea's focus is taken over by the
-                    //     `RunningCommandCard` in the timeline (only
-                    //     when `interactiveMode` actually trips), which
-                    //     is the stdin sink for prompts like sqlmap's
-                    //     `[Y/n]`.
-                    //   - `useUnifiedInputState.handleSubmit` early-
-                    //     returns when `isProcessRunning`, so an
-                    //     accidental Enter press here does NOT ship the
-                    //     buffered text to the PTY as half-stdin /
-                    //     half-command. The text stays in the buffer
-                    //     until the command ends, then the user can
-                    //     submit it as the next command.
+                    // While a command is running, the textarea's
+                    // submit is suppressed inside `useUnifiedInputState`
+                    // so an accidental Enter press doesn't ship the
+                    // buffered text to the PTY as half-stdin / half-
+                    // command. The text stays in the buffer until the
+                    // current command ends.
                     <div
                       className="pane-bottom-terminal origin-bottom"
                       data-input-state="idle"
-                      data-interactive={isInteractiveInputActive ? "true" : "false"}
+                      data-interactive="false"
                     >
                       <UnifiedInput sessionId={sessionId} />
                     </div>
-                  )}
+                  ))}
               </>
             )}
           </>
