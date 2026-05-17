@@ -14,7 +14,7 @@
  * preventing re-renders when unrelated session or layout properties change.
  */
 
-import React, { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import React, { lazy, Suspense, useCallback, useEffect } from "react";
 import { SubAgentDetailView } from "@/components/SubAgentDetailView";
 import { ToolCallDetailView } from "@/components/ToolCallDetailView/ToolCallDetailView";
 import { UnifiedInput } from "@/components/UnifiedInput";
@@ -100,7 +100,6 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
   // textarea so the user can just type `y` + Enter without a click.
   const interactiveMode = useStore((s) => s.sessions[sessionId]?.interactiveMode ?? null);
   const isInteractiveInputActive = interactiveMode?.active === true;
-  const isCommandRunning = !!pendingCommand?.command;
 
   const isFocused = focusedPaneId === paneId;
   const showFocusIndicator = isFocused && paneCount > 1;

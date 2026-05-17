@@ -73,7 +73,7 @@ export function useGridResize({
     if (!el) return;
     if (typeof ResizeObserver === "undefined") return;
 
-    const flush = (trigger: "mount" | "observer") => {
+    const flush = (_trigger: "mount" | "observer") => {
       const target = containerRef.current;
       if (!target) return;
       const metrics = measureCell(target);

@@ -191,10 +191,6 @@ export function useGridState(sessionId: string, enabled: boolean): GridSnapshot 
     const handle = async (payload: TerminalGridUpdatePayload) => {
       if (cancelled) return;
       if (payload.session_id !== sessionId) return;
-      if (!firstFrameLogged) {
-        firstFrameLogged = true;
-      }
-
       // Detect a missed event: if we have a baseline and the new rev
       // isn't strictly greater than the last seen + 1 we may have
       // dropped frames. Ask for a fresh full snapshot to resync —

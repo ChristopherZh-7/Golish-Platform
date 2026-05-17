@@ -253,24 +253,6 @@ export function useTauriEvents() {
             // takeover.
             const processName = extractProcessName(command);
 
-            // Fast-path for known TUI apps (vim / htop / less / tmux / …).
-            // The `setTimeout(…, PROCESS_DETECTION_DELAY_MS)` below confirms
-            // the foreground process via `ptyGetForegroundProcess` before
-            // committing the name, but vim trips `\x1b[?1049h` (alt-screen
-            // enable) within a handful of milliseconds — far faster than
-            // the detection timer fires. Without this fast path the
-            // `alternate_screen` handler reads `session.processName === null`,
-            // misses the whitelist, leaves us in timeline mode, and vim's
-            // full-screen ANSI gets dumped into the scrollback as garbled
-            // `t;4;2m` / `▽` / `~` fragments. Whitelist-matched commands
-            // are safe to claim immediately — if the foreground process
-            // turns out to be something else (e.g. `vim` aliased to a
-            // wrapper that exec's `cat`), the `setRenderMode("timeline")`
-            // on the alt-screen-disable path will recover.
-            if (processName && ALT_SCREEN_TUI_PROCESSES.has(processName)) {
-              state.setProcessName(session_id, processName);
-            }
-
             if (isFastCommand(command)) break;
 
             clearProcessDetectionTimer(session_id);
@@ -395,9 +377,97 @@ export function useTauriEvents() {
             const hex = Array.from(preview)
               .map((c) => c.charCodeAt(0).toString(16).padStart(2, "0"))
               .join("");
+            // eslint-disable-next-line no-console
+            console.log(
+              `[pty-trace] sid=${session_id.slice(0, 8)} seq=${seenSoFar + 1} len=${data.length} json=`,
+              JSON.stringify(preview),
+              "hex=",
+              hex
+            );
+          }
+        } catch {
+          // localStorage can throw in private mode / Webview restrictions —
+          // the trace is best-effort, never let it break output handling.
+        }
+        virtualTerminalManager.write(session_id, data);
+        store.getState().appendOutput(session_id, data);
+      })
+    );
+
+    unlisteners.push(
+      onEvent("directory_changed", async (payload) => {
+        if (isStale()) return;
+        const { session_id, path } = payload;
+        const state = store.getState();
+
+        state.updateWorkingDirectory(session_id, path);
+
+        try {
+          const branch = await getGitBranch(path);
+          state.updateGitBranch(session_id, branch);
+        } catch {
+          state.updateGitBranch(session_id, null);
+        }
+
+        try {
+          const initialized = await isAiSessionInitialized(session_id);
+          if (initialized) {
+            await updateAiWorkspace(path, session_id);
+            notify.info("Workspace synced", { message: path });
+          }
+        } catch (error) {
+          logger.error("Error updating AI workspace:", error);
+        }
+      })
+    );
+
+    unlisteners.push(
+      onEvent("virtual_env_changed", (payload) => {
+        if (isStale()) return;
+        store.getState().updateVirtualEnv(payload.session_id, payload.name);
+      })
+    );
+
+    unlisteners.push(
+      onEvent("session_ended", (payload) => {
+        if (isStale()) return;
+        trace("session_ended", payload.sessionId);
+        seenCommandEnd.delete(payload.sessionId);
+        lastPromptStartConsumedAt.delete(payload.sessionId);
+        store.getState().removeSession(payload.sessionId);
+      })
+    );
+
+    unlisteners.push(
+      onEvent("alternate_screen", (payload) => {
+        if (isStale()) return;
+        const { session_id, enabled } = payload;
+        const state = store.getState();
+
+        // Disable side: always honour — even non-TUI processes will
+        // toggle the alt-screen flag off when they exit, and we want
+        // to be back in Block UI by the time they do.
+        if (!enabled) {
+          state.setRenderMode(session_id, "timeline");
+          return;
+        }
+
+        // Enable side: only flip into fullterm when the foreground
+        // process is a known TUI (vim / htop / less / nano / …). Any
+        // other alt-screen toggle (a misbehaving pager, an incidental
+        // cursor-visibility flip during a Y/N prompt) is treated as
+        // noise and kept in Block UI so the Warp-style interactive
+        // input keeps working.
+        const session = state.sessions[session_id];
+        const processName = session?.processName ?? null;
+        if (processName && ALT_SCREEN_TUI_PROCESSES.has(processName)) {
           state.setRenderMode(session_id, "fullterm");
           usedAlternateScreen.set(session_id, true);
         } else {
+          logger.debug("[fullterm] alt-screen ignored (non-TUI foreground)", {
+            session_id,
+            processName,
+          });
         }
       })
     );
