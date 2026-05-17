@@ -504,6 +504,18 @@ export function useTauriEvents() {
         // is hidden anyway.
         if (session.renderMode === "fullterm") return;
 
+        // Guard: only flip interactive mode while a command is actually
+        // running. Without this guard the user can force-quit a command
+        // (sqlmap Ctrl-C / Esc), the PTY's shell prompt `$ ` redraws,
+        // the stdin_wait_detector on the backend mistakes the shell
+        // prompt for a `[Y/n]` and fires another stdin_wait, and the
+        // bottom input gets stuck on "回复 the running command (Y/N)…"
+        // even though no command is running. The user then has to
+        // force-quit a *second* time (which actually goes nowhere
+        // because there's nothing to interrupt) before the placeholder
+        // clears.
+        if (!state.pendingCommand[session_id]?.command) return;
+
         // Resolve the command label shown in the Warp-style cell.
         // We prefer OSC 133;C's `command` field, fall back to the
         // most recent `command_start` event, and finally to whatever
