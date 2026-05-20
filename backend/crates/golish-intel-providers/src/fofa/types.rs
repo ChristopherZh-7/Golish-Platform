@@ -9,6 +9,13 @@
 //! On error the envelope sets `error: true` and fills `errmsg`.
 //!
 //! Reference: <https://fofa.info/api>
+//!
+//! NOTE on `#![allow(dead_code)]`: envelope metadata fields (size / page /
+//! consumed_fpoint / required_fpoints / mode / query) are parsed to keep
+//! the deserializer schema-complete but not all are currently surfaced
+//! through `ProviderRecord`. Future iterations may emit them as evidence.
+
+#![allow(dead_code)]
 
 use serde::Deserialize;
 

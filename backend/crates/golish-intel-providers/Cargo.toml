@@ -9,6 +9,7 @@ description = "ASM/threat intel provider abstraction layer: 0.zone (零零信安
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_urlencoded = "0.7"
+base64 = "0.22"
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
 tracing = { workspace = true }
@@ -16,7 +17,6 @@ chrono = { workspace = true }
 async-trait = { workspace = true }
 reqwest = { workspace = true }
 url = { workspace = true }
-base64 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
