@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "searchsploit",
+    "pentestPhase": ["vuln_id"],
     "name": "searchsploit",
     "description": "Offline command-line search of the Exploit-DB archive (CVE / vendor / product / nmap-XML)",
     "executable": "searchsploit",

@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "john",
+    "pentestPhase": ["exploit", "post_exploit"],
     "name": "john",
     "description": "John the Ripper - offline password hash cracker for many formats (NTLM, MD5, SHA, bcrypt, etc.)",
     "executable": "john",

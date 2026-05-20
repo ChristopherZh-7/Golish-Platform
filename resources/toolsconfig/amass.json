@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "amass",
+    "pentestPhase": ["recon", "enum"],
     "name": "amass",
     "description": "OWASP Amass - in-depth attack surface mapping and asset discovery (passive + active subdomain enum, ASN, ports)",
     "executable": "amass",

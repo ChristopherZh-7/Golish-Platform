@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "sqlmap",
+    "pentestPhase": ["vuln_id", "exploit"],
     "name": "sqlmap",
     "description": "Automatic SQL injection and database takeover tool",
     "executable": "sqlmap/sqlmap.py",

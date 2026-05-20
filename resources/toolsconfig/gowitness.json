@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "gowitness",
+    "pentestPhase": ["recon"],
     "name": "gowitness",
     "description": "Web screenshot utility using Chrome Headless - bulk capture, indexed DB, HTML report",
     "executable": "gowitness",

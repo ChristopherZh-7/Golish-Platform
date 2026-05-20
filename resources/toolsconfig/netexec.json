@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "netexec",
+    "pentestPhase": ["post_exploit"],
     "name": "netexec",
     "description": "Network service exploitation tool (successor to crackmapexec) - SMB, WinRM, RDP, SSH, FTP, MSSQL, LDAP, VNC bulk auth + post-exploit",
     "executable": "nxc",

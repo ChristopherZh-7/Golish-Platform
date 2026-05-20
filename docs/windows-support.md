@@ -90,7 +90,6 @@ auto-detect it via `which_executable`.
 | `masscan` | `brew install masscan` | [GitHub release](https://github.com/robertdavidgraham/masscan/releases) |
 | `metasploit-framework` | `brew install metasploit` | [Metasploit Windows installer](https://www.metasploit.com/download) |
 | `wireshark` | `brew install --cask wireshark` | `winget install -e --id WiresharkFoundation.Wireshark` |
-| `burpsuite-community` | `brew install --cask burp-suite` | [PortSwigger downloads](https://portswigger.net/burp/communitydownload) |
 | `sqlmap` | GitHub clone | GitHub clone (works as-is — Python required) |
 | `responder` | GitHub clone | GitHub clone (works on Python ≥3.9) |
 | `searchsploit` | GitHub clone | GitHub clone — runs under Git Bash / WSL |

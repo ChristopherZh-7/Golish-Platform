@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "gobuster",
+    "pentestPhase": ["enum"],
     "name": "gobuster",
     "description": "Directory, DNS, vhost, and S3 bucket brute-forcer in Go",
     "executable": "gobuster",

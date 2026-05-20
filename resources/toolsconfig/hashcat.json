@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "hashcat",
+    "pentestPhase": ["exploit", "post_exploit"],
     "name": "hashcat",
     "description": "World's fastest GPU-accelerated password recovery tool (200+ hash modes)",
     "executable": "hashcat",

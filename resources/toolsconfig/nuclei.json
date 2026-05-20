@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "nuclei",
+    "pentestPhase": ["vuln_id"],
     "name": "nuclei",
     "description": "Template-based vulnerability scanner with thousands of community templates",
     "executable": "nuclei",

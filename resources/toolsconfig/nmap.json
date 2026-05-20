@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "nmap",
+    "pentestPhase": ["enum"],
     "name": "nmap",
     "description": "Network exploration tool and security/port scanner",
     "executable": "nmap",

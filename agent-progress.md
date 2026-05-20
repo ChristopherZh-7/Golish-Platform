@@ -17,9 +17,9 @@
 | **包管理** | `pnpm`（前端）+ `cargo` nextest（后端） |
 | **标准启动** | `just dev`（全栈热重载，端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
-| **当前最高优先级** | 跑 `just dev` 真跑一遍，验证 26+1 个新合入 commits（KG / Dispatch / Planner / Task-Plan + AI-Chat ModelSettings Popover）在运行时不破坏现有功能 |
-| **当前 blocker** | 完整 `cargo check` 多次跑超时被用户主动中断；TS typecheck 全程绿（最新一次 12.5s）；M1/M2 cargo check 已跑过；M3 + ai-chat 大概率正常但**未独立全量验证**，建议下一轮用 `cargo check -p golish-models -p golish-llm-providers -p golish-agent-runtime` 仅 check 受影响 crate |
-| **未提交的半成品** | 本轮工作树干净（git status 空）；之前游离的 `ChatModelSelector` / `useProviderForm` 修改在 MCP-6 的 `74b4d22 chore: checkpoint finishing workspace before terminal merge` 已被打包提交进 HEAD |
+| **当前最高优先级** | 跑 `just dev` 真跑一遍，验证 26+1 commits + 本轮 `pentestPhase` schema 改动在运行时不破坏现有功能；ToolManager UI 加 phase 过滤器是下一轮候选 |
+| **当前 blocker** | 完整 `cargo check` 多次跑超时被用户主动中断；TS typecheck 全程绿（最新一次 10.9s）；本轮覆盖 `cargo check -p golish-pentest / golish-pentest-domain / golish-pentest-mcp` + `cargo test -p golish-pentest --lib models::` 全绿；M3 + ai-chat 大概率正常但**未独立全量验证**，建议下一轮跑 `just check-rust` 兜底 |
+| **未提交的半成品** | 本轮已修改但未 commit：`backend/crates/golish-pentest/src/{models.rs,search.rs,command_builder/tests.rs}` + `frontend/lib/pentest/types.ts` + `resources/toolsconfig/*.json`（27 改 + 1 删）+ `resources/skills/burpsuite-community/`（1 删 + 空目录删）+ `docs/windows-support.md`（1 行删）+ `agent-progress.md`（本节）。等用户授权后 commit |
 
 ---
 
@@ -113,6 +113,58 @@
   2. 跑 `bash init.sh` 验证环境基线
   3. 用户决定是否把 6 个新文件合并为一次 commit（推荐 message：`chore(harness): scaffold meta-harness markdown + scripts`）
   4. 后续按 `feature_list.json` 优先级推进，第一个候选是把内层 agent harness Rust 实现按 `docs/superpowers/plans/2026-05-20-golish-agent-harness-architecture.md` 推进
+
+---
+
+### 2026-05-20 · ToolConfig 新增 `pentestPhase` 字段 + 删除 burpsuite-community
+
+- **本轮目标**：MCP-3 接手 MCP-1 上下文，给 `golish-pentest::ToolConfig` 加 `pentest_phase: Vec<String>` 字段标记 7 阶段（实际 6 个：recon/enum/vuln_id/exploit/post_exploit/aux，meta 被用户砍掉），同时按用户指示把 `burpsuite-community` 工具完全清出仓库。
+- **已完成**：
+  - **后端**：`backend/crates/golish-pentest/src/models.rs`
+    - `ToolConfig` 加 `pentest_phase: Vec<String>` + `#[serde(default, rename = "pentestPhase")]` 向后兼容（老 JSON 无此字段 = 空数组）
+    - `validate()` 加 phase 枚举校验（任意取值不在 6 枚举集报 `pentestPhase '<x>' invalid, must be one of: ...`）
+    - 新增 `pub const VALID_PENTEST_PHASES: &[&str]` 模块级常量供 harness `tool_policy` 等下游复用
+    - 加 4 个 `#[cfg(test)] mod tests`：driving JSON round-trip / legacy compat / canonical pass / 拒绝未知 phase
+    - 修 `command_builder/tests.rs:17` + `search.rs:103` 两处 struct literal 漏字段（仅加 `pentest_phase: vec![],` 一行）
+  - **前端**：`frontend/lib/pentest/types.ts` 加 `pentestPhase?: string[]`（手写镜像；ts-rs 历史债不在本次 scope）
+  - **配置数据**：`resources/toolsconfig/*.json` 27 份逐个加 `"pentestPhase": [...]` 字段（详细取值表见下方）
+  - **清除 burpsuite-community 全部痕迹**（按用户 A 一并清理选项）：
+    - 删 `resources/toolsconfig/burpsuite-community.json`（2789 字节）
+    - 删 `resources/skills/burpsuite-community/basic-usage.md`（4133 字节）+ 空目录
+    - 改 `docs/windows-support.md` 删第 93 行 burpsuite-community 安装说明
+  - **未顺手改**：发现 `golish-pentest-domain::ToolConfig` + `golish-pentest-mcp::ToolConfig` 是 `ToolConfig` 的孪生副本（违反 I5，但属历史债）。两者都没 `pentestPhase` 字段，但因 serde 默认忽略未知字段，反序列化 JSON 不受影响。**留作下一轮**统一到 ts-rs。
+- **运行过的验证**：
+  - `cargo check -p golish-pentest` → 0，32.76s
+  - `cargo test -p golish-pentest --lib models::` → 4 passed; 0 failed（round-trip / legacy compat / canonical phases / reject 'meta'）
+  - `cargo check -p golish-pentest-domain` → 0，9.45s（受牵连验证未被破坏）
+  - `cargo check -p golish-pentest-mcp` → 0，69.6s（同上）
+  - `pnpm typecheck` → 0，10.9s
+  - `jq` 27 个 JSON `.tool.pentestPhase` 全部数组合法 + 取值全在 6 枚举集（exit 0，无 INVALID 输出）
+  - `ReadLints` models.rs + types.ts → 无 lint 错误
+- **已记录证据**：
+  - 27 个 JSON 取值表（按 phase 分类）：
+    - **recon**（被动子域/URL/截图）：subfinder, gau, waybackurls, gowitness
+    - **recon+enum**（多阶段）：amass, httpx, katana
+    - **enum**（主动扫描）：nmap, masscan, gobuster
+    - **enum+vuln_id**（扫描+识别）：ffuf, nikto
+    - **vuln_id**（漏洞识别）：nuclei, wpscan, dalfox, searchsploit
+    - **vuln_id+exploit**：sqlmap
+    - **exploit**：metasploit-framework, hydra
+    - **exploit+post_exploit**：john, hashcat
+    - **post_exploit**：impacket, netexec, bloodhound-python, responder, chisel
+    - **aux**：wireshark
+  - 单元测试通过列表见上"运行过的验证"
+- **提交记录**：**待用户确认后 commit**（本轮未跑 commit；用户未明示 push）
+- **已知风险或未解决问题**：
+  - `golish-pentest-domain` / `golish-pentest-mcp` 两份孪生 `ToolConfig` 没同步 `pentest_phase`（serde 兼容但语义裂开）；建议下一轮统一走 ts-rs derive 收敛到一份
+  - `frontend/lib/pentest/types.ts` 是手写镜像（违 I5）；ts-rs 收敛建议同上
+  - 27 个 JSON 的初始取值是**经验判断**（基于 MCP-1 文档 §3 工具阶段分类表），后续可能需根据实际使用调整
+  - `search_tools` 函数未扩展 phase 过滤（不在本轮 scope，留作下一轮）
+- **下一步最佳动作**：
+  1. 用户审核 27 个 JSON 的 phase 取值表，提出调整建议
+  2. 在 `golish-pentest/src/tool_manager/mod.rs::search_tools` 扩展 phase 关键字过滤
+  3. ToolManager UI 加 "按阶段查看" 过滤器（参考 MCP-1 设计 §6.2）
+  4. 把 `golish-pentest-domain` / `golish-pentest-mcp` 的 ToolConfig 收敛到 ts-rs derive（消除 I5 历史债）
 
 ---
 

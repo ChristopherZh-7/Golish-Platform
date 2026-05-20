@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "wireshark",
+    "pentestPhase": ["aux"],
     "name": "wireshark",
     "description": "Industry-standard graphical network protocol analyzer for capture and dissection",
     "executable": "wireshark",

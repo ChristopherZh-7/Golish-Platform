@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "hydra",
+    "pentestPhase": ["exploit"],
     "name": "hydra",
     "description": "Fast network logon brute-forcer for many protocols (SSH, FTP, HTTP, SMB, RDP, etc.)",
     "executable": "hydra",

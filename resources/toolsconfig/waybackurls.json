@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "waybackurls",
+    "pentestPhase": ["recon"],
     "name": "waybackurls",
     "description": "Fetch all the URLs that the Wayback Machine knows about for a domain (lighter alternative to gau)",
     "executable": "waybackurls",

@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "dalfox",
+    "pentestPhase": ["vuln_id"],
     "name": "dalfox",
     "description": "Powerful XSS scanner and parameter analysis tool with DOM/blind/stored detection",
     "executable": "dalfox",

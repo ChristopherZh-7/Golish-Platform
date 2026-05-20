@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "httpx",
+    "pentestPhase": ["recon", "enum"],
     "name": "httpx",
     "description": "Fast multi-purpose HTTP toolkit (probe, status, title, tech, screenshots)",
     "executable": "httpx",

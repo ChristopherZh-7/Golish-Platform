@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "katana",
+    "pentestPhase": ["recon", "enum"],
     "name": "katana",
     "description": "Next-gen web crawler from ProjectDiscovery (headless + JS endpoint extraction + sitemap / robots / wayback / form parsing)",
     "executable": "katana",

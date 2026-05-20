@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "gau",
+    "pentestPhase": ["recon"],
     "name": "gau",
     "description": "Get All URLs - fetch known URLs from Wayback / OTX / Common Crawl / URLScan for a domain (passive, no requests to target)",
     "executable": "gau",

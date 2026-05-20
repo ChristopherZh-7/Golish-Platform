@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "nikto",
+    "pentestPhase": ["enum", "vuln_id"],
     "name": "nikto",
     "description": "Web server scanner that tests for dangerous files, outdated versions, and configuration issues",
     "executable": "nikto",

@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "masscan",
+    "pentestPhase": ["enum"],
     "name": "masscan",
     "description": "Mass IP port scanner - capable of scanning the entire Internet in under 6 minutes",
     "executable": "masscan",

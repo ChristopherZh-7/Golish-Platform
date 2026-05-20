@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "bloodhound-python",
+    "pentestPhase": ["post_exploit"],
     "name": "bloodhound-python",
     "description": "Python-based AD ingestor for BloodHound (CE) - collects users/groups/computers/sessions/ACLs from Linux",
     "executable": "bloodhound-python",

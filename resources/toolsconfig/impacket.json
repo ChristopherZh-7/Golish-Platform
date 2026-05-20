@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "impacket",
+    "pentestPhase": ["post_exploit"],
     "name": "impacket",
     "description": "Collection of Python classes for working with network protocols - psexec, secretsdump, GetNPUsers, mimikatz over SMB, and more",
     "executable": "impacket-secretsdump",

@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "wpscan",
+    "pentestPhase": ["vuln_id"],
     "name": "wpscan",
     "description": "WordPress vulnerability scanner - users, plugins, themes, and known CVEs",
     "executable": "wpscan",

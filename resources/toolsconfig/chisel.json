@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "chisel",
+    "pentestPhase": ["post_exploit"],
     "name": "chisel",
     "description": "Fast TCP/UDP tunnel over HTTP secured via SSH - reverse / forward port-forwarding through firewalls",
     "executable": "chisel",

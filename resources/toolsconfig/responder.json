@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "responder",
+    "pentestPhase": ["post_exploit"],
     "name": "responder",
     "description": "LLMNR / NBT-NS / mDNS poisoner with rogue authentication servers (capture NetNTLMv2 hashes)",
     "executable": "responder",

@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "metasploit-framework",
+    "pentestPhase": ["exploit"],
     "name": "metasploit-framework",
     "description": "World's most used penetration testing framework - exploits, payloads, post modules",
     "executable": "msfconsole",

@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "subfinder",
+    "pentestPhase": ["recon"],
     "name": "subfinder",
     "description": "Passive subdomain discovery tool from ProjectDiscovery (uses public sources)",
     "executable": "subfinder",

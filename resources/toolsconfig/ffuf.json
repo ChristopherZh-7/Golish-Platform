@@ -1,6 +1,7 @@
 {
   "tool": {
     "id": "ffuf",
+    "pentestPhase": ["enum", "vuln_id"],
     "name": "ffuf",
     "description": "Fast web fuzzer written in Go - directories, parameters, vhosts, and more",
     "executable": "ffuf",
