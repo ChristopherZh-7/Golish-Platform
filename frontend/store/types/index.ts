@@ -35,9 +35,11 @@ export type {
   DetailViewMode,
   ExecutionMode,
   InputMode,
+  InteractiveModeState,
   RenderMode,
   Session,
   SessionMode,
+  StdinWaitDetector,
   TabType,
 } from "./session";
 export type {

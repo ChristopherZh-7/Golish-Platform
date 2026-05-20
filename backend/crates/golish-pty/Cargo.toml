@@ -19,6 +19,16 @@ serde_json = { workspace = true }
 portable-pty = { workspace = true }
 vte = { version = "0.13" }
 
+# Virtual terminal grid (Phase B · GridTerminal) — drives alt-screen
+# rendering through `alacritty_terminal`, which is the same vt parser /
+# screen-state machine that powers Alacritty, Wezterm, and Warp. We use
+# it to maintain a full grid (cells + cursor + scrollback) for any
+# session that enters alt-screen, then ship per-frame diffs to the
+# frontend so vim / htop / less can render without xterm.js.
+alacritty_terminal = "0.26"
+unicode-width = "0.2"
+bitflags = "2"
+
 # Concurrency
 parking_lot = { version = "0.12" }
 

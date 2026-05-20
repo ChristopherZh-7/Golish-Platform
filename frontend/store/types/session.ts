@@ -21,6 +21,13 @@ export type ExecutionMode = string;
 export const EXECUTION_MODE_CHAT = "chat";
 export const EXECUTION_MODE_TASK = "task";
 
+export type StdinWaitDetector =
+  | "yn_choice"
+  | "password"
+  | "powershell_choice"
+  | "continue"
+  | "generic_prompt";
+
 export interface AiConfig {
   provider: string;
   model: string;
@@ -36,6 +43,13 @@ export interface AiConfig {
 }
 
 export type DetailViewMode = "timeline" | "tool-detail" | "sub-agent-detail";
+
+export interface InteractiveModeState {
+  active: boolean;
+  command: string | null;
+  detector: StdinWaitDetector;
+  enteredAt: number;
+}
 
 export interface Session {
   id: string;
@@ -59,4 +73,5 @@ export interface Session {
   retiredPlans?: RetiredPlan[];
   detailViewMode?: DetailViewMode;
   toolDetailRequestIds?: string[] | null;
+  interactiveMode?: InteractiveModeState | null;
 }

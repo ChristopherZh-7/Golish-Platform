@@ -11,8 +11,16 @@ pub(in crate::parser) struct OscPerformer {
     last_virtual_env: Option<String>,
     /// Current semantic region based on OSC 133 markers
     pub(in crate::parser) current_region: TerminalRegion,
-    /// Accumulated visible output bytes (only from Output region)
+    /// Accumulated visible output bytes (only from Output region) —
+    /// consumed by the timeline renderer.
     pub(in crate::parser) visible_bytes: Vec<u8>,
+    /// Accumulated visible bytes **across all regions** (Output,
+    /// Prompt, Input) with escape sequences stripped. The Warp-style
+    /// `stdin_wait` detector needs this to see PS1/PS2/PS3 prompts —
+    /// which sit in `Prompt` / `Input` regions thanks to OSC 133 and
+    /// are otherwise filtered out of `visible_bytes`. Drained
+    /// alongside `visible_bytes` on each `parse_filtered` call.
+    pub(in crate::parser) prompt_visible_bytes: Vec<u8>,
     /// Track alternate screen state to deduplicate CSI events
     pub(in crate::parser) alternate_screen_active: bool,
 }
@@ -25,6 +33,7 @@ impl OscPerformer {
             last_virtual_env: None,
             current_region: TerminalRegion::Output,
             visible_bytes: Vec::new(),
+            prompt_visible_bytes: Vec::new(),
             alternate_screen_active: false,
         }
     }
@@ -115,12 +124,38 @@ impl OscPerformer {
                 self.events.push(OscEvent::PromptEnd);
             }
             Some('C') => {
-                // Command may come from marker suffix (C;cmd) or params[2]
+                // OSC 133;C[;<command>] — VTE has already split the OSC
+                // payload on `;`, so a command that itself contains
+                // semicolons (`cat foo; ls`, `cmd1 && cmd2; cmd3`, the
+                // multi-segment compound that bash assembles for an
+                // unterminated `select ... do ... done`) lands as
+                // multiple successive params. Re-join them back with
+                // `;` so the frontend sees the user's full command
+                // text instead of just the first segment.
                 self.current_region = TerminalRegion::Output;
-                let command = marker
-                    .strip_prefix("C;")
-                    .or(extra_arg)
-                    .map(|s| s.to_string());
+                let command = if let Some(rest) = marker.strip_prefix("C;") {
+                    let mut buf = String::from(rest);
+                    for chunk in &params[2..] {
+                        if let Ok(s) = std::str::from_utf8(chunk) {
+                            buf.push(';');
+                            buf.push_str(s);
+                        }
+                    }
+                    Some(buf)
+                } else if params.len() >= 3 {
+                    let mut buf = String::new();
+                    for (i, chunk) in params[2..].iter().enumerate() {
+                        if i > 0 {
+                            buf.push(';');
+                        }
+                        if let Ok(s) = std::str::from_utf8(chunk) {
+                            buf.push_str(s);
+                        }
+                    }
+                    if buf.is_empty() { None } else { Some(buf) }
+                } else {
+                    None
+                };
                 tracing::trace!("[OSC 133] CommandStart: {:?}", command);
                 self.events.push(OscEvent::CommandStart { command });
             }
@@ -246,24 +281,30 @@ impl OscPerformer {
 
 impl Perform for OscPerformer {
     fn print(&mut self, c: char) {
+        let mut buf = [0u8; 4];
+        let encoded = c.encode_utf8(&mut buf);
+        // Always record into `prompt_visible_bytes` (used by stdin_wait
+        // detector) — regardless of region — so that PS1/PS2/PS3
+        // prompts in Prompt/Input regions are visible to the detector.
+        self.prompt_visible_bytes.extend_from_slice(encoded.as_bytes());
+
         if self.current_region == TerminalRegion::Output {
-            // Encode char as UTF-8 and add to visible_bytes
-            let mut buf = [0u8; 4];
-            let encoded = c.encode_utf8(&mut buf);
             self.visible_bytes.extend_from_slice(encoded.as_bytes());
         }
     }
 
     fn execute(&mut self, byte: u8) {
-        if self.current_region == TerminalRegion::Output {
-            // Pass through control characters in Output region
-            // Common ones: LF (0x0A), CR (0x0D), TAB (0x09), BS (0x08)
-            match byte {
-                0x0A | 0x0D | 0x09 | 0x08 => {
+        // Pass through the same set of control chars to BOTH buffers.
+        // The detector needs `\n` / `\r` to see line boundaries in the
+        // accumulated tail (so it can match e.g. `<prompt>\n> `).
+        match byte {
+            0x0A | 0x0D | 0x09 | 0x08 => {
+                self.prompt_visible_bytes.push(byte);
+                if self.current_region == TerminalRegion::Output {
                     self.visible_bytes.push(byte);
                 }
-                _ => {}
             }
+            _ => {}
         }
     }
 

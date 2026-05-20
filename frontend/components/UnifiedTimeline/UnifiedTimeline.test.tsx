@@ -5,42 +5,9 @@ import { getOutputBuffer } from "@/store/slices/session-helpers";
 import { useStore } from "../../store";
 import { UnifiedTimeline } from "./UnifiedTimeline";
 
-// Mock xterm.js and addons - they don't work in jsdom
-vi.mock("@xterm/xterm", () => ({
-  Terminal: class MockTerminal {
-    options = { theme: {} };
-    rows = 24;
-    cols = 80;
-    loadAddon = vi.fn();
-    open = vi.fn();
-    write = vi.fn();
-    clear = vi.fn();
-    dispose = vi.fn();
-    scrollToBottom = vi.fn();
-    resize = vi.fn();
-    element = document.createElement("div");
-    registerLinkProvider = vi.fn(() => ({ dispose: vi.fn() }));
-    buffer = {
-      active: {
-        getLine: vi.fn(() => ({
-          translateToString: vi.fn(() => ""),
-        })),
-      },
-    };
-  },
-}));
-
-vi.mock("@xterm/addon-fit", () => ({
-  FitAddon: class MockFitAddon {
-    fit = vi.fn();
-  },
-}));
-
-vi.mock("@xterm/addon-serialize", () => ({
-  SerializeAddon: class MockSerializeAddon {
-    serialize = vi.fn(() => "");
-  },
-}));
+// D6.4b: xterm.js mocks were removed alongside the renderer. The
+// `@xterm/headless` package used by `VirtualTerminal` runs cleanly
+// under jsdom so no replacement mock is needed.
 
 describe("UnifiedTimeline", () => {
   beforeEach(() => {
@@ -262,6 +229,60 @@ describe("UnifiedTimeline", () => {
       expect(screen.queryByText("Running...")).not.toBeInTheDocument();
       const state = useStore.getState();
       expect(selectCommandBlocksFromTimeline(state.timelines["test-session"])).toHaveLength(0);
+    });
+
+    // Regression for "command line content lands at the top instead of
+    // the bottom on project reopen". The 2026-05-16 transform-based
+    // rewrite owns the scroll position in React state (no native
+    // scrollTop). We can't assert the rendered transform value because
+    // jsdom doesn't lay anything out (scrollHeight/clientHeight both
+    // default to 0 → maxScroll = 0 → transform = 0 regardless), but
+    // we CAN assert that the viewport + inner DOM contract is in
+    // place. If the transform attribute disappears, scroll regresses
+    // back to native and we'll trip every glitch we just fixed.
+    it("renders the transform-based viewport when timeline has restored blocks", () => {
+      const store = useStore.getState();
+
+      for (let i = 0; i < 5; i++) {
+        store.handleCommandStart("test-session", `restored cmd ${i}`);
+        store.appendOutput("test-session", `output ${i}\n`);
+        store.handleCommandEnd("test-session", 0);
+      }
+      expect(useStore.getState().timelines["test-session"]?.length ?? 0).toBeGreaterThan(0);
+
+      const { container } = render(<UnifiedTimeline sessionId="test-session" />);
+
+      // Transform-based viewport contract:
+      // 1. The viewport node exists and is overflow-hidden (no
+      //    native scroll surface for WKWebView to misbehave on).
+      // 2. It carries our state-driven data attributes so e2e
+      //    snapshots can read the scroll position.
+      // 3. An inner div with `transform:` is present — that's our
+      //    new scroll mechanism.
+      const viewport = container.querySelector('[data-testid="timeline-viewport"]');
+      expect(viewport).toBeInTheDocument();
+      expect(viewport).toHaveAttribute("data-max-scroll");
+      expect(viewport).toHaveAttribute("data-scroll-position");
+      expect(viewport?.className ?? "").toContain("overflow-hidden");
+
+      const innerWithTransform = viewport?.querySelector('[style*="transform"]');
+      expect(innerWithTransform).toBeInTheDocument();
+    });
+
+    it("does NOT render transform layer when timeline is empty (WelcomeScreen path)", () => {
+      // Empty branch renders WelcomeScreen instead of the transform
+      // layer. We assert the absence so a future "always-render the
+      // transform layer" refactor can't accidentally hide the
+      // welcome state behind an invisible scroll container.
+      const { container } = render(<UnifiedTimeline sessionId="test-session" />);
+
+      const viewport = container.querySelector('[data-testid="timeline-viewport"]');
+      // Viewport node itself still exists (the outer flex hierarchy
+      // is always mounted) but the transform-styled inner should not
+      // exist on the empty branch.
+      expect(viewport).toBeInTheDocument();
+      const innerWithTransform = viewport?.querySelector('[style*="transform"]');
+      expect(innerWithTransform).not.toBeInTheDocument();
     });
   });
 });

@@ -17,6 +17,14 @@ pub struct ParseResult {
     pub events: Vec<OscEvent>,
     /// Filtered output bytes - only includes Output region content (not Prompt or Input)
     pub output: Vec<u8>,
+    /// All visible printable bytes (with OSC sequences stripped), regardless
+    /// of OSC 133 region. This is what the Warp-style `stdin_wait` detector
+    /// inspects so that PS1/PS2/PS3 prompts (which sit in `Prompt` and
+    /// `Input` regions and are intentionally excluded from `output` for
+    /// timeline rendering) can still be recognised. Includes printable
+    /// chars, common control chars (`\n` / `\r` / `\t`), and the textual
+    /// prompt itself; does **not** include OSC/CSI/ESC escape sequences.
+    pub prompt_visible: Vec<u8>,
 }
 
 /// Events extracted from terminal escape sequences (OSC and CSI)

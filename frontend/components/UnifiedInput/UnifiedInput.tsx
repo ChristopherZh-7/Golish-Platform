@@ -5,6 +5,7 @@ import { ContextBar } from "./ContextBar";
 import { InputPopups } from "./InputPopups";
 import { InputBadges, SendButton, ToolParamsPanel } from "./InputToolbar";
 import { useInputKeyboard } from "./useInputKeyboard";
+import { useInputResize } from "./useInputResize";
 import { useInputState } from "./useUnifiedInputState";
 
 interface UnifiedInputProps {
@@ -34,7 +35,8 @@ const GhostTextHint = memo(function GhostTextHint({
 });
 
 export function UnifiedInput({ sessionId }: UnifiedInputProps) {
-  const state = useInputState({ sessionId });
+  const { desiredHeight, handlePointerDown, resetToDefault } = useInputResize();
+  const state = useInputState({ sessionId, desiredHeight });
   const handleKeyDown = useInputKeyboard(state);
 
   const {
@@ -64,6 +66,8 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
     inputContainerRef,
     isSessionDead,
     inputMode,
+    interactiveMode,
+    isInteractive,
     isBlockCaret,
     isInputDisabled,
     isToolSearchMode,
@@ -89,8 +93,42 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
     setInput,
   } = state;
 
+  const interactivePlaceholder = useMemo(() => {
+    if (!isInteractive || !interactiveMode) return null;
+    const cmd = interactiveMode.command?.trim() ?? "";
+    const target = cmd ? `\`${cmd}\`` : "the running command";
+    switch (interactiveMode.detector) {
+      case "yn_choice":
+        return `回复 ${target} (Y/N)…`;
+      case "password":
+        return `输入密码发给 ${target}…`;
+      case "powershell_choice":
+        return `选择选项发给 ${target}…`;
+      case "continue":
+        return `回车继续 ${target}…`;
+      default:
+        return `回复 ${target}…`;
+    }
+  }, [isInteractive, interactiveMode]);
+
   return (
-    <div className="border-t border-[var(--border-subtle)]">
+    <div
+      className={cn(
+        "border-t border-[var(--border-subtle)]",
+        isInteractive && "ring-1 ring-amber-500/40"
+      )}
+      data-interactive={isInteractive ? "true" : "false"}
+    >
+      <div
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize command input"
+        title="Drag to resize · double-click to reset"
+        className="h-1 -mt-px cursor-ns-resize bg-transparent hover:bg-accent/40 active:bg-accent/60 transition-colors titlebar-no-drag"
+        onPointerDown={handlePointerDown}
+        onDoubleClick={resetToDefault}
+      />
+
       <ContextBar sessionId={sessionId} />
 
       <ToolParamsPanel
@@ -129,20 +167,22 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
                   ? ""
                   : isSessionDead
                     ? "Session limit exceeded. Please start a new session."
-                    : activeTool
-                      ? (() => {
-                          const req = toolParams.find((p) => p.required);
-                          return req
-                            ? `${req.flag} ${req.placeholder || req.label}...`
-                            : t("input.enterParamsHint");
-                        })()
-                      : isToolSearchMode
-                        ? t("input.searchToolName")
-                        : t("input.enterCommand")
+                    : isInteractive && interactivePlaceholder
+                      ? interactivePlaceholder
+                      : activeTool
+                        ? (() => {
+                            const req = toolParams.find((p) => p.required);
+                            return req
+                              ? `${req.flag} ${req.placeholder || req.label}...`
+                              : t("input.enterParamsHint");
+                          })()
+                        : isToolSearchMode
+                          ? t("input.searchToolName")
+                          : t("input.enterCommand")
               }
               rows={1}
               className={cn(
-                "w-full max-h-[200px] py-0 min-h-[26px]",
+                "w-full py-0 min-h-[26px] max-h-[800px]",
                 "bg-transparent border-none shadow-none resize-none",
                 "font-mono text-[13px] text-foreground leading-[26px] align-middle",
                 "focus:outline-none focus:ring-0",
@@ -201,7 +241,10 @@ export function UnifiedInput({ sessionId }: UnifiedInputProps) {
             />
           </div>
 
-          <SendButton onSubmit={handleSubmit} disabled={!input.trim() || isInputDisabled} />
+          <SendButton
+            onSubmit={handleSubmit}
+            disabled={(!isInteractive && !input.trim()) || isInputDisabled}
+          />
         </div>
       </div>
     </div>

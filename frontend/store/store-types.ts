@@ -23,6 +23,7 @@ export type {
   ExecutionMode,
   FinalizedStreamingBlock,
   InputMode,
+  InteractiveModeState,
   PendingCommand,
   PipelineExecution,
   PipelineStepExecution,
@@ -38,6 +39,7 @@ export type {
   Session,
   // Session
   SessionMode,
+  StdinWaitDetector,
   // Plan
   StepStatus,
   // Streaming
