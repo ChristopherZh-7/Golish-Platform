@@ -19,6 +19,32 @@ interface ChatModelSelectorProps {
   onModelSelect: (modelId: string, provider: string) => void;
 }
 
+export function getVisibleProviderGroups(
+  configuredProviders: Set<string>,
+  currentProvider: string
+): typeof PROVIDER_GROUPS {
+  const filtered = PROVIDER_GROUPS.filter((g) => configuredProviders.has(g.provider));
+  const selectedProvider = currentProvider === "anthropic_vertex" ? "vertex_ai" : currentProvider;
+  const selectedIndex = filtered.findIndex((g) => g.provider === selectedProvider);
+
+  if (selectedIndex <= 0) return filtered;
+
+  return [
+    filtered[selectedIndex],
+    ...filtered.slice(0, selectedIndex),
+    ...filtered.slice(selectedIndex + 1),
+  ];
+}
+
+export function getModelItemClassName(isSelected: boolean): string {
+  return cn(
+    "text-xs cursor-pointer",
+    isSelected
+      ? "bg-accent/20 text-foreground ring-1 ring-accent/35 focus:bg-accent/25 focus:text-foreground"
+      : "text-foreground/90 hover:bg-[var(--bg-hover)]/80 hover:text-foreground"
+  );
+}
+
 export const ChatModelSelector = memo(function ChatModelSelector({
   modelDisplay,
   currentModel,
@@ -27,7 +53,7 @@ export const ChatModelSelector = memo(function ChatModelSelector({
   onModelSelect,
 }: ChatModelSelectorProps) {
   const { t } = useTranslation();
-  const filtered = PROVIDER_GROUPS.filter((g) => configuredProviders.has(g.provider));
+  const filtered = getVisibleProviderGroups(configuredProviders, currentProvider);
 
   return (
     <DropdownMenu modal={false}>
@@ -70,12 +96,7 @@ export const ChatModelSelector = memo(function ChatModelSelector({
                   <DropdownMenuItem
                     key={`${group.provider}-${model.id}-${model.reasoningEffort ?? ""}`}
                     onClick={() => onModelSelect(model.id, group.provider)}
-                    className={cn(
-                      "text-xs cursor-pointer",
-                      isSelected
-                        ? "text-accent bg-[var(--accent-dim)]"
-                        : "text-foreground hover:text-accent"
-                    )}
+                    className={getModelItemClassName(isSelected)}
                   >
                     {model.name}
                   </DropdownMenuItem>

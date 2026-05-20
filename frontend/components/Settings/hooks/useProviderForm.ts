@@ -76,6 +76,61 @@ function providerToSettingsKey(provider: string): ProviderSettingsKey | null {
   return mapping[provider] ?? null;
 }
 
+function defaultProviderSettings(provider: ProviderSettingsKey): Record<string, unknown> | null {
+  switch (provider) {
+    case "vertex_ai":
+    case "vertex_gemini":
+      return {
+        credentials_path: null,
+        project_id: null,
+        location: null,
+        show_in_selector: true,
+      };
+    case "anthropic":
+    case "gemini":
+    case "groq":
+    case "xai":
+      return {
+        api_key: null,
+        show_in_selector: true,
+      };
+    case "openai":
+      return {
+        api_key: null,
+        base_url: null,
+        show_in_selector: true,
+        enable_web_search: false,
+        web_search_context_size: "medium",
+      };
+    case "openrouter":
+      return {
+        api_key: null,
+        show_in_selector: true,
+      };
+    case "ollama":
+      return {
+        base_url: "http://localhost:11434",
+        show_in_selector: true,
+      };
+    case "zai_sdk":
+      return {
+        api_key: null,
+        base_url: null,
+        model: null,
+        show_in_selector: true,
+      };
+    case "nvidia":
+    case "deepseek":
+      return {
+        api_key: null,
+        base_url: null,
+        show_in_selector: true,
+      };
+    default:
+      return null;
+  }
+}
+
 function toProviderConfig(info: ProviderInfo): ProviderConfig | null {
   const settingsKey = providerToSettingsKey(info.provider);
   if (!settingsKey) return null;
@@ -234,8 +289,13 @@ export function useProviderForm(settings: AiSettings, onChange: (settings: AiSet
 
   const updateProvider = useCallback(
     <K extends keyof AiSettings>(provider: K, field: string, value: string | boolean | null) => {
-      const providerSettings = settings[provider];
-      if (typeof providerSettings === "object" && providerSettings !== null) {
+      const existingSettings = settings[provider];
+      const providerSettings =
+        typeof existingSettings === "object" && existingSettings !== null
+          ? existingSettings
+          : defaultProviderSettings(provider as ProviderSettingsKey);
+
+      if (providerSettings) {
         onChange({
           ...settings,
           [provider]: {

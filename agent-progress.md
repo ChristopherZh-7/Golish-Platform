@@ -19,7 +19,7 @@
 | **标准验证** | `just precommit` = `just check && just test` |
 | **当前最高优先级** | 外层 meta-harness 文件铺设（`AGENTS.md` + `agent-progress.md` + `feature_list.json` + `init.sh` + `clean-state-checklist.md` + `.cursor/rules/agents-bridge.mdc`） |
 | **当前 blocker** | 无 |
-| **未提交的半成品** | `frontend/components/AIChatPanel/ChatModelSelector.tsx`、`frontend/components/Settings/hooks/useProviderForm.ts` 以及对应的 `.test.ts` 文件处于 git status 中，未在本轮范围 |
+| **未提交的半成品** | (1) `frontend/components/AIChatPanel/ChatModelSelector.tsx` + `.test.ts`、`frontend/components/Settings/hooks/useProviderForm.ts` + `.test.ts`（不在本轮范围，等用户分轮处理）；(2) 删除的 `.cursor/rules/dialogue-protocol.mdc` + `docs/design/2026-05-17-targets-organization-grouping.md`（不在本轮范围）；(3) 别处生成的 `docs/design/2026-05-20-agent-harness-strategy.md`、`docs/design/recon-tool-belt-2026-05.md`、`docs/superpowers/plans/2026-05-20-golish-agent-harness-architecture.md`、`docs/superpowers/plans/2026-05-20-golish-agent-harness.md`（非本会话产物，不动）；(4) **本文件**被本轮 commit 后微调一次，未 commit |
 
 ---
 
@@ -47,7 +47,7 @@
   - ReadLints 6 个新文件 → `No linter errors found.`
   - **未执行**：`bash init.sh --quick`（会触发 `just check-fe` 和 `just check-rust`，可能因 git status 中游离的 ChatModelSelector / useProviderForm 改动而非确定性绿，留给用户自行执行）
 - **已记录证据**：见本节"运行过的验证"
-- **提交记录**：暂未提交，待用户审阅 6 个新文件后决定是否一次性 commit
+- **提交记录**：`3b1f659` `chore(harness): scaffold external meta-harness for AI agents`（6 files, 703 insertions, 未 push）。提交后本文件被微调过一次（补本字段为实际 hash + 补"未提交的半成品"说明），微调本身未 commit，由下一轮 progress 更新自然带走。
 - **已知风险或未解决问题**：
   - `init.sh` 第一次跑可能会全量 `pnpm install` 和 `cargo build`，初次耗时较久
   - `feature_list.json` 的初始功能列表可能不完整，需要用户根据实际优先级调整
