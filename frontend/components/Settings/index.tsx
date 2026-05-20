@@ -6,6 +6,7 @@ import {
   FolderCode,
   Globe,
   Loader2,
+  Network,
   Paintbrush,
   Puzzle,
   Server,
@@ -54,6 +55,9 @@ const NetworkSettings = lazy(() =>
 const PentestEnvSettings = lazy(() =>
   import("./PentestEnvSettings").then((m) => ({ default: m.PentestEnvSettings }))
 );
+const IntelProvidersSettings = lazy(() =>
+  import("./IntelProvidersSettings").then((m) => ({ default: m.IntelProvidersSettings }))
+);
 
 interface SettingsDialogProps {
   open: boolean;
@@ -79,6 +83,12 @@ const NAV_ITEM_DEFS: NavItemDef[] = [
     labelKey: "settings.providers",
     icon: <Server className="w-4 h-4" />,
     descKey: "settings.providersDesc",
+  },
+  {
+    id: "intel",
+    labelKey: "settings.intelProviders",
+    icon: <Network className="w-4 h-4" />,
+    descKey: "settings.intelProvidersDesc",
   },
   {
     id: "ai",
@@ -207,6 +217,8 @@ export function SettingsContent({ activeSection: activeSectionProp }: { activeSe
         return (
           <ProviderSettings settings={settings.ai} onChange={(ai) => updateSection("ai", ai)} />
         );
+      case "intel":
+        return <IntelProvidersSettings />;
       case "ai":
         return (
           <AiSettings
@@ -375,6 +387,8 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         return (
           <ProviderSettings settings={settings.ai} onChange={(ai) => updateSection("ai", ai)} />
         );
+      case "intel":
+        return <IntelProvidersSettings />;
       case "ai":
         return (
           <AiSettings
