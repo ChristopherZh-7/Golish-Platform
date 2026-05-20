@@ -328,6 +328,8 @@
     "vaultDesc": "Encrypted storage for passwords, tokens, SSH keys",
     "providers": "Providers",
     "providersDesc": "Configure AI provider credentials",
+    "intelProviders": "Intel Providers",
+    "intelProvidersDesc": "Configure ASM platform API keys (0.zone / FOFA / Quake / Hunter / Shodan)",
     "aiModels": "AI & Models",
     "aiModelsDesc": "Default provider and synthesis settings",
     "terminal": "Terminal",

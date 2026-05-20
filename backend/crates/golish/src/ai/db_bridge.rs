@@ -627,7 +627,8 @@ impl DbRepoProvider for GolishDbRepoProvider {
         &self,
         session_id: Uuid,
     ) -> anyhow::Result<Vec<SubAgentDispatchView>> {
-        let rows = golish_db::repo::sub_agent_dispatches::list_running(&self.pool, session_id).await?;
+        let rows =
+            golish_db::repo::sub_agent_dispatches::list_running(&self.pool, session_id).await?;
         Ok(rows
             .into_iter()
             .map(|r| SubAgentDispatchView {

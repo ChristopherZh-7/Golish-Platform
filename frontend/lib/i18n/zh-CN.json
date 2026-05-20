@@ -328,6 +328,8 @@
     "vaultDesc": "加密存储密码、Token、SSH Key",
     "providers": "Providers",
     "providersDesc": "配置 AI 提供商凭证",
+    "intelProviders": "情报源",
+    "intelProvidersDesc": "配置 ASM 测绘平台 API（0.zone / FOFA / Quake / Hunter / Shodan）",
     "aiModels": "AI & Models",
     "aiModelsDesc": "默认提供商和合成设置",
     "terminal": "Terminal",

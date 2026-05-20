@@ -1,0 +1,22 @@
+[package]
+name = "golish-intel-providers"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "ASM/threat intel provider abstraction layer: 0.zone (零零信安), FOFA, 360 Quake, Hunter, Shodan, etc."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_urlencoded = "0.7"
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+serial_test = { workspace = true }

@@ -11,6 +11,7 @@ import {
   FolderCode,
   Globe,
   Loader2,
+  Network,
   Paintbrush,
   Puzzle,
   Server,
@@ -38,6 +39,7 @@ import { AiSettings } from "./AiSettings";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { CodebasesSettings } from "./CodebasesSettings";
 import { EditorSettings } from "./EditorSettings";
+import { IntelProvidersSettings } from "./IntelProvidersSettings";
 import { McpSettings } from "./McpSettings";
 import { NetworkSettings } from "./NetworkSettings";
 import { NotificationsSettings } from "./NotificationsSettings";
@@ -48,6 +50,7 @@ import { TerminalSettings } from "./TerminalSettings";
 type SettingsSection =
   | "pentest"
   | "providers"
+  | "intel"
   | "ai"
   | "terminal"
   | "editor"
@@ -78,6 +81,12 @@ const NAV_ITEMS: NavItem[] = [
     labelKey: "settings.providers",
     icon: <Server className="w-4 h-4" />,
     descKey: "settings.providersDesc",
+  },
+  {
+    id: "intel",
+    labelKey: "settings.intelProviders",
+    icon: <Network className="w-4 h-4" />,
+    descKey: "settings.intelProvidersDesc",
   },
   {
     id: "ai",
@@ -209,6 +218,8 @@ export function SettingsTabContent() {
         return (
           <ProviderSettings settings={settings.ai} onChange={(ai) => updateSection("ai", ai)} />
         );
+      case "intel":
+        return <IntelProvidersSettings />;
       case "ai":
         return (
           <AiSettings

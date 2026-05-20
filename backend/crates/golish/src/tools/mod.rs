@@ -84,3 +84,6 @@ pub mod scan_runner;
 
 // Sensitive file scanner (directory-level probing)
 pub mod sensitive_scan;
+
+// ASM intel providers (0.zone, FOFA, Quake, ...) — Settings UI + agent
+pub mod intel_providers;

@@ -6,6 +6,24 @@
   "status_values": ["not_started", "in_progress", "blocked", "passing"],
   "features": [
     {
+      "id": "asm-intel-providers",
+      "priority": 0,
+      "area": "backend/golish-intel-providers + frontend/Settings",
+      "title": "ASM 多 Provider 集成（0.zone 首发 + FOFA/Quake/Hunter/Shodan 预留 + vault key 管理）",
+      "user_visible_behavior": "Settings → Intel Providers 能配置各家 ASM 平台（0.zone 优先）的 API key；调用后 organizations 表的 domains / ip_ranges / asns / certificates / email_domains / github_orgs / contacts 等字段能从 ASM 平台自动补全；加新 provider 只需 1 个 Rust mod + 1 个 toolsconfig JSON + 1 个 ProviderCard 行。",
+      "status": "in_progress",
+      "verification": [
+        "cargo nextest run -p golish-intel-providers 全绿（含 7 个 query_type mapper 单测）",
+        "cargo nextest run -p golish-pentest output_store::organizations 全绿",
+        "pnpm vitest run frontend/components/Settings/IntelProvidersSettings 全绿",
+        "手动 E2E：Settings 配 0.zone key + zone_key_id → 在 organizations UI 触发拉取 → SELECT organizations.domains 含新数据",
+        "just precommit 全绿（fmt + lint + 前后端 test）",
+        "feat/asm-intel-providers 分支能 squash merge 到 main 不冲突"
+      ],
+      "evidence": null,
+      "notes": "设计文档：docs/design/2026-05-20-asm-intel-providers.md。实施计划：docs/superpowers/plans/2026-05-20-asm-intel-providers.md。baseline 字段映射：docs/design/2026-05-20-pentest-fields-tool-mapping.md。⚠ feature_list 当前已有 3 个游离 in_progress（meta-harness-scaffold / chat-model-selector-tests / provider-form-tests）是历史，本条目是当前会话真正在做的；收尾时清理。"
+    },
+    {
       "id": "meta-harness-scaffold",
       "priority": 1,
       "area": "harness",

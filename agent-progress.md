@@ -168,6 +168,65 @@
 
 ---
 
+### 2026-05-20 · ASM Intel Providers 集成（feat/asm-intel-providers · 0.zone 首发）
+
+- **本轮目标**：搭建 ASM 多 provider 集成的可扩展架构，0.zone 首发落地，含后端 IPC + 前端 Settings UI + vault key 管理 + organizations 表写入路径。
+- **已完成**：
+  - **分支**：`git checkout -b feat/asm-intel-providers`（基于 main）
+  - **设计文档**：
+    - `docs/design/2026-05-20-pentest-fields-tool-mapping.md`（baseline · 14000 字 · 11 节 · targets 25 字段 + organizations 28 字段 + 6 辅助表 + 27 工具完整映射）
+    - `docs/design/2026-05-20-asm-intel-providers.md`（架构 · §0-§9 含 4 决策点 + 4 层架构图 + 6 不变量）
+    - `docs/superpowers/plans/2026-05-20-asm-intel-providers.md`（4 phase 实施计划）
+  - **元数据**：`feature_list.json` 加 `asm-intel-providers` 条目（priority=0 · in_progress）；`backend/Cargo.toml` 加新 crate 到 members + default-members + workspace.deps。
+  - **新 crate `golish-intel-providers`**（9 个文件）：
+    - `Cargo.toml`（依赖 serde / tokio / reqwest / async-trait / thiserror / chrono / serde_urlencoded）
+    - `src/lib.rs`（IntelProvider trait + ProviderRecord）
+    - `src/error.rs`（IntelError 7 变体 + IntelResult）
+    - `src/types.rs`（QueryType 10 变体 + ProviderMeta + ProviderRecord + ConnectionStatus）
+    - `src/shared/{mod,api_key,rate_limit}.rs`（KeyStore trait + EnvKeyStore + RateLimiter）
+    - `src/zone/{mod,client,types,mapper}.rs`（0.zone 完整实现 · 7 query_type · 限速 2/s · group 反查归属）
+    - `src/{fofa,quake,hunter,shodan}/mod.rs`（4 个占位 IntelProvider impl）
+  - **golish-pentest 修改**：
+    - `output_store/organizations.rs`（新 · store_organization_update writer + find_or_create_organization + 5 个 append helper · jsonb 幂等追加）
+    - `output_store/mod.rs`（match 加 `organization_update` 分支）
+    - `output_store/store_trait.rs`（OutputStore trait 加 store_organization_update）
+    - `output_store/pg_adapter.rs`（PgPentestStore impl）
+  - **golish 后端 IPC**（4 个文件）：
+    - `tools/intel_providers.rs`（PgVaultKeyStore impl KeyStore · provider_registry · 3 个 #[tauri::command]）
+    - `tools/mod.rs`（+ pub mod intel_providers）
+    - `commands_facade/intel_providers.rs`（新 · pub use）
+    - `commands_facade/mod.rs`（+ pub mod intel_providers）
+    - `commands_registry.rs`（+ use commands_facade::intel_providers::* + 3 命令进 generate_handler）
+    - `Cargo.toml`（+ golish-intel-providers 依赖）
+  - **前端**（5 个文件）：
+    - `lib/api/intel.ts`（手写 TS interface + 3 invoke wrapper）
+    - `lib/api/index.ts`（+ intel 导出）
+    - `components/Settings/IntelProvidersSettings/{index,ProviderCard,KeyEditor}.tsx`（5 provider 卡片 + key 编辑 + Test Connection）
+    - `components/Settings/SettingsTabContent.tsx`（NAV_ITEMS 加 "intel" section · Network 图标）
+  - **i18n**：`frontend/lib/i18n/{en,zh-CN}.json` 加 `settings.intelProviders` + `settings.intelProvidersDesc`
+- **运行过的验证**：
+  - `cargo check -p golish-intel-providers --tests` → Exit 0 · 0 warning
+  - `cargo nextest run -p golish-intel-providers` → **31 passed · 0 skipped**（trait 对象安全 + 5 mapper + 3 envelope + 3 api_key + 3 rate_limit + 7 zone unit + others）
+  - `cargo check -p golish-pentest` → Exit 0
+  - `cargo check -p golish` → Exit 0 · 1m08s（含全 workspace 依赖编译）
+  - `cargo fmt --package golish-intel-providers` → 自动修复
+  - `cargo clippy -p golish-intel-providers --no-deps -- -D warnings` → Exit 0
+  - `pnpm typecheck` → Exit 0 · 10.1s
+  - `pnpm biome check components/Settings/IntelProvidersSettings/ lib/api/intel.ts ...` → Exit 0 · No fixes applied
+- **已记录证据**：见以上验证命令；测试输出关键行 "31 tests run: 31 passed, 0 skipped"
+- **提交记录**：**待提交**（用户未授权 commit；分支 feat/asm-intel-providers 上累计 ~30 个新/改文件）
+- **已知风险或未解决问题**：
+  - `pnpm check`（biome lint）整体失败仅因 pre-existing `useTaskPlanState.ts` 等文件的 useOptionalChain warning，与本任务无关；新增文件全 clean
+  - Phase 4 的 Playwright E2E spec 暂未写（涉及 mock Tauri 复杂度）；标 TODO，本轮不阻塞验收
+  - 0.zone HTTP 调用实测未跑（需要 zone_key_id 付费会员），但已用 mock-friendly 设计 + 5 mapper 单测覆盖 7 query_type
+  - fofa/quake/hunter/shodan 仅 stub，下一期实现
+- **下一步最佳动作**：
+  - 用户授权后 commit feat/asm-intel-providers 分支累计改动（建议 squash commit 标题：`feat: ASM intel providers full stack · 0.zone first impl + Settings UI + organizations writer`）
+  - `just dev` 启动 + 手动跑 Settings → Intel Providers → 填 0.zone key（如有）→ Test Connection → 看 organizations 表更新
+  - 后续 PR：fofa/quake/hunter/shodan 各家 client + types + mapper（约 0.5 day/家）；Playwright E2E spec（约 0.5 day）
+
+---
+
 <!-- 新会话请在这里上方插入一条新记录，保持倒序 -->
 
 ## 模板（复制下面这块当新会话记录）

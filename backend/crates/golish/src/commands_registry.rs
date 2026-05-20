@@ -14,6 +14,7 @@ use commands_facade::ai::*;
 use commands_facade::findings::*;
 use commands_facade::git_pty::*;
 use commands_facade::indexer::*;
+use commands_facade::intel_providers::*;
 use commands_facade::mcp::*;
 use commands_facade::pentest::*;
 use commands_facade::pipeline::*;
@@ -153,6 +154,8 @@ fn install_handlers(
         organization_update_profile, organization_move, organization_delete,
         vault_list, vault_add, vault_get_value, vault_update, vault_delete, vault_resolve, vault_validate, vault_update_status,
         project_export, project_import,
+        // ── intel_providers (ASM platforms · 0.zone / FOFA / Quake / ...) ─
+        intel_list_providers, intel_test_connection, intel_query_provider,
         method_list_templates, method_start_project, method_list_projects, method_load_project, method_update_item, method_delete_project,
         recording_save, recording_load, recording_list, recording_delete,
         output_parse, output_detect_tool, output_parse_and_store,

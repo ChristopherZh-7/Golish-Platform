@@ -2523,6 +2523,7 @@ dependencies = [
  "golish-events",
  "golish-graphiti",
  "golish-indexer",
+ "golish-intel-providers",
  "golish-js-analyzer",
  "golish-llm-providers",
  "golish-mcp",
@@ -2872,6 +2873,23 @@ dependencies = [
  "tempfile",
  "tracing",
  "vtcode-indexer",
+]
+
+[[package]]
+name = "golish-intel-providers"
+version = "0.2.43"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "reqwest 0.13.3",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "serial_test",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

@@ -261,10 +261,8 @@ fn domain_regex() -> &'static Regex {
     // RFC1035 简化版：label 由字母数字 hyphen 组成，首尾非 hyphen；
     // 顶级域至少 2 字符；允许 `*.` 通配前缀（domain wildcard）。
     R.get_or_init(|| {
-        Regex::new(
-            r"^(\*\.)?([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$",
-        )
-        .expect("static regex must compile")
+        Regex::new(r"^(\*\.)?([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$")
+            .expect("static regex must compile")
     })
 }
 
@@ -341,17 +339,19 @@ fn validate_profile_patch(p: &OrganizationProfilePatch) -> Vec<(String, String, 
                 // 允许 {domain,wildcard,note} 或纯字符串
                 let s = match entry {
                     serde_json::Value::String(s) => s.clone(),
-                    serde_json::Value::Object(map) => match map.get("domain").and_then(|v| v.as_str()) {
-                        Some(d) => d.to_string(),
-                        None => {
-                            errs.push((
-                                "domains".into(),
-                                entry.to_string(),
-                                "object missing required string field `domain`".into(),
-                            ));
-                            continue;
+                    serde_json::Value::Object(map) => {
+                        match map.get("domain").and_then(|v| v.as_str()) {
+                            Some(d) => d.to_string(),
+                            None => {
+                                errs.push((
+                                    "domains".into(),
+                                    entry.to_string(),
+                                    "object missing required string field `domain`".into(),
+                                ));
+                                continue;
+                            }
                         }
-                    },
+                    }
                     _ => {
                         errs.push((
                             "domains".into(),

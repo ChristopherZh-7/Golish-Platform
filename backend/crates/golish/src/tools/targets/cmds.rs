@@ -223,7 +223,11 @@ pub async fn target_update(
     }
     if let Some(g) = &grp {
         let trimmed = g.trim();
-        let val = if trimmed.is_empty() { "default" } else { trimmed };
+        let val = if trimmed.is_empty() {
+            "default"
+        } else {
+            trimmed
+        };
         sqlx::query("UPDATE targets SET grp=$1, updated_at=NOW() WHERE id=$2")
             .bind(val)
             .bind(uid)
@@ -253,11 +257,7 @@ pub async fn target_update(
         let org_id: Option<Uuid> = if org_id_str.trim().is_empty() {
             None
         } else {
-            Some(
-                org_id_str
-                    .parse()
-                    .map_err(|e: uuid::Error| e.to_string())?,
-            )
+            Some(org_id_str.parse().map_err(|e: uuid::Error| e.to_string())?)
         };
         sqlx::query("UPDATE targets SET organization_id=$1, updated_at=NOW() WHERE id=$2")
             .bind(org_id)

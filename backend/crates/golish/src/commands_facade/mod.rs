@@ -35,6 +35,7 @@ pub mod ai;
 pub mod findings;
 pub mod git_pty;
 pub mod indexer;
+pub mod intel_providers;
 pub mod mcp;
 pub mod pentest;
 pub mod pipeline;
