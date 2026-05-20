@@ -1,0 +1,52 @@
+---
+description: Bridge Cursor IDE prompts to AGENTS.md so every Cursor Agent session honors the project's harness without re-reading the whole file.
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+# AGENTS.md Bridge for Cursor
+
+This rule **forwards Cursor Agent to the project-level harness** living at `AGENTS.md` in the repository root. The full rules are in `AGENTS.md`; this file is a compact pointer + the absolute minimum guardrails so Cursor sessions don't drift from the cross-tool harness.
+
+## On every session
+
+1. **Read `AGENTS.md`** in the project root before doing anything substantive. It defines:
+   - Project stack (Tauri + Rust workspace + React)
+   - Opening flow (read `agent-progress.md` → check `feature_list.json` → run `./init.sh`)
+   - Working rules (one feature at a time, command naming, IDOR, ts-rs sync)
+   - Definition of done (evidence required, `just precommit` green)
+   - Closing flow (update progress, update feature_list, clean-state-checklist)
+
+2. **Then read `agent-progress.md`** for the current verified state and the previous session's hand-off notes.
+
+3. **Then check `feature_list.json`** to see what's `in_progress` (max 1) or pick the highest-priority `not_started`.
+
+## Minimum guardrails (do not break, even on "quick" changes)
+
+| # | Rule | Where it lives |
+|---|---|---|
+| M1 | Use the right command name: `<domain>_<verb>_<object>`, route through `commands_facade/<domain>.rs`, never edit `commands_registry.rs` directly | `AGENTS.md §2.2`, `docs/development.md` |
+| M2 | Never call `invoke()` from frontend components directly — always go through `frontend/lib/api/<domain>.ts` | `AGENTS.md §2.3` |
+| M3 | Cross-IPC types use `#[derive(ts_rs::TS)]`; don't hand-maintain two type files | `AGENTS.md §5 I5` |
+| M4 | After any substantive edit, run `just precommit`. **No evidence → no "done"** | `AGENTS.md §3` |
+| M5 | Don't conflate "checked-empty" with "unchecked" in pentest deliverables | `AGENTS.md §5 I8` |
+| M6 | High-risk actions (delete files, push remote, change DB schema, change release config) require explicit user confirmation in chat | `AGENTS.md §2.7` |
+
+## Coexistence with other Cursor rules
+
+- `.cursor/rules/private-mcp.mdc`: multi-agent coordination protocol (private-MCP channel). This rule does NOT override it; both apply simultaneously.
+- `.cursor/rules/global-enforcement.mdc`: global iron laws (read-before-edit, evidence-first, etc.). This rule sits on top and makes those laws concrete for the Golish project.
+- `.cursor/skills/`: harness sub-modules (brainstorming, writing-plans, verification-before-completion, ...). Use them as the on-demand toolkit; `AGENTS.md` is the connective tissue.
+
+## When `AGENTS.md` and a Cursor user prompt conflict
+
+The user's explicit prompt wins for that single session, **but**:
+- You MUST surface the conflict in your response (one line is enough).
+- If the conflict touches a Golish invariant (`AGENTS.md §5`) or a high-risk action (`AGENTS.md §2.7`), STOP and ask the user to confirm in chat before proceeding.
+
+## Reminder
+
+The point of this bridge is not to duplicate `AGENTS.md` — it's to make sure that whenever a Cursor Agent session starts (regardless of what file the user opens), it gets a one-screen reminder that the cross-tool harness in `AGENTS.md` is in effect.
+
+If you find yourself about to take an action that you haven't seen reflected in `AGENTS.md`, re-read `AGENTS.md` first.

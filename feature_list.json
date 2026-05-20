@@ -1,0 +1,111 @@
+{
+  "$schema": "https://walkinglabs.github.io/learn-harness-engineering/schemas/feature_list.json",
+  "version": "0.1.0",
+  "last_updated": "2026-05-20",
+  "notes": "同一时间只能有一个 status=in_progress 的条目。详见 AGENTS.md §2.1。priority 越小越优先。",
+  "status_values": ["not_started", "in_progress", "blocked", "passing"],
+  "features": [
+    {
+      "id": "meta-harness-scaffold",
+      "priority": 1,
+      "area": "harness",
+      "title": "外层 Meta-Harness 文件铺设",
+      "user_visible_behavior": "项目根目录有 AGENTS.md / agent-progress.md / feature_list.json / init.sh / clean-state-checklist.md；.cursor/rules/ 多一个 agents-bridge.mdc；任何 AI agent 进入仓库都能在 60 秒内读完 AGENTS.md 并知道开工流程和验证命令。",
+      "status": "in_progress",
+      "verification": [
+        "ls AGENTS.md agent-progress.md feature_list.json init.sh clean-state-checklist.md 不报错",
+        "ls .cursor/rules/agents-bridge.mdc 不报错",
+        "bash init.sh 退出码为 0",
+        "AGENTS.md 引用的命令在 justfile / package.json 中都真实存在"
+      ],
+      "evidence": null,
+      "notes": "本轮任务。完成后切换为 passing，并把内层 Rust harness 推到 priority 2。"
+    },
+    {
+      "id": "domain-harness-runtime",
+      "priority": 2,
+      "area": "backend/golish-agent-kit",
+      "title": "内层 Domain-Harness Runtime（agent loop + tool policy + evidence ledger + gate decision）",
+      "user_visible_behavior": "Golish 跑起来后，pentest agent 不能只靠自然语言声称'完成 Recon'；必须提交结构化 deliverable，由 gate validator 判定 allowed/blocked，未通过时生成 recovery actions。",
+      "status": "not_started",
+      "verification": [
+        "cargo nextest run -p golish-agent-kit harness::recon 全绿",
+        "至少 1 个 gate 单测覆盖 'domain 无 DNS 结果应阻断' 场景",
+        "至少 1 个 gate 单测覆盖 'open port 无 service fingerprint 应阻断' 场景",
+        "task_orchestrator 接入 gate 后现有测试不回退"
+      ],
+      "evidence": null,
+      "notes": "已有完整设计与实现计划：docs/design/2026-05-20-agent-harness-architecture-mvp.md 和 docs/superpowers/plans/2026-05-20-golish-agent-harness-architecture.md。按 superpowers:executing-plans skill 逐 task 推进。"
+    },
+    {
+      "id": "recon-harness-demo-stage",
+      "priority": 3,
+      "area": "backend/golish-agent-kit",
+      "title": "Recon Demo Stage（attack-surface snapshot + ReconDeliverable + ReconGateDecision）",
+      "user_visible_behavior": "Recon 子任务结束后，agent 必须返回结构化 ReconDeliverable JSON；gate 验证后 UI 能看到 allowed/blocking_reasons/recovery_actions；不通过时不会自动进入 Vulnerability Matching 阶段。",
+      "status": "not_started",
+      "verification": [
+        "cargo nextest run -p golish-agent-kit harness::recon 全绿",
+        "前端 timeline 出现 ReconGateEvaluated 事件",
+        "用 mock agent 跑一轮 recon，gate 阻断时确实生成 recovery action"
+      ],
+      "evidence": null,
+      "notes": "依赖 domain-harness-runtime。设计在 docs/design/harness-recon-mvp.md（已 superseded 为候选草案）和 docs/superpowers/plans/2026-05-20-golish-agent-harness.md。"
+    },
+    {
+      "id": "chat-model-selector-tests",
+      "priority": 5,
+      "area": "frontend/AIChatPanel",
+      "title": "ChatModelSelector 单测补齐",
+      "user_visible_behavior": "ChatModelSelector 组件的关键交互（切换 provider、切换 model、显示当前选中状态）有覆盖；vitest 跑过且证据落地。",
+      "status": "in_progress",
+      "verification": [
+        "pnpm vitest run frontend/components/AIChatPanel/ChatModelSelector.test.ts 全绿",
+        "覆盖率不低于现有同类组件平均水平"
+      ],
+      "evidence": null,
+      "notes": "git status 显示 ChatModelSelector.tsx 和 ChatModelSelector.test.ts 已有改动，不在本轮 meta-harness 任务范围；下一轮会话可以拾起。⚠ 注意：feature_list 同一时间只允许一个 in_progress——本轮 meta-harness 结束后切换该条目为 not_started 或先把它切到 in_progress 再处理。"
+    },
+    {
+      "id": "provider-form-tests",
+      "priority": 6,
+      "area": "frontend/Settings",
+      "title": "useProviderForm Hook 单测",
+      "user_visible_behavior": "Provider 配置表单的核心逻辑（validation / dirty state / submit / reset）有单测覆盖。",
+      "status": "in_progress",
+      "verification": [
+        "pnpm vitest run frontend/components/Settings/hooks/useProviderForm.test.ts 全绿"
+      ],
+      "evidence": null,
+      "notes": "同上，游离在 git status 中。"
+    },
+    {
+      "id": "evaluator-rubric",
+      "priority": 10,
+      "area": "harness",
+      "title": "评审评分表（evaluator-rubric.md）",
+      "user_visible_behavior": "项目根目录有 evaluator-rubric.md，列出六维度（正确性 / 验证 / 范围纪律 / 可靠性 / 可维护性 / 交接准备度）打分规则；agent 自评与人评对比，校准 3-5 轮。",
+      "status": "not_started",
+      "verification": [
+        "evaluator-rubric.md 存在",
+        "已用它给至少一轮历史会话打分并记录差异"
+      ],
+      "evidence": null,
+      "notes": "Meta-harness 第二批。项目复杂度上来再做。"
+    },
+    {
+      "id": "session-handoff",
+      "priority": 11,
+      "area": "harness",
+      "title": "会话交接摘要模板（session-handoff.md）",
+      "user_visible_behavior": "长会话或并行会话场景下，可以用 session-handoff.md 一页纸交接给下一位 agent。",
+      "status": "not_started",
+      "verification": [
+        "session-handoff.md 存在",
+        "至少做过一次真实交接演练"
+      ],
+      "evidence": null,
+      "notes": "Meta-harness 第二批。"
+    }
+  ]
+}
