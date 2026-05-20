@@ -93,6 +93,7 @@ impl Default for ProviderSettings {
 }
 
 mod anthropic;
+mod deepseek;
 mod gemini;
 mod groq;
 mod nvidia;
@@ -105,6 +106,7 @@ mod xai;
 mod zai_sdk;
 
 pub use anthropic::AnthropicProviderImpl;
+pub use deepseek::DeepSeekProviderImpl;
 pub use gemini::GeminiProviderImpl;
 pub use groq::GroqProviderImpl;
 pub use nvidia::NvidiaProviderImpl;
@@ -236,6 +238,16 @@ pub fn create_provider(
                 base_url: settings.base_url.clone(),
             }))
         }
+        AiProvider::Deepseek => {
+            let api_key = settings
+                .api_key
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("DeepSeek API key required"))?;
+            Ok(Box::new(DeepSeekProviderImpl {
+                api_key,
+                base_url: settings.base_url.clone(),
+            }))
+        }
     }
 }
 
@@ -318,6 +330,11 @@ pub fn extract_provider_settings(
         AiProvider::Nvidia => ProviderSettings {
             api_key: settings.ai.nvidia.api_key.clone(),
             base_url: settings.ai.nvidia.base_url.clone(),
+            ..Default::default()
+        },
+        AiProvider::Deepseek => ProviderSettings {
+            api_key: settings.ai.deepseek.api_key.clone(),
+            base_url: settings.ai.deepseek.base_url.clone(),
             ..Default::default()
         },
     }

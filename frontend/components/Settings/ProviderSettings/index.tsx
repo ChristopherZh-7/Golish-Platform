@@ -431,6 +431,47 @@ export function ProviderSettings({ settings, onChange }: ProviderSettingsProps) 
           </div>
         );
 
+      case "deepseek":
+        return (
+          <div className="space-y-3.5">
+            <div className="space-y-1.5">
+              <label htmlFor="deepseek-key" className={fieldLabel}>
+                API Key
+              </label>
+              <PasswordInput
+                id="deepseek-key"
+                value={settings.deepseek?.api_key || ""}
+                onChange={(value) => updateProvider("deepseek", "api_key", value)}
+                placeholder="sk-..."
+              />
+              <p className={fieldHint}>
+                From{" "}
+                <a
+                  href="https://platform.deepseek.com/api_keys"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={fieldLink}
+                >
+                  platform.deepseek.com <ExternalLink className="w-2.5 h-2.5" />
+                </a>
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <label htmlFor="deepseek-base" className={fieldLabel}>
+                Base URL <span className="text-muted-foreground/30 font-normal">(optional)</span>
+              </label>
+              <Input
+                id="deepseek-base"
+                value={settings.deepseek?.base_url || ""}
+                onChange={(e) => updateProvider("deepseek", "base_url", e.target.value)}
+                placeholder="https://api.deepseek.com"
+                className={cn(fieldInput, "font-mono")}
+              />
+              <p className={fieldHint}>OpenAI-compatible DeepSeek endpoint</p>
+            </div>
+          </div>
+        );
+
       default:
         return null;
     }

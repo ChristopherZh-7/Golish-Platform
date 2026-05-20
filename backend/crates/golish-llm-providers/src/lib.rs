@@ -10,6 +10,7 @@
 //! - xAI (Grok) via rig-core
 //! - Direct Anthropic API via rig-core
 //! - Z.AI (GLM models) via rig-zai-sdk (native SDK implementation)
+//! - DeepSeek via OpenAI-compatible API
 //!
 //! # Architecture
 //!
@@ -17,12 +18,14 @@
 //! - Depends on: rig-core, rig-anthropic-vertex
 //! - Used by: golish-ai (agent orchestration)
 
+pub mod deepseek;
 mod model_capabilities;
 mod openai_config;
 mod provider_config;
 mod provider_trait;
 mod reasoning_models;
 
+pub use deepseek::*;
 pub use model_capabilities::*;
 pub use openai_config::*;
 pub use provider_config::*;
@@ -165,6 +168,8 @@ pub enum LlmClient {
     RigZaiSdk(rig_zai_sdk::CompletionModel),
     /// NVIDIA NIM via OpenAI-compatible Chat Completions API
     RigNvidia(rig_openai::completion::CompletionModel),
+    /// DeepSeek via OpenAI-compatible Chat Completions API
+    RigDeepSeek(rig_openai::completion::CompletionModel),
     /// Mock client for testing (doesn't require credentials)
     /// This variant is always available for integration testing across crates.
     Mock,
@@ -199,6 +204,7 @@ macro_rules! dispatch_llm_client {
             $crate::LlmClient::RigXai($model) => $body,
             $crate::LlmClient::RigZaiSdk($model) => $body,
             $crate::LlmClient::RigNvidia($model) => $body,
+            $crate::LlmClient::RigDeepSeek($model) => $body,
             $crate::LlmClient::Mock => $mock_body,
         }
     };
@@ -238,6 +244,7 @@ macro_rules! dispatch_llm_client_split {
             $crate::LlmClient::RigXai($g) => $g_body,
             $crate::LlmClient::RigZaiSdk($g) => $g_body,
             $crate::LlmClient::RigNvidia($g) => $g_body,
+            $crate::LlmClient::RigDeepSeek($g) => $g_body,
             $crate::LlmClient::Mock => $mock_body,
         }
     };
@@ -363,6 +370,7 @@ impl LlmClient {
             LlmClient::RigXai(_) => "xai",
             LlmClient::RigZaiSdk(_) => "zai_sdk",
             LlmClient::RigNvidia(_) => "nvidia",
+            LlmClient::RigDeepSeek(_) => "deepseek",
             LlmClient::Mock => "mock",
         }
     }
@@ -381,6 +389,7 @@ impl LlmClient {
             LlmClient::RigOpenAi(_)
                 | LlmClient::RigOpenAiResponses(_)
                 | LlmClient::OpenAiReasoning(_)
+                | LlmClient::RigDeepSeek(_)
         )
     }
 

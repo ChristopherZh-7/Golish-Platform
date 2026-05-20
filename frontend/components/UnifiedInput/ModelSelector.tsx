@@ -43,7 +43,8 @@ export type ModelProvider =
   | "groq"
   | "xai"
   | "zai_sdk"
-  | "nvidia";
+  | "nvidia"
+  | "deepseek";
 
 function isAnyNestedSelected(
   entries: ModelEntry[],
@@ -164,6 +165,7 @@ const PROVIDER_MAP: Record<ModelProvider, string> = {
   xai: "xai",
   zai_sdk: "zai_sdk",
   nvidia: "nvidia",
+  deepseek: "deepseek",
 };
 
 interface ModelSelectorBadgeProps {

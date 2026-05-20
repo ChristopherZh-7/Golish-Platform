@@ -1,6 +1,6 @@
 //! LLM provider settings: per-provider config blocks for Vertex Anthropic,
 //! Vertex Gemini, OpenRouter (incl. provider preferences), Anthropic, OpenAI,
-//! Ollama, Gemini, Groq, xAI, Z.AI SDK, and NVIDIA NIM.
+//! Ollama, Gemini, Groq, xAI, Z.AI SDK, NVIDIA NIM, and DeepSeek.
 
 use super::defaults::*;
 use serde::{Deserialize, Serialize};
@@ -311,6 +311,25 @@ pub struct NvidiaSettings {
     pub show_in_selector: bool,
 }
 
+/// DeepSeek direct API settings.
+///
+/// Uses the OpenAI-compatible API at https://api.deepseek.com.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeepSeekSettings {
+    /// DeepSeek API key (supports $ENV_VAR syntax)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+
+    /// Custom base URL (defaults to https://api.deepseek.com)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+
+    /// Whether to show this provider's models in the model selector
+    #[serde(default = "default_true")]
+    pub show_in_selector: bool,
+}
+
 impl Default for VertexAiSettings {
     fn default() -> Self {
         Self {
@@ -414,6 +433,16 @@ impl Default for ZaiSdkSettings {
 }
 
 impl Default for NvidiaSettings {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            base_url: None,
+            show_in_selector: true,
+        }
+    }
+}
+
+impl Default for DeepSeekSettings {
     fn default() -> Self {
         Self {
             api_key: None,

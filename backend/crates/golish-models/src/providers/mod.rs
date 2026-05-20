@@ -4,6 +4,7 @@ use golish_settings::schema::AiProvider;
 use serde::{Deserialize, Serialize};
 
 mod anthropic;
+mod deepseek;
 mod gemini;
 mod groq;
 mod nvidia;
@@ -16,6 +17,7 @@ mod xai;
 mod zai_sdk;
 
 pub use anthropic::anthropic_models;
+pub use deepseek::deepseek_models;
 pub use gemini::gemini_models;
 pub use groq::groq_models;
 pub use nvidia::nvidia_models;
@@ -104,6 +106,12 @@ pub fn get_provider_info(provider: AiProvider) -> ProviderInfo {
             icon: "🟢",
             description: "NVIDIA NIM inference",
         },
+        AiProvider::Deepseek => ProviderInfo {
+            provider,
+            name: "DeepSeek",
+            icon: "🧠",
+            description: "DeepSeek direct API",
+        },
     }
 }
 
@@ -121,5 +129,6 @@ pub fn get_all_provider_info() -> Vec<ProviderInfo> {
         get_provider_info(AiProvider::Ollama),
         get_provider_info(AiProvider::Openrouter),
         get_provider_info(AiProvider::Nvidia),
+        get_provider_info(AiProvider::Deepseek),
     ]
 }

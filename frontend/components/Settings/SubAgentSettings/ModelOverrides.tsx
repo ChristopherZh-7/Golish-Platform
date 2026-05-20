@@ -16,6 +16,7 @@ export const PROVIDER_OPTIONS: { value: AiProvider; label: string }[] = [
   { value: "xai", label: "xAI (Grok)" },
   { value: "zai_sdk", label: "Z.AI SDK" },
   { value: "nvidia", label: "NVIDIA NIM" },
+  { value: "deepseek", label: "DeepSeek" },
 ];
 
 export const MODEL_SUGGESTIONS: Record<AiProvider, string[]> = {
@@ -54,6 +55,7 @@ export const MODEL_SUGGESTIONS: Record<AiProvider, string[]> = {
     "deepseek-ai/deepseek-v3.2",
     "google/gemma-4-31b-it",
   ],
+  deepseek: ["deepseek-v4-flash", "deepseek-v4-pro"],
 };
 
 interface ModelOverridePanelProps {

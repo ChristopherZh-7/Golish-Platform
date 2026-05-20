@@ -29,7 +29,8 @@ export type AiProvider =
   | "groq"
   | "xai"
   | "zai_sdk"
-  | "nvidia";
+  | "nvidia"
+  | "deepseek";
 
 /**
  * Capabilities that vary across LLM models.

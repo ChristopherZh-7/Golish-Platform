@@ -16,8 +16,9 @@ use golish_context::ContextManagerConfig;
 use golish_core::runtime::GolishRuntime;
 
 use crate::llm_client::{
-    create_nvidia_components, create_openai_components, create_openrouter_components,
-    NvidiaClientConfig, OpenAiClientConfig, OpenRouterClientConfig, SharedComponentsConfig,
+    create_deepseek_components, create_nvidia_components, create_openai_components,
+    create_openrouter_components, DeepSeekClientConfig, NvidiaClientConfig, OpenAiClientConfig,
+    OpenRouterClientConfig, SharedComponentsConfig,
 };
 
 use super::super::AgentBridge;
@@ -161,6 +162,29 @@ impl AgentBridge {
             base_url,
         };
         let components = create_nvidia_components(config, shared_config).await?;
+        Ok(Self::from_components_with_runtime(
+            components,
+            runtime,
+            event_session_id.to_string(),
+        ))
+    }
+
+    pub async fn new_deepseek_with_shared_config(
+        workspace: PathBuf,
+        model: &str,
+        api_key: &str,
+        base_url: Option<&str>,
+        shared_config: SharedComponentsConfig,
+        runtime: Arc<dyn GolishRuntime>,
+        event_session_id: &str,
+    ) -> Result<Self> {
+        let config = DeepSeekClientConfig {
+            workspace,
+            model,
+            api_key,
+            base_url,
+        };
+        let components = create_deepseek_components(config, shared_config).await?;
         Ok(Self::from_components_with_runtime(
             components,
             runtime,

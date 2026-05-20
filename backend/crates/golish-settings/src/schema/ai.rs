@@ -9,9 +9,9 @@ use std::collections::HashMap;
 
 use super::enums::{AiProvider, ReasoningEffort};
 use super::llm::{
-    AnthropicSettings, GeminiSettings, GroqSettings, NvidiaSettings, OllamaSettings,
-    OpenAiSettings, OpenRouterSettings, VertexAiSettings, VertexGeminiSettings, XaiSettings,
-    ZaiSdkSettings,
+    AnthropicSettings, DeepSeekSettings, GeminiSettings, GroqSettings, NvidiaSettings,
+    OllamaSettings, OpenAiSettings, OpenRouterSettings, VertexAiSettings, VertexGeminiSettings,
+    XaiSettings, ZaiSdkSettings,
 };
 use serde::{Deserialize, Serialize};
 
@@ -118,6 +118,9 @@ pub struct AiSettings {
 
     /// NVIDIA NIM settings.
     pub nvidia: NvidiaSettings,
+
+    /// DeepSeek direct API settings.
+    pub deepseek: DeepSeekSettings,
 }
 
 impl Default for AiSettings {
@@ -141,6 +144,7 @@ impl Default for AiSettings {
             xai: XaiSettings::default(),
             zai_sdk: ZaiSdkSettings::default(),
             nvidia: NvidiaSettings::default(),
+            deepseek: DeepSeekSettings::default(),
         }
     }
 }

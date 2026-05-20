@@ -123,6 +123,9 @@ fn detect_thinking_history_support(provider_name: &str, model_name: &str) -> boo
         // GLM-4.5 supports interleaved thinking but not explicit thinking config
         "zai" | "zai_sdk" => model_lower.contains("glm-4.7"),
 
+        // DeepSeek direct API exposes reasoning_content for v4/reasoner models.
+        "deepseek" => !model_lower.ends_with("deepseek-chat"),
+
         // All other providers: no thinking history support
         _ => false,
     }

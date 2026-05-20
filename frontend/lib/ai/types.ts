@@ -17,7 +17,8 @@ export type AiProvider =
   | "groq"
   | "xai"
   | "zai_sdk"
-  | "nvidia";
+  | "nvidia"
+  | "deepseek";
 
 /**
  * Reasoning effort level for models that support it (e.g., OpenAI o-series, GPT-5).
@@ -123,6 +124,13 @@ export type ProviderConfig =
     }
   | {
       provider: "nvidia";
+      workspace: string;
+      model: string;
+      api_key: string;
+      base_url?: string;
+    }
+  | {
+      provider: "deepseek";
       workspace: string;
       model: string;
       api_key: string;

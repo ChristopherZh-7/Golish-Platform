@@ -61,6 +61,11 @@ export const DEFAULT_SETTINGS: GolishSettings = {
       base_url: null,
       show_in_selector: true,
     },
+    deepseek: {
+      api_key: null,
+      base_url: null,
+      show_in_selector: true,
+    },
   },
   api_keys: {
     tavily: null,

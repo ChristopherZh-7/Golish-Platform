@@ -16,6 +16,7 @@ export type ProviderSettingsKey = keyof Pick<
   | "xai"
   | "zai_sdk"
   | "nvidia"
+  | "deepseek"
 >;
 
 export interface ProviderConfig {
@@ -50,6 +51,8 @@ function isProviderConfigured(id: ProviderSettingsKey, settings: AiSettings): bo
       return !!settings.zai_sdk?.api_key;
     case "nvidia":
       return !!settings.nvidia?.api_key;
+    case "deepseek":
+      return !!settings.deepseek?.api_key;
     default:
       return false;
   }
@@ -68,6 +71,7 @@ function providerToSettingsKey(provider: string): ProviderSettingsKey | null {
     xai: "xai",
     zai_sdk: "zai_sdk",
     nvidia: "nvidia",
+    deepseek: "deepseek",
   };
   return mapping[provider] ?? null;
 }
@@ -92,6 +96,13 @@ export const FALLBACK_PROVIDERS: ProviderConfig[] = [
     icon: "🔶",
     description: "Direct Claude API access",
     getConfigured: (s) => !!s.anthropic.api_key,
+  },
+  {
+    id: "deepseek",
+    name: "DeepSeek",
+    icon: "🧠",
+    description: "DeepSeek direct API",
+    getConfigured: (s) => !!s.deepseek?.api_key,
   },
   {
     id: "gemini",
@@ -169,6 +180,7 @@ export const PROVIDER_COLORS: Record<string, { bg: string; border: string; dot: 
   groq: { bg: "rgba(245,158,11,0.07)", border: "rgba(245,158,11,0.35)", dot: "#F59E0B" },
   ollama: { bg: "rgba(139,92,246,0.07)", border: "rgba(139,92,246,0.35)", dot: "#8B5CF6" },
   nvidia: { bg: "rgba(118,185,0,0.07)", border: "rgba(118,185,0,0.35)", dot: "#76B900" },
+  deepseek: { bg: "rgba(59,130,246,0.07)", border: "rgba(59,130,246,0.35)", dot: "#3B82F6" },
   vertex_ai: { bg: "rgba(66,133,244,0.07)", border: "rgba(66,133,244,0.35)", dot: "#4285F4" },
   vertex_gemini: { bg: "rgba(142,117,255,0.07)", border: "rgba(142,117,255,0.35)", dot: "#8E75FF" },
   anthropic: { bg: "rgba(217,119,6,0.07)", border: "rgba(217,119,6,0.35)", dot: "#D97706" },

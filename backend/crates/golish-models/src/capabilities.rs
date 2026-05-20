@@ -277,6 +277,18 @@ impl ModelCapabilities {
         }
     }
 
+    /// Create capabilities for DeepSeek direct API models.
+    pub fn deepseek_defaults() -> Self {
+        Self {
+            supports_temperature: true,
+            supports_thinking_history: true,
+            supports_vision: false,
+            context_window: 128_000,
+            max_output_tokens: 8_192,
+            ..Default::default()
+        }
+    }
+
     /// Create capabilities for Ollama local models.
     ///
     /// Capabilities vary by model, so this returns conservative defaults.

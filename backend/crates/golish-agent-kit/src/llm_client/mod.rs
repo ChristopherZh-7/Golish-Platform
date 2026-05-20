@@ -39,10 +39,10 @@ pub use providers::*;
 
 // Re-export types from golish-llm-providers for backward compatibility
 pub use golish_llm_providers::{
-    rig_gemini_vertex, rig_zai_sdk, AnthropicClientConfig, GeminiClientConfig, GroqClientConfig,
-    LlmClient, NvidiaClientConfig, OllamaClientConfig, OpenAiClientConfig, OpenRouterClientConfig,
-    ProviderConfig, VertexAnthropicClientConfig, VertexGeminiClientConfig, XaiClientConfig,
-    ZaiSdkClientConfig,
+    rig_gemini_vertex, rig_zai_sdk, AnthropicClientConfig, DeepSeekClientConfig,
+    GeminiClientConfig, GroqClientConfig, LlmClient, NvidiaClientConfig, OllamaClientConfig,
+    OpenAiClientConfig, OpenRouterClientConfig, ProviderConfig, VertexAnthropicClientConfig,
+    VertexGeminiClientConfig, XaiClientConfig, ZaiSdkClientConfig,
 };
 
 // Re-export ContextManagerConfig for convenience (also used internally)

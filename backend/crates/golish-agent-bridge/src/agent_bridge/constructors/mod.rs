@@ -217,6 +217,23 @@ impl AgentBridge {
                 )
                 .await
             }
+            ProviderConfig::Deepseek {
+                model,
+                api_key,
+                base_url,
+                ..
+            } => {
+                Self::new_deepseek_with_shared_config(
+                    workspace_path,
+                    &model,
+                    &api_key,
+                    base_url.as_deref(),
+                    shared_config,
+                    runtime,
+                    event_session_id,
+                )
+                .await
+            }
             ProviderConfig::VertexGemini {
                 model,
                 credentials_path,

@@ -439,6 +439,11 @@ let mockSettings = {
       base_url: null,
       show_in_selector: true,
     },
+    deepseek: {
+      api_key: null,
+      base_url: null,
+      show_in_selector: true,
+    },
   },
   api_keys: {
     tavily: null,
@@ -2313,7 +2318,8 @@ export function setMockProviderVisibility(
     | "groq"
     | "xai"
     | "zai_sdk"
-    | "nvidia",
+    | "nvidia"
+    | "deepseek",
   visible: boolean
 ): void {
   mockSettings.ai[provider].show_in_selector = visible;

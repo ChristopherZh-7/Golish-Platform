@@ -240,6 +240,7 @@ pub(crate) async fn complete_with_client(
         LlmClient::RigXai(m) => one_shot!(m),
         LlmClient::RigZaiSdk(m) => one_shot!(m),
         LlmClient::RigNvidia(m) => one_shot!(m),
+        LlmClient::RigDeepSeek(m) => one_shot!(m),
         LlmClient::Mock => Err(anyhow::anyhow!("Mock client cannot execute completions")),
     }
 }
