@@ -16,6 +16,7 @@
 mod core;
 mod emitter;
 mod session_create;
+mod stdin_wait_detector;
 mod utf8;
 
 pub use core::{PtyManager, PtySession};

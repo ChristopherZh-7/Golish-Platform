@@ -67,9 +67,22 @@ export function useInputKeyboard(state: InputStateReturn) {
         toolSelectedIndex,
       } = stateRef.current;
 
-      const isProcessRunning = !!useStore.getState().pendingCommand[sessionId];
+      const storeState = useStore.getState();
+      const isProcessRunning = !!storeState.pendingCommand[sessionId];
+      const isInteractive = storeState.sessions[sessionId]?.interactiveMode?.active === true;
       const isToolSearchMode = /^\/t\s/i.test(input);
       const toolSearchQuery = isToolSearchMode ? input.replace(/^\/t\s+/i, "") : "";
+
+      // Esc in Warp-style interactive mode → leave interactive mode but
+      // keep the running command alive. The bottom input box returns to
+      // "type a new command" behaviour; the user can opt back in by
+      // typing into the textarea (next `stdin_wait` event re-enters) or
+      // by Ctrl-C'ing the running command outright.
+      if (e.key === "Escape" && isInteractive && !showToolPopup && !showHistorySearch) {
+        e.preventDefault();
+        storeState.setInteractiveMode(sessionId, null);
+        return;
+      }
 
       // Force-clear stale pendingCommand state on Escape
       if (
@@ -80,7 +93,7 @@ export function useInputKeyboard(state: InputStateReturn) {
         !showHistorySearch
       ) {
         e.preventDefault();
-        useStore.getState().handlePromptStart(sessionId);
+        storeState.handlePromptStart(sessionId);
         return;
       }
 

@@ -32,6 +32,7 @@
 //! manager.resize_session(&session_id, 80, 24).await?;
 //! ```
 
+mod grid;
 mod manager;
 mod parser;
 mod shell;
@@ -41,6 +42,10 @@ mod error;
 pub use error::{PtyError, Result};
 
 // Public exports
+pub use grid::{
+    Cell as GridCell, CellAttrs as GridCellAttrs, Color as GridColor, Cursor as GridCursor,
+    CursorStyle as GridCursorStyle, GridDims, GridManager, GridTerminal, GridUpdate, RowUpdate,
+};
 pub use manager::{PtyManager, PtySession};
 pub use parser::{OscEvent, TerminalParser};
 pub use shell::{detect_shell, ShellInfo, ShellIntegration, ShellType};

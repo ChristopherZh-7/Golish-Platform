@@ -76,7 +76,18 @@ export interface StateRefValue {
   activeTool: ToolConfig | null;
 }
 
-export function useInputState({ sessionId }: { sessionId: string }) {
+export function useInputState({
+  sessionId,
+  desiredHeight = 0,
+}: {
+  sessionId: string;
+  /**
+   * Height (in px) the user has dragged the input panel to. `0` means
+   * "user has never dragged" → legacy auto-grow (one line, cap 200px).
+   * `>0` means textarea must be at least this tall, up to 800px.
+   */
+  desiredHeight?: number;
+}) {
   const { t } = useTranslation();
   const workingDirectory = useStore((state) => state.sessions[sessionId]?.workingDirectory);
 
@@ -107,7 +118,23 @@ export function useInputState({ sessionId }: { sessionId: string }) {
   const { isSessionDead } = useStoreInputState(sessionId);
   const inputMode = "terminal" as const;
   const pendingCommand = usePendingCommand(sessionId);
-  const isProcessRunning = !!pendingCommand;
+
+  // Warp-style interactive input mode: when the backend `stdin_wait`
+  // detector fires for the running command, the textarea can route
+  // keystrokes straight to the PTY (Enter sends `input + \n` via
+  // `ptyWrite` without creating a new command block) as a fallback
+  // stdin sink. `RunningCommandCard` is the primary sink (its own
+  // offscreen capture textarea takes focus), but `UnifiedInput` keeps
+  // the UI affordance (orange ring / banner) and offers a secondary
+  // path for keystrokes when the card hasn't focused yet.
+  const interactiveMode = useStore((state) => state.sessions[sessionId]?.interactiveMode) ?? null;
+  const isInteractive = !!interactiveMode?.active;
+
+  // `isProcessRunning` controls focus/blur for the textarea — when a
+  // command is running we normally drop focus so keystrokes don't pile
+  // up uselessly. Interactive mode is the explicit exception: a
+  // command IS running, but those keystrokes are the whole point.
+  const isProcessRunning = !!pendingCommand && !isInteractive;
 
   useEffect(() => {
     getSettings().then((s) => setCaretSettings(s.terminal.caret ?? DEFAULT_CARET_SETTINGS));
@@ -219,17 +246,57 @@ export function useInputState({ sessionId }: { sessionId: string }) {
 
   // ── textarea auto-resize ──
   const lastTextareaHeightRef = useRef<number>(0);
+  const desiredHeightRef = useRef(desiredHeight);
+  desiredHeightRef.current = desiredHeight;
   const adjustTextareaHeight = useCallback(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
     requestAnimationFrame(() => {
+      const desired = desiredHeightRef.current;
+
+      if (desired > 0) {
+        // User has dragged the input panel to a fixed minimum height.
+        // Set the textarea to that height FIRST, then check whether the
+        // content actually needs more. This avoids the previous
+        //   height='auto' → measure scrollHeight → restore
+        // cycle that briefly shrunk the textarea down to one line (~26px)
+        // before snapping it back to `desired` (~80px). That brief shrink
+        // propagated up the parent flex column and caused the browser to
+        // clamp `scrollTop` on the timeline above us, producing the
+        // visible "jump up one row" glitch every time the user typed into
+        // an otherwise single-line input. (Bug: 主页 timeline 输入时跳一格)
+        const desiredStr = `${desired}px`;
+        if (textarea.style.height !== desiredStr) {
+          textarea.style.height = desiredStr;
+        }
+        const scrollHeight = textarea.scrollHeight;
+        if (scrollHeight > desired) {
+          const newHeight = Math.min(scrollHeight, 800);
+          const newStr = `${newHeight}px`;
+          if (textarea.style.height !== newStr) {
+            textarea.style.height = newStr;
+          }
+          lastTextareaHeightRef.current = newHeight;
+        } else {
+          lastTextareaHeightRef.current = desired;
+        }
+        return;
+      }
+
+      // Legacy auto-grow path (user has never dragged the resize handle).
+      // We must use height='auto' here so the textarea can SHRINK back when
+      // content is deleted — without it the textarea would only ever grow.
+      // The jump-glitch is much less noticeable on this path because the
+      // delta is small (single-line ≈26px ↔ cap 200px) and there is no
+      // fixed "minimum" the textarea snaps back to.
       textarea.style.height = "auto";
       const scrollHeight = textarea.scrollHeight;
       const newHeight = Math.min(scrollHeight, 200);
-      if (newHeight !== lastTextareaHeightRef.current) {
-        lastTextareaHeightRef.current = newHeight;
+      const newStr = `${newHeight}px`;
+      if (textarea.style.height !== newStr) {
+        textarea.style.height = newStr;
       }
-      textarea.style.height = `${newHeight}px`;
+      lastTextareaHeightRef.current = newHeight;
     });
   }, []);
 
@@ -251,7 +318,7 @@ export function useInputState({ sessionId }: { sessionId: string }) {
 
   useEffect(() => {
     adjustTextareaHeight();
-  }, [input, adjustTextareaHeight]);
+  }, [input, desiredHeight, adjustTextareaHeight]);
 
   // ── tool context refs ──
   const toolContextRef = useRef<{ cdPrefix: string; baseCmd: string }>({
@@ -272,6 +339,30 @@ export function useInputState({ sessionId }: { sessionId: string }) {
 
   const handleSubmit = useCallback(() => {
     const { input: currentInput } = stateRef.current;
+
+    // Interactive-mode handler: pipe whatever the user typed (even
+    // empty — hitting Enter on `[Y/n]` with no input is a valid
+    // "accept default") straight to the running command's stdin via
+    // `ptyWrite`. No history entry, no command tracking — those
+    // concerns belong to the start-a-new-command path only.
+    // `RunningCommandCard` is the primary stdin sink, this is a
+    // fallback for keystrokes that reach `UnifiedInput` first.
+    if (isInteractive) {
+      setInput("");
+      ptyWrite(sessionId, `${currentInput}\n`).catch((err) =>
+        console.error("[UnifiedInput] interactive ptyWrite failed:", err)
+      );
+      return;
+    }
+
+    // Non-interactive: while a command is running suppress submit so
+    // the user's freshly-typed text doesn't accidentally pipe into the
+    // PTY as half-stdin / half-shell-command. The buffered text stays
+    // in the textarea so the user can submit it as the next command
+    // the moment the current one ends.
+    const storeState = useStore.getState();
+    if (storeState.pendingCommand[sessionId]?.command) return;
+
     if (!currentInput.trim()) return;
 
     const value = currentInput.trim();
@@ -309,7 +400,7 @@ export function useInputState({ sessionId }: { sessionId: string }) {
     ptyWrite(sessionId, `${fullCmd}\n`).catch((err) =>
       console.error("[UnifiedInput] ptyWrite failed:", err)
     );
-  }, [sessionId, addToHistory, resetHistory, setLastSentCommand, clearToolMode]);
+  }, [sessionId, addToHistory, resetHistory, setLastSentCommand, clearToolMode, isInteractive]);
 
   const handleSlashSelect = useCallback(async (command: SlashCommand, _args?: string) => {
     if (command.type === "builtin" && command.name === "t") {
@@ -428,6 +519,13 @@ export function useInputState({ sessionId }: { sessionId: string }) {
       const curIsToolSearchMode = /^\/t\s/i.test(currentInput);
 
       let value = e.target.value;
+      // Strip ASCII control bytes that some IMEs / Ctrl key chords
+      // inject into the textarea value (e.g. Ctrl-H produces U+0008
+      // BACKSPACE on macOS / Linux). They render as `⬛` boxes in
+      // monospace fonts and would poison any command we eventually
+      // ship to the shell. Keep `\n` (Shift+Enter / multi-line
+      // commands) and `\t` (tab) — both are legitimate.
+      value = value.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
       if (curIsToolSearchMode && !value.toLowerCase().startsWith("/t")) {
         value = `/t ${value}`;
       }
@@ -551,6 +649,8 @@ export function useInputState({ sessionId }: { sessionId: string }) {
     isSessionDead,
     inputMode,
     isProcessRunning,
+    interactiveMode,
+    isInteractive,
     isBlockCaret,
     isInputDisabled,
     isToolSearchMode,

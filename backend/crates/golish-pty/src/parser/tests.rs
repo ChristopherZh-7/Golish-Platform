@@ -85,6 +85,43 @@ fn test_osc_133_command_with_complex_text() {
 }
 
 #[test]
+fn test_osc_133_command_with_embedded_semicolons() {
+    // OSC 133 ; C ; <cmd> — vte splits `<cmd>` on `;` so a compound
+    // shell command lands as successive params. Regression coverage
+    // for the pre-fix behaviour where only the first segment
+    // (`cat foo`) made it to the frontend, producing misleading
+    // `RunningCommandCard` titles for users running things like
+    // `cat foo; ls` or `cmd1 && cmd2; cmd3`.
+    let mut parser = TerminalParser::new();
+    let data = b"\x1b]133;C;cat foo; ls -la; echo done\x07";
+    let events = parser.parse(data);
+    assert_eq!(events.len(), 1);
+    if let OscEvent::CommandStart { command } = &events[0] {
+        assert_eq!(command.as_deref(), Some("cat foo; ls -la; echo done"));
+    } else {
+        panic!("Expected CommandStart");
+    }
+}
+
+#[test]
+fn test_osc_133_command_marker_c_with_separate_arg_param() {
+    // OSC 133 ; C ; <cmd> where the very first marker is just `C`
+    // (no `;` glued to it). Some shells emit this form; we still
+    // need to reconstruct the full command from the trailing
+    // params, including any `;`-separated segments.
+    let mut parser = TerminalParser::new();
+    // Synthetic encoding: `]133` `C` `cat foo` ` ls`
+    let data = b"\x1b]133;C;cat foo; ls\x07";
+    let events = parser.parse(data);
+    assert_eq!(events.len(), 1);
+    if let OscEvent::CommandStart { command } = &events[0] {
+        assert_eq!(command.as_deref(), Some("cat foo; ls"));
+    } else {
+        panic!("Expected CommandStart");
+    }
+}
+
+#[test]
 fn test_osc_133_command_end_success() {
     let mut parser = TerminalParser::new();
     // OSC 133 ; D ; 0 ST

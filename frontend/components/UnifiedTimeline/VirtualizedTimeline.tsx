@@ -42,9 +42,29 @@ export const VirtualizedTimeline = memo(function VirtualizedTimeline({
   useEffect(() => {
     const grew = blocks.length > prevBlocksLengthRef.current;
     prevBlocksLengthRef.current = blocks.length;
-    if (shouldScrollToBottom && grew) {
-      virtualizer.scrollToIndex(blocks.length - 1, { align: "end" });
-    }
+    if (!(shouldScrollToBottom && grew)) return;
+    // Defer scrollToIndex by one frame so the virtualizer has already
+    // observed the freshly-inserted row's DOM node. Calling it synchronously
+    // from the effect can fire before the row has been measured, which makes
+    // @tanstack/virtual log `Failed to get offset for index: N` and then
+    // silently skip the scroll. The double-RAF (requestAnimationFrame inside
+    // requestAnimationFrame) outlasts the row's first measurement pass.
+    const targetIndex = blocks.length - 1;
+    let inner: number | undefined;
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => {
+        try {
+          virtualizer.scrollToIndex(targetIndex, { align: "end" });
+        } catch {
+          // Silently swallow — virtualizer can throw if the target row was
+          // removed in the same tick. Next append will re-trigger scrolling.
+        }
+      });
+    });
+    return () => {
+      cancelAnimationFrame(outer);
+      if (inner !== undefined) cancelAnimationFrame(inner);
+    };
   }, [blocks.length, shouldScrollToBottom, virtualizer]);
 
   if (blocks.length < VIRTUALIZATION_THRESHOLD) {

@@ -1,4 +1,5 @@
 import { invoke } from "./client";
+import type { TerminalGridUpdatePayload } from "@/lib/events/payloads";
 
 export interface PtySession {
   id: string;
@@ -37,6 +38,16 @@ export async function ptyGetSession(sessionId: string): Promise<PtySession> {
 
 export async function ptyGetForegroundProcess(sessionId: string): Promise<string | null> {
   return invoke<string | null>("pty_get_foreground_process", { sessionId });
+}
+
+export async function ptyRequestGridSnapshot(
+  sessionId: string
+): Promise<TerminalGridUpdatePayload | null> {
+  return invoke<TerminalGridUpdatePayload | null>("pty_request_grid_snapshot", { sessionId });
+}
+
+export async function ptyResizeGrid(sessionId: string, cols: number, rows: number): Promise<void> {
+  return invoke("pty_resize_grid", { sessionId, cols, rows });
 }
 
 export async function setActiveTerminalSession(sessionId: string): Promise<void> {

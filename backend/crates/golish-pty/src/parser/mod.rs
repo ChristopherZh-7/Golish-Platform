@@ -48,6 +48,7 @@ impl TerminalParser {
 
         self.performer.events.clear();
         self.performer.visible_bytes.clear();
+        self.performer.prompt_visible_bytes.clear();
 
         for byte in data {
             self.parser.advance(&mut self.performer, *byte);
@@ -64,6 +65,12 @@ impl TerminalParser {
             } else {
                 std::mem::take(&mut self.performer.visible_bytes)
             },
+            // `prompt_visible` is always drained from the performer
+            // (independent of alt-screen mode) because the detector
+            // pipeline is irrelevant for vim/htop sessions anyway —
+            // the frontend ignores `stdin_wait` events while in
+            // `fullterm` render mode (see `useTauriEvents.ts`).
+            prompt_visible: std::mem::take(&mut self.performer.prompt_visible_bytes),
         }
     }
 

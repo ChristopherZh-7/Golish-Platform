@@ -39,6 +39,49 @@ export interface AlternateScreenPayload {
   enabled: boolean;
 }
 
+export interface StdinWaitPayload {
+  session_id: string;
+  detector: string;
+}
+
+export type GridColor =
+  | { kind: "default" }
+  | { kind: "indexed"; value: number }
+  | { kind: "rgb"; value: number };
+
+export type GridCursorStyle = "block" | "underline" | "bar";
+
+export interface GridCursorPayload {
+  x: number;
+  y: number;
+  visible: boolean;
+  style: GridCursorStyle;
+}
+
+export interface GridCellPayload {
+  ch: string;
+  fg: GridColor;
+  bg: GridColor;
+  attrs: number;
+}
+
+export interface GridRowPayload {
+  y: number;
+  cells: GridCellPayload[];
+}
+
+export interface TerminalGridUpdatePayload {
+  session_id: string;
+  rev: number;
+  cols: number;
+  rows: number;
+  full: boolean;
+  dirty_rows: GridRowPayload[];
+  cursor: GridCursorPayload;
+  alt_screen: boolean;
+  app_cursor_mode: boolean;
+}
+
 /**
  * File watcher event emitted when a watched workspace file changes on disk.
  * Mirrors Rust `golish::commands::fs::file_watcher::FileChangedEvent`
@@ -141,6 +184,8 @@ export interface EventPayloadMap {
   virtual_env_changed: VirtualEnvChangedPayload;
   session_ended: SessionEndedPayload;
   alternate_screen: AlternateScreenPayload;
+  stdin_wait: StdinWaitPayload;
+  terminal_grid_update: TerminalGridUpdatePayload;
   "sidecar-event": SidecarEventPayload;
   "file-changed": FileChangedPayload;
   "mcp-event": McpEventPayload;

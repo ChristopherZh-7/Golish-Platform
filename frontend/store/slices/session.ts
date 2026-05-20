@@ -21,6 +21,7 @@ import type {
   DetailViewMode,
   ExecutionMode,
   InputMode,
+  InteractiveModeState,
   PendingCommand,
   RenderMode,
   Session,
@@ -90,6 +91,7 @@ export interface SessionActions {
   setRenderMode: (sessionId: string, mode: RenderMode) => void;
   setDetailViewMode: (sessionId: string, mode: DetailViewMode) => void;
   setToolDetailRequestIds: (sessionId: string, requestIds: string[] | null) => void;
+  setInteractiveMode: (sessionId: string, mode: InteractiveModeState | null) => void;
 
   // Terminal lifecycle
   handlePromptStart: (sessionId: string) => void;
@@ -181,6 +183,21 @@ export const createSessionSlice: SliceCreator<SessionSlice, SessionStoreDraft> =
   ...createSessionTerminalActions(set, get),
   ...createSessionStreamingActions(set, get),
   ...createSessionTabActions(set, get),
+  setInteractiveMode: (sessionId: string, mode: InteractiveModeState | null) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return;
+      const prev = session.interactiveMode ?? null;
+      if (
+        prev?.active === mode?.active &&
+        prev?.command === mode?.command &&
+        prev?.detector === mode?.detector &&
+        prev?.enteredAt === mode?.enteredAt
+      ) {
+        return;
+      }
+      session.interactiveMode = mode;
+    }),
 });
 
 // ---------------------------------------------------------------------------

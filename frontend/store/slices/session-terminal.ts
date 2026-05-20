@@ -3,6 +3,7 @@
  * operations.
  */
 
+import { ALT_SCREEN_TUI_PROCESSES, extractProcessName } from "@/hooks/tauri-event-types";
 import { logger } from "@/lib/logger";
 import { sendNotification } from "@/lib/systemNotifications";
 import type { CommandBlock } from "../store-types";
@@ -17,6 +18,22 @@ import {
   setOutputBuffer,
 } from "./session-helpers";
 import type { ImmerSet, StateGet } from "./types";
+
+/**
+ * Phase C · Warp-style TUI block folding: detect whether the command
+ * that just finished is something whose alt-screen output is restored
+ * on exit (vim, htop, less, …). Those blocks open *collapsed* in the
+ * timeline since their `output` is rarely useful in static form.
+ *
+ * Mirrors the `ALT_SCREEN_TUI_PROCESSES` allowlist used by
+ * `useTauriEvents.ts` to gate auto-fullterm; sharing the set keeps the
+ * two policies — "render this through alt-screen" and "collapse this
+ * after it exits" — perfectly aligned.
+ */
+function detectTuiCommand(command: string | null): boolean {
+  const processName = extractProcessName(command);
+  return processName !== null && ALT_SCREEN_TUI_PROCESSES.has(processName);
+}
 
 export function createSessionTerminalActions(
   set: ImmerSet<SessionStoreDraft>,
@@ -70,11 +87,44 @@ export function createSessionTerminalActions(
       // Ready for input - nothing to do for now
     },
 
+    discardPendingCommand: (sessionId: string) => {
+      // Drop pending without producing a timeline block, and preserve the
+      // output buffer so the eventual handleCommandEnd has the full bytes.
+      // See SessionActions.discardPendingCommand for the Windows-specific
+      // race this guards against.
+      set((state) => {
+        if (state.pendingCommand[sessionId]) {
+          state.pendingCommand[sessionId] = null;
+        }
+      });
+    },
+
     handleCommandStart: (sessionId: string, command: string | null) => {
       deleteOutputBuffer(sessionId);
       set((state) => {
         const session = state.sessions[sessionId];
-        const effectiveCommand = command || state.lastSentCommand[sessionId] || null;
+        const userTyped = state.lastSentCommand[sessionId];
+        // Bash's DEBUG trap exposes `BASH_COMMAND`, which for a
+        // multi-line compound like
+        //   select yn in "Yes" "No"; do
+        //     echo $yn
+        //     break
+        //   done
+        // collapses into `select yn in "Yes" "No"; doecho $ynbreakdone`
+        // — newlines AND inter-token whitespace are dropped. That
+        // mangled string is what OSC 133;C carries to the frontend,
+        // and what we'd otherwise show in the RunningCommandCard /
+        // InteractiveCell header. When the user typed the command
+        // through the bottom Warp input box we already have the
+        // pristine text in `lastSentCommand`; prefer it whenever its
+        // alphanumeric skeleton matches the OSC value so the timeline
+        // keeps the original multi-line layout. Commands coming from
+        // arrow-up history re-runs (no `lastSentCommand`) or shell-
+        // initiated execution (`source ~/.bashrc`, completions, etc.)
+        // still fall through to the OSC payload unchanged.
+        const skeleton = (s: string | null | undefined) => s?.replace(/\s+/g, "").trim() ?? "";
+        const useUserTyped = !!userTyped && !!command && skeleton(userTyped) === skeleton(command);
+        const effectiveCommand = useUserTyped ? userTyped : command || userTyped || null;
         state.pendingCommand[sessionId] = {
           command: effectiveCommand,
           output: "",
@@ -104,6 +154,16 @@ export function createSessionTerminalActions(
           if (pending.command && !isFullterm) {
             const blockId = crypto.randomUUID();
             const currentWorkingDir = session?.workingDirectory || pending.workingDirectory;
+            // Phase C · TUI commands (vim, htop, less, …) default to
+            // collapsed because their alt-screen output is restored on
+            // exit — keeping the block expanded would leave a row of
+            // dangling escape sequences in the timeline. Matches
+            // Warp's behaviour: a single line `~ (Xs) vim foo.txt`
+            // that the user can re-expand if they want to inspect the
+            // (mostly empty) static output. Detection mirrors the
+            // `ALT_SCREEN_TUI_PROCESSES` set used by the alt-screen
+            // gating in `useTauriEvents.ts`.
+            const isTuiCommand = detectTuiCommand(pending.command);
             const block: CommandBlock = {
               id: blockId,
               sessionId,
@@ -113,7 +173,7 @@ export function createSessionTerminalActions(
               startTime: pending.startTime,
               durationMs: (endTime ?? Date.now()) - new Date(pending.startTime).getTime(),
               workingDirectory: currentWorkingDir,
-              isCollapsed: false,
+              isCollapsed: isTuiCommand,
             };
 
             if (!state.timelines[sessionId]) {

@@ -71,3 +71,44 @@ pub async fn set_active_terminal_session(
     *active = Some(session_id);
     Ok(())
 }
+
+/// Frontend → backend nudge for the Phase B GridTerminal. The grid is
+/// a fire-and-forget event stream (`terminal_grid_update`) so the
+/// frontend doesn't normally need to ask for anything, but on
+/// reconnect or when it detects a non-contiguous `rev` it can call
+/// this to receive a full baseline snapshot.
+///
+/// Returns the latest [`golish_pty::GridUpdate`] (always `full = true`)
+/// if the session is currently rendering through a GridTerminal, or
+/// `None` if no grid is allocated (i.e. the session is not on
+/// alt-screen).
+#[tauri::command]
+pub async fn pty_request_grid_snapshot(
+    state: State<'_, PtyState>,
+    session_id: String,
+) -> Result<Option<golish_pty::GridUpdate>> {
+    let Some(grid) = state.manager.grid_terminal(&session_id) else {
+        return Ok(None);
+    };
+    // Hoist the snapshot out before returning so the `MutexGuard` is
+    // dropped at the end of this statement instead of being held
+    // across the final `Ok(...)` expression (rustc complains about the
+    // borrow lifetime otherwise).
+    let snapshot = grid.lock().snapshot_full();
+    Ok(Some(snapshot))
+}
+
+/// Frontend → backend grid resize. Mirrors `pty_resize` but targets the
+/// GridTerminal layer rather than the underlying PTY (which keeps its
+/// own dimensions to drive the shell). No-ops when no grid is allocated
+/// for the session.
+#[tauri::command]
+pub async fn pty_resize_grid(
+    state: State<'_, PtyState>,
+    session_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<()> {
+    state.manager.resize_grid(&session_id, cols, rows);
+    Ok(())
+}

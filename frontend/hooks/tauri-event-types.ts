@@ -36,6 +36,48 @@ export const BUILTIN_FULLTERM_COMMANDS = [
   "gemini",
 ];
 
+export const ALT_SCREEN_TUI_PROCESSES: ReadonlySet<string> = new Set([
+  "vim",
+  "vi",
+  "nvim",
+  "neovim",
+  "emacs",
+  "nano",
+  "pico",
+  "joe",
+  "micro",
+  "kakoune",
+  "helix",
+  "hx",
+  "htop",
+  "btop",
+  "btop++",
+  "atop",
+  "iotop",
+  "iftop",
+  "top",
+  "less",
+  "more",
+  "most",
+  "man",
+  "info",
+  "tig",
+  "lazygit",
+  "lazydocker",
+  "k9s",
+  "ranger",
+  "lf",
+  "mc",
+  "nnn",
+  "tmux",
+  "screen",
+  "ssh",
+  "mosh",
+  "weechat",
+  "irssi",
+  "newsboat",
+]);
+
 export function isFastCommand(command: string | null): boolean {
   if (!command) return true;
   const firstWord = command.trim().split(/\s+/)[0];

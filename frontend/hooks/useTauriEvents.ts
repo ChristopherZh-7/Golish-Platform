@@ -21,6 +21,21 @@ import {
   shouldRefreshGitInfo,
 } from "./tauri-event-types";
 
+const STDIN_WAIT_DETECTORS = [
+  "yn_choice",
+  "password",
+  "powershell_choice",
+  "continue",
+  "generic_prompt",
+] as const;
+type StdinWaitDetectorChannel = (typeof STDIN_WAIT_DETECTORS)[number];
+
+function normaliseStdinWaitDetector(value: unknown): StdinWaitDetectorChannel {
+  return STDIN_WAIT_DETECTORS.includes(value as StdinWaitDetectorChannel)
+    ? (value as StdinWaitDetectorChannel)
+    : "generic_prompt";
+}
+
 let activeGeneration = 0;
 
 export function useTauriEvents() {
@@ -219,6 +234,7 @@ export function useTauriEvents() {
 
             clearProcessDetectionTimer(session_id);
             state.setProcessName(session_id, null);
+            state.setInteractiveMode(session_id, null);
             break;
           }
         }
@@ -287,6 +303,30 @@ export function useTauriEvents() {
         const { session_id, enabled } = payload;
         store.getState().setRenderMode(session_id, enabled ? "fullterm" : "timeline");
         if (enabled) usedAlternateScreen.set(session_id, true);
+      })
+    );
+
+    unlisteners.push(
+      onEvent("stdin_wait", (payload) => {
+        if (isStale()) return;
+        const { session_id, detector } = payload;
+        const state = store.getState();
+        const session = state.sessions[session_id];
+        if (!session || session.renderMode === "fullterm") return;
+        if (!state.pendingCommand[session_id]?.command) return;
+
+        const command =
+          state.pendingCommand[session_id]?.command ??
+          lastStartedCommand.get(session_id) ??
+          state.lastSentCommand[session_id] ??
+          null;
+
+        state.setInteractiveMode(session_id, {
+          active: true,
+          command,
+          detector: normaliseStdinWaitDetector(detector),
+          enteredAt: Date.now(),
+        });
       })
     );
 

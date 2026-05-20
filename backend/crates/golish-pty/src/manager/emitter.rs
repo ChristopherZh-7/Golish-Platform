@@ -45,6 +45,22 @@ pub(super) trait PtyEventEmitter: Send + Sync + 'static {
     /// Emit synchronized output mode change (DEC 2026). Used to batch
     /// terminal updates atomically to prevent flickering.
     fn emit_synchronized_output(&self, session_id: &str, enabled: bool);
+
+    /// Emit a "running command is blocking on stdin" hint. Drives the
+    /// Warp-style interactive input mode in the frontend (see
+    /// `docs/design/2026-05-15-warp-style-interaction.md`).
+    ///
+    /// `detector` is a stable identifier for the heuristic that fired
+    /// (e.g. `"yn_choice"`, `"password"`) so the frontend can tweak the
+    /// hint text per pattern and the integration tests can assert exact
+    /// values.
+    fn emit_stdin_wait(&self, session_id: &str, detector: &str);
+
+    /// Emit a virtual terminal grid snapshot. Drives the Phase B
+    /// GridTerminal frontend (see
+    /// `docs/design/2026-05-15-grid-terminal-phase-b.md`). The payload
+    /// is the `GridUpdate` JSON described in §3 of that document.
+    fn emit_grid_update(&self, session_id: &str, update: &crate::grid::GridUpdate);
 }
 
 /// Payload for command-block lifecycle events.
@@ -206,6 +222,67 @@ impl PtyEventEmitter for RuntimeEmitter {
                 enabled = enabled,
                 error = %e,
                 "Failed to emit synchronized_output event"
+            );
+        }
+    }
+
+    fn emit_stdin_wait(&self, session_id: &str, detector: &str) {
+        tracing::debug!(
+            session_id = %session_id,
+            detector = %detector,
+            "Emitting stdin_wait"
+        );
+        if let Err(e) = self.0.emit(RuntimeEvent::Custom {
+            name: "stdin_wait".to_string(),
+            payload: serde_json::json!({
+                "session_id": session_id,
+                "detector": detector,
+            }),
+        }) {
+            tracing::warn!(
+                session_id = %session_id,
+                detector = %detector,
+                error = %e,
+                "Failed to emit stdin_wait event"
+            );
+        }
+    }
+
+    fn emit_grid_update(&self, session_id: &str, update: &crate::grid::GridUpdate) {
+        // Build the payload manually so we can flatten `update` onto
+        // the same object as `session_id` — the frontend listener
+        // expects `{ session_id, rev, cols, ... }` as one flat object.
+        let payload = match serde_json::to_value(update) {
+            Ok(serde_json::Value::Object(mut map)) => {
+                map.insert("session_id".to_string(), serde_json::Value::String(session_id.to_string()));
+                serde_json::Value::Object(map)
+            }
+            Ok(other) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    "GridUpdate serialised to non-object JSON, skipping emit: {:?}",
+                    other
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    error = %e,
+                    "Failed to serialize GridUpdate"
+                );
+                return;
+            }
+        };
+
+        if let Err(e) = self.0.emit(RuntimeEvent::Custom {
+            name: "terminal_grid_update".to_string(),
+            payload,
+        }) {
+            tracing::warn!(
+                session_id = %session_id,
+                error = %e,
+                "Failed to emit terminal_grid_update event"
             );
         }
     }

@@ -1,45 +1,10 @@
 import { render } from "@testing-library/react";
 import React from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { useStore } from "../../store";
 import { clearAllSessionCaches } from "../../store/selectors/session";
 
-// Mock xterm.js and addons - they don't work in jsdom
-vi.mock("@xterm/xterm", () => ({
-  Terminal: class MockTerminal {
-    options = { theme: {} };
-    rows = 24;
-    cols = 80;
-    loadAddon = vi.fn();
-    open = vi.fn();
-    write = vi.fn();
-    clear = vi.fn();
-    dispose = vi.fn();
-    scrollToBottom = vi.fn();
-    resize = vi.fn();
-    element = document.createElement("div");
-    registerLinkProvider = vi.fn(() => ({ dispose: vi.fn() }));
-    buffer = {
-      active: {
-        getLine: vi.fn(() => ({
-          translateToString: vi.fn(() => ""),
-        })),
-      },
-    };
-  },
-}));
-
-vi.mock("@xterm/addon-fit", () => ({
-  FitAddon: class MockFitAddon {
-    fit = vi.fn();
-  },
-}));
-
-vi.mock("@xterm/addon-serialize", () => ({
-  SerializeAddon: class MockSerializeAddon {
-    serialize = vi.fn(() => "");
-  },
-}));
+// D6.4b: xterm.js mocks retired with the renderer.
 
 // Helper to reset store
 const resetStore = () => {

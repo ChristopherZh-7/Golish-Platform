@@ -77,9 +77,48 @@ fn test_parse_filtered_suppresses_prompt() {
     assert_eq!(result.events.len(), 2);
     assert!(matches!(result.events[0], OscEvent::PromptStart));
     assert!(matches!(result.events[1], OscEvent::PromptEnd));
-    // Prompt text "user@host:~$ " should be suppressed
+    // Prompt text "user@host:~$ " should be suppressed from `output`
+    // (timeline renderer) ...
     assert_eq!(result.output, b"");
+    // ... but the same text MUST be present in `prompt_visible` so
+    // the Warp-style stdin_wait detector can read PS1/PS2/PS3 prompts.
+    assert_eq!(result.prompt_visible, b"user@host:~$ ");
 }
+
+#[test]
+fn test_parse_filtered_prompt_visible_captures_zsh_select_ps2() {
+    // Regression for the bug where zsh's `select> ` PS2 continuation
+    // prompt was invisible to the stdin_wait detector. After OSC 133
+    // shell integration calls PromptEnd at the start of each readline
+    // iteration the region is `Input`, which used to filter the prompt
+    // bytes out of every downstream signal. `prompt_visible` now
+    // preserves them so the detector can match `>` line endings.
+    let mut parser = TerminalParser::new();
+    // Set up state to match a real zsh `select` continuation: a B
+    // (PromptEnd) lands first, then the prompt text streams in.
+    parser.parse_filtered(b"\x1b]133;B\x07");
+    let result = parser.parse_filtered(b"select> ");
+    // The timeline renderer still sees nothing — it's still
+    // technically in the Input region for OSC 133 purposes.
+    assert_eq!(result.output, b"");
+    // But the detector buffer sees the full prompt text.
+    assert_eq!(result.prompt_visible, b"select> ");
+}
+
+#[test]
+fn test_parse_filtered_prompt_visible_captures_bash_ps3() {
+    // Same idea for bash's PS3 prompt (`#? `) which is emitted while
+    // the `select` builtin runs. The bytes land in the Output region
+    // so they were already visible in `output`, but we should still
+    // mirror them into `prompt_visible` so the detector pipeline can
+    // treat both regions uniformly.
+    let mut parser = TerminalParser::new();
+    parser.parse_filtered(b"\x1b]133;C;select yn in \"Yes\" \"No\"\x07");
+    let result = parser.parse_filtered(b"1) Yes\n2) No\n#? ");
+    assert_eq!(result.output, b"1) Yes\n2) No\n#? ");
+    assert_eq!(result.prompt_visible, b"1) Yes\n2) No\n#? ");
+}
+
 
 #[test]
 fn test_parse_filtered_suppresses_user_input() {
