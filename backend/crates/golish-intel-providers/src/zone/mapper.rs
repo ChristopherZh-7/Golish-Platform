@@ -227,7 +227,7 @@ mod tests {
             group: None,
         };
         let rec = map_code(entry, raw_object());
-        assert!(rec.fields.get("github_org").is_none());
+        assert!(!rec.fields.contains_key("github_org"));
     }
 
     #[test]

@@ -2880,6 +2880,7 @@ name = "golish-intel-providers"
 version = "0.2.43"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "reqwest 0.13.3",
  "serde",
