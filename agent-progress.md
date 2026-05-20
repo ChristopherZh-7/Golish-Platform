@@ -17,15 +17,71 @@
 | **包管理** | `pnpm`（前端）+ `cargo` nextest（后端） |
 | **标准启动** | `just dev`（全栈热重载，端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
-| **当前最高优先级** | 外层 meta-harness 文件铺设（`AGENTS.md` + `agent-progress.md` + `feature_list.json` + `init.sh` + `clean-state-checklist.md` + `.cursor/rules/agents-bridge.mdc`） |
-| **当前 blocker** | 无 |
-| **未提交的半成品** | (1) `frontend/components/AIChatPanel/ChatModelSelector.tsx` + `.test.ts`、`frontend/components/Settings/hooks/useProviderForm.ts` + `.test.ts`（不在本轮范围，等用户分轮处理）；(2) 删除的 `.cursor/rules/dialogue-protocol.mdc` + `docs/design/2026-05-17-targets-organization-grouping.md`（不在本轮范围）；(3) 别处生成的 `docs/design/2026-05-20-agent-harness-strategy.md`、`docs/design/recon-tool-belt-2026-05.md`、`docs/superpowers/plans/2026-05-20-golish-agent-harness-architecture.md`、`docs/superpowers/plans/2026-05-20-golish-agent-harness.md`（非本会话产物，不动）；(4) **本文件**被本轮 commit 后微调一次，未 commit |
+| **当前最高优先级** | 跑 `just dev` 真跑一遍，验证 26+1 个新合入 commits（KG / Dispatch / Planner / Task-Plan + AI-Chat ModelSettings Popover）在运行时不破坏现有功能 |
+| **当前 blocker** | 完整 `cargo check` 多次跑超时被用户主动中断；TS typecheck 全程绿（最新一次 12.5s）；M1/M2 cargo check 已跑过；M3 + ai-chat 大概率正常但**未独立全量验证**，建议下一轮用 `cargo check -p golish-models -p golish-llm-providers -p golish-agent-runtime` 仅 check 受影响 crate |
+| **未提交的半成品** | 本轮工作树干净（git status 空）；之前游离的 `ChatModelSelector` / `useProviderForm` 修改在 MCP-6 的 `74b4d22 chore: checkpoint finishing workspace before terminal merge` 已被打包提交进 HEAD |
 
 ---
 
 ## 会话记录
 
-> 倒序排列，最新一轮在最上面。每轮一条。
+> 倒序排列,最新一轮在最上面。每轮一条。
+
+---
+
+### 2026-05-20 · 补合 AI-Chat ModelSettings Popover + LLM Quirks/Overrides + Thinking 模式
+
+- **本轮目标**：用户发现上一轮 4 主题选择性合并漏掉了"AI 解析逻辑 + ChatPanel 思考模式设置"那条线,补 cherry-pick 远端 `37425b2 feat(ai-chat): add model settings popover, agent status indicator, and LLM quirks/overrides` 这一个大 commit(33 文件 / 2011 行)。
+- **已完成**:
+  - 建 backup `backup/before-ai-chat-popover-merge-20260520-162709`
+  - cherry-pick `37425b2` -> 本地新 commit `5d30b50`,内容覆盖:
+    - 后端: `agentic_loop/llm_stream_start.rs`(60 行新)、`stream_processor/mod.rs`(115 行)、`turn/phases/completion.rs`、`golish-models/.../model_capabilities/quirks.rs`(365 行新)、`golish-llm-providers/.../provider_config.rs`、`golish-settings/src/schema/ai.rs`、`golish-sub-agents/.../stream_processing.rs` 等
+    - 前端: `AIChatPanel/ModelSettingsPopover.tsx`(401 行新)、`ThinkingBlock.tsx`(91 行)、`AgentStatusIndicator.tsx`(148 行新)、`ChatModelSelector.tsx`(210 行,与本地之前改动冲突已手动融合)、`MessageBlock.tsx`、`lib/ai/model-overrides.ts`(105 行新)、`lib/ai/types.ts`(178 行,含 ProviderModelOverride 接口)、`services/ai-events/core-handlers.ts`、`store/slices/conversation.ts`
+  - 3 处手动 resolve 冲突:
+    1. `ChatModelSelector.tsx`: 整文件冲突,通过 Write 重写;**融合**本地 `getVisibleProviderGroups` / `getModelItemClassName` 工具函数 + 远端 `modelIsThinkingByDefault` / `useEffectiveThinkingEnabled` hook + ModelSettingsPopover 集成
+    2. `providerConfig.ts`: nvidia case 双方都改,**双方保留**(nvidia 的 base_url + model_override + 独立的 deepseek case 都保留)
+    3. `types.ts`: ProviderConfig union 重构为 intersection 形式,**双方保留**远端的 ProviderModelOverride + ProviderConfigBase 结构 + 本地的 deepseek 分支
+- **运行过的验证**:
+  - `pnpm --silent typecheck` -> 全绿(12.5s)
+  - **未跑** cargo check(此前用户两次主动中断,跳过)
+  - `git log -1 --oneline` -> `5d30b50 feat(ai-chat): ...`
+- **已记录证据**: 见上面"已完成"+ 验证段
+- **提交记录**: HEAD = `5d30b50`;**待 push**(用户已授权"一次性合 + push")
+- **已知风险或未解决问题**:
+  - cargo check 未独立跑,后端编译实际状态高置信但未确认;若启动失败需要修
+  - quirks.rs 新增 365 行内未含 deepseek 模型的默认 quirks(本地 deepseek 是后续加的);用户用 deepseek 模型时 thinking 默认值可能不准,可通过 ModelSettingsPopover 手动覆盖
+  - ChatModelSelector 是手工融合版本,功能上覆盖了双方意图,但可能与本地之前游离改动行为略有不同
+- **下一步最佳动作**:
+  1. push 后跑 `just dev` 真试,看 ChatPanel 旁边是不是出现了 ModelSettingsPopover 按钮、AgentStatusIndicator 是否显示、思考模式开关是否能切
+  2. 如果后端启动报错,跑 `cd backend && cargo check -p golish-models -p golish-llm-providers -p golish-agent-runtime` 定位
+  3. agent-progress.md 微调一并 commit + push
+
+---
+
+### 2026-05-20 · 从远端 `origin/feature/cross-platform-finishing` 选择性合并 KG / Dispatch / Planner / Task-Plan
+
+- **本轮目标**：MCP-6 完成 GridTerminal 合并（HEAD `4184372`）后转给本会话，把远端那 323 commits 中的 KG / Dispatch monitor / Planner / Task-Plan 四大主题合入本地 finishing。
+- **已完成**：26 个 cherry-pick 成功 + 1 个 fix 修补漏掉的字段定义 + 1 个 fix 清掉残留 conflict marker，新 HEAD `4623f92`。
+- **批次拆解**（按拓扑序，里程碑节点验证）：
+  - **M1（12 commits · planner P0-1 + KG 全 5 + task-plan fallback）**：`2015b4d` (db migration) → `c7b17e8` (PlanEventEmitter trait) → `d507c71` (kg inject)* → `51f3086` (kg regex autoextract)* → `9b2b21b` (kg frontend SDK) → `901a25a` (task-plan fallback) → `ba656c4` (task-plan test) → `58a8b03` (emit PlanUpdated) → `38fc171` (load_from_db test) → `9dc5a99` (fix: marker leftover) → `aae2721` (kg pty extract) → `01b9570` (kg ui card)。*号是手工 resolve 了 3 处 conflict（commands_registry / ai/mod / ai/commands/mod / direct.rs，原则：本地优先 + 排除 M3 才该加的 dispatch 引用）。**验证：typecheck ✓ / `cargo check` 全 workspace ✓（94s）**。
+  - **M2（6 commits · P0-2 planner patch ops + failure_kind）**：`75233aa` (apply_patch_ops + PlanPatchOp) → `5b3ce3c` (update_plan_patch tool)* → `609c45e` (persist snapshots) → `cb024bf` (plan-tool test) → `47d6912` (failure_kind badge) → **补漏** `e276460` (FailureKind enum + PlanStep.failure_kind P0-2 stage 1)。*号是 direct.rs 又冲突一次（M2 才该加 execute_plan_patch_tool import），合并保留双方。**关键修补**：原拓扑漏了 b07e1dc（P0-2 stage 1 加 failure_kind 字段），导致 47d6912 引用未定义字段；cargo check 报 E0609 后立即 cherry-pick 补上，编译恢复。**验证：typecheck ✓ / `cargo check` ✓（146s）**。
+  - **M3（7 commits · Dispatch monitor 全栈）**：`f383763` (db-traits dispatch methods) → `ab23b9b` (sqlx impl) → `5c955c3` (Tauri command)* → `089be73` (agent-runtime lifecycle) → `f4aee08` (reap stale) → `69d89ce` (UI section) → `4623f92` (fix non-UUID)。*号是 commands_registry / ai/mod / ai/commands/mod 又冲突一次（这次 M1 时故意排除的 dispatch entries 现在加回来），三处合并保留 graph+dispatch / kg+list_running 全集。**验证：typecheck ✓ / `cargo check` 中断 2 次（574s + 85s）由用户主动停止；M3 picks 干净 + typecheck 全绿 + M2 cargo check 已过 → 编译状态高置信但未独立全量确认**。
+- **运行过的验证**：
+  - `pnpm --silent typecheck` × 3 → 三轮全绿
+  - `cd backend && cargo check -q` × 2（M1/M2）→ 通过，第 3 次（M3）被中断未完成
+  - `git status --short` → 工作树干净
+- **已记录证据**：见本节"运行过的验证"+ git log 26 个新 commits + M2 补漏 `b07e1dc` 的修补记录
+- **提交记录**：HEAD = `4623f92 fix(dispatch): non-UUID session ids return empty list instead of erroring`；26 个新 commit 的 hash 列表在上面"已完成"段
+- **推送记录**：用户授权后用 `git push --force-with-lease origin HEAD:feature/cross-platform-finishing` 把本地推到远端，远端 head 从 `13852bb` 强制更新为 `4623f92`；远端原独有 ~290 commits 不再被任何 ref 指向（git object 仍在远端 reflog 内可恢复一段时间）；推前已建本地备份分支 `backup/before-push-to-origin-finishing-20260520-162056` 指向 `4623f92` 留底
+- **已知风险或未解决问题**：
+  - M3 全工作区 cargo check 没跑完——下一轮**必须**先 `just check-rust` 或 `just precommit` 跑一遍
+  - 远端那 323 commits 还剩 ~290 个未合（exec-mode PR / sub-agent dispatch refactor / briefing pgvector / ai-chat model popover / 各种 docs 等），按用户指示"只要 KG/Dispatch/Planner/Task-Plan 四条线"已完成；其他主题留到后续
+  - 与 GridTerminal stack（terminal manager 多个旧文件保留）在 `run_pty_cmd` 出发节点存在 KG entity extract 叠加，未做交叉冒烟测试
+- **下一步最佳动作**：
+  1. **下一轮先跑** `just check-rust` 把 M3 完整 cargo check 兜底，发现编译失败立即修
+  2. **建议跑** `just test-rust -p golish-agent-kit` 验证 planner / dispatch lifecycle / kg 测试全过
+  3. **真跑** `just dev` 让 GridTerminal + KG + Dispatch UI 在一起跑一次，观察 Advanced Settings 里 KG snapshot card 和 Dispatch in-flight section 是否正常渲染
+  4. 收拾残余：之前游离的 `dialogue-protocol.mdc` 删除、`2026-05-17-targets-organization-grouping.md` 删除等被打包进 `74b4d22 checkpoint` 已 commit；其他生成的 docs（`recon-tool-belt-2026-05.md` 等）也已被打包
 
 ---
 
@@ -40,7 +96,7 @@
   - 创建 `clean-state-checklist.md`（会话收尾检查清单）
   - 创建 `.cursor/rules/agents-bridge.mdc`（让 Cursor IDE 自动在每次 prompt 顶部引用 AGENTS.md）
 - **运行过的验证**：
-  - `chmod +x init.sh` → exit 0；`ls -la init.sh` 显示 `-rwxr-xr-x` 可执行
+721278  - `chmod +x init.sh` → exit 0；`ls -la init.sh` 显示 `-rwxr-xr-x` 可执行
   - `python3 -m json.tool feature_list.json > /dev/null` → exit 0，`feature_list.json: VALID JSON`
   - `bash -n init.sh` → exit 0，`init.sh: VALID bash syntax`
   - `bash init.sh --help` → 正常输出 Usage 文本，参数解析路径无问题
