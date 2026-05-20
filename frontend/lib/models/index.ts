@@ -7,6 +7,7 @@
  */
 
 export * from "./anthropic";
+export * from "./deepseek";
 export * from "./gemini";
 export * from "./groq";
 export * from "./groups";

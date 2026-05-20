@@ -24,6 +24,8 @@ pub enum AiProvider {
     ZaiSdk,
     /// NVIDIA NIM (OpenAI-compatible API)
     Nvidia,
+    /// DeepSeek direct API (OpenAI-compatible)
+    Deepseek,
 }
 
 impl fmt::Display for AiProvider {
@@ -40,6 +42,7 @@ impl fmt::Display for AiProvider {
             AiProvider::Xai => "xai",
             AiProvider::ZaiSdk => "zai_sdk",
             AiProvider::Nvidia => "nvidia",
+            AiProvider::Deepseek => "deepseek",
         };
         write!(f, "{}", s)
     }
@@ -61,6 +64,7 @@ impl std::str::FromStr for AiProvider {
             "xai" => Ok(AiProvider::Xai),
             "z_ai_sdk" | "zai_sdk" | "zai" | "z_ai" | "zhipu" => Ok(AiProvider::ZaiSdk),
             "nvidia" | "nvidia_nim" | "nim" => Ok(AiProvider::Nvidia),
+            "deepseek" | "deepseek_api" => Ok(AiProvider::Deepseek),
             _ => Err(format!("Invalid AI provider: {}", s)),
         }
     }

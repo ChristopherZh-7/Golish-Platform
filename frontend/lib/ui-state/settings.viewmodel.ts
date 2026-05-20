@@ -38,6 +38,12 @@ export function deriveProviderCards(
       configured: !!settings.ai.gemini.api_key,
     },
     {
+      id: "deepseek",
+      label: "DeepSeek",
+      enabled: visibility.deepseek,
+      configured: !!settings.ai.deepseek?.api_key,
+    },
+    {
       id: "vertex_ai",
       label: "Vertex AI (Claude)",
       enabled: visibility.vertex_ai,

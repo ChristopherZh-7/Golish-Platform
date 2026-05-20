@@ -90,6 +90,7 @@ static MODEL_REGISTRY: Lazy<Vec<ModelDefinition>> = Lazy::new(|| {
     models.extend(ollama_default_models());
     models.extend(openrouter_models());
     models.extend(nvidia_models());
+    models.extend(deepseek_models());
     models
 });
 
@@ -294,6 +295,7 @@ pub fn get_model_capabilities(provider: AiProvider, model: &str) -> ModelCapabil
         AiProvider::Ollama => ModelCapabilities::ollama_defaults(),
         AiProvider::Openrouter => ModelCapabilities::conservative_defaults(),
         AiProvider::Nvidia => ModelCapabilities::nvidia_defaults(),
+        AiProvider::Deepseek => ModelCapabilities::deepseek_defaults(),
     }
 }
 

@@ -70,6 +70,7 @@ vi.mock("@/lib/settings", () => ({
     xai: true,
     zai_sdk: true,
     nvidia: true,
+    deepseek: true,
   })),
 }));
 

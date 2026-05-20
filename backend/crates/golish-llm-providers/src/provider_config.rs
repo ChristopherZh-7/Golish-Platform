@@ -104,6 +104,15 @@ pub struct NvidiaClientConfig<'a> {
     pub base_url: Option<&'a str>,
 }
 
+/// Configuration for creating an AgentBridge with DeepSeek direct API
+pub struct DeepSeekClientConfig<'a> {
+    pub workspace: PathBuf,
+    pub model: &'a str,
+    pub api_key: &'a str,
+    /// Custom base URL (if None, uses https://api.deepseek.com)
+    pub base_url: Option<&'a str>,
+}
+
 fn default_web_search_context_size() -> String {
     "medium".to_string()
 }
@@ -202,6 +211,13 @@ pub enum ProviderConfig {
         #[serde(default)]
         base_url: Option<String>,
     },
+    Deepseek {
+        workspace: String,
+        model: String,
+        api_key: String,
+        #[serde(default)]
+        base_url: Option<String>,
+    },
 }
 
 #[allow(dead_code)]
@@ -219,6 +235,7 @@ impl ProviderConfig {
             Self::Xai { workspace, .. } => workspace,
             Self::ZaiSdk { workspace, .. } => workspace,
             Self::Nvidia { workspace, .. } => workspace,
+            Self::Deepseek { workspace, .. } => workspace,
         }
     }
 
@@ -235,6 +252,7 @@ impl ProviderConfig {
             Self::Xai { model, .. } => model,
             Self::ZaiSdk { model, .. } => model,
             Self::Nvidia { model, .. } => model,
+            Self::Deepseek { model, .. } => model,
         }
     }
 
@@ -251,6 +269,7 @@ impl ProviderConfig {
             Self::Xai { .. } => "xai",
             Self::ZaiSdk { .. } => "zai_sdk",
             Self::Nvidia { .. } => "nvidia",
+            Self::Deepseek { .. } => "deepseek",
         }
     }
 }

@@ -174,6 +174,18 @@ export async function buildProviderConfig(
       };
     }
 
+    case "deepseek": {
+      const apiKey = settings.ai.deepseek?.api_key;
+      if (!apiKey) throw new Error("DeepSeek API key not configured");
+      return {
+        provider: "deepseek",
+        workspace,
+        model: default_model,
+        api_key: apiKey,
+        base_url: settings.ai.deepseek?.base_url || undefined,
+      };
+    }
+
     default:
       throw new Error(`Unknown provider: ${default_provider}`);
   }

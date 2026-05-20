@@ -84,5 +84,6 @@ export function buildProviderVisibility(settings: GolishSettings): ProviderVisib
     xai: settings.ai.xai.show_in_selector,
     zai_sdk: settings.ai.zai_sdk?.show_in_selector ?? true,
     nvidia: settings.ai.nvidia?.show_in_selector ?? true,
+    deepseek: settings.ai.deepseek?.show_in_selector ?? true,
   };
 }

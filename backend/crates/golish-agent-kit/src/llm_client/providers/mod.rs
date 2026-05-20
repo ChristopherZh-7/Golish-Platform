@@ -5,6 +5,7 @@
 //! (`agent_bridge::constructors`) keep using the original symbol paths.
 
 mod anthropic;
+mod deepseek;
 mod gemini;
 mod groq;
 mod nvidia;
@@ -17,6 +18,7 @@ mod xai;
 mod zai_sdk;
 
 pub use anthropic::create_anthropic_components;
+pub use deepseek::create_deepseek_components;
 pub use gemini::create_gemini_components;
 pub use groq::create_groq_components;
 pub use nvidia::create_nvidia_components;

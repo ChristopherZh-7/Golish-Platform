@@ -71,6 +71,15 @@ export function buildProviderConfig(
         workspace,
         model,
         api_key: settings.ai.nvidia?.api_key || "",
+        base_url: settings.ai.nvidia?.base_url || undefined,
+      };
+    case "deepseek":
+      return {
+        provider: "deepseek",
+        workspace,
+        model,
+        api_key: settings.ai.deepseek?.api_key || "",
+        base_url: settings.ai.deepseek?.base_url || undefined,
       };
     case "vertex_ai":
       return {
@@ -116,6 +125,7 @@ export function getConfiguredProviders(settings: GolishSettings): Set<string> {
   if (ai.xai?.api_key) configured.add("xai");
   if (ai.zai_sdk?.api_key) configured.add("zai_sdk");
   if (ai.nvidia?.api_key) configured.add("nvidia");
+  if (ai.deepseek?.api_key) configured.add("deepseek");
   if (ai.vertex_ai?.credentials_path || ai.vertex_ai?.project_id) {
     configured.add("vertex_ai");
   }

@@ -347,6 +347,7 @@ async fn test_all_providers() {
         (AiProvider::Xai, "xai"),
         (AiProvider::ZaiSdk, "zai_sdk"),
         (AiProvider::Nvidia, "nvidia"),
+        (AiProvider::Deepseek, "deepseek"),
     ];
 
     for (provider, expected_str) in providers {

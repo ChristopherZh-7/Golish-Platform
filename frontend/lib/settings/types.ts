@@ -55,6 +55,7 @@ export interface AiSettings {
   xai: XaiSettings;
   zai_sdk: ZaiSdkSettings;
   nvidia: NvidiaSettings;
+  deepseek: DeepSeekSettings;
 }
 
 /**
@@ -75,7 +76,8 @@ export type AiProvider =
   | "groq"
   | "xai"
   | "zai_sdk"
-  | "nvidia";
+  | "nvidia"
+  | "deepseek";
 
 export interface VertexAiSettings {
   credentials_path: string | null;
@@ -156,6 +158,12 @@ export interface ZaiSdkSettings {
 }
 
 export interface NvidiaSettings {
+  api_key: string | null;
+  base_url: string | null;
+  show_in_selector: boolean;
+}
+
+export interface DeepSeekSettings {
   api_key: string | null;
   base_url: string | null;
   show_in_selector: boolean;
@@ -302,4 +310,5 @@ export interface ProviderVisibility {
   xai: boolean;
   zai_sdk: boolean;
   nvidia: boolean;
+  deepseek: boolean;
 }

@@ -54,6 +54,8 @@ function isProviderAvailable(settings: AiSettings, providerId: AiProvider): bool
       return settings.zai_sdk?.show_in_selector !== false && !!settings.zai_sdk?.api_key;
     case "nvidia":
       return settings.nvidia?.show_in_selector !== false && !!settings.nvidia?.api_key;
+    case "deepseek":
+      return settings.deepseek?.show_in_selector !== false && !!settings.deepseek?.api_key;
     default:
       return false;
   }

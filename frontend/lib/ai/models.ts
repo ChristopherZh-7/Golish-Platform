@@ -134,3 +134,8 @@ export const NVIDIA_MODELS = {
   MINIMAX_M2_5: "minimaxai/minimax-m2.5",
   MARIN_8B: "marin/marin-8b-instruct",
 } as const;
+
+export const DEEPSEEK_MODELS = {
+  DEEPSEEK_V4_FLASH: "deepseek-v4-flash",
+  DEEPSEEK_V4_PRO: "deepseek-v4-pro",
+} as const;
