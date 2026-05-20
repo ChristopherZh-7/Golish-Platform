@@ -241,6 +241,8 @@ pub enum ProviderConfig {
         api_key: String,
         #[serde(default)]
         base_url: Option<String>,
+        #[serde(default)]
+        model_override: Option<ModelOverride>,
     },
 }
 
@@ -310,7 +312,8 @@ impl ProviderConfig {
             | Self::Groq { model_override, .. }
             | Self::Xai { model_override, .. }
             | Self::ZaiSdk { model_override, .. }
-            | Self::Nvidia { model_override, .. } => model_override.as_ref(),
+            | Self::Nvidia { model_override, .. }
+            | Self::Deepseek { model_override, .. } => model_override.as_ref(),
         }
     }
 }
