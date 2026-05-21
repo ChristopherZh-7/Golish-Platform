@@ -51,6 +51,10 @@ pub struct IntegrationsState {
     resolver: Arc<DefaultSchemaResolver>,
     tester: Arc<DefaultTester>,
     settings_mgr: Arc<SettingsManager>,
+    /// Tools directory snapshot used to expand `{{tools_dir}}` in
+    /// schema-declared `external_file.path` values. `None` outside
+    /// production (test constructor).
+    tools_dir: Option<PathBuf>,
 }
 
 impl IntegrationsState {
@@ -63,6 +67,7 @@ impl IntegrationsState {
         settings_mgr: Arc<SettingsManager>,
         exec_resolver: ExecResolver,
         builtin_dispatcher: Option<Arc<dyn BuiltinDispatcher>>,
+        tools_dir: Option<PathBuf>,
     ) -> Self {
         let resolver = Arc::new(DefaultSchemaResolver::new(toolsconfig_dir, in_code_schemas));
         let mut tester = DefaultTester::new(exec_resolver).expect("DefaultTester init");
@@ -73,6 +78,7 @@ impl IntegrationsState {
             resolver,
             tester: Arc::new(tester),
             settings_mgr,
+            tools_dir,
         }
     }
 
@@ -134,6 +140,7 @@ impl IntegrationsState {
             settings_mgr,
             exec_resolver,
             Some(dispatcher),
+            Some((*tools_dir_arc).clone()),
         )
     }
 
@@ -165,7 +172,13 @@ impl IntegrationsState {
     ) -> IntegrationResult<Box<dyn StorageBackend>> {
         match &schema.storage {
             Storage::Vault { .. } => Ok(Box::new(VaultBackend::new(pool))),
-            Storage::ExternalFile { .. } => Ok(Box::new(ExternalFileBackend::new())),
+            Storage::ExternalFile { .. } => {
+                let mut backend = ExternalFileBackend::new();
+                if let Some(td) = &self.tools_dir {
+                    backend = backend.with_tools_dir(td.clone());
+                }
+                Ok(Box::new(backend))
+            }
             Storage::Settings { .. } => {
                 Ok(Box::new(SettingsBackend::new(self.settings_mgr.clone())))
             }

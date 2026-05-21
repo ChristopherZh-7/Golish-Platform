@@ -528,9 +528,11 @@ async fn on_navigation_event(
 /// Run one extraction rule against the live webview. Returns
 /// `(target_field, value)` on success or `Err(reason)` otherwise.
 ///
-/// P1 MVP supports only `Cookie`; the rest deliberately bail with a
-/// "not yet implemented" reason so the UI surfaces the gap clearly
-/// rather than silently succeeding.
+/// P1 MVP supports `Cookie` (single cookie value) and `CookieJoined`
+/// (the more common "ENScan-style full Cookie header" pattern — see
+/// the AQC capture recipe in `enscan-go.json`). The remaining rule
+/// kinds bail with a "not yet implemented" reason so the UI surfaces
+/// the gap clearly rather than silently succeeding.
 async fn extract_one(
     win: &tauri::WebviewWindow,
     rule: &CaptureRule,
@@ -542,39 +544,103 @@ async fn extract_one(
             target_field,
             ..
         } => {
-            // Tauri's `cookies_for_url` is synchronous and on Windows
-            // can deadlock when called from a sync command / event
-            // handler. We always route through `spawn_blocking` to be
-            // safe across platforms (negligible per-rule overhead).
-            let host = domain.trim_start_matches('.').to_string();
-            let url_str = format!("https://{host}/");
-            let url = url_str
-                .parse::<url::Url>()
-                .map_err(|e| format!("invalid synthesized cookie URL {url_str}: {e}"))?;
-            let win_clone = win.clone();
-            let cookies = tokio::task::spawn_blocking(move || win_clone.cookies_for_url(url))
-                .await
-                .map_err(|e| format!("spawn_blocking join failed: {e}"))?
-                .map_err(|e| format!("cookies_for_url failed: {e}"))?;
+            let cookies = fetch_domain_cookies(win, domain).await?;
             let value = cookies
                 .into_iter()
-                .find(|c| c.name() == name.as_str())
+                .find(|(n, _)| n == name)
                 .ok_or_else(|| format!("cookie '{name}' not found in domain '{domain}'"))?
-                .value()
-                .to_string();
+                .1;
             Ok((target_field.clone(), value))
         }
-        // P2 rules are explicitly out of scope for P1 MVP. The schema
-        // parser accepts them so a forward-compatible JSON config
-        // doesn't break, but the engine refuses to silently succeed.
-        CaptureRule::CookieJoined { .. }
-        | CaptureRule::LocalStorage { .. }
+
+        CaptureRule::CookieJoined {
+            domain,
+            names,
+            sep,
+            fmt,
+            target_field,
+            ..
+        } => {
+            // `names = []` means "all cookies belonging to this domain
+            // (or any subdomain) — wanted format = full Cookie header".
+            // For sites with strong session-binding like aiqicha.baidu.com
+            // (BDUSS alone trips the safety wall — needs BAIDUID + PSTM
+            // + H_PS_PSSID + 等 一起) the user typically wants every
+            // baidu.com-domain cookie.
+            let cookies = fetch_domain_cookies(win, domain).await?;
+            let parts = format_joined_cookies(names, fmt, &cookies);
+            if parts.is_empty() {
+                let want_summary = if names.is_empty() {
+                    "<all>".to_string()
+                } else {
+                    format!("{names:?}")
+                };
+                return Err(format!(
+                    "no cookies matched for domain '{domain}' (wanted {want_summary})"
+                ));
+            }
+            let value = parts.join(sep);
+            Ok((target_field.clone(), value))
+        }
+
+        // P2 rules: schema parser accepts them so a forward-compatible
+        // JSON config doesn't break, but the engine refuses to silently
+        // succeed.
+        CaptureRule::LocalStorage { .. }
         | CaptureRule::SessionStorage { .. }
         | CaptureRule::PageContent { .. }
         | CaptureRule::UrlQuery { .. } => {
             Err("rule type not yet implemented in P1 MVP".to_string())
         }
     }
+}
+
+/// Fetch every cookie scoped to `domain` (or any matching parent /
+/// child suffix) from the live webview. Routes through
+/// `spawn_blocking` because Tauri's `cookies_for_url` is sync and can
+/// deadlock when called from an event handler on Windows.
+///
+/// Returns `Vec<(name, value)>` so callers can `.into_iter().find(...)`
+/// without depending on Tauri's `Cookie` type (also keeps the joined
+/// formatter unit-testable).
+async fn fetch_domain_cookies(
+    win: &tauri::WebviewWindow,
+    domain: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let host = domain.trim_start_matches('.').to_string();
+    let url_str = format!("https://{host}/");
+    let url = url_str
+        .parse::<url::Url>()
+        .map_err(|e| format!("invalid synthesized cookie URL {url_str}: {e}"))?;
+    let win_clone = win.clone();
+    let cookies = tokio::task::spawn_blocking(move || win_clone.cookies_for_url(url))
+        .await
+        .map_err(|e| format!("spawn_blocking join failed: {e}"))?
+        .map_err(|e| format!("cookies_for_url failed: {e}"))?;
+    Ok(cookies
+        .into_iter()
+        .map(|c| (c.name().to_string(), c.value().to_string()))
+        .collect())
+}
+
+/// Filter + format cookies into the `name=value` parts the
+/// `CookieJoined` rule will `sep`-join.
+///
+/// `names` empty → take every cookie (typical ENScan-style "send the
+/// full Cookie header" use). Otherwise only cookies whose name
+/// appears in `names`. `fmt` supports `{name}` and `{value}`
+/// substitution (defaults to `{name}={value}`).
+fn format_joined_cookies(
+    names: &[String],
+    fmt: &str,
+    cookies: &[(String, String)],
+) -> Vec<String> {
+    let want_all = names.is_empty();
+    cookies
+        .iter()
+        .filter(|(n, _)| want_all || names.iter().any(|w| w == n))
+        .map(|(n, v)| fmt.replace("{name}", n).replace("{value}", v))
+        .collect()
 }
 
 /// Persist the captured values via the same `StorageBackend::write`
@@ -722,6 +788,49 @@ mod tests {
         let s = h.inner.read().await;
         assert_eq!(s.state, CaptureState::Cancelled);
         assert!(s.state.is_terminal());
+    }
+
+    #[test]
+    fn format_joined_cookies_all_when_names_empty() {
+        let cookies = vec![
+            ("BDUSS".to_string(), "xx".to_string()),
+            ("BAIDUID".to_string(), "yy".to_string()),
+            ("PSTM".to_string(), "12345".to_string()),
+        ];
+        let parts = format_joined_cookies(&[], "{name}={value}", &cookies);
+        assert_eq!(
+            parts,
+            vec!["BDUSS=xx", "BAIDUID=yy", "PSTM=12345"],
+            "names=[] should take every cookie in order"
+        );
+    }
+
+    #[test]
+    fn format_joined_cookies_filters_to_names_list() {
+        let cookies = vec![
+            ("BDUSS".to_string(), "xx".to_string()),
+            ("BAIDUID".to_string(), "yy".to_string()),
+            ("UNRELATED".to_string(), "drop_me".to_string()),
+        ];
+        let parts = format_joined_cookies(
+            &["BDUSS".to_string(), "BAIDUID".to_string()],
+            "{name}={value}",
+            &cookies,
+        );
+        assert_eq!(parts, vec!["BDUSS=xx", "BAIDUID=yy"]);
+    }
+
+    #[test]
+    fn format_joined_cookies_custom_fmt_template() {
+        let cookies = vec![("BDUSS".to_string(), "abc".to_string())];
+        let parts = format_joined_cookies(&[], "Cookie: {name}: {value}", &cookies);
+        assert_eq!(parts, vec!["Cookie: BDUSS: abc"]);
+    }
+
+    #[test]
+    fn format_joined_cookies_empty_input_returns_empty() {
+        let parts = format_joined_cookies(&[], "{name}={value}", &[]);
+        assert!(parts.is_empty());
     }
 
     #[tokio::test]

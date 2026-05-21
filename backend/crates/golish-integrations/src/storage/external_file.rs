@@ -39,12 +39,32 @@ use crate::types::FieldValue;
 
 const MAX_BACKUPS: usize = 3;
 
-/// Stateless: the file path lives in the schema.
-pub struct ExternalFileBackend;
+/// Stateless except for an optional `tools_dir` hint used to expand
+/// `{{tools_dir}}` templates inside the schema's `external_file.path`.
+///
+/// Path templates supported by [`Self::expand`]:
+/// - `{{tools_dir}}` → the absolute path of the pentest tool-pack
+///   directory (when the backend was built with [`Self::with_tools_dir`]).
+///   When unset, the placeholder is left literal so the caller can
+///   notice the misconfiguration on the first read / write.
+/// - `~/` prefix → user home (via [`dirs::home_dir`]).
+pub struct ExternalFileBackend {
+    tools_dir: Option<PathBuf>,
+}
 
 impl ExternalFileBackend {
     pub fn new() -> Self {
-        Self
+        Self { tools_dir: None }
+    }
+
+    /// Attach a tools directory used to expand `{{tools_dir}}` inside
+    /// the schema's `external_file.path`. Without this hint the
+    /// template is left literal (which is intentional in tests that
+    /// never write to a real tools layout — the corruption surfaces
+    /// loudly the first time the path is touched).
+    pub fn with_tools_dir(mut self, dir: PathBuf) -> Self {
+        self.tools_dir = Some(dir);
+        self
     }
 
     /// Extract the [`ExternalFileStorage`] block from the schema, or
@@ -74,14 +94,22 @@ impl ExternalFileBackend {
             })
     }
 
-    /// Expand `~` (home) at the start of `path`. Leaves the rest untouched.
-    fn expand(path: &str) -> PathBuf {
-        if let Some(rest) = path.strip_prefix("~/") {
+    /// Expand schema path templates.
+    ///
+    /// Order matters: `{{tools_dir}}` is substituted first (it may
+    /// introduce a `~/`-prefixed path on some installs), then `~/` is
+    /// resolved to the user home.
+    fn expand(&self, path: &str) -> PathBuf {
+        let mut expanded = path.to_string();
+        if let Some(td) = &self.tools_dir {
+            expanded = expanded.replace("{{tools_dir}}", &td.to_string_lossy());
+        }
+        if let Some(rest) = expanded.strip_prefix("~/") {
             if let Some(home) = dirs::home_dir() {
                 return home.join(rest);
             }
         }
-        PathBuf::from(path)
+        PathBuf::from(expanded)
     }
 
     /// Read & parse the file at `path` into a [`YamlValue`], using
@@ -310,7 +338,7 @@ impl StorageBackend for ExternalFileBackend {
     ) -> IntegrationResult<HashMap<String, FieldValue>> {
         let storage = Self::storage(schema)?;
         let group = Self::group(schema, group_id)?;
-        let path = Self::expand(&storage.path);
+        let path = self.expand(&storage.path);
         let doc = Self::load_existing(&path, storage.format).await?;
         let mut out = HashMap::new();
         let updated_at: Option<chrono::DateTime<chrono::Utc>> = if path.exists() {
@@ -380,7 +408,7 @@ impl StorageBackend for ExternalFileBackend {
             }
         }
 
-        let path = Self::expand(&storage.path);
+        let path = self.expand(&storage.path);
         // 2. Start from existing document if preserving unknown keys.
         let mut doc = if storage.preserve_unknown_keys {
             Self::load_existing(&path, storage.format).await?
@@ -414,7 +442,7 @@ impl StorageBackend for ExternalFileBackend {
     ) -> IntegrationResult<()> {
         let storage = Self::storage(schema)?;
         let group = Self::group(schema, group_id)?;
-        let path = Self::expand(&storage.path);
+        let path = self.expand(&storage.path);
         if !path.exists() {
             return Ok(());
         }
@@ -438,7 +466,7 @@ impl StorageBackend for ExternalFileBackend {
     ) -> IntegrationResult<HashMap<String, String>> {
         let storage = Self::storage(schema)?;
         let group = Self::group(schema, group_id)?;
-        let path = Self::expand(&storage.path);
+        let path = self.expand(&storage.path);
         let doc = Self::load_existing(&path, storage.format).await?;
         let mut out = HashMap::new();
         for f in &group.fields {
@@ -892,5 +920,77 @@ cookies:
         let backend = ExternalFileBackend::new();
         let err = backend.read("enscan-go", "aqc", &schema).await.unwrap_err();
         assert!(matches!(err, IntegrationError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn tools_dir_template_expands_to_real_path() {
+        // Schema declares `{{tools_dir}}/ENScan_GO/config.yaml`. The
+        // backend was built with `with_tools_dir(tmp/tools)`. Writing
+        // must drop the file under that real path.
+        let dir = TempDir::new().unwrap();
+        let tools_dir = dir.path().join("tools");
+        std::fs::create_dir_all(&tools_dir).unwrap();
+        let templated = "{{tools_dir}}/ENScan_GO/config.yaml";
+        let mut schema = aqc_schema(Path::new(templated), true);
+        if let Storage::ExternalFile { external_file } = &mut schema.storage {
+            external_file.path = templated.into();
+        }
+        let backend = ExternalFileBackend::new().with_tools_dir(tools_dir.clone());
+        let mut fields = HashMap::new();
+        fields.insert("cookies.aqc".into(), "expanded_ok".into());
+        backend
+            .write("enscan-go", "aqc", &schema, fields)
+            .await
+            .unwrap();
+
+        let actual_path = tools_dir.join("ENScan_GO").join("config.yaml");
+        assert!(
+            actual_path.exists(),
+            "expanded path {} should exist",
+            actual_path.display()
+        );
+        let parsed: YamlValue =
+            serde_yaml::from_str(&std::fs::read_to_string(&actual_path).unwrap()).unwrap();
+        assert_eq!(
+            parsed
+                .get("cookies")
+                .and_then(|v| v.get("aqc"))
+                .and_then(|v| v.as_str()),
+            Some("expanded_ok")
+        );
+    }
+
+    #[tokio::test]
+    async fn tools_dir_template_without_hint_stays_literal() {
+        // If the backend has no `tools_dir` hint, the path is left
+        // with the literal `{{tools_dir}}` token. write() then fails
+        // because the `{` directory can't be created (or, if it
+        // can, the path is obviously wrong — both are louder failure
+        // modes than silently writing to a default location).
+        let dir = TempDir::new().unwrap();
+        let templated = format!(
+            "{}/{{{{tools_dir}}}}/ENScan_GO/config.yaml",
+            dir.path().display()
+        );
+        let mut schema = aqc_schema(Path::new(&templated), true);
+        if let Storage::ExternalFile { external_file } = &mut schema.storage {
+            external_file.path = templated.clone();
+        }
+        let backend = ExternalFileBackend::new(); // no with_tools_dir
+        let mut fields = HashMap::new();
+        fields.insert("cookies.aqc".into(), "x".into());
+        let res = backend.write("enscan-go", "aqc", &schema, fields).await;
+        // The literal directory `{{tools_dir}}/ENScan_GO/` is unlikely
+        // to be createable on most platforms (braces fine but path
+        // semantically nonsense). Either way, the resulting file path
+        // must contain the unexpanded token.
+        if let Ok(()) = res {
+            assert!(
+                std::fs::read_dir(dir.path())
+                    .unwrap()
+                    .any(|e| e.unwrap().file_name().to_string_lossy().contains("{{")),
+                "without tools_dir hint, template stays literal"
+            );
+        }
     }
 }

@@ -12,7 +12,7 @@
       "storage": {
         "type": "external_file",
         "external_file": {
-          "path": "~/.config/enscan/config.yaml",
+          "path": "{{tools_dir}}/ENScan_GO/config.yaml",
           "format": "yaml",
           "preserve_unknown_keys": true,
           "backup_on_write": true
@@ -22,14 +22,14 @@
         {
           "id": "aqc",
           "name": "爱企查 (AQC)",
-          "description": "Log in to aiqicha.baidu.com, then copy the full Cookie header from the browser devtools / Burp. Or click the ⚡ button to capture the BDUSS cookie automatically (P1 MVP single-cookie path; ENScan may still need the full header — adjust manually if so).",
+          "description": "Log in to aiqicha.baidu.com, then click the ⚡ button to harvest the full baidu.com Cookie header automatically (BDUSS alone is rejected by AQC's safety wall — the engine joins every cookie on .baidu.com into a `name=value; name=value` header). Manual paste of the same header also works.",
           "help_url": "https://github.com/wgpsec/ENScan_GO#aqc",
           "fields": [
             {
-              "key": "cookies.aqc",
+              "key": "cookies.aiqicha",
               "label": "Cookie",
               "type": "secret_textarea",
-              "placeholder": "BAIDUID=...; BDUSS=...; ...",
+              "placeholder": "BAIDUID=...; BDUSS=...; PSTM=...; ...",
               "required": true,
               "rows": 4
             }
@@ -38,20 +38,22 @@
             "kind": "exec",
             "cmd": "{{exec}} -n 小米 -type aqc -field icp",
             "ok_regex": "(?i)company_name|company\\s*name|icp",
-            "fail_regex": "(?i)cookie\\s*expired|auth\\s*failed",
-            "timeout_secs": 30
+            "fail_regex": "(?i)cookie\\s*expired|auth\\s*failed|安全验证",
+            "timeout_secs": 60
           },
           "capture": {
             "login_url": "https://aiqicha.baidu.com/",
             "success_url_pattern": "aiqicha\\.baidu\\.com/(home|company|usercenter|user|s)",
             "timeout_secs": 300,
-            "instructions": "登录爱企查账号后，Golish 会自动提取 BDUSS cookie 写入 cookies.aqc 字段。如果 ENScan 提示 cookie 不足，请手动复制完整 Cookie header 覆盖。",
+            "instructions": "登录爱企查账号后，Golish 自动提取 .baidu.com 域所有 cookie 拼成完整 Cookie header 写入 cookies.aiqicha 字段（BDUSS 单值会触发安全验证，必须发完整 header）。",
             "rules": [
               {
-                "type": "cookie",
+                "type": "cookie_joined",
                 "domain": ".baidu.com",
-                "name": "BDUSS",
-                "target_field": "cookies.aqc",
+                "names": [],
+                "sep": "; ",
+                "fmt": "{name}={value}",
+                "target_field": "cookies.aiqicha",
                 "required": true
               }
             ]
@@ -63,25 +65,25 @@
           "description": "TYC needs three values together: full Cookie, the X-Tycid header, and the Auth token. All three can be captured from a logged-in tianyancha.com session.",
           "help_url": "https://github.com/wgpsec/ENScan_GO#tyc",
           "fields": [
-            { "key": "cookies.tyc", "label": "Cookie", "type": "secret_textarea", "required": true, "rows": 4 },
-            { "key": "tyc.tycid", "label": "tycid", "type": "secret_text", "required": true, "placeholder": "X-Tycid value" },
-            { "key": "tyc.auth_token", "label": "auth_token", "type": "secret_text", "required": true, "placeholder": "Authorization header value" }
+            { "key": "cookies.tianyancha", "label": "Cookie", "type": "secret_textarea", "required": true, "rows": 4 },
+            { "key": "cookies.tycid", "label": "tycid", "type": "secret_text", "required": true, "placeholder": "X-Tycid value" },
+            { "key": "cookies.auth_token", "label": "auth_token", "type": "secret_text", "required": true, "placeholder": "Authorization header value" }
           ],
           "test": {
             "kind": "exec",
             "cmd": "{{exec}} -n 小米 -type tyc -field icp",
             "ok_regex": "(?i)company_name|company\\s*name|icp",
-            "fail_regex": "(?i)cookie\\s*expired|auth\\s*failed",
-            "timeout_secs": 30
+            "fail_regex": "(?i)cookie\\s*expired|auth\\s*failed|安全验证",
+            "timeout_secs": 60
           }
         },
         {
           "id": "kc",
-          "name": "快查 (KC)",
-          "description": "Cookie copied from a logged-in kuaichacha session.",
+          "name": "七麦数据 (Qimai)",
+          "description": "ENScan_GO v2.0.5 maps -type kc to the qimai.cn enterprise data source (legacy 快查/kuaicha alias). Cookie copied from a logged-in qimai.cn session.",
           "fields": [
             {
-              "key": "cookies.kc",
+              "key": "cookies.qimai",
               "label": "Cookie",
               "type": "secret_textarea",
               "required": true,
@@ -92,8 +94,8 @@
             "kind": "exec",
             "cmd": "{{exec}} -n 小米 -type kc -field icp",
             "ok_regex": "(?i)company_name|company\\s*name|icp",
-            "fail_regex": "(?i)cookie\\s*expired|auth\\s*failed",
-            "timeout_secs": 30
+            "fail_regex": "(?i)cookie\\s*expired|auth\\s*failed|安全验证",
+            "timeout_secs": 60
           }
         },
         {
@@ -102,7 +104,7 @@
           "description": "Cookie copied from a logged-in riskbird.com session.",
           "fields": [
             {
-              "key": "cookies.rb",
+              "key": "cookies.risk_bird",
               "label": "Cookie",
               "type": "secret_textarea",
               "required": true,
@@ -113,8 +115,8 @@
             "kind": "exec",
             "cmd": "{{exec}} -n 小米 -type rb -field icp",
             "ok_regex": "(?i)company_name|company\\s*name|icp",
-            "fail_regex": "(?i)cookie\\s*expired|auth\\s*failed",
-            "timeout_secs": 30
+            "fail_regex": "(?i)cookie\\s*expired|auth\\s*failed|安全验证",
+            "timeout_secs": 60
           }
         },
         {

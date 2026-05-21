@@ -516,15 +516,23 @@ mod tests {
             recipe.timeout_secs
         );
         assert!(!recipe.rules.is_empty(), "recipe should declare ≥1 rule");
-        let has_bduss = recipe.rules.iter().any(|r| match r {
-            crate::schema::CaptureRule::Cookie {
-                name, target_field, ..
-            } => name == "BDUSS" && target_field == "cookies.aqc",
+        // After 2026-05-21 schema fix: AQC must harvest the **full**
+        // baidu.com Cookie header (CookieJoined with names=[]) because
+        // BDUSS alone trips aiqicha.baidu.com's safety wall. Target
+        // field renamed to `cookies.aiqicha` to match the literal key
+        // ENScan v2.0.5 reads from its yaml.
+        let cookie_joined_all = recipe.rules.iter().any(|r| match r {
+            crate::schema::CaptureRule::CookieJoined {
+                domain,
+                names,
+                target_field,
+                ..
+            } => domain == ".baidu.com" && names.is_empty() && target_field == "cookies.aiqicha",
             _ => false,
         });
         assert!(
-            has_bduss,
-            "AQC capture should write the BDUSS cookie into cookies.aqc"
+            cookie_joined_all,
+            "AQC capture should join every baidu.com cookie into cookies.aiqicha"
         );
     }
 
