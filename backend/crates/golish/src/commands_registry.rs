@@ -160,6 +160,8 @@ fn install_handlers(
         // ── integrations (schema-driven external-service credentials) ─
         integrations_list_schemas, integrations_get, integrations_set,
         integrations_clear, integrations_test,
+        // ── integrations capture (credential capture engine) ─
+        integrations_capture_start, integrations_capture_status, integrations_capture_cancel,
         method_list_templates, method_start_project, method_list_projects, method_load_project, method_update_item, method_delete_project,
         recording_save, recording_load, recording_list, recording_delete,
         output_parse, output_detect_tool, output_parse_and_store,
