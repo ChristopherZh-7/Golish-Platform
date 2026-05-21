@@ -19,8 +19,67 @@ use async_trait::async_trait;
 use tokio::fs;
 
 use crate::error::{IntegrationError, IntegrationResult};
-use crate::schema::IntegrationSchema;
+use crate::schema::{CaptureRule, IntegrationGroup, IntegrationSchema};
 use crate::traits::{ResolvedIntegration, SchemaResolver};
+
+/// Validate a capture recipe makes sense in the context of its
+/// parent group:
+///
+/// 1. `login_url` parses and uses `http` / `https` scheme (rejects
+///    `javascript:`, `file://`, etc.).
+/// 2. Every rule's `target_field` references an existing
+///    [`crate::schema::Field::key`] in the parent group.
+///
+/// (Timeout clamp happens engine-side; this function only enforces
+/// invariants the schema parser doesn't.)
+fn validate_capture(group: &IntegrationGroup) -> IntegrationResult<()> {
+    let Some(recipe) = group.capture.as_ref() else {
+        return Ok(());
+    };
+
+    // 1. login_url scheme whitelist
+    let parsed = url::Url::parse(&recipe.login_url).map_err(|e| {
+        IntegrationError::CaptureInvalidUrl(format!("{}: {e}", recipe.login_url))
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(IntegrationError::CaptureInvalidUrl(format!(
+            "{} (scheme must be http or https, got {})",
+            recipe.login_url,
+            parsed.scheme()
+        )));
+    }
+
+    // 2. target_field cross-reference
+    let known: std::collections::HashSet<&str> =
+        group.fields.iter().map(|f| f.key.as_str()).collect();
+    for (idx, rule) in recipe.rules.iter().enumerate() {
+        let tf = match rule {
+            CaptureRule::Cookie { target_field, .. }
+            | CaptureRule::CookieJoined { target_field, .. }
+            | CaptureRule::LocalStorage { target_field, .. }
+            | CaptureRule::SessionStorage { target_field, .. }
+            | CaptureRule::PageContent { target_field, .. }
+            | CaptureRule::UrlQuery { target_field, .. } => target_field.as_str(),
+        };
+        if !known.contains(tf) {
+            return Err(IntegrationError::CaptureInvalidTargetField {
+                rule_index: idx,
+                field: tf.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Validate every group's capture recipe in a schema. Returns the
+/// first error encountered (callers should fix one issue at a time
+/// rather than collecting batches).
+fn validate_schema_captures(schema: &IntegrationSchema) -> IntegrationResult<()> {
+    for group in schema.groups.iter() {
+        validate_capture(group)?;
+    }
+    Ok(())
+}
 
 /// Default resolver — scans a directory of tool JSON files, plus
 /// merges in any in-code schemas injected at construction time.
@@ -75,7 +134,26 @@ impl DefaultSchemaResolver {
                     by_tool.insert(it.tool_id.clone(), it.clone());
                 }
 
-                // 3. Stable ordering by tool_id so the UI doesn't reshuffle.
+                // 3. Validate capture recipes across all merged schemas.
+                //    A single bad recipe fails fast — capture is opt-in
+                //    so an invalid one almost certainly means a typo
+                //    rather than a desired-but-impossible config.
+                for it in by_tool.values() {
+                    validate_schema_captures(&it.schema).map_err(|e| match e {
+                        IntegrationError::CaptureInvalidUrl(msg) => {
+                            IntegrationError::CaptureInvalidUrl(format!("{} ({})", msg, it.tool_id))
+                        }
+                        IntegrationError::CaptureInvalidTargetField { rule_index, field } => {
+                            IntegrationError::Validation(format!(
+                                "tool {} integration has invalid capture target_field at rule #{rule_index}: {field}",
+                                it.tool_id
+                            ))
+                        }
+                        other => other,
+                    })?;
+                }
+
+                // 4. Stable ordering by tool_id so the UI doesn't reshuffle.
                 let mut out: Vec<ResolvedIntegration> = by_tool.into_values().collect();
                 out.sort_by(|a, b| a.tool_id.cmp(&b.tool_id));
                 Ok::<_, IntegrationError>(out)
@@ -302,6 +380,94 @@ mod tests {
         let err = resolver.list().await.unwrap_err();
         assert!(matches!(err, IntegrationError::Validation(_)));
     }
+
+    // ────────────────────────────────────────────────────────────────
+    // validate_capture tests (Phase 1 T1.4)
+    // ────────────────────────────────────────────────────────────────
+
+    fn group_with_capture(
+        target_field: &str,
+        login_url: &str,
+    ) -> IntegrationGroup {
+        use crate::schema::{CaptureRecipe, CaptureRule};
+        IntegrationGroup {
+            id: "default".into(),
+            name: "Test".into(),
+            description: None,
+            icon: None,
+            help_url: None,
+            test: None,
+            capture: Some(CaptureRecipe {
+                login_url: login_url.into(),
+                success_url_pattern: None,
+                visit_url: None,
+                instructions: None,
+                timeout_secs: 60,
+                rules: vec![CaptureRule::Cookie {
+                    domain: ".example.com".into(),
+                    name: "BDUSS".into(),
+                    target_field: target_field.into(),
+                    required: true,
+                }],
+            }),
+            fields: vec![Field {
+                key: "cookies.aqc".into(),
+                label: "Cookie".into(),
+                field_type: FieldType::SecretTextarea,
+                placeholder: None,
+                required: true,
+                rows: None,
+                options: vec![],
+                pattern: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn validate_capture_accepts_valid_recipe() {
+        let g = group_with_capture("cookies.aqc", "https://aiqicha.baidu.com");
+        assert!(validate_capture(&g).is_ok());
+    }
+
+    #[test]
+    fn validate_capture_rejects_unknown_target_field() {
+        let g = group_with_capture("missing_field", "https://aiqicha.baidu.com");
+        let err = validate_capture(&g).unwrap_err();
+        match err {
+            IntegrationError::CaptureInvalidTargetField { rule_index, field } => {
+                assert_eq!(rule_index, 0);
+                assert_eq!(field, "missing_field");
+            }
+            other => panic!("expected CaptureInvalidTargetField, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_capture_rejects_javascript_url() {
+        let g = group_with_capture("cookies.aqc", "javascript:alert(1)");
+        let err = validate_capture(&g).unwrap_err();
+        assert!(matches!(err, IntegrationError::CaptureInvalidUrl(_)));
+    }
+
+    #[test]
+    fn validate_capture_rejects_file_url() {
+        let g = group_with_capture("cookies.aqc", "file:///etc/passwd");
+        let err = validate_capture(&g).unwrap_err();
+        let s = err.to_string();
+        assert!(s.contains("CAPTURE_INVALID_URL"));
+        assert!(s.contains("file"));
+    }
+
+    #[test]
+    fn validate_capture_skips_when_capture_is_none() {
+        let mut g = group_with_capture("cookies.aqc", "https://aiqicha.baidu.com");
+        g.capture = None;
+        assert!(validate_capture(&g).is_ok());
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // Pre-existing tests below
+    // ────────────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn schema_can_be_round_tripped_through_resolver() {

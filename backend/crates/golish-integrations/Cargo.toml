@@ -19,6 +19,7 @@ dirs = { workspace = true }
 sqlx = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true }
+url = { workspace = true }
 golish-core = { workspace = true }
 golish-db = { workspace = true }
 golish-settings = { workspace = true }
