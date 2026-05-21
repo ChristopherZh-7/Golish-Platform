@@ -70,8 +70,8 @@
           "T5.7 用户手动验证旧 0.zone vault key 经 read alias 在新 UI 显示「已配置」+ ENScan_GO 5 个 cookie group 真能写到 ~/.config/enscan/config.yaml",
           "T5.8 Playwright E2E（3 case: 渲染 / 保存 / 测试）暂跳过（vitest + 后端 nextest 已覆盖关键路径）",
           "整 monorepo just precommit 因 preexisting biome 警告（pty.ts 排序 / useTaskPlanState 等非本轮文件）fail，与 Phase 1-5 改动无关；本轮自己改的文件 biome 全干净",
-          "TestKind::Builtin 仍返 Unknown：5 个 intel provider 的 测试连接 按钮目前无法真正调 IntelProvider::test_connection，需在 commands.rs::integrations_test 加 builtin 分支",
-          "ENScan exec test 拿不到 {{exec}}：tester 用 no-op exec resolver，需接入 ConfigManager 的 find_tool_executables"
+          "[RESOLVED 2026-05-21 · commit 7a2a5c6] TestKind::Builtin Unknown：IntegrationsState 新增 IntelBuiltinDispatcher（BuiltinDispatcher trait 注入 DefaultTester），Builtin → IntelProvider::test_connection 真路由 + ConnectionStatus → IntegrationHealth 4-variant 映射。仍需用户 just dev 验证 0.zone/FOFA/Quake/Hunter/Shodan Test connection 真返 Healthy/Invalid",
+          "[RESOLVED 2026-05-21 · commit 7a2a5c6] ENScan exec test 拿不到 {{exec}}：新增 golish-pentest::resolve_tool_executable sync helper + IntegrationsState::build_default snapshot 所有 ToolConfig + 构造真 exec_resolver closure。tauri_app.rs block_on 一次性取 tools_dir/toolsconfig_dir。机制通用（任何 TestKind::Exec 工具受益）。仍需用户 just dev 验证 ENScan AQC Test connection 真返 Healthy"
         ]
       },
       "notes": "2026-05-21 完成 Phase 1-5 代码。整批改动未 commit（等用户跑 just dev 真试 + 截图后整批 commit）。设计文档：docs/design/2026-05-21-integrations.md。实施计划：docs/superpowers/plans/2026-05-21-integrations.md。覆盖范围包含且超过原 asm-intel-providers（已置回 not_started + superseded notes）。⚠ 仍存在历史游离 in_progress（meta-harness-scaffold / chat-model-selector-tests / provider-form-tests）；本轮聚焦 integrations，那 3 个不动留待后续清理。"

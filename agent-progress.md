@@ -17,15 +17,47 @@
 | **包管理** | `pnpm`（前端）+ `cargo` nextest（后端） |
 | **标准启动** | `just dev`（全栈热重载,端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
-| **当前最高优先级** | 凭据抓取器 Phase 1-5 **代码部分均已 commit 完毕**（HEAD `308eddf`）。剩余只是用户手动 E2E：① `just dev` 启动 → Settings → Integrations → ENScan_GO → AQC 应出现 ⚡ 按钮 ② 点击 → confirm dialog → "打开浏览器并登录" → 真实弹窗到 aiqicha.baidu.com ③ 登录后 success_url 命中 → 自动抠 BDUSS cookie → toast 变绿 → cookies.aqc 显示已配置 ④ `enscan -n 小米 -type aqc -field icp` 真实跑通。+ 反向 6 case（超时 / 取消 / 409 / 手动关窗 / data_dir 清干净 / GC 后 404）。用户跑完后把 capture-engine 切 passing |
-| **当前 blocker** | 整 monorepo 的 `just precommit` 因 preexisting biome 警告 + 8 个 preexisting `failure_kind` PlanStep struct literal 编译错（M2 cherry-pick 遗留）fail，与 capture/integrations 改动无关。capture Phase 1+2 自己引入的代码 cargo check / cargo nextest lib / ReadLints 全绿 |
-| **未提交的半成品** | git status 仍挂着 ~30 个 preexisting 文件改动（pty / agent-kit / kg / planner / llm-providers / pentest / `golish/tests/ai_events_characterization/` 等），与本轮 capture-engine 无关；本轮新增 commit `11f4aaa` + `6dc8303` + `92d94ad` + `e3d5963` 范围干净 |
+| **当前最高优先级** | ① capture-engine Phase 1-5 代码全 push（HEAD `a5f1964`），待用户手动 E2E（T5.2 正向 + T5.3 反向 6 case）通过后切 passing ② integrations Test connection 修复刚完成（HEAD `7a2a5c6`）：ENScan exec + 5 intel provider builtin 两条路径都能真实跑了 |
+| **当前 blocker** | 整 monorepo 的 `just precommit` 因 preexisting biome 警告 + 8 个 preexisting `failure_kind` PlanStep struct literal 编译错（M2 cherry-pick 遗留）fail，与 capture/integrations 改动无关。本轮新增 commit 范围内 cargo check / cargo nextest lib / ReadLints 全绿 |
+| **未提交的半成品** | git status 仍挂着 ~30 个 preexisting 文件改动（pty / agent-kit / kg / planner / llm-providers / pentest / `golish/tests/ai_events_characterization/` 等），与本轮 capture-engine / integrations Test wiring 都无关；本轮新增 commit `7a2a5c6` 范围干净 |
 
 ---
 
 ## 会话记录
 
 > 倒序排列,最新一轮在最上面。每轮一条。
+
+---
+
+### 2026-05-21 · integrations Test connection 真 wire — exec resolver + builtin dispatcher 双修
+
+- **本轮目标**：用户报告"加进去了（指 Auto-capture 跑通）但点 Test connection 没反应"。截图显示按钮右侧"Unknown"灰标签 + Cookie 字段 (configured) + Captured 1 field(s) successfully toast。用户进一步质疑通用性："如果不是 enscan 工具 其他工具呢？"。最终决定上 A+B 一起：A 修 `{{exec}}` no-op resolver（影响所有 TestKind::Exec 工具），B 修 Builtin 分支返 Unknown 不路由（影响 5 个 intel provider）。两条路径都做得通用，不只针对 ENScan / intel。
+- **诊断证据链**：① `enscan-go.json` aqc test = `kind:exec, cmd:{{exec}} -n 小米 -type aqc -field icp` ② `tester.rs:122-129` 拿不到 exec_path 时返 `IntegrationHealth::unknown` ③ `state.rs:58-62` 自陈 "Phase 3 ships a no-op; Phase 5 will wire" ④ `TestButton.tsx:59` `<HealthPill>` 把 unknown 渲染成右下角灰色"Unknown"小标签，message 只在 hover title 里——用户视觉上以为没反应。
+- **已完成（commit `7a2a5c6`，+625 行 / -51 行 / 6 个文件）**：
+  - **新建 `backend/crates/golish-pentest/src/tool_resolve.rs`**（+150 行）：sync `pub fn resolve_tool_executable(tool_id, &[ToolConfig], &Path) -> Option<String>`，逻辑沿用 `golish-pentest-mcp::builder::resolve_executable`：native runtime 先 `golish_shell_exec::which_executable($PATH 命令)`、否则 `tools_dir.join(executable).exists()`、最终回退原字符串。+ 4 个单测（unknown id / 真实文件 / 缺失 / 非 native runtime）。
+  - **`golish-pentest/src/lib.rs`** +2：`pub mod tool_resolve` + 重导出 `resolve_tool_executable`。
+  - **`golish-integrations/src/tester.rs`** +97/-10：① 新 `#[async_trait] pub trait BuiltinDispatcher` ② `DefaultTester` 加 `builtin_dispatcher: Option<Arc<dyn BuiltinDispatcher>>` + `with_builtin_dispatcher` builder ③ `TestKind::Builtin` 分支：Some(d) → d.dispatch / None → 保留旧 Unknown（向后兼容）④ 新增 `builtin_routed_to_dispatcher_when_attached` 测试（FakeDispatcher 注入 → 返 Healthy）。
+  - **`golish-integrations/src/lib.rs`** +1：公开 `BuiltinDispatcher / DefaultTester / ExecResolver`。
+  - **`golish/src/tools/integrations/state.rs`** +400/-51：① 改 `IntegrationsState::new` 签名为 5 参（接受真 exec_resolver + Option<BuiltinDispatcher>）② `build_default` 接受 `(settings_mgr, tools_dir, toolsconfig_dir)`，内部调 `scan_toolsconfig` 拿快照构造真 resolver closure ③ `collect_in_code_schemas_and_providers` 同时返 schemas + `HashMap<String, Arc<dyn IntelProvider>>`，不重复构造 5 个 Provider ④ 新增 `IntelBuiltinDispatcher` + `BuiltinDispatcher` impl：查 registry → 拿第一个 secret field → `provider.test_connection(&key).await` → `connection_status_to_health` 映射 4 variant ⑤ 8 个新单测（pick_credential / 4 个 ConnectionStatus 映射 / dispatcher 未知 id / dispatcher 错 group）。
+  - **`golish/src/app/tauri_app.rs`** +15/-5：`tauri::async_runtime::block_on` 一次性取 `tools_dir` + `toolsconfig_dir` 喂给 `build_default`。
+- **运行过的验证**：
+  - `cargo check -p golish-pentest -p golish-integrations -p golish` → **exit 0 / 0 warning**（29.83s）
+  - `cargo nextest run -p golish-pentest -E 'test(tool_resolve)'` → **4 tests run: 4 passed**
+  - `cargo nextest run -p golish-integrations` → **71 tests run: 71 passed**（前轮 70 + 我加 1）
+  - `cargo nextest run -p golish --lib -E 'test(tools::integrations)'` → **31 tests run: 31 passed**（前轮 23 + 我加 8）
+  - `ReadLints` 6 改动文件 → No linter errors found
+- **已记录证据**：见上方 4 个 cargo 验证 + commit `7a2a5c6` HEAD
+- **提交记录**：`7a2a5c6` (feat/asm-intel-providers 分支)，尚未 push（等用户手动 E2E 通过后一并 push）
+- **已知风险或未解决问题**：
+  - **运行时新装工具**：snapshot 只在 Tauri 启动时取一次。用户安装新工具后想要 Test connection 立即生效 → 需重启 Golish。这是可接受的（test 按钮路径低频）。未来如要支持热刷新可改成 `Arc<RwLock<Snapshot>>` + 监听 install event（P2）。
+  - **ENScan_GO 实际是否安装**：用户当前环境下 `enscan-v2.0.5-darwin-amd64` 必须真实存在于 `tools_dir/ENScan_GO/` 才能跑得到 ok_regex / fail_regex 判定。如果工具未安装，Test connection 会返 unknown + message 提示"executable not found"。
+  - **手动 E2E 未做**：需要用户 just dev 后在 Settings → Integrations → ENScan_GO → AQC 点 Test connection 看 pill 是否变绿（cookie 有效）/ 变红（cookie expired）/ 仍 Unknown（工具未装）。同样需要在 0.zone 等填入真实/假 key 测试 Builtin 分支。
+  - **`integration_schema` 假定每 group 第一个 secret field 就是测试用 credential**：对当前所有 schema 成立（5 intel provider 都是单 `api_key` field）。如果未来某 schema 是 `TestKind::Builtin` 但有多个 secret field，需要在 schema 里加 `credential_field: "..."` 字段指明，并改 `pick_credential_value`。
+- **下一步最佳动作**：
+  1. **用户 just dev → 测 4 条路径**：① ENScan AQC（应该绿）② ENScan AQC 把 cookie 故意删一段（应 fail_regex 命中或 ok_regex miss → 红 Invalid）③ 0.zone 填真实 key（应绿）④ 0.zone 不填 / 填空 key（应 AuthFailed → 红 Invalid）
+  2. 通过 → push `7a2a5c6` 到远端
+  3. 不通过 → 视失败模式修：a) ok_regex 没命中 → 调 enscan-go.json b) provider.test_connection 返意外 NetworkError → 看错误 message c) IntelBuiltinDispatcher pick_credential 拿空字符串 → 看是否 cleartext 字段名不一致
+  4. 4 路径全过 → integrations.outstanding_followups #4 + #5 真正解决（已在 commit message 标注）
 
 ---
 
