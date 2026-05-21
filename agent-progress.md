@@ -17,15 +17,55 @@
 | **包管理** | `pnpm`（前端）+ `cargo` nextest（后端） |
 | **标准启动** | `just dev`（全栈热重载,端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
-| **当前最高优先级** | 用户手动验 T5.7：启动 `just dev` → Settings → Integrations，检查 0.zone 旧 vault key 经 read alias 显示「已配置」+ ENScan_GO 5 个 cookie group 可保存到 `~/.config/enscan/config.yaml`；同时验 GitHub Token 卡片能读取并写回 `network.github_token` |
+| **当前最高优先级** | 两项并行：① 用户手动验 Integrations T5.7（0.zone read alias / ENScan 5 group / GitHub Token）；② 用户审核新出的 `docs/superpowers/plans/2026-05-21-credential-capture-engine.md`（凭据抓取器 P1 MVP 实施计划，5 Phase + Phase 0 spike），审完决定何时把 `integrations` 切 passing、`capture-engine` 切 in_progress |
 | **当前 blocker** | 整 monorepo 的 `just precommit` 因 preexisting biome 警告 fail（pty.ts / useTaskPlanState.ts / App.tsx 等非本轮文件的格式 / lint info），与 Phase 1-5 改动无关。本轮自己引入的代码 biome + tsc + nextest + vitest 全绿（见 2026-05-21 会话记录证据段） |
-| **未提交的半成品** | 本轮 Integrations 相关改动 + 之前残留的 KG/dispatch/planner/pty 等 ~70 个 preexisting 文件改动都未 commit；建议下一轮先把 Phase 1-5 单独 commit |
+| **未提交的半成品** | 本轮 Integrations 相关改动 + 之前残留的 KG/dispatch/planner/pty 等 ~70 个 preexisting 文件改动都未 commit；建议下一轮先把 Phase 1-5 单独 commit。本轮新增 `docs/design/2026-05-21-credential-capture-engine.md`（前一轮已写）+ `docs/superpowers/plans/2026-05-21-credential-capture-engine.md`（本轮新增）+ `feature_list.json` 加 capture-engine 条目（同时未 commit）。建议把这 3 个文档/JSON 改动单独 commit 一次 |
 
 ---
 
 ## 会话记录
 
 > 倒序排列,最新一轮在最上面。每轮一条。
+
+---
+
+### 2026-05-21 · 凭据抓取器（Credential Capture Engine）实施计划落地
+
+- **本轮目标**：上一轮已交付凭据抓取器设计文档 `docs/design/2026-05-21-credential-capture-engine.md`（14 小节、~620 行、Draft 状态、待用户审）。用户回复「先写实施计划」。本轮按 `.cursor/skills/writing-plans/SKILL.md` 规范，把设计文档第 9 节 P1 MVP 落成可逐 task 执行的实施计划。
+- **已完成**：
+  - **新文件 `docs/superpowers/plans/2026-05-21-credential-capture-engine.md`**（~1100 行）：5 个 Phase + Phase 0 spike，每个 Phase 含若干 task；每个 task 含「文件 / 步骤 / 验证命令 / 提交命令」；所有步骤都带完整代码块（schema struct / runtime types / engine state machine / 3 Tauri command / hook / dialog / toast）；无任何 TODO 占位符。
+    - **Phase 0**（30 分钟 spike）：写 `backend/crates/golish/examples/capture_spike.rs` 验证 Tauri 2 `WebviewWindowBuilder::data_directory` / `cookies_for_url` / `on_navigation` 三个 API 真实存在
+    - **Phase 1**（90 分钟）：6 个 task 加 `CaptureRecipe` / `CaptureRule` / `CaptureState` / `CaptureSessionInfo` / `CaptureEventPayload` / 8 个新 `IntegrationError` variant / `validate_capture` 交叉校验（target_field 引用 / URL scheme 白名单）+ ts-rs 同步前端
+    - **Phase 2**（4-5 小时）：6 个 task 实现 `CaptureEngine` 状态机 + session registry + per-session data_dir 隔离 + webview 创建 + navigation handler + Cookie rule 提取 + 写 vault + TTL watcher + event emit；P2 rule 类型先 stub 返 "not yet implemented in P1 MVP"
+    - **Phase 3**（90 分钟）：3 个 Tauri command（start / status / cancel）+ frontend `captureStart / captureStatus / captureCancel` wrapper + devtools 手动验
+    - **Phase 4**（3-4 小时）：i18n 新增 `integrations.capture.*` 一组键（en + zh-CN）+ `useCaptureSession` hook（订阅 `integration-capture` event + 倒计时 + react-query invalidate）+ `CaptureButton` / `CaptureConfirmDialog` / `CaptureStatusToast` 三个组件 + 集成进 `IntegrationGroup.tsx` + 单测 3 case
+    - **Phase 5**（90 分钟）：ENScan AQC 加 `capture` 段（cookies.aqc → `BDUSS` cookie）+ 手动 E2E + 6 个反向 case（超时 / 取消 / 409 / 手动关窗 / data_dir 清干净 / status gc 后 404）+ just precommit 全绿
+  - **更新 `feature_list.json`**：加 `capture-engine` 条目（priority=1 / status=not_started / 10 条 verification / 关联设计 + 计划文档路径 / notes 说明启动条件「等 integrations 切 passing」）
+  - **更新 `agent-progress.md`**：当前最高优先级追加「审审计划」+ 当前会话记录
+- **运行过的验证**：
+  - `Write docs/superpowers/plans/2026-05-21-credential-capture-engine.md` → 成功
+  - `StrReplace feature_list.json` → 成功（capture-engine 条目插入到 integrations 之前 priority=1）
+  - `StrReplace agent-progress.md` → 成功（顶部"当前最高优先级"+"未提交的半成品"已更新；本会话记录待 ReadLints 验证后插入）
+  - `python3 -m json.tool feature_list.json > /dev/null` → 待跑（下一步）
+  - `ReadLints` → 待跑（下一步）
+- **已记录证据**：
+  - 计划文档行数：`wc -l docs/superpowers/plans/2026-05-21-credential-capture-engine.md` 待跑
+  - 计划自检 §按 writing-plans skill 自检要求三项全过：规格覆盖度 / 占位符扫描 / 类型一致性
+- **提交记录**：本轮所有文档+元数据改动**未 commit**（高风险操作前必须先获用户确认）
+- **未提交文件清单**：
+  - 新增：`docs/superpowers/plans/2026-05-21-credential-capture-engine.md`
+  - 修改：`feature_list.json`、`agent-progress.md`
+  - 同时挂着（前一轮）：`docs/design/2026-05-21-credential-capture-engine.md`
+- **已知风险或未解决问题**：
+  - Phase 0 spike 是计划中的「先验证再动业务代码」环节；若 Tauri 2 在当前锁定版本里 `cookies_for_url` / `data_directory` 的 API 名称已变，会在 Phase 0 编译阶段立即发现，避免 Phase 2 一半才返工
+  - ENScan AQC 的 `BDUSS` cookie 名是合理猜测（设计文档 §3.4 已注明「实际名字 P1 实施阶段实测拍板」）。用户跑 Phase 5 时如发现实际是 `STOKEN` / `BDUSS_BFESS`，改 schema 一行
+  - `CaptureEngine` 的 `start_webview` 内用了 `futures::executor::block_on(handle.inner.read())` 同步读 RwLock——Tauri builder callback 是同步的，没办法 await；锁的持有时间 < 1ms 不会触发死锁，但若代码 review 觉得不安全，T2.3 备选方案是改用 `std::sync::RwLock` 而非 `tokio::sync::RwLock`
+  - Phase 4 假设项目用了 `react-i18next` 和 shadcn/ui 的 `AlertDialog` / `Button` / `Tooltip`（看了既有 IntegrationGroup.tsx / SecretInput.tsx 这些都用着）；若实际 Tooltip 路径不同，import 路径需对照修
+- **下一步最佳动作**：
+  1. 用户**先审计划**（重点：Phase 0 spike 是否同意做、`CaptureRule` enum 是否漏案例、`useCaptureSession` 状态机设计是否合理）
+  2. 审完后用户决定何时把 `integrations` 切 passing（现已基本完成 Phase 1-5）、把 `capture-engine` 切 in_progress
+  3. 然后另起一个会话用 `superpowers:executing-plans` 技能逐 Phase 执行计划
+  4. 本轮 3 个文档/JSON 改动可独立 commit：`docs(capture): add design + implementation plan + feature_list entry` —— 不会影响任何已运行代码，安全 commit
 
 ---
 
