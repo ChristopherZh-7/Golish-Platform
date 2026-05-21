@@ -465,6 +465,69 @@ mod tests {
         assert!(validate_capture(&g).is_ok());
     }
 
+    /// Fixture sanity: load the real `resources/toolsconfig/enscan-go.json`
+    /// from the repo root via [`DefaultSchemaResolver::get`] and verify
+    /// the `aqc` group's capture recipe survives all of (a) JSON parse,
+    /// (b) IntegrationSchema deserialization, (c) validate_capture
+    /// cross-checks. This is the closest end-to-end smoke we can run
+    /// from within the integrations crate — catches Phase 5 T5.1
+    /// regressions if anyone edits the JSON and breaks the recipe
+    /// shape.
+    #[tokio::test]
+    async fn fixture_enscan_aqc_capture_recipe_loads() {
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let toolsconfig_dir = std::path::PathBuf::from(manifest_dir)
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("resources")
+            .join("toolsconfig");
+        if !toolsconfig_dir.exists() {
+            // Skip outside a normal git checkout.
+            eprintln!(
+                "fixture skipped: toolsconfig dir not found at {}",
+                toolsconfig_dir.display()
+            );
+            return;
+        }
+        let resolver = DefaultSchemaResolver::new(Some(toolsconfig_dir), vec![]);
+        let resolved = resolver
+            .get("enscan-go")
+            .await
+            .expect("enscan-go integration should load");
+        let aqc = resolved
+            .schema
+            .groups
+            .iter()
+            .find(|g| g.id == "aqc")
+            .expect("aqc group should exist");
+        let recipe = aqc
+            .capture
+            .as_ref()
+            .expect("aqc group should declare a capture recipe");
+        assert!(
+            recipe.login_url.starts_with("https://aiqicha.baidu.com"),
+            "login_url should target aiqicha.baidu.com, got {}",
+            recipe.login_url
+        );
+        assert!(
+            recipe.timeout_secs >= 30 && recipe.timeout_secs <= 900,
+            "timeout_secs should be within engine clamp window, got {}",
+            recipe.timeout_secs
+        );
+        assert!(!recipe.rules.is_empty(), "recipe should declare ≥1 rule");
+        let has_bduss = recipe.rules.iter().any(|r| match r {
+            crate::schema::CaptureRule::Cookie {
+                name, target_field, ..
+            } => name == "BDUSS" && target_field == "cookies.aqc",
+            _ => false,
+        });
+        assert!(
+            has_bduss,
+            "AQC capture should write the BDUSS cookie into cookies.aqc"
+        );
+    }
+
     // ────────────────────────────────────────────────────────────────
     // Pre-existing tests below
     // ────────────────────────────────────────────────────────────────

@@ -22,7 +22,7 @@
         {
           "id": "aqc",
           "name": "爱企查 (AQC)",
-          "description": "Log in to aiqicha.baidu.com, then copy the full Cookie header from the browser devtools / Burp.",
+          "description": "Log in to aiqicha.baidu.com, then copy the full Cookie header from the browser devtools / Burp. Or click the ⚡ button to capture the BDUSS cookie automatically (P1 MVP single-cookie path; ENScan may still need the full header — adjust manually if so).",
           "help_url": "https://github.com/wgpsec/ENScan_GO#aqc",
           "fields": [
             {
@@ -40,6 +40,21 @@
             "ok_regex": "(?i)company_name|company\\s*name|icp",
             "fail_regex": "(?i)cookie\\s*expired|auth\\s*failed",
             "timeout_secs": 30
+          },
+          "capture": {
+            "login_url": "https://aiqicha.baidu.com/",
+            "success_url_pattern": "aiqicha\\.baidu\\.com/(home|company|usercenter|user|s)",
+            "timeout_secs": 300,
+            "instructions": "登录爱企查账号后，Golish 会自动提取 BDUSS cookie 写入 cookies.aqc 字段。如果 ENScan 提示 cookie 不足，请手动复制完整 Cookie header 覆盖。",
+            "rules": [
+              {
+                "type": "cookie",
+                "domain": ".baidu.com",
+                "name": "BDUSS",
+                "target_field": "cookies.aqc",
+                "required": true
+              }
+            ]
           }
         },
         {
