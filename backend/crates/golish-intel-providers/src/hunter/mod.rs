@@ -118,6 +118,12 @@ impl IntelProvider for HunterProvider {
             ],
             quota_hint: "每日 / 每月免费配额 · ≤2 req/s 防护".into(),
             requires_paid: false,
+            integration_schema: Some(crate::api_key_integration_schema(
+                "Hunter（奇安信）",
+                "奇安信 Hunter · 国内主流网络空间测绘",
+                Some("Hunter API key from hunter.qianxin.com"),
+                Some("https://hunter.qianxin.com/home/userInfo"),
+            )),
         }
     }
 
@@ -170,8 +176,10 @@ impl IntelProvider for HunterProvider {
         }
         // Cheap probe: search a fixed harmless query, page_size=1.
         self.rate_limit.acquire().await;
+        // Hunter rejects very small page sizes; 10 is the smallest observed
+        // legal value and still cheap enough for a connection probe.
         let result: IntelResult<types::HunterEnvelope> =
-            client::search(&self.http, key.trim(), "ip=\"1.1.1.1\"", 3, Some(1)).await;
+            client::search(&self.http, key.trim(), "ip=\"1.1.1.1\"", 3, Some(10)).await;
         match result {
             Ok(env) if env.is_ok() => {
                 let data = env.data.unwrap_or_default();

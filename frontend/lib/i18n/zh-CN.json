@@ -328,8 +328,10 @@
     "vaultDesc": "加密存储密码、Token、SSH Key",
     "providers": "Providers",
     "providersDesc": "配置 AI 提供商凭证",
-    "intelProviders": "情报源",
-    "intelProvidersDesc": "配置 ASM 测绘平台 API（0.zone / FOFA / Quake / Hunter / Shodan）",
+    "integrations": "集成 / Integrations",
+    "integrationsDesc": "统一管理所有外部服务的凭据（API key / cookie / token）",
+    "intelProviders": "情报源（旧版）",
+    "intelProvidersDesc": "旧版面板 · 待 Integrations 完成迁移后移除",
     "aiModels": "AI & Models",
     "aiModelsDesc": "默认提供商和合成设置",
     "terminal": "Terminal",
@@ -352,6 +354,7 @@
     "githubToken": "GitHub Token",
     "githubTokenPlaceholder": "ghp_xxxxxxxxxxxxxxxxxxxx",
     "githubTokenHint": "GitHub Personal Access Token，提升 API 速率限制（60 → 5000 次/小时）。用于下载工具时获取 Release 信息。",
+    "githubTokenMovedHint": "GitHub Token 已迁移至 Settings → Integrations。已有的 Token 会自动沿用 —— 打开 Integrations 下的 GitHub 卡片即可查看或替换。",
     "generateToken": "生成 Token →",
     "proxyRestart": "代理配置更改后需要重启应用才能生效。"
   },
@@ -809,5 +812,147 @@
     "initialTargetsHint": "每行一个或逗号分隔，AI 将自动启动信息收集",
     "projectPath": "项目路径",
     "create": "创建项目"
+  },
+  "intel": {
+    "headerDesc": "配置 ASM 网络空间测绘平台 API。保存后可在 organizations 详情页一键拉取域名 / IP / 邮箱 / 证书等情报并自动入库。",
+    "empty": "暂未注册任何情报源。请确认后端 commands_registry 已包含 intel_list_providers。",
+    "loadFailed": "加载情报源列表失败",
+    "fieldSignup": "注册 / API 申请",
+    "fieldDocs": "文档",
+    "fieldQueryTypes": "支持的查询类型",
+    "paidBadge": "Paid",
+    "badgeConnected": "已连接",
+    "badgeAuthFailed": "鉴权失败",
+    "badgeQuotaExhausted": "额度耗尽",
+    "badgeNetworkError": "网络错误",
+    "testButton": "测试连接",
+    "testing": "测试中…",
+    "keyLabel": "API Key",
+    "keyPlaceholder": "请输入 {{providerId}} 的 API key",
+    "keySave": "保存",
+    "keyDeleteTitle": "删除当前 key",
+    "keyMeta": "已保存 · vault entry {{idShort}}… · 上次更新 {{time}}",
+    "keyEmpty": "API key 不能为空",
+    "keySaved": "API key 已保存",
+    "keyDeleted": "API key 已删除",
+    "keySaveFailed": "保存失败：{{error}}",
+    "keyDeleteFailed": "删除失败：{{error}}",
+    "keyDeleteConfirm": "确认删除 {{providerId}} 的 API key？",
+    "provider": {
+      "0_zone": {
+        "displayName": "0.zone（零零信安）",
+        "description": "国内网络空间测绘 + 暗网情报双引擎（7 query_type · 含 group 公司归属反查）"
+      },
+      "fofa": {
+        "displayName": "FOFA（鹰图）",
+        "description": "白帽汇 FOFA · 国内主流网络空间测绘 · 支持 host/domain/cert 等查询语法"
+      },
+      "hunter": {
+        "displayName": "奇安信 Hunter",
+        "description": "奇安信网络空间测绘 · 国内主流 ASM 平台之一"
+      },
+      "quake": {
+        "displayName": "360 Quake",
+        "description": "360 网络空间测绘 · 国内三大测绘平台之一 · 服务+主机维度"
+      },
+      "shodan": {
+        "displayName": "Shodan",
+        "description": "国外 ASM 元老 · 全球互联网 banner 测绘"
+      }
+    }
+  },
+  "integrations": {
+    "title": "集成 / Integrations",
+    "headerDesc": "在这里统一管理所有外部服务的凭据（API key / cookie / token）。每个集成在 JSON 中自描述字段 schema，下方表单按 schema 动态渲染；保存时按声明的后端（vault 加密表 / 外部配置文件 / settings.toml）落盘。",
+    "loading": "加载中…",
+    "loadFailed": "加载集成列表失败",
+    "empty": "尚未注册任何集成。",
+    "emptyHint": "在 resources/toolsconfig/ 的工具 JSON 里加 `integration` 段，或在 IntelProvider 实现中暴露 `integration_schema`。",
+    "noMatch": "没有匹配当前筛选条件的集成。",
+    "searchPlaceholder": "按名称 / tool id / 分类搜索…",
+    "save": "保存",
+    "saved": "凭据已保存",
+    "clear": "清除",
+    "cleared": "凭据已清除",
+    "clearConfirm": "确认清空「{{groupName}}」组的全部凭据吗？",
+    "testButton": "测试连接",
+    "testing": "测试中…",
+    "help": "配置帮助",
+    "signup": "申请",
+    "signupLink": "打开申请 / API key 页面",
+    "groupCount_one": "{{count}} 组",
+    "groupCount_other": "{{count}} 组",
+    "category": {
+      "all": "全部",
+      "asm-cyberspace": "网络空间测绘",
+      "enterprise-intel": "企业情报",
+      "code-host": "代码托管",
+      "ai-provider": "AI 服务",
+      "other": "其它"
+    },
+    "storage": {
+      "vault": "Vault 加密",
+      "external_file": "外部文件",
+      "settings": "Settings"
+    },
+    "health": {
+      "healthy": "正常",
+      "invalid": "无效",
+      "expired": "已过期",
+      "rate_limited": "限流中",
+      "unknown": "未知"
+    },
+    "tool": {
+      "0_zone": {
+        "display_name": "0.zone（零零信安）",
+        "description": "国内网络空间测绘 + 暗网情报双引擎"
+      },
+      "fofa": {
+        "display_name": "FOFA（鹰图）",
+        "description": "白帽汇 FOFA · 国内主流网络空间测绘"
+      },
+      "quake": {
+        "display_name": "360 Quake",
+        "description": "360 Quake 网络空间测绘 · 国内主流 ASM"
+      },
+      "hunter": {
+        "display_name": "Hunter（奇安信）",
+        "description": "奇安信 Hunter · 国内主流网络空间测绘"
+      },
+      "shodan": {
+        "display_name": "Shodan",
+        "description": "国外 ASM 元老 · 全球互联网 banner 测绘"
+      },
+      "enscan_go": {
+        "display_name": "ENScan_GO 企业情报",
+        "description": "ENScan_GO 上游 5 家企业情报源所需的 Cookie。Cookie 通常 1-7 天失效，扫描返回为空时请刷新。",
+        "group": {
+          "aqc": {
+            "name": "爱企查 (AQC)",
+            "description": "登录 aiqicha.baidu.com，用浏览器开发者工具 / Burp 复制完整 Cookie。"
+          },
+          "tyc": {
+            "name": "天眼查 (TYC)",
+            "description": "TYC 需要 3 个值同时存在：完整 Cookie、X-Tycid 头部、Authorization 令牌。登录 tianyancha.com 后均可在网络请求中抓到。"
+          },
+          "kc": {
+            "name": "快查 (KC)",
+            "description": "登录快查后复制 Cookie。"
+          },
+          "rb": {
+            "name": "风鸟 (RiskBird)",
+            "description": "登录 riskbird.com 后复制 Cookie。"
+          },
+          "miit": {
+            "name": "MIIT ICP plugin",
+            "description": "在 MIIT ICP 后台（beian.miit.gov.cn）抓取 Token + Sign 两个值。"
+          }
+        }
+      },
+      "github": {
+        "display_name": "GitHub 个人访问令牌",
+        "description": "渗透工具安装器拉取 GitHub Release 时使用，把匿名访问的速率限制从 60 req/h 提升到 5000 req/h。存储路径 settings.toml::network.github_token —— 细粒度 PAT 只需 public_repo 权限即可。"
+      }
+    }
   }
 }

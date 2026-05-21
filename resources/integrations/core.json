@@ -1,0 +1,48 @@
+{
+  "$schema": "https://walkinglabs.github.io/golish-platform/schemas/core_integrations.json",
+  "version": "1",
+  "description": "Built-in core integrations bundled with Golish (extend by editing this file; see docs/design/2026-05-21-integrations.md §6.3).",
+  "integrations": [
+    {
+      "tool_id": "github",
+      "schema": {
+        "category": "code-host",
+        "display_name": "GitHub Personal Access Token",
+        "description": "Used by the pentest tool installer to fetch GitHub releases (raises the anonymous rate-limit from 60 req/h to 5 000 req/h). Lives in settings.toml as network.github_token — a fine-grained Personal Access Token with only the public_repo scope is sufficient.",
+        "help_url": "https://github.com/settings/tokens",
+        "storage": {
+          "type": "settings",
+          "settings": {
+            "key": "network.github_token"
+          }
+        },
+        "groups": [
+          {
+            "id": "default",
+            "name": "Personal Access Token",
+            "fields": [
+              {
+                "key": "token",
+                "label": "Token",
+                "type": "secret_text",
+                "placeholder": "ghp_… (classic) or github_pat_… (fine-grained)",
+                "required": true
+              }
+            ],
+            "test": {
+              "kind": "http",
+              "method": "GET",
+              "url": "https://api.github.com/user",
+              "headers": {
+                "Authorization": "Bearer {{value:token}}",
+                "User-Agent": "Golish-Platform-Integrations/1"
+              },
+              "ok_status_range": [200, 200],
+              "timeout_secs": 15
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -126,6 +126,12 @@ impl IntelProvider for FofaProvider {
             supported_query_types: vec![QueryType::Site, QueryType::Domain, QueryType::Cert],
             quota_hint: "免费账户每日 100 条；vault key 格式 'email|key'".into(),
             requires_paid: false,
+            integration_schema: Some(crate::api_key_integration_schema(
+                "FOFA（鹰图）",
+                "白帽汇 FOFA · 国内主流网络空间测绘",
+                Some("email|api_key (combined, separated by `|`)"),
+                Some("https://fofa.info/register"),
+            )),
         }
     }
 

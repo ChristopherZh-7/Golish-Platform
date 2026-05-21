@@ -55,8 +55,8 @@ const NetworkSettings = lazy(() =>
 const PentestEnvSettings = lazy(() =>
   import("./PentestEnvSettings").then((m) => ({ default: m.PentestEnvSettings }))
 );
-const IntelProvidersSettings = lazy(() =>
-  import("./IntelProvidersSettings").then((m) => ({ default: m.IntelProvidersSettings }))
+const IntegrationsSettings = lazy(() =>
+  import("./IntegrationsSettings").then((m) => ({ default: m.IntegrationsSettings }))
 );
 
 interface SettingsDialogProps {
@@ -85,10 +85,10 @@ const NAV_ITEM_DEFS: NavItemDef[] = [
     descKey: "settings.providersDesc",
   },
   {
-    id: "intel",
-    labelKey: "settings.intelProviders",
+    id: "integrations",
+    labelKey: "settings.integrations",
     icon: <Network className="w-4 h-4" />,
-    descKey: "settings.intelProvidersDesc",
+    descKey: "settings.integrationsDesc",
   },
   {
     id: "ai",
@@ -217,8 +217,8 @@ export function SettingsContent({ activeSection: activeSectionProp }: { activeSe
         return (
           <ProviderSettings settings={settings.ai} onChange={(ai) => updateSection("ai", ai)} />
         );
-      case "intel":
-        return <IntelProvidersSettings />;
+      case "integrations":
+        return <IntegrationsSettings />;
       case "ai":
         return (
           <AiSettings
@@ -387,8 +387,8 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         return (
           <ProviderSettings settings={settings.ai} onChange={(ai) => updateSection("ai", ai)} />
         );
-      case "intel":
-        return <IntelProvidersSettings />;
+      case "integrations":
+        return <IntegrationsSettings />;
       case "ai":
         return (
           <AiSettings

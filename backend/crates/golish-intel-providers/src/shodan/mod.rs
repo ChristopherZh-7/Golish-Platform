@@ -120,6 +120,12 @@ impl IntelProvider for ShodanProvider {
             ],
             quota_hint: "$69/月起 · 1 req/s · 免费账户仅 host lookup".into(),
             requires_paid: true,
+            integration_schema: Some(crate::api_key_integration_schema(
+                "Shodan",
+                "国外 ASM 元老 · 全球互联网 banner 测绘",
+                Some("Shodan API key from account.shodan.io"),
+                Some("https://account.shodan.io/register"),
+            )),
         }
     }
 

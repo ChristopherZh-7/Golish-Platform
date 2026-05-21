@@ -1,0 +1,28 @@
+[package]
+name = "golish-integrations"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Schema-driven integrations: external-service credentials (API key / Cookie / Token) for ASM providers + tools, with vault / external-file / settings storage backends."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "fs"] }
+tracing = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+regex = { workspace = true }
+dirs = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+reqwest = { workspace = true }
+golish-core = { workspace = true }
+golish-db = { workspace = true }
+golish-settings = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+tempfile = { workspace = true }

@@ -1,7 +1,7 @@
 //! 0.zone (零零信安) provider implementation.
 //!
 //! API: <https://0.zone/api/data/>
-//! Docs: <https://0.zone/apply>
+//! Docs: <https://0.zone/plug-in-unit>
 //! Reference impl: <https://github.com/lemonlove7/0_zone/blob/main/zone_api.py>
 //!
 //! ## Supported QueryTypes
@@ -10,9 +10,9 @@
 //! - [`QueryType::Domain`] · 子域名
 //! - [`QueryType::Email`] · 邮箱
 //! - [`QueryType::Apk`] · 移动端应用
-//! - [`QueryType::Sensitive`] · 敏感目录
 //! - [`QueryType::Code`] · 代码/文档泄漏
 //! - [`QueryType::Member`] · 人员
+//! - [`QueryType::Org`] · 企业画像
 //!
 //! ## Rate limit
 //!
@@ -24,9 +24,7 @@ mod mapper;
 mod types;
 
 #[cfg(test)]
-pub use types::{
-    ApkEntry, CodeEntry, DomainEntry, EmailEntry, MemberEntry, SensitiveEntry, SiteEntry,
-};
+pub use types::{ApkEntry, CodeEntry, DomainEntry, EmailEntry, MemberEntry, SiteEntry};
 
 use async_trait::async_trait;
 use tracing::{debug, warn};
@@ -74,9 +72,9 @@ impl ZoneProvider {
             QueryType::Domain => Ok("domain"),
             QueryType::Email => Ok("email"),
             QueryType::Apk => Ok("apk"),
-            QueryType::Sensitive => Ok("sensitive"),
             QueryType::Code => Ok("code"),
             QueryType::Member => Ok("member"),
+            QueryType::Org => Ok("org"),
             other => Err(IntelError::UnsupportedQueryType {
                 provider: PROVIDER_ID.into(),
                 query_type: other.as_str().into(),
@@ -106,11 +104,6 @@ impl ZoneProvider {
                     .map_err(|err| IntelError::bad_response(PROVIDER_ID, err.to_string()))?;
                 Ok(mapper::map_apk(e, raw))
             }
-            QueryType::Sensitive => {
-                let e: types::SensitiveEntry = serde_json::from_value(raw.clone())
-                    .map_err(|err| IntelError::bad_response(PROVIDER_ID, err.to_string()))?;
-                Ok(mapper::map_sensitive(e, raw))
-            }
             QueryType::Code => {
                 let e: types::CodeEntry = serde_json::from_value(raw.clone())
                     .map_err(|err| IntelError::bad_response(PROVIDER_ID, err.to_string()))?;
@@ -120,6 +113,11 @@ impl ZoneProvider {
                 let e: types::MemberEntry = serde_json::from_value(raw.clone())
                     .map_err(|err| IntelError::bad_response(PROVIDER_ID, err.to_string()))?;
                 Ok(mapper::map_member(e, raw))
+            }
+            QueryType::Org => {
+                let e: types::OrgEntry = serde_json::from_value(raw.clone())
+                    .map_err(|err| IntelError::bad_response(PROVIDER_ID, err.to_string()))?;
+                Ok(mapper::map_org(e, raw))
             }
             other => Err(IntelError::UnsupportedQueryType {
                 provider: PROVIDER_ID.into(),
@@ -142,19 +140,25 @@ impl IntelProvider for ZoneProvider {
             description:
                 "国内网络空间测绘 + 暗网情报双引擎（7 query_type · 含 group 公司归属反查）".into(),
             homepage_url: "https://0.zone".into(),
-            signup_url: "https://0.zone/apply".into(),
+            signup_url: "https://0.zone/plug-in-unit".into(),
             docs_url: "https://0.zone/grammarList".into(),
             supported_query_types: vec![
                 QueryType::Site,
                 QueryType::Domain,
                 QueryType::Email,
                 QueryType::Apk,
-                QueryType::Sensitive,
                 QueryType::Code,
                 QueryType::Member,
+                QueryType::Org,
             ],
             quota_hint: "基础会员 ¥98/年 · 250 次/日 · ≤2 req/s".into(),
             requires_paid: true,
+            integration_schema: Some(crate::api_key_integration_schema(
+                "0.zone（零零信安）",
+                "国内网络空间测绘 + 暗网情报双引擎",
+                Some("API key from https://0.zone/plug-in-unit profile page"),
+                Some("https://0.zone/plug-in-unit"),
+            )),
         }
     }
 
@@ -258,9 +262,9 @@ mod tests {
             QueryType::Domain,
             QueryType::Email,
             QueryType::Apk,
-            QueryType::Sensitive,
             QueryType::Code,
             QueryType::Member,
+            QueryType::Org,
         ] {
             assert!(
                 ZoneProvider::query_type_wire(qt).is_ok(),
@@ -272,6 +276,12 @@ mod tests {
     #[test]
     fn query_type_wire_rejects_cert() {
         let res = ZoneProvider::query_type_wire(QueryType::Cert);
+        assert!(matches!(res, Err(IntelError::UnsupportedQueryType { .. })));
+    }
+
+    #[test]
+    fn query_type_wire_rejects_old_sensitive_type() {
+        let res = ZoneProvider::query_type_wire(QueryType::Sensitive);
         assert!(matches!(res, Err(IntelError::UnsupportedQueryType { .. })));
     }
 

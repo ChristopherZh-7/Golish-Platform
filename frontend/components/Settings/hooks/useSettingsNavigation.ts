@@ -6,7 +6,7 @@ import { type GolishSettings, getSettings, updateSettings } from "@/lib/settings
 
 export type SettingsSection =
   | "providers"
-  | "intel"
+  | "integrations"
   | "ai"
   | "terminal"
   | "editor"

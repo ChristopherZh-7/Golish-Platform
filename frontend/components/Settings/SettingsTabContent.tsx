@@ -39,7 +39,7 @@ import { AiSettings } from "./AiSettings";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { CodebasesSettings } from "./CodebasesSettings";
 import { EditorSettings } from "./EditorSettings";
-import { IntelProvidersSettings } from "./IntelProvidersSettings";
+import { IntegrationsSettings } from "./IntegrationsSettings";
 import { McpSettings } from "./McpSettings";
 import { NetworkSettings } from "./NetworkSettings";
 import { NotificationsSettings } from "./NotificationsSettings";
@@ -50,7 +50,7 @@ import { TerminalSettings } from "./TerminalSettings";
 type SettingsSection =
   | "pentest"
   | "providers"
-  | "intel"
+  | "integrations"
   | "ai"
   | "terminal"
   | "editor"
@@ -83,10 +83,10 @@ const NAV_ITEMS: NavItem[] = [
     descKey: "settings.providersDesc",
   },
   {
-    id: "intel",
-    labelKey: "settings.intelProviders",
+    id: "integrations",
+    labelKey: "settings.integrations",
     icon: <Network className="w-4 h-4" />,
-    descKey: "settings.intelProvidersDesc",
+    descKey: "settings.integrationsDesc",
   },
   {
     id: "ai",
@@ -218,8 +218,8 @@ export function SettingsTabContent() {
         return (
           <ProviderSettings settings={settings.ai} onChange={(ai) => updateSection("ai", ai)} />
         );
-      case "intel":
-        return <IntelProvidersSettings />;
+      case "integrations":
+        return <IntegrationsSettings />;
       case "ai":
         return (
           <AiSettings

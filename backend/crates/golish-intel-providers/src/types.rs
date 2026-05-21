@@ -1,14 +1,74 @@
 //! Shared data types for the intel-providers crate.
 
 use chrono::{DateTime, Utc};
+use golish_integrations::schema::{
+    Field, FieldType, IntegrationGroup, IntegrationSchema, Storage, TestKind, VaultStorage,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+/// Build a single-field `secret_text` "API Key" Vault integration
+/// schema — the shape every cyberspace-mapping ASM provider in this
+/// crate uses for its credentials. The connectivity test path is
+/// declared as [`TestKind::Builtin`] so the IPC facade dispatches
+/// the test to `IntelProvider::test_connection` (Phase 5+ hook).
+///
+/// Callers pass:
+/// - `display_name`: card title in the Settings UI (translated copy
+///   lives next to the same string in i18n files).
+/// - `description`: one-line subtitle.
+/// - `placeholder`: input placeholder hint (e.g. `"email|key"` for
+///   FOFA's two-piece key format).
+pub fn api_key_integration_schema(
+    display_name: &str,
+    description: &str,
+    placeholder: Option<&str>,
+    signup_url: Option<&str>,
+) -> IntegrationSchema {
+    IntegrationSchema {
+        category: "asm-cyberspace".into(),
+        display_name: display_name.into(),
+        description: Some(description.into()),
+        // Surface the provider's signup page on the schema so the UI
+        // can render a single "Sign up / API key" link on the card
+        // header — most users land here because they need to obtain
+        // the key in the first place.
+        help_url: signup_url.map(|s| s.to_string()),
+        storage: Storage::Vault {
+            vault: VaultStorage {
+                // Tag the row so the legacy IntelProvidersSettings UI
+                // still recognises it during the migration period
+                // (see docs/design/2026-05-21-integrations.md §6.1).
+                extra_tags: vec!["intel-provider".into()],
+            },
+        },
+        groups: vec![IntegrationGroup {
+            id: "default".into(),
+            name: "API Key".into(),
+            description: None,
+            icon: None,
+            help_url: signup_url.map(|s| s.to_string()),
+            test: Some(TestKind::Builtin),
+            fields: vec![Field {
+                key: "api_key".into(),
+                label: "API Key".into(),
+                field_type: FieldType::SecretText,
+                placeholder: placeholder.map(|s| s.to_string()),
+                required: true,
+                rows: None,
+                options: vec![],
+                pattern: None,
+            }],
+        }],
+    }
+}
 
 /// Query category. Each provider declares which subset of these it supports.
 ///
 /// The names roughly map to the `query_type` parameter of various ASM
-/// platforms (0.zone uses `site` / `domain` / `email` / `apk` / `sensitive`
-/// / `code` / `member`; FOFA / Quake use similar but distinct vocabularies).
+/// platforms (0.zone uses `site` / `domain` / `email` / `apk` / `app` /
+/// `code` / `member` / `org` / `branch`; FOFA / Quake use similar but
+/// distinct vocabularies).
 /// The enum is intentionally a superset; provider impls return
 /// `IntelError::UnsupportedQueryType` for variants they don't handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -28,6 +88,12 @@ pub enum QueryType {
     Code,
     /// Employee / member identity.
     Member,
+    /// Organization / company profile.
+    Org,
+    /// Branch / subsidiary profile.
+    Branch,
+    /// Darknet intelligence.
+    Darknet,
     /// Certificate transparency.
     Cert,
     /// ASN / network range.
@@ -47,6 +113,9 @@ impl QueryType {
             Self::Sensitive => "sensitive",
             Self::Code => "code",
             Self::Member => "member",
+            Self::Org => "org",
+            Self::Branch => "branch",
+            Self::Darknet => "darknet",
             Self::Cert => "cert",
             Self::Asn => "asn",
             Self::Cidr => "cidr",
@@ -77,6 +146,15 @@ pub struct ProviderMeta {
     pub quota_hint: String,
     /// Whether this provider requires a paid plan.
     pub requires_paid: bool,
+    /// Integration schema describing which credential fields this
+    /// provider expects and how to test them.
+    ///
+    /// `None` is allowed during the rollout (Phase 1) so existing
+    /// providers keep compiling before Phase 5 fills them in;
+    /// `Some(_)` makes the provider show up in the Integrations
+    /// Settings tab with a fully-rendered form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration_schema: Option<golish_integrations::IntegrationSchema>,
 }
 
 /// Uniform record produced by every provider.

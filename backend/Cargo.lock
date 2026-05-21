@@ -2523,6 +2523,7 @@ dependencies = [
  "golish-events",
  "golish-graphiti",
  "golish-indexer",
+ "golish-integrations",
  "golish-intel-providers",
  "golish-js-analyzer",
  "golish-llm-providers",
@@ -2876,12 +2877,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "golish-integrations"
+version = "0.2.43"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "dirs",
+ "golish-core",
+ "golish-db",
+ "golish-settings",
+ "regex",
+ "reqwest 0.13.3",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "golish-intel-providers"
 version = "0.2.43"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "golish-integrations",
  "reqwest 0.13.3",
  "serde",
  "serde_json",

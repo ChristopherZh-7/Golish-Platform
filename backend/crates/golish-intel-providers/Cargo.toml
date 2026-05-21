@@ -17,6 +17,7 @@ chrono = { workspace = true }
 async-trait = { workspace = true }
 reqwest = { workspace = true }
 url = { workspace = true }
+golish-integrations = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

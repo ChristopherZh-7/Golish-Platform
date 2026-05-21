@@ -12,6 +12,7 @@ use crate::commands::FileWatcherState;
 use crate::history::HistoryManager;
 use crate::state::AppState;
 use crate::tools;
+use crate::tools::integrations::IntegrationsState;
 
 /// Apply plugins, managed state and lifecycle hooks to the given Tauri
 /// builder. The caller is responsible for chaining `invoke_handler`,
@@ -28,6 +29,9 @@ pub(crate) fn configure_builder(
     let sidecar_managed = app_state.extract_sidecar_managed();
     let settings_mgr = app_state.settings_manager.clone();
     let pentest_cfg = app_state.pentest_config_manager.clone();
+    // Integrations: schema resolver + tester + bundled in-code schemas
+    // (intel providers + `resources/integrations/core.json`).
+    let integrations_state = IntegrationsState::build_default(settings_mgr.clone());
 
     builder
         .plugin(tauri_plugin_dialog::init())
@@ -44,6 +48,7 @@ pub(crate) fn configure_builder(
         .manage(history_manager)
         .manage(Arc::new(FileWatcherState::new()))
         .manage(tools::pentest::PentestState::new())
+        .manage(integrations_state)
         .on_window_event(|window, event| {
             crate::app::window_lifecycle::handle_window_event(window, event);
         })

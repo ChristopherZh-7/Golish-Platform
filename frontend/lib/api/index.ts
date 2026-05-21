@@ -23,6 +23,7 @@ import * as findings from "./findings";
 import * as git from "./git";
 import * as history from "./history";
 import * as indexer from "./indexer";
+import * as integrations from "./integrations";
 import * as intel from "./intel";
 import * as mcp from "./mcp";
 import * as methodology from "./methodology";
@@ -58,6 +59,7 @@ export {
   mcp,
   context,
   indexer,
+  integrations,
   intel,
   sidecar,
   security,
@@ -94,6 +96,7 @@ export const api = {
   mcp,
   context,
   indexer,
+  integrations,
   intel,
   sidecar,
   security,

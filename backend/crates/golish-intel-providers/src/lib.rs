@@ -32,7 +32,9 @@ pub mod shodan;
 pub mod zone;
 
 pub use error::{IntelError, IntelResult};
-pub use types::{ConnectionStatus, ProviderMeta, ProviderRecord, QueryType};
+pub use types::{
+    api_key_integration_schema, ConnectionStatus, ProviderMeta, ProviderRecord, QueryType,
+};
 
 use async_trait::async_trait;
 

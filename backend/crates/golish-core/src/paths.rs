@@ -103,6 +103,22 @@ pub fn wordlists_dir() -> Option<PathBuf> {
     resolve_shared_dir("wordlists")
 }
 
+/// Path to the bundled `core.json` describing built-in integrations
+/// (currently just GitHub Token). Returns `None` when the file is
+/// not present (e.g. during unit tests).
+///
+/// Format: `{ "integrations": [{ "tool_id": "...", "schema": ... }] }`
+/// — see `resources/integrations/core.json`.
+pub fn integrations_core_file() -> Option<PathBuf> {
+    if let Some(res) = project_resources_dir() {
+        let p = res.join("integrations").join("core.json");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    app_data_base().map(|b| b.join("integrations").join("core.json"))
+}
+
 /// Per-workspace `.golish` directory.
 ///
 /// For a real workspace path, returns `{workspace}/.golish`.

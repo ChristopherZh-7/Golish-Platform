@@ -328,8 +328,10 @@
     "vaultDesc": "Encrypted storage for passwords, tokens, SSH keys",
     "providers": "Providers",
     "providersDesc": "Configure AI provider credentials",
-    "intelProviders": "Intel Providers",
-    "intelProvidersDesc": "Configure ASM platform API keys (0.zone / FOFA / Quake / Hunter / Shodan)",
+    "integrations": "Integrations",
+    "integrationsDesc": "Manage all external-service credentials (API keys / cookies / tokens) in one place",
+    "intelProviders": "Intel Providers (legacy)",
+    "intelProvidersDesc": "Legacy panel — to be removed once Integrations migration ships",
     "aiModels": "AI & Models",
     "aiModelsDesc": "Default provider and synthesis settings",
     "terminal": "Terminal",
@@ -352,6 +354,7 @@
     "githubToken": "GitHub Token",
     "githubTokenPlaceholder": "ghp_xxxxxxxxxxxxxxxxxxxx",
     "githubTokenHint": "GitHub Personal Access Token to increase API rate limits (60 → 5000 req/hr). Used to fetch Release info when downloading tools.",
+    "githubTokenMovedHint": "GitHub Token has moved to Settings → Integrations. Existing tokens are picked up automatically — open the GitHub card under Integrations to view or replace it.",
     "generateToken": "Generate Token →",
     "proxyRestart": "Proxy changes take effect after restarting the application."
   },
@@ -809,5 +812,147 @@
     "initialTargetsHint": "One per line or comma-separated. AI will auto-start reconnaissance.",
     "projectPath": "Project path",
     "create": "Create Project"
+  },
+  "intel": {
+    "headerDesc": "Configure ASM intel platform APIs. Once saved you can pull domains / IPs / emails / certs from the organization detail page in one click.",
+    "empty": "No intel providers registered. Please verify that the backend commands_registry exposes intel_list_providers.",
+    "loadFailed": "Failed to load intel providers",
+    "fieldSignup": "Sign up / API key",
+    "fieldDocs": "Docs",
+    "fieldQueryTypes": "Supported query types",
+    "paidBadge": "Paid",
+    "badgeConnected": "Connected",
+    "badgeAuthFailed": "Auth failed",
+    "badgeQuotaExhausted": "Quota exhausted",
+    "badgeNetworkError": "Network error",
+    "testButton": "Test connection",
+    "testing": "Testing…",
+    "keyLabel": "API key",
+    "keyPlaceholder": "Enter API key for {{providerId}}",
+    "keySave": "Save",
+    "keyDeleteTitle": "Delete this key",
+    "keyMeta": "Saved · vault entry {{idShort}}… · last updated {{time}}",
+    "keyEmpty": "API key cannot be empty",
+    "keySaved": "API key saved",
+    "keyDeleted": "API key removed",
+    "keySaveFailed": "Save failed: {{error}}",
+    "keyDeleteFailed": "Delete failed: {{error}}",
+    "keyDeleteConfirm": "Delete the API key for {{providerId}}?",
+    "provider": {
+      "0_zone": {
+        "displayName": "0.zone",
+        "description": "China-focused ASM + darknet intel dual engine (7 query types, includes group attribution lookup)"
+      },
+      "fofa": {
+        "displayName": "FOFA",
+        "description": "Knownsec FOFA — popular China-side ASM, supports host / domain / cert query syntax"
+      },
+      "hunter": {
+        "displayName": "Qi-AnXin Hunter",
+        "description": "Qi-AnXin cyberspace mapping, one of the major China ASM platforms"
+      },
+      "quake": {
+        "displayName": "360 Quake",
+        "description": "360 cyberspace mapping, one of the top-3 China ASM platforms (service + host dimensions)"
+      },
+      "shodan": {
+        "displayName": "Shodan",
+        "description": "The veteran global ASM, internet-wide banner mapping"
+      }
+    }
+  },
+  "integrations": {
+    "title": "Integrations",
+    "headerDesc": "Manage all external-service credentials (API keys, cookies, tokens) in one place. Each integration ships a self-describing schema that renders the form below; saving writes through the declared backend (vault, external config file, or settings.toml).",
+    "loading": "Loading…",
+    "loadFailed": "Failed to load integrations",
+    "empty": "No integrations registered yet.",
+    "emptyHint": "Add an `integration` block to a tool config in resources/toolsconfig/, or expose `integration_schema` from an IntelProvider implementation.",
+    "noMatch": "No integrations match the current filter.",
+    "searchPlaceholder": "Search by name / tool id / category…",
+    "save": "Save",
+    "saved": "Credentials saved",
+    "clear": "Clear",
+    "cleared": "Credentials cleared",
+    "clearConfirm": "Clear all stored credentials for the \"{{groupName}}\" group?",
+    "testButton": "Test connection",
+    "testing": "Testing…",
+    "help": "Setup help",
+    "signup": "Sign up",
+    "signupLink": "Open signup / API key page",
+    "groupCount_one": "{{count}} group",
+    "groupCount_other": "{{count}} groups",
+    "category": {
+      "all": "All",
+      "asm-cyberspace": "Cyberspace mapping",
+      "enterprise-intel": "Enterprise intel",
+      "code-host": "Code hosting",
+      "ai-provider": "AI providers",
+      "other": "Other"
+    },
+    "storage": {
+      "vault": "Vault",
+      "external_file": "External file",
+      "settings": "Settings"
+    },
+    "health": {
+      "healthy": "Healthy",
+      "invalid": "Invalid",
+      "expired": "Expired",
+      "rate_limited": "Rate-limited",
+      "unknown": "Unknown"
+    },
+    "tool": {
+      "0_zone": {
+        "display_name": "0.zone (Anonymous Security)",
+        "description": "Chinese cyberspace mapping + darknet intelligence dual engine"
+      },
+      "fofa": {
+        "display_name": "FOFA (Eagle Map)",
+        "description": "White Hat FOFA · top Chinese ASM platform"
+      },
+      "quake": {
+        "display_name": "360 Quake",
+        "description": "360 Quake cyberspace mapping · top Chinese ASM"
+      },
+      "hunter": {
+        "display_name": "Hunter (QiAnXin)",
+        "description": "QiAnXin Hunter · top Chinese ASM"
+      },
+      "shodan": {
+        "display_name": "Shodan",
+        "description": "Global ASM veteran · internet-wide banner mapping"
+      },
+      "enscan_go": {
+        "display_name": "ENScan_GO · Enterprise intel",
+        "description": "Cookies for the five upstream enterprise-intel sources ENScan_GO talks to. Cookies typically expire after 1-7 days; refresh when scans start returning empty.",
+        "group": {
+          "aqc": {
+            "name": "AiQiChe (AQC)",
+            "description": "Log in to aiqicha.baidu.com, then copy the full Cookie header from the browser devtools / Burp."
+          },
+          "tyc": {
+            "name": "TianYanCha (TYC)",
+            "description": "TYC needs three values together: full Cookie, the X-Tycid header, and the Auth token. All three can be captured from a logged-in tianyancha.com session."
+          },
+          "kc": {
+            "name": "KuaiCha (KC)",
+            "description": "Cookie copied from a logged-in kuaichacha session."
+          },
+          "rb": {
+            "name": "RiskBird (RB)",
+            "description": "Cookie copied from a logged-in riskbird.com session."
+          },
+          "miit": {
+            "name": "MIIT ICP plugin",
+            "description": "Token + Sign captured from the MIIT ICP backend (beian.miit.gov.cn)."
+          }
+        }
+      },
+      "github": {
+        "display_name": "GitHub Personal Access Token",
+        "description": "Used by the pentest tool installer to fetch GitHub releases (raises the anonymous rate-limit from 60 req/h to 5 000 req/h). Stored in settings.toml as network.github_token — a fine-grained Personal Access Token with only the public_repo scope is sufficient."
+      }
+    }
   }
 }

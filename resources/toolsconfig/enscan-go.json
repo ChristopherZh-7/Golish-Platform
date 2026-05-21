@@ -1,0 +1,389 @@
+{
+  "tool": {
+    "category": "recon",
+    "description": "Chinese enterprise intelligence collector for company trees, ICP records, apps, mini-programs, social accounts, investments, branches, and public recruitment data. Uses user-provided cookies/tokens for sources such as AQC, TYC, KC, RB, and MIIT.",
+    "executable": "ENScan_GO/enscan-v2.0.5-darwin-amd64",
+    "id": "enscan-go",
+    "integration": {
+      "category": "enterprise-intel",
+      "display_name": "ENScan_GO 企业情报",
+      "description": "Cookies for the five upstream enterprise-intel sources ENScan_GO talks to. Cookies typically expire after 1-7 days; refresh when scans start returning empty.",
+      "help_url": "https://github.com/wgpsec/ENScan_GO#config",
+      "storage": {
+        "type": "external_file",
+        "external_file": {
+          "path": "~/.config/enscan/config.yaml",
+          "format": "yaml",
+          "preserve_unknown_keys": true,
+          "backup_on_write": true
+        }
+      },
+      "groups": [
+        {
+          "id": "aqc",
+          "name": "爱企查 (AQC)",
+          "description": "Log in to aiqicha.baidu.com, then copy the full Cookie header from the browser devtools / Burp.",
+          "help_url": "https://github.com/wgpsec/ENScan_GO#aqc",
+          "fields": [
+            {
+              "key": "cookies.aqc",
+              "label": "Cookie",
+              "type": "secret_textarea",
+              "placeholder": "BAIDUID=...; BDUSS=...; ...",
+              "required": true,
+              "rows": 4
+            }
+          ],
+          "test": {
+            "kind": "exec",
+            "cmd": "{{exec}} -n 小米 -type aqc -field icp",
+            "ok_regex": "(?i)company_name|company\\s*name|icp",
+            "fail_regex": "(?i)cookie\\s*expired|auth\\s*failed",
+            "timeout_secs": 30
+          }
+        },
+        {
+          "id": "tyc",
+          "name": "天眼查 (TYC)",
+          "description": "TYC needs three values together: full Cookie, the X-Tycid header, and the Auth token. All three can be captured from a logged-in tianyancha.com session.",
+          "help_url": "https://github.com/wgpsec/ENScan_GO#tyc",
+          "fields": [
+            { "key": "cookies.tyc", "label": "Cookie", "type": "secret_textarea", "required": true, "rows": 4 },
+            { "key": "tyc.tycid", "label": "tycid", "type": "secret_text", "required": true, "placeholder": "X-Tycid value" },
+            { "key": "tyc.auth_token", "label": "auth_token", "type": "secret_text", "required": true, "placeholder": "Authorization header value" }
+          ],
+          "test": {
+            "kind": "exec",
+            "cmd": "{{exec}} -n 小米 -type tyc -field icp",
+            "ok_regex": "(?i)company_name|company\\s*name|icp",
+            "fail_regex": "(?i)cookie\\s*expired|auth\\s*failed",
+            "timeout_secs": 30
+          }
+        },
+        {
+          "id": "kc",
+          "name": "快查 (KC)",
+          "description": "Cookie copied from a logged-in kuaichacha session.",
+          "fields": [
+            {
+              "key": "cookies.kc",
+              "label": "Cookie",
+              "type": "secret_textarea",
+              "required": true,
+              "rows": 4
+            }
+          ],
+          "test": {
+            "kind": "exec",
+            "cmd": "{{exec}} -n 小米 -type kc -field icp",
+            "ok_regex": "(?i)company_name|company\\s*name|icp",
+            "fail_regex": "(?i)cookie\\s*expired|auth\\s*failed",
+            "timeout_secs": 30
+          }
+        },
+        {
+          "id": "rb",
+          "name": "风鸟 (RiskBird)",
+          "description": "Cookie copied from a logged-in riskbird.com session.",
+          "fields": [
+            {
+              "key": "cookies.rb",
+              "label": "Cookie",
+              "type": "secret_textarea",
+              "required": true,
+              "rows": 4
+            }
+          ],
+          "test": {
+            "kind": "exec",
+            "cmd": "{{exec}} -n 小米 -type rb -field icp",
+            "ok_regex": "(?i)company_name|company\\s*name|icp",
+            "fail_regex": "(?i)cookie\\s*expired|auth\\s*failed",
+            "timeout_secs": 30
+          }
+        },
+        {
+          "id": "miit",
+          "name": "MIIT ICP plugin",
+          "description": "Token + Sign captured from the MIIT ICP backend (beian.miit.gov.cn).",
+          "fields": [
+            { "key": "miit.token", "label": "Token", "type": "secret_text", "required": true },
+            { "key": "miit.sign", "label": "Sign", "type": "secret_text", "required": true }
+          ],
+          "test": {
+            "kind": "exec",
+            "cmd": "{{exec}} -n 小米 -type miit -field icp",
+            "ok_regex": "(?i)company_name|company\\s*name|icp",
+            "fail_regex": "(?i)token\\s*expired|sign\\s*invalid|auth\\s*failed",
+            "timeout_secs": 30
+          }
+        }
+      ]
+    },
+    "install": {
+      "linux": {
+        "method": "github",
+        "source": "wgpsec/ENScan_GO"
+      },
+      "method": "github",
+      "source": "wgpsec/ENScan_GO",
+      "windows": {
+        "method": "github",
+        "source": "wgpsec/ENScan_GO"
+      }
+    },
+    "launchMode": "cli",
+    "name": "ENScan_GO",
+    "output": {
+      "detect": "ENScan|enterprise_info|icp|invest|branch|holds",
+      "fields": {
+        "app.bundle_id": "app_id",
+        "app.link": "app_url",
+        "app.name": "app_name",
+        "branch.name": "subsidiary",
+        "copyright.name": "software_copyright",
+        "enterprise_info.email": "email",
+        "enterprise_info.name": "organization_name",
+        "enterprise_info.phone": "contact_phone",
+        "enterprise_info.reg_code": "credit_code",
+        "holds.name": "subsidiary",
+        "holds.scale": "ownership_percent",
+        "icp.company_name": "organization_name",
+        "icp.domain": "domain",
+        "invest.name": "subsidiary",
+        "invest.pid": "provider_company_id",
+        "invest.scale": "ownership_percent",
+        "job.name": "job_title",
+        "wechat.name": "social_account_name",
+        "wechat.wechat_id": "wechat_id",
+        "weibo.name": "social_account_name",
+        "wx_app.name": "app_name"
+      },
+      "format": "json",
+      "produces": [
+        "organization",
+        "domain",
+        "business_system",
+        "social_account",
+        "contact",
+        "intel"
+      ]
+    },
+    "params": [
+      {
+        "description": "Company keyword or full legal name",
+        "flag": "-n",
+        "label": "Company Name",
+        "placeholder": "小米",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "default": "aqc",
+        "description": "Enterprise data source. Requires the matching cookie/token in ENScan config.",
+        "flag": "-type",
+        "label": "Data Source",
+        "options": [
+          {
+            "label": "爱企查 (AQC)",
+            "value": "aqc"
+          },
+          {
+            "label": "天眼查 (TYC)",
+            "value": "tyc"
+          },
+          {
+            "label": "快查 (KC)",
+            "value": "kc"
+          },
+          {
+            "label": "风鸟 (RiskBird)",
+            "value": "rb"
+          },
+          {
+            "label": "MIIT ICP plugin",
+            "value": "miit"
+          },
+          {
+            "label": "All supported sources",
+            "value": "all"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "default": "icp,app,wx_app,wechat",
+        "description": "Comma-separated fields to collect",
+        "flag": "-field",
+        "label": "Fields",
+        "placeholder": "icp,app,wx_app,wechat",
+        "type": "string"
+      },
+      {
+        "description": "Only collect invested companies whose ownership percentage is greater than or equal to this value",
+        "flag": "-invest",
+        "label": "Minimum Investment Percent",
+        "placeholder": "51",
+        "type": "string"
+      },
+      {
+        "default": "1",
+        "description": "Recursive company relationship depth. Requires -invest.",
+        "flag": "-deep",
+        "label": "Depth",
+        "type": "string"
+      },
+      {
+        "description": "Collect branch companies",
+        "flag": "-branch",
+        "label": "Include Branches",
+        "type": "boolean"
+      },
+      {
+        "description": "Collect holding companies. Some sources may require VIP account.",
+        "flag": "-hold",
+        "label": "Include Holdings",
+        "type": "boolean"
+      },
+      {
+        "description": "Collect supplier information from public tender/report data",
+        "flag": "-supplier",
+        "label": "Include Suppliers",
+        "type": "boolean"
+      },
+      {
+        "default": "3",
+        "description": "Delay between requests. Use -1 for random 1-5 seconds.",
+        "flag": "-delay",
+        "label": "Delay Seconds",
+        "type": "string"
+      },
+      {
+        "default": "enscan-output",
+        "description": "Directory for exported results",
+        "flag": "-out-dir",
+        "label": "Output Directory",
+        "placeholder": "enscan-output",
+        "type": "string"
+      },
+      {
+        "description": "Export results as JSON instead of XLSX",
+        "flag": "-json",
+        "label": "JSON Export",
+        "type": "boolean"
+      },
+      {
+        "description": "Optional HTTP proxy",
+        "flag": "-proxy",
+        "label": "Proxy",
+        "placeholder": "http://127.0.0.1:8080",
+        "type": "string"
+      },
+      {
+        "default": "1",
+        "description": "Request timeout in minutes",
+        "flag": "-timeout",
+        "label": "Timeout Minutes",
+        "type": "string"
+      }
+    ],
+    "pentestPhase": [
+      "recon"
+    ],
+    "runtime": "native",
+    "skills": [
+      {
+        "args": "-v",
+        "description": "Generate ENScan_GO config file under the user's config directory. User must fill cookies/tokens manually.",
+        "id": "init-config",
+        "name": "Initialize config",
+        "tags": [
+          "setup",
+          "credential"
+        ]
+      },
+      {
+        "args": "-api",
+        "description": "Start local REST API mode, default config listens on :31000.",
+        "id": "api-server",
+        "name": "Start REST API server",
+        "tags": [
+          "api",
+          "server",
+          "long-running"
+        ]
+      },
+      {
+        "args": "-mcp",
+        "description": "Start local MCP SSE server, default config listens on http://localhost:8080.",
+        "id": "mcp-server",
+        "name": "Start MCP server",
+        "tags": [
+          "mcp",
+          "server",
+          "long-running"
+        ]
+      },
+      {
+        "args": "-n \"{{org}}\" -type aqc -field icp,app,wx_app,wechat -delay 3 -json -out-dir enscan-output",
+        "description": "Collect default enterprise intelligence as JSON: ICP, apps, mini-programs, and WeChat accounts.",
+        "id": "company-default-json",
+        "name": "Company profile JSON",
+        "tags": [
+          "enterprise",
+          "json",
+          "default"
+        ]
+      },
+      {
+        "args": "-n \"{{org}}\" -type aqc -field icp,app,wx_app,wechat -invest 51 -branch -deep 2 -delay 3 -json -out-dir enscan-output",
+        "description": "Collect company tree candidates with investment percentage >=51%, branches, and depth 2.",
+        "id": "company-tree-51",
+        "name": "Company tree >=51%",
+        "tags": [
+          "enterprise",
+          "subsidiary",
+          "scope"
+        ]
+      },
+      {
+        "args": "-n \"{{org}}\" -type aqc,miit -field icp -delay 3 -json -out-dir enscan-output",
+        "description": "Collect ICP records for domain ownership evidence.",
+        "id": "icp-only",
+        "name": "ICP only",
+        "tags": [
+          "icp",
+          "domain",
+          "evidence"
+        ]
+      },
+      {
+        "args": "-n \"{{org}}\" -type aqc -field all -delay 3 -json -out-dir enscan-output",
+        "description": "Collect all default ENScan fields as JSON. Use with care because this may trigger more requests.",
+        "id": "all-fields-json",
+        "name": "All default fields JSON",
+        "tags": [
+          "enterprise",
+          "json",
+          "thorough"
+        ]
+      }
+    ],
+    "subcategory": "osint",
+    "tags": [
+      "recon",
+      "osint",
+      "enterprise",
+      "organization",
+      "china",
+      "icp",
+      "data-source",
+      "credential-required"
+    ],
+    "tier": "recommended",
+    "updateInfo": {
+      "lastUpdated": "2026-05-21",
+      "version": "v2.0.5"
+    }
+  }
+}

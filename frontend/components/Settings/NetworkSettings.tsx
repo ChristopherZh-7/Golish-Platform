@@ -65,26 +65,12 @@ export function NetworkSettings({ settings, onChange }: NetworkSettingsProps) {
       </div>
 
       <div className="space-y-2 border-t border-[var(--border-medium)] pt-4">
-        <label htmlFor="github-token" className="text-sm font-medium text-foreground">
-          {t("network.githubToken")}
-        </label>
-        <Input
-          id="github-token"
-          type="password"
-          value={settings.github_token || ""}
-          onChange={(e) => onChange({ ...settings, github_token: e.target.value || null })}
-          placeholder={t("network.githubTokenPlaceholder")}
-        />
         <p className="text-xs text-muted-foreground">
-          {t("network.githubTokenHint")}
-          <a
-            href="https://github.com/settings/tokens"
-            target="_blank"
-            rel="noreferrer"
-            className="text-accent hover:underline ml-1"
-          >
-            {t("network.generateToken")}
-          </a>
+          {/* GitHub Token moved to Settings → Integrations on 2026-05-21.
+              Reads/writes still go to `network.github_token` under the
+              hood, so this is purely a UI migration; existing tokens are
+              picked up automatically. */}
+          {t("network.githubTokenMovedHint")}
         </p>
       </div>
 

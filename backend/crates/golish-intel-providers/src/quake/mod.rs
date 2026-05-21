@@ -115,6 +115,12 @@ impl IntelProvider for QuakeProvider {
             supported_query_types: vec![QueryType::Site, QueryType::Domain, QueryType::Cert],
             quota_hint: "免费账户每月 3000 条 · 单值 API token".into(),
             requires_paid: false,
+            integration_schema: Some(crate::api_key_integration_schema(
+                "360 Quake",
+                "360 Quake 网络空间测绘 · 国内主流 ASM",
+                Some("Quake API token from quake.360.net account page"),
+                Some("https://quake.360.net/quake/#/login"),
+            )),
         }
     }
 

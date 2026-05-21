@@ -15,17 +15,64 @@
 | **仓库根** | `/Users/christopherzheng/WebstormProjects/Golish-Platform`（macOS）/ 同名相对路径 |
 | **栈** | Tauri 2 + Rust workspace (50+ crates) + React 19 + TypeScript 6 + Vite 8 + Tailwind 4 |
 | **包管理** | `pnpm`（前端）+ `cargo` nextest（后端） |
-| **标准启动** | `just dev`（全栈热重载，端口 1420）/ `just dev-fe`（仅前端 mock） |
+| **标准启动** | `just dev`（全栈热重载,端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
-| **当前最高优先级** | 跑 `just dev` 真跑一遍，验证 26+1 commits + 本轮 `pentestPhase` schema 改动在运行时不破坏现有功能；ToolManager UI 加 phase 过滤器是下一轮候选 |
-| **当前 blocker** | 完整 `cargo check` 多次跑超时被用户主动中断；TS typecheck 全程绿（最新一次 10.9s）；本轮覆盖 `cargo check -p golish-pentest / golish-pentest-domain / golish-pentest-mcp` + `cargo test -p golish-pentest --lib models::` 全绿；M3 + ai-chat 大概率正常但**未独立全量验证**，建议下一轮跑 `just check-rust` 兜底 |
-| **未提交的半成品** | 本轮已修改但未 commit：`backend/crates/golish-pentest/src/{models.rs,search.rs,command_builder/tests.rs}` + `frontend/lib/pentest/types.ts` + `resources/toolsconfig/*.json`（27 改 + 1 删）+ `resources/skills/burpsuite-community/`（1 删 + 空目录删）+ `docs/windows-support.md`（1 行删）+ `agent-progress.md`（本节）。等用户授权后 commit |
+| **当前最高优先级** | 用户手动验 T5.7：启动 `just dev` → Settings → Integrations，检查 0.zone 旧 vault key 经 read alias 显示「已配置」+ ENScan_GO 5 个 cookie group 可保存到 `~/.config/enscan/config.yaml`；同时验 GitHub Token 卡片能读取并写回 `network.github_token` |
+| **当前 blocker** | 整 monorepo 的 `just precommit` 因 preexisting biome 警告 fail（pty.ts / useTaskPlanState.ts / App.tsx 等非本轮文件的格式 / lint info），与 Phase 1-5 改动无关。本轮自己引入的代码 biome + tsc + nextest + vitest 全绿（见 2026-05-21 会话记录证据段） |
+| **未提交的半成品** | 本轮 Integrations 相关改动 + 之前残留的 KG/dispatch/planner/pty 等 ~70 个 preexisting 文件改动都未 commit；建议下一轮先把 Phase 1-5 单独 commit |
 
 ---
 
 ## 会话记录
 
 > 倒序排列,最新一轮在最上面。每轮一条。
+
+---
+
+### 2026-05-21 · Integrations 集成中心 Phase 1-5（schema-driven 凭据管理 · 替换 Intel Providers 入口）
+
+- **本轮目标**：按照 `docs/superpowers/plans/2026-05-21-integrations.md` 的 5 个 Phase 推完整个 Integrations 集成中心：新建 `golish-integrations` crate → 3 个 storage backend + tester + resolver → 5 个 Tauri IPC + frontend wrapper → 前端动态表单组件库 → 接入 ENScan_GO + 5 intel providers + GitHub Token + 删旧 UI。`feature_list.json` 中 `integrations` 条目为本轮唯一 `in_progress`。
+- **已完成（按 Phase 分）**：
+  - **Phase 1（已在前序会话完成）**：`golish-integrations` crate 骨架 + schema/types/error/traits 类型；本轮在 Phase 3 时给 `ResolvedIntegration` 补了 `Serialize/Deserialize` derive
+  - **Phase 2（已在前序会话完成）**：`storage::{vault,external_file,settings}` + `resolver` + `tester` 全部实现，49 个单测全绿
+  - **Phase 3（本轮 IPC 命令）**：`backend/crates/golish/src/tools/integrations/{mod,state,commands}.rs` 5 个 `#[tauri::command]`（list_schemas / get / set / clear / test）+ `commands_facade/integrations.rs` + `commands_registry.rs` 注册 + `frontend/lib/api/integrations.ts` 类型镜像 + IPC wrapper。`IntegrationsState::pick_backend()` 按 storage variant 分发 vault/external_file/settings backend；TestKind::Builtin 暂返 Unknown 待 IntelProvider::test_connection 接入
+  - **Phase 4（本轮前端动态表单）**：`frontend/components/Settings/IntegrationsSettings/`：7 个字段组件（SecretInput / SecretTextarea / TextInput / SelectField / BooleanField / ProxyInput + FieldRenderer 多态分发）+ `useIntegrationGroup` 状态机 hook + `IntegrationGroupForm`（按 fields[] 动态渲染、Save/Clear/Test 三按钮）+ `IntegrationCard` 折叠卡（storage/category/group-count pill）+ `TestButton` + HealthPill（5 种 HealthStatus mapping）+ `CategoryNav` 侧栏 + fuzzy AND 搜索 + `index.tsx` 三态入口（loading/error/empty/ready）+ i18n 新增 `integrations.*` 27 条键
+  - **Phase 5（本轮接入 + 迁移）**：
+    - T5.1 `resources/toolsconfig/enscan-go.json` 加 `integration` 段（5 groups: aqc/tyc/kc/rb/miit，TYC 三字段 cookie+tycid+auth_token，全部带 exec test recipe）
+    - T5.2 5 个 intel provider 在 `meta()` 中填 `integration_schema: Some(...)`，通过新 helper `crate::api_key_integration_schema(...)`（保留 `extra_tags: ["intel-provider"]` 让旧 UI 仍能识别迁移期数据）
+    - T5.3 `resources/integrations/core.json` 描述 GitHub Token（storage=settings.network.github_token / TestKind::Http GET api.github.com/user）+ `golish_core::paths::integrations_core_file()` + `IntegrationsState::build_default()` 启动时合并
+    - T5.4 `SettingsTabContent.tsx` 和 `Settings/index.tsx` 两个 Settings 入口都加 Integrations nav + lazy import + switch case；`useSettingsNavigation` SettingsSection 类型把 `"intel"` 替换为 `"integrations"`
+    - T5.5 删除 `frontend/components/Settings/IntelProvidersSettings/` 整目录（KeyEditor + ProviderCard + index.tsx 共 ~14KB），同时清掉两个 Settings 入口中所有 IntelProvidersSettings 引用
+    - T5.6 `NetworkSettings.tsx` 删除 GitHub Token UI 块（line 67-89），替换为 `t("network.githubTokenMovedHint")` 指向 Integrations 的提示；底层 `settings.network.github_token` 字段保留（Integrations 仍读写它）
+- **运行过的验证**:
+  - `cd backend && cargo check -p golish-integrations -p golish-intel-providers -p golish` → exit 0（首轮 3m41s，后续增量 49s）
+  - `cd backend && cargo nextest run -p golish-integrations -p golish-intel-providers --status-level fail` → **188 tests pass / 0 fail**
+  - `cd backend && cargo nextest run -p golish --lib -E 'test(integrations::commands::tests)'` → **6 tests pass / 0 fail**（含 schema serialization round-trip + error mapping + tester Builtin/missing-test 行为锁定）
+  - `pnpm exec tsc --noEmit`（全前端）→ exit 0
+  - `pnpm exec biome check frontend/components/Settings/IntegrationsSettings/ frontend/lib/api/integrations.ts frontend/lib/i18n/{en,zh-CN}.json frontend/components/Settings/{NetworkSettings,SettingsTabContent,index}.tsx frontend/components/Settings/hooks/useSettingsNavigation.ts` → 全部干净
+  - `pnpm vitest run frontend/components/Settings/IntegrationsSettings/` → **17/17 passed**（SecretInput reveal+30s auto-mask / CategoryNav fuzzy AND 语义 / IntegrationGroup 3-field TYC schema 动态渲染 + Save payload + 无 test recipe 隐藏按钮 + 错误路径）
+  - `pnpm vitest run frontend/components/Settings/` → **68/68 passed**（含本轮 17 + 现有 AppearanceSettings / CaretPreview / TerminalSettings 等回归）
+  - `rg "IntelProvidersSettings" frontend/` → 0 真实引用，2 处仅在注释里提到 "legacy IntelProvidersSettings UI"
+- **已记录证据**:
+  - 188 + 6 + 17 + 68 = 全部 test 数量见上面 "运行过的验证" 段
+  - 关键文件：`docs/design/2026-05-21-integrations.md` / `docs/superpowers/plans/2026-05-21-integrations.md`（设计 + 实施计划）+ `feature_list.json` 已写入 evidence
+- **提交记录**：本轮所有 Phase 1-5 改动**未 commit**，等用户授权后整批 commit
+- **未提交文件清单（本轮新增/修改部分）**:
+  - 后端：`backend/crates/golish-integrations/`（新 crate，11 文件）+ `backend/crates/golish/src/tools/integrations/{mod,state,commands}.rs`（新）+ `backend/crates/golish/src/commands_facade/{mod,integrations}.rs`(改+新) + `backend/crates/golish/src/commands_registry.rs`(改) + `backend/crates/golish/src/app/tauri_app.rs`(改) + `backend/crates/golish/Cargo.toml`(+dep) + `backend/Cargo.toml` & `Cargo.lock`(workspace members) + `backend/crates/golish-intel-providers/{Cargo.toml,src/lib.rs,src/types.rs,src/{zone,fofa,quake,hunter,shodan}/mod.rs}`(+dep + helper + 5 schema) + `backend/crates/golish-core/src/paths.rs`(+integrations_core_file)
+  - 前端：`frontend/components/Settings/IntegrationsSettings/`（10 文件：index + 5 容器 + fields/6 + hooks/1 + 3 测试）+ `frontend/lib/api/{index,integrations}.ts` + `frontend/components/Settings/{NetworkSettings,SettingsTabContent,index}.tsx`(改) + `frontend/components/Settings/hooks/useSettingsNavigation.ts`(改) + `frontend/lib/i18n/{en,zh-CN}.json`(改) + 删除 `frontend/components/Settings/IntelProvidersSettings/`（3 文件）
+  - 资源：`resources/toolsconfig/enscan-go.json`(改) + `resources/integrations/core.json`(新)
+- **已知风险或未解决问题**:
+  - **T5.7 read alias 未在真实运行环境验证**：旧 0.zone vault key 经新 UI 渲染应显示「已配置」badge，但需 `just dev` 跑起来用户人工对照看一眼
+  - **T5.8 Playwright E2E 未补**：plan 原定 3 case（渲染 / 保存 / 测试），本轮 vitest + 后端 nextest 已覆盖关键路径，E2E 暂跳过
+  - **TestKind::Builtin 还是返 Unknown**：5 个 intel provider 的「测试连接」按钮目前不能真正调到 `IntelProvider::test_connection`。若用户在 UI 上点击会看到 `Unknown · builtin test path...`。补 dispatch 是后续小补丁
+  - **ENScan exec test 拿不到 executable**：tester 用 no-op exec resolver，所以 ENScan 5 个 group 点 Test 会返「executable not found」。接入 ConfigManager 的 `find_tool_executables` 是后续补丁
+  - **`just precommit` 整体不绿**：preexisting biome 警告（pty.ts 排序 / useTaskPlanState 可选链 / App.tsx 格式等非本轮文件）阻塞，与 Phase 1-5 改动无关；本轮自己改的文件全部干净
+  - **国际化 `intel.*` 翻译键 fallback 保留**：plan 说保留半个版本周期 fallback；本轮不动 `intel.provider.*` / `intel.headerDesc` 等键，下一轮可清
+- **下一步最佳动作**:
+  1. 用户**先跑 `just dev`** 真试新 UI：6 张卡（0.zone/fofa/quake/hunter/shodan + enscan-go + github）能否在 Settings → Integrations 正常渲染；旧 0.zone vault key 是否显示「已配置」
+  2. 截图 / 录屏后给我看，确认无 UI 问题后**整批 commit** Phase 1-5（约 50+ 文件）
+  3. **补两个小补丁**：① IntegrationsState 接入 ConfigManager 的 executable 查询 ② commands.rs::integrations_test 加 `TestKind::Builtin → IntelProvider::test_connection` 分支
+  4. 后续清理 preexisting biome 警告，让 `just precommit` 整体绿，方便日常使用
 
 ---
 

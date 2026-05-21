@@ -14,6 +14,7 @@ use commands_facade::ai::*;
 use commands_facade::findings::*;
 use commands_facade::git_pty::*;
 use commands_facade::indexer::*;
+use commands_facade::integrations::*;
 use commands_facade::intel_providers::*;
 use commands_facade::mcp::*;
 use commands_facade::pentest::*;
@@ -156,6 +157,9 @@ fn install_handlers(
         project_export, project_import,
         // ── intel_providers (ASM platforms · 0.zone / FOFA / Quake / ...) ─
         intel_list_providers, intel_test_connection, intel_query_provider,
+        // ── integrations (schema-driven external-service credentials) ─
+        integrations_list_schemas, integrations_get, integrations_set,
+        integrations_clear, integrations_test,
         method_list_templates, method_start_project, method_list_projects, method_load_project, method_update_item, method_delete_project,
         recording_save, recording_load, recording_list, recording_delete,
         output_parse, output_detect_tool, output_parse_and_store,
